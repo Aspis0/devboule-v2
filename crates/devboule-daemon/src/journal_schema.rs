@@ -106,14 +106,23 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                 tx.execute("ALTER TABLE workspaces ADD COLUMN branch TEXT", [])?;
             }
         }
+        if version < 8 {
+            tx.execute_batch(PEERS_AUDIT_SQL)?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
     validate_v6_schema(&conn)?;
+    // A crash inside `sweep_audit` between dropping the triggers and
+    // recreating them leaves the audit table writable, so the guarantee is
+    // re-established on every open rather than trusted from the migration.
+    ensure_audit_triggers(&conn)?;
     let _ = conn.execute(
         "ALTER TABLE sessions ADD COLUMN reaped INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    // The age floor alone is a disk sink: enforce the cap at every start too.
+    let _ = sweep_audit(&conn, unix_millis());
     // Reaped-but-still-live: the process was observed to exit, then the
     // daemon died during ConPTY drain. That is Ended (we saw the child),
     // not Recovered (we did not lose the process unobserved).
@@ -174,6 +183,39 @@ fn validate_v6_schema(conn: &Connection) -> Result<(), JournalError> {
             ("branch", "TEXT", 0, 0),
         ],
     )?;
+    validate_table_shape(
+        conn,
+        "peers",
+        &[
+            ("device_id", "TEXT", 0, 1),
+            ("display_name", "TEXT", 1, 0),
+            ("role", "TEXT", 1, 0),
+            ("public_key", "BLOB", 1, 0),
+            ("paired_by_user", "TEXT", 0, 0),
+            ("binding_kind", "TEXT", 1, 0),
+            ("binding_stable_id", "TEXT", 0, 0),
+            ("binding_node_name", "TEXT", 0, 0),
+            ("binding_login_name", "TEXT", 0, 0),
+            ("address", "TEXT", 1, 0),
+            ("paired_at", "INTEGER", 1, 0),
+            ("revoked_at", "INTEGER", 0, 0),
+            ("caps", "TEXT", 1, 0),
+        ],
+    )?;
+    validate_table_shape(
+        conn,
+        "audit",
+        &[
+            ("id", "INTEGER", 0, 1),
+            ("at", "INTEGER", 1, 0),
+            ("device_id", "TEXT", 1, 0),
+            ("role", "TEXT", 1, 0),
+            ("claimed_origin", "TEXT", 0, 0),
+            ("action", "TEXT", 1, 0),
+            ("session_id", "TEXT", 0, 0),
+            ("outcome", "TEXT", 1, 0),
+        ],
+    )?;
     let project_index: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master
           WHERE type = 'index' AND name = 'workspaces_project'",
@@ -182,7 +224,7 @@ fn validate_v6_schema(conn: &Connection) -> Result<(), JournalError> {
     )?;
     if project_index != 1 {
         return Err(JournalError::Corrupt(
-            "journal schema v6 has an unexpected workspaces_project index".to_string(),
+            "journal schema has an unexpected workspaces_project index".to_string(),
         ));
     }
     Ok(())
@@ -202,13 +244,15 @@ fn validate_table_shape(
         .optional()?;
     if object_type.as_deref() != Some("table") {
         return Err(JournalError::Corrupt(format!(
-            "journal schema v6 has an unexpected {table} table"
+            "journal schema has an unexpected {table} table"
         )));
     }
 
     let pragma = match table {
         "projects" => "PRAGMA table_info('projects')",
         "workspaces" => "PRAGMA table_info('workspaces')",
+        "peers" => "PRAGMA table_info('peers')",
+        "audit" => "PRAGMA table_info('audit')",
         _ => unreachable!("schema table is fixed above"),
     };
     let mut statement = conn.prepare(pragma)?;
@@ -232,10 +276,121 @@ fn validate_table_shape(
     });
     if !required_columns_present {
         return Err(JournalError::Corrupt(format!(
-            "journal schema v6 has an unexpected {table} table"
+            "journal schema has an unexpected {table} table"
         )));
     }
     Ok(())
+}
+
+/// v8: the paired peers and the append-only audit trail. `caps` is a JSON
+/// array in TEXT (SQLite has no array type); `paired_by_user` is the local
+/// daemon's own SID at pairing time, written by this side and never received
+/// from the peer.
+const PEERS_AUDIT_SQL: &str = "
+CREATE TABLE IF NOT EXISTS peers (
+    device_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('client','daemon')),
+    public_key BLOB NOT NULL,
+    paired_by_user TEXT,
+    binding_kind TEXT NOT NULL,
+    binding_stable_id TEXT,
+    binding_node_name TEXT,
+    binding_login_name TEXT,
+    address TEXT NOT NULL,
+    paired_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    caps TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit (
+    id INTEGER PRIMARY KEY,
+    at INTEGER NOT NULL,
+    device_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    claimed_origin TEXT,
+    action TEXT NOT NULL,
+    session_id TEXT,
+    outcome TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_device ON audit(device_id, id);
+CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
+BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
+BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
+";
+
+const AUDIT_NO_DELETE_SQL: &str = "
+CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
+BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;";
+
+const AUDIT_NO_UPDATE_SQL: &str = "
+CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
+BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;";
+
+/// Minimum audit retention. A `const`, never a wire parameter.
+pub(super) const AUDIT_FLOOR_DAYS: i64 = 90;
+/// Per-device ceiling. The age floor alone is a disk sink; the cap wins over
+/// the floor for that device, and the local device is subject to it too.
+pub(super) const AUDIT_MAX_ROWS_PER_DEVICE: i64 = 20_000;
+
+fn ensure_audit_triggers(conn: &Connection) -> Result<(), JournalError> {
+    for (name, sql) in [
+        ("audit_no_delete", AUDIT_NO_DELETE_SQL),
+        ("audit_no_update", AUDIT_NO_UPDATE_SQL),
+    ] {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+            [name],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            conn.execute_batch(sql)?;
+        }
+    }
+    Ok(())
+}
+
+/// The one place allowed to drop the append-only triggers: inside a single
+/// transaction that deletes the aged rows, applies the per-device cap, and
+/// recreates them. Returns `(deleted_by_age, deleted_by_cap)`.
+pub(super) fn sweep_audit(conn: &Connection, now_ms: i64) -> Result<(u64, u64), JournalError> {
+    let floor_ms = now_ms - AUDIT_FLOOR_DAYS * 24 * 60 * 60 * 1000;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "DROP TRIGGER IF EXISTS audit_no_delete;
+         DROP TRIGGER IF EXISTS audit_no_update;",
+    )?;
+    let aged = tx.execute("DELETE FROM audit WHERE at < ?1", [floor_ms])?;
+    let devices: Vec<String> = {
+        let mut statement = tx.prepare("SELECT DISTINCT device_id FROM audit")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let mut capped = 0usize;
+    for device_id in devices {
+        capped += tx.execute(
+            "DELETE FROM audit
+              WHERE device_id = ?1
+                AND id NOT IN (
+                    SELECT id FROM audit WHERE device_id = ?1
+                     ORDER BY id DESC LIMIT ?2
+                )",
+            rusqlite::params![device_id, AUDIT_MAX_ROWS_PER_DEVICE],
+        )?;
+    }
+    tx.execute_batch(&format!("{AUDIT_NO_DELETE_SQL}{AUDIT_NO_UPDATE_SQL}"))?;
+    tx.commit()?;
+    Ok((aged as u64, capped as u64))
+}
+
+fn unix_millis() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0),
+    )
+    .unwrap_or(i64::MAX)
 }
 
 const SCHEMA_SQL: &str = "
@@ -311,8 +466,8 @@ mod tests {
     use devboule_protocol::{SessionState, TranscriptIntegrity};
 
     use super::super::{
-        sample_session, tmp_journal, Journal, JournalError, JOURNAL_MAX_AGE_MS,
-        JOURNAL_MAX_SESSIONS, JOURNAL_SCHEMA_VERSION,
+        sample_session, tmp_journal, AuditRecord, Journal, JournalError, PeerRecord,
+        DEFAULT_PEER_CAPS, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_SESSIONS, JOURNAL_SCHEMA_VERSION,
     };
     use super::SCHEMA_SQL;
 
@@ -684,6 +839,110 @@ mod tests {
         let journal = Journal::open(&path).expect("create");
         assert!(path.exists());
         drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn version_7_journal_migrates_to_v8_with_peers_audit_and_triggers() {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("old journal");
+        conn.execute_batch(SCHEMA_SQL).expect("old schema");
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN dropped_frames INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN dropped_bytes INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN trimmed_bytes INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN peer_session_id TEXT;
+             ALTER TABLE sessions ADD COLUMN provider TEXT;
+             CREATE TABLE journal_settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+             CREATE TABLE deleted_sessions (
+                 id TEXT PRIMARY KEY, workspace_id TEXT, kind TEXT NOT NULL, title TEXT NOT NULL,
+                 created_at_ms INTEGER NOT NULL, deleted_at_ms INTEGER NOT NULL,
+                 reason TEXT NOT NULL, bytes_removed INTEGER NOT NULL
+             );
+             CREATE TABLE projects (
+                 id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE,
+                 git_state TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE workspaces (
+                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
+                 isolation TEXT NOT NULL, path TEXT NOT NULL,
+                 created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, branch TEXT
+             );
+             CREATE INDEX workspaces_project ON workspaces(project_id, updated_at_ms, id);",
+        )
+        .expect("v7 schema");
+        conn.pragma_update(None, "user_version", 7).expect("v7");
+        drop(conn);
+
+        let journal = Journal::open(&path).expect("migrate");
+        journal
+            .peer_upsert(PeerRecord {
+                device_id: "dev-migrated".to_string(),
+                display_name: "Host".to_string(),
+                role: "client".to_string(),
+                public_key: vec![1u8; 32],
+                paired_by_user: Some("S-1-5-21-1".to_string()),
+                binding_kind: "tailnet".to_string(),
+                binding_stable_id: Some("nMIGRATED".to_string()),
+                binding_node_name: None,
+                binding_login_name: None,
+                address: "100.64.0.9:47831".to_string(),
+                paired_at: 1,
+                revoked_at: None,
+                caps: DEFAULT_PEER_CAPS
+                    .iter()
+                    .map(|cap| cap.to_string())
+                    .collect(),
+            })
+            .expect("peers table is usable");
+        journal
+            .audit_append(AuditRecord {
+                device_id: "dev-migrated".to_string(),
+                role: "client".to_string(),
+                claimed_origin: None,
+                action: "Ping".to_string(),
+                session_id: None,
+                outcome: "ok".to_string(),
+            })
+            .expect("audit table is usable");
+        let sweep = journal.audit_sweep().expect("sweep");
+        assert_eq!((sweep.deleted_by_age, sweep.deleted_by_cap), (0, 0));
+        journal.flush().expect("flush");
+        drop(journal);
+
+        let check = Connection::open(&path).expect("check migrated schema");
+        let version: i32 = check
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, JOURNAL_SCHEMA_VERSION);
+        for table in ["peers", "audit"] {
+            let count: i64 = check
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("new table exists");
+            assert_eq!(count, 1, "missing migrated table {table}");
+        }
+        for trigger in ["audit_no_delete", "audit_no_update"] {
+            let count: i64 = check
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                    [trigger],
+                    |row| row.get(0),
+                )
+                .expect("trigger exists");
+            assert_eq!(count, 1, "missing migrated trigger {trigger}");
+        }
+        let index: i64 = check
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'audit_device'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("audit index");
+        assert_eq!(index, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

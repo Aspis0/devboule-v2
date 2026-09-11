@@ -16,6 +16,8 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
     ConvertStringSidToSidW, GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
 };
+#[cfg(feature = "server")]
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Security::{
     EqualSid, GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
     PSID, TOKEN_QUERY, TOKEN_USER,
@@ -185,22 +187,91 @@ pub fn dacl_sddl(handle: HANDLE) -> io::Result<String> {
         if status != 0 {
             return Err(io::Error::from_raw_os_error(status as i32));
         }
-        let mut text = ptr::null_mut();
-        let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            sd,
-            SDDL_REVISION_1,
-            DACL_SECURITY_INFORMATION,
-            &mut text,
-            ptr::null_mut(),
-        );
+        let result = descriptor_dacl_sddl(sd);
         LocalFree(sd as _);
-        if ok == 0 {
-            return Err(last_os_error());
-        }
-        let sddl = pwstr_to_string(text)?;
-        LocalFree(text as _);
-        Ok(sddl)
+        result
     }
+}
+
+/// DACL of a file or directory, by path. `GetSecurityInfo` on a handle needs
+/// `READ_CONTROL`; a handle opened for writing does not carry it, so the
+/// private-file check in tests has to ask by name.
+#[allow(dead_code)]
+pub fn dacl_sddl_for_path(path: &std::path::Path) -> io::Result<String> {
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+
+    unsafe {
+        let mut sd: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        let wide_path = wide(&path.to_string_lossy());
+        let status = GetNamedSecurityInfoW(
+            wide_path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut sd,
+        );
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        let result = descriptor_dacl_sddl(sd);
+        LocalFree(sd as _);
+        result
+    }
+}
+
+unsafe fn descriptor_dacl_sddl(sd: PSECURITY_DESCRIPTOR) -> io::Result<String> {
+    let mut text = ptr::null_mut();
+    let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        sd,
+        SDDL_REVISION_1,
+        DACL_SECURITY_INFORMATION,
+        &mut text,
+        ptr::null_mut(),
+    );
+    if ok == 0 {
+        return Err(last_os_error());
+    }
+    let sddl = pwstr_to_string(text);
+    LocalFree(text as _);
+    sddl
+}
+
+/// Create (or truncate) a file whose DACL grants the current user alone.
+/// The same SDDL the pipe uses, applied at creation so no window exists in
+/// which the file is world-readable.
+#[cfg(feature = "server")]
+pub fn create_private_file(path: &std::path::Path) -> io::Result<std::fs::File> {
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+    };
+
+    let descriptor = PipeSecurity::current_user_only()?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.as_ptr(),
+        bInheritHandle: 0,
+    };
+    let wide_path = wide(&path.to_string_lossy());
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            &attributes,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(last_os_error());
+    }
+    // SAFETY: CreateFileW returned a new owned handle.
+    Ok(unsafe { std::fs::File::from_raw_handle(handle as RawHandle) })
 }
 
 /// Test-only oracle; production code never calls this function. The daemon

@@ -11,6 +11,10 @@ pub struct RuntimePaths {
     pub dir: PathBuf,
     pub lock_file: PathBuf,
     pub pipe_name: String,
+    /// This device's persisted identity: the random `device_id`, the public
+    /// half of the Noise static key, and the display name. The private half
+    /// lives in the OS credential store (or the file store), never here.
+    pub device_file: PathBuf,
 }
 
 impl RuntimePaths {
@@ -31,10 +35,12 @@ impl RuntimePaths {
         let dir = dir.into();
         let lock_file = dir.join("daemon.lock");
         let pipe_name = pipe_name_for(&dir);
+        let device_file = dir.join("device.json");
         Self {
             dir,
             lock_file,
             pipe_name,
+            device_file,
         }
     }
 
@@ -49,15 +55,25 @@ impl RuntimePaths {
     }
 }
 
-fn pipe_name_for(dir: &Path) -> String {
+/// The one normalisation the pipe name and the credential-store username
+/// share: a directory written two ways must name one daemon.
+pub(crate) fn normalized_runtime_dir(dir: &Path) -> String {
     let mut normalized = dir.to_string_lossy().replace('/', "\\").to_lowercase();
     while normalized.ends_with('\\') {
         normalized.pop();
     }
-    format!(
-        "\\\\.\\pipe\\devboule-{:016x}",
-        fnv1a64(normalized.as_bytes())
-    )
+    normalized
+}
+
+/// 16 lowercase hex characters derived from the normalised runtime directory.
+/// Two daemons of one user are told apart by this string, so it must agree
+/// with `pipe_name_for` on what "the same directory" means.
+pub(crate) fn runtime_dir_hash(dir: &Path) -> String {
+    format!("{:016x}", fnv1a64(normalized_runtime_dir(dir).as_bytes()))
+}
+
+fn pipe_name_for(dir: &Path) -> String {
+    format!("\\\\.\\pipe\\devboule-{}", runtime_dir_hash(dir))
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -99,5 +115,18 @@ mod tests {
             paths.journal_file(),
             PathBuf::from(r"C:\Users\Name With Spaces\AppData\Local\Devboule\journal.db")
         );
+        assert_eq!(
+            paths.device_file,
+            PathBuf::from(r"C:\Users\Name With Spaces\AppData\Local\Devboule\device.json")
+        );
+    }
+
+    #[test]
+    fn runtime_dir_hash_is_stable_across_slash_and_case() {
+        let a = runtime_dir_hash(Path::new(r"C:\Users\Gualt\AppData\Local\Devboule"));
+        let b = runtime_dir_hash(Path::new(r"c:/users/gualt/appdata/local/devboule/"));
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
+        assert!(a.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 }

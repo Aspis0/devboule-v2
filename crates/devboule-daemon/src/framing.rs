@@ -367,7 +367,7 @@ fn wait_for_operation(
 }
 
 #[cfg(windows)]
-fn read_chunk(
+pub(crate) fn read_chunk(
     file: &File,
     buffer: &mut [u8],
     deadline: Option<Instant>,
@@ -407,7 +407,11 @@ fn read_chunk(
 }
 
 #[cfg(windows)]
-fn write_all_overlapped(file: &File, bytes: &[u8], deadline: Option<Instant>) -> io::Result<()> {
+pub(crate) fn write_all_overlapped(
+    file: &File,
+    bytes: &[u8],
+    deadline: Option<Instant>,
+) -> io::Result<()> {
     let mut written_total = 0usize;
     while written_total < bytes.len() {
         let event = OperationEvent::new()?;

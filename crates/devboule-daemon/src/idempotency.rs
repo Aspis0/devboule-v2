@@ -2,6 +2,22 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{DaemonMessage, IDEMPOTENCY_MAX_ENTRIES, IDEMPOTENCY_TTL_SECS};
+use sha2::{Digest, Sha256};
+
+/// SHA-256 of the caller's fingerprint text.
+///
+/// The text itself is caller-chosen and can be a 64 KiB prompt
+/// (`send_fingerprint` appends the whole send text), and the table holds up
+/// to `IDEMPOTENCY_MAX_ENTRIES` of them. Hashing here means one entry costs a
+/// fixed 32 bytes regardless of what the caller passed, and every call site
+/// is covered without touching it: receipt semantics are unchanged, only the
+/// stored representative is shorter.
+fn fingerprint_digest(fingerprint: &str) -> [u8; 32] {
+    let digest = Sha256::digest(fingerprint.as_bytes());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
 
 /// `Hit` stores a full reply frame. Boxing it would scatter clones on the
 /// retry path for a cache of a few thousand entries.
@@ -16,7 +32,7 @@ pub enum IdempotencyOutcome {
 struct Entry {
     owner: String,
     key: String,
-    fingerprint: String,
+    fingerprint: [u8; 32],
     response: DaemonMessage,
     inserted: Instant,
 }
@@ -46,6 +62,7 @@ impl IdempotencyStore {
         fingerprint: &str,
         now: Instant,
     ) -> IdempotencyOutcome {
+        let fingerprint = fingerprint_digest(fingerprint);
         self.evict(now);
         match self
             .entries
@@ -77,7 +94,7 @@ impl IdempotencyStore {
         self.entries.push_back(Entry {
             owner,
             key,
-            fingerprint,
+            fingerprint: fingerprint_digest(&fingerprint),
             response,
             inserted: now,
         });
@@ -143,6 +160,34 @@ mod tests {
         assert_eq!(
             store.check("app-1", "k", "a", later),
             IdempotencyOutcome::Miss
+        );
+    }
+
+    #[test]
+    fn a_64_kib_fingerprint_is_stored_as_32_bytes() {
+        let mut store = IdempotencyStore::default();
+        let now = Instant::now();
+        let text = "x".repeat(64 * 1024);
+        let fingerprint = format!("send:s.a.1:0:{text}");
+        assert_eq!(fingerprint.len(), 64 * 1024 + "send:s.a.1:0:".len());
+        store.remember(
+            "app-1".into(),
+            "k".into(),
+            fingerprint.clone(),
+            pong(1),
+            now,
+        );
+        assert_eq!(store.entries.len(), 1);
+        assert_eq!(store.entries[0].fingerprint.len(), 32);
+        // Receipts are unchanged: the same text still hits, a different one
+        // still conflicts.
+        assert!(matches!(
+            store.check("app-1", "k", &fingerprint, now),
+            IdempotencyOutcome::Hit(_)
+        ));
+        assert_eq!(
+            store.check("app-1", "k", "send:s.a.1:0:other", now),
+            IdempotencyOutcome::Conflict
         );
     }
 }

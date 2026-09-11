@@ -1,0 +1,25 @@
+{
+	"Node": {
+		"ID": "n1234567890ABCDEF",
+		"StableID": "nxd5gUfvzj11CNTRL",
+		"Name": "marcos-macbook-pro.tail80a42d.ts.net.",
+		"User": 1234567890,
+		"Key": "nodekey:0000000000000000000000000000000000000000000000000000000000000000",
+		"KeyExpiry": "2026-12-01T00:00:00Z",
+		"Addresses": [
+			"100.74.116.126/32",
+			"fd7a:115c:a1e0::1/128"
+		],
+		"AllowedIPs": [
+			"100.74.116.126/32"
+		],
+		"Machine": "1111111111111111111111111111111111111111111111111111111111111111"
+	},
+	"UserProfile": {
+		"ID": 1234567890,
+		"LoginName": "user@example.com",
+		"DisplayName": "Example User",
+		"ProfilePicURL": ""
+	},
+	"CapMap": null
+}

@@ -20,6 +20,8 @@ mod claude_view;
 mod client;
 #[cfg(feature = "server")]
 mod codex_view;
+#[cfg(feature = "server")]
+mod device_identity;
 mod diagnostics;
 mod error;
 mod framing;
@@ -50,12 +52,16 @@ mod registry;
 #[cfg(feature = "server")]
 mod screen;
 #[cfg(feature = "server")]
+mod secret_store;
+#[cfg(feature = "server")]
 mod server;
 #[cfg(feature = "server")]
 mod session;
 #[cfg(feature = "server")]
 mod shell_unwrap;
 mod spawn;
+#[cfg(feature = "server")]
+mod tailscale_localapi;
 #[cfg(feature = "server")]
 mod tool_paths;
 mod transport;

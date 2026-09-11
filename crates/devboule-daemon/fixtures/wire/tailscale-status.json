@@ -1,0 +1,20 @@
+{
+	"Version": "1.102.2-t0000000000",
+	"TUN": true,
+	"BackendState": "Running",
+	"Self": {
+		"ID": "nSELFNODE0000001",
+		"StableID": "nJZ7SELFNODE0001",
+		"Name": "marcolenovo.tail80a42d.ts.net.",
+		"DNSName": "marcolenovo.tail80a42d.ts.net.",
+		"UserID": 1234567890,
+		"Addresses": [
+			"100.102.128.70/32"
+		],
+		"TailscaleIPs": [
+			"100.102.128.70"
+		],
+		"Online": true
+	},
+	"Peer": {}
+}

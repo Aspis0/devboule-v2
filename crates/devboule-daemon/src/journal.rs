@@ -46,11 +46,16 @@ use journal_retention::{
     delete_session_user, effective_limits, journal_retention, journal_usage, retain,
     set_journal_retention, RetentionState,
 };
-use journal_schema::open_connection;
+use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 7;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 8;
+
+/// How often the append path enforces the audit age floor and per-device cap.
+/// The session retention sweep is byte-driven, not time-driven, so the hourly
+/// clock belongs to this loop; an idle daemon writes no audit rows anyway.
+const AUDIT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Bounded journal queue. Each slot is one coalesced frame (typically
 /// ≤ 8 KiB). A full queue never blocks the PTY path.
@@ -271,6 +276,86 @@ impl WorkspaceRecord {
             path: crate::workspace::display_path(&self.path),
         }
     }
+}
+
+/// Capabilities a freshly paired peer starts with (`DESIGN-remote-agents.md`
+/// §8b A11: every per-peer toggle is off by default except "view").
+/// Used from S6 (pairing); the allow is removed when that lands.
+#[allow(dead_code)]
+pub const DEFAULT_PEER_CAPS: &[&str] = &["view"];
+
+/// One paired device, as stored in `peers`.
+///
+/// `role` is `client` or `daemon` (the CHECK constraint holds the same set).
+/// `caps` is a JSON array of capability names. `paired_by_user` is **this**
+/// daemon's own user SID at pairing time, written by this side: it is never
+/// received from the peer and never trusted from a frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerRecord {
+    pub device_id: String,
+    pub display_name: String,
+    pub role: String,
+    pub public_key: Vec<u8>,
+    pub paired_by_user: Option<String>,
+    pub binding_kind: String,
+    pub binding_stable_id: Option<String>,
+    pub binding_node_name: Option<String>,
+    pub binding_login_name: Option<String>,
+    pub address: String,
+    pub paired_at: i64,
+    pub revoked_at: Option<i64>,
+    pub caps: Vec<String>,
+}
+
+impl PeerRecord {
+    /// Used by the S5/S6 live-connection checks; the allow is removed there.
+    #[allow(dead_code)]
+    pub fn is_revoked(&self) -> bool {
+        self.revoked_at.is_some()
+    }
+
+    /// The numeric address half of the stored `address` (`ip:port` at
+    /// pairing time, a bare IP in early rows).
+    pub fn address_ip(&self) -> Option<std::net::IpAddr> {
+        let raw = self.address.trim();
+        if let Ok(address) = raw.parse::<std::net::IpAddr>() {
+            return Some(address);
+        }
+        raw.parse::<std::net::SocketAddr>()
+            .ok()
+            .map(|socket| socket.ip())
+    }
+
+    /// Whether `address` is this peer's stored address. Numeric comparison,
+    /// so `100.64.0.1` and `100.64.0.10` cannot match each other.
+    /// Used by the S5 pre-Noise filter; the allow is removed there.
+    #[allow(dead_code)]
+    pub fn owns_address(&self, address: &std::net::IpAddr) -> bool {
+        self.address_ip()
+            .map(|owned| owned == *address)
+            .unwrap_or(false)
+    }
+}
+
+/// One append-only audit row. `device_id` and `role` always come from the
+/// authenticated connection, never from a frame; for a local connection
+/// `device_id` is this device's UUID and `role` is `"local"`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditRecord {
+    pub device_id: String,
+    pub role: String,
+    pub claimed_origin: Option<String>,
+    pub action: String,
+    pub session_id: Option<String>,
+    pub outcome: String,
+}
+
+/// What one `audit_sweep` removed. Both halves are reported so a test can
+/// tell the age floor from the per-device cap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AuditSweep {
+    pub deleted_by_age: u64,
+    pub deleted_by_cap: u64,
 }
 
 impl SessionRecord {
@@ -573,6 +658,35 @@ enum JournalCmd {
     Unpin {
         session_id: String,
     },
+    PeersList {
+        reply: mpsc::Sender<Result<Vec<PeerRecord>, JournalError>>,
+    },
+    PeerUpsert {
+        record: PeerRecord,
+        reply: mpsc::Sender<Result<PeerRecord, JournalError>>,
+    },
+    PeerGet {
+        device_id: String,
+        reply: mpsc::Sender<Result<Option<PeerRecord>, JournalError>>,
+    },
+    PeerRevoke {
+        device_id: String,
+        at: i64,
+        reply: mpsc::Sender<Result<bool, JournalError>>,
+    },
+    PeerSetCaps {
+        device_id: String,
+        caps: Vec<String>,
+        reply: mpsc::Sender<Result<bool, JournalError>>,
+    },
+    AuditAppend {
+        record: AuditRecord,
+        at: Option<i64>,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    AuditSweep {
+        reply: mpsc::Sender<Result<AuditSweep, JournalError>>,
+    },
     Flush {
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
@@ -872,6 +986,70 @@ impl Journal {
             },
             WORKSPACE_LOOKUP_WAIT,
         )
+    }
+
+    /// Every peer row, revoked ones included: the audit trail outlives the
+    /// pairing, and callers filter on [`PeerRecord::is_revoked`] for the
+    /// live set.
+    pub fn peers_list(&self) -> Result<Vec<PeerRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::PeersList { reply })
+    }
+
+    pub fn peer_upsert(&self, record: PeerRecord) -> Result<PeerRecord, JournalError> {
+        self.rpc(|reply| JournalCmd::PeerUpsert { record, reply })
+    }
+
+    pub fn peer_get(&self, device_id: &str) -> Result<Option<PeerRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::PeerGet {
+            device_id: device_id.to_string(),
+            reply,
+        })
+    }
+
+    /// Mark a peer revoked. `Ok(false)` means there was nothing to revoke
+    /// (unknown device, or already revoked).
+    pub fn peer_revoke(&self, device_id: &str, at: i64) -> Result<bool, JournalError> {
+        self.rpc(|reply| JournalCmd::PeerRevoke {
+            device_id: device_id.to_string(),
+            at,
+            reply,
+        })
+    }
+
+    pub fn peer_set_caps(&self, device_id: &str, caps: Vec<String>) -> Result<bool, JournalError> {
+        self.rpc(|reply| JournalCmd::PeerSetCaps {
+            device_id: device_id.to_string(),
+            caps,
+            reply,
+        })
+    }
+
+    /// Append one audit row. The timestamp is stamped by the writer, not the
+    /// caller, so a bug upstream cannot backdate the trail.
+    pub fn audit_append(&self, record: AuditRecord) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::AuditAppend {
+            record,
+            at: None,
+            reply,
+        })
+    }
+
+    /// Enforce the audit age floor and the per-device row cap. This is the
+    /// only operation allowed to drop the append-only triggers, and it does
+    /// so inside one transaction.
+    pub fn audit_sweep(&self) -> Result<AuditSweep, JournalError> {
+        self.rpc(|reply| JournalCmd::AuditSweep { reply })
+    }
+
+    /// Test-only: append with an explicit timestamp so a sweep test can build
+    /// aged rows. Production callers always use [`Journal::audit_append`].
+    #[cfg(test)]
+    pub fn audit_append_at(&self, record: AuditRecord, at: i64) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::AuditAppend {
+            record,
+            at: Some(at),
+            reply,
+        })
     }
 
     pub fn replay(&self, session_id: &str, from_seq: u64) -> Result<Replay, JournalError> {
@@ -1209,12 +1387,19 @@ fn journal_loop(
     } = loop_state;
     let mut pins: HashSet<String> = HashSet::new();
     let mut retention_state = RetentionState::default();
+    let mut last_audit_sweep = Instant::now();
     while let Ok(cmd) = rx.recv() {
         queued
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 Some(value.saturating_sub(1))
             })
             .ok();
+        if last_audit_sweep.elapsed() >= AUDIT_SWEEP_INTERVAL {
+            last_audit_sweep = Instant::now();
+            if let Err(error) = sweep_audit(&conn, now_ms() as i64) {
+                on_write_error(&error);
+            }
+        }
         match cmd {
             JournalCmd::Upsert(record) => {
                 if let Err(error) = upsert_session(&conn, &record) {
@@ -1432,6 +1617,58 @@ fn journal_loop(
                 pins.remove(&session_id);
                 retention_state.session_set_changed();
             }
+            JournalCmd::PeersList { reply } => {
+                let _ = reply.send(list_peers(&conn));
+            }
+            JournalCmd::PeerUpsert { record, reply } => {
+                let result = upsert_peer(&conn, &record);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::PeerGet { device_id, reply } => {
+                let _ = reply.send(get_peer(&conn, &device_id));
+            }
+            JournalCmd::PeerRevoke {
+                device_id,
+                at,
+                reply,
+            } => {
+                let result = revoke_peer(&conn, &device_id, at);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::PeerSetCaps {
+                device_id,
+                caps,
+                reply,
+            } => {
+                let result = set_peer_caps(&conn, &device_id, &caps);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::AuditAppend { record, at, reply } => {
+                let result = append_audit(&conn, &record, at.unwrap_or_else(|| now_ms() as i64));
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::AuditSweep { reply } => {
+                let result = sweep_audit(&conn, now_ms() as i64).map(|(aged, capped)| AuditSweep {
+                    deleted_by_age: aged,
+                    deleted_by_cap: capped,
+                });
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
             JournalCmd::Flush { reply } => {
                 let result = conn
                     .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
@@ -1606,6 +1843,145 @@ fn delete_workspace(conn: &Connection, id: &str) -> Result<(), JournalError> {
             "Workspace '{id}' does not exist."
         )));
     }
+    Ok(())
+}
+
+const PEER_COLUMNS: &str = "device_id, display_name, role, public_key, paired_by_user, \
+     binding_kind, binding_stable_id, binding_node_name, binding_login_name, address, \
+     paired_at, revoked_at, caps";
+
+fn peers_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeerRecord> {
+    let caps_json: String = row.get(12)?;
+    let caps = serde_json::from_str::<Vec<String>>(&caps_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(12, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    Ok(PeerRecord {
+        device_id: row.get(0)?,
+        display_name: row.get(1)?,
+        role: row.get(2)?,
+        public_key: row.get(3)?,
+        paired_by_user: row.get(4)?,
+        binding_kind: row.get(5)?,
+        binding_stable_id: row.get(6)?,
+        binding_node_name: row.get(7)?,
+        binding_login_name: row.get(8)?,
+        address: row.get(9)?,
+        paired_at: row.get(10)?,
+        revoked_at: row.get(11)?,
+        caps,
+    })
+}
+
+fn list_peers(conn: &Connection) -> Result<Vec<PeerRecord>, JournalError> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {PEER_COLUMNS} FROM peers ORDER BY device_id"
+    ))?;
+    let rows = statement.query_map([], peers_from_row)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(JournalError::from)
+}
+
+fn get_peer(conn: &Connection, device_id: &str) -> Result<Option<PeerRecord>, JournalError> {
+    conn.query_row(
+        &format!("SELECT {PEER_COLUMNS} FROM peers WHERE device_id = ?1"),
+        [device_id],
+        peers_from_row,
+    )
+    .optional()
+    .map_err(JournalError::from)
+}
+
+fn upsert_peer(conn: &Connection, record: &PeerRecord) -> Result<PeerRecord, JournalError> {
+    if record.role != "client" && record.role != "daemon" {
+        return Err(JournalError::InvalidRequest(format!(
+            "peer role {:?} is not client or daemon",
+            record.role
+        )));
+    }
+    if record.public_key.len() != 32 {
+        return Err(JournalError::InvalidRequest(format!(
+            "peer public key is {} bytes, expected 32",
+            record.public_key.len()
+        )));
+    }
+    let caps = serde_json::to_string(&record.caps)
+        .map_err(|error| JournalError::InvalidRequest(error.to_string()))?;
+    conn.execute(
+        "INSERT INTO peers (
+                device_id, display_name, role, public_key, paired_by_user,
+                binding_kind, binding_stable_id, binding_node_name, binding_login_name,
+                address, paired_at, revoked_at, caps
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(device_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                role = excluded.role,
+                public_key = excluded.public_key,
+                paired_by_user = excluded.paired_by_user,
+                binding_kind = excluded.binding_kind,
+                binding_stable_id = excluded.binding_stable_id,
+                binding_node_name = excluded.binding_node_name,
+                binding_login_name = excluded.binding_login_name,
+                address = excluded.address,
+                paired_at = excluded.paired_at,
+                revoked_at = excluded.revoked_at,
+                caps = excluded.caps",
+        params![
+            record.device_id,
+            record.display_name,
+            record.role,
+            record.public_key,
+            record.paired_by_user,
+            record.binding_kind,
+            record.binding_stable_id,
+            record.binding_node_name,
+            record.binding_login_name,
+            record.address,
+            record.paired_at,
+            record.revoked_at,
+            caps,
+        ],
+    )?;
+    get_peer(conn, &record.device_id)?.ok_or_else(|| {
+        JournalError::Unavailable("peer row vanished immediately after upsert".to_string())
+    })
+}
+
+fn revoke_peer(conn: &Connection, device_id: &str, at: i64) -> Result<bool, JournalError> {
+    let updated = conn.execute(
+        "UPDATE peers SET revoked_at = ?2 WHERE device_id = ?1 AND revoked_at IS NULL",
+        params![device_id, at],
+    )?;
+    Ok(updated > 0)
+}
+
+fn set_peer_caps(
+    conn: &Connection,
+    device_id: &str,
+    caps: &[String],
+) -> Result<bool, JournalError> {
+    let caps = serde_json::to_string(caps)
+        .map_err(|error| JournalError::InvalidRequest(error.to_string()))?;
+    let updated = conn.execute(
+        "UPDATE peers SET caps = ?2 WHERE device_id = ?1",
+        params![device_id, caps],
+    )?;
+    Ok(updated > 0)
+}
+
+fn append_audit(conn: &Connection, record: &AuditRecord, at: i64) -> Result<(), JournalError> {
+    conn.execute(
+        "INSERT INTO audit (at, device_id, role, claimed_origin, action, session_id, outcome)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            at,
+            record.device_id,
+            record.role,
+            record.claimed_origin,
+            record.action,
+            record.session_id,
+            record.outcome,
+        ],
+    )?;
     Ok(())
 }
 
@@ -3211,6 +3587,283 @@ mod tests {
         let journal = Journal::open(&path).expect("reopen after kill");
         let replay = journal.replay("s.hammer.1", 0);
         assert!(replay.is_ok(), "journal unreadable after kill: {replay:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn peer_record(device_id: &str) -> PeerRecord {
+        PeerRecord {
+            device_id: device_id.to_string(),
+            display_name: "Marco's MacBook Pro".to_string(),
+            role: "daemon".to_string(),
+            public_key: vec![7u8; 32],
+            paired_by_user: Some("S-1-5-21-1".to_string()),
+            binding_kind: "tailnet".to_string(),
+            binding_stable_id: Some("nxd5gUfvzj11CNTRL".to_string()),
+            binding_node_name: Some("marcos-macbook-pro.tail80a42d.ts.net.".to_string()),
+            binding_login_name: Some("user@example.com".to_string()),
+            address: "100.74.116.126:47831".to_string(),
+            paired_at: 1_700_000_000_000,
+            revoked_at: None,
+            caps: DEFAULT_PEER_CAPS
+                .iter()
+                .map(|cap| cap.to_string())
+                .collect(),
+        }
+    }
+
+    fn audit_record(device_id: &str, action: &str) -> AuditRecord {
+        AuditRecord {
+            device_id: device_id.to_string(),
+            role: "daemon".to_string(),
+            claimed_origin: None,
+            action: action.to_string(),
+            session_id: None,
+            outcome: "ok".to_string(),
+        }
+    }
+
+    #[test]
+    fn peers_round_trip_revoke_and_caps() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let record = peer_record("dev-1");
+        let stored = journal.peer_upsert(record.clone()).expect("upsert");
+        assert_eq!(stored, record);
+        assert_eq!(journal.peers_list().expect("list").len(), 1);
+        let loaded = journal.peer_get("dev-1").expect("get").expect("row");
+        assert_eq!(loaded.role, "daemon");
+        assert_eq!(loaded.caps, vec!["view".to_string()]);
+        assert!(loaded.owns_address(&"100.74.116.126".parse().expect("ip")));
+        assert!(!loaded.owns_address(&"100.74.116.127".parse().expect("ip")));
+
+        assert!(journal
+            .peer_set_caps("dev-1", vec!["view".into(), "send".into()])
+            .expect("caps"));
+        assert_eq!(
+            journal.peer_get("dev-1").expect("get").expect("row").caps,
+            vec!["view".to_string(), "send".to_string()]
+        );
+        assert!(!journal.peer_set_caps("missing", vec![]).expect("caps"));
+
+        assert!(journal.peer_revoke("dev-1", 42).expect("revoke"));
+        assert!(!journal.peer_revoke("dev-1", 43).expect("revoke twice"));
+        assert!(!journal.peer_revoke("missing", 43).expect("revoke unknown"));
+        assert!(journal
+            .peer_get("dev-1")
+            .expect("get")
+            .expect("row")
+            .is_revoked());
+
+        // A re-pair after revoke replaces the row, including cleared
+        // revocation, and does not duplicate it.
+        let mut again = record;
+        again.display_name = "Renamed".to_string();
+        again.revoked_at = None;
+        let replaced = journal.peer_upsert(again).expect("re-upsert");
+        assert_eq!(replaced.display_name, "Renamed");
+        assert!(!replaced.is_revoked());
+        assert_eq!(journal.peers_list().expect("list").len(), 1);
+
+        let mut bad_role = peer_record("dev-2");
+        bad_role.role = "admin".to_string();
+        assert!(matches!(
+            journal.peer_upsert(bad_role),
+            Err(JournalError::InvalidRequest(_))
+        ));
+        let mut short_key = peer_record("dev-3");
+        short_key.public_key = vec![0u8; 31];
+        assert!(matches!(
+            journal.peer_upsert(short_key),
+            Err(JournalError::InvalidRequest(_))
+        ));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_is_append_only_against_delete_and_update() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .audit_append(audit_record("dev-1", "Shutdown"))
+            .expect("append");
+        journal.flush().expect("flush");
+        let conn = Connection::open(&path).expect("raw");
+        let delete = conn.execute("DELETE FROM audit", []);
+        assert!(delete.is_err(), "DELETE must fail on the audit table");
+        assert!(
+            delete
+                .expect_err("delete error")
+                .to_string()
+                .contains("append-only"),
+            "the trigger's message must name the reason"
+        );
+        let update = conn.execute("UPDATE audit SET outcome = 'ok'", []);
+        assert!(update.is_err(), "UPDATE must fail on the audit table");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(rows, 1);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_sweep_removes_only_rows_past_the_floor_and_restores_the_triggers() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let now = now_ms() as i64;
+        journal
+            .audit_append_at(audit_record("dev-1", "Ping"), now)
+            .expect("fresh");
+        let day = 24 * 60 * 60 * 1000;
+        journal
+            .audit_append_at(
+                audit_record("dev-1", "Ping"),
+                now - (journal_schema::AUDIT_FLOOR_DAYS + 1) * day,
+            )
+            .expect("aged");
+        let sweep = journal.audit_sweep().expect("sweep");
+        assert_eq!(sweep.deleted_by_age, 1);
+        assert_eq!(sweep.deleted_by_cap, 0);
+
+        let conn = Connection::open(&path).expect("raw");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(rows, 1, "the fresh row must survive the sweep");
+        for trigger in ["audit_no_delete", "audit_no_update"] {
+            let present: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                    [trigger],
+                    |row| row.get(0),
+                )
+                .expect("trigger");
+            assert_eq!(present, 1, "{trigger} must exist again after the sweep");
+        }
+        assert!(conn.execute("DELETE FROM audit", []).is_err());
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_sweep_caps_rows_per_device_and_leaves_other_devices_alone() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal.flush().expect("flush");
+        let at = now_ms() as i64;
+        {
+            let conn = Connection::open(&path).expect("raw");
+            let tx = conn.unchecked_transaction().expect("tx");
+            {
+                let mut statement = tx
+                    .prepare(
+                        "INSERT INTO audit (at, device_id, role, action, outcome)
+                         VALUES (?1, ?2, 'daemon', 'Ping', 'ok')",
+                    )
+                    .expect("prepare");
+                for index in 0..20_050i64 {
+                    statement
+                        .execute(params![at + index, "dev-a"])
+                        .expect("row");
+                }
+                statement
+                    .execute(params![at, "dev-b"])
+                    .expect("other device");
+            }
+            tx.commit().expect("commit");
+        }
+        let sweep = journal.audit_sweep().expect("sweep");
+        assert_eq!(sweep.deleted_by_cap, 50, "20050 rows minus the 20000 cap");
+        assert_eq!(sweep.deleted_by_age, 0, "all rows are fresh");
+
+        let conn = Connection::open(&path).expect("raw");
+        let capped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE device_id = 'dev-a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(capped, 20_000);
+        let other: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE device_id = 'dev-b'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(other, 1, "another device's rows are untouched");
+        let oldest: i64 = conn
+            .query_row(
+                "SELECT MIN(id) FROM audit WHERE device_id = 'dev-a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("min");
+        assert_eq!(oldest, 51, "the oldest 50 rows are the ones removed");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reopening_recreates_a_missing_audit_trigger() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal.flush().expect("flush");
+        drop(journal);
+        {
+            let conn = Connection::open(&path).expect("raw");
+            conn.execute_batch("DROP TRIGGER IF EXISTS audit_no_delete;")
+                .expect("drop trigger");
+        }
+        let journal = Journal::open(&path).expect("reopen");
+        let conn = Connection::open(&path).expect("raw");
+        let present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'audit_no_delete'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("trigger");
+        assert_eq!(present, 1);
+        journal
+            .audit_append(audit_record("dev-1", "Ping"))
+            .expect("append");
+        journal.flush().expect("flush");
+        assert!(
+            conn.execute("DELETE FROM audit", []).is_err(),
+            "the recreated trigger must protect a non-empty table"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_retention_does_not_touch_audit_rows() {
+        let (dir, path) = tmp_journal();
+        let limits = JournalLimits {
+            max_age_ms: 0,
+            ..JournalLimits::default()
+        };
+        let journal = Journal::open_with_limits(&path, limits).expect("open");
+        journal
+            .audit_append(audit_record("dev-1", "SessionSend"))
+            .expect("append");
+        journal
+            .upsert_blocking(sample_session("s.retention"))
+            .expect("session");
+        journal
+            .append_blocking(output_record("s.retention", 1, 1, b"output"))
+            .expect("output");
+        journal.flush().expect("flush");
+        let conn = Connection::open(&path).expect("raw");
+        let audit_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
+            .expect("audit count");
+        assert_eq!(audit_rows, 1, "retention never sweeps the audit table");
+        journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
