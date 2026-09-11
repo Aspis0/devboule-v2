@@ -64,7 +64,7 @@ rusqlite = { version = "=0.40.2", features = ["bundled"], optional = true }
 # aws-lc-rs, a native cmake/NASM build the CI runner cannot be assumed to
 # carry. Exit condition: move to 0.13 when oracle-core's dependents do.
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
-uuid = { version = "=1.25.0", features = ["v4"], optional = true }
+uuid = { version = "=1.26.0", features = ["v4"], optional = true }
 # Prompt attachments: the bytes arrive base64 and are written under a sha256 of
 # their content. Both are optional behind `server` for the same reason as
 # rusqlite — a client-only build never writes an attachment to disk.
