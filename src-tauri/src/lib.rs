@@ -1,3 +1,4 @@
+mod artifact_export;
 mod backend;
 mod client;
 mod oracle;
@@ -95,6 +96,7 @@ pub fn run() {
             oracle::oracle_ask_folder,
             surface_settings::surface_settings_get,
             surface_settings::surface_settings_set,
+            artifact_export::artifact_write_file,
             plugins::plugins_list,
             plugins::plugins_rescan,
             plugins::plugin_install,
