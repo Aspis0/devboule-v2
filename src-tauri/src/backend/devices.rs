@@ -12,7 +12,9 @@
 use std::sync::Arc;
 
 use devboule_daemon::DaemonClient;
-use devboule_protocol::{DaemonMessage, ErrorCode, PeerRow, PendingPairing, SelfInfo};
+use devboule_protocol::{
+    DaemonMessage, ErrorCode, PairingSecret, PeerRole, PeerRow, PendingPairing, SelfInfo,
+};
 use tauri::State;
 
 use super::error::CommandError;
@@ -31,6 +33,19 @@ fn unexpected_reply() -> CommandError {
     CommandError::new(ErrorCode::Internal, "unexpected daemon reply")
 }
 
+/// Read the panel's role string into the daemon's enum.
+///
+/// The frontend sends `"client" | "daemon"`, which is what `PeerRole`
+/// serialises to; an unknown value is refused **here**, with a sentence a
+/// person can act on, rather than being passed to the daemon as a string it
+/// would have to reinterpret. The message names both accepted values because
+/// the only realistic cause is a UI bug or a stale frontend.
+fn parse_role(role: &str) -> Result<PeerRole, CommandError> {
+    PeerRole::parse(role).ok_or_else(|| {
+        CommandError::new(ErrorCode::InvalidRequest, "role must be client or daemon")
+    })
+}
+
 /// The `devices_list` reply: the daemon's `devices` frame without its request
 /// id. `serde` spells the fields the way the panel reads them.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -43,11 +58,15 @@ pub struct DevicesReply {
 
 /// The `pairing_start` reply: the daemon's `pairing_code` frame without its
 /// request id.
+///
+/// `expires_at` is the daemon's `i64` unix-millisecond stamp, and `code` is a
+/// plain string for the panel; `PairingSecret` is the daemon's redacting
+/// wrapper and its `Debug` is not what the frontend needs.
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingCode {
     pub code: String,
-    pub expires_at: u64,
+    pub expires_at: i64,
     pub address: String,
 }
 
@@ -83,14 +102,17 @@ pub fn pairing_start(
     bridge: State<'_, DaemonBridge>,
     role: String,
 ) -> Result<PairingCode, CommandError> {
-    match require_client(&bridge)?.pairing_start(&role)? {
+    let role = parse_role(&role)?;
+    match require_client(&bridge)?.pairing_start(role)? {
         DaemonMessage::PairingCode {
             code,
             expires_at,
             address,
             ..
         } => Ok(PairingCode {
-            code,
+            // The panel shows this string and never logs it; unwrapping the
+            // wrapper here is the one place it leaves its envelope.
+            code: code.as_str().to_string(),
             expires_at,
             address,
         }),
@@ -105,7 +127,14 @@ pub fn pairing_complete(
     code: String,
     role: String,
 ) -> Result<PairingOutcome, CommandError> {
-    match require_client(&bridge)?.pairing_complete(&address, &code, &role)? {
+    let role = parse_role(&role)?;
+    match require_client(&bridge)?.pairing_complete(
+        &address,
+        // The wrapper keeps the code out of `Debug` output for the whole trip
+        // through the daemon client.
+        PairingSecret::new(code),
+        role,
+    )? {
         DaemonMessage::PairingPending { peer, .. } => Ok(PairingOutcome::PairingPending { peer }),
         DaemonMessage::PairingDone { peer, .. } => Ok(PairingOutcome::PairingDone { peer }),
         _ => Err(unexpected_reply()),

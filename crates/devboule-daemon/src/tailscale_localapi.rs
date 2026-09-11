@@ -61,10 +61,6 @@ pub const ENDPOINT_ENV: &str = "DEVBOULE_TAILSCALE_ENDPOINT";
 
 #[derive(Debug)]
 pub enum LocalApiError {
-    /// This platform's transport is not built yet (macOS App Store sandboxed
-    /// tailscaled needs a loopback port + same-user token: slice 6).
-    #[cfg(not(windows))]
-    Unsupported(String),
     /// Tailscale is not running (the pipe or socket is absent).
     Absent(String),
     Transport(String),
@@ -79,10 +75,6 @@ pub enum LocalApiError {
 impl std::fmt::Display for LocalApiError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            #[cfg(not(windows))]
-            Self::Unsupported(message) => {
-                write!(formatter, "tailscale localapi unsupported: {message}")
-            }
             Self::Absent(message) => write!(formatter, "tailscale is not running: {message}"),
             Self::Transport(message) => {
                 write!(formatter, "tailscale localapi transport: {message}")
@@ -144,6 +136,9 @@ impl Endpoint {
 pub struct LocalApiClient {
     endpoint: Endpoint,
     timeout: Duration,
+    /// How long an `Absent` answer is trusted. A field rather than the constant
+    /// so a test can drive expiry without sleeping for the production window.
+    absent_ttl: Duration,
 }
 
 impl Default for LocalApiClient {
@@ -161,7 +156,20 @@ impl LocalApiClient {
     /// uses this; a non-default pipe can also be selected with
     /// `DEVBOULE_TAILSCALE_ENDPOINT`.
     pub fn with_endpoint(endpoint: Endpoint, timeout: Duration) -> Self {
-        Self { endpoint, timeout }
+        Self {
+            endpoint,
+            timeout,
+            absent_ttl: ABSENT_CACHE_TTL,
+        }
+    }
+
+    /// How long this client trusts an `Absent` answer. Test-only: the
+    /// production window is `ABSENT_CACHE_TTL`, and the tests need a short one
+    /// to observe expiry without sleeping for it.
+    #[cfg(test)]
+    pub fn with_absent_ttl(mut self, absent_ttl: Duration) -> Self {
+        self.absent_ttl = absent_ttl;
+        self
     }
 
     /// Point the client at an arbitrary pipe. Test-only: production talks to
@@ -171,33 +179,62 @@ impl LocalApiClient {
         Self {
             endpoint: Endpoint::Pipe(pipe_name.into()),
             timeout,
+            absent_ttl: ABSENT_CACHE_TTL,
         }
     }
 
     /// `whois(addr)`: which tailnet node and login own this address.
     pub fn whois(&self, addr: SocketAddr) -> Result<WhoIs, LocalApiError> {
-        let body = self.get(&format!("/localapi/v0/whois?addr={addr}"))?;
+        let body = self.get(&format!("/localapi/v0/whois?addr={addr}"), false)?;
         parse_whois(&body)
     }
 
-    /// This node's own identity and tailnet addresses.
+    /// This node's own identity and tailnet addresses, honouring the `Absent`
+    /// cache.
+    ///
+    /// Test-only, because the one production caller wants the opposite:
+    /// `Tailnet::listen` runs once at start-up and must see whether Tailscale
+    /// is up *now*, so it calls [`LocalApiClient::self_node_fresh`]. The cached
+    /// path stays reachable in production through `whois`, which is what the
+    /// cache exists for (it is asked once per accepted connection).
+    #[cfg(test)]
     pub fn self_node(&self) -> Result<SelfNode, LocalApiError> {
-        let body = self.get("/localapi/v0/status")?;
+        let body = self.get("/localapi/v0/status", false)?;
         parse_self_node(&body)
     }
 
-    fn get(&self, path_and_query: &str) -> Result<Vec<u8>, LocalApiError> {
+    /// The same as [`LocalApiClient::self_node`] but ignoring a cached
+    /// `Absent`.
+    ///
+    /// A cached `Absent` is a *short-lived convenience* for the repeated
+    /// question "is Tailscale up?", not a fact: a tailscaled that started
+    /// inside the TTL would otherwise still be reported missing. The listener
+    /// start path uses this, because it runs once and must see the truth.
+    pub fn self_node_fresh(&self) -> Result<SelfNode, LocalApiError> {
+        let body = self.get("/localapi/v0/status", true)?;
+        parse_self_node(&body)
+    }
+
+    fn get(
+        &self,
+        path_and_query: &str,
+        bypass_absent_cache: bool,
+    ) -> Result<Vec<u8>, LocalApiError> {
         // A recent `Absent` is trusted, so "no Tailscale" is cheap to ask
-        // repeatedly. A success or a different error clears it immediately.
+        // repeatedly. A success or a different error clears it immediately, and
+        // the entry is dropped once it is older than `absent_ttl`.
         let key = self.endpoint.key();
-        if let Some(since) = absent_cache()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&key)
-            .copied()
-        {
-            if since.elapsed() < ABSENT_CACHE_TTL {
-                return Err(LocalApiError::Absent(format!("{key} is not available")));
+        if !bypass_absent_cache {
+            let mut cache = absent_cache()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(since) = cache.get(&key).copied() {
+                if since.elapsed() < self.absent_ttl {
+                    return Err(LocalApiError::Absent(format!("{key} is not available")));
+                }
+                // Expired: forget it now, so the answer below is a fresh probe
+                // and a stale entry cannot outlive its TTL by being unread.
+                cache.remove(&key);
             }
         }
         match self.get_uncached(path_and_query) {
@@ -398,16 +435,6 @@ fn read_unix_socket(
         }
     }
     Ok(raw)
-}
-
-#[cfg(not(windows))]
-#[allow(dead_code)]
-fn macos_sandbox_is_a_later_slice() -> LocalApiError {
-    LocalApiError::Unsupported(
-        "the macOS App Store tailscaled transport (loopback port plus a same-user token) \
-         is slice 6"
-            .to_string(),
-    )
 }
 
 fn map_io(error: std::io::Error, step: &str) -> LocalApiError {
@@ -1060,6 +1087,91 @@ mod tests {
         assert!(
             second < ABSENT_GRACE,
             "the cached answer must be immediate, took {second:?}"
+        );
+        absent_cache()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&key);
+    }
+
+    /// F4: the `Absent` cache must **expire**, so a tailscaled that started
+    /// inside the TTL stops being reported missing. The TTL is a field so the
+    /// test does not sleep for the production window.
+    #[cfg(windows)]
+    #[test]
+    fn the_absent_cache_expires() {
+        let name = format!(
+            "\\\\.\\pipe\\devboule-localapi-absent-expiry-{}",
+            std::process::id()
+        );
+        let key = format!("pipe:{name}");
+        let client = LocalApiClient::with_pipe_name(name, DEFAULT_TIMEOUT)
+            .with_absent_ttl(Duration::from_millis(80));
+
+        match client.self_node() {
+            Err(LocalApiError::Absent(_)) => {}
+            other => panic!("expected Absent, got {other:?}"),
+        }
+        // Inside the TTL it is served from the cache, so it is instant.
+        let started = Instant::now();
+        assert!(client.self_node().is_err());
+        assert!(
+            started.elapsed() < ABSENT_GRACE,
+            "a fresh Absent is served from the cache"
+        );
+
+        std::thread::sleep(Duration::from_millis(120));
+        // Past the TTL the probe is really made again: it takes the grace
+        // period, which is the observable difference between a cached answer
+        // and a new one.
+        let started = Instant::now();
+        match client.self_node() {
+            Err(LocalApiError::Absent(_)) => {}
+            other => panic!("expected Absent again, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() >= ABSENT_GRACE,
+            "an expired cache entry must trigger a fresh probe, took {:?}",
+            started.elapsed()
+        );
+        absent_cache()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&key);
+    }
+
+    /// F4: an explicit refresh ignores the cache, which is what the listener
+    /// start path needs.
+    #[cfg(windows)]
+    #[test]
+    fn a_fresh_probe_bypasses_the_absent_cache() {
+        let name = format!(
+            "\\\\.\\pipe\\devboule-localapi-absent-bypass-{}",
+            std::process::id()
+        );
+        let key = format!("pipe:{name}");
+        // A long TTL: if the bypass did not work, the fresh call would return
+        // instantly from the cache and the timing assertion below would fail.
+        let client = LocalApiClient::with_pipe_name(name, DEFAULT_TIMEOUT)
+            .with_absent_ttl(Duration::from_secs(60));
+
+        assert!(client.self_node().is_err(), "seeds the cache");
+        let cached = Instant::now();
+        assert!(client.self_node().is_err());
+        assert!(
+            cached.elapsed() < ABSENT_GRACE,
+            "the cached call is instant"
+        );
+
+        let started = Instant::now();
+        match client.self_node_fresh() {
+            Err(LocalApiError::Absent(_)) => {}
+            other => panic!("expected Absent, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() >= ABSENT_GRACE,
+            "a fresh probe must not be served from the cache, took {:?}",
+            started.elapsed()
         );
         absent_cache()
             .lock()

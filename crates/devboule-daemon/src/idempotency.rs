@@ -164,6 +164,49 @@ mod tests {
     }
 
     #[test]
+    fn the_store_is_bounded_by_entry_count() {
+        // F5. The age bound is covered by `ttl_expiry_is_a_miss`; this is the
+        // count bound, which is what stops a caller that invents a fresh
+        // `idempotency_key` for every request from growing the table without
+        // limit. Entries are evicted from the front, so the *newest* survive.
+        let cap = 4;
+        let mut store = IdempotencyStore {
+            cap,
+            ..IdempotencyStore::default()
+        };
+        let now = Instant::now();
+        for index in 0..cap * 3 {
+            store.remember(
+                "app-1".into(),
+                format!("k{index}"),
+                format!("payload-{index}"),
+                pong(index as u64),
+                now + Duration::from_millis(index as u64),
+            );
+            assert!(
+                store.entries.len() <= cap,
+                "after {index} distinct keys the store holds {} entries",
+                store.entries.len()
+            );
+        }
+        assert_eq!(store.entries.len(), cap, "the store sits at its cap");
+        // The oldest keys are gone and the newest still replay.
+        assert_eq!(
+            store.check("app-1", "k0", "payload-0", now),
+            IdempotencyOutcome::Miss
+        );
+        assert!(matches!(
+            store.check(
+                "app-1",
+                &format!("k{}", cap * 3 - 1),
+                &format!("payload-{}", cap * 3 - 1),
+                now
+            ),
+            IdempotencyOutcome::Hit(_)
+        ));
+    }
+
+    #[test]
     fn a_64_kib_fingerprint_is_stored_as_32_bytes() {
         let mut store = IdempotencyStore::default();
         let now = Instant::now();

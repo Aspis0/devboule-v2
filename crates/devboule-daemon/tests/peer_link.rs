@@ -301,10 +301,10 @@ impl NoisePeer {
             PEER_NOISE_PATTERN,
         )
         .map_err(|error| format!("handshake: {error}"))?;
-        let (reader, writer) =
+        let (reader, writer, closer) =
             split_session(&stream, session).map_err(|error| error.to_string())?;
         Ok(Self {
-            framed: Framed::from_stream(reader, writer),
+            framed: Framed::from_stream(reader, writer, closer),
         })
     }
 

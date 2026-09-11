@@ -54,12 +54,13 @@ pub trait SecretStore: Send + Sync {
     /// as an empty secret.
     fn get(&self, name: &str) -> Result<Option<Vec<u8>>, SecretStoreError>;
     fn set(&self, name: &str, bytes: &[u8]) -> Result<(), SecretStoreError>;
-    /// Remove an entry. Called when a pairing is revoked and the key material
-    /// is retired; nothing in 1a reaches it yet, so the trait method carries
-    /// the allowance until S6.
-    #[allow(dead_code)]
-    fn delete(&self, name: &str) -> Result<(), SecretStoreError>;
 }
+// There is deliberately no `delete`. Nothing in this slice retires stored key
+// material: revoking a peer stamps a row in the `peers` table and drops its
+// connections, and the only secret here is this device's own Noise static key,
+// which outlives every pairing. A method with no caller is dead code that
+// `-D warnings` only catches if it is not hidden behind an allow; the slice
+// that rotates or forgets a key adds it back together with its caller.
 
 fn map_keyring(error: keyring::Error) -> SecretStoreError {
     match error {
@@ -122,13 +123,6 @@ impl SecretStore for KeyringStore {
 
     fn set(&self, name: &str, bytes: &[u8]) -> Result<(), SecretStoreError> {
         self.entry(name)?.set_secret(bytes).map_err(map_keyring)
-    }
-
-    fn delete(&self, name: &str) -> Result<(), SecretStoreError> {
-        match self.entry(name)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(map_keyring(error)),
-        }
     }
 }
 
@@ -203,15 +197,6 @@ impl SecretStore for FileStore {
             let _ = std::fs::remove_file(&temp);
         }
         result.map_err(|error| SecretStoreError::Unavailable(error.to_string()))
-    }
-
-    fn delete(&self, name: &str) -> Result<(), SecretStoreError> {
-        let path = self.path_for(name)?;
-        match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(SecretStoreError::Unavailable(error.to_string())),
-        }
     }
 }
 
@@ -331,14 +316,6 @@ impl SecretStore for InMemoryStore {
             .insert(name.to_string(), bytes.to_vec());
         Ok(())
     }
-
-    fn delete(&self, name: &str) -> Result<(), SecretStoreError> {
-        self.entries
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(name);
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -369,10 +346,13 @@ mod tests {
             store.get(NAME).expect("get").as_deref(),
             Some(&b"0123456789"[..])
         );
-        store.delete(NAME).expect("delete");
-        assert!(store.get(NAME).expect("get").is_none());
-        // Deleting twice is not an error.
-        store.delete(NAME).expect("delete again");
+        // Overwriting is the only mutation: the store has no delete, because
+        // nothing in this slice retires stored key material.
+        store.set(NAME, b"second").expect("overwrite");
+        assert_eq!(
+            store.get(NAME).expect("get").as_deref(),
+            Some(&b"second"[..])
+        );
     }
 
     #[test]
@@ -390,8 +370,14 @@ mod tests {
             store.path_for(NAME).expect("path"),
             dir.join("secrets").join("noise-static.bin")
         );
-        store.delete(NAME).expect("delete");
-        assert!(store.get(NAME).expect("get").is_none());
+        // An overwrite replaces the bytes in place, through the temporary and
+        // the rename.
+        let second = crate::device_identity::encode_envelope(&[11u8; 32]);
+        store.set(NAME, &second).expect("overwrite");
+        assert_eq!(
+            store.get(NAME).expect("get").expect("entry").as_slice(),
+            &second[..]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

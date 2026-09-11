@@ -492,14 +492,18 @@ mod tests {
         let (dir, paths) = tmp_paths();
         let store = InMemoryStore::default();
         let identity = load_or_create(&paths, &store).expect("create");
-        store.delete(NOISE_STATIC_SECRET_NAME).expect("delete key");
-        match load_or_create(&paths, &store) {
+        // A different, empty store stands in for "the credential is gone":
+        // simulating that by deleting is not available (the store has no
+        // delete), and an empty store is the stronger case anyway — the key is
+        // absent everywhere, and `device.json` is still on disk.
+        let empty = InMemoryStore::default();
+        match load_or_create(&paths, &empty) {
             Err(DeviceIdentityError::KeyMissing) => {}
             Err(other) => panic!("expected KeyMissing, got {other:?}"),
             Ok(_) => panic!("a present device.json with no stored key must not load"),
         }
         // And the missing key is not silently replaced.
-        assert!(load_or_create(&paths, &store).is_err());
+        assert!(load_or_create(&paths, &empty).is_err());
         assert_eq!(identity.device_id, read_id(&paths));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -784,18 +784,23 @@ impl ServerState {
     /// asked to close; the flag is what actually drops them, on the next turn
     /// of their own loop.
     pub(crate) fn revoke_peer_connections(&self, device_id: &str) -> usize {
-        let connections = self
+        // The close flags are collected under the lock and raised after it is
+        // released. Iterating the map while setting an atomic is already
+        // O(connections) with a cap of 32, but this keeps the accept loop's
+        // `register_remote_conn` from ever queueing behind a revoke on a busy
+        // connection set.
+        let closes: Vec<Arc<AtomicBool>> = self
             .remote_conns
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let mut closed = 0;
-        for (owner, close) in connections.values() {
-            if owner == device_id {
-                close.store(true, Ordering::SeqCst);
-                closed += 1;
-            }
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .filter(|(owner, _)| owner == device_id)
+            .map(|(_, close)| Arc::clone(close))
+            .collect();
+        for close in &closes {
+            close.store(true, Ordering::SeqCst);
         }
-        closed
+        closes.len()
     }
 
     pub(crate) fn is_peer_online(&self, device_id: &str) -> bool {
@@ -2328,11 +2333,10 @@ fn dispatch_devices(
             code,
             role,
         } => {
-            let transport = state.peer_transport();
-            match state
-                .pairing()
-                .complete(transport.as_ref(), state, &address, &code, role)
-            {
+            // The pairing service takes this device's transport from its own
+            // state, so the binding check on both the immediate path and the
+            // deferred answer thread see the same one.
+            match state.pairing().complete(state, &address, &code, role) {
                 Ok(crate::pairing::PairingOutcome::Pending(peer)) => {
                     DaemonMessage::PairingPending { id, peer }
                 }
@@ -2577,7 +2581,8 @@ fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage 
 /// Audit one request that came from a remote peer.
 ///
 /// `device_id` and `role` come from the Noise-authenticated `ConnPeer`, never
-/// from the frame, and the action is the variant name.
+/// from the frame, and the action is the variant name. The outcome is refined
+/// by [`peer_outcome`].
 fn audit_peer_request(
     state: &Arc<ServerState>,
     conn_peer: &Option<ConnPeer>,
@@ -2596,8 +2601,34 @@ fn audit_peer_request(
         claimed_origin: None,
         action: request.name().to_string(),
         session_id: request_session_id(request),
-        outcome: outcome.to_string(),
+        outcome: peer_outcome(request, outcome).to_string(),
     });
+}
+
+/// The audit outcome for a peer request: the decision, refined by whether the
+/// request named a prompt-skipping mode.
+///
+/// `ClientMessage::SessionCreate` is the only request in the protocol carrying
+/// both a session kind and a mode, so it is the only one this can classify
+/// without a session lookup — and this gate runs before any session is touched.
+/// The request is refused either way; the two outcomes are worth distinguishing
+/// because "a paired machine asked for unattended execution" is a different
+/// event in the trail from "a paired machine asked for something it may not
+/// have" (design §8b A5).
+fn peer_outcome(request: &ClientMessage, outcome: &str) -> &'static str {
+    if outcome != "denied" {
+        return if outcome == "ok" { "ok" } else { "denied" };
+    }
+    match request {
+        ClientMessage::SessionCreate {
+            kind,
+            mode: Some(mode),
+            ..
+        } if crate::peer_policy::prompt_skipping_mode(kind.clone(), mode) => {
+            "prompt_skipping_refused"
+        }
+        _ => "denied",
+    }
 }
 
 /// The session id a request names, when it names one. Deliberately not a
@@ -4446,36 +4477,124 @@ mod tests {
         let _ = std::fs::remove_dir_all(path);
     }
 
+    /// The peer gate must return **before** the `ProvidersRefresh` and
+    /// `ProviderUpdate` spawns, so a remote peer can never trigger an npm
+    /// install or a catalog refresh on this device (design §8b A1).
+    ///
+    /// Two assertions make this real rather than a claim about a reply's shape:
+    ///
+    /// 1. the same `dispatch` call from a **local** connection returns `None`
+    ///    for these variants, which is the async wrapper's own signature for
+    ///    "I spawned a worker" — so `Some(Error)` from a peer is the gate
+    ///    returning early, not the variant being synchronous by nature; and
+    /// 2. the update path's process-launch seam is a recording runner, and a
+    ///    remote `ProviderUpdate` leaves it with no new invocation while a
+    ///    local one adds one. That is the side effect the gate exists to
+    ///    prevent, observed directly.
     #[test]
     fn the_peer_gate_denies_the_destructive_set_before_any_spawn() {
-        let (path, state) = temp_state("peer-gate");
+        let path = std::env::temp_dir().join(format!(
+            "devboule-peer-gate-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        std::fs::create_dir_all(&path).expect("runtime directory");
+        let executable = path.join("codex.cmd");
+        std::fs::write(&executable, b"shim").expect("fake executable");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runner = Arc::new(RecordingNpmRunner {
+            calls: Arc::clone(&calls),
+            result: crate::provider_update::NpmInstallResult {
+                exit_code: Some(0),
+                log: String::new(),
+            },
+        });
+        let state = ServerState::with_paths_and_npm_install_runner(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+            runner,
+        )
+        .expect("state");
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "codex",
+                Some("@openai/codex"),
+                true,
+                crate::provider_catalog::InstallChannel::Npm,
+                executable.clone(),
+            )],
+            unreadable_dirs: 0,
+        });
+        state.set_provider_update_npm_command(std::path::PathBuf::from(r"C:\fake\npm.cmd"), vec![]);
+
         let owner = OwnerId::new("test-user", "test-client").expect("owner");
-        let conn = remote_conn(PeerRole::Daemon, None);
+        let local = ConnHandle::new(1);
+        let remote = remote_conn(PeerRole::Daemon, None);
+
+        // 1. The local path really does spawn, for both async variants. This is
+        //    the control that makes the peer assertion below meaningful.
+        for request in [
+            ClientMessage::ProvidersRefresh { id: 2 },
+            ClientMessage::ProviderUpdate {
+                id: 3,
+                provider_id: "codex".to_string(),
+            },
+        ] {
+            let name = request.name();
+            assert!(
+                dispatch(&state, &owner, request, &local, true, true, true, true).is_none(),
+                "the local path spawns a worker for {name}: `None` is how the async wrapper says so"
+            );
+        }
+        // The local update reaches the runner, which proves the seam is armed.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while calls.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let local_calls = calls.lock().unwrap_or_else(|e| e.into_inner()).len();
+        assert_eq!(
+            local_calls, 1,
+            "a local ProviderUpdate must reach the npm runner"
+        );
+
+        // 2. Every one of these is refused to a peer, synchronously.
         let requests = [
             ClientMessage::Shutdown { id: 1 },
             ClientMessage::ProvidersRefresh { id: 2 },
             ClientMessage::ProviderUpdate {
                 id: 3,
-                provider_id: "claude".to_string(),
+                provider_id: "codex".to_string(),
             },
             ClientMessage::Status { id: 4 },
         ];
         for request in requests {
-            // `ProvidersRefresh`/`ProviderUpdate` are answered by an async
-            // wrapper that returns `None` and spawns a thread. A `Some(Error)`
-            // here is proof the gate returned before the spawn, not merely
-            // that the reply looked similar.
-            let reply = dispatch(&state, &owner, request, &conn, true, true, true, true)
-                .expect("the gate must answer synchronously");
+            let name = request.name();
+            let reply = dispatch(&state, &owner, request, &remote, true, true, true, true)
+                .unwrap_or_else(|| {
+                    panic!("the gate must answer {name} instead of spawning a worker")
+                });
             match reply {
                 DaemonMessage::Error(error) => assert_eq!(
                     error.code,
                     ErrorCode::CapabilityNotSupported,
-                    "unexpected refusal: {error:?}"
+                    "unexpected refusal for {name}: {error:?}"
                 ),
-                other => panic!("expected CapabilityNotSupported, got {other:?}"),
+                other => panic!("expected CapabilityNotSupported for {name}, got {other:?}"),
             }
         }
+
+        // Give a thread that should not exist a moment to prove otherwise: if
+        // the gate had let the update through, this is where its npm call would
+        // land, and the count would move past the local one.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            calls.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            local_calls,
+            "a remote ProviderUpdate must not start an npm install"
+        );
+
         drop(state);
         assert_eq!(
             audit_rows(&path),
@@ -4668,20 +4787,65 @@ mod tests {
 
     #[test]
     fn status_carries_the_secret_store_selector_and_a_remote_state() {
-        let (_path, state) = temp_state("status");
+        let (path, state) = temp_state("status");
         let _ = state.secret_store();
+
+        let remote_of = |state: &Arc<ServerState>| match state.status_body(9) {
+            DaemonMessage::Status { body, .. } => body.remote.expect("remote is always reported"),
+            other => panic!("expected Status, got {other:?}"),
+        };
+
+        // The selector is one of exactly two values, and it is reported.
         match state.status_body(9) {
-            DaemonMessage::Status { body, .. } => {
-                assert!(
-                    matches!(body.secret_store.as_deref(), Some("keyring" | "file")),
-                    "unexpected selector: {:?}",
-                    body.secret_store
-                );
-                let remote = body.remote.expect("remote state is always reported");
-                assert_eq!(remote.state, devboule_protocol::RemoteStateKind::Disabled);
-                assert!(remote.reason.is_some());
-            }
+            DaemonMessage::Status { body, .. } => assert!(
+                matches!(body.secret_store.as_deref(), Some("keyring" | "file")),
+                "unexpected selector: {:?}",
+                body.secret_store
+            ),
             other => panic!("expected Status, got {other:?}"),
         }
+
+        // `disabled` is the start-up state, with a reason.
+        let disabled = remote_of(&state);
+        assert_eq!(disabled.state, devboule_protocol::RemoteStateKind::Disabled);
+        assert!(
+            disabled.reason.is_some(),
+            "a disabled state explains itself"
+        );
+
+        // `enabled`: the listener is up. Status carries the state and reason
+        // only — the addresses and port live in `SelfInfo`.
+        state.set_remote_state(RemoteState::Enabled {
+            addresses: vec!["100.102.128.70".parse().expect("ip")],
+            port: 47831,
+        });
+        let enabled = remote_of(&state);
+        assert_eq!(enabled.state, devboule_protocol::RemoteStateKind::Enabled);
+        assert!(
+            enabled.reason.is_none(),
+            "an enabled listener has nothing to explain: {enabled:?}"
+        );
+        let json = serde_json::to_value(&enabled).expect("json");
+        assert_eq!(json["state"], "enabled");
+        assert!(json["reason"].is_null(), "the key is present as null");
+
+        // `key_missing`: device.json exists but the private key does not. This
+        // is a refusal to guess, and it must be distinguishable from
+        // `disabled` because the remedy differs (re-pair vs start Tailscale).
+        state.set_remote_state(RemoteState::KeyMissing);
+        let missing = remote_of(&state);
+        assert_eq!(
+            missing.state,
+            devboule_protocol::RemoteStateKind::KeyMissing
+        );
+        assert!(missing.reason.is_some());
+        assert_ne!(
+            serde_json::to_value(&missing).expect("json")["state"],
+            "disabled",
+            "a missing key is not the same state as a disabled listener"
+        );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
     }
 }

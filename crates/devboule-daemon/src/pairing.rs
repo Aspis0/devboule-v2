@@ -44,8 +44,8 @@ use crate::journal::PeerRecord;
 use crate::peer_policy::TransportBinding;
 use crate::peer_transport::{
     initiator_handshake, read_framed, responder_handshake, split_session, write_framed,
-    NoiseReader, NoiseWriter, PairingHook, PeerTransport, PAIRING_MAGIC, PAIR_NOISE_PATTERN,
-    PAIR_PROLOGUE,
+    HandshakeGuard, NoiseReader, NoiseWriter, PairingHook, PeerTransport, PAIRING_MAGIC,
+    PAIR_NOISE_PATTERN, PAIR_PROLOGUE,
 };
 use crate::server::ServerState;
 
@@ -76,9 +76,14 @@ pub const ATTEMPTS_PER_SOURCE: usize = 3;
 pub const ATTEMPT_WINDOW: Duration = Duration::from_secs(300);
 /// Socket timeout for the whole pairing exchange.
 pub const PAIRING_IO_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long the initiator waits for the responder's final answer. Covers the
-/// confirm window plus one round trip. Written as whole seconds because
-/// `Duration + Duration` is not const-stable.
+/// The initiator's budget for the *setup* phase: connect, SPAKE2, Noise and
+/// the two payloads.
+pub const PAIRING_SETUP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the initiator waits for the responder's final answer, measured from
+/// the moment the request is in the responder's hands. It covers the far side's
+/// whole confirm window plus one round trip; it is **not** shared with the
+/// setup budget, or a slow handshake would silently shorten the window the
+/// responder's person is being asked to fill.
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(CONFIRM_WINDOW.as_secs() + 10);
 
 /// The two sides' PAKE identity strings. Fixed, as the brief specifies: the
@@ -572,9 +577,15 @@ impl PairingService {
     }
 
     /// The initiator: this device typed a code shown by `address`.
+    ///
+    /// The binding check uses `server.peer_transport()` rather than a transport
+    /// passed in. There is only one right answer to "which transport is this
+    /// device pairing over", and taking it from the state means the immediate
+    /// check and the deferred one on the answer thread cannot disagree — a
+    /// mismatch there would make the row land under a different binding than
+    /// the one that was verified.
     pub fn complete(
         &self,
-        transport: &dyn PeerTransport,
         server: &Arc<ServerState>,
         address: &str,
         code: &PairingSecret,
@@ -596,7 +607,11 @@ impl PairingService {
 
         let mut stream = TcpStream::connect_timeout(&remote_addr, PAIRING_IO_TIMEOUT)
             .map_err(|error| PairingError::Failed(error.to_string()))?;
-        let deadline = Instant::now() + ANSWER_TIMEOUT;
+        // One budget for the setup phase (SPAKE2, Noise, the payloads), and a
+        // **separate** one, taken below, for the far side's answer. Sharing a
+        // single deadline across both is what makes a slow handshake eat into
+        // the responder's confirmation window.
+        let setup_deadline = Instant::now() + PAIRING_SETUP_TIMEOUT;
         stream.set_read_timeout(Some(PAIRING_IO_TIMEOUT))?;
         stream.set_write_timeout(Some(PAIRING_IO_TIMEOUT))?;
         {
@@ -606,19 +621,19 @@ impl PairingService {
 
         // 1-2: SPAKE2, side B. Each side's role goes over in the clear first,
         // because both must be bound into the PSK before either derives it.
-        write_role(&mut stream, role, deadline)?;
-        let responder_role = read_role(&mut stream, deadline)?;
+        write_role(&mut stream, role, setup_deadline)?;
+        let responder_role = read_role(&mut stream, setup_deadline)?;
         let password = spake2::Password::new(code.as_str().as_bytes());
         let responder_identity = spake2::Identity::new(PAIR_RESPONDER_ID);
         let initiator_identity = spake2::Identity::new(PAIR_INITIATOR_ID);
         let mut their_message = [0u8; 256];
-        let their_len = read_framed(&stream, &mut their_message, deadline)?;
+        let their_len = read_framed(&stream, &mut their_message, setup_deadline)?;
         let (spake_state, our_message) = spake2::Spake2::<spake2::Ed25519Group>::start_b(
             &password,
             &responder_identity,
             &initiator_identity,
         );
-        write_framed(&stream, &our_message, deadline)?;
+        write_framed(&stream, &our_message, setup_deadline)?;
         let spake_key = spake_state
             .finish(&their_message[..their_len])
             .map_err(|error| PairingError::Failed(error.to_string()))?;
@@ -628,7 +643,7 @@ impl PairingService {
         // different PSK and the handshake fails here.
         let session = initiator_handshake(
             &stream,
-            deadline,
+            setup_deadline,
             identity.private_key(),
             None,
             PAIR_PROLOGUE,
@@ -643,7 +658,7 @@ impl PairingService {
             .get_remote_static()
             .ok_or_else(|| PairingError::Failed("no remote static key".to_string()))?
             .to_vec();
-        let (mut reader, mut writer) = split_session(&stream, session)?;
+        let (mut reader, mut writer, _closer) = split_session(&stream, session)?;
 
         let payload = PairPayload {
             device_id: identity.device_id.clone(),
@@ -651,12 +666,12 @@ impl PairingService {
             role,
             public_key: identity.public_key_b64(),
         };
-        write_json(&mut writer, &payload, deadline)?;
+        write_json(&mut writer, &payload, setup_deadline)?;
 
         // The responder's own payload. This is the identity recorded below:
         // using our own `payload` here would store *this* device as its own
         // peer, with the responder's key attached.
-        let peer_payload: PairPayload = read_json(&mut reader, deadline)?;
+        let peer_payload: PairPayload = read_json(&mut reader, setup_deadline)?;
         let peer_key = base64_decode(&peer_payload.public_key)?;
         if peer_key != remote_static {
             return Err(PairingError::Failed(
@@ -685,10 +700,13 @@ impl PairingService {
             let peer_display_name = peer_payload.display_name.clone();
             let peer_role = peer_payload.role;
             let address_for_answer = address.to_string();
+            // The far side's whole confirmation window starts now, after the
+            // handshake, so a slow setup cannot shorten it.
+            let answer_deadline = Instant::now() + ANSWER_TIMEOUT;
             std::thread::Builder::new()
                 .name("daemon-pairing-answer".into())
                 .spawn(move || {
-                    let answer: PairAnswer = match read_json(&mut reader, deadline) {
+                    let answer: PairAnswer = match read_json(&mut reader, answer_deadline) {
                         Ok(answer) => answer,
                         Err(error) => {
                             eprintln!("daemon pairing answer was not received: {error}");
@@ -730,7 +748,7 @@ impl PairingService {
             return Ok(PairingOutcome::Pending(pending));
         }
 
-        let answer: PairAnswer = read_json(&mut reader, deadline)?;
+        let answer: PairAnswer = read_json(&mut reader, Instant::now() + ANSWER_TIMEOUT)?;
         if !answer.accepted {
             return Err(PairingError::Failed(if answer.reason.is_empty() {
                 "the other device declined".to_string()
@@ -740,7 +758,8 @@ impl PairingService {
         }
 
         // The binding is what **our** `whois` says about **their** address.
-        let binding = transport
+        let binding = server
+            .peer_transport()
             .binding(&remote_addr)
             .map_err(|error| PairingError::Failed(error.to_string()))?;
         let record = local_peer_record(
@@ -774,8 +793,10 @@ impl PairingHook for PairingService {
         mut stream: TcpStream,
         peer_addr: SocketAddr,
         server: &Arc<ServerState>,
+        in_flight: HandshakeGuard,
     ) {
-        if let Err(error) = self.serve_pairing(transport, &mut stream, peer_addr, server) {
+        if let Err(error) = self.serve_pairing(transport, &mut stream, peer_addr, server, in_flight)
+        {
             // The reason only: no code, no key, no device id.
             eprintln!("daemon pairing attempt ended: {error}");
         }
@@ -791,6 +812,7 @@ impl PairingService {
         stream: &mut TcpStream,
         peer_addr: SocketAddr,
         server: &Arc<ServerState>,
+        in_flight: HandshakeGuard,
     ) -> Result<(), PairingError> {
         // The accept loop peeked these four bytes; consume them for real now.
         let mut magic = [0u8; 4];
@@ -862,7 +884,7 @@ impl PairingService {
             .get_remote_static()
             .ok_or_else(|| PairingError::Failed("no remote static key".to_string()))?
             .to_vec();
-        let (mut reader, mut writer) = split_session(stream, session)?;
+        let (mut reader, mut writer, _closer) = split_session(stream, session)?;
 
         let payload: PairPayload = read_json(&mut reader, deadline)?;
         // The key in the payload must be the key Noise authenticated;
@@ -938,6 +960,14 @@ impl PairingService {
             if !parked {
                 false
             } else {
+                // The exchange is no longer a handshake, so the slot goes back
+                // before the wait. Holding it here is what would let two
+                // parked pairings starve the budget for `CONFIRM_WINDOW` and
+                // turn a third candidate into a dropped connection; with it
+                // released, the third candidate reaches this method and is
+                // answered "pairing busy" (design §8 R4 budgets *handshakes*,
+                // and a parked pairing is not one).
+                drop(in_flight);
                 // Wait for the local answer, or for the window to close. The
                 // entry is dropped by `confirm`, or expired by the tick; a late
                 // confirm finds nothing and is refused there.
@@ -1149,6 +1179,195 @@ mod tests {
         (dir, server)
     }
 
+    /// The whole pairing, in process, over loopback and with a real code: the
+    /// responder the accept loop would have started, and the initiator the
+    /// `PairingComplete` RPC drives.
+    ///
+    /// This is the happy path the earlier test only approached — it proves the
+    /// SPAKE2 exchange, the role-bound PSK, the `XXpsk3` handshake, both
+    /// payloads, the parked confirmation and the two `peers` rows, with no
+    /// Tailscale and no daemon process.
+    #[test]
+    fn a_client_pairing_completes_and_writes_both_rows() {
+        let (dir_a, server_a) = server("initiator");
+        let (dir_b, server_b) = server("responder");
+        let service_a = PairingService::new();
+        let service_b = Arc::new(PairingService::new());
+        let (code, _expires_at) = service_b.start(PeerRole::Client).expect("a code");
+        let transport = Arc::new(crate::peer_transport::TestTransport::default());
+        // `complete` binds the peer through this device's transport, so the
+        // stub has to be *installed*, not merely passed.
+        assert!(server_a.set_peer_transport(transport.clone()).is_ok());
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr").to_string();
+
+        let responder_transport = Arc::clone(&transport);
+        let responder_server = Arc::clone(&server_b);
+        let responder_service = Arc::clone(&service_b);
+        let caps = Arc::new(crate::peer_transport::AcceptCaps::default());
+        let responder = std::thread::spawn(move || {
+            let (stream, peer_addr) = accept_bounded(&listener);
+            // The accept loop takes the pairing handshake slot; the service
+            // releases it once the exchange stops being a handshake.
+            let slot = caps
+                .admit_handshake(crate::peer_transport::HandshakeKind::Pairing)
+                .expect("a pairing slot");
+            responder_service.handle(
+                responder_transport.as_ref(),
+                stream,
+                peer_addr,
+                &responder_server,
+                slot,
+            );
+        });
+
+        let outcome = service_a
+            .complete(&server_a, &address, &code, PeerRole::Client)
+            .expect("the initiator completes the exchange");
+        let pending = match outcome {
+            PairingOutcome::Pending(pending) => pending,
+            PairingOutcome::Done(_) => panic!(
+                "a Client pairing must be reported pending: the far side has not confirmed yet"
+            ),
+        };
+        // The initiator's card names the device that has to confirm.
+        let responder_id = server_b
+            .device_identity()
+            .as_ref()
+            .expect("B has an identity")
+            .device_id
+            .clone();
+        assert_eq!(pending.device_id, responder_id);
+        assert_eq!(pending.role, PeerRole::Client);
+        assert!(!pending.key_fingerprint.is_empty());
+
+        // B parked it, keyed by the device that typed the code (A).
+        let parked = service_b.pending_snapshot();
+        assert_eq!(parked.len(), 1, "exactly one pairing is parked at B");
+        let initiator_id = server_a
+            .device_identity()
+            .as_ref()
+            .expect("A has an identity")
+            .device_id
+            .clone();
+        assert_eq!(parked[0].device_id, initiator_id);
+
+        // The person at B accepts.
+        let row = service_b
+            .confirm(&server_b, &initiator_id, true)
+            .expect("confirm");
+        let row = match row {
+            ConfirmOutcome::Accepted(row) => *row,
+            ConfirmOutcome::Declined => panic!("an accept must produce a row"),
+        };
+        assert_eq!(row.device_id, initiator_id);
+        assert_eq!(row.role, PeerRole::Client);
+        assert!(row.revoked_at.is_none());
+        assert_eq!(row.caps, vec!["view".to_string()]);
+
+        join_bounded(responder, "the responder's pairing thread");
+
+        // A writes its own row once the answer reaches it, on the thread that
+        // did not block the RPC.
+        let deadline = Instant::now() + bound::THREAD;
+        loop {
+            let rows = server_a.peers().expect("A's rows");
+            if rows.len() == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "A never wrote its row for B; saw {rows:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let a_row = &server_a.peers().expect("A's rows")[0];
+        assert_eq!(a_row.device_id, responder_id, "A's row names B");
+        // `peers()` hands back the stored record, whose role is the wire
+        // string, not the enum.
+        assert_eq!(a_row.role, "client");
+        assert_eq!(a_row.caps, vec!["view".to_string()]);
+        assert!(a_row.revoked_at.is_none());
+
+        drop(server_a);
+        drop(server_b);
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    /// The same exchange with the code wrong on one side: the PAKE derives a
+    /// different key, so the Noise handshake fails and **no** row is written on
+    /// either side.
+    #[test]
+    fn a_wrong_code_never_writes_a_row() {
+        let (dir_a, server_a) = server("wrong-initiator");
+        let (dir_b, server_b) = server("wrong-responder");
+        let service_a = PairingService::new();
+        let service_b = Arc::new(PairingService::new());
+        let (_real_code, _) = service_b.start(PeerRole::Client).expect("a code");
+        let wrong = PairingSecret::new("ZZZZ2345");
+        let transport = Arc::new(crate::peer_transport::TestTransport::default());
+        assert!(server_a.set_peer_transport(transport.clone()).is_ok());
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr").to_string();
+
+        let responder_transport = Arc::clone(&transport);
+        let responder_server = Arc::clone(&server_b);
+        let responder_service = Arc::clone(&service_b);
+        let caps = Arc::new(crate::peer_transport::AcceptCaps::default());
+        let responder = std::thread::spawn(move || {
+            let (stream, peer_addr) = accept_bounded(&listener);
+            let slot = caps
+                .admit_handshake(crate::peer_transport::HandshakeKind::Pairing)
+                .expect("a pairing slot");
+            responder_service.handle(
+                responder_transport.as_ref(),
+                stream,
+                peer_addr,
+                &responder_server,
+                slot,
+            );
+        });
+
+        let outcome = service_a.complete(&server_a, &address, &wrong, PeerRole::Client);
+        assert!(
+            outcome.is_err(),
+            "a wrong code must not complete the pairing: {outcome:?}"
+        );
+        join_bounded(responder, "the responder's refused pairing thread");
+
+        assert!(
+            server_a.peers().expect("A's rows").is_empty(),
+            "A must not store a peer it never authenticated"
+        );
+        assert!(
+            server_b.peers().expect("B's rows").is_empty(),
+            "B must not store a peer whose PAKE failed"
+        );
+        assert!(
+            service_b.pending_snapshot().is_empty(),
+            "a failed PAKE never parks a pairing"
+        );
+        // The wrong attempt is written to the audit table, which is how an
+        // operator sees a guessing campaign. Read straight from the journal.
+        let connection = rusqlite::Connection::open(dir_b.join("journal.db")).expect("B's journal");
+        let attempts: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE action = 'pairing_attempt'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("audit rows");
+        assert_eq!(attempts, 1, "the failure is audited exactly once");
+
+        drop(server_a);
+        drop(server_b);
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
     /// The RFC 5869 vectors, run against the `hkdf` crate as used here: a
     /// `None` salt is the all-zero one.
     #[test]
@@ -1290,8 +1509,9 @@ mod tests {
         match initiator {
             Err(_) => {}
             Ok(session) => {
-                let (mut reader, _writer) = crate::peer_transport::split_session(&stream, session)
-                    .expect("split the initiator session");
+                let (mut reader, _writer, _closer) =
+                    crate::peer_transport::split_session(&stream, session)
+                        .expect("split the initiator session");
                 let mut chunk = [0u8; 64];
                 let read = reader.read_plaintext(&mut chunk, Some(deadline));
                 assert!(

@@ -57,6 +57,13 @@ use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 pub struct StreamPair {
     pub reader: Mutex<NoiseReader>,
     pub writer: Mutex<NoiseWriter>,
+    /// A third handle on the same socket, held **outside** both mutexes.
+    ///
+    /// `cancel_read` needs to shut the socket down to unblock a reader parked
+    /// inside `read_plaintext`; doing that through `reader` would mean waiting
+    /// for that same parked read to return, which is the opposite of
+    /// cancelling it. A cloned handle shuts the socket down without any lock.
+    pub closer: std::net::TcpStream,
 }
 
 enum FramedInner {
@@ -119,11 +126,16 @@ impl Framed {
 
     /// Carry a protocol frame over a Noise session instead of a pipe.
     #[cfg(feature = "server")]
-    pub fn from_stream(reader: NoiseReader, writer: NoiseWriter) -> Self {
+    pub fn from_stream(
+        reader: NoiseReader,
+        writer: NoiseWriter,
+        closer: std::net::TcpStream,
+    ) -> Self {
         Self {
             inner: FramedInner::Stream(Arc::new(StreamPair {
                 reader: Mutex::new(reader),
                 writer: Mutex::new(writer),
+                closer,
             })),
             buf: Arc::new(Mutex::new(Vec::new())),
             max_frame_bytes: MAX_FRAME_BYTES,
@@ -290,11 +302,16 @@ impl Framed {
                 );
             },
             // A socket has no overlapped operation to cancel; shutting the
-            // read side down is what unblocks the reader thread.
+            // read side down is what unblocks the reader thread. The `closer`
+            // handle needs no lock, so this returns immediately even while the
+            // reader is parked inside a 300 s read.
+            //
+            // `Shutdown::Read`, not `Both`: teardown still writes the
+            // connection's final events after this call, exactly as it does on
+            // the pipe path where `CancelIoEx` leaves writes working.
             #[cfg(feature = "server")]
             FramedInner::Stream(pair) => {
-                let reader = pair.reader.lock().unwrap_or_else(|err| err.into_inner());
-                let _ = reader.shutdown();
+                let _ = pair.closer.shutdown(std::net::Shutdown::Read);
             }
         }
     }
@@ -304,8 +321,7 @@ impl Framed {
     pub fn cancel_read(&self) {
         #[cfg(feature = "server")]
         if let FramedInner::Stream(pair) = &self.inner {
-            let reader = pair.reader.lock().unwrap_or_else(|err| err.into_inner());
-            let _ = reader.shutdown();
+            let _ = pair.closer.shutdown(std::net::Shutdown::Read);
         }
     }
 

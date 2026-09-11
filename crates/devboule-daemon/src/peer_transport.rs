@@ -2,7 +2,8 @@
 //!
 //! One listener per tailnet address, and every byte on it inside a Noise
 //! session. The transport is a trait because a relay will be one later
-//! (`DESIGN-remote-agents.md` §2 D2b); `Relay` is declared and unimplemented.
+//! (`DESIGN-remote-agents.md` §2 D2b); only the tailnet implementation exists
+//! in this slice.
 //!
 //! # Wire framing on the peer transport
 //!
@@ -279,11 +280,6 @@ impl NoiseReader {
         }
     }
 
-    /// Close the read side, which unblocks a reader parked in `read`.
-    pub fn shutdown(&self) -> io::Result<()> {
-        self.stream.shutdown(std::net::Shutdown::Both)
-    }
-
     /// Plaintext bytes for the caller's frame buffer. `0` means end of stream.
     ///
     /// One call reads as many Noise messages as it takes to produce a byte or
@@ -485,13 +481,17 @@ fn run_handshake(
 pub fn split_session(
     stream: &TcpStream,
     state: snow::TransportState,
-) -> Result<(NoiseReader, NoiseWriter), PeerError> {
+) -> Result<(NoiseReader, NoiseWriter, TcpStream), PeerError> {
     let reader_stream = stream.try_clone()?;
     let writer_stream = stream.try_clone()?;
+    // A third handle, held outside both halves' mutexes, purely so a cancelling
+    // thread can shut the socket down without waiting for the reader.
+    let closer = stream.try_clone()?;
     let shared = Arc::new(Mutex::new(state));
     Ok((
         NoiseReader::new(reader_stream, Arc::clone(&shared)),
         NoiseWriter::new(writer_stream, shared),
+        closer,
     ))
 }
 
@@ -755,8 +755,13 @@ impl PeerTransport for Tailnet {
         stop: Arc<AtomicBool>,
     ) -> io::Result<PeerListener> {
         let client = crate::tailscale_localapi::LocalApiClient::new();
+        // `_fresh`, not the cached answer: this runs once at start-up and must
+        // see whether Tailscale is up *now*. A cached `Absent` from an earlier
+        // probe (say, `status` asked a moment ago) would otherwise keep the
+        // listener down for the rest of the cache TTL on a machine whose
+        // Tailscale is running.
         let node = client
-            .self_node()
+            .self_node_fresh()
             .map_err(|error| io::Error::other(error.to_string()))?;
         let port = peer_port();
         let listener = Self::bind_peer_listener(&node.addresses, port, stop)?;
@@ -819,53 +824,16 @@ pub fn is_tailnet_address(address: &IpAddr) -> bool {
     }
 }
 
-/// The relay transport, declared and not built (`DESIGN-remote-agents.md` §2
-/// D2b). Every method refuses with a message that names the design section, so
-/// a future implementer starts from the reason rather than from a silent
-/// no-op.
-/// The relay transport, declared and not built (`DESIGN-remote-agents.md` §2
-/// D2b). Refusing with a message that names the design section is the whole
-/// point: a future implementer starts from the reason, and a caller cannot
-/// mistake an unimplemented transport for a working one.
-///
-/// The allow is because nothing constructs it in this slice by design; the
-/// design explicitly wants the second implementation to exist as a type.
-#[allow(dead_code)]
-pub struct Relay;
-
-#[allow(dead_code)]
-impl Relay {
-    fn unimplemented<T>(&self) -> io::Result<T> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "the relay transport is designed (DESIGN-remote-agents.md §2 D2b) and not built; \
-             the tailnet is the only transport in this slice",
-        ))
-    }
-}
-
-#[allow(dead_code)]
-impl PeerTransport for Relay {
-    fn listen(
-        &self,
-        _paths: &crate::paths::RuntimePaths,
-        _stop: Arc<AtomicBool>,
-    ) -> io::Result<PeerListener> {
-        self.unimplemented()
-    }
-
-    fn pre_noise_filter(&self, _peer: &SocketAddr, _peers: &PeerTable) -> Result<(), RejectReason> {
-        // A relay has no address to check: the binding is the Relay account
-        // (design §8 R10), so this is the one method that is a genuine no-op.
-        Ok(())
-    }
-
-    fn binding(&self, _peer: &SocketAddr) -> Result<TransportBinding, BindingError> {
-        Err(BindingError::WhoisFailed(
-            "the relay transport is not built".to_string(),
-        ))
-    }
-}
+// A relay transport is designed (`DESIGN-remote-agents.md` §2 D2b: raw TCP on
+// the tailnet now, a WebSocket through Cloudflare later) and is **not built**.
+// It is deliberately not present here as a stub type: a struct that nothing
+// constructs and every method of which returns `Unsupported` is dead code that
+// `-D warnings` cannot see through once it carries an allow, and the extension
+// point that matters is this trait, which `Tailnet` implements and which a
+// future `Relay` would implement the same way. The design's normative content
+// for the relay — the binding becomes the relay account and the pinned Noise
+// static keys remain the only authentication (§8 R10) — belongs with the slice
+// that writes it.
 
 pub fn peer_port() -> u16 {
     std::env::var(PEER_PORT_ENV)
@@ -1058,12 +1026,20 @@ pub trait PairingHook: Send + Sync {
     fn housekeeping(&self, now: Instant);
 
     /// Step 3's pairing path. Runs on its own thread; the socket is owned here.
+    ///
+    /// `in_flight` is the pairing handshake slot the accept loop took for this
+    /// connection. The implementation drops it as soon as the exchange stops
+    /// being a handshake — which for a parked `Client` pairing is *before* it
+    /// waits for the local confirmation, so that two parked pairings cannot
+    /// hold the budget for a minute and turn a third candidate into a dropped
+    /// connection instead of the ready answer the panel can show.
     fn handle(
         &self,
         transport: &dyn PeerTransport,
         stream: TcpStream,
         peer_addr: SocketAddr,
         state: &Arc<ServerState>,
+        in_flight: HandshakeGuard,
     );
 }
 
@@ -1087,6 +1063,7 @@ impl PairingHook for PairingDisabled {
         stream: TcpStream,
         _peer_addr: SocketAddr,
         _state: &Arc<ServerState>,
+        _in_flight: HandshakeGuard,
     ) {
         let _ = stream.shutdown(std::net::Shutdown::Both);
     }
@@ -1221,12 +1198,12 @@ pub fn accept_peers(
                 .name("daemon-peer-pairing".into())
                 .spawn(move || {
                     let _guard = guard;
-                    let _handshake = guard_handshake;
                     pairing_for_task.handle(
                         transport_for_task.as_ref(),
                         stream,
                         peer_addr,
                         &state_for_task,
+                        guard_handshake,
                     );
                 })
             {
@@ -1342,11 +1319,11 @@ fn serve_noise_peer(
         paired_by_user: row.paired_by_user.clone(),
         binding: binding.clone(),
     };
-    let (reader, writer) = split_session(&stream, session)?;
+    let (reader, writer, closer) = split_session(&stream, session)?;
     // Step 6. The remote identity is decided above; `handle_client` must never
     // ask for a pipe handle on this path.
     handle_client(
-        crate::framing::Framed::from_stream(reader, writer),
+        crate::framing::Framed::from_stream(reader, writer, closer),
         Arc::clone(state),
         Some(conn_peer),
     )
@@ -1572,7 +1549,7 @@ mod tests {
                 PEER_NOISE_PATTERN,
             )
             .expect("responder");
-            let (mut reader, _writer) = split_session(&stream, session).expect("split");
+            let (mut reader, _writer, _closer) = split_session(&stream, session).expect("split");
             let mut collected = Vec::new();
             while !collected.ends_with(b"\n") {
                 let mut chunk = [0u8; 8192];
@@ -1598,7 +1575,7 @@ mod tests {
             PEER_NOISE_PATTERN,
         )
         .expect("initiator");
-        let (_reader, mut writer) = split_session(&stream, session).expect("split");
+        let (_reader, mut writer, _closer) = split_session(&stream, session).expect("split");
         writer.write_frame(&frame, Some(deadline)).expect("write");
         frame.clear();
 
@@ -1627,7 +1604,7 @@ mod tests {
                 PEER_NOISE_PATTERN,
             )
             .expect("responder");
-            let (mut reader, _) = split_session(&stream, session).expect("split");
+            let (mut reader, _, _) = split_session(&stream, session).expect("split");
             let mut chunk = [0u8; 64];
             reader.read_plaintext(&mut chunk, Some(deadline)).is_err()
         });
@@ -1673,7 +1650,7 @@ mod tests {
                 PEER_NOISE_PATTERN,
             )
             .expect("responder");
-            let (mut reader, mut writer) = split_session(&stream, session).expect("split");
+            let (mut reader, mut writer, _closer) = split_session(&stream, session).expect("split");
             let writer_thread = std::thread::spawn(move || {
                 for _ in 0..64 {
                     writer
@@ -1706,7 +1683,7 @@ mod tests {
             PEER_NOISE_PATTERN,
         )
         .expect("initiator");
-        let (mut reader, mut writer) = split_session(&stream, session).expect("split");
+        let (mut reader, mut writer, _closer) = split_session(&stream, session).expect("split");
         let writer_thread = std::thread::spawn(move || {
             for _ in 0..64 {
                 writer
@@ -1965,13 +1942,56 @@ mod tests {
     /// the one that hangs.
     #[test]
     fn an_unknown_source_is_closed_before_any_read() {
+        // A transport that records every `pre_noise_filter` call and decides
+        // from a table this test controls, so the accept loop's *ordering*
+        // (filter first, then decide) is what is being observed rather than the
+        // tailnet address range, which would refuse loopback for an unrelated
+        // reason and make the test pass for the wrong one.
+        struct Recording {
+            calls: Mutex<Vec<SocketAddr>>,
+            allow: bool,
+        }
+        impl PeerTransport for Recording {
+            fn listen(
+                &self,
+                _paths: &crate::paths::RuntimePaths,
+                stop: Arc<AtomicBool>,
+            ) -> io::Result<PeerListener> {
+                Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("ip")], 0, stop)
+            }
+            fn pre_noise_filter(
+                &self,
+                peer: &SocketAddr,
+                _peers: &PeerTable,
+            ) -> Result<(), RejectReason> {
+                self.calls
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(*peer);
+                if self.allow {
+                    Ok(())
+                } else {
+                    Err(RejectReason::UnknownSource)
+                }
+            }
+            fn binding(&self, _peer: &SocketAddr) -> Result<TransportBinding, BindingError> {
+                Ok(TransportBinding::tailnet("n", "n", "n"))
+            }
+        }
+
+        // Case 1: the filter refuses, so the loop must close the socket
+        // **before** reading anything from it.
+        let refused = Arc::new(Recording {
+            calls: Mutex::new(Vec::new()),
+            allow: false,
+        });
         let state = crate::server::ServerState::new("peer-accept".to_string());
         let stop = Arc::new(AtomicBool::new(false));
         let listener =
             Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("ip")], 0, Arc::clone(&stop))
                 .expect("bind");
         let address = listener.addrs()[0];
-        let transport: Arc<dyn PeerTransport> = Arc::new(Tailnet);
+        let transport: Arc<dyn PeerTransport> = refused.clone();
         let pairing: Arc<dyn PairingHook> = Arc::new(PairingDisabled);
         let accept_state = Arc::clone(&state);
         let accept = std::thread::spawn(move || {
@@ -1997,11 +2017,84 @@ mod tests {
             "closed immediately, without even the pairing peek budget: {:?}",
             started.elapsed()
         );
+        // The filter ran, which is what makes the close its decision.
+        assert_eq!(
+            refused
+                .calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1,
+            "pre_noise_filter must be consulted exactly once"
+        );
 
-        // Both stop paths, so the loop cannot keep spinning on either.
+        // Case 2: the same source, same table-shape, with the filter allowing
+        // it. Nothing is closed: the loop commits to the Noise path, and the
+        // client's read blocks (no EOF) until its own deadline.
         stop.store(true, Ordering::SeqCst);
         state.stop_flag().store(true, Ordering::SeqCst);
         join_bounded(accept, "the peer accept loop");
+        drop(stream);
+
+        let allowed = Arc::new(Recording {
+            calls: Mutex::new(Vec::new()),
+            allow: true,
+        });
+        let state = crate::server::ServerState::new("peer-allow".to_string());
+        let stop = Arc::new(AtomicBool::new(false));
+        let listener =
+            Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("ip")], 0, Arc::clone(&stop))
+                .expect("bind");
+        let address = listener.addrs()[0];
+        let transport: Arc<dyn PeerTransport> = allowed.clone();
+        let pairing: Arc<dyn PairingHook> = Arc::new(PairingDisabled);
+        let accept_state = Arc::clone(&state);
+        let accept = std::thread::spawn(move || {
+            accept_peers(listener, transport, accept_state, pairing);
+        });
+
+        let stream = connect_bounded(address);
+        // Wait until the loop has actually run the filter for this connection:
+        // asserting the counter first removes the tick race, so the read below
+        // tests the loop's decision and not its scheduling.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while allowed
+            .calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "pre_noise_filter was never consulted for an accepted source"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The loop's Noise path will not send anything until the client speaks,
+        // so a short read deadline is what distinguishes "kept" from "closed".
+        stream
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .expect("read timeout");
+        let mut byte = [0u8; 1];
+        let read = std::io::Read::read(&mut &stream, &mut byte);
+        assert!(
+            matches!(read, Err(ref error) if error.kind() == io::ErrorKind::WouldBlock
+                || error.kind() == io::ErrorKind::TimedOut),
+            "an accepted source must not be closed: expected a read timeout, got {read:?}"
+        );
+        assert_eq!(
+            allowed
+                .calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1,
+            "pre_noise_filter must be consulted exactly once"
+        );
+
+        stop.store(true, Ordering::SeqCst);
+        state.stop_flag().store(true, Ordering::SeqCst);
+        join_bounded(accept, "the allowing peer accept loop");
     }
 
     /// A silent source must not be able to park a reader. This drives the
@@ -2031,7 +2124,7 @@ mod tests {
                 PEER_NOISE_PATTERN,
             )
             .expect("responder");
-            let (_reader, _writer) = split_session(&stream, session).expect("split");
+            let (_reader, _writer, _closer) = split_session(&stream, session).expect("split");
             // Hold the connection open past the reader's deadline.
             std::thread::sleep(DEADLINE + Duration::from_millis(300));
         });
@@ -2047,8 +2140,8 @@ mod tests {
             PEER_NOISE_PATTERN,
         )
         .expect("initiator");
-        let (reader, writer) = split_session(&stream, session).expect("split");
-        let framed = crate::framing::Framed::from_stream(reader, writer);
+        let (reader, writer, closer) = split_session(&stream, session).expect("split");
+        let framed = crate::framing::Framed::from_stream(reader, writer, closer);
 
         let started = Instant::now();
         let outcome = framed.recv_timeout::<devboule_protocol::ClientMessage>(DEADLINE);
@@ -2083,8 +2176,29 @@ mod tests {
                 Arc::new(PairingDisabled) as Arc<dyn PairingHook>,
             );
         });
-        std::thread::sleep(Duration::from_millis(50));
+        // It must still be running before the flag is raised: a loop that had
+        // already exited would "stop" for the wrong reason.
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !accept.is_finished(),
+            "the accept loop must be running before the flag is raised"
+        );
+        let raised_at = Instant::now();
         shutdown.store(true, Ordering::SeqCst);
-        join_bounded(accept, "the peer accept loop stopped by its listener");
+
+        // A tight bound of its own: `bound::THREAD` (20 s) would hide a loop
+        // that only exits after several ticks. One tick is the design's
+        // `HOUSEKEEPING_TICK` (1 s), so 3 s is a generous but real bound.
+        const STOP_BUDGET: Duration = Duration::from_secs(3);
+        let deadline = Instant::now() + STOP_BUDGET;
+        while !accept.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "the accept loop did not stop within {STOP_BUDGET:?} of the flag being raised                 (last tick took {:?})",
+                raised_at.elapsed()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = accept.join();
     }
 }

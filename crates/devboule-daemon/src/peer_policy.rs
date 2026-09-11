@@ -115,6 +115,16 @@ pub fn peer_allows(role: PeerRole, request: &ClientMessage) -> PeerDecision {
 /// it.
 ///
 /// The lists are concrete because "prompt skipping" is per provider and is
+/// Whether `mode_id` is a mode that can run without asking the target
+/// device's user (`DESIGN-remote-agents.md` §8b A5).
+///
+/// Called from the peer gate's audit path (`server.rs::peer_outcome`): a remote
+/// request that names one of these modes is refused and recorded as
+/// `prompt_skipping_refused`, so the trail distinguishes an attempt at
+/// unattended execution from an ordinary denial. Slice 3, which lets a `Daemon`
+/// peer reach a session, uses the same list to refuse the request outright.
+///
+/// The lists are concrete because "prompt skipping" is per provider and is
 /// not exposed uniformly. Two consequences for the caller:
 ///
 /// - Codex `auto` is **not** here: it still prompts, so it is allowed.
@@ -123,7 +133,6 @@ pub fn peer_allows(role: PeerRole, request: &ClientMessage) -> PeerDecision {
 ///   "only the agent's ask/default mode" allowlist, which the caller must
 ///   apply with the agent's own mode list. Do not use this function alone to
 ///   decide whether a remote-origin ACP session may be driven.
-#[allow(dead_code)]
 pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
     match kind {
         SessionKind::Claude => matches!(mode_id, "acceptEdits" | "auto" | "bypassPermissions"),

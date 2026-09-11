@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
-    DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PeerRow,
-    PermissionOutcome, Persistence, Project, PromptAttachment, ProviderInfo, ResumeResult,
-    RetentionPatch, Session, SessionEvent, SessionEventEnvelope, SessionKind,
-    SessionStateSnapshot, SubscriptionId, WireError, Workspace, WorkspaceIsolation,
+    DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PairingSecret, PeerRole,
+    PeerRow, PermissionOutcome, Persistence, Project, PromptAttachment, ProviderInfo, ResumeResult,
+    RetentionPatch, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionStateSnapshot,
+    SubscriptionId, WireError, Workspace, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -674,9 +674,13 @@ impl DaemonClient {
     /// The code is a five-minute secret: it leaves here only inside the returned
     /// frame, which the panel puts on screen. This method formats no frame into
     /// a message, so no error path of it can carry the code.
-    pub fn pairing_start(&self, role: &str) -> Result<DaemonMessage, DaemonError> {
+    ///
+    /// `role` is the typed enum, not a string: an unrecognised role string is
+    /// refused where it is parsed (the Tauri command boundary) rather than
+    /// travelling as a request the daemon would have to reinterpret.
+    pub fn pairing_start(&self, role: PeerRole) -> Result<DaemonMessage, DaemonError> {
         let id = self.alloc_id();
-        match self.roundtrip(ClientMessage::PairingStart { id, role: role.to_string() })? {
+        match self.roundtrip(ClientMessage::PairingStart { id, role })? {
             reply @ DaemonMessage::PairingCode { .. } => Ok(reply),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             _ => pairing_reply_mismatch(),
@@ -687,20 +691,20 @@ impl DaemonClient {
     /// parked pairing this device's user still has to confirm, or with the row
     /// it already wrote.
     ///
-    /// `code` is moved into the request and dropped with it; it is never
-    /// formatted into any error string here.
+    /// `code` is the redacting wrapper, so it is structurally impossible to
+    /// `Debug`-format it into an error string here.
     pub fn pairing_complete(
         &self,
         address: &str,
-        code: &str,
-        role: &str,
+        code: PairingSecret,
+        role: PeerRole,
     ) -> Result<DaemonMessage, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::PairingComplete {
             id,
             address: address.to_string(),
-            code: code.to_string(),
-            role: role.to_string(),
+            code,
+            role,
         })? {
             reply @ (DaemonMessage::PairingPending { .. } | DaemonMessage::PairingDone { .. }) => {
                 Ok(reply)
