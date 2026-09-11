@@ -18,6 +18,7 @@ vi.mock("../lib/tauri", () => ({
 import {
   PERMISSION_TARGET_LIMIT,
   PermissionCard,
+  permissionOriginLabel,
   permissionSubject,
   shortenPermissionTarget,
 } from "./PermissionCard";
@@ -112,6 +113,27 @@ describe("shortenPermissionTarget", () => {
   });
 });
 
+describe("permissionOriginLabel", () => {
+  it("labels a peer origin with the device and its role", () => {
+    expect(permissionOriginLabel({ kind: "peer", deviceId: "device-1", role: "daemon" })).toBe(
+      "Device: device-1 · Role: daemon",
+    );
+  });
+
+  it("has nothing to say about a local or absent origin", () => {
+    // The daemon stamps a local origin on every local request, so a present-
+    // but-local origin must render exactly like no origin at all.
+    expect(permissionOriginLabel({ kind: "local" })).toBeNull();
+    expect(permissionOriginLabel(undefined)).toBeNull();
+  });
+
+  it("stands in for a field a peer origin did not carry", () => {
+    // A peer origin always carries both fields; this is the guard, not a case
+    // in normal use, and the provenance is not allowed to vanish for it.
+    expect(permissionOriginLabel({ kind: "peer" })).toBe("Device: unknown · Role: unknown");
+  });
+});
+
 describe("PermissionCard", () => {
   beforeEach(() => {
     mocks.sessionPermissionRespond.mockReset();
@@ -123,6 +145,97 @@ describe("PermissionCard", () => {
 
   afterEach(() => {
     document.body.replaceChildren();
+  });
+
+  it("renders a peer origin's provenance as the card's first line", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          origin={{ kind: "peer", deviceId: "device-1", role: "daemon" }}
+        />,
+      );
+    });
+
+    const card = container.querySelector(".permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    const provenance = card.firstElementChild;
+    expect(provenance?.className).toBe("permission-card-origin");
+    expect(provenance?.textContent).toBe("Device: device-1 · Role: daemon");
+    // The request's own text renders below the provenance, in its own elements:
+    // a command that prints a header of its own cannot land in this element.
+    expect(card.querySelector(".permission-card-command")?.textContent).toBe(
+      "cmd.exe /c echo alpha",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("reads the origin the daemon put on the request when the host passes none", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={{
+            ...request,
+            origin: { kind: "peer", deviceId: "device-2", role: "client" },
+          }}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    expect(container.querySelector(".permission-card-origin")?.textContent).toBe(
+      "Device: device-2 · Role: client",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("leaves a card without a peer origin unchanged", async () => {
+    const renderCard = async (origin?: PermissionRequest["origin"]) => {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <PermissionCard
+            sessionId="session-1"
+            subscriptionId={41}
+            request={request}
+            capabilities={["typed_permissions"]}
+            origin={origin}
+          />,
+        );
+      });
+      return { container, root };
+    };
+
+    const absent = await renderCard();
+    const cardWithout = absent.container.querySelector(".permission-card");
+    expect(cardWithout?.querySelector(".permission-card-origin")).toBeNull();
+    expect(cardWithout?.firstElementChild?.className).toBe("permission-card-heading");
+    // The daemon stamps `local` on every local request, so that origin must
+    // render exactly like no origin at all.
+    const local = await renderCard({ kind: "local" });
+    const cardLocal = local.container.querySelector(".permission-card");
+    expect(cardLocal?.querySelector(".permission-card-origin")).toBeNull();
+    expect(cardLocal?.firstElementChild?.className).toBe("permission-card-heading");
+
+    await act(async () => absent.root.unmount());
+    await act(async () => local.root.unmount());
   });
 
   it("says what is being asked about instead of printing the tool's name", async () => {

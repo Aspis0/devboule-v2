@@ -8,6 +8,7 @@ import {
 } from "../../lib/tauri";
 import type {
   AttentionReason,
+  PeerRow,
   ProviderInfo,
   Session,
   SessionKind,
@@ -150,6 +151,34 @@ export function sessionTitle(session: Pick<Session, "id" | "title" | "kind">): s
   return `${isAgentKind(session.kind) ? "Agent" : "Terminal"} ${session.id.slice(0, 8)}`;
 }
 
+/**
+ * The display name for each paired device, keyed by device id. This is the
+ * `DevicesList` map the session badge resolves against; revoked rows are kept,
+ * because a session started by a device that has since been revoked still
+ * belongs to it.
+ */
+export function peerDeviceNames(peers: readonly PeerRow[]): Map<string, string> {
+  return new Map(peers.map((peer) => [peer.deviceId, peer.displayName]));
+}
+
+/**
+ * The tab badge for a session of remote origin, or null for a local one.
+ *
+ * The device is named, never guessed: the daemon stamps only the device id on
+ * the origin, and the name comes from the devices list the workspace holds. An
+ * id the list does not know yet falls back to the id itself, which is still a
+ * true statement about where the session came from; an origin that names no
+ * device at all yields no badge rather than an invented one.
+ */
+export function sessionOriginBadge(
+  session: Pick<Session, "origin">,
+  deviceNames: ReadonlyMap<string, string>,
+): string | null {
+  const origin = session.origin;
+  if (origin?.kind !== "peer" || origin.deviceId === undefined) return null;
+  return `from ${deviceNames.get(origin.deviceId) ?? origin.deviceId}`;
+}
+
 export function createWorkspaceSessionController(
   source: WorkspaceSessionSource = DEFAULT_SOURCE,
 ): WorkspaceSessionController {
@@ -218,6 +247,10 @@ export function createWorkspaceSessionController(
         // Attention comes and goes with each roster push; assigning it
         // (even undefined) keeps a stale badge from surviving a cleared one.
         attention: snapshot.attention,
+        // Origin is session identity, not roster state: a push that stops
+        // carrying it (or never did) must not erase what the list already
+        // said about a row the app is holding, so the previous value stands in.
+        origin: snapshot.origin ?? previous?.origin,
       };
       return previous
         ? { ...previous, ...carried }

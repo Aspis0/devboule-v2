@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
+  PeerRow,
   ProviderInfo,
   Session,
   SessionKind,
@@ -9,8 +10,10 @@ import type {
 import {
   chatCapableProviders,
   createWorkspaceSessionController,
+  peerDeviceNames,
   requiresConsent,
   sessionCreateFromProvider,
+  sessionOriginBadge,
   sessionStateLabel,
 } from "./workspaceSessions";
 import { workspaceView } from "./workspaceProjects";
@@ -23,6 +26,23 @@ const liveSession = (id: string, title = id): Session => ({
   state: { type: "live", generation: 1 },
   elapsedMs: 0,
 });
+
+const pairedPhone: PeerRow = {
+  deviceId: "device-phone",
+  displayName: "Xiaomi 14",
+  role: "client",
+  publicKey: "cHVibGljLWtleQ==",
+  keyFingerprint: "f9e8d7c6b5a4938271605f4e3d2c1b0a",
+  bindingKind: "tailnet",
+  bindingNodeName: "xiaomi-14.tail80a42d.ts.net.",
+  bindingLoginName: "user@example.com",
+  address: "100.74.116.126:47831",
+  pairedAt: 1_760_000_000_000,
+  revokedAt: null,
+  caps: ["view", "send"],
+  pairedByUser: null,
+  online: true,
+};
 
 describe("workspace session controller", () => {
   it("maps stream-json, ACP, Pi RPC, and Codex app-server to their session kinds", () => {
@@ -543,6 +563,112 @@ describe("workspace session controller", () => {
     };
     expect(workspaceView(workspaceOne, sessions).meta).toBe("0 live sessions · local");
     expect(workspaceView(workspaceWithAgent, sessions).meta).toBe("1 live session · local");
+    release();
+  });
+});
+
+describe("session origin badge", () => {
+  it("names the device a peer session came from", () => {
+    const names = peerDeviceNames([pairedPhone]);
+    expect(
+      sessionOriginBadge(
+        { origin: { kind: "peer", deviceId: "device-phone", role: "client" } },
+        names,
+      ),
+    ).toBe("from Xiaomi 14");
+  });
+
+  it("shows nothing for a local or absent origin", () => {
+    const names = peerDeviceNames([pairedPhone]);
+    expect(sessionOriginBadge({ origin: { kind: "local" } }, names)).toBeNull();
+    expect(sessionOriginBadge({}, names)).toBeNull();
+  });
+
+  it("keeps the device id when no list has named the device yet", () => {
+    expect(
+      sessionOriginBadge({ origin: { kind: "peer", deviceId: "device-phone" } }, new Map()),
+    ).toBe("from device-phone");
+  });
+
+  it("shows no badge for a peer origin that names no device at all", () => {
+    expect(sessionOriginBadge({ origin: { kind: "peer" } }, new Map())).toBeNull();
+  });
+
+  it("keeps the name of a revoked device, whose sessions still exist", () => {
+    const names = peerDeviceNames([{ ...pairedPhone, revokedAt: 1_760_000_100_000 }]);
+    expect(names.get("device-phone")).toBe("Xiaomi 14");
+  });
+
+  it("keeps the origin a roster push carries for a session no list has described", async () => {
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => []),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+
+    watched.listener?.([
+      {
+        id: "peer-push",
+        workspaceId: null,
+        kind: "acp",
+        title: "remote agent",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 5,
+        origin: { kind: "peer", deviceId: "device-phone", role: "client" },
+      },
+    ]);
+
+    expect(controller.getState().sessions[0]?.origin).toEqual({
+      kind: "peer",
+      deviceId: "device-phone",
+      role: "client",
+    });
+    release();
+  });
+
+  it("does not let a push that omits the origin erase what the list said", async () => {
+    const listed: Session = {
+      ...liveSession("peer-1", "remote shell"),
+      origin: { kind: "peer", deviceId: "device-phone", role: "client" },
+    };
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [listed]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+
+    watched.listener?.([
+      {
+        id: "peer-1",
+        workspaceId: null,
+        kind: "terminal",
+        title: "remote shell",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 5,
+      },
+    ]);
+
+    expect(controller.getState().sessions[0]?.origin).toEqual(listed.origin);
     release();
   });
 });

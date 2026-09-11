@@ -24,6 +24,19 @@
   font-size: 11px;
 }
 
+/* The provenance band (A14). It sits above the body on a surface of its own,
+   in its own weight: the request's text is chosen upstream, so a line it prints
+   itself must not be able to pass as this one by placing itself first. */
+.permission-card-origin {
+  padding: 5px 11px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-strong);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 .permission-card-heading,
 .permission-card-actions {
   display: flex;

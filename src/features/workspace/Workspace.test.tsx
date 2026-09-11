@@ -47,6 +47,9 @@ vi.mock("../../lib/tauri", () => ({
   })),
   sessionsWatch: vi.fn(async () => undefined),
   sessionsUnwatch: vi.fn(async () => undefined),
+  // The session badge's name map: one read per daemon connection. Individual
+  // tests override the reply; the default has one paired device to name.
+  devicesList: vi.fn(async () => ({ selfInfo: undefined, peers: [], pending: [] })),
 }));
 
 vi.mock("../terminal/TerminalSurface", () => ({
@@ -169,6 +172,7 @@ vi.mock("./AgentChatSurface", () => ({
 import {
   daemonRestart,
   daemonStatus,
+  devicesList,
   journalUsage,
   projectAdd,
   projectsList,
@@ -182,7 +186,12 @@ import {
   sessionsWatch,
 } from "../../lib/tauri";
 import { ask } from "@tauri-apps/plugin-dialog";
-import type { JournalUsage, Project, Workspace as IpcWorkspace } from "../../types/ipc";
+import type {
+  DevicesReply,
+  JournalUsage,
+  Project,
+  Workspace as IpcWorkspace,
+} from "../../types/ipc";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 
@@ -252,6 +261,39 @@ const daemonDisconnected: DaemonStatus = {
   message: "daemon unreachable",
 };
 
+const devicesReply: DevicesReply = {
+  selfInfo: {
+    deviceId: "device-self",
+    displayName: "This laptop",
+    publicKey: "cHVibGljLWtleQ==",
+    keyFingerprint: "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    addresses: ["100.64.0.1"],
+    port: 47831,
+    daemonVersion: "0.1.0",
+    protocolVersion: 1,
+    remote: { state: "enabled", reason: null },
+  },
+  peers: [
+    {
+      deviceId: "device-phone",
+      displayName: "Xiaomi 14",
+      role: "client",
+      publicKey: "cHVibGljLWtleQ==",
+      keyFingerprint: "f9e8d7c6b5a4938271605f4e3d2c1b0a",
+      bindingKind: "tailnet",
+      bindingNodeName: "xiaomi-14.tail80a42d.ts.net.",
+      bindingLoginName: "user@example.com",
+      address: "100.74.116.126:47831",
+      pairedAt: 1_760_000_000_000,
+      revokedAt: null,
+      caps: ["view", "send"],
+      pairedByUser: null,
+      online: true,
+    },
+  ],
+  pending: [],
+};
+
 const permissionRequest: PermissionRequest = {
   type: "permission_request",
   toolCallId: "tool-test",
@@ -317,6 +359,10 @@ describe("Workspace sessions", () => {
       kind: "acp",
     });
     vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
+    vi.mocked(devicesList).mockResolvedValue(devicesReply);
+    // The factory default already says "connected", but a nested describe's
+    // override survives `clearAllMocks`, so pin it here for every test.
+    vi.mocked(daemonStatus).mockResolvedValue(daemonConnected);
   });
 
   afterEach(async () => {
@@ -2145,5 +2191,60 @@ describe("Workspace sessions", () => {
       expect(strip.textContent).toContain(UNRESPONSIVE_MESSAGE);
       expect(strip.textContent).toContain("a restart was attempted, but it did not complete");
     });
+  });
+
+  it("shows no origin badge on a local session's tab", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const tab = container.querySelector(".workspace-session-tab");
+    if (tab === null) throw new Error("session tab did not render");
+    expect(tab.querySelector(".session-origin-badge")).toBeNull();
+  });
+
+  it("names the device on a peer session's tab", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      {
+        ...terminal("peer-session", "remote shell"),
+        origin: { kind: "peer", deviceId: "device-phone", role: "client" },
+      },
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    // Two ticks: the tab renders from the session list, and the badge is named
+    // by the devices read the same connection started.
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    const badge = container.querySelector<HTMLElement>(
+      ".workspace-session-tab .session-origin-badge",
+    );
+    expect(badge?.textContent).toBe("from Xiaomi 14");
+    // The name comes from the devices list, which the connection loads once.
+    expect(devicesList).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the device id for a device the list does not know", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      {
+        ...terminal("peer-session", "remote shell"),
+        origin: { kind: "peer", deviceId: "device-unseen", role: "daemon" },
+      },
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const badge = container.querySelector<HTMLElement>(
+      ".workspace-session-tab .session-origin-badge",
+    );
+    expect(badge?.textContent).toBe("from device-unseen");
   });
 });

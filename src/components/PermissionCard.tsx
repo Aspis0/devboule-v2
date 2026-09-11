@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { reasonFromCause, sessionPermissionRespond } from "../lib/tauri";
-import type { DaemonConnectionState, PermissionRequest } from "../types/ipc";
+import type { DaemonConnectionState, PermissionRequest, SessionOrigin } from "../types/ipc";
 import "./PermissionCard.css";
 
 export type PermissionState = "waiting" | "submitting" | "allowed" | "denied";
@@ -107,6 +107,22 @@ export function formatPermissionCommand(request: PermissionRequest): string | nu
   return [request.command, ...request.args].map(quotePermissionArg).join(" ");
 }
 
+/**
+ * The provenance line for a permission card, or null when the session is not a
+ * peer's.
+ *
+ * The line is built from the origin alone, never from the request's own text:
+ * on a remote-origin turn the tool input is chosen upstream, so a header it
+ * prints itself would be indistinguishable from the provenance if the two
+ * shared a text run. `unknown` stands in for a field the daemon did not send,
+ * matching `sessionStateLabel`'s vocabulary — a peer origin always carries
+ * both fields, so this is a guard, not a case in normal use.
+ */
+export function permissionOriginLabel(origin: SessionOrigin | undefined): string | null {
+  if (origin?.kind !== "peer") return null;
+  return `Device: ${origin.deviceId ?? "unknown"} · Role: ${origin.role ?? "unknown"}`;
+}
+
 export interface PermissionCardProps {
   sessionId: string;
   subscriptionId: number;
@@ -120,6 +136,12 @@ export interface PermissionCardProps {
    * target travels on the transcript item with the same `toolCallId`.
    */
   toolTitle?: string | null;
+  /**
+   * The origin of the session this request belongs to. A host that already
+   * knows the session's origin passes it here; otherwise the card falls back to
+   * the `origin` the daemon put on the request itself.
+   */
+  origin?: SessionOrigin;
   onRespond?: (outcome: "allow_once" | "deny") => Promise<void>;
   onResolved?: (sessionId: string, toolCallId: string) => void;
 }
@@ -132,6 +154,7 @@ export function PermissionCard({
   capabilities,
   daemonState = "connected",
   toolTitle = null,
+  origin,
   onRespond,
   onResolved,
 }: PermissionCardProps) {
@@ -162,6 +185,7 @@ export function PermissionCard({
   if (!capabilities.includes("typed_permissions") && daemonState === "connected") return null;
 
   const subject = permissionSubject(request, toolTitle);
+  const provenance = permissionOriginLabel(origin ?? request.origin);
   const commandLine = formatPermissionCommand(request);
   const daemonReachable = daemonState === "connected";
   const allowSupported = request.options.some((option) => option.kind === "allow_once");
@@ -189,6 +213,10 @@ export function PermissionCard({
 
   return (
     <div className="permission-card" aria-live="polite">
+      {/* The provenance line is the card's first child and its own element
+          (A14): the request's text renders below it, so a remote turn cannot
+          print something that reads as it. */}
+      {provenance !== null ? <div className="permission-card-origin">{provenance}</div> : null}
       <div className="permission-card-heading">
         <span className={`permission-card-dot permission-card-${permission}`} />
         <span className="permission-card-action">{subject.action}</span>

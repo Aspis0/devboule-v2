@@ -534,6 +534,20 @@
   white-space: nowrap;
 }
 
+/* The peer-origin badge names the device a session belongs to. It is its own
+   element beside the title, never part of the tab's text, so the session's own
+   title cannot pass as provenance. */
+.session-origin-badge {
+  padding: 1px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .workspace-session-add {
   width: 25px;
   height: 25px;

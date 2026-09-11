@@ -32,6 +32,21 @@ export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" 
 export type SendIntent = "interrupt" | "steer" | "queue";
 export type PermissionOutcome = "allow_once" | "deny";
 
+/** Which device a session belongs to, in the protocol's own words. */
+export type SessionOriginKind = "local" | "peer";
+
+/**
+ * Where a session came from: this machine, or a paired peer (protocol
+ * `SessionOrigin`). `deviceId` is the key the session badge resolves to a
+ * display name; `role` says which grade of device it is, in `PeerRole`'s own
+ * vocabulary. Both are absent on a local origin.
+ */
+export interface SessionOrigin {
+  kind: SessionOriginKind;
+  deviceId?: string;
+  role?: PeerRole;
+}
+
 export interface PermissionOption {
   optionId: string;
   name: string;
@@ -58,6 +73,12 @@ export interface PermissionRequest {
   cwd?: string;
   env?: PermissionEnvVar[];
   options: PermissionOption[];
+  /**
+   * The origin of the session this request belongs to, when the daemon sends
+   * it. The card renders a `peer` origin as its own provenance line, in its own
+   * element: the request's own text must never be able to imitate it.
+   */
+  origin?: SessionOrigin;
 }
 
 export interface PermissionResolved {
@@ -250,6 +271,13 @@ export interface Session {
   createdAtMs?: number;
   /** Mirror of the roster snapshot's attention; the frontend only renders it. */
   attention?: Attention;
+  /**
+   * Where the session came from. Absent means the daemon did not say — a
+   * record written before the field existed, or a roster push that omitted it
+   * for a row no list response has described yet. When absent the frontend
+   * shows no peer badge rather than guessing.
+   */
+  origin?: SessionOrigin;
 }
 
 export type ResumeResult =
@@ -354,6 +382,11 @@ export interface SessionStateSnapshot {
   elapsedMs: number | null;
   /** Absent when the session needs no attention; suppression is daemon-side. */
   attention?: Attention;
+  /**
+   * The session's origin, when the daemon carries it on the push. A push that
+   * omits it leaves a row already listed by `sessionsList` its known origin.
+   */
+  origin?: SessionOrigin;
 }
 
 export type CursorShape = "block" | "underline" | "bar";

@@ -16,17 +16,19 @@ import {
 } from "../../components/PermissionCard";
 import {
   chatCapableProviders,
+  peerDeviceNames,
   requiresConsent,
   sessionAttentionLabel,
   sessionCreateFromProvider,
   sessionDotTone,
+  sessionOriginBadge,
   sessionStateLabel,
   sessionTitle,
   useWorkspaceSessions,
 } from "./workspaceSessions";
 import type { DaemonStatus, PermissionRequest, ProviderInfo, Session } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
-import { daemonRestart, providersList, reasonFromCause } from "../../lib/tauri";
+import { daemonRestart, devicesList, providersList, reasonFromCause } from "../../lib/tauri";
 import "./Workspace.css";
 
 type ActiveSidePanel = SidePanelEntry["id"];
@@ -102,6 +104,10 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   const [permissionQueue, setPermissionQueue] = useState<
     Array<{ sessionId: string; subscriptionId: number; request: PermissionRequest }>
   >([]);
+  // Device id to display name, for the tab badge that names a peer session's
+  // device. One read per daemon connection: the names come from pairing and do
+  // not change while the connection lives.
+  const [peerNames, setPeerNames] = useState<ReadonlyMap<string, string>>(() => new Map());
   const daemon = useWorkspaceDaemon();
   const {
     sessions,
@@ -144,6 +150,14 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   // is reloaded on the same transitions — first connect and every reconnect
   // after a daemon restart. A successful load clears its own error.
   const wasConnectedRef = useRef(false);
+  const refreshPeerNames = useCallback(async () => {
+    try {
+      setPeerNames(peerDeviceNames((await devicesList()).peers));
+    } catch {
+      // Keep the names already known. A badge that falls back to the device id
+      // is better than one that disappears because a list read did not answer.
+    }
+  }, []);
   useEffect(() => {
     if (daemon.state !== "connected") {
       wasConnectedRef.current = false;
@@ -153,7 +167,8 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     wasConnectedRef.current = true;
     void retryProjects();
     void reconnectSessions();
-  }, [daemon.state, reconnectSessions, retryProjects]);
+    void refreshPeerNames();
+  }, [daemon.state, reconnectSessions, refreshPeerNames, retryProjects]);
   // Presence reporter lives outside React state: it holds no render output.
   // Selection changes arrive through the second effect below.
   const presenceReporterRef = useRef<PresenceReporter | null>(null);
@@ -686,33 +701,39 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
 
       <main className="workspace-center-panel">
         <div className="workspace-session-tabs" role="tablist" aria-label="Sessions">
-          {sessions.map((session) => (
-            <button
-              type="button"
-              role="tab"
-              id={`workspace-session-tab-${session.id}`}
-              aria-selected={selectedSessionId === session.id}
-              aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
-              className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
-              key={session.id}
-              onClick={() => selectSession(session.id)}
-            >
-              <span
-                className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
-              />
-              <span className="workspace-tab-label">{sessionTitle(session)}</span>
-              <span className="workspace-tab-meta">
-                {sessionStateLabel(session.state, session.elapsedMs)}
-              </span>
-              {session.attention ? (
+          {sessions.map((session) => {
+            const originBadge = sessionOriginBadge(session, peerNames);
+            return (
+              <button
+                type="button"
+                role="tab"
+                id={`workspace-session-tab-${session.id}`}
+                aria-selected={selectedSessionId === session.id}
+                aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
+                className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
+                key={session.id}
+                onClick={() => selectSession(session.id)}
+              >
                 <span
-                  className={`workspace-tab-attention workspace-attention-${session.attention.reason}`}
-                >
-                  {sessionAttentionLabel(session.attention.reason)}
+                  className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
+                />
+                <span className="workspace-tab-label">{sessionTitle(session)}</span>
+                {originBadge !== null ? (
+                  <span className="session-origin-badge">{originBadge}</span>
+                ) : null}
+                <span className="workspace-tab-meta">
+                  {sessionStateLabel(session.state, session.elapsedMs)}
                 </span>
-              ) : null}
-            </button>
-          ))}
+                {session.attention ? (
+                  <span
+                    className={`workspace-tab-attention workspace-attention-${session.attention.reason}`}
+                  >
+                    {sessionAttentionLabel(session.attention.reason)}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
           <div
             className="workspace-session-add-wrap"
             ref={providerAnchor?.kind === "strip" ? providerPickerRef : undefined}
