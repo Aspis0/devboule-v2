@@ -200,7 +200,14 @@ interface DesignToolbarProps {
   onSave: () => void;
   onUndo: () => void;
   onRedo: () => void;
-  onHistoryOpen: (entry: DesignHistoryEntry) => void;
+  /**
+   * Returns true when the pick was accepted and an attach actually started, and
+   * false when it was refused (a generation running, another attach already in
+   * flight, or the entry is the design already on the canvas). The popover
+   * closes only on true: a refused pick changed nothing, so it must not look
+   * like it did.
+   */
+  onHistoryOpen: (entry: DesignHistoryEntry) => boolean;
 }
 
 interface LayerPanelProps {
@@ -893,6 +900,18 @@ const DesignToolbar = memo(function DesignToolbar({
     queueMicrotask(() => historyTriggerRef.current?.focus());
   }, []);
 
+  // The close belongs here, on the pick itself, not in openHistoryEntry's result
+  // callback: that callback can land as loading, timeout or failed, and a menu
+  // that waits for success would sit over the canvas forever on a failure. The
+  // loading, timeout and failed notices render outside this popover, so closing
+  // it takes none of that feedback away.
+  const handleHistoryEntryOpen = useCallback(
+    (entry: DesignHistoryEntry) => {
+      if (onHistoryOpen(entry)) closeHistory();
+    },
+    [closeHistory, onHistoryOpen],
+  );
+
   useEffect(() => {
     if (!historyOpen) return;
     historyPopoverRef.current?.focus();
@@ -989,7 +1008,7 @@ const DesignToolbar = memo(function DesignToolbar({
           <DesignHistoryList
             refreshKey={historyRefreshKey}
             liveSessionId={liveSessionId}
-            onOpen={onHistoryOpen}
+            onOpen={handleHistoryEntryOpen}
           />
         </div>
       </div>
@@ -4684,6 +4703,12 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     [busy, reportPersistence],
   );
 
+  /**
+   * Attaches a history entry to the canvas. Returns true when the attach was
+   * started and false when the guard refused the pick, so the caller knows
+   * whether an action really happened. Every guard condition is synchronous, so
+   * the answer is settled before the first await of the attach.
+   */
   const openHistoryEntry = useCallback(
     (entry: DesignHistoryEntry) => {
       if (
@@ -4692,7 +4717,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         historyOpenInFlightRef.current ||
         entry.sessionId === liveSessionIdRef.current
       ) {
-        return;
+        return false;
       }
 
       // Provenance belongs to the generation that produced it. History entries do not persist
@@ -4741,6 +4766,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         },
       });
       historyOpenRef.current = handle;
+      return true;
     },
     [busy, disposeHistoryOpen, markDocumentDirty, setMessages],
   );

@@ -791,6 +791,113 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("closes History when an entry is picked", async () => {
+    historyOpenMocks.open.mockReturnValue({ dispose: vi.fn() });
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const popover = container.querySelector<HTMLDivElement>("#design-history-popover");
+    const onOpen = historyListMocks.onOpen;
+    if (trigger === null || popover === null || onOpen === null) {
+      throw new Error("History controls missing");
+    }
+
+    await act(async () => trigger.click());
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    await act(async () => onOpen({ sessionId: "history-picked" }));
+
+    expect(historyOpenMocks.open).toHaveBeenCalledTimes(1);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(popover.hidden).toBe(true);
+    // closeHistory keeps parking focus on its trigger; that keyboard path is unchanged.
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => root.unmount());
+  });
+
+  it("leaves History open when the pick is the design already on the canvas", async () => {
+    const host = createHost({
+      getAgentSessionRecord: () => ({ id: "session-design" }) as Session,
+    });
+    const { container, root } = await renderDesign(host);
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const popover = container.querySelector<HTMLDivElement>("#design-history-popover");
+    const onOpen = historyListMocks.onOpen;
+    if (trigger === null || popover === null || onOpen === null) {
+      throw new Error("History controls missing");
+    }
+
+    await act(async () => trigger.click());
+    await act(async () => onOpen({ sessionId: "session-design" }));
+
+    expect(historyOpenMocks.open).not.toHaveBeenCalled();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(popover.hidden).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it("leaves History open when a second pick is refused mid-attach", async () => {
+    historyOpenMocks.open.mockReturnValue({ dispose: vi.fn() });
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const popover = container.querySelector<HTMLDivElement>("#design-history-popover");
+    const onOpen = historyListMocks.onOpen;
+    if (trigger === null || popover === null || onOpen === null) {
+      throw new Error("History controls missing");
+    }
+
+    await act(async () => trigger.click());
+    await act(async () => onOpen({ sessionId: "history-first" }));
+    expect(popover.hidden).toBe(true);
+
+    // The first attach never reports back, so the guard refuses the second pick. The
+    // popover the user reopened must stay up, because that click did nothing.
+    await act(async () => trigger.click());
+    expect(popover.hidden).toBe(false);
+    await act(async () => onOpen({ sessionId: "history-second" }));
+
+    expect(historyOpenMocks.open).toHaveBeenCalledTimes(1);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(popover.hidden).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it("closes History on a pointerdown outside the menu", async () => {
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const popover = container.querySelector<HTMLDivElement>("#design-history-popover");
+    if (trigger === null || popover === null) throw new Error("History controls missing");
+
+    await act(async () => trigger.click());
+    expect(popover.hidden).toBe(false);
+
+    await act(async () => {
+      document.body.dispatchEvent(
+        pointerEvent("pointerdown", { button: 0, clientX: 4, clientY: 4, pointerId: 31 }),
+      );
+    });
+
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(popover.hidden).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => root.unmount());
+  });
+
   it("does not start a second history attach from the same tick", async () => {
     const firstDispose = vi.fn();
     const secondDispose = vi.fn();
