@@ -23,10 +23,11 @@ import { buildStandaloneArtifactHtml } from "./artifactExport";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
 import {
-  getCachedArtifactSections,
+  getCachedArtifactStructure,
   sectionsToLayers,
-  setCachedArtifactSections,
+  setCachedArtifactStructure,
   type ArtifactSection,
+  type ArtifactStructure,
 } from "./artifactStructure";
 import {
   formatSectionNotesScope,
@@ -39,6 +40,10 @@ import {
   ARTIFACT_PAGE_HEIGHT,
   ARTIFACT_PAGE_WIDTH,
   artifactPageHeightForCanvas,
+  clampArtifactScroll,
+  maxArtifactScroll,
+  revealArtifactRect,
+  scrollArtifactBy,
   shouldAdaptArtifactHeight,
 } from "./artifactViewport";
 import {
@@ -210,6 +215,12 @@ interface CanvasProps {
   artifactError?: string;
   artifactMissingTokens: readonly string[];
   artifactHeight: number;
+  /**
+   * Measured full page height in page CSS px, or undefined when the artifact
+   * has not been measured yet. Undefined keeps the frame unscrollable (today's
+   * behaviour), never a guess.
+   */
+  artifactContentHeight?: number;
   /** World-space highlight for the selected page section, if it is one. */
   sectionHighlight: NodeRect | null;
   /** World-space marks for sections carrying an agent note. */
@@ -682,6 +693,7 @@ type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
 const EMPTY_DESIGN_MESSAGES: readonly DesignMessage[] = [];
 const EMPTY_TRANSCRIPT: readonly DesignTranscriptItem[] = [];
 const EMPTY_SECTIONS: readonly ArtifactSection[] = [];
+const EMPTY_ARTIFACT_STRUCTURE: ArtifactStructure = { sections: EMPTY_SECTIONS };
 const EMPTY_SECTION_NOTES: readonly SectionNote[] = [];
 const EMPTY_RESOLVED_NOTES: readonly ResolvedSectionNote[] = [];
 const HISTORY_OPEN_MESSAGE_PREFIX = "design-history-open-";
@@ -1029,6 +1041,25 @@ const SectionDetails = memo(function SectionDetails({
   );
 });
 
+/**
+ * Scroll position that reveals a target inside a scroller, or the current one
+ * when the target is already fully visible. Positions are in the scroller's own
+ * coordinate space; the caller measures them, so the geometry stays pure and
+ * testable. The bottom is checked first: an expanded row grows downward, and the
+ * content just revealed is what must come into view.
+ */
+export function revealScrollTopFor(
+  scrollTop: number,
+  clientHeight: number,
+  targetTop: number,
+  targetHeight: number,
+): number {
+  const bottom = targetTop + targetHeight;
+  if (bottom > scrollTop + clientHeight) return Math.max(0, bottom - clientHeight);
+  if (targetTop < scrollTop) return Math.max(0, targetTop);
+  return scrollTop;
+}
+
 const LayerPanel = memo(function LayerPanel({
   layers,
   onSelect,
@@ -1039,17 +1070,40 @@ const LayerPanel = memo(function LayerPanel({
   selectedSectionNotes,
   onAddNote,
 }: LayerPanelProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const expandedRowRef = useRef<HTMLDivElement>(null);
+  const expandedRow = layers.find((layer) => layer.selected && layer.section !== undefined) ?? null;
+  const expandedRowId = expandedRow?.id ?? null;
+  const expandedRowNoteCount = expandedRow?.section === undefined ? 0 : selectedSectionNotes.length;
+
+  // Selecting a section expands its row inside the scroller; the revealed note
+  // and diagnostics must not stay cut off below the panel. Measured here, after
+  // layout, and only when the disclosure changes, so a manual scroll of a list
+  // whose selection did not move is never fought.
+  useEffect(() => {
+    if (expandedRowId === null) return;
+    const list = listRef.current;
+    const row = expandedRowRef.current;
+    if (list === null || row === null) return;
+    const listRect = list.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const targetTop = rowRect.top - listRect.top + list.scrollTop;
+    const next = revealScrollTopFor(list.scrollTop, list.clientHeight, targetTop, rowRect.height);
+    if (next !== list.scrollTop) list.scrollTop = next;
+  }, [expandedRowId, expandedRowNoteCount]);
+
   return (
     <section className="design-layers-panel" aria-labelledby="design-layers-title">
       <div className="design-overlay-heading">
         <span id="design-layers-title">Layers</span>
         <span className="design-layer-count">{layers.length}</span>
       </div>
-      <div className="design-layer-list">
+      <div className="design-layer-list" ref={listRef}>
         {layers.map((layer) => (
           <div
             className={`design-layer-row${layer.selected ? " design-layer-row-selected" : ""}`}
             key={layer.id}
+            ref={layer.selected && layer.section !== undefined ? expandedRowRef : undefined}
           >
             <button
               className="design-layer-select"
@@ -1318,6 +1372,7 @@ const DesignCanvas = memo(function DesignCanvas({
   artifactError,
   artifactMissingTokens,
   artifactHeight,
+  artifactContentHeight,
   sectionHighlight,
   noteMarks,
   onSelectLayer,
@@ -1389,6 +1444,44 @@ const DesignCanvas = memo(function DesignCanvas({
     }
     return rects;
   }, [artifactRect, layerRects, sectionLayers, hiddenLayerIds]);
+
+  // The artifact window's page-space scroll offset. It lives here, next to the
+  // frame it moves, because the same number drives the iframe translate and the
+  // parent-side section hit zones: one offset, so the two cannot drift apart.
+  const [artifactScroll, setArtifactScroll] = useState(0);
+  const artifactContentBoxHeight =
+    artifactContentHeight === undefined
+      ? undefined
+      : Math.max(artifactHeight, artifactContentHeight);
+  const artifactScrollOffset =
+    artifactContentHeight === undefined
+      ? 0
+      : clampArtifactScroll(artifactScroll, artifactContentHeight, artifactHeight);
+
+  // A new artifact is a new page: its window starts at the top.
+  useEffect(() => {
+    setArtifactScroll(0);
+  }, [artifactHtml, artifactError]);
+
+  // A stale offset past the end of a re-measured page is harmless: the render,
+  // the wheel, and the reveal all clamp against the current height.
+
+  // Selecting a section must show it: the panel row and the canvas overlay both
+  // land here, so the window scrolls to the section just chosen. A section
+  // already inside the window returns the current offset, so nothing jumps.
+  useEffect(() => {
+    if (artifactRect === null || artifactContentHeight === undefined) return;
+    const section = sectionLayers.find((layer) => layer.id === selectedLayerId);
+    if (section === undefined) return;
+    setArtifactScroll((current) =>
+      revealArtifactRect(
+        current,
+        { top: section.transform.y - artifactRect.y, height: section.transform.height },
+        artifactContentHeight,
+        artifactRect.h,
+      ),
+    );
+  }, [artifactContentHeight, artifactRect, sectionLayers, selectedLayerId]);
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -1462,8 +1555,40 @@ const DesignCanvas = memo(function DesignCanvas({
     (event: WheelEvent) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      event.preventDefault();
       const bounds = canvas.getBoundingClientRect();
+      // Wheel is the established canvas zoom everywhere, including over the
+      // artifact, so the page scroll gets its own modifier instead of taking
+      // that over. Shift is the browser's unused "other axis" modifier; Ctrl is
+      // reserved by the browser's page zoom and Alt can trip menus. Over an
+      // artifact with room to scroll, Shift+wheel scrolls the window; anything
+      // else (including a short page) falls through to zoom, so the gesture is
+      // never dead.
+      if (event.shiftKey && artifactRect !== null && artifactContentHeight !== undefined) {
+        const point = pointerToWorld(
+          event.clientX,
+          event.clientY,
+          { left: bounds.left, top: bounds.top },
+          viewportRef.current,
+        );
+        const overArtifact =
+          point.x >= artifactRect.x &&
+          point.x <= artifactRect.x + artifactRect.w &&
+          point.y >= artifactRect.y &&
+          point.y <= artifactRect.y + artifactRect.h;
+        if (overArtifact && maxArtifactScroll(artifactContentHeight, artifactHeight) > 0) {
+          event.preventDefault();
+          setArtifactScroll((current) =>
+            scrollArtifactBy(
+              current,
+              { deltaY: event.deltaY, deltaMode: event.deltaMode },
+              artifactContentHeight,
+              artifactHeight,
+            ),
+          );
+          return;
+        }
+      }
+      event.preventDefault();
       const next = zoomViewport(
         viewportRef.current,
         { deltaY: event.deltaY, deltaMode: event.deltaMode },
@@ -1474,7 +1599,7 @@ const DesignCanvas = memo(function DesignCanvas({
       applyViewport(next);
       viewportCommitScheduler.schedule(next);
     },
-    [applyViewport, viewportCommitScheduler],
+    [applyViewport, artifactContentHeight, artifactHeight, artifactRect, viewportCommitScheduler],
   );
 
   useEffect(() => {
@@ -1642,7 +1767,18 @@ const DesignCanvas = memo(function DesignCanvas({
                 {artifactError}
               </div>
             ) : (
-              <div className="design-canvas-artifact-content" inert>
+              <div
+                className="design-canvas-artifact-content"
+                inert
+                style={
+                  artifactContentBoxHeight === undefined
+                    ? undefined
+                    : {
+                        height: `${artifactContentBoxHeight}px`,
+                        transform: `translateY(${-artifactScrollOffset}px)`,
+                      }
+                }
+              >
                 {/*
                   WebView2 measurement on 2026-09-05: the parent CSP is not inherited by srcdoc.
                   This policy is therefore delivered inside the frame; the sandbox remains a
@@ -1676,16 +1812,18 @@ const DesignCanvas = memo(function DesignCanvas({
         {/*
           The section highlight is drawn by the parent OVER the closed iframe
           (like CanvasNode), never inside it: page rect + artifact origin, in
-          world coordinates. The artifact box clips its own content but not
-          this sibling, so a section below the fold still highlights at its
-          true composed position under the sheet — declared, not hidden.
+          world coordinates, minus the window's page scroll. The artifact box
+          clips its own content but not this sibling, so a section below the
+          fold still highlights at its true composed position under the sheet —
+          declared, not hidden — and follows the offset the frame content moves
+          by, so the box and the highlight never disagree.
         */}
         {sectionHighlight !== null ? (
           <div
             className="design-canvas-section-highlight"
             style={{
               left: sectionHighlight.x,
-              top: sectionHighlight.y,
+              top: sectionHighlight.y - artifactScrollOffset,
               width: sectionHighlight.w,
               height: sectionHighlight.h,
             }}
@@ -1697,7 +1835,7 @@ const DesignCanvas = memo(function DesignCanvas({
             className="design-canvas-section-highlight design-canvas-section-hover"
             style={{
               left: hoveredHighlight.x,
-              top: hoveredHighlight.y,
+              top: hoveredHighlight.y - artifactScrollOffset,
               width: hoveredHighlight.w,
               height: hoveredHighlight.h,
             }}
@@ -1720,7 +1858,7 @@ const DesignCanvas = memo(function DesignCanvas({
             className="design-canvas-section-overlay"
             style={{
               left: section.transform.x,
-              top: section.transform.y,
+              top: section.transform.y - artifactScrollOffset,
               width: section.transform.width,
               height: section.transform.height,
             }}
@@ -1748,7 +1886,7 @@ const DesignCanvas = memo(function DesignCanvas({
             <span
               key={mark.id}
               className="design-canvas-note-mark"
-              style={{ left: mark.x, top: mark.y }}
+              style={{ left: mark.x, top: mark.y - artifactScrollOffset }}
               title={marked ? `Note on ${marked.name}` : "Section note"}
               aria-hidden="true"
             />
@@ -3040,23 +3178,35 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   // Measured page structure for the current artifact. The critic feeds the
   // module cache once per new artifact (same pass, no second measurement);
   // this state only re-renders the surface when that result lands. A remount
-  // reads straight from the cache, so navigating back keeps the layers.
+  // reads straight from the cache, so navigating back keeps the layers and the
+  // measured page height.
   const [measuredArtifact, setMeasuredArtifact] = useState<{
     html: string;
     sections: readonly ArtifactSection[];
+    contentHeight?: number;
   } | null>(null);
   const handleArtifactMeasured = useCallback((html: string, result: ArtifactRenderCriticResult) => {
     const sections = result.structure ?? EMPTY_SECTIONS;
-    setCachedArtifactSections(html, sections);
-    setMeasuredArtifact({ html, sections });
+    const contentHeight = result.contentHeight;
+    setCachedArtifactStructure(html, {
+      sections,
+      ...(contentHeight === undefined ? {} : { contentHeight }),
+    });
+    setMeasuredArtifact({
+      html,
+      sections,
+      ...(contentHeight === undefined ? {} : { contentHeight }),
+    });
   }, []);
-  const artifactSections: readonly ArtifactSection[] = useMemo(() => {
-    if (artifactHtml === undefined) return EMPTY_SECTIONS;
+  const artifactStructure: ArtifactStructure = useMemo(() => {
+    if (artifactHtml === undefined) return EMPTY_ARTIFACT_STRUCTURE;
     if (measuredArtifact !== null && measuredArtifact.html === artifactHtml) {
-      return measuredArtifact.sections;
+      return measuredArtifact;
     }
-    return getCachedArtifactSections(artifactHtml) ?? EMPTY_SECTIONS;
+    return getCachedArtifactStructure(artifactHtml) ?? EMPTY_ARTIFACT_STRUCTURE;
   }, [artifactHtml, measuredArtifact]);
+  const artifactSections = artifactStructure.sections;
+  const artifactContentHeight = artifactStructure.contentHeight;
   const sectionAnchors = useMemo(
     () => new Set(artifactSections.map((section) => section.anchor)),
     [artifactSections],
@@ -4216,6 +4366,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             artifactError={artifactError}
             artifactMissingTokens={artifactMissingTokens}
             artifactHeight={artifactPageHeight}
+            artifactContentHeight={artifactContentHeight}
             sectionHighlight={sectionHighlight}
             noteMarks={noteMarks}
             onSelectLayer={selectLayer}

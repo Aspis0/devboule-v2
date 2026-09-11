@@ -7,6 +7,7 @@ import {
   MAX_ARTIFACT_STRUCTURE_ENTRIES,
   clearCachedArtifactSections,
   getCachedArtifactSections,
+  getCachedArtifactStructure,
   readArtifactStructure,
   sectionsToLayers,
   setCachedArtifactSections,
@@ -244,6 +245,15 @@ describe("artifact structure cache", () => {
       setCachedArtifactSections(`<main>${index}</main>`, []);
     }
     expect(getCachedArtifactSections(html)).toBeUndefined();
+  });
+
+  it("keeps the measured page height alongside the sections", () => {
+    const html = "<main>Tall</main>";
+    setCachedArtifactSections(html, [], 3600);
+    expect(getCachedArtifactStructure(html)).toEqual({ sections: [], contentHeight: 3600 });
+    // An entry stored without a height reads as unmeasured, not as zero.
+    setCachedArtifactSections("<main>Short</main>", []);
+    expect(getCachedArtifactStructure("<main>Short</main>")).toEqual({ sections: [] });
   });
 });
 

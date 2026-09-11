@@ -1,3 +1,5 @@
+import { normalizeWheel } from "./designViewport";
+
 /**
  * The canonical viewport a generated page is authored against and rendered at.
  *
@@ -74,4 +76,65 @@ export function shouldAdaptArtifactHeight(
   const prevRatio = canvasAspectRatio(prevWidth, prevHeight);
   if (prevRatio === null) return true;
   return Math.abs(nextRatio - prevRatio) > ARTIFACT_CANVAS_RATIO_DELTA;
+}
+
+/*
+ * Page-space scrolling for the artifact window. The on-canvas frame is a
+ * fixed-height window (artifactPageHeightForCanvas) over a page whose measured
+ * height arrives from the render critic. Everything below works in PAGE CSS px,
+ * before the canvas zoom/pan transform: the offset is a translateY on the frame
+ * content, and the parent-side section hit zones are shifted by the same
+ * amount, so no screen-px conversion belongs here.
+ */
+
+/** Largest offset that keeps the window inside the page; 0 for a short page. */
+export function maxArtifactScroll(contentHeight: number, windowHeight: number): number {
+  if (!Number.isFinite(contentHeight) || !Number.isFinite(windowHeight)) return 0;
+  // Ceil so the last slice is reachable when the measured height is fractional.
+  return Math.max(0, Math.ceil(contentHeight - windowHeight));
+}
+
+/** Keep an offset inside [0, maxArtifactScroll]; an unusable input reads as 0. */
+export function clampArtifactScroll(
+  offset: number,
+  contentHeight: number,
+  windowHeight: number,
+): number {
+  if (!Number.isFinite(offset)) return 0;
+  return Math.min(maxArtifactScroll(contentHeight, windowHeight), Math.max(0, offset));
+}
+
+/** Offset after a wheel event: same unit normalization as the zoom path. */
+export function scrollArtifactBy(
+  offset: number,
+  wheel: { deltaY: number; deltaMode: number },
+  contentHeight: number,
+  windowHeight: number,
+): number {
+  const delta = normalizeWheel(wheel.deltaY, wheel.deltaMode, windowHeight);
+  return clampArtifactScroll(offset + delta, contentHeight, windowHeight);
+}
+
+/**
+ * Offset that brings a page-space rect into a window showing
+ * [offset, offset + windowHeight). The current offset is returned unchanged
+ * when the rect is already fully inside, so revealing a visible selection does
+ * not make the page jump. A rect taller than the window is bottom-aligned: the
+ * content just revealed is at the bottom.
+ */
+export function revealArtifactRect(
+  offset: number,
+  rect: { top: number; height: number },
+  contentHeight: number,
+  windowHeight: number,
+): number {
+  const current = clampArtifactScroll(offset, contentHeight, windowHeight);
+  const bottom = rect.top + rect.height;
+  if (bottom > current + windowHeight) {
+    return clampArtifactScroll(bottom - windowHeight, contentHeight, windowHeight);
+  }
+  if (rect.top < current) {
+    return clampArtifactScroll(rect.top, contentHeight, windowHeight);
+  }
+  return current;
 }

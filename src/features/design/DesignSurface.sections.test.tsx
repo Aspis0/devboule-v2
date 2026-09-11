@@ -7,6 +7,7 @@ import { useAppStore } from "../../store/appStore";
 import {
   artifactNodeRect,
   DesignSurface,
+  revealScrollTopFor,
   smallestSectionAt,
   type DesignDocument,
   type DesignHost,
@@ -153,6 +154,28 @@ const GENERATION_BASE = {
   nodeIds: [],
 };
 
+// Scroll fixtures: a page taller than the frame window, with one section in the
+// first screen and one well below it.
+const SCROLL_HTML = "<section><h2>Top</h2></section><section><h2>Far</h2></section>";
+const SCROLL_SECTIONS = [
+  {
+    anchor: "body[1]/section[1]",
+    tag: "section",
+    name: "Top",
+    depth: 1,
+    rect: { x: 0, y: 0, width: 1280, height: 200 },
+  },
+  {
+    anchor: "body[1]/section[2]",
+    tag: "section",
+    name: "Far",
+    depth: 1,
+    rect: { x: 0, y: 1400, width: 1280, height: 400 },
+  },
+] as const;
+const SCROLL_CONTENT_HEIGHT = 3600;
+const SCROLL_ARTIFACT_ORIGIN = { x: 60, y: 46 };
+
 function createHost(overrides: Partial<DesignHost> = {}): DesignHost {
   return {
     loadDocument: vi.fn(async () => DOCUMENT),
@@ -193,8 +216,9 @@ async function generateArtifact(
   container: HTMLDivElement,
   generate: ReturnType<typeof vi.fn>,
   prompt: string,
+  contentHeight?: number,
 ): Promise<void> {
-  setCachedArtifactSections(ARTIFACT_HTML, [...ARTIFACT_SECTIONS]);
+  setCachedArtifactSections(ARTIFACT_HTML, [...ARTIFACT_SECTIONS], contentHeight);
   await fillDraft(container, prompt);
   const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
   if (send === null) throw new Error("Generate control missing");
@@ -211,6 +235,45 @@ function layerRowByName(container: HTMLDivElement, name: string): HTMLButtonElem
   const row = rows.find((candidate) => candidate.textContent?.includes(name));
   if (row === undefined) throw new Error(`Layer row for ${name} missing`);
   return row;
+}
+
+function stageViewport(container: HTMLDivElement): {
+  panX: number;
+  panY: number;
+  zoom: number;
+} {
+  const stage = container.querySelector<HTMLElement>(".design-canvas-stage");
+  const transform = stage?.style.transform ?? "";
+  const match = /translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)/.exec(transform);
+  if (match === null) throw new Error(`Stage transform missing: ${transform}`);
+  return { panX: Number(match[1]), panY: Number(match[2]), zoom: Number(match[3]) };
+}
+
+function clientPointForWorld(
+  container: HTMLDivElement,
+  x: number,
+  y: number,
+): { clientX: number; clientY: number } {
+  const { panX, panY, zoom } = stageViewport(container);
+  return { clientX: x * zoom + panX, clientY: y * zoom + panY };
+}
+
+function wheelEvent(init: {
+  clientX: number;
+  clientY: number;
+  deltaY: number;
+  deltaMode?: number;
+  shiftKey?: boolean;
+}): WheelEvent {
+  const event = new Event("wheel", { bubbles: true, cancelable: true }) as WheelEvent;
+  Object.defineProperties(event, {
+    clientX: { value: init.clientX },
+    clientY: { value: init.clientY },
+    deltaMode: { value: init.deltaMode ?? 0 },
+    deltaY: { value: init.deltaY },
+    shiftKey: { value: init.shiftKey ?? false },
+  });
+  return event;
 }
 
 async function fillNote(container: HTMLDivElement, text: string): Promise<void> {
@@ -724,6 +787,232 @@ describe("DesignSurface page sections", () => {
         sectionNotes: [{ anchor: "body[1]/main[1]", text: "Persist me" }],
       }),
     );
+    await act(async () => root.unmount());
+  });
+});
+
+function artifactContent(container: HTMLDivElement): HTMLElement {
+  const content = container.querySelector<HTMLElement>(".design-canvas-artifact-content");
+  if (content === null) throw new Error("Artifact content missing");
+  return content;
+}
+
+async function generateScrollArtifact(generate: DesignHost["generate"]): Promise<{
+  container: HTMLDivElement;
+  root: ReturnType<typeof createRoot>;
+}> {
+  const { container, root } = await renderDesign(createHost({ generate }));
+  setCachedArtifactSections(SCROLL_HTML, [...SCROLL_SECTIONS], SCROLL_CONTENT_HEIGHT);
+  await fillDraft(container, "Build a tall page.");
+  const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+  if (send === null) throw new Error("Generate control missing");
+  await act(async () => {
+    send.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(generate).toHaveBeenCalled();
+  return { container, root };
+}
+
+async function wheelOverArtifact(
+  container: HTMLDivElement,
+  deltaY: number,
+  shiftKey = true,
+): Promise<void> {
+  const canvas = container.querySelector<HTMLDivElement>(".design-canvas");
+  if (canvas === null) throw new Error("Canvas missing");
+  const point = clientPointForWorld(
+    container,
+    SCROLL_ARTIFACT_ORIGIN.x + 640,
+    SCROLL_ARTIFACT_ORIGIN.y + 400,
+  );
+  await act(async () => {
+    canvas.dispatchEvent(wheelEvent({ ...point, deltaY, shiftKey }));
+    await Promise.resolve();
+  });
+}
+
+describe("DesignSurface artifact window scrolling", () => {
+  it("gives the frame the measured page height and starts at the top", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: SCROLL_HTML }));
+    const { container, root } = await generateScrollArtifact(generate);
+
+    const content = artifactContent(container);
+    // The window stays artifactPageHeight; the frame inside it is page-sized.
+    expect(content.style.height).toBe("3600px");
+    expect(content.style.transform).toBe("translateY(0px)");
+    const frame = container.querySelector<HTMLIFrameElement>(".design-artifact-frame");
+    expect(frame?.parentElement).toBe(content);
+    await act(async () => root.unmount());
+  });
+
+  it("scrolls with Shift+wheel and keeps the section hit zones on the moved content", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: SCROLL_HTML }));
+    const { container, root } = await generateScrollArtifact(generate);
+    const content = artifactContent(container);
+
+    const overlaysBefore = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".design-canvas-section-overlay"),
+    );
+    const topsBefore = overlaysBefore.map((overlay) => Number.parseFloat(overlay.style.top));
+
+    await wheelOverArtifact(container, 120);
+
+    expect(content.style.transform).toBe("translateY(-120px)");
+    const topsAfter = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".design-canvas-section-overlay"),
+    ).map((overlay) => Number.parseFloat(overlay.style.top));
+    // Point 4: every hit zone moved by exactly the offset the content moved by,
+    // so a click still lands on the section drawn under the pointer.
+    expect(topsBefore.map((top, index) => top - (topsAfter[index] ?? Number.NaN))).toEqual([
+      120, 120,
+    ]);
+    await act(async () => root.unmount());
+  });
+
+  it("leaves plain wheel as zoom over the artifact", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: SCROLL_HTML }));
+    const { container, root } = await generateScrollArtifact(generate);
+    const content = artifactContent(container);
+    const stage = container.querySelector<HTMLElement>(".design-canvas-stage");
+    const before = stage?.style.transform;
+
+    await wheelOverArtifact(container, -120, false);
+
+    expect(content.style.transform).toBe("translateY(0px)");
+    expect(stage?.style.transform).not.toBe(before);
+    await act(async () => root.unmount());
+  });
+
+  it("scrolls a selected section into the window and never moves a visible one", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: SCROLL_HTML }));
+    const { container, root } = await generateScrollArtifact(generate);
+    const content = artifactContent(container);
+
+    // Far sits at page y 1400 with height 400: bottom-aligning it in an 800 px
+    // window is offset 1000.
+    await act(async () => {
+      layerRowByName(container, "Far").click();
+      await Promise.resolve();
+    });
+    expect(content.style.transform).toBe("translateY(-1000px)");
+
+    // Far is selected and now visible: selecting it again must not move anything.
+    await act(async () => {
+      layerRowByName(container, "Far").click();
+      await Promise.resolve();
+    });
+    expect(content.style.transform).toBe("translateY(-1000px)");
+
+    // Top sits above the window: revealing it scrolls back to the page top.
+    await act(async () => {
+      layerRowByName(container, "Top").click();
+      await Promise.resolve();
+    });
+    expect(content.style.transform).toBe("translateY(0px)");
+    await act(async () => root.unmount());
+  });
+
+  it("resets the window to the top when a new artifact arrives", async () => {
+    const secondHtml = "<section><h2>Second</h2></section>";
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce({ ...GENERATION_BASE, artifactHtml: SCROLL_HTML })
+      .mockResolvedValueOnce({ ...GENERATION_BASE, artifactHtml: secondHtml });
+    const { container, root } = await renderDesign(createHost({ generate }));
+    setCachedArtifactSections(SCROLL_HTML, [...SCROLL_SECTIONS], SCROLL_CONTENT_HEIGHT);
+    setCachedArtifactSections(secondHtml, [], SCROLL_CONTENT_HEIGHT);
+
+    await fillDraft(container, "First page.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => {
+      send.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await wheelOverArtifact(container, 200);
+    expect(artifactContent(container).style.transform).toBe("translateY(-200px)");
+
+    await fillDraft(container, "Second page.");
+    await act(async () => {
+      send.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(artifactContent(container).style.transform).toBe("translateY(0px)");
+    await act(async () => root.unmount());
+  });
+});
+
+describe("revealScrollTopFor", () => {
+  it("moves only when the target is outside the viewport", () => {
+    // Already inside: unchanged, so a visible selection never jumps.
+    expect(revealScrollTopFor(0, 100, 20, 30)).toBe(0);
+    // Revealed content below the viewport pulls the list just enough.
+    expect(revealScrollTopFor(0, 100, 80, 60)).toBe(40);
+    // A target above the viewport scrolls back to its top.
+    expect(revealScrollTopFor(200, 100, 50, 30)).toBe(50);
+    // Never negative.
+    expect(revealScrollTopFor(0, 100, -20, 30)).toBe(0);
+  });
+});
+
+describe("DesignSurface layer list reveal", () => {
+  it("scrolls the expanded row into view inside the list", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: ARTIFACT_HTML }));
+    const host = createHost({ generate });
+    const { container, root } = await renderDesign(host);
+    await generateArtifact(container, generate, "Build a shop page.");
+
+    const list = container.querySelector<HTMLDivElement>(".design-layer-list");
+    const row = layerRowByName(container, "Deals").closest<HTMLDivElement>(".design-layer-row");
+    if (list === null || row === null) throw new Error("Layer list or row missing");
+
+    let scrollTop = 0;
+    Object.defineProperty(list, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 100 });
+    Object.defineProperty(list, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        top: 0,
+        bottom: 100,
+        left: 0,
+        right: 200,
+        width: 200,
+        height: 100,
+        x: 0,
+        y: 0,
+      }),
+    });
+    // The expanded row ends 40 px below the list viewport.
+    Object.defineProperty(row, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        top: 80,
+        bottom: 140,
+        left: 0,
+        right: 200,
+        width: 200,
+        height: 60,
+        x: 0,
+        y: 80,
+      }),
+    });
+
+    await act(async () => {
+      layerRowByName(container, "Deals").click();
+      await Promise.resolve();
+    });
+
+    expect(scrollTop).toBe(40);
     await act(async () => root.unmount());
   });
 });

@@ -394,6 +394,14 @@ export interface ArtifactRenderCriticResult {
    * empty here so a structural problem can never hide the render findings.
    */
   readonly structure?: readonly ArtifactSection[];
+  /**
+   * Full page height in CSS px at `ARTIFACT_PAGE_WIDTH`, measured in the same
+   * frame pass as the findings. The display frame is a fixed-height window, so
+   * the parent needs this to scroll it over a page taller than the window.
+   * Absent on messages that predate the height; the surface then treats the
+   * page as unscrollable rather than guessing.
+   */
+  readonly contentHeight?: number;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -516,12 +524,18 @@ export function readArtifactRenderCriticResult(value: unknown): ArtifactRenderCr
   const structure =
     message.structure === undefined ? [] : (readArtifactStructure(message.structure) ?? []);
 
+  // Same degradation rule as the structure: a malformed height must not hide
+  // the findings, so it reads as "unmeasured" instead of failing the result.
+  const postedHeight = message.contentHeight;
+  const contentHeight = boundedNumber(postedHeight, 1000000) ? postedHeight : undefined;
+
   return {
     findings,
     kind: ARTIFACT_RENDER_CRITIC_MESSAGE_KIND,
     source: ARTIFACT_RENDER_CRITIC_SOURCE,
     version: ARTIFACT_RENDER_CRITIC_VERSION,
     structure,
+    ...(contentHeight === undefined ? {} : { contentHeight }),
   };
 }
 
@@ -1098,7 +1112,15 @@ const MEASUREMENT_SCRIPT = String.raw`(() => {
       } catch {
         structure = [];
       }
-      window.parent.postMessage({ kind: KIND, source: SOURCE, version: 1, findings: run(), structure }, '*');
+      // The page height on the same pass as the findings: remeasuring it in a
+      // second frame would cost another ~1.5 s and flicker verdicts. The frame
+      // is fixed 1280x800; a page that sizes on its own viewport height (vh)
+      // would make this number wrong, which is why the doctrine forbids vh.
+      const contentHeight = Math.max(
+        document.documentElement ? document.documentElement.scrollHeight : 0,
+        document.body ? document.body.scrollHeight : 0,
+      );
+      window.parent.postMessage({ kind: KIND, source: SOURCE, version: 1, findings: run(), structure, contentHeight }, '*');
     } catch {
       // A missing result is safer than turning an evaluator failure into a finding.
     }
