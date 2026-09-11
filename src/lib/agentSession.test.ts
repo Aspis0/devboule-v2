@@ -74,6 +74,32 @@ describe("ACP agent session", () => {
     ]);
   });
 
+  it("renders a warning session notice as a system item without changing status", async () => {
+    // Slice-2 S4 fixture: a codex-originated `SessionNotice` with
+    // `severity: "warning"` must reach the transcript as `role: "system""
+    // with its severity intact. No daemon change; this pins the render path
+    // at `agentSession.ts` (`case "session_notice"`) end to end.
+    const harness = makeHarness();
+    await harness.session.start();
+    expect(harness.session.getState().status).toBe("idle");
+
+    harness.emit({
+      type: "session_notice",
+      text: "Codex extension needs approval to read the workspace.",
+      severity: "warning",
+    });
+
+    expect(harness.session.getState().status).toBe("idle");
+    expect(harness.session.getState().items).toEqual([
+      {
+        id: "system-1",
+        role: "system",
+        text: "Codex extension needs approval to read the workspace.",
+        severity: "warning",
+      },
+    ]);
+  });
+
   it("splits an in-progress assistant message around a session notice", async () => {
     const harness = makeHarness();
     await harness.session.start();

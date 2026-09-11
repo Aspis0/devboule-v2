@@ -33,6 +33,8 @@ import {
   sessionResume,
   surfaceSettingsGet,
   surfaceSettingsSet,
+  toolPolicyGet,
+  toolPolicySet,
   type PairingOutcome,
 } from "./tauri";
 import type { PeerRow, PendingPairing } from "../types/ipc";
@@ -732,5 +734,42 @@ describe("device command wrappers", () => {
     expect(COMMAND_ARG_KEYS.pairing_confirm).toEqual(["deviceId", "accept"]);
     expect(COMMAND_ARG_KEYS.peer_revoke).toEqual(["deviceId"]);
     expect(COMMAND_ARG_KEYS.peer_set_caps).toEqual(["deviceId", "caps"]);
+  });
+});
+
+describe("tool policy command wrappers", () => {
+  it("calls tool_policy_get with no payload", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({ policies: [] } as never);
+
+    await expect(toolPolicyGet()).resolves.toEqual({ policies: [] });
+    expect(invoke).toHaveBeenCalledWith("tool_policy_get", undefined);
+  });
+
+  it("sends the full policy row, with null meaning enabled", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await toolPolicySet("grok", null, ["some_tool"]);
+    await toolPolicySet("grok", false, []);
+
+    // The daemon stores the array it receives, so the deny list is always
+    // the complete set, never a delta. `null` is enabled (matches the
+    // daemon's absent-means-enabled rule); `false` disables every tool.
+    expect(invoke).toHaveBeenNthCalledWith(1, "tool_policy_set", {
+      providerId: "grok",
+      enabled: null,
+      disabledTools: ["some_tool"],
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "tool_policy_set", {
+      providerId: "grok",
+      enabled: false,
+      disabledTools: [],
+    });
+  });
+
+  it("pins the wire keys of both tool policy commands", () => {
+    expect(COMMAND_ARG_KEYS.tool_policy_get).toEqual([]);
+    expect(COMMAND_ARG_KEYS.tool_policy_set).toEqual(["providerId", "enabled", "disabledTools"]);
   });
 });

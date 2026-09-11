@@ -6,11 +6,19 @@ import {
   providersList,
   providersRefresh,
   reasonFromCause,
+  toolPolicyGet,
+  toolPolicySet,
   workspacesList,
 } from "../../lib/tauri";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
-import type { Project, ProviderCatalog, ProviderInfo, Workspace } from "../../types/ipc";
+import type {
+  Project,
+  ProviderCatalog,
+  ProviderInfo,
+  ToolPolicyEntry,
+  Workspace,
+} from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
@@ -228,6 +236,146 @@ function providerCanUpdate(provider: ProviderInfo): boolean {
 /** Last 500 characters of an npm log; the head is noise for a failed install. */
 function logTail(log: string): string {
   return log.length > 500 ? log.slice(-500) : log;
+}
+
+/** The tool the daemon never gates: disabling it would hide the agent roster. */
+export const ALWAYS_ON_TOOL = "devboule_list_agents";
+
+/** One-line reason shown next to the always-on tool's disabled switch. */
+export const ALWAYS_ON_REASON = "Always on: sessions need the agent roster.";
+
+/**
+ * What one provider's toggles read from a stored row. `undefined` is the
+ * same as enabled: `ToolPolicyGet` returns stored rows only, so a provider
+ * with no row is enabled by default — never an error, never "unknown".
+ */
+export function toolPolicyFor(
+  providerId: string,
+  policies: readonly ToolPolicyEntry[] | null,
+): { enabled: boolean; disabledTools: readonly string[] } {
+  const row = policies?.find((entry) => entry.providerId === providerId);
+  if (row === undefined) return { enabled: true, disabledTools: [] };
+  return {
+    enabled: row.enabled !== false,
+    disabledTools: row.disabledTools ?? [],
+  };
+}
+
+/**
+ * Per-provider tool toggles, under one provider card. Renders nothing when
+ * `provider.tools` is empty: the daemon sends the `tools` key only for the
+ * four native MCP-capable providers, and an empty list means there is
+ * nothing to toggle.
+ *
+ * The always-on tool stays checked and disabled with its one-line reason.
+ * Every other change applies optimistically and reverts on rejection; the
+ * daemon's own sentence is shown verbatim inside the card.
+ */
+function ProviderToolSettings({ provider }: { provider: ProviderInfo }) {
+  const tools = provider.tools ?? [];
+  const [policies, setPolicies] = useState<readonly ToolPolicyEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    // No fetch when there is nothing to toggle: the daemon omits `tools`
+    // for wrappers and non-MCP providers, and the section stays hidden.
+    if (tools.length === 0) return;
+    let cancelled = false;
+    void toolPolicyGet()
+      .then((reply) => {
+        if (!cancelled) setPolicies(reply.policies);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(reasonFromCause(cause));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tools.length]);
+  if (tools.length === 0) return null;
+  const { enabled, disabledTools } = toolPolicyFor(provider.id, policies);
+  const disabledSet = new Set(disabledTools);
+
+  async function persist(nextEnabled: boolean, nextDisabled: string[]) {
+    setBusy(true);
+    setError(null);
+    const previous = policies;
+    setPolicies((current) => {
+      const rest = (current ?? []).filter((entry) => entry.providerId !== provider.id);
+      return [
+        ...rest,
+        {
+          providerId: provider.id,
+          enabled: nextEnabled ? null : false,
+          disabledTools: nextDisabled,
+        },
+      ];
+    });
+    try {
+      await toolPolicySet(provider.id, nextEnabled ? null : false, nextDisabled);
+    } catch (cause) {
+      setPolicies(previous);
+      setError(reasonFromCause(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleProvider(next: boolean) {
+    if (busy) return;
+    void persist(next, [...disabledSet]);
+  }
+
+  function toggleTool(name: string, next: boolean) {
+    if (busy || name === ALWAYS_ON_TOOL) return;
+    const nextDisabled = next
+      ? [...disabledSet].filter((tool) => tool !== name)
+      : [...disabledSet, name];
+    void persist(enabled, nextDisabled);
+  }
+
+  return (
+    <div className="provider-card-block provider-tools">
+      <details>
+        <summary>Tool settings</summary>
+        <label className="provider-tool-row">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label={`Enable tools for ${provider.id}`}
+            checked={enabled}
+            disabled={busy || policies === null}
+            onChange={(event) => toggleProvider(event.target.checked)}
+          />
+          <span>Enable tools</span>
+        </label>
+        <div className="provider-tool-list">
+          {tools.map((tool) => {
+            const alwaysOn = tool.name === ALWAYS_ON_TOOL;
+            const checked = alwaysOn ? true : enabled && !disabledSet.has(tool.name);
+            return (
+              <label className="provider-tool-row" key={tool.name}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={busy || alwaysOn || !enabled}
+                  onChange={(event) => toggleTool(tool.name, event.target.checked)}
+                />
+                <span className="provider-tool-name">{tool.name}</span>
+                <span className="provider-tool-description">{tool.description}</span>
+                {alwaysOn ? <span className="provider-tool-note">{ALWAYS_ON_REASON}</span> : null}
+              </label>
+            );
+          })}
+        </div>
+        {error === null ? null : (
+          <p role="alert" className="device-error">
+            {error}
+          </p>
+        )}
+      </details>
+    </div>
+  );
 }
 
 function ProvidersPanel() {
@@ -520,6 +668,7 @@ function ProvidersPanel() {
                       </button>
                     </div>
                   ) : null}
+                  <ProviderToolSettings provider={provider} />
                 </div>
               );
             })}
