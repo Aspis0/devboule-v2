@@ -707,7 +707,7 @@ impl DaemonClient {
         })? {
             DaemonMessage::PeerUpdated { peer, .. } => Ok(peer),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
-            other => unexpected(other),
+            _ => pairing_reply_mismatch(),
         }
     }
 
@@ -721,7 +721,7 @@ impl DaemonClient {
         })? {
             DaemonMessage::PeerUpdated { peer, .. } => Ok(peer),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
-            other => unexpected(other),
+            _ => pairing_reply_mismatch(),
         }
     }
 
@@ -740,7 +740,7 @@ impl DaemonClient {
         })? {
             DaemonMessage::PeerUpdated { peer, .. } => Ok(peer),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
-            other => unexpected(other),
+            _ => pairing_reply_mismatch(),
         }
     }
 
@@ -1407,12 +1407,13 @@ fn unexpected<T>(message: DaemonMessage) -> Result<T, DaemonError> {
     )))
 }
 
-/// A reply the pairing methods did not expect. Unlike [`unexpected`] it never
-/// formats the frame: a `pairing_code` frame carries the live code, and the
-/// code must not reach a log or an error string through a `Debug` of a reply.
+/// A reply the pairing and peer-management methods did not expect. Unlike
+/// [`unexpected`] it never formats the frame: a `pairing_code` frame carries
+/// the live code, and the code must not reach a log or an error string through
+/// a `Debug` of a reply, whichever request the frame was misdelivered to.
 fn pairing_reply_mismatch<T>() -> Result<T, DaemonError> {
     Err(DaemonError::Protocol(
-        "unexpected daemon frame on a pairing request".to_string(),
+        "unexpected daemon frame on a pairing or peer request".to_string(),
     ))
 }
 
