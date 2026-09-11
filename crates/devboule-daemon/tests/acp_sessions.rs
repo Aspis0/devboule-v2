@@ -691,19 +691,23 @@ fn acp_handshake_failure_ends_the_journal_row_and_records_provider_failure() {
 
     // The journal row was upserted before spawn; a failed spawn must end it,
     // or the roster renders a phantom recovered session with zero events.
-    // The journal writer is asynchronous, so poll with a deadline.
+    // The journal writer is asynchronous and the upsert lands before the
+    // end, so a list taken in between shows the row as `Recovered`: poll
+    // until it renders as ended, with a deadline. (CI run 34564790508 caught
+    // the loop breaking on the first sighting, `Recovered { generation: 1, .. }`.)
     let deadline = Instant::now() + Duration::from_secs(10);
     let state = loop {
         let sessions = test.client.sessions_list().expect("sessions list");
-        if let Some(session) = sessions
+        let state = sessions
             .iter()
             .find(|session| session.kind == SessionKind::Acp)
-        {
-            break session.state.clone();
+            .map(|session| session.state.clone());
+        if let Some(state @ devboule_protocol::SessionState::Ended { .. }) = state {
+            break state;
         }
         assert!(
             Instant::now() < deadline,
-            "the failed session never appeared in sessions_list"
+            "the failed-handshake session must render as ended within the deadline, last seen {state:?}"
         );
         std::thread::sleep(Duration::from_millis(100));
     };
