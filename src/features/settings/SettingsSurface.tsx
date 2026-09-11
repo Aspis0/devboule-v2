@@ -257,7 +257,10 @@ export function toolPolicyFor(
   if (row === undefined) return { enabled: true, disabledTools: [] };
   return {
     enabled: row.enabled !== false,
-    disabledTools: row.disabledTools ?? [],
+    // A stored row that names the always-on tool is stale daemon data:
+    // the daemon never gates it, so the panel drops it on read and never
+    // sends it back (persist strips again as the wire choke point).
+    disabledTools: (row.disabledTools ?? []).filter((name) => name !== ALWAYS_ON_TOOL),
   };
 }
 
@@ -276,6 +279,13 @@ function ProviderToolSettings({ provider }: { provider: ProviderInfo }) {
   const [policies, setPolicies] = useState<readonly ToolPolicyEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Synchronous mirror of `policies`. It — never the render closure — is
+  // what a second rapid write reads and the base its revert applies to
+  // (audit findings 1, 8).
+  const policiesRef = useRef<readonly ToolPolicyEntry[] | null>(null);
+  // Monotonic write sequence: only the newest write owns the UI when it
+  // settles, so an older rejection can never clobber a newer row.
+  const seqRef = useRef(0);
   useEffect(() => {
     // No fetch when there is nothing to toggle: the daemon omits `tools`
     // for wrappers and non-MCP providers, and the section stays hidden.
@@ -283,7 +293,11 @@ function ProviderToolSettings({ provider }: { provider: ProviderInfo }) {
     let cancelled = false;
     void toolPolicyGet()
       .then((reply) => {
-        if (!cancelled) setPolicies(reply.policies);
+        if (cancelled) return;
+        // A write that landed first is newer than this fetch: keep it.
+        if (seqRef.current !== 0) return;
+        policiesRef.current = reply.policies;
+        setPolicies(reply.policies);
       })
       .catch((cause: unknown) => {
         if (!cancelled) setError(reasonFromCause(cause));
@@ -291,47 +305,94 @@ function ProviderToolSettings({ provider }: { provider: ProviderInfo }) {
     return () => {
       cancelled = true;
     };
-  }, [tools.length]);
+  }, [provider.id, tools.length]);
   if (tools.length === 0) return null;
   const { enabled, disabledTools } = toolPolicyFor(provider.id, policies);
   const disabledSet = new Set(disabledTools);
+  // The stored rows are still in flight: until they land, `toolPolicyFor`
+  // reads the missing row as "everything on", which is a guess, so nothing
+  // in the card may be edited yet (finding 6 — the master switch was
+  // already locked here while the tool rows below stayed live).
+  const loading = policies === null;
 
-  async function persist(nextEnabled: boolean, nextDisabled: string[]) {
+  /**
+   * The daemon never gates this tool, so it is never sent in a deny list
+   * and a stored row that names it (stale daemon data) is stripped here.
+   */
+  function stripAlwaysOn(names: readonly string[]): string[] {
+    return names.filter((name) => name !== ALWAYS_ON_TOOL);
+  }
+
+  async function persist(nextEnabled: boolean, nextDisabled: readonly string[]) {
+    const cleanDisabled = stripAlwaysOn(nextDisabled);
+    // This write's own revert base: the provider row as it stands right
+    // now, read through the ref and not through the render closure, so an
+    // earlier write's optimistic row is part of the base (findings 1, 8).
+    const previous = toolPolicyFor(provider.id, policiesRef.current);
+    // Sequence guard (findings 1, 8). Every write is sent immediately, in
+    // click order: a second toggle must still reach the daemon — dropping
+    // it on a stale `busy` loses the user's click. Overlap is resolved when
+    // a write settles instead: only the newest sequence owns the UI, so a
+    // rejection a newer write has superseded reverts nothing and reports
+    // nothing and the newer optimistic row stands.
+    const seq = ++seqRef.current;
     setBusy(true);
     setError(null);
-    const previous = policies;
-    setPolicies((current) => {
-      const rest = (current ?? []).filter((entry) => entry.providerId !== provider.id);
-      return [
-        ...rest,
+    // Optimistic row, appended to the ref mirror: it always holds the
+    // newest rows, including an earlier write's optimistic row when two
+    // writes overlap.
+    const row: ToolPolicyEntry = {
+      providerId: provider.id,
+      enabled: nextEnabled ? null : false,
+      disabledTools: cleanDisabled,
+    };
+    const optimistic: readonly ToolPolicyEntry[] = [
+      ...(policiesRef.current ?? []).filter((entry) => entry.providerId !== provider.id),
+      row,
+    ];
+    policiesRef.current = optimistic;
+    setPolicies(optimistic);
+    try {
+      await toolPolicySet(provider.id, nextEnabled ? null : false, cleanDisabled);
+      // Confirmed. An older write settling here must not clear a busy flag
+      // the newest write still needs.
+      if (seq === seqRef.current) setBusy(false);
+      return;
+    } catch (cause) {
+      // A newer write superseded this one: its optimistic row stands, this
+      // rejection reports nothing.
+      if (seq !== seqRef.current) return;
+      // No newer write exists, so the row in the ref is the one this write
+      // wrote: put back the row this write itself replaced, applied to the
+      // current rows (never a stale render snapshot).
+      const reverted: readonly ToolPolicyEntry[] = [
+        ...(policiesRef.current ?? []).filter((entry) => entry.providerId !== provider.id),
         {
           providerId: provider.id,
-          enabled: nextEnabled ? null : false,
-          disabledTools: nextDisabled,
+          enabled: previous.enabled ? null : false,
+          disabledTools: [...previous.disabledTools],
         },
       ];
-    });
-    try {
-      await toolPolicySet(provider.id, nextEnabled ? null : false, nextDisabled);
-    } catch (cause) {
-      setPolicies(previous);
+      policiesRef.current = reverted;
+      setPolicies(reverted);
       setError(reasonFromCause(cause));
-    } finally {
       setBusy(false);
     }
   }
 
   function toggleProvider(next: boolean) {
-    if (busy) return;
-    void persist(next, [...disabledSet]);
+    void persist(next, toolPolicyFor(provider.id, policiesRef.current).disabledTools);
   }
 
   function toggleTool(name: string, next: boolean) {
-    if (busy || name === ALWAYS_ON_TOOL) return;
+    if (name === ALWAYS_ON_TOOL) return;
+    // Live state, not this render's: two toggles in one tick must each flip
+    // the row the other just wrote rather than re-send a duplicate write.
+    const current = toolPolicyFor(provider.id, policiesRef.current);
     const nextDisabled = next
-      ? [...disabledSet].filter((tool) => tool !== name)
-      : [...disabledSet, name];
-    void persist(enabled, nextDisabled);
+      ? current.disabledTools.filter((tool) => tool !== name)
+      : [...current.disabledTools, name];
+    void persist(current.enabled, nextDisabled);
   }
 
   return (
@@ -344,7 +405,7 @@ function ProviderToolSettings({ provider }: { provider: ProviderInfo }) {
             role="switch"
             aria-label={`Enable tools for ${provider.id}`}
             checked={enabled}
-            disabled={busy || policies === null}
+            disabled={busy || loading}
             onChange={(event) => toggleProvider(event.target.checked)}
           />
           <span>Enable tools</span>
@@ -353,18 +414,22 @@ function ProviderToolSettings({ provider }: { provider: ProviderInfo }) {
           {tools.map((tool) => {
             const alwaysOn = tool.name === ALWAYS_ON_TOOL;
             const checked = alwaysOn ? true : enabled && !disabledSet.has(tool.name);
+            const inputId = `tool-${provider.id}-${tool.name}`;
             return (
-              <label className="provider-tool-row" key={tool.name}>
+              <div className="provider-tool-row" key={tool.name}>
                 <input
+                  id={inputId}
                   type="checkbox"
                   checked={checked}
-                  disabled={busy || alwaysOn || !enabled}
+                  disabled={busy || alwaysOn || !enabled || loading}
                   onChange={(event) => toggleTool(tool.name, event.target.checked)}
                 />
-                <span className="provider-tool-name">{tool.name}</span>
-                <span className="provider-tool-description">{tool.description}</span>
+                <label htmlFor={inputId}>
+                  <span className="provider-tool-name">{tool.name}</span>
+                  <span className="provider-tool-description"> {tool.description}</span>
+                </label>
                 {alwaysOn ? <span className="provider-tool-note">{ALWAYS_ON_REASON}</span> : null}
-              </label>
+              </div>
             );
           })}
         </div>
@@ -668,7 +733,7 @@ function ProvidersPanel() {
                       </button>
                     </div>
                   ) : null}
-                  <ProviderToolSettings provider={provider} />
+                  <ProviderToolSettings key={provider.id} provider={provider} />
                 </div>
               );
             })}
