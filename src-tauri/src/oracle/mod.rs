@@ -8,6 +8,8 @@
 //! - [`types`] holds the wire types the commands exchange with the panel.
 //! - [`commands`] is the Tauri command surface — one wrapper per registered
 //!   command plus the index job that runs on its own thread.
+//! - [`folder`] aims the same stores and query engine at a folder that is not
+//!   the runtime's active workspace, without switching the runtime's root.
 //! - [`status`] reads the index snapshot and turns it into the status and
 //!   health answers, including the model readiness checks.
 //! - [`query`] builds the query engine over the stores and maps engine
@@ -16,6 +18,7 @@
 
 mod commands;
 mod errors;
+mod folder;
 mod query;
 mod runtime;
 mod status;
@@ -45,13 +48,17 @@ pub use commands::{
     oracle_model_download_start, oracle_stats, oracle_status, oracle_watch_start,
     oracle_watch_stop, oracle_workspace_get, oracle_workspace_set,
 };
+pub use folder::{
+    __cmd__oracle_ask_folder, __cmd__oracle_folder_status, __tauri_command_name_oracle_ask_folder,
+    __tauri_command_name_oracle_folder_status, oracle_ask_folder, oracle_folder_status,
+};
 pub use runtime::OracleRuntime;
 // The types keep their original path at the oracle root; nothing inside the
 // crate names them through this re-export, and the module itself is private,
 // so the unused-imports lint would otherwise fire on pure surface keeping.
 #[allow(unused_imports)]
 pub use types::{
-    FileTab, IndexedFile, OracleHealth, OracleHealthCheck, OracleIndexStats, OracleIndexStatus,
-    OracleMatchType, OracleModelState, OracleModelStatus, OracleResourceBudget, OracleResult,
-    OracleSearchResponse, OracleWorkspace,
+    FileTab, IndexedFile, OracleFolderIndexState, OracleFolderIndexStatus, OracleHealth,
+    OracleHealthCheck, OracleIndexStats, OracleIndexStatus, OracleMatchType, OracleModelState,
+    OracleModelStatus, OracleResourceBudget, OracleResult, OracleSearchResponse, OracleWorkspace,
 };

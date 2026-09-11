@@ -10,7 +10,10 @@ import { createDaemonRecovery } from "./daemonRecovery";
 import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
 import { useProviderConsent } from "./useProviderConsent";
-import { quotePermissionArg } from "./commandLine";
+import {
+  PermissionCard as WorkspacePermissionCard,
+  formatPermissionCommand,
+} from "../../components/PermissionCard";
 import {
   chatCapableProviders,
   requiresConsent,
@@ -23,16 +26,10 @@ import {
 } from "./workspaceSessions";
 import type { DaemonStatus, PermissionRequest, ProviderInfo, Session } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
-import {
-  daemonRestart,
-  providersList,
-  reasonFromCause,
-  sessionPermissionRespond,
-} from "../../lib/tauri";
+import { daemonRestart, providersList, reasonFromCause } from "../../lib/tauri";
 import "./Workspace.css";
 
 type ActiveSidePanel = SidePanelEntry["id"];
-type PermissionState = "waiting" | "submitting" | "allowed" | "denied";
 /**
  * Where the provider choice UI is anchored: a project's "New workspace" row
  * or the tab strip's session "+" button. It only decides placement; the
@@ -62,18 +59,7 @@ function daemonLabel(status: DaemonStatus): string {
   return "daemon · disconnected";
 }
 
-const PERMISSION_LABELS: Record<PermissionState, string> = {
-  waiting: "Waiting on you",
-  submitting: "Sending decision…",
-  allowed: "Allowed once · running",
-  denied: "Denied — the turn continues without it",
-};
-
-export function formatPermissionCommand(request: PermissionRequest): string | null {
-  if (!request.command) return null;
-  if (request.args === undefined || request.args.length === 0) return request.command;
-  return [request.command, ...request.args].map(quotePermissionArg).join(" ");
-}
+export { WorkspacePermissionCard, formatPermissionCommand };
 
 interface WorkspaceProps {
   sidePanelRegistry?: readonly SidePanelEntry[];
@@ -781,6 +767,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                       subscriptionId={selectedPermission.subscriptionId}
                       request={selectedPermission.request}
                       capabilities={daemon.capabilities}
+                      daemonState={daemon.state}
                       onResolved={handlePermissionResolved}
                     />
                   ) : undefined
@@ -928,118 +915,5 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
         onCreate={handleCreateProject}
       />
     </section>
-  );
-}
-
-interface WorkspacePermissionCardProps {
-  sessionId: string;
-  subscriptionId: number;
-  request: PermissionRequest;
-  capabilities: readonly string[];
-  onResolved?: (sessionId: string, toolCallId: string) => void;
-}
-
-/** A real ACP permission prompt; it is inert unless the handshake negotiated typed_permissions. */
-export function WorkspacePermissionCard({
-  sessionId,
-  subscriptionId,
-  request,
-  capabilities,
-  onResolved,
-}: WorkspacePermissionCardProps) {
-  const [permission, setPermission] = useState<PermissionState>("waiting");
-  const [error, setError] = useState<string | null>(null);
-  const submittingRef = useRef(false);
-
-  if (!capabilities.includes("typed_permissions")) return null;
-
-  const commandLine = formatPermissionCommand(request);
-
-  const respond = async (outcome: "allow_once" | "deny", optionId: string) => {
-    if (submittingRef.current || permission !== "waiting") return;
-    submittingRef.current = true;
-    setPermission("submitting");
-    setError(null);
-    try {
-      await sessionPermissionRespond(
-        sessionId,
-        subscriptionId,
-        request.toolCallId,
-        outcome,
-        optionId,
-      );
-      setPermission(outcome === "allow_once" ? "allowed" : "denied");
-      onResolved?.(sessionId, request.toolCallId);
-    } catch (cause) {
-      submittingRef.current = false;
-      setPermission("waiting");
-      setError(reasonFromCause(cause));
-    }
-  };
-
-  return (
-    <div className="workspace-permission-card" aria-live="polite">
-      <div className="workspace-permission-heading">
-        <span className={`workspace-permission-dot workspace-permission-${permission}`} />
-        <span className="workspace-permission-title">Permission · {request.title}</span>
-        {request.cwd ? <span className="workspace-permission-context">{request.cwd}</span> : null}
-      </div>
-      {request.description ? (
-        <div className="workspace-permission-description">{request.description}</div>
-      ) : null}
-      {commandLine ? <div className="workspace-permission-command">{commandLine}</div> : null}
-      {request.env && request.env.length > 0 ? (
-        <div className="workspace-permission-env">
-          {request.env.map((variable) => `${variable.name}=${variable.value}`).join("\n")}
-        </div>
-      ) : null}
-      <div className="workspace-permission-actions">
-        <span className="workspace-permission-label">{PERMISSION_LABELS[permission]}</span>
-        {request.options.length > 0 ? (
-          request.options.map((option, index) => {
-            if (option.kind.startsWith("allow")) {
-              return (
-                <button
-                  key={`${option.optionId}-${index}`}
-                  type="button"
-                  className="workspace-primary-action"
-                  onClick={() => void respond("allow_once", option.optionId)}
-                  disabled={permission !== "waiting"}
-                >
-                  {option.name}
-                </button>
-              );
-            }
-            if (option.kind.startsWith("reject")) {
-              return (
-                <button
-                  key={`${option.optionId}-${index}`}
-                  type="button"
-                  className="workspace-secondary-action workspace-deny-action"
-                  onClick={() => void respond("deny", option.optionId)}
-                  disabled={permission !== "waiting"}
-                >
-                  {option.name}
-                </button>
-              );
-            }
-            return (
-              <button
-                key={`${option.optionId}-${index}`}
-                type="button"
-                className="workspace-secondary-action"
-                disabled
-                title={`Unsupported option kind: ${option.kind}`}
-              >
-                {option.name}
-              </button>
-            );
-          })
-        ) : (
-          <span className="workspace-permission-empty">The agent offered no options.</span>
-        )}
-      </div>
-      {error ? <div role="alert">{error}</div> : null}
-    </div>
   );
 }

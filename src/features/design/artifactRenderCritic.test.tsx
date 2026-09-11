@@ -12,6 +12,7 @@ import {
   ArtifactRenderCritic,
   buildArtifactMeasurementSrcDoc,
   contrastRatio,
+  findingHeadline,
   isLargeScaleText,
   readArtifactRenderCriticMessage,
   readArtifactRenderCriticResult,
@@ -410,7 +411,10 @@ describe("artifact render critic pure helpers", () => {
   });
 
   it("rejects malformed result payloads", () => {
-    expect(readArtifactRenderCriticResult(VALID_RESULT)).toEqual(VALID_RESULT);
+    expect(readArtifactRenderCriticResult(VALID_RESULT)).toEqual({
+      ...VALID_RESULT,
+      structure: [],
+    });
     expect(readArtifactRenderCriticResult({ ...VALID_RESULT, version: 2 })).toBeNull();
     expect(
       readArtifactRenderCriticResult({
@@ -448,9 +452,60 @@ describe("artifact render critic pure helpers", () => {
       source: frameWindow,
     });
 
-    expect(readArtifactRenderCriticMessage(validEvent, frameWindow)).toEqual(VALID_RESULT);
+    expect(readArtifactRenderCriticMessage(validEvent, frameWindow)).toEqual({
+      ...VALID_RESULT,
+      structure: [],
+    });
     expect(readArtifactRenderCriticMessage(foreignEvent, frameWindow)).toBeNull();
     expect(readArtifactRenderCriticMessage(malformedEvent, frameWindow)).toBeNull();
+  });
+});
+
+describe("artifact render critic headline", () => {
+  it("names each measured group instead of totalling different kinds", () => {
+    expect(
+      findingHeadline({
+        kind: "contrast",
+        count: 30,
+        samples: [{ label: "<a>", ratio: 3.93, minimum: 4.5, fontSizePx: 14 }],
+      }),
+    ).toBe("30 low-contrast texts");
+    expect(
+      findingHeadline({
+        kind: "pointer-target",
+        count: 7,
+        samples: [{ label: "<button>", width: 20, height: 20 }],
+      }),
+    ).toBe("7 small targets");
+    expect(
+      findingHeadline({
+        kind: "contrast",
+        count: 1,
+        samples: [{ label: "<code>", ratio: 1, minimum: 4.5, fontSizePx: 16 }],
+      }),
+    ).toBe("1 low-contrast text");
+    expect(
+      findingHeadline({
+        kind: "pointer-target",
+        count: 1,
+        samples: [{ label: "<button>", width: 12, height: 12 }],
+      }),
+    ).toBe("1 small target");
+    expect(
+      findingHeadline({
+        kind: "overflow",
+        count: 2,
+        samples: [{ label: "<div>", scrollWidth: 300, clientWidth: 200 }],
+      }),
+    ).toBe("2 overflowing elements");
+    expect(
+      findingHeadline({
+        kind: "focus-indicator",
+        reason: "removed",
+        count: 1,
+        samples: [{ label: "<button>", selector: "button:focus-visible" }],
+      }),
+    ).toBe("1 removed focus indicator");
   });
 });
 
@@ -515,9 +570,52 @@ describe("artifact render critic lifecycle", () => {
     });
 
     expect(container.querySelector('[role="status"]')?.textContent).toContain(
-      "Render checks found 1 finding.",
+      "Render checks found 1 low-contrast text.",
     );
     expect(container.textContent).toContain("Measured <code> at 1:1");
+    await act(async () => root.unmount());
+  });
+
+  it("names each measured group in the headline instead of totalling kinds", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<ArtifactRenderCritic html="<main>Measured</main>" />);
+    });
+    const frame = document.querySelector<HTMLIFrameElement>(".design-artifact-measurement-frame");
+    if (frame === null || frame.contentWindow === null) {
+      throw new Error("Measurement frame did not mount");
+    }
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            kind: ARTIFACT_RENDER_CRITIC_MESSAGE_KIND,
+            source: ARTIFACT_RENDER_CRITIC_SOURCE,
+            version: 1,
+            findings: [
+              {
+                kind: "contrast",
+                count: 30,
+                samples: [{ label: "<a>", ratio: 3.93, minimum: 4.5, fontSizePx: 14 }],
+              },
+              {
+                kind: "pointer-target",
+                count: 7,
+                samples: [{ label: "<button>", width: 20, height: 20 }],
+              },
+            ],
+          },
+          source: frame.contentWindow,
+        }),
+      );
+    });
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      "Render checks found 30 low-contrast texts, 7 small targets.",
+    );
     await act(async () => root.unmount());
   });
 

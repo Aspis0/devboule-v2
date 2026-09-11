@@ -15,7 +15,7 @@ default = ["server"]
 # Optional so a client-only build (the GUI process) does not link ConPTY.
 # rusqlite is the conversation journal (M3c). Optional for the same reason:
 # the GUI process never opens the database.
-server = ["dep:portable-pty", "dep:rusqlite", "dep:alacritty_terminal", "dep:reqwest"]
+server = ["dep:portable-pty", "dep:rusqlite", "dep:alacritty_terminal", "dep:reqwest", "dep:uuid"]
 
 [lib]
 name = "devboule_daemon"
@@ -64,6 +64,7 @@ rusqlite = { version = "=0.40.2", features = ["bundled"], optional = true }
 # aws-lc-rs, a native cmake/NASM build the CI runner cannot be assumed to
 # carry. Exit condition: move to 0.13 when oracle-core's dependents do.
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
+uuid = { version = "=1.25.0", features = ["v4"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Named pipe, DACL, and LockFileEx. Version 0.61.2 is already in the lockfile

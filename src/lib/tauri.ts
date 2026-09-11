@@ -8,6 +8,7 @@ import type {
   JournalRetention,
   JournalUsage,
   IndexedFile,
+  OracleFolderIndexStatus,
   OracleHealth,
   OracleIndexStatus,
   OracleIndexStats,
@@ -71,7 +72,7 @@ export type CommandArgs = {
   session_presence: { focusedSessionId: Id | null; appVisible: boolean };
   session_resize: { id: Id; subscriptionId: SubscriptionId; cols: number; rows: number };
   session_detach: { subscriptionId: SubscriptionId };
-  session_close: { id: Id };
+  session_close: { id: Id; subscriptionId?: SubscriptionId };
   journal_usage: undefined;
   journal_retention_get: undefined;
   journal_retention_set: RetentionPatch;
@@ -95,6 +96,8 @@ export type CommandArgs = {
   oracle_watch_stop: undefined;
   oracle_files: { tab: FileTab; page: number };
   oracle_ask: { query: string };
+  oracle_folder_status: { path: string };
+  oracle_ask_folder: { path: string; query: string };
   surface_settings_get: { surfaceId: string };
   surface_settings_set: { surfaceId: string; value: unknown };
   plugins_list: undefined;
@@ -150,6 +153,8 @@ type CommandResults = {
   oracle_watch_stop: void;
   oracle_files: IndexedFile[];
   oracle_ask: OracleSearchResponse;
+  oracle_folder_status: OracleFolderIndexStatus;
+  oracle_ask_folder: OracleSearchResponse;
   surface_settings_get: unknown;
   surface_settings_set: void;
   plugins_list: PluginInventory;
@@ -194,10 +199,10 @@ export const COMMAND_ARG_KEYS = {
   session_presence: ["focusedSessionId", "appVisible"],
   session_resize: ["id", "subscriptionId", "cols", "rows"],
   session_detach: ["subscriptionId"],
-  session_close: ["id"],
+  session_close: ["id", "subscriptionId"],
   journal_usage: [],
   journal_retention_get: [],
-  journal_retention_set: ["sessionMaxBytes", "maxBytes", "maxSessions", "maxAgeMs"],
+  journal_retention_set: ["maxAgeMs", "maxBytes", "maxSessions", "sessionMaxBytes"],
   session_delete: ["id"],
   sessions_list: [],
   sessions_watch: ["ch"],
@@ -218,6 +223,8 @@ export const COMMAND_ARG_KEYS = {
   oracle_watch_stop: [],
   oracle_files: ["tab", "page"],
   oracle_ask: ["query"],
+  oracle_folder_status: ["path"],
+  oracle_ask_folder: ["path", "query"],
   surface_settings_get: ["surfaceId"],
   surface_settings_set: ["surfaceId", "value"],
   plugins_list: [],
@@ -408,7 +415,19 @@ export const sessionResize = (id: Id, subscriptionId: SubscriptionId, cols: numb
   invokeTyped("session_resize", { id, subscriptionId, cols, rows });
 export const sessionDetach = (subscriptionId: SubscriptionId) =>
   invokeTyped("session_detach", { subscriptionId });
-export const sessionClose = (id: Id) => invokeTyped("session_close", { id });
+/**
+ * Destroys a session. The subscription is optional by design: the wire
+ * `SessionClose` frame carries only the session id — the daemon authenticates
+ * the caller as the session owner — so a session created by a startup that
+ * failed before `session_attach` returned can still be closed. Omitting the
+ * argument is what makes that leak closable; passing it keeps the same
+ * registration check this command always had.
+ */
+export const sessionClose = (id: Id, subscriptionId?: SubscriptionId) =>
+  invokeTyped("session_close", {
+    id,
+    ...(subscriptionId === undefined ? {} : { subscriptionId }),
+  });
 export const journalUsage = () => invokeTyped("journal_usage");
 export const journalRetentionGet = () => invokeTyped("journal_retention_get");
 export const journalRetentionSet = (patch: RetentionPatch) =>
@@ -441,6 +460,25 @@ export const oracleWatchStop = () => invokeTyped("oracle_watch_stop");
 export const oracleFiles = (tab: FileTab, page: number) =>
   invokeTyped("oracle_files", { tab, page });
 export const oracleAsk = (query: string) => invokeTyped("oracle_ask", { query });
+/**
+ * Answers whether a folder has an Oracle index and how complete it is,
+ * without making that folder the workspace. Read-only by construction: the
+ * backend command has no runtime state to change, and it never starts
+ * indexing or a model download. `path` must be an absolute, existing folder;
+ * a relative or missing one rejects. A folder that cannot be read comes back
+ * as `state: "unreadable"`, never as an empty index.
+ */
+export const oracleFolderStatus = (path: string) => invokeTyped("oracle_folder_status", { path });
+/**
+ * Runs one Oracle search against `path`'s own index, leaving the active
+ * workspace untouched. Rejects — naming the folder — when that folder has no
+ * usable index; it never falls back to the workspace's index, because an
+ * answer from the wrong corpus is worse than an error. Both argument keys are
+ * always sent, including an empty `query`, so the backend's validation is
+ * what decides it is invalid.
+ */
+export const oracleAskFolder = (path: string, query: string) =>
+  invokeTyped("oracle_ask_folder", { path, query });
 /**
  * The three ways a surface settings read can land, distinguished in the type
  * so a consumer cannot collapse them into one falsy value. The backend

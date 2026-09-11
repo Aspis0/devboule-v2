@@ -4,6 +4,7 @@ import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  OracleFolderIndexStatus,
   OracleIndexStatus,
   OracleSearchResponse,
   ProviderInfo,
@@ -19,7 +20,10 @@ const channelHarness = vi.hoisted(() => ({
 }));
 
 const mocks = vi.hoisted(() => ({
+  daemonStatus: vi.fn(),
   oracleAsk: vi.fn(),
+  oracleAskFolder: vi.fn(),
+  oracleFolderStatus: vi.fn(),
   oracleFiles: vi.fn(),
   oracleStatus: vi.fn(),
   reasonFromCause: vi.fn(),
@@ -44,6 +48,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/tauri", () => ({
+  daemonStatus: mocks.daemonStatus,
   createSessionChannel: vi.fn((onEvent: (event: SessionEvent) => void) => {
     const channel = {};
     channelHarness.handlers.set(channel, onEvent);
@@ -51,6 +56,8 @@ vi.mock("../../lib/tauri", () => ({
     return channel;
   }),
   oracleAsk: mocks.oracleAsk,
+  oracleAskFolder: mocks.oracleAskFolder,
+  oracleFolderStatus: mocks.oracleFolderStatus,
   oracleFiles: mocks.oracleFiles,
   oracleStatus: mocks.oracleStatus,
   reasonFromCause: mocks.reasonFromCause,
@@ -81,11 +88,13 @@ vi.mock("../../features/workspace/Workspace", () => ({
   Workspace: () => <div data-screen-label="Workspace">Workspace</div>,
 }));
 
-import { AGENT_DESIGN_DISCLOSURE, App } from "../../app/App";
+import { App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationOptions, DesignGenerationResult } from "./designHost";
+import { DesignSurface } from "./DesignSurface";
 import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
+import { rankSkillsForQuery } from "./skillRanking";
 import {
   buildSkillBlock,
   DOCTRINE_DESCRIPTION_CEILING_CHARS,
@@ -102,10 +111,15 @@ import {
   extractArtifactHtml,
   extractFencedHtml,
   groundedPrompt,
+  groundingNoticeFor,
   invokeAgentCommand,
+  normalizeFolderOption,
+  resolveFolderGrounding,
+  stripFencedHtml,
   AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
   composeAutomaticSkillSlugs,
+  matchSkillChoice,
   MAX_AUTOMATIC_SKILL_SECTIONS,
   MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS,
   parseAutomaticSkillReply,
@@ -134,6 +148,40 @@ const SESSION: Session = {
   state: { type: "live", generation: 1 },
   elapsedMs: 0,
 };
+
+function providerInfo(id: string): ProviderInfo {
+  return {
+    id,
+    executable: id,
+    acpAvailable: true,
+    authentication: "unknown",
+    protocol: "acp",
+    origin: "user-binary",
+  };
+}
+
+function sessionRecord(id: string): Session {
+  return {
+    ...SESSION,
+    id,
+    peerSessionId: `${id}-peer`,
+  };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 const READY_STATUS = {
   state: "ready",
   indexed_files: 1,
@@ -208,8 +256,9 @@ function emitToolUpdate(
 async function startRun(
   host: ReturnType<typeof createAgentHost>,
   options?: DesignGenerationOptions,
+  prompt = "Update the design",
 ): Promise<{ run: Promise<DesignGenerationResult> }> {
-  const run = host.generate?.("Update the design", new AbortController().signal, options);
+  const run = host.generate?.(prompt, new AbortController().signal, options);
   let failure: unknown;
   void run?.catch((error: unknown) => {
     failure = error;
@@ -233,6 +282,8 @@ beforeEach(() => {
   channelHarness.emit = null;
   channelHarness.active = null;
   mocks.oracleAsk.mockReset();
+  mocks.oracleAskFolder.mockReset();
+  mocks.oracleFolderStatus.mockReset();
   mocks.oracleFiles.mockReset();
   mocks.oracleStatus.mockReset();
   mocks.reasonFromCause.mockReset();
@@ -253,6 +304,7 @@ beforeEach(() => {
 
   mocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
   mocks.surfaceSettingsSet.mockResolvedValue(undefined);
+  mocks.daemonStatus.mockResolvedValue({ capabilities: [] });
 
   mocks.oracleAsk.mockResolvedValue({
     query: "Update the design",
@@ -266,6 +318,29 @@ beforeEach(() => {
       },
     ],
   });
+  mocks.oracleAskFolder.mockResolvedValue({
+    query: "Update the design",
+    results: [
+      {
+        path: "src/folder/Widget.tsx",
+        line_start: 10,
+        line_end: 20,
+        snippet: "export function Widget() {}",
+        score: 0.95,
+      },
+    ],
+  });
+  mocks.oracleFolderStatus.mockResolvedValue({
+    path: "C:/design-sandbox",
+    data_dir: "C:/design-sandbox/oracle-data",
+    state: "ready",
+    indexed_files: 12,
+    total_files: 12,
+    pending_files: 0,
+    stale_files: 0,
+    indexed_chunks: 48,
+    message: null,
+  } satisfies OracleFolderIndexStatus);
   mocks.oracleFiles.mockResolvedValue([]);
   mocks.reasonFromCause.mockImplementation((cause: unknown) =>
     cause instanceof Error ? cause.message : String(cause),
@@ -295,6 +370,47 @@ afterEach(async () => {
   if (host !== null) await disposeAgentHost(host);
   useAppStore.getState().clearDesignSession(host ?? undefined);
   document.body.replaceChildren();
+});
+
+describe("agent host canvas contents", () => {
+  const INDEXED_COMPONENT = {
+    path: "src/features/oracle/OraclePanel.tsx",
+    chunks: 1,
+    updated_at: "2026-09-05T00:00:00Z",
+  };
+
+  it("starts the document empty even when Oracle's index would list components", async () => {
+    mocks.oracleFiles.mockResolvedValue([INDEXED_COMPONENT]);
+    const host = createAgentHost();
+
+    const document = await host.loadDocument();
+
+    expect(document.layers).toEqual([]);
+    expect(document.selectedLayerId).toBe("");
+    expect(document.messages).toEqual([]);
+    expect(document.layerNotice).toBeUndefined();
+    // The canvas is not built from Oracle's file enumeration at all.
+    expect(mocks.oracleFiles).not.toHaveBeenCalled();
+  });
+
+  it("renders no repository layer on the surface canvas", async () => {
+    mocks.oracleFiles.mockResolvedValue([INDEXED_COMPONENT]);
+    const host = createAgentHost();
+    const { container, root } = createRootContainer();
+
+    await act(async () => root.render(<DesignSurface host={host} />));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
+    );
+
+    expect(container.querySelectorAll(".design-canvas-node")).toHaveLength(0);
+    expect(mocks.oracleFiles).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
 });
 
 describe("ACP design host", () => {
@@ -332,6 +448,195 @@ describe("ACP design host", () => {
     expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "codex");
     channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
     await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+  });
+
+  it("opens and attaches a session immediately after provider selection", async () => {
+    const host = createAgentHost();
+    host.selectProvider?.(providerInfo("grok"));
+
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    expect(mocks.oracleAsk).not.toHaveBeenCalled();
+    expect(mocks.sessionSend).not.toHaveBeenCalled();
+    expect(host.getAgentSessionRecord?.()?.id).toBe(SESSION.id);
+    expect(host.getAgentSession?.()?.getState().status).toBe("idle");
+
+    await disposeAgentHost(host);
+  });
+
+  it("keeps a provider preference lazy until the first generation", async () => {
+    const host = createAgentHost();
+    host.setProviderPreference?.(providerInfo("grok"));
+
+    await settle();
+    expect(mocks.sessionCreate).not.toHaveBeenCalled();
+    expect(host.getAgentSessionRecord?.()).toBeNull();
+
+    const { run } = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("does not create a second session when the same provider is selected twice", async () => {
+    const host = createAgentHost();
+    const provider = providerInfo("grok");
+    host.selectProvider?.(provider);
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    host.selectProvider?.({ ...provider });
+    await Promise.resolve();
+
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(1);
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
+    expect(host.getAgentSessionRecord?.()?.id).toBe(SESSION.id);
+
+    await disposeAgentHost(host);
+  });
+
+  it("closes the old provider session before the replacement becomes current", async () => {
+    const host = createAgentHost();
+    const first = providerInfo("provider-a");
+    const second = providerInfo("provider-b");
+    mocks.sessionCreate
+      .mockResolvedValueOnce(sessionRecord("session-a"))
+      .mockResolvedValueOnce(sessionRecord("session-b"));
+
+    host.selectProvider?.(first);
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+    host.selectProvider?.(second);
+
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a", 41));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(2));
+
+    expect(mocks.sessionDetach).toHaveBeenCalledWith(41);
+    expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
+
+    await disposeAgentHost(host);
+  });
+
+  it("closes a live session when a new preference is selected and opens it on the next run", async () => {
+    const host = createAgentHost();
+    mocks.sessionCreate
+      .mockResolvedValueOnce(sessionRecord("session-a"))
+      .mockResolvedValueOnce(sessionRecord("session-b"));
+    host.selectProvider?.(providerInfo("provider-a"));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    host.setProviderPreference?.(providerInfo("provider-b"));
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a", 41));
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
+    expect(host.getAgentSessionRecord?.()).toBeNull();
+
+    const { run } = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenLastCalledWith(null, "acp", "provider-b");
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("ends a live session without clearing the selected provider", async () => {
+    const host = createAgentHost();
+    const provider = providerInfo("grok");
+    host.selectProvider?.(provider);
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    await host.closeAgentSession?.();
+
+    expect(mocks.sessionClose).toHaveBeenCalledWith(SESSION.id, 41);
+    expect(host.getAgentSessionRecord?.()).toBeNull();
+    const { run } = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenLastCalledWith(null, "acp", "grok");
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("lets the last rapid provider selection win and closes the stale slow create", async () => {
+    const firstCreate = deferred<Session>();
+    const secondCreate = deferred<Session>();
+    const host = createAgentHost();
+    mocks.sessionCreate.mockImplementation((...args: unknown[]) => {
+      if (args[2] === "provider-a") return firstCreate.promise;
+      if (args[2] === "provider-b") return secondCreate.promise;
+      throw new Error(`unexpected provider: ${String(args[2])}`);
+    });
+
+    host.selectProvider?.(providerInfo("provider-a"));
+    await vi.waitFor(() =>
+      expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-a"),
+    );
+
+    host.selectProvider?.(providerInfo("provider-b"));
+    await vi.waitFor(() =>
+      expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-b"),
+    );
+
+    secondCreate.resolve(sessionRecord("session-b"));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+    expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
+
+    firstCreate.resolve(sessionRecord("session-a"));
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a", 41));
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(2);
+    expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
+
+    await disposeAgentHost(host);
+  });
+
+  it("temporarily attaches a stale session before closing it after disposal", async () => {
+    const pendingCreate = deferred<Session>();
+    const host = createAgentHost();
+    mocks.sessionCreate.mockReturnValueOnce(pendingCreate.promise);
+
+    host.selectProvider?.(providerInfo("provider-a"));
+    await vi.waitFor(() =>
+      expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-a"),
+    );
+
+    const disposal = disposeAgentHost(host);
+    pendingCreate.resolve(sessionRecord("stale-session"));
+    await disposal;
+
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
+    expect(mocks.sessionClose).toHaveBeenCalledWith("stale-session", 41);
+    expect(mocks.sessionDetach).toHaveBeenCalledWith(41);
+  });
+
+  it("leaves a failed provider start empty and allows the same selection to retry", async () => {
+    const host = createAgentHost();
+    const provider = providerInfo("grok");
+    mocks.sessionCreate
+      .mockRejectedValueOnce(new Error("provider unavailable"))
+      .mockResolvedValueOnce(sessionRecord("session-retry"));
+
+    host.selectProvider?.(provider);
+    await vi.waitFor(() => expect(mocks.reasonFromCause).toHaveBeenCalledWith(expect.any(Error)));
+    expect(host.getAgentSession?.()).toBeNull();
+    expect(host.getAgentSessionRecord?.()).toBeNull();
+
+    host.selectProvider?.({ ...provider });
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
+    expect(host.getAgentSessionRecord?.()?.id).toBe("session-retry");
+
+    await disposeAgentHost(host);
+  });
+
+  it("reuses the session opened by provider selection during generation", async () => {
+    const host = createAgentHost();
+    host.selectProvider?.(providerInfo("grok"));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    const { run } = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(1);
+    finishRun();
+    await expect(run).resolves.toMatchObject({ sessionId: SESSION.id });
+
+    await disposeAgentHost(host);
   });
 
   it("keeps the selected provider when Generate is ahead of session creation", async () => {
@@ -456,15 +761,20 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("refuses a workspace change after a session exists", async () => {
+  it("closes a live session when the workspace changes and reopens it on the next run", async () => {
     const host = createAgentHost();
     host.selectWorkspace?.(WORKSPACE);
     const { run } = await startRun(host);
-    host.selectWorkspace?.(null);
-
     expect(mocks.sessionCreate).toHaveBeenCalledWith(WORKSPACE.id, "acp");
     finishRun();
     await run;
+    host.selectWorkspace?.(null);
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith(SESSION.id, 41));
+
+    const next = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenLastCalledWith(null, "acp");
+    finishRun();
+    await next.run;
     await disposeAgentHost(host);
   });
 
@@ -657,6 +967,44 @@ describe("ACP design host", () => {
     }
   });
 
+  it("reuses the Matched selection, not the whole corpus, when the automatic fallback fires", async () => {
+    // "animate the drawer opening" is the ranker's calibrated strong-match anchor, so this
+    // pins the fallback to a relevance-ranked head instead of the priority-order corpus.
+    const prompt = "animate the drawer opening";
+    const matched = matchSkillChoice(prompt);
+    expect(matched.fallback).toBe(false);
+    expect(matched.slugs.length).toBeLessThanOrEqual(MAX_AUTOMATIC_SKILL_SECTIONS);
+    expect(matched.slugs.length).toBeLessThan(builtInSkillIndex().length);
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" }, prompt);
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: "No section applies.",
+    });
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+
+    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[2] as string;
+    for (const slug of matched.slugs) {
+      const entry = builtInSkillIndex().find((candidate) => candidate.slug === slug);
+      if (entry === undefined) throw new Error(`Expected built-in skill missing: ${slug}`);
+      expect(generationPrompt).toContain(`## ${entry.title}`);
+    }
+    finishRun();
+
+    const result = await run;
+    const applied = result.appliedSkillSlugs;
+    if (applied === undefined) throw new Error("Expected the run to report its applied skills.");
+    expect(applied).toEqual(matched.slugs);
+    expect(applied.length).toBeLessThanOrEqual(MAX_AUTOMATIC_SKILL_SECTIONS);
+    // Still reported as a fallback: the agent's own answer was replaced, even though the
+    // ranking it was replaced with did not itself concede.
+    expect(result.skillSelectionFallback).toBe(true);
+    await disposeAgentHost(host);
+  });
+
   it("aborts automatic selection without starting generation", async () => {
     const host = createAgentHost();
     const controller = new AbortController();
@@ -700,9 +1048,9 @@ describe("ACP design host", () => {
     if (selected === undefined || omitted === undefined) throw new Error("Built-in skills missing");
 
     const host = createAgentHost();
-    const { run } = await startRun(host, { skills: [selected.slug] });
+    const { run } = await startRun(host, { skillMode: "manual", skills: [selected.slug] });
     finishRun();
-    await run;
+    const result = await run;
 
     const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
     expect(sentText).toContain(`## ${selected.title}`);
@@ -715,32 +1063,141 @@ describe("ACP design host", () => {
     expect(sentText).toContain(selectedSection.section.body);
     expect(sentText).not.toContain(`## ${omitted.title}`);
 
+    // A pin is reported like any other selection, and it never falls back.
+    expect(result.appliedSkillSlugs).toEqual([selected.slug]);
+    expect(result.skillSelectionFallback).toBe(false);
+
     await disposeAgentHost(host);
   });
 
-  it("omits the doctrine block when an empty skill list is selected", async () => {
+  it("omits the doctrine block when an empty skill list is pinned", async () => {
     const host = createAgentHost();
-    const { run } = await startRun(host, { skills: [] });
+    const { run } = await startRun(host, { skillMode: "manual", skills: [] });
     finishRun();
-    await run;
+    const result = await run;
 
     const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
     expect(sentText).not.toContain(DESIGN_DOCTRINE_BEGIN);
     expect(sentText).not.toContain(DESIGN_DOCTRINE_END);
 
+    // An empty pin is a real selection of nothing, distinct from an absent report.
+    expect(result.appliedSkillSlugs).toEqual([]);
+    expect(result.skillSelectionFallback).toBe(false);
+
     await disposeAgentHost(host);
   });
 
-  it("requests every built-in doctrine section but sends the priority head that fits", async () => {
+  it("falls back to the priority head when matched mode finds nothing strong", async () => {
     const index = builtInSkillIndex();
     const host = createAgentHost();
-    const { run } = await startRun(host, { skills: index.map((entry) => entry.slug) });
+    // "make it prettier" is the fallback side of the ranker's own calibration
+    // test, so this pins the fallback contract to the same anchor.
+    const { run } = await startRun(host, { skillMode: "all" }, "make it prettier");
     finishRun();
     await run;
 
     const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
     expectPriorityHead(sentText);
 
+    const result = await run;
+    // The fallback requests every section in priority order and lets the
+    // composed budget keep the head, exactly like the automatic fallback.
+    // The fallback fact lives only in `skillSelectionFallback`: the list
+    // length is the request size, not a signal.
+    expect(result.appliedSkillSlugs).toEqual(index.map((entry) => entry.slug));
+    expect(result.skillSelectionFallback).toBe(true);
+    await disposeAgentHost(host);
+  });
+
+  it("ranks the corpus against the request when matched mode is declared, and prepends the baseline", async () => {
+    const index = builtInSkillIndex();
+    const prompt = "animate the drawer opening";
+    const ranking = rankSkillsForQuery(prompt, index);
+    // The strong-match side of the ranker's own calibration test: if this
+    // ever falls back, the ranker or corpus drifted and this contract test
+    // must be re-anchored, not silenced.
+    expect(ranking.fallback).toBe(false);
+    const baselineSlugs = new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS);
+    const routed = ranking.slugs
+      .filter((slug) => !baselineSlugs.has(slug))
+      .slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS);
+    const expected = composeAutomaticSkillSlugs(
+      routed,
+      index.map((entry) => entry.slug),
+    );
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "all" }, prompt);
+    finishRun();
+
+    const result = await run;
+    const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+    for (const slug of expected) {
+      const entry = index.find((candidate) => candidate.slug === slug);
+      if (entry === undefined) throw new Error(`Expected built-in skill missing: ${slug}`);
+      expect(sentText).toContain(`## ${entry.title}`);
+    }
+    // The weakest-ranked section must not ride along on a matched request.
+    const weakestSlug = ranking.slugs[ranking.slugs.length - 1];
+    const weakest = index.find((candidate) => candidate.slug === weakestSlug);
+    if (weakest === undefined) throw new Error("Built-in skills missing");
+    expect(expected).not.toContain(weakest.slug);
+    expect(sentText).not.toContain(`## ${weakest.title}`);
+
+    // The baseline leads the matched selection, as it leads the automatic one.
+    expect(expected[0]).toBe(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0]);
+    expect(result.appliedSkillSlugs).toEqual(expected);
+    expect(result.skillSelectionFallback).toBe(false);
+    await disposeAgentHost(host);
+  });
+
+  it("honors a pin with the full corpus in a different order, verbatim, without ranking it", async () => {
+    // The slug set of matched mode, reordered: with a shape-derived mode this
+    // list would silently rank (or silently pin while claiming a match). With
+    // a declared mode it is a pin, honored verbatim: same slugs, reversed
+    // order, the budget keeps the reversed head and the anti-AI-slop baseline
+    // never enters by itself.
+    const index = builtInSkillIndex();
+    const pinned = [...index.map((entry) => entry.slug)].reverse();
+    const baseline = index.find((entry) => entry.slug === AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0]);
+    if (baseline === undefined) throw new Error("Built-in skills missing");
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "manual", skills: pinned });
+    finishRun();
+
+    const result = await run;
+    const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+    // The reversed head is what fits: the first reversed sections are in, the
+    // baseline — last in the reversed order — is not.
+    expect(sentText).toContain(`## ${index[index.length - 1]!.title}`);
+    expect(sentText).not.toContain(`## ${baseline.title}`);
+    // The report states the pin verbatim and never claims a match happened.
+    expect(result.appliedSkillSlugs).toEqual(pinned);
+    expect(result.skillSelectionFallback).toBe(false);
+    await disposeAgentHost(host);
+  });
+
+  it("defaults to matched mode when no options are sent", async () => {
+    const index = builtInSkillIndex();
+    const prompt = "animate the drawer opening";
+    const host = createAgentHost();
+    const { run } = await startRun(host, undefined, prompt);
+    finishRun();
+
+    const result = await run;
+    const ranking = rankSkillsForQuery(prompt, index);
+    const baselineSlugs = new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS);
+    const routed = ranking.slugs
+      .filter((slug) => !baselineSlugs.has(slug))
+      .slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS);
+    expect(result.appliedSkillSlugs).toEqual(
+      composeAutomaticSkillSlugs(
+        routed,
+        index.map((entry) => entry.slug),
+      ),
+    );
+    expect(result.skillSelectionFallback).toBe(false);
     await disposeAgentHost(host);
   });
 
@@ -766,9 +1223,10 @@ describe("ACP design host", () => {
 
     const result = await run;
     expect(result.sources).toEqual(["src/features/design/DesignSurface.tsx"]);
-    expect(result.desc).toContain("wrote 1 file");
-    expect(result.desc).toContain("DesignSurface.tsx");
-    expect(result.title).toContain("wrote");
+    expect(result.title).toBe("Wrote");
+    // The paths travel in `sources` alone; the message card renders them there so
+    // the same path is not repeated in the prose.
+    expect(result.desc).not.toContain("DesignSurface.tsx");
     expect(result.desc).toContain("Review what the agent wrote with your own git.");
     // No selection is intentional: the daemon-directory fallback remains a valid generation.
     expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp");
@@ -890,7 +1348,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("waits for the subscription detach before closing the agent session", async () => {
+  it("closes the agent session while attached, then detaches", async () => {
     let releaseDetach!: () => void;
     const detachDone = new Promise<void>((resolve) => {
       releaseDetach = resolve;
@@ -900,13 +1358,15 @@ describe("ACP design host", () => {
     await startRun(host);
 
     const disposePromise = disposeAgentHost(host);
-    await Promise.resolve();
-    expect(mocks.sessionClose).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-1", 41));
 
     releaseDetach();
     await disposePromise;
     expect(mocks.sessionDetach).toHaveBeenCalledWith(41);
-    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1");
+    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1", 41);
+    expect(mocks.sessionClose.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.sessionDetach.mock.invocationCallOrder[0],
+    );
   });
 
   it("rejects when AgentSession cannot attach", async () => {
@@ -942,7 +1402,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("stops on a permission request without approving it", async () => {
+  it("keeps a real run alive when it asks for permission", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);
 
@@ -954,9 +1414,561 @@ describe("ACP design host", () => {
       options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
     });
 
-    await expect(run).rejects.toThrow("Respond in the Workspace surface");
+    expect(host.getPendingPermission?.()).toMatchObject({
+      sessionId: "session-1",
+      subscriptionId: 41,
+      request: { toolCallId: "permission-1" },
+    });
     expect(mocks.sessionPermissionRespond).not.toHaveBeenCalled();
+    expect(mocks.sessionInterrupt).not.toHaveBeenCalled();
+
+    let settled = false;
+    void run.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await settle();
+    expect(settled).toBe(false);
+
+    const disposal = disposeAgentHost(host);
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    await disposal;
+  });
+
+  it("answers a real permission request and lets the same turn finish", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-1",
+      title: "Write a file",
+      command: "apply_patch",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    await host.respondPermission?.("allow_once");
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-1",
+      "allow_once",
+    );
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(mocks.sessionInterrupt).not.toHaveBeenCalled();
+
+    finishRun();
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+
+    await disposeAgentHost(host);
+  });
+
+  it("answers with the live subscription after a re-attach", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const liveSession = host.getAgentSession?.();
+    if (liveSession === null || liveSession === undefined) throw new Error("agent session missing");
+    const getSubscriptionId = vi.spyOn(
+      liveSession as unknown as { getSubscriptionId: () => number | null },
+      "getSubscriptionId",
+    );
+    getSubscriptionId.mockReturnValue(42);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-reattach",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    await host.respondPermission?.("allow_once");
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      42,
+      "permission-reattach",
+      "allow_once",
+    );
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("lets a re-delivered request be answered after its first answer was superseded", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const liveSession = host.getAgentSession?.();
+    if (liveSession === null || liveSession === undefined) throw new Error("agent session missing");
+
+    const first = deferred<void>();
+    const second = deferred<void>();
+    mocks.sessionPermissionRespond
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    const permission = {
+      type: "permission_request" as const,
+      toolCallId: "permission-superseded",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    };
+
+    channelHarness.active?.(permission);
+    const firstAnswer = host.respondPermission?.("allow_once");
+    await settle();
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-superseded" },
+      subscriptionId: 41,
+    });
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledTimes(1);
+
+    // A re-attach gives the session a new subscription id and the daemon
+    // re-delivers the same request on it. The harness cannot re-attach a live
+    // AgentSession, so the adopted id is written directly, editing the same
+    // private field `getSubscriptionId` reads.
+    (liveSession as unknown as { subscriptionId: number }).subscriptionId = 42;
+    channelHarness.active?.(permission);
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-superseded" },
+      subscriptionId: 42,
+    });
+
+    // The superseded answer must no longer block a fresh one.
+    const secondAnswer = host.respondPermission?.("allow_once");
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledTimes(2);
+    expect(mocks.sessionPermissionRespond).toHaveBeenLastCalledWith(
+      "session-1",
+      42,
+      "permission-superseded",
+      "allow_once",
+    );
+
+    // The abandoned first answer settling late must not remove the live entry.
+    first.resolve();
+    await settle();
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-superseded" },
+    });
+
+    second.resolve();
+    await settle();
+    expect(host.getPendingPermission?.()).toBeNull();
+
+    await firstAnswer;
+    await secondAnswer;
+
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("queues concurrent Design permissions and advances in FIFO order", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-a",
+      title: "Write A",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-b",
+      title: "Write B",
+      options: [{ optionId: "deny", name: "Deny", kind: "reject_once" }],
+    });
+
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-a" },
+    });
+    await host.respondPermission?.("allow_once");
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-b" },
+    });
+    await host.respondPermission?.("deny");
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(mocks.sessionPermissionRespond).toHaveBeenNthCalledWith(
+      1,
+      "session-1",
+      41,
+      "permission-a",
+      "allow_once",
+    );
+    expect(mocks.sessionPermissionRespond).toHaveBeenNthCalledWith(
+      2,
+      "session-1",
+      41,
+      "permission-b",
+      "deny",
+    );
+
+    finishRun();
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await disposeAgentHost(host);
+  });
+
+  it("deduplicates redelivery and removes a resolved request from any queue position", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const permission = (toolCallId: string) => ({
+      type: "permission_request" as const,
+      toolCallId,
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    channelHarness.active?.(permission("permission-queue-a"));
+    channelHarness.active?.(permission("permission-queue-b"));
+    channelHarness.active?.(permission("permission-queue-a"));
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-queue-a" },
+    });
+
+    channelHarness.active?.({ type: "permission_resolved", toolCallId: "permission-queue-b" });
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-queue-a" },
+    });
+    channelHarness.active?.({ type: "permission_resolved", toolCallId: "permission-queue-a" });
+    expect(host.getPendingPermission?.()).toBeNull();
+
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("keeps a rejected permission answer queued and retryable", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const response = deferred<void>();
+    mocks.sessionPermissionRespond.mockReturnValueOnce(response.promise);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-reject",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    const answer = host.respondPermission?.("allow_once");
+    await settle();
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-reject" },
+    });
+
+    response.reject(new Error("answer IPC failed"));
+    await expect(answer).rejects.toThrow("answer IPC failed");
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-reject" },
+    });
+
+    const retry = host.respondPermission?.("allow_once");
+    await retry;
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledTimes(2);
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("does not turn an in-flight Allow into Deny when Stop interrupts the run", async () => {
+    const host = createAgentHost();
+    const controller = new AbortController();
+    const run = host.generate?.("Update the design", controller.signal);
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalled());
+    const response = deferred<void>();
+    mocks.sessionPermissionRespond.mockReturnValueOnce(response.promise);
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-stop-race",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-stop-race-2",
+      title: "Write another file",
+      options: [{ optionId: "deny", name: "Deny", kind: "reject_once" }],
+    });
+
+    const allow = host.respondPermission?.("allow_once");
+    await settle();
+    controller.abort();
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-stop-race",
+      "allow_once",
+    );
+    expect(mocks.sessionPermissionRespond).not.toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-stop-race",
+      "deny",
+    );
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-stop-race-2",
+      "deny",
+    );
     expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
+
+    const disposal = disposeAgentHost(host);
+    await disposal;
+    response.resolve(undefined);
+    await allow;
+  });
+
+  it("does not turn an in-flight Allow into Deny during disposal", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const response = deferred<void>();
+    mocks.sessionPermissionRespond.mockReturnValueOnce(response.promise);
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-dispose-race",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    const allow = host.respondPermission?.("allow_once");
+    await settle();
+    await disposeAgentHost(host);
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-dispose-race",
+      "allow_once",
+    );
+    expect(mocks.sessionPermissionRespond).not.toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-dispose-race",
+      "deny",
+    );
+    response.resolve(undefined);
+    await allow;
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("clears and explains a permission resolved by timeout or cancellation", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-expired",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    expect(host.getPendingPermission?.()).not.toBeNull();
+
+    channelHarness.active?.({
+      type: "permission_resolved",
+      toolCallId: "permission-expired",
+    });
+
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(host.getPermissionNotice?.()).toBe(
+      "Permission request is no longer waiting; it was answered elsewhere or it expired.",
+    );
+    const rejected = expect(run).rejects.toMatchObject({ name: "AbortError" });
+    await disposeAgentHost(host);
+    await rejected;
+  });
+
+  it("does not show a notice when our answer resolves before its IPC promise", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const response = deferred<void>();
+    mocks.sessionPermissionRespond.mockReturnValueOnce(response.promise);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-local-resolution",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    const answer = host.respondPermission?.("allow_once");
+    await settle();
+    channelHarness.active?.({
+      type: "permission_resolved",
+      toolCallId: "permission-local-resolution",
+    });
+
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(host.getPermissionNotice?.()).toBeNull();
+    response.resolve(undefined);
+    await answer;
+    finishRun();
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await disposeAgentHost(host);
+  });
+
+  it("clears the resolved-permission notice when its run settles", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-notice",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    channelHarness.active?.({ type: "permission_resolved", toolCallId: "permission-notice" });
+    expect(host.getPermissionNotice?.()).toBe(
+      "Permission request is no longer waiting; it was answered elsewhere or it expired.",
+    );
+    finishRun();
+    await run;
+    expect(host.getPermissionNotice?.()).toBeNull();
+
+    const next = await startRun(host);
+    expect(host.getPermissionNotice?.()).toBeNull();
+    finishRun();
+    await next.run;
+    await disposeAgentHost(host);
+  });
+
+  it("does not settle after a finish event until pending permission is resolved", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-finished",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    finishRun();
+    await settle();
+
+    let settled = false;
+    void run.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await settle();
+    expect(settled).toBe(false);
+
+    await host.respondPermission?.("allow_once");
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await disposeAgentHost(host);
+  });
+
+  it("auto-denies a pending permission when a run is aborted", async () => {
+    const host = createAgentHost();
+    const controller = new AbortController();
+    const run = host.generate?.("Update the design", controller.signal);
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalled());
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-abort",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    controller.abort();
+
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-abort",
+      "deny",
+    );
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
+    await disposeAgentHost(host);
+  });
+
+  it("auto-denies a pending permission during disposal", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-dispose",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    const disposal = disposeAgentHost(host);
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    await disposal;
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-dispose",
+      "deny",
+    );
+    expect(host.getPendingPermission?.()).toBeNull();
+  });
+
+  it("queues a preflight permission instead of answering it, then falls back to every section", async () => {
+    const index = builtInSkillIndex();
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "preflight-permission",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    // Our own craft-selection question is still the user's to answer: nothing is sent.
+    expect(mocks.sessionPermissionRespond).not.toHaveBeenCalled();
+    // ...and the request is published so the card can render it.
+    expect(host.getPendingPermission?.()).toMatchObject({
+      sessionId: "session-1",
+      subscriptionId: 41,
+      request: { toolCallId: "preflight-permission" },
+    });
+
+    // The daemon cancels the request when the preflight turn ends unanswered. Its 8s
+    // deadline reaches the same state through session_interrupt.
+    channelHarness.active?.({ type: "permission_resolved", toolCallId: "preflight-permission" });
+    expect(host.getPendingPermission?.()).toBeNull();
+
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+    expectPriorityHead(mocks.sessionSend.mock.calls[1]?.[2] as string);
+    finishRun();
+
+    const result = await run;
+    expect(result.appliedSkillSlugs).toEqual(index.map((entry) => entry.slug));
+    expect(result.skillSelectionFallback).toBe(true);
+    await disposeAgentHost(host);
+  });
+
+  it("queues a permission that arrives with no active run instead of dropping it", async () => {
+    const host = createAgentHost();
+    host.selectProvider?.(providerInfo("grok"));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "idle-permission",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    // No run claims this session, but the daemon is still waiting: ask the user.
+    expect(mocks.sessionPermissionRespond).not.toHaveBeenCalled();
+    expect(host.getPendingPermission?.()).toMatchObject({
+      sessionId: "session-1",
+      subscriptionId: 41,
+      request: { toolCallId: "idle-permission" },
+    });
 
     await disposeAgentHost(host);
   });
@@ -1027,7 +2039,7 @@ describe("ACP design host", () => {
 
     expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
     expect(mocks.sessionAttach).toHaveBeenCalledTimes(2);
-    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1");
+    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1", 41);
     await disposeAgentHost(host);
   });
 
@@ -1081,7 +2093,7 @@ describe("ACP design host", () => {
     expect(mocks.sessionCreate).not.toHaveBeenCalled();
   });
 
-  it("loads the workspace registry, reaches ACP, and retains its artifact", async () => {
+  it("loads the workspace registry, reaches ACP, and omits the debug disclosure", async () => {
     mocks.oracleStatus.mockResolvedValue(READY_STATUS);
     mocks.providersList.mockResolvedValue({
       providers: [
@@ -1108,9 +2120,7 @@ describe("ACP design host", () => {
         ),
       ).not.toBeNull(),
     );
-    expect(container.textContent).toContain(
-      "ACP agent — will run in the directory the app was launched from.",
-    );
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
     const providerButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label^="Choose provider:"]',
     );
@@ -1316,6 +2326,41 @@ describe("ACP design host", () => {
       });
     });
 
+    describe("stripFencedHtml", () => {
+      it("keeps the prose around one block", () => {
+        const text = "Here is the page:\n```html\n<div>Hi</div>\n```\nDone.";
+        expect(stripFencedHtml(text)).toBe("Here is the page:\n\nDone.");
+      });
+
+      it("returns empty when the text is only a block", () => {
+        expect(stripFencedHtml("```html\n<div>Hi</div>\n```")).toBe("");
+      });
+
+      it("removes two blocks and collapses the blank lines left behind", () => {
+        const text = [
+          "First:",
+          "```html",
+          "<div>One</div>",
+          "```",
+          "",
+          "",
+          "Middle.",
+          "",
+          "",
+          "```html",
+          "<div>Two</div>",
+          "```",
+          "",
+          "Last.",
+        ].join("\n");
+        expect(stripFencedHtml(text)).toBe("First:\n\nMiddle.\n\nLast.");
+      });
+
+      it("leaves text with no block intact", () => {
+        expect(stripFencedHtml("Just prose, no fence.")).toBe("Just prose, no fence.");
+      });
+    });
+
     describe("extractArtifactHtml", () => {
       it("scans assistant messages only, not thoughts", () => {
         const state: AgentSessionState = {
@@ -1497,6 +2542,310 @@ describe("ACP design host", () => {
         await disposeAgentHost(host);
       });
 
+      it("skips the repository search entirely when grounding is off", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host, { skillMode: "all", grounded: false });
+        finishRun();
+        await run;
+
+        // The toggle is a promise about the run: off means Oracle is never asked.
+        expect(mocks.oracleAsk).not.toHaveBeenCalled();
+        expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+        expect(mocks.oracleFolderStatus).not.toHaveBeenCalled();
+        const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+        expect(sentText).not.toContain("Oracle grounding (search hits, not files changed)");
+        expect(sentText).toContain("Oracle grounding is off for this request");
+
+        await disposeAgentHost(host);
+      });
+
+      describe("folder-aware grounding", () => {
+        const FOLDER = "C:/design-sandbox";
+
+        it("queries the attached folder's own index when it is ready", async () => {
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleFolderStatus).toHaveBeenCalledWith(FOLDER);
+          expect(mocks.oracleAskFolder).toHaveBeenCalledWith(FOLDER, "Update the design");
+          expect(mocks.oracleAsk).not.toHaveBeenCalled();
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("src/folder/Widget.tsx:10-20");
+          expect(sentText).not.toContain("src/app/Shell.tsx");
+          expect(result.groundingNotice).toBeNull();
+
+          await disposeAgentHost(host);
+        });
+
+        it("reports the folder's own message and grounds nothing when never indexed", async () => {
+          mocks.oracleFolderStatus.mockResolvedValueOnce({
+            path: FOLDER,
+            data_dir: "C:/design-sandbox/oracle-data",
+            state: "never_indexed",
+            indexed_files: 0,
+            total_files: 0,
+            pending_files: 0,
+            stale_files: 0,
+            indexed_chunks: 0,
+            message: "Oracle has no index for C:/design-sandbox yet. Index this folder.",
+          } satisfies OracleFolderIndexStatus);
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleFolderStatus).toHaveBeenCalledWith(FOLDER);
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(mocks.oracleAsk).not.toHaveBeenCalled();
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("Oracle grounding is off for this request");
+          // never_indexed gets the one-sentence notice (folder name only), not
+          // Oracle's own longer message: see groundingNoticeFor.
+          expect(result.groundingNotice).toBe(
+            "Not grounded: design-sandbox has no Oracle index yet. Index the folder to let the agent search it.",
+          );
+
+          await disposeAgentHost(host);
+        });
+
+        it("grounds nothing with a notice when the folder index is partial", async () => {
+          mocks.oracleFolderStatus.mockResolvedValueOnce({
+            path: FOLDER,
+            data_dir: "C:/design-sandbox/oracle-data",
+            state: "partial",
+            indexed_files: 4,
+            total_files: 12,
+            pending_files: 8,
+            stale_files: 0,
+            indexed_chunks: 16,
+            message: "The index of C:/design-sandbox is incomplete: 4 of 12 files indexed.",
+          } satisfies OracleFolderIndexStatus);
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(mocks.oracleAsk).not.toHaveBeenCalled();
+          expect(result.groundingNotice).toBe(
+            "The index of C:/design-sandbox is incomplete: 4 of 12 files indexed.",
+          );
+
+          await disposeAgentHost(host);
+        });
+
+        it("grounds nothing with a notice when the folder index is unreadable", async () => {
+          mocks.oracleFolderStatus.mockResolvedValueOnce({
+            path: FOLDER,
+            data_dir: "C:/design-sandbox/oracle-data",
+            state: "unreadable",
+            indexed_files: 0,
+            total_files: 0,
+            pending_files: 0,
+            stale_files: 0,
+            indexed_chunks: 0,
+            message: "Oracle cannot read the folder C:/design-sandbox.",
+          } satisfies OracleFolderIndexStatus);
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(result.groundingNotice).toBe("Oracle cannot read the folder C:/design-sandbox.");
+
+          await disposeAgentHost(host);
+        });
+
+        it("grounds nothing without a notice when no folder is attached", async () => {
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: null,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleFolderStatus).not.toHaveBeenCalled();
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(mocks.oracleAsk).not.toHaveBeenCalled();
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("Oracle grounding is off for this request");
+          expect(result.groundingNotice).toBeNull();
+
+          await disposeAgentHost(host);
+        });
+
+        it("degrades to no grounding plus the reason when the folder search fails", async () => {
+          mocks.oracleAskFolder.mockRejectedValueOnce(new Error("folder search unavailable"));
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(result.groundingNotice).toBe("folder search unavailable");
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("Oracle grounding is off for this request");
+
+          await disposeAgentHost(host);
+        });
+
+        it("degrades to no grounding plus the reason when the status probe fails", async () => {
+          mocks.oracleFolderStatus.mockRejectedValueOnce(new Error("status probe failed"));
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(result.groundingNotice).toBe("status probe failed");
+
+          await disposeAgentHost(host);
+        });
+
+        it("degrades the legacy global search instead of failing the run", async () => {
+          mocks.oracleAsk.mockRejectedValueOnce(new Error("global index unavailable"));
+          const host = createAgentHost();
+          const { run } = await startRun(host, { skillMode: "all", grounded: true });
+          finishRun();
+          const result = await run;
+
+          expect(result.groundingNotice).toBe("global index unavailable");
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("Oracle grounding is off for this request");
+
+          await disposeAgentHost(host);
+        });
+
+        it("keeps the legacy global index when the caller predates folder awareness", async () => {
+          const host = createAgentHost();
+          const { run } = await startRun(host, { skillMode: "all", grounded: true });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleAsk).toHaveBeenCalledWith("Update the design");
+          expect(mocks.oracleFolderStatus).not.toHaveBeenCalled();
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(result.groundingNotice).toBeNull();
+
+          await disposeAgentHost(host);
+        });
+
+        it("normalizes a blank folder path to no folder", () => {
+          expect(normalizeFolderOption("  ")).toBeNull();
+          expect(normalizeFolderOption(null)).toBeNull();
+          expect(normalizeFolderOption(undefined)).toBeUndefined();
+          expect(normalizeFolderOption("C:/design-sandbox ")).toBe("C:/design-sandbox");
+        });
+
+        it("strips the Windows extended-length prefix from Oracle messages", () => {
+          // Four characters: backslash, backslash, "?", backslash.
+          const prefix = "\\\\?\\";
+          const status = {
+            path: `${prefix}C:\\design-sandbox`,
+            data_dir: "oracle-data",
+            state: "unreadable" as const,
+            indexed_files: 0,
+            total_files: 0,
+            pending_files: 0,
+            stale_files: 0,
+            indexed_chunks: 0,
+            message: `Cannot read ${prefix}C:\\design-sandbox index.`,
+          };
+          const notice = groundingNoticeFor(status, `${prefix}C:\\design-sandbox`);
+          expect(notice).toBe("Cannot read C:\\design-sandbox index.");
+        });
+
+        it("takes the folder name after the last backslash or slash", () => {
+          const base = {
+            path: "x",
+            data_dir: "oracle-data",
+            state: "never_indexed" as const,
+            indexed_files: 0,
+            total_files: 0,
+            pending_files: 0,
+            stale_files: 0,
+            indexed_chunks: 0,
+            message: null,
+          };
+          expect(groundingNoticeFor(base, "C:\\work\\design-sandbox")).toBe(
+            "Not grounded: design-sandbox has no Oracle index yet. Index the folder to let the agent search it.",
+          );
+          expect(groundingNoticeFor(base, "C:/work/design-sandbox/")).toBe(
+            "Not grounded: design-sandbox has no Oracle index yet. Index the folder to let the agent search it.",
+          );
+          expect(groundingNoticeFor(base, "C:\\work\\design-sandbox\\")).toBe(
+            "Not grounded: design-sandbox has no Oracle index yet. Index the folder to let the agent search it.",
+          );
+        });
+
+        it("resolves a ready folder to its hits with no notice", async () => {
+          const grounding = await resolveFolderGrounding("Update the design", FOLDER);
+
+          expect(grounding.notice).toBeNull();
+          expect(grounding.results.map((hit) => hit.path)).toEqual(["src/folder/Widget.tsx"]);
+        });
+
+        it("throws without searching when the signal is already aborted", async () => {
+          const controller = new AbortController();
+          controller.abort();
+          await expect(
+            resolveFolderGrounding("Update the design", FOLDER, controller.signal),
+          ).rejects.toMatchObject({ name: "AbortError" });
+          expect(mocks.oracleFolderStatus).not.toHaveBeenCalled();
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+        });
+
+        it("skips the folder search when the run aborts between the two awaits", async () => {
+          const controller = new AbortController();
+          mocks.oracleFolderStatus.mockImplementationOnce(async () => {
+            controller.abort();
+            return {
+              path: FOLDER,
+              data_dir: "oracle-data",
+              state: "ready" as const,
+              indexed_files: 1,
+              total_files: 1,
+              pending_files: 0,
+              stale_files: 0,
+              indexed_chunks: 1,
+              message: null,
+            };
+          });
+          await expect(
+            resolveFolderGrounding("Update the design", FOLDER, controller.signal),
+          ).rejects.toMatchObject({ name: "AbortError" });
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+        });
+      });
+
       it("places output constraints before the doctrine block and the restatement after it", async () => {
         const source = builtInSkillSources()[0];
         if (source === undefined) throw new Error("No built-in doctrine source was loaded");
@@ -1643,36 +2992,251 @@ describe("ACP design host", () => {
   });
 });
 
-describe("agent design disclosure", () => {
-  it("names the daemon-reported directory for a live session", () => {
-    expect(
-      AGENT_DESIGN_DISCLOSURE({
-        session: { ...SESSION, cwd: "C:/actual/design" },
-        selectedWorkspace: WORKSPACE,
-      }),
-    ).toBe("ACP agent — running in C:/actual/design.");
-  });
+describe("design transcript", () => {
+  async function renderDesignAndSend(
+    host: ReturnType<typeof createAgentHost>,
+    prompt: string,
+  ): Promise<{ container: HTMLDivElement; root: Root }> {
+    const { container, root } = createRootContainer();
+    await act(async () => root.render(<DesignSurface host={host} />));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
+    );
+    const draft = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Describe a design change"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (draft === null || send === null) throw new Error("Design composer did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    await act(async () => {
+      setValue.call(draft, prompt);
+      draft.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => send.click());
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(1));
+    return { container, root };
+  }
 
-  it("does not guess a path when a live session has no cwd", () => {
-    const disclosure = AGENT_DESIGN_DISCLOSURE({
-      session: SESSION,
-      selectedWorkspace: WORKSPACE,
+  function transcriptText(container: HTMLDivElement): string {
+    return [...container.querySelectorAll(".design-transcript-row")]
+      .map((row) => row.textContent ?? "")
+      .join("\n");
+  }
+
+  it("shows the agent's message while the run is still working", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Update the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "Checking the header before editing it.",
+      });
     });
 
-    expect(disclosure).toBe("ACP agent — the directory is not known for this session.");
-    expect(disclosure).not.toContain("C:/");
-    expect(disclosure).not.toContain(WORKSPACE.title);
+    expect(transcriptText(container)).toContain("Checking the header before editing it.");
+    expect(container.querySelector(".design-generate-button")?.textContent).toBe("Working…");
+    await act(async () => root.unmount());
   });
 
-  it("describes the selected workspace before a session exists", () => {
-    expect(AGENT_DESIGN_DISCLOSURE({ session: null, selectedWorkspace: WORKSPACE })).toBe(
-      "ACP agent — will run in workspace feat/design.",
-    );
+  it("renders reasoning as its own secondary row, apart from the answer", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Update the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "The header is updated.",
+      });
+      channelHarness.active?.({
+        type: "agent_thought",
+        messageId: "thought-1",
+        text: "The count has to come from the snapshot.",
+      });
+    });
+
+    const thought = container.querySelector(".design-transcript-thought .design-transcript-text");
+    expect(thought?.textContent).toBe("The count has to come from the snapshot.");
+    // The answer and the reasoning are different rows, so reasoning cannot be read as the reply.
+    const answer = container.querySelector(".design-transcript-assistant .design-transcript-text");
+    expect(answer?.textContent).toBe("The header is updated.");
+    await act(async () => root.unmount());
   });
 
-  it("describes the launch-directory fallback before a session exists", () => {
-    expect(AGENT_DESIGN_DISCLOSURE({ session: null, selectedWorkspace: null })).toBe(
-      "ACP agent — will run in the directory the app was launched from.",
+  it("lists tool activity as a compact row beside the conversation", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Update the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "Reading the file.",
+      });
+      emitToolCall("call-1", "completed", "edit", ["src/Header.tsx"]);
+    });
+
+    const tool = container.querySelector(".design-transcript-tool");
+    expect(tool?.textContent).toContain("Tool");
+    expect(tool?.textContent).toContain("completed");
+    expect(transcriptText(container)).toContain("Reading the file.");
+    await act(async () => root.unmount());
+  });
+
+  it("shows the run summary once, beside the conversation", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Update the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "I edited the header and left the rest alone.",
+      });
+      emitToolCall("write-1", "completed", "edit", ["src/Header.tsx"]);
+      finishRun();
+    });
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-message-source")?.textContent).toBe("src/Header.tsx"),
     );
+
+    // The honest file list is still there, exactly once, with no tick and no
+    // duplicate count heading repeating it.
+    const summary = container.querySelector(".design-message-card");
+    expect(summary?.querySelector(".design-message-summary-status")?.textContent).toBe("Wrote");
+    expect(summary?.querySelectorAll(".design-message-source")).toHaveLength(1);
+    expect(summary?.querySelector(".design-message-icon")).toBeNull();
+    expect((summary?.textContent ?? "").match(/src\/Header\.tsx/g) ?? []).toHaveLength(1);
+    // ...and it is no longer the only thing a person sees.
+    expect(container.querySelectorAll(".design-transcript-row").length).toBeGreaterThanOrEqual(2);
+    expect(transcriptText(container)).toContain("I edited the header and left the rest alone.");
+    await act(async () => root.unmount());
+  });
+
+  it("still reports that no files were written, beside the conversation", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Review the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "Nothing needed changing.",
+      });
+      emitToolCall("read-1", "completed", "read", ["src/Header.tsx"]);
+      finishRun();
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Agent wrote no files"));
+
+    expect(transcriptText(container)).toContain("Nothing needed changing.");
+    await act(async () => root.unmount());
+  });
+
+  it("never shows the daemon's echo of the grounded prompt as a transcript row", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    channelHarness.active?.({
+      type: "agent_user_message",
+      messageId: null,
+      text: `User request: Update the design\n\n${DESIGN_DOCTRINE_BEGIN}`,
+    });
+    channelHarness.active?.({ type: "agent_message", messageId: "m-1", text: "Done." });
+    finishRun();
+
+    const result = await run;
+    expect((result.transcript ?? []).map((row) => row.text)).toEqual(["Done."]);
+    await disposeAgentHost(host);
+  });
+
+  it("leaves the craft pre-flight out of the run's transcript", async () => {
+    const index = builtInSkillIndex();
+    const selected = index[0];
+    if (selected === undefined) throw new Error("Built-in skills missing");
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+
+    // The pre-flight's question and answer are the host's, not the user's request, and no
+    // run exists yet to stream from.
+    expect(host.getRunTranscriptStart?.() ?? null).toBeNull();
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: `preflight selection ${selected.slug}`,
+    });
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+    const boundary = host.getRunTranscriptStart?.() ?? null;
+    if (boundary === null) throw new Error("The run did not report a transcript boundary");
+    expect(boundary).toBeGreaterThan(0);
+
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "m-1",
+      text: "Here is the change.",
+    });
+    finishRun();
+
+    const result = await run;
+    const transcript = (result.transcript ?? []).map((row) => row.text).join("\n");
+    expect(transcript).toContain("Here is the change.");
+    expect(transcript).not.toContain("preflight selection");
+    await disposeAgentHost(host);
+  });
+});
+
+describe("design disclosure removal", () => {
+  it("does not render the old disclosure while the host is resolving", async () => {
+    let resolveStatus: ((status: OracleIndexStatus) => void) | undefined;
+    mocks.oracleStatus.mockReturnValue(
+      new Promise((resolve) => {
+        resolveStatus = resolve;
+      }),
+    );
+    const { container, root } = createRootContainer();
+
+    await act(async () => root.render(<App />));
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
+    resolveStatus?.(READY_STATUS);
+    await act(async () => root.unmount());
+  });
+
+  it("does not render the old disclosure on an ACP surface after workspace selection", async () => {
+    mocks.oracleStatus.mockResolvedValue(READY_STATUS);
+    const { container, root } = createRootContainer();
+
+    await act(async () => root.render(<App />));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
+    );
+    const workspaceButton = container.querySelector<HTMLButtonElement>(
+      'button[data-design-folder-trigger="true"]',
+    );
+    if (workspaceButton === null) throw new Error("Workspace picker did not render");
+    await act(async () => workspaceButton.click());
+    const workspaceOption = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find((option) => option.textContent?.includes(WORKSPACE.title));
+    if (workspaceOption === undefined) throw new Error("Workspace option did not render");
+    await act(async () => workspaceOption.click());
+
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("does not render the old disclosure on the demo fallback surface", async () => {
+    mocks.oracleStatus.mockRejectedValue(new Error("Oracle daemon unavailable"));
+    const { container, root } = createRootContainer();
+
+    await act(async () => root.render(<App />));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
+    await act(async () => root.unmount());
   });
 });

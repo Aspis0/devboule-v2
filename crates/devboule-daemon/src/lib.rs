@@ -31,6 +31,8 @@ mod journal;
 mod lock;
 mod login_shell_env;
 #[cfg(feature = "server")]
+mod mcp_broker;
+#[cfg(feature = "server")]
 mod outbound;
 mod paths;
 #[cfg(feature = "server")]

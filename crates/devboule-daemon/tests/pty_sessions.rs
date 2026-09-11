@@ -40,20 +40,18 @@ use windows_sys::Win32::System::Threading::{
 const LEGACY_RING_CAPACITY: usize = 256 * 1024;
 
 fn daemon_bin() -> PathBuf {
-    if let Some(path) = option_env!("CARGO_BIN_EXE_devboule_daemon") {
+    // Cargo names this env var after the bin verbatim (dashes included); an
+    // underscore lookup never matches. A stale-binary fallback would
+    // silently run "the past" and report green, so refuse to guess.
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_devboule-daemon") {
         return PathBuf::from(path);
     }
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop();
-    path.pop();
-    path.push("target");
-    path.push(if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    });
-    path.push("devboule-daemon.exe");
-    path
+    if let Some(path) = option_env!("CARGO_BIN_EXE_devboule-daemon") {
+        return PathBuf::from(path);
+    }
+    panic!(
+        "CARGO_BIN_EXE_devboule-daemon was not provided by Cargo; refusing to guess a target directory binary (a stale one would test the past)"
+    );
 }
 
 fn unique_paths() -> (RuntimePaths, PathBuf) {

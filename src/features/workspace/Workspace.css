@@ -500,8 +500,6 @@
 .workspace-tab-meta,
 .workspace-rate,
 .workspace-session-cwd,
-.workspace-permission-context,
-.workspace-permission-command,
 .workspace-diff-header,
 .workspace-diff-lines,
 .workspace-test-meta,
@@ -1140,121 +1138,6 @@
   vertical-align: -1px;
   background: var(--terracotta);
   animation: caret 1s steps(1) infinite;
-}
-
-.workspace-permission-card {
-  flex: none;
-  overflow: hidden;
-  background: var(--surface-muted);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  animation: rise 0.24s ease both;
-}
-
-.workspace-permission-heading,
-.workspace-permission-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.workspace-permission-heading {
-  min-width: 0;
-  overflow: hidden;
-  padding: 8px 12px 4px;
-  font-size: 11.5px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-permission-dot {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  border-radius: 999px;
-}
-
-.workspace-permission-waiting {
-  background: var(--ochre);
-}
-
-.workspace-permission-allowed {
-  background: var(--green);
-}
-
-.workspace-permission-denied {
-  background: var(--danger);
-}
-
-.workspace-permission-submitting {
-  background: var(--ochre);
-}
-
-.workspace-permission-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-permission-description {
-  padding: 0 12px 6px;
-  color: var(--silence);
-  font-size: 12px;
-}
-
-.workspace-permission-context {
-  min-width: 0;
-  margin-left: auto;
-  overflow: hidden;
-  color: var(--silence);
-  font-size: 10px;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-permission-command {
-  max-height: 120px;
-  overflow: auto;
-  padding: 2px 12px 6px;
-  font-size: 11px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.workspace-permission-env {
-  max-height: 120px;
-  overflow: auto;
-  padding: 0 12px 6px;
-  color: var(--silence);
-  font-size: 11px;
-  font-family: "JetBrains Mono", monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.workspace-permission-actions {
-  justify-content: flex-end;
-  padding: 6px 12px 8px;
-  flex-wrap: wrap;
-}
-
-.workspace-permission-actions button {
-  height: auto;
-  padding: 4px 10px;
-  font-size: 11.5px;
-}
-
-.workspace-permission-empty {
-  color: var(--silence);
-  font-size: 11.5px;
-}
-
-.workspace-permission-label {
-  color: var(--silence);
-  font-size: 11px;
 }
 
 .workspace-row-selected .workspace-row-meta,

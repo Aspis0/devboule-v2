@@ -22,6 +22,7 @@ const EXPECTED_PRIORITY_ORDER = [
   "rtl",
   "form-validation",
   "cognition",
+  "reference-research",
 ] as const;
 
 function slugForPath(path: string): string {
@@ -55,6 +56,7 @@ describe("built-in design skills", () => {
               slug: result.section.slug,
               title: result.section.title,
               description: result.section.description,
+              body: result.section.body,
             },
           ]
         : [];

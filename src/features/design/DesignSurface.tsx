@@ -4,22 +4,50 @@ import type {
   KeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
+  ReactNode,
   RefObject,
 } from "react";
 import type {
   DesignAssistantMessage,
-  DesignDisclosure,
   DesignDocument,
   DesignAgentSession,
   DesignHost,
   DesignLayer,
   DesignMessage,
+  DesignTranscriptItem,
+  PendingPermission,
   DesignRadiusOption,
+  SectionNote,
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
-import { ArtifactRenderCritic } from "./artifactRenderCritic";
-import { ARTIFACT_TOO_LARGE_MESSAGE, AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
+import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
 import {
+  getCachedArtifactSections,
+  sectionsToLayers,
+  setCachedArtifactSections,
+  type ArtifactSection,
+} from "./artifactStructure";
+import {
+  formatSectionNotesScope,
+  MAX_SECTION_NOTE_CHARS,
+  MAX_SECTION_NOTES,
+  resolveSectionNotes,
+  type ResolvedSectionNote,
+} from "./sectionNotes";
+import {
+  ARTIFACT_PAGE_HEIGHT,
+  ARTIFACT_PAGE_WIDTH,
+  artifactPageHeightForCanvas,
+  shouldAdaptArtifactHeight,
+} from "./artifactViewport";
+import {
+  ARTIFACT_TOO_LARGE_MESSAGE,
+  AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
+  stripFencedHtml,
+  transcriptItems,
+} from "./agentHost";
+import {
+  MAX_AUTOMATIC_SKILL_SECTIONS,
   builtInSkillIndex,
   builtInSkillSources,
   type BuiltInSkillIndexEntry,
@@ -29,13 +57,16 @@ import {
   loadDesignProviderId,
   loadDesignSkillSelection,
   loadDesignWorkspaceId,
+  loadStoredDesignProviderId,
   loadStoredDesignWorkspaceId,
   saveDesignProviderId,
   saveDesignSkillSelection,
   saveDesignWorkspaceId,
   selectedSlugs,
+  SKILL_MODE_LABELS,
   type DesignSkillSelection,
 } from "./designSettings";
+import { DesignFolderControl } from "./DesignFolderControl";
 import { DesignHistoryList } from "./DesignHistoryList";
 import { recordDesignHistoryEntry, type DesignHistoryEntry } from "./designHistory";
 import {
@@ -45,8 +76,18 @@ import {
 } from "./designHistoryOpen";
 import { buildSkillBlock } from "./skillLoader";
 import { useProviderConsent } from "../workspace/useProviderConsent";
+import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
 import { chatCapableProviders, requiresConsent } from "../workspace/workspaceSessions";
-import { projectsList, providersList, reasonFromCause, workspacesList } from "../../lib/tauri";
+import { PermissionCard } from "../../components/PermissionCard";
+import {
+  projectAdd,
+  projectsList,
+  providersList,
+  reasonFromCause,
+  workspaceCreate,
+  workspacesList,
+} from "../../lib/tauri";
+import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
 import { useAppStore } from "../../store/appStore";
@@ -59,7 +100,7 @@ import type {
   SessionModel,
   Workspace,
 } from "../../types/ipc";
-import type { NodeRect } from "../../types/geometry";
+import type { NodeRect, Point } from "../../types/geometry";
 import {
   clampViewportZoom,
   createViewport,
@@ -74,13 +115,9 @@ import {
   type DesignViewport,
 } from "./designViewport";
 import "./design.css";
+import "./designSession.css";
 
-export type {
-  DesignDisclosure,
-  DesignDisclosureContext,
-  DesignDocument,
-  DesignHost,
-} from "./designHost";
+export type { DesignDocument, DesignHost } from "./designHost";
 
 type MessageAction = "stop" | "retry" | "select" | "regenerate";
 
@@ -108,6 +145,8 @@ interface DesignHistory {
 interface LayerViewModel extends DesignLayer {
   selected: boolean;
   hidden: boolean;
+  /** A section layer carries at least one agent note. Canvas nodes never do. */
+  hasNote: boolean;
 }
 
 interface RadiusViewModel extends DesignRadiusOption {
@@ -115,8 +154,12 @@ interface RadiusViewModel extends DesignRadiusOption {
 }
 
 interface DesignToolbarProps {
-  documentName: string;
-  documentPath: string;
+  /**
+   * The folder control that owns the toolbar's left slot. It is passed in as an
+   * element rather than as a dozen props because the toolbar only positions it:
+   * the attachment itself is the surface's state, not the toolbar's.
+   */
+  folderControl: ReactNode;
   grounded: boolean;
   canSave: boolean;
   saved: boolean;
@@ -124,20 +167,28 @@ interface DesignToolbarProps {
   saveError: string | null;
   canUndo: boolean;
   canRedo: boolean;
+  historyRefreshKey: number;
+  liveSessionId: string | null;
   onGroundingToggle: () => void;
   onSave: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onHistoryOpen: (entry: DesignHistoryEntry) => void;
 }
 
 interface LayerPanelProps {
   layers: readonly LayerViewModel[];
   onSelect: (layerId: string) => void;
   onToggleVisibility: (layerId: string) => void;
+  /** Notes whose anchor is gone from the current page; shown, not dropped. */
+  orphanNotes: readonly ResolvedSectionNote[];
+  onDeleteNote: (index: number) => void;
 }
 
 interface CanvasProps {
   layers: readonly DesignLayer[];
+  /** Measured page sections living inside the artifact frame. */
+  sectionLayers: readonly DesignLayer[];
   hiddenLayerIds: readonly string[];
   pan: Pan;
   selectedLayerId: string;
@@ -146,8 +197,14 @@ interface CanvasProps {
   artifactHtml?: string;
   artifactError?: string;
   artifactMissingTokens: readonly string[];
+  artifactHeight: number;
+  /** World-space highlight for the selected page section, if it is one. */
+  sectionHighlight: NodeRect | null;
+  /** World-space marks for sections carrying an agent note. */
+  noteMarks: readonly NodeRect[];
   onSelectLayer: (layerId: string) => void;
   onViewportChange: (viewport: DesignViewport) => void;
+  onArtifactMeasured: (html: string, result: ArtifactRenderCriticResult) => void;
 }
 
 interface CanvasNodeProps {
@@ -175,8 +232,13 @@ interface InspectorProps {
   onElevationChange: (flat: boolean) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onClose: () => void;
   canDuplicate: boolean;
   canDelete: boolean;
+  /** Notes on the inspected section; empty for canvas layers. */
+  sectionNotes: readonly ResolvedSectionNote[];
+  onAddNote: (text: string) => void;
+  onDeleteNote: (index: number) => void;
 }
 
 interface WorkspaceProject extends Project {
@@ -184,23 +246,46 @@ interface WorkspaceProject extends Project {
   workspaceError?: string;
 }
 
-const WORKSPACE_NOT_REGISTERED_NOTICE = "The selected workspace is no longer registered.";
+/**
+ * What ending the session costs, in one sentence. It is a tooltip rather than a
+ * visible line: at 337px this sentence consumed a whole composer row on its own,
+ * so the controls it explains were pushed to a third row. Both the tooltip and
+ * the accessible name carry it, so hiding it from the layout does not hide it
+ * from a screen reader.
+ */
+export const END_SESSION_EXPLANATION =
+  "Ends this session and drops the agent's context for this surface.";
+
+const WORKSPACE_NOT_REGISTERED_NOTICE = "The attached folder is no longer registered.";
 const WORKSPACE_UNCONFIRMED_NOTICE =
-  "The selected workspace could not be confirmed because its project failed to load.";
+  "The attached folder could not be confirmed because its record failed to load.";
 
 // The persistence calls report a boolean: false means the value never reached disk and will
 // revert on reload. One notice region serves all four callers because they fail the same way,
 // but each message names what was lost, because the four mean different things to the user.
 const PERSISTENCE_NOTICE_TEXT = {
   provider: "Your agent choice was not saved.",
-  workspace: "Your workspace choice was not saved.",
+  workspace: "Your folder choice was not saved.",
   skill: "Your craft selection was not saved.",
   history: "This design was not added to your history.",
 } as const;
 
 type PersistenceNoticeKind = keyof typeof PERSISTENCE_NOTICE_TEXT;
 
-interface AssistantProps {
+interface DesignSkillViewProps {
+  skillIndex: readonly BuiltInSkillIndexEntry[];
+  skillSelection: DesignSkillSelection;
+  selectedSkillSlugs: readonly string[];
+  resolvedSkillSlugs: readonly string[] | null;
+  appliedSkillSlugs: readonly string[] | null;
+  hasResolvedComposition: boolean;
+  skillBlock: ReturnType<typeof buildSkillBlock>;
+  resolvedSkillSlugSet: ReadonlySet<string>;
+  automaticBaselineSlugSet: ReadonlySet<string>;
+  droppedSkillSlugSet: ReadonlySet<string>;
+}
+
+interface AssistantProps extends DesignSkillViewProps {
   canGenerate: boolean;
   contextPrefix: string;
   generationLabel: string;
@@ -208,15 +293,15 @@ interface AssistantProps {
   providers: readonly ProviderInfo[];
   providersLoading: boolean;
   selectedProviderId: string | null;
-  workspaceProjects: readonly WorkspaceProject[];
-  workspacesLoading: boolean;
-  workspacesRefreshing: boolean;
-  workspacesError: string | null;
-  selectedWorkspaceId: string | null;
-  workspaceSelectionNotice: string | null;
-  workspaceSelectionUnresolved: boolean;
+  unavailableProviderId: string | null;
   agentSession: DesignAgentSession | null;
   agentState: AgentSessionState | null;
+  /** Rows streamed for the run in progress; empty when none is in progress. */
+  liveTranscript: readonly DesignTranscriptItem[];
+  pendingPermission: PendingPermission | null;
+  permissionNotice: string | null;
+  capabilities: readonly string[];
+  daemonConnected: boolean;
   draft: string;
   draftPlaceholder: string;
   sendLabel: string;
@@ -230,22 +315,376 @@ interface AssistantProps {
   onClearContext: () => void;
   onMessageAction: (action: MessageAction, message: DesignMessage) => void;
   onProviderSelect: (provider: ProviderInfo) => void;
-  onWorkspaceSelect: (workspace: Workspace | null) => void;
-  onWorkspacePickerOpen: () => void;
   onModelSelect: (modelId: string) => void;
   onEffortSelect: (effort: string) => void;
-  skillIndex: readonly BuiltInSkillIndexEntry[];
-  skillSelection: DesignSkillSelection;
-  selectedSkillSlugs: readonly string[];
-  autoAppliedSkillSlugs: readonly string[] | null;
-  autoSkillNotice: string | null;
+  onPermissionRespond: (outcome: "allow_once" | "deny") => Promise<void>;
+  onEndSession: () => void;
+  skillResultNotice: string | null;
   onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
+  onCraftOpen: () => void;
+  onCraftReadMore: () => void;
+}
+
+interface DesignCraftSheetProps extends DesignSkillViewProps {
+  readOnly: boolean;
+  onClose: () => void;
   onSkillToggle: (slug: string) => void;
 }
+
+const DESIGN_SKILL_MODES: readonly DesignSkillSelection["mode"][] = ["all", "manual", "auto"];
+
+function renderCraftInline(text: string) {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={index}>{part.slice(1, -1)}</code>;
+    }
+    return part;
+  });
+}
+
+function renderCraftBody(body: string) {
+  return body
+    .split(/\n\s*\n/)
+    .map((paragraph, index) => (
+      <p key={index}>{renderCraftInline(paragraph.replace(/\n/g, " "))}</p>
+    ));
+}
+
+const DesignSkillModeControl = memo(function DesignSkillModeControl({
+  skillSelection,
+  onSkillModeChange,
+  onCraftOpen,
+  onCraftReadMore,
+}: {
+  skillSelection: DesignSkillSelection;
+  onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
+  onCraftOpen: () => void;
+  onCraftReadMore: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const selectedModeRef = useRef<HTMLButtonElement>(null);
+  const activeCopy = SKILL_MODE_LABELS[skillSelection.mode];
+
+  const closePopover = useCallback(() => {
+    setOpen(false);
+    queueMicrotask(() => triggerRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    selectedModeRef.current?.focus();
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      closePopover();
+    };
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !popoverRef.current?.contains(target) &&
+        !triggerRef.current?.contains(target)
+      ) {
+        closePopover();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [closePopover, open]);
+
+  const chooseMode = useCallback(
+    (mode: DesignSkillSelection["mode"]) => {
+      if (skillSelection.mode === mode) return;
+      onSkillModeChange(mode);
+      closePopover();
+      if (mode === "manual") onCraftOpen();
+    },
+    [closePopover, onCraftOpen, onSkillModeChange, skillSelection.mode],
+  );
+
+  const openCraft = useCallback(() => {
+    closePopover();
+    if (skillSelection.mode === "manual") onCraftOpen();
+    else onCraftReadMore();
+  }, [closePopover, onCraftOpen, onCraftReadMore, skillSelection.mode]);
+
+  return (
+    <div className="design-skill-controls">
+      <fieldset className="design-skill-mode-fieldset">
+        <legend className="design-sr-only">Craft mode</legend>
+        <button
+          ref={triggerRef}
+          className="design-skill-mode-control"
+          type="button"
+          data-design-skill-mode-trigger="true"
+          aria-label={`Craft mode: ${activeCopy.name} · ${activeCopy.summary ?? activeCopy.blurb}`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls="design-skill-picker"
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="design-skill-mode-control-name">{activeCopy.name}</span>
+          <span className="design-skill-mode-control-chevron" aria-hidden="true">
+            ⌄
+          </span>
+        </button>
+      </fieldset>
+      {open ? (
+        <div
+          ref={popoverRef}
+          id="design-skill-picker"
+          className="design-agent-picker design-skill-picker"
+          role="dialog"
+          aria-labelledby="design-skill-picker-title"
+          tabIndex={-1}
+        >
+          <div className="design-agent-picker-label" id="design-skill-picker-title">
+            Craft mode
+          </div>
+          <p className="design-skill-picker-default">
+            <strong>Default:</strong> {SKILL_MODE_LABELS.all.defaultNotice}
+          </p>
+          <div className="design-skill-mode-options" role="radiogroup" aria-label="Craft mode">
+            {DESIGN_SKILL_MODES.map((mode) => {
+              const copy = SKILL_MODE_LABELS[mode];
+              const selected = skillSelection.mode === mode;
+              return (
+                <button
+                  ref={selected ? selectedModeRef : undefined}
+                  className={[
+                    "design-skill-mode-option",
+                    `design-skill-mode-option-${mode}`,
+                    mode === "all" ? "design-skill-mode-option-default" : null,
+                  ]
+                    .filter((className): className is string => className !== null)
+                    .join(" ")}
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  data-design-skill-mode={mode}
+                  aria-checked={selected}
+                  onClick={() => chooseMode(mode)}
+                >
+                  <span className="design-skill-mode-option-name">
+                    {copy.name}
+                    <span className="design-skill-mode-option-badge">{copy.badge}</span>
+                    {selected ? (
+                      <span className="design-skill-mode-option-selected">Selected</span>
+                    ) : null}
+                  </span>
+                  <span className="design-skill-mode-option-blurb">{copy.blurb}</span>
+                </button>
+              );
+            })}
+          </div>
+          <button className="design-skill-picker-action" type="button" onClick={openCraft}>
+            {skillSelection.mode === "manual" ? "Choose sections…" : "Read more"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+const DesignCraftSheet = memo(function DesignCraftSheet({
+  skillIndex,
+  skillSelection,
+  selectedSkillSlugs,
+  resolvedSkillSlugs,
+  appliedSkillSlugs,
+  hasResolvedComposition,
+  skillBlock,
+  resolvedSkillSlugSet,
+  automaticBaselineSlugSet,
+  droppedSkillSlugSet,
+  readOnly,
+  onClose,
+  onSkillToggle,
+}: DesignCraftSheetProps) {
+  const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
+  const modeCopy = SKILL_MODE_LABELS[skillSelection.mode];
+  const manualLimitReached =
+    skillSelection.mode === "manual" && selectedSkillSlugs.length >= MAX_AUTOMATIC_SKILL_SECTIONS;
+  const includedSkillCount = hasResolvedComposition
+    ? Math.max(0, (resolvedSkillSlugs?.length ?? 0) - skillBlock.dropped.length)
+    : 0;
+  const droppedEntries = skillIndex.filter((entry) => {
+    const isRequested = resolvedSkillSlugSet.has(entry.slug);
+    return hasResolvedComposition && isRequested && droppedSkillSlugSet.has(entry.slug);
+  });
+  const expandedEntry = skillIndex.find((entry) => entry.slug === expandedSlug) ?? null;
+  const isWaitingForAutomaticChoice = skillSelection.mode === "auto" && appliedSkillSlugs === null;
+  const budgetHeading = hasResolvedComposition
+    ? `${includedSkillCount} sections included`
+    : "Automatic selection";
+  const budgetValue = hasResolvedComposition
+    ? `${skillBlock.totalChars.toLocaleString()} / ${skillBlock.ceiling.toLocaleString()} characters`
+    : `up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections · ${skillBlock.ceiling.toLocaleString()}-character budget`;
+
+  return (
+    <div className="design-craft-overlay">
+      <section
+        className={`design-craft-sheet${expandedEntry !== null ? " design-craft-sheet-expanded" : ""}`}
+        role="dialog"
+        aria-labelledby="design-craft-sheet-title"
+        aria-describedby="design-craft-sheet-budget"
+      >
+        <header className="design-craft-sheet-header">
+          <div className="design-craft-sheet-heading">
+            <h2 id="design-craft-sheet-title">Craft</h2>
+            <span>{modeCopy.name}</span>
+          </div>
+          <div className="design-craft-budget" id="design-craft-sheet-budget" role="status">
+            <strong>{budgetHeading}</strong>
+            <span>{budgetValue}</span>
+          </div>
+          <button
+            className="design-craft-close"
+            type="button"
+            aria-label="Close Craft"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="design-craft-sheet-content">
+          <div className="design-craft-index">
+            <div className="design-craft-index-heading">
+              <span>{readOnly ? "Sections" : "Choose sections"}</span>
+              {!readOnly ? (
+                <span className={manualLimitReached ? "design-craft-count-limit" : ""}>
+                  {selectedSkillSlugs.length} / {MAX_AUTOMATIC_SKILL_SECTIONS}
+                </span>
+              ) : null}
+            </div>
+            {readOnly && droppedEntries.length > 0 ? (
+              <p className="design-craft-budget-note">
+                {droppedEntries.length} sections left out; the character budget is full.
+              </p>
+            ) : null}
+            {readOnly && isWaitingForAutomaticChoice ? (
+              <p className="design-craft-budget-note">
+                The agent will choose sections for this request.
+              </p>
+            ) : null}
+            {!readOnly && manualLimitReached ? (
+              <p className="design-craft-budget-note design-craft-budget-note-limit">
+                Maximum reached. Clear one to choose another.
+              </p>
+            ) : null}
+            <ul className="design-craft-title-list">
+              {skillIndex.map((entry) => {
+                const isSelected = selectedSkillSlugs.includes(entry.slug);
+                const isAutomaticBaseline =
+                  skillSelection.mode === "auto" && automaticBaselineSlugSet.has(entry.slug);
+                const isRequested = resolvedSkillSlugSet.has(entry.slug);
+                const isDropped =
+                  hasResolvedComposition && isRequested && droppedSkillSlugSet.has(entry.slug);
+                const isIncluded =
+                  !isDropped && ((hasResolvedComposition && isRequested) || isAutomaticBaseline);
+                const isAutomaticallyUnselected =
+                  skillSelection.mode === "auto" &&
+                  appliedSkillSlugs !== null &&
+                  !isRequested &&
+                  !isAutomaticBaseline;
+                const status = isDropped
+                  ? "Left out"
+                  : isAutomaticBaseline
+                    ? "Always included"
+                    : isWaitingForAutomaticChoice
+                      ? "Chosen per request"
+                      : isAutomaticallyUnselected
+                        ? "Not chosen"
+                        : isIncluded
+                          ? "Included"
+                          : "Not selected";
+                const rowClass = [
+                  "design-craft-title-row",
+                  isSelected ? "design-craft-title-row-selected" : null,
+                  isIncluded ? "design-craft-title-row-included" : null,
+                  isDropped ? "design-craft-title-row-dropped" : null,
+                  isAutomaticallyUnselected ? "design-craft-title-row-not-selected" : null,
+                ]
+                  .filter((className): className is string => className !== null)
+                  .join(" ");
+                const detailId = `design-craft-detail-${entry.slug}`;
+
+                return (
+                  <li className={rowClass} key={entry.slug}>
+                    {readOnly ? (
+                      <span
+                        className={`design-craft-title-mark design-craft-title-mark-${
+                          isDropped ? "dropped" : isIncluded ? "included" : "pending"
+                        }`}
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <input
+                        type="checkbox"
+                        aria-label={`Apply ${entry.title}`}
+                        checked={isSelected}
+                        disabled={manualLimitReached && !isSelected}
+                        onChange={() => {
+                          if (!manualLimitReached || isSelected) onSkillToggle(entry.slug);
+                        }}
+                      />
+                    )}
+                    <button
+                      className="design-craft-title-button"
+                      type="button"
+                      aria-expanded={expandedSlug === entry.slug}
+                      aria-controls={detailId}
+                      onClick={() =>
+                        setExpandedSlug((current) => (current === entry.slug ? null : entry.slug))
+                      }
+                    >
+                      <span>{entry.title}</span>
+                      {readOnly ? (
+                        <span className="design-craft-title-status">{status}</span>
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          {expandedEntry !== null ? (
+            <article
+              className="design-craft-detail"
+              id={`design-craft-detail-${expandedEntry.slug}`}
+            >
+              <h3>{expandedEntry.title}</h3>
+              <p>{expandedEntry.description}</p>
+              <div className="design-craft-detail-body">{renderCraftBody(expandedEntry.body)}</div>
+            </article>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+});
 
 type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
 
 const EMPTY_DESIGN_MESSAGES: readonly DesignMessage[] = [];
+const EMPTY_TRANSCRIPT: readonly DesignTranscriptItem[] = [];
+const EMPTY_SECTIONS: readonly ArtifactSection[] = [];
+const EMPTY_SECTION_NOTES: readonly SectionNote[] = [];
+const EMPTY_RESOLVED_NOTES: readonly ResolvedSectionNote[] = [];
 const HISTORY_OPEN_MESSAGE_PREFIX = "design-history-open-";
 
 function isHistoryOpenMessage(message: DesignMessage): boolean {
@@ -262,7 +701,12 @@ function cloneMessageList(messages: readonly DesignMessage[]): DesignMessage[] {
   return messages.map((message) =>
     message.role === "user"
       ? { ...message }
-      : { ...message, sources: [...message.sources], nodeIds: [...message.nodeIds] },
+      : {
+          ...message,
+          sources: [...message.sources],
+          nodeIds: [...message.nodeIds],
+          ...(message.transcript === undefined ? {} : { transcript: [...message.transcript] }),
+        },
   );
 }
 
@@ -318,8 +762,7 @@ function promptForMessage(
 }
 
 const DesignToolbar = memo(function DesignToolbar({
-  documentName,
-  documentPath,
+  folderControl,
   grounded,
   canSave,
   saved,
@@ -327,22 +770,52 @@ const DesignToolbar = memo(function DesignToolbar({
   saveError,
   canUndo,
   canRedo,
+  historyRefreshKey,
+  liveSessionId,
   onGroundingToggle,
   onSave,
   onUndo,
   onRedo,
+  onHistoryOpen,
 }: DesignToolbarProps) {
   const saveText = saving ? "Saving…" : saved ? "Saved" : "Unsaved changes";
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyMenuRef = useRef<HTMLDivElement>(null);
+  const historyTriggerRef = useRef<HTMLButtonElement>(null);
+  const historyPopoverRef = useRef<HTMLDivElement>(null);
+
+  const closeHistory = useCallback(() => {
+    setHistoryOpen(false);
+    queueMicrotask(() => historyTriggerRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    historyPopoverRef.current?.focus();
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeHistory();
+    };
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (target instanceof Node && !historyMenuRef.current?.contains(target)) {
+        closeHistory();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [closeHistory, historyOpen]);
 
   return (
     <header className="design-toolbar">
-      <div className="design-browser-label">
-        <span className="design-toolbar-dot" aria-hidden="true" />
-        <span className="design-browser-name">{documentName}</span>
-      </div>
-      <span className="design-path" title={documentPath}>
-        {documentPath}
-      </span>
+      {folderControl}
       {canSave ? (
         <>
           <span className="design-save-status" aria-live="polite">
@@ -382,10 +855,48 @@ const DesignToolbar = memo(function DesignToolbar({
           ↷
         </button>
       </span>
+      <div className="design-history-menu" ref={historyMenuRef}>
+        <button
+          ref={historyTriggerRef}
+          className="design-history-menu-button"
+          type="button"
+          aria-controls="design-history-popover"
+          aria-expanded={historyOpen}
+          aria-haspopup="dialog"
+          onClick={() => {
+            if (historyOpen) {
+              closeHistory();
+            } else {
+              setHistoryOpen(true);
+            }
+          }}
+        >
+          History
+        </button>
+        <div
+          ref={historyPopoverRef}
+          id="design-history-popover"
+          className="design-history-popover"
+          role="dialog"
+          aria-label="Design history"
+          tabIndex={-1}
+          hidden={!historyOpen}
+        >
+          <DesignHistoryList
+            refreshKey={historyRefreshKey}
+            liveSessionId={liveSessionId}
+            onOpen={onHistoryOpen}
+          />
+        </div>
+      </div>
       <button
         className="design-grounding-toggle"
         type="button"
-        title="Oracle grounding"
+        title={
+          grounded
+            ? "Oracle grounding on: the next run searches the repository first"
+            : "Oracle grounding off: the next run does not search or read the repository"
+        }
         aria-pressed={grounded}
         onClick={onGroundingToggle}
       >
@@ -393,7 +904,7 @@ const DesignToolbar = memo(function DesignToolbar({
           className={`design-grounding-dot${grounded ? " design-grounding-dot-on" : ""}`}
           aria-hidden="true"
         />
-        {grounded ? "Grounded · devboule" : "Not grounded"}
+        {grounded ? "Grounded" : "Not grounded"}
       </button>
       {canSave ? (
         <span className="design-save-actions">
@@ -410,6 +921,8 @@ const LayerPanel = memo(function LayerPanel({
   layers,
   onSelect,
   onToggleVisibility,
+  orphanNotes,
+  onDeleteNote,
 }: LayerPanelProps) {
   return (
     <section className="design-layers-panel" aria-labelledby="design-layers-title">
@@ -430,12 +943,19 @@ const LayerPanel = memo(function LayerPanel({
               aria-label={`Select ${layer.name}`}
               onClick={() => onSelect(layer.id)}
             >
-              <span className="design-layer-kind">{layer.kind}</span>
+              <span className="design-layer-kind">{layer.section?.tag ?? layer.kind}</span>
               <span
                 className={`design-layer-name${layer.hidden ? " design-layer-name-hidden" : ""}`}
               >
                 {layer.name}
               </span>
+              {layer.hasNote ? (
+                <span
+                  className="design-layer-note-dot"
+                  title="Has an agent note"
+                  aria-label="Has an agent note"
+                />
+              ) : null}
             </button>
             <button
               className="design-layer-visibility"
@@ -450,6 +970,27 @@ const LayerPanel = memo(function LayerPanel({
           </div>
         ))}
       </div>
+      {orphanNotes.length > 0 ? (
+        <div className="design-layer-orphans">
+          <div className="design-layer-orphans-heading">Detached notes ({orphanNotes.length})</div>
+          <ul className="design-layer-orphans-list">
+            {orphanNotes.map((entry) => (
+              <li key={`${entry.note.anchor}:${entry.index}`}>
+                <span className="design-layer-orphan-badge">orphan</span>
+                <span className="design-layer-orphan-anchor">{entry.note.anchor}</span>
+                <span className="design-layer-orphan-text">{entry.note.text}</span>
+                <button
+                  type="button"
+                  aria-label={`Delete detached note on ${entry.note.anchor}`}
+                  onClick={() => onDeleteNote(entry.index)}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 });
@@ -540,14 +1081,22 @@ const ZoomControls = memo(function ZoomControls({
 
 const DESIGN_GRID_ORIGIN_X = 60;
 const DESIGN_GRID_ORIGIN_Y = 46;
-const ARTIFACT_NODE_WIDTH = 700;
-const ARTIFACT_NODE_HEIGHT = 500;
+// The generated page is a desktop page: it is authored against the canonical
+// 1280px page width (see artifactViewport). Width stays fixed so media queries
+// and columns do not move; height follows the live canvas aspect so the fitted
+// page fills the canvas instead of letterboxing below it.
+const ARTIFACT_NODE_WIDTH = ARTIFACT_PAGE_WIDTH;
 const ARTIFACT_NODE_GAP = 32;
 const ARTIFACT_NODE_ID = "generated-artifact";
 const ARTIFACT_CONTEXT_NAME = "Generated artifact";
 const ARTIFACT_CSP =
   "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; font-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; worker-src 'none'; manifest-src 'none'";
 const ARTIFACT_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_CSP}" />`;
+// A gutter, not a frame. The generated page is authored at 1280px and the
+// canvas next to a 366px assistant column is under 900px, so every pixel of
+// margin is a pixel the page does not get: at 80 per side the page fitted at
+// 58% of its true size on a canvas that had room for 70%.
+const DESIGN_FIT_MARGIN = 24;
 
 function layerRectsFor(layers: readonly DesignLayer[]): NodeRect[] {
   return layers.map((layer, index) => ({
@@ -560,15 +1109,20 @@ function layerRectsFor(layers: readonly DesignLayer[]): NodeRect[] {
   }));
 }
 
-function artifactNodeRect(layers: readonly DesignLayer[]): NodeRect {
-  const bounds = nodesBounds(layerRectsFor(layers));
+export function artifactNodeRect(layers: readonly DesignLayer[], height: number): NodeRect {
+  // The artifact owns its origin: only canvas layers (TSX/SVG) push it down.
+  // Section layers live INSIDE its frame, so they are excluded here — feeding
+  // them back in would make the frame depend on the sections that depend on
+  // the frame. With no canvas layers the artifact sits at the grid origin.
+  const bounds = nodesBounds(layerRectsFor(layers.filter((layer) => layer.kind !== "SECTION")));
   return {
     id: ARTIFACT_NODE_ID,
     x: bounds?.x ?? DESIGN_GRID_ORIGIN_X,
     y: bounds === null ? DESIGN_GRID_ORIGIN_Y : bounds.y + bounds.h + ARTIFACT_NODE_GAP,
     w: ARTIFACT_NODE_WIDTH,
-    h: ARTIFACT_NODE_HEIGHT,
-    z: layers.length,
+    h: height,
+    // Canvas nodes only: sections are measured inside the frame, not placed on it.
+    z: layers.filter((layer) => layer.kind !== "SECTION").length,
   };
 }
 
@@ -577,12 +1131,50 @@ function sourceDirectory(path: string): string {
   return separator > 0 ? path.slice(0, separator) : ".";
 }
 
+/**
+ * Direct-on-canvas section pick. Page sections nest (a `nav` inside a
+ * `header` inside the body), so several rects contain the pointer at once.
+ * Rule: the SMALLEST area containing the point wins — the deepest element is
+ * the one the pointer is on. The overlay buttons below are painted
+ * largest-first so the smallest is on top, and the canvas click path checks
+ * sections with this same helper first: both paths pick the same id, and both
+ * call the shared `onSelectLayer`, so canvas selection and panel selection
+ * are one state, not two.
+ */
+export function smallestSectionAt(
+  sections: readonly DesignLayer[],
+  hiddenLayerIds: readonly string[],
+  point: Point,
+): DesignLayer | null {
+  let best: DesignLayer | null = null;
+  let bestArea = Number.POSITIVE_INFINITY;
+  for (const section of sections) {
+    if (hiddenLayerIds.includes(section.id)) continue;
+    const box = section.transform;
+    if (
+      point.x < box.x ||
+      point.x > box.x + box.width ||
+      point.y < box.y ||
+      point.y > box.y + box.height
+    ) {
+      continue;
+    }
+    const area = box.width * box.height;
+    if (area < bestArea) {
+      best = section;
+      bestArea = area;
+    }
+  }
+  return best;
+}
+
 function artifactSrcDoc(html: string): string {
   return `${ARTIFACT_CSP_META}\n${html}`;
 }
 
 const DesignCanvas = memo(function DesignCanvas({
   layers,
+  sectionLayers,
   hiddenLayerIds,
   pan,
   selectedLayerId,
@@ -591,8 +1183,12 @@ const DesignCanvas = memo(function DesignCanvas({
   artifactHtml,
   artifactError,
   artifactMissingTokens,
+  artifactHeight,
+  sectionHighlight,
+  noteMarks,
   onSelectLayer,
   onViewportChange,
+  onArtifactMeasured,
 }: CanvasProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -635,13 +1231,30 @@ const DesignCanvas = memo(function DesignCanvas({
   );
   const artifactRect = useMemo(
     () =>
-      artifactHtml !== undefined || artifactError !== undefined ? artifactNodeRect(layers) : null,
-    [artifactError, artifactHtml, layers],
+      artifactHtml !== undefined || artifactError !== undefined
+        ? artifactNodeRect(layers, artifactHeight)
+        : null,
+    [artifactError, artifactHtml, artifactHeight, layers],
   );
-  const hitRects = useMemo<NodeRect[]>(
-    () => (artifactRect === null ? layerRects : [...layerRects, artifactRect]),
-    [artifactRect, layerRects],
-  );
+  const hitRects = useMemo<NodeRect[]>(() => {
+    const rects = artifactRect === null ? [...layerRects] : [...layerRects, artifactRect];
+    // Sections sit above the artifact sheet so a click inside the frame
+    // selects the section, not the whole page. Same z for all: last in
+    // document order wins, which is the deepest element under the pointer.
+    const sectionBase = artifactRect === null ? layerRects.length : artifactRect.z + 1;
+    for (const section of sectionLayers) {
+      if (hiddenLayerIds.includes(section.id)) continue;
+      rects.push({
+        id: section.id,
+        x: section.transform.x,
+        y: section.transform.y,
+        w: section.transform.width,
+        h: section.transform.height,
+        z: sectionBase,
+      });
+    }
+    return rects;
+  }, [artifactRect, layerRects, sectionLayers, hiddenLayerIds]);
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -658,6 +1271,14 @@ const DesignCanvas = memo(function DesignCanvas({
         { left: bounds.left, top: bounds.top },
         viewportRef.current,
       );
+      // Sections first, smallest-wins (see smallestSectionAt): the overlay
+      // buttons below already resolved the same way, so a click agrees with
+      // a hover whatever path it arrived on.
+      const sectionHit = smallestSectionAt(sectionLayers, hiddenLayerIds, point);
+      if (sectionHit !== null) {
+        onSelectLayer(sectionHit.id);
+        return;
+      }
       let target = hitTest(point, hitRects);
       if (!target && event.target instanceof Element) {
         const clickedNode = event.target.closest<HTMLElement>("[data-canvas-layer-id]");
@@ -671,7 +1292,36 @@ const DesignCanvas = memo(function DesignCanvas({
       }
       onSelectLayer(target?.id ?? "");
     },
-    [hitRects, onSelectLayer],
+    [hitRects, hiddenLayerIds, onSelectLayer, sectionLayers],
+  );
+
+  // Direct-on-canvas hover: one id, cleared on leave. The highlight below
+  // mirrors the selected-section highlight so hover and selection read as
+  // the same affordance; the selected section keeps the solid style.
+  const [hoveredSectionId, setHoveredSectionId] = useState<string | null>(null);
+  const hoveredHighlight = useMemo(() => {
+    if (hoveredSectionId === null || hoveredSectionId === selectedLayerId) return null;
+    const hovered = sectionLayers.find((section) => section.id === hoveredSectionId);
+    if (hovered === undefined || hiddenLayerIds.includes(hovered.id)) return null;
+    return {
+      x: hovered.transform.x,
+      y: hovered.transform.y,
+      w: hovered.transform.width,
+      h: hovered.transform.height,
+    };
+  }, [hoveredSectionId, sectionLayers, selectedLayerId, hiddenLayerIds]);
+  // Largest-first paint order: the smallest (deepest) overlay is on top and
+  // receives the pointer, matching smallestSectionAt above.
+  const sectionOverlays = useMemo(
+    () =>
+      [...sectionLayers]
+        .filter((section) => !hiddenLayerIds.includes(section.id))
+        .sort(
+          (left, right) =>
+            right.transform.width * right.transform.height -
+            left.transform.width * left.transform.height,
+        ),
+    [hiddenLayerIds, sectionLayers],
   );
 
   const handleWheel = useCallback(
@@ -785,6 +1435,7 @@ const DesignCanvas = memo(function DesignCanvas({
       ref={canvasRef}
       className="design-canvas"
       aria-label="Design canvas"
+      tabIndex={-1}
       onClick={handleCanvasClick}
     >
       <div className="design-canvas-grid" aria-hidden="true" />
@@ -797,9 +1448,19 @@ const DesignCanvas = memo(function DesignCanvas({
           {layerNotice}
         </div>
       ) : null}
-      {layers.length === 0 ? (
+      {layers.length === 0 && artifactRect === null ? (
         <div className="design-canvas-empty" role="status">
-          {layerNotice ?? "No design components found."}
+          {layerNotice === undefined ? (
+            <>
+              <p className="design-canvas-empty-title">The canvas is empty.</p>
+              <p className="design-canvas-empty-copy">
+                Describe the change you want in the composer, then choose Generate. The result
+                appears here.
+              </p>
+            </>
+          ) : (
+            layerNotice
+          )}
         </div>
       ) : null}
       <div
@@ -871,11 +1532,94 @@ const DesignCanvas = memo(function DesignCanvas({
                     {artifactMissingTokens.join(", ")}.
                   </div>
                 ) : null}
-                {artifactHtml !== undefined ? <ArtifactRenderCritic html={artifactHtml} /> : null}
+                {artifactHtml !== undefined ? (
+                  <ArtifactRenderCritic html={artifactHtml} onResult={onArtifactMeasured} />
+                ) : null}
               </div>
             ) : null}
           </div>
         ) : null}
+        {/*
+          The section highlight is drawn by the parent OVER the closed iframe
+          (like CanvasNode), never inside it: page rect + artifact origin, in
+          world coordinates. The artifact box clips its own content but not
+          this sibling, so a section below the fold still highlights at its
+          true composed position under the sheet — declared, not hidden.
+        */}
+        {sectionHighlight !== null ? (
+          <div
+            className="design-canvas-section-highlight"
+            style={{
+              left: sectionHighlight.x,
+              top: sectionHighlight.y,
+              width: sectionHighlight.w,
+              height: sectionHighlight.h,
+            }}
+            aria-hidden="true"
+          />
+        ) : null}
+        {hoveredHighlight !== null ? (
+          <div
+            className="design-canvas-section-highlight design-canvas-section-hover"
+            style={{
+              left: hoveredHighlight.x,
+              top: hoveredHighlight.y,
+              width: hoveredHighlight.w,
+              height: hoveredHighlight.h,
+            }}
+            aria-hidden="true"
+          />
+        ) : null}
+        {/*
+          Direct-on-canvas selection zones: one transparent parent-side button
+          per measured section, painted largest-first (see sectionOverlays) so
+          the smallest — the deepest — is on top and receives the pointer.
+          The display iframe keeps pointer-events:none and inert and is never
+          touched: these siblings over it are what the pointer hits. Hover
+          highlights, click selects through the shared onSelectLayer, so the
+          canvas and the Layers panel are one state, not two.
+        */}
+        {sectionOverlays.map((section) => (
+          <button
+            key={section.id}
+            type="button"
+            className="design-canvas-section-overlay"
+            style={{
+              left: section.transform.x,
+              top: section.transform.y,
+              width: section.transform.width,
+              height: section.transform.height,
+            }}
+            aria-label={`Select ${section.name}`}
+            aria-pressed={selectedLayerId === section.id}
+            onClick={(event) => {
+              // The canvas click handler below would hit-test the same point
+              // and pick the same id, but stopping here keeps one path.
+              event.stopPropagation();
+              onSelectLayer(section.id);
+            }}
+            onMouseEnter={() => setHoveredSectionId(section.id)}
+            onMouseLeave={() =>
+              setHoveredSectionId((current) => (current === section.id ? null : current))
+            }
+            onFocus={() => setHoveredSectionId(section.id)}
+            onBlur={() =>
+              setHoveredSectionId((current) => (current === section.id ? null : current))
+            }
+          />
+        ))}
+        {noteMarks.map((mark) => {
+          const marked = sectionLayers.find((section) => section.id === mark.id);
+          return (
+            <span
+              key={mark.id}
+              className="design-canvas-note-mark"
+              style={{ left: mark.x, top: mark.y }}
+              title={marked ? `Note on ${marked.name}` : "Section note"}
+              aria-hidden="true"
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -890,9 +1634,105 @@ const InspectorPanel = memo(function InspectorPanel({
   onElevationChange,
   onDuplicate,
   onDelete,
+  onClose,
   canDuplicate,
   canDelete,
+  sectionNotes,
+  onAddNote,
+  onDeleteNote,
 }: InspectorProps) {
+  const [noteDraft, setNoteDraft] = useState("");
+  // A measured page section is not a canvas node: no transform editing, no
+  // corners, no elevation, no duplicate/delete. Tag, anchor, measured size,
+  // text preview, and the agent notes are what exist for it.
+  if (layer.kind === "SECTION" && layer.section !== undefined) {
+    const submitNote = () => {
+      const text = noteDraft.trim();
+      if (text.length === 0) return;
+      onAddNote(text);
+      setNoteDraft("");
+    };
+    return (
+      <section className="design-inspector-panel" aria-labelledby="design-inspector-title">
+        <div className="design-inspector-heading">
+          <span id="design-inspector-title" className="design-inspector-name">
+            {layer.name}
+          </span>
+          <span className="design-inspector-kind">{layer.kind}</span>
+          <button
+            className="design-inspector-close"
+            type="button"
+            aria-label="Close inspector"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="design-inspector-section">
+          <div className="design-inspector-label">Page section</div>
+          <dl className="design-section-meta">
+            <div>
+              <dt>Tag</dt>
+              <dd className="design-mono-value">&lt;{layer.section.tag}&gt;</dd>
+            </div>
+            <div>
+              <dt>Anchor</dt>
+              <dd className="design-mono-value">{layer.section.anchor}</dd>
+            </div>
+            <div>
+              <dt>Measured</dt>
+              <dd className="design-mono-value">
+                {layer.transform.width} × {layer.transform.height} px
+              </dd>
+            </div>
+          </dl>
+          <p className="design-section-preview">{layer.name}</p>
+        </div>
+
+        <div className="design-inspector-section">
+          <div className="design-inspector-label">Agent notes ({sectionNotes.length})</div>
+          {sectionNotes.length > 0 ? (
+            <ul className="design-section-notes">
+              {sectionNotes.map((entry) => (
+                <li key={entry.index}>
+                  <span className="design-section-note-text">{entry.note.text}</span>
+                  <button
+                    type="button"
+                    aria-label="Delete note"
+                    onClick={() => onDeleteNote(entry.index)}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="design-section-note-compose">
+            <input
+              type="text"
+              value={noteDraft}
+              maxLength={2000}
+              placeholder="Note for the agent on this section…"
+              aria-label="Note for the agent on this section"
+              onChange={(event) => setNoteDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitNote();
+                }
+              }}
+            />
+            <button type="button" onClick={submitNote} disabled={noteDraft.trim().length === 0}>
+              Add
+            </button>
+          </div>
+        </div>
+        <div className="design-inspector-footer">{tokenFooter}</div>
+      </section>
+    );
+  }
+
   const transformFields = [
     ["X", layer.transform.x],
     ["Y", layer.transform.y],
@@ -907,9 +1747,14 @@ const InspectorPanel = memo(function InspectorPanel({
           {layer.name}
         </span>
         <span className="design-inspector-kind">{layer.kind}</span>
-        <span className="design-inspector-close" aria-hidden="true">
-          ✕
-        </span>
+        <button
+          className="design-inspector-close"
+          type="button"
+          aria-label="Close inspector"
+          onClick={onClose}
+        >
+          ×
+        </button>
       </div>
 
       <div className="design-inspector-section">
@@ -1001,12 +1846,65 @@ const InspectorPanel = memo(function InspectorPanel({
   );
 });
 
+/**
+ * One row of the agent's conversation. The kind is carried in the class name
+ * because the three kinds must stay visually distinct: prose is the answer,
+ * reasoning is secondary and collapsible, and tool activity is a compact line
+ * that opens only when the tool reported more than its own title. The Workspace
+ * chat already renders these same agent items this way; this is that pattern
+ * inside the Design panel's transcript.
+ */
+const DesignTranscriptRow = memo(function DesignTranscriptRow({
+  item,
+}: {
+  item: DesignTranscriptItem;
+}) {
+  if (item.role === "thought") {
+    return (
+      <details className="design-transcript-row design-transcript-thought" open>
+        <summary className="design-transcript-label">Thinking</summary>
+        <div className="design-transcript-text">{item.text}</div>
+      </details>
+    );
+  }
+
+  if (item.role === "tool") {
+    const [headline, ...detail] = item.text.split("\n");
+    return (
+      <details className="design-transcript-row design-transcript-tool">
+        <summary className="design-transcript-label">
+          <span className="design-transcript-tool-line">
+            <span className="design-transcript-tool-name">{headline}</span>
+            <span className="design-transcript-tool-status">{item.status}</span>
+          </span>
+        </summary>
+        {detail.length > 0 ? (
+          <div className="design-transcript-text">{detail.join("\n")}</div>
+        ) : null}
+      </details>
+    );
+  }
+
+  // The page already lives on the canvas, so a fenced ```html block would print
+  // dozens of tag lines into the column. Keep only the prose around it; when
+  // nothing but a block remains, render no row instead of an empty bubble.
+  const prose = stripFencedHtml(item.text);
+  if (prose.length === 0) return null;
+  return (
+    <div className="design-transcript-row design-transcript-assistant">
+      <div className="design-transcript-text">{prose}</div>
+    </div>
+  );
+});
+
 const DesignMessageCard = memo(function DesignMessageCard({
   canGenerate,
+  liveTranscript,
   message,
   onAction,
 }: {
   canGenerate: boolean;
+  liveTranscript: readonly DesignTranscriptItem[];
   message: DesignMessage;
   onAction: (action: MessageAction, message: DesignMessage) => void;
 }) {
@@ -1019,37 +1917,64 @@ const DesignMessageCard = memo(function DesignMessageCard({
     );
   }
 
+  // A working run streams the live slice; a settled one reads the transcript the
+  // host reported with its result. Reading the live slice for a settled message
+  // would attach a later run's words to this run's summary.
+  const transcript =
+    message.status === "working" ? liveTranscript : (message.transcript ?? EMPTY_TRANSCRIPT);
+
   return (
-    <div className="design-message-card">
-      <div className="design-message-card-heading">
-        <span
-          className={`design-message-icon design-message-icon-${message.status === "working" ? "working" : message.status === "error" ? "error" : "done"}`}
-          aria-hidden="true"
-        >
-          {message.status === "working" ? "◌" : message.status === "error" ? "!" : "✓"}
-        </span>
-        <span className="design-message-title">{message.title}</span>
-      </div>
-      <div className="design-message-description">{message.desc}</div>
-      {message.sources.length > 0 ? (
-        <div className="design-message-sources">
-          {message.sources.map((source) => (
-            <span key={source}>{source}</span>
+    <div className="design-message-group">
+      {transcript.length > 0 ? (
+        <div className="design-transcript">
+          {transcript.map((item) => (
+            <DesignTranscriptRow item={item} key={item.id} />
           ))}
         </div>
       ) : null}
-      <div className="design-message-actions">
-        {messageActions(message, canGenerate).map((action) => (
-          <button type="button" key={action} onClick={() => onAction(action, message)}>
-            {action === "stop"
-              ? "Stop"
-              : action === "retry"
-                ? "Retry"
-                : action === "select"
-                  ? "Select on canvas"
-                  : "Regenerate"}
-          </button>
-        ))}
+      <div className="design-message-card">
+        {message.status === "done" ? (
+          // A settled run states one fact once: its status and the paths it
+          // reported. The count heading, the tick, and a second copy of the
+          // paths in the description were ceremony, not information.
+          <div className="design-message-summary">
+            <span className="design-message-summary-status">{message.title}</span>
+            {message.sources.map((source) => (
+              <span className="design-message-source" key={source}>
+                {source}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div className="design-message-card-heading">
+            <span
+              className={`design-message-icon design-message-icon-${message.status === "working" ? "working" : "error"}`}
+              aria-hidden="true"
+            >
+              {message.status === "working" ? "◌" : "!"}
+            </span>
+            <span className="design-message-title">{message.title}</span>
+          </div>
+        )}
+        <div className="design-message-description">{message.desc}</div>
+        {message.groundingNotice ? (
+          <div className="design-grounding-notice" role="status">
+            {message.groundingNotice}
+          </div>
+        ) : null}
+        <div className="design-message-actions">
+          {messageActions(message, canGenerate).map((action) => (
+            <button type="button" key={action} onClick={() => onAction(action, message)}>
+              {action === "stop"
+                ? "Stop"
+                : action === "retry"
+                  ? "Retry"
+                  : action === "select"
+                    ? "Select on canvas"
+                    : "Regenerate"}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -1078,15 +2003,14 @@ const DesignAssistant = memo(function DesignAssistant({
   providers,
   providersLoading,
   selectedProviderId,
-  workspaceProjects,
-  workspacesLoading,
-  workspacesRefreshing,
-  workspacesError,
-  selectedWorkspaceId,
-  workspaceSelectionNotice,
-  workspaceSelectionUnresolved,
+  unavailableProviderId,
   agentSession,
   agentState,
+  liveTranscript,
+  pendingPermission,
+  permissionNotice,
+  capabilities,
+  daemonConnected,
   draft,
   draftPlaceholder,
   sendLabel,
@@ -1100,69 +2024,105 @@ const DesignAssistant = memo(function DesignAssistant({
   onClearContext,
   onMessageAction,
   onProviderSelect,
-  onWorkspaceSelect,
-  onWorkspacePickerOpen,
   onModelSelect,
   onEffortSelect,
-  skillIndex,
+  onPermissionRespond,
+  onEndSession,
   skillSelection,
-  selectedSkillSlugs,
-  autoAppliedSkillSlugs,
-  autoSkillNotice,
+  skillResultNotice,
   onSkillModeChange,
-  onSkillToggle,
+  onCraftOpen,
+  onCraftReadMore,
 }: AssistantProps) {
-  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
-  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const providerButtonRef = useRef<HTMLButtonElement>(null);
   const providerPickerWrapRef = useRef<HTMLDivElement>(null);
-  const workspacePickerWrapRef = useRef<HTMLDivElement>(null);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
   const consentRestoreProviderIdRef = useRef<string | null>(null);
   const manifest = agentState?.manifest ?? null;
   const currentModel = manifestModel(manifest);
-  const modelLabel =
-    currentModel?.name ??
-    manifest?.currentModelId ??
-    (agentState === null ? "No agent running" : "No model selected");
+  const sessionClosed = agentState?.status === "closed";
+  const sessionErrored = agentState?.status === "error";
+  const sessionUnavailable = sessionClosed || sessionErrored;
+  // `fail()` in agentSession.ts records the message only as an error item in the
+  // transcript; the state carries no dedicated error field, so read it back here.
+  let sessionErrorText: string | null = null;
+  if (agentState !== null) {
+    for (let index = agentState.items.length - 1; index >= 0; index -= 1) {
+      const item = agentState.items[index];
+      if (item.role === "error") {
+        sessionErrorText = item.text;
+        break;
+      }
+    }
+  }
+  // The permission request itself carries only the tool's name, so the target it
+  // asks about is read back from the transcript item with the same toolCallId —
+  // the same id the daemon used to correlate them. A request that arrives before
+  // its tool call simply has no wording yet and gains it on the next render.
+  const permissionToolTitle = useMemo(() => {
+    const toolCallId = pendingPermission?.request.toolCallId;
+    if (toolCallId === undefined || agentState === null) return null;
+    for (let index = agentState.items.length - 1; index >= 0; index -= 1) {
+      const item = agentState.items[index];
+      if (item.role === "tool" && item.toolCallId === toolCallId) return item.title;
+    }
+    return null;
+  }, [agentState, pendingPermission]);
+
+  const modelLabel = sessionClosed
+    ? "Session closed"
+    : sessionErrored
+      ? "Session error"
+      : (currentModel?.name ??
+        manifest?.currentModelId ??
+        (agentState === null ? "No agent running" : "No model selected"));
+  const modelButtonLabel = modelLabel === "No model selected" ? "No model" : modelLabel;
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? null;
-  const providerLabel =
-    selectedProvider?.id ??
-    manifest?.providerId ??
-    (providersLoading ? "Loading agents…" : "Choose agent");
-  const selectedWorkspace = workspaceProjects
-    .flatMap((project) => project.workspaces)
-    .find((workspace) => workspace.id === selectedWorkspaceId);
-  const workspaceLabel =
-    selectedWorkspace?.title ??
-    (workspaceSelectionUnresolved ? "Workspace not confirmed" : "No workspace");
+  const providerFallback =
+    unavailableProviderId === null
+      ? providersLoading
+        ? "Loading agents…"
+        : "Choose agent"
+      : `Unavailable: ${unavailableProviderId}`;
+  const providerLabel = selectedProvider?.id ?? manifest?.providerId ?? providerFallback;
   const efforts = currentModel?.efforts ?? [];
   const pendingSwitch =
     agentState?.pendingSwitch !== null && agentState?.pendingSwitch !== undefined;
-  const providerButtonDisabled = agentSession !== null;
-  const workspaceButtonDisabled = agentSession !== null;
+  const providerButtonDisabled = busy;
   const modelButtonDisabled =
-    agentSession === null || manifest === null || manifest.models.length === 0;
-  const modelUnavailableMessage =
-    agentSession === null || manifest === null
-      ? "Start a generation to see the models offered by this agent."
-      : "This agent offered no models.";
+    agentSession === null ||
+    sessionUnavailable ||
+    manifest === null ||
+    manifest.models.length === 0;
   const modelButtonUnavailableLabel =
-    agentSession === null || manifest === null
-      ? `No agent running yet. ${modelUnavailableMessage}`
-      : modelUnavailableMessage;
+    busy && agentSession === null
+      ? "Starting the agent session; its models will appear shortly."
+      : agentSession === null
+        ? "Start a generation to see the models offered by this agent."
+        : sessionClosed
+          ? "The agent session has closed; start a generation to reconnect."
+          : sessionErrored
+            ? `Session error: ${sessionErrorText ?? "The agent reported an unknown error."} The session is still open; start a generation to continue.`
+            : manifest === null
+              ? "The agent is running; waiting for its model list."
+              : // Interim reading until the wire carries the distinction (models as
+                // Option<Vec<_>>, absent vs empty): an empty list WITH a current model is
+                // self-contradictory — an agent offering no models cannot have a current
+                // one — and matches the daemon's model-switch completion fallback, which
+                // publishes a manifest naming the switched-to model with models: []. So
+                // only an empty list with NO current model counts as evidence of absence.
+                manifest.currentModelId !== undefined
+                ? "The agent is running; its model list is not known yet."
+                : "This agent offered no models.";
 
   // A picker whose button is disabled must not keep an open flag: a session can close and a
   // later one can open, and the stale flag would reopen the menu with no user action.
   useEffect(() => {
     if (providerButtonDisabled) setProviderPickerOpen(false);
   }, [providerButtonDisabled]);
-  useEffect(() => {
-    if (workspaceButtonDisabled) setWorkspacePickerOpen(false);
-  }, [workspaceButtonDisabled]);
   useEffect(() => {
     if (modelButtonDisabled) setModelPickerOpen(false);
   }, [modelButtonDisabled]);
@@ -1182,6 +2142,10 @@ const DesignAssistant = memo(function DesignAssistant({
     inFlight: consentInFlight,
     commandLine: consentCommandLine,
   } = useProviderConsent({ onConfirmed: handleConsentConfirmed });
+
+  useEffect(() => {
+    if (!providerPickerOpen && consentProvider !== null) cancelConsent();
+  }, [cancelConsent, consentProvider, providerPickerOpen]);
 
   const dismissProviderPicker = useCallback(() => {
     if (consentProvider !== null) {
@@ -1240,66 +2204,6 @@ const DesignAssistant = memo(function DesignAssistant({
     };
   }, [dismissProviderPicker, providerPickerOpen]);
 
-  const dismissWorkspacePicker = useCallback(() => {
-    setWorkspacePickerOpen(false);
-  }, []);
-
-  useEffect(() => {
-    if (!workspacePickerOpen) return;
-    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      dismissWorkspacePicker();
-    };
-    const onMouseDown = (event: globalThis.MouseEvent): void => {
-      const root = workspacePickerWrapRef.current;
-      if (root !== null && event.target instanceof Node && !root.contains(event.target)) {
-        dismissWorkspacePicker();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("mousedown", onMouseDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("mousedown", onMouseDown);
-    };
-  }, [dismissWorkspacePicker, workspacePickerOpen]);
-
-  const selectedSlugSet = useMemo(() => new Set(selectedSkillSlugs), [selectedSkillSlugs]);
-  const resolvedSkillSlugs =
-    skillSelection.mode === "auto" ? autoAppliedSkillSlugs : selectedSkillSlugs;
-  // Manual belongs here too: `resolvedSkillSlugs` is the user's own ticks, so the composition
-  // is as resolved as it is in `all`. Leaving it out meant a manual selection that overflowed
-  // the budget kept every box ticked and said nothing, which is the same lie this row status
-  // exists to prevent — and the larger the corpus grows, the easier it is to tick past the
-  // ceiling.
-  const hasResolvedComposition =
-    skillSelection.mode === "all" ||
-    skillSelection.mode === "manual" ||
-    (skillSelection.mode === "auto" && autoAppliedSkillSlugs !== null);
-  const skillBlock = useMemo(
-    () => buildSkillBlock(builtInSkillSources(), resolvedSkillSlugs ?? []),
-    [resolvedSkillSlugs],
-  );
-  const resolvedSkillSlugSet = useMemo(
-    () => new Set(resolvedSkillSlugs ?? []),
-    [resolvedSkillSlugs],
-  );
-  const automaticBaselineSlugSet = useMemo(
-    () => new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS),
-    [],
-  );
-  const droppedSkillSlugSet = useMemo(() => new Set(skillBlock.dropped), [skillBlock]);
-  const skillSummary =
-    skillSelection.mode === "auto"
-      ? "Craft: automatic"
-      : skillSelection.mode === "all"
-        ? "Craft: priority sections that fit"
-        : selectedSkillSlugs.length === 0
-          ? `Craft: 0 of ${skillIndex.length} · no design guidance`
-          : `Craft: ${selectedSkillSlugs.length} of ${skillIndex.length}`;
-  const skillPreview = useMemo(() => skillBlock.text, [skillBlock]);
-
   return (
     <aside className="design-assistant" aria-labelledby="design-assistant-title">
       <div className="design-assistant-header">
@@ -1308,17 +2212,39 @@ const DesignAssistant = memo(function DesignAssistant({
           Assistant
         </span>
         <span className="design-generation-label">{generationLabel}</span>
-        {canGenerate ? (
-          <button
-            className="design-visual-check"
-            type="button"
-            title="Visual check"
-            aria-label="Run visual check"
-            onClick={onVisualCheck}
-          >
-            ◉
-          </button>
-        ) : null}
+        {/* The session-level actions sit at the right end of the header, as one
+            group, so the composer strip below keeps a single row of controls. */}
+        <div className="design-assistant-actions">
+          {agentSession !== null ? (
+            <div className="design-session-end-control">
+              {/* The explanation is a tooltip, not a line in a 337px column where it
+                  claimed a row of its own. It is mirrored into aria-label because a
+                  title alone is not announced; the visible label stays visible, since
+                  a label that exists only in aria-label is invisible text. */}
+              <button
+                className="design-session-end-button"
+                type="button"
+                disabled={busy}
+                title={END_SESSION_EXPLANATION}
+                aria-label={`End session. ${END_SESSION_EXPLANATION}`}
+                onClick={onEndSession}
+              >
+                End session
+              </button>
+            </div>
+          ) : null}
+          {canGenerate ? (
+            <button
+              className="design-visual-check"
+              type="button"
+              title="Visual check"
+              aria-label="Run visual check"
+              onClick={onVisualCheck}
+            >
+              ◉
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="design-assistant-scroll design-scroll" ref={assistantRef}>
@@ -1326,6 +2252,7 @@ const DesignAssistant = memo(function DesignAssistant({
           <DesignMessageCard
             key={message.id}
             canGenerate={canGenerate}
+            liveTranscript={liveTranscript}
             message={message}
             onAction={onMessageAction}
           />
@@ -1334,8 +2261,32 @@ const DesignAssistant = memo(function DesignAssistant({
 
       {canGenerate ? (
         <div className="design-composer-wrap">
-          <div className="design-composer-meta">
-            {contextLayerName ? (
+          {busy && pendingPermission !== null ? (
+            <PermissionCard
+              sessionId={pendingPermission.sessionId}
+              subscriptionId={pendingPermission.subscriptionId}
+              request={pendingPermission.request}
+              toolTitle={permissionToolTitle}
+              capabilities={capabilities}
+              daemonState={daemonConnected ? "connected" : "disconnected"}
+              onRespond={onPermissionRespond}
+            />
+          ) : permissionNotice !== null ? (
+            <div className="permission-card-notice" role="status">
+              {permissionNotice}
+            </div>
+          ) : null}
+          {unavailableProviderId !== null ? (
+            <div className="design-provider-unavailable" role="status">
+              <span className="design-message-icon design-message-icon-error" aria-hidden="true">
+                !
+              </span>
+              Remembered agent &ldquo;{unavailableProviderId}&rdquo; is no longer available. Choose
+              another agent.
+            </div>
+          ) : null}
+          {contextLayerName ? (
+            <div className="design-composer-meta">
               <div className="design-composer-context">
                 <span>
                   {contextPrefix} {contextLayerName}
@@ -1349,466 +2300,26 @@ const DesignAssistant = memo(function DesignAssistant({
                   ✕
                 </button>
               </div>
-            ) : null}
-            <div className="design-skill-controls">
-              <button
-                className="design-skill-summary"
-                type="button"
-                aria-expanded={skillPickerOpen}
-                aria-controls="design-skill-picker"
-                aria-label="Configure design craft"
-                onClick={() => setSkillPickerOpen((open) => !open)}
-              >
-                {skillSummary}
-              </button>
-              {autoSkillNotice ? (
-                <div className="design-skill-result" role="status">
-                  {autoSkillNotice}
-                </div>
-              ) : null}
-              {skillPickerOpen ? (
-                <div
-                  id="design-skill-picker"
-                  className="design-skill-picker"
-                  role="group"
-                  aria-label="Design craft sections"
-                >
-                  <p className="design-skill-purpose">
-                    These sections are added to every design request, so the agent works to the same
-                    standards each time.
-                  </p>
-                  <fieldset className="design-skill-modes">
-                    <legend>Apply craft sections</legend>
-                    <label>
-                      <input
-                        type="radio"
-                        name="design-skill-mode"
-                        value="all"
-                        checked={skillSelection.mode === "all"}
-                        onChange={() => onSkillModeChange("all")}
-                      />
-                      <span>Priority</span>
-                      <small>Most important sections that fit; the rest are omitted.</small>
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="design-skill-mode"
-                        value="manual"
-                        checked={skillSelection.mode === "manual"}
-                        onChange={() => onSkillModeChange("manual")}
-                      />
-                      <span>Manual</span>
-                      <small>Exactly the sections you tick.</small>
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="design-skill-mode"
-                        value="auto"
-                        checked={skillSelection.mode === "auto"}
-                        onChange={() => onSkillModeChange("auto")}
-                      />
-                      <span>Automatic</span>
-                      <small>The agent chooses relevant sections for each request.</small>
-                    </label>
-                  </fieldset>
-                  <div className="design-skill-list">
-                    {skillIndex.map((entry) => {
-                      const isAutomaticBaseline =
-                        skillSelection.mode === "auto" && automaticBaselineSlugSet.has(entry.slug);
-                      const isRequested = resolvedSkillSlugSet.has(entry.slug);
-                      const isDropped =
-                        hasResolvedComposition &&
-                        isRequested &&
-                        droppedSkillSlugSet.has(entry.slug);
-                      const isIncluded =
-                        !isDropped &&
-                        ((hasResolvedComposition && isRequested) || isAutomaticBaseline);
-                      const isAutomaticallyUnselected =
-                        skillSelection.mode === "auto" &&
-                        autoAppliedSkillSlugs !== null &&
-                        !isRequested &&
-                        !isAutomaticBaseline;
-                      const status = isDropped
-                        ? `Omitted: did not fit within the ${skillBlock.ceiling.toLocaleString()}-character budget.`
-                        : isAutomaticBaseline
-                          ? "Always included automatically."
-                          : isAutomaticallyUnselected
-                            ? "Not chosen automatically."
-                            : null;
-                      const rowClass = [
-                        "design-skill-option",
-                        skillSelection.mode !== "manual" ? "design-skill-option-locked" : null,
-                        isIncluded ? "design-skill-option-included" : null,
-                        isDropped ? "design-skill-option-dropped" : null,
-                        isAutomaticBaseline ? "design-skill-option-always-included" : null,
-                        isAutomaticallyUnselected ? "design-skill-option-not-selected" : null,
-                      ]
-                        .filter((className): className is string => className !== null)
-                        .join(" ");
-
-                      return (
-                        <label className={rowClass} key={entry.slug}>
-                          <input
-                            type="checkbox"
-                            aria-label={`Apply ${entry.title}`}
-                            // Automatic has not decided yet, and an empty box would say it
-                            // decided no.  `indeterminate` is the state HTML already has for
-                            // exactly this, announced as "mixed" rather than "not checked".
-                            ref={(node) => {
-                              if (node !== null) {
-                                node.indeterminate =
-                                  skillSelection.mode === "auto" &&
-                                  autoAppliedSkillSlugs === null &&
-                                  !isAutomaticBaseline;
-                              }
-                            }}
-                            checked={
-                              skillSelection.mode === "manual"
-                                ? selectedSlugSet.has(entry.slug)
-                                : isIncluded
-                            }
-                            disabled={skillSelection.mode !== "manual"}
-                            onChange={() => onSkillToggle(entry.slug)}
-                          />
-                          <span className="design-skill-option-copy">
-                            <span className="design-skill-option-title">{entry.title}</span>
-                            <span className="design-skill-option-description">
-                              {entry.description}
-                            </span>
-                            {status !== null ? (
-                              <span className="design-skill-option-status">{status}</span>
-                            ) : null}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  {skillPreview.length > 0 ? (
-                    <details className="design-skill-preview">
-                      <summary>What the agent will be told</summary>
-                      <pre>{skillPreview}</pre>
-                    </details>
-                  ) : null}
-                </div>
-              ) : null}
             </div>
-          </div>
+          ) : null}
           <div className="design-composer">
-            <textarea
-              value={draft}
-              onChange={onDraftChange}
-              onKeyDown={onComposerKeyDown}
-              placeholder={draftPlaceholder}
-              aria-label="Describe a design change"
-              rows={2}
-            />
-            <div className="design-composer-footer">
-              <div className="design-agent-picker-wrap" ref={providerPickerWrapRef}>
-                <button
-                  ref={providerButtonRef}
-                  className="design-provider-button"
-                  type="button"
-                  // A session keeps the agent it was opened with, so once one exists this
-                  // is not a choice any more. Say which agent, say why, and drop the
-                  // chevron: a disabled control that still promises a menu is the shape
-                  // this surface has been carrying everywhere — `saveDocument` already
-                  // sets the rule that an absent capability removes its own UI.
-                  aria-label={
-                    providerButtonDisabled
-                      ? `Agent for this session: ${providerLabel}. Choose an agent before the first generation.`
-                      : `Choose provider: ${providerLabel}`
-                  }
-                  title={
-                    providerButtonDisabled
-                      ? "This session keeps the agent it started with. Choose an agent before the first generation."
-                      : undefined
-                  }
-                  aria-expanded={providerButtonDisabled ? undefined : providerPickerOpen}
-                  aria-controls={providerButtonDisabled ? undefined : "design-provider-picker"}
-                  disabled={providerButtonDisabled}
-                  onClick={() => {
-                    if (consentProvider !== null) return;
-                    setProviderPickerOpen((open) => !open);
-                    setWorkspacePickerOpen(false);
-                    setModelPickerOpen(false);
-                  }}
-                >
-                  <span className="design-provider-dot" aria-hidden="true" />
-                  {providerLabel}
-                  {providerButtonDisabled ? null : " ▾"}
-                </button>
-                {providerPickerOpen && !providerButtonDisabled ? (
-                  <div
-                    id="design-provider-picker"
-                    className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
-                    role={consentProvider === null ? "listbox" : "group"}
-                    aria-label={consentProvider === null ? "Choose provider" : "Confirm provider"}
-                  >
-                    {consentProvider !== null ? (
-                      <>
-                        <div className="design-agent-picker-label">Confirm provider</div>
-                        {/*
-                          Focus moves to Confirm as soon as this card appears, so a screen reader
-                          announces that button and whatever describes it — and nothing else. The
-                          description therefore has to carry the command itself: approving a
-                          package download while hearing only the word "Confirm" is not consent.
-                        */}
-                        <p className="design-agent-picker-notice" id="design-consent-notice">
-                          Approve this command to download and run third-party code:
-                        </p>
-                        <code className="design-agent-picker-command" id="design-consent-command">
-                          {consentCommandLine}
-                        </code>
-                        <div className="design-agent-picker-actions">
-                          <button
-                            type="button"
-                            className="design-agent-picker-secondary"
-                            onClick={cancelConsent}
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            ref={consentConfirmRef}
-                            type="button"
-                            className="design-agent-picker-primary"
-                            aria-describedby="design-consent-notice design-consent-command"
-                            onClick={confirmConsent}
-                            disabled={consentInFlight}
-                          >
-                            Confirm
-                          </button>
-                        </div>
-                      </>
-                    ) : providersLoading ? (
-                      <>
-                        <div className="design-agent-picker-label">Choose agent</div>
-                        <div className="design-agent-picker-status">Loading agents…</div>
-                      </>
-                    ) : providers.length === 0 ? (
-                      <>
-                        <div className="design-agent-picker-label">Choose agent</div>
-                        <div className="design-agent-picker-status">
-                          No chat-capable agents found.
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="design-agent-picker-label">Choose agent</div>
-                        <div className="design-agent-picker-options">
-                          {providers.map((providerOption) => (
-                            <button
-                              type="button"
-                              role="option"
-                              aria-selected={providerOption.id === selectedProviderId}
-                              data-provider-id={providerOption.id}
-                              className="design-agent-picker-option"
-                              key={providerOption.id}
-                              onClick={(event) => {
-                                if (requiresConsent(providerOption)) {
-                                  consentRestoreRef.current = event.currentTarget;
-                                  consentRestoreProviderIdRef.current = providerOption.id;
-                                  requestConsent(providerOption);
-                                  return;
-                                }
-                                onProviderSelect(providerOption);
-                                setProviderPickerOpen(false);
-                              }}
-                            >
-                              {providerOption.id}
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-              <div className="design-agent-picker-wrap" ref={workspacePickerWrapRef}>
-                <button
-                  className="design-provider-button"
-                  type="button"
-                  aria-label={
-                    workspaceButtonDisabled
-                      ? `Workspace for this session: ${workspaceLabel}. Choose a workspace before the first generation.`
-                      : `Choose workspace: ${workspaceLabel}`
-                  }
-                  title={
-                    workspaceButtonDisabled
-                      ? "This session keeps the workspace it started in. Choose a workspace before the first generation."
-                      : undefined
-                  }
-                  aria-expanded={workspaceButtonDisabled ? undefined : workspacePickerOpen}
-                  aria-controls={workspaceButtonDisabled ? undefined : "design-workspace-picker"}
-                  disabled={workspaceButtonDisabled}
-                  onClick={() => {
-                    const nextOpen = !workspacePickerOpen;
-                    if (nextOpen) onWorkspacePickerOpen();
-                    setWorkspacePickerOpen(nextOpen);
-                    setProviderPickerOpen(false);
-                    setModelPickerOpen(false);
-                  }}
-                >
-                  <span className="design-provider-dot" aria-hidden="true" />
-                  {workspaceLabel}
-                  {workspaceButtonDisabled ? null : " ▾"}
-                </button>
-                {workspacePickerOpen && !workspaceButtonDisabled ? (
-                  <div
-                    id="design-workspace-picker"
-                    className="design-agent-picker"
-                    role="listbox"
-                    aria-label="Choose workspace"
-                  >
-                    <div className="design-agent-picker-label">Choose workspace</div>
-                    {workspacesLoading && workspaceProjects.length === 0 ? (
-                      <div className="design-agent-picker-status">Loading workspaces.</div>
-                    ) : (
-                      <>
-                        {workspacesRefreshing ? (
-                          <div className="design-agent-picker-status">Refreshing workspaces.</div>
-                        ) : null}
-                        {workspacesError !== null ? (
-                          <div className="design-agent-picker-status">{workspacesError}</div>
-                        ) : null}
-                        {workspaceSelectionNotice !== null ? (
-                          <div className="design-agent-picker-status">
-                            {workspaceSelectionNotice}
-                          </div>
-                        ) : null}
-                        <div className="design-agent-picker-options">
-                          <button
-                            type="button"
-                            role="option"
-                            aria-selected={selectedWorkspaceId === null}
-                            className="design-agent-picker-option"
-                            onClick={() => {
-                              onWorkspaceSelect(null);
-                              setWorkspacePickerOpen(false);
-                            }}
-                          >
-                            No workspace — use the daemon directory
-                          </button>
-                        </div>
-                        {workspaceProjects.length === 0 ? (
-                          <div className="design-agent-picker-status">No projects registered.</div>
-                        ) : (
-                          workspaceProjects.map((project) => (
-                            <div className="design-workspace-project" key={project.id}>
-                              <div className="design-agent-picker-label">{project.name}</div>
-                              {project.workspaceError !== undefined ? (
-                                <div className="design-agent-picker-status">
-                                  {project.workspaceError}
-                                </div>
-                              ) : project.workspaces.length === 0 ? (
-                                <div className="design-agent-picker-status">
-                                  A workspace has to be created in Workspace first.
-                                </div>
-                              ) : (
-                                <div className="design-agent-picker-options">
-                                  {project.workspaces.map((workspace) => (
-                                    <button
-                                      type="button"
-                                      role="option"
-                                      aria-selected={workspace.id === selectedWorkspaceId}
-                                      data-workspace-id={workspace.id}
-                                      className="design-agent-picker-option"
-                                      key={workspace.id}
-                                      onClick={() => {
-                                        onWorkspaceSelect(workspace);
-                                        setWorkspacePickerOpen(false);
-                                      }}
-                                    >
-                                      {workspace.title}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-              <div className="design-agent-picker-wrap">
-                <button
-                  className="design-provider-button"
-                  type="button"
-                  aria-label={
-                    modelButtonDisabled ? modelButtonUnavailableLabel : `Model: ${modelLabel}`
-                  }
-                  title={modelButtonDisabled ? modelButtonUnavailableLabel : undefined}
-                  aria-expanded={modelButtonDisabled ? undefined : modelPickerOpen}
-                  aria-controls={modelButtonDisabled ? undefined : "design-model-picker"}
-                  disabled={modelButtonDisabled}
-                  onClick={() => {
-                    setModelPickerOpen((open) => !open);
-                    setProviderPickerOpen(false);
-                    setWorkspacePickerOpen(false);
-                  }}
-                >
-                  <span className="design-provider-dot" aria-hidden="true" />
-                  Model: {modelLabel}
-                  {modelButtonDisabled ? null : " ▾"}
-                </button>
-                {modelButtonDisabled ? (
-                  <div className="design-agent-picker-status" role="status">
-                    {modelUnavailableMessage}
-                  </div>
-                ) : modelPickerOpen ? (
-                  <div
-                    id="design-model-picker"
-                    className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
-                    role="group"
-                    aria-label="Choose model"
-                    aria-busy={pendingSwitch}
-                  >
-                    <>
-                      <div className="design-agent-picker-label">
-                        {manifest.providerId ?? providerLabel}
-                      </div>
-                      {manifest.models.length > 1 ? (
-                        <select
-                          aria-label="Model"
-                          value={manifest.currentModelId ?? ""}
-                          disabled={pendingSwitch}
-                          onChange={(event) => onModelSelect(event.target.value)}
-                        >
-                          {manifest.models.map((model) => (
-                            <option key={model.modelId} value={model.modelId}>
-                              {model.name}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="design-agent-picker-model-name">
-                          {manifest.models[0].name}
-                        </span>
-                      )}
-                      {efforts.length > 0 ? (
-                        <label className="design-agent-picker-effort">
-                          <span>Thinking effort</span>
-                          <select
-                            aria-label="Thinking effort"
-                            value={confirmedEffort(currentModel)}
-                            disabled={pendingSwitch}
-                            onChange={(event) => onEffortSelect(event.target.value)}
-                          >
-                            {efforts.map((effort) => (
-                              <option key={effort.id} value={effort.id}>
-                                {effort.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : null}
-                    </>
-                  </div>
-                ) : null}
-              </div>
+            <div className="design-composer-input">
+              <textarea
+                value={draft}
+                onChange={onDraftChange}
+                onKeyDown={onComposerKeyDown}
+                placeholder={draftPlaceholder}
+                aria-label="Describe a design change"
+                rows={3}
+              />
+              {/*
+                The primary action sits beside the text, not in a row of its own.
+                The composer's content box is 313px wide (366 assistant − 1 border
+                − 28 composer-wrap padding − 2 composer border − 22 composer padding),
+                and the four controls with their gaps need 335px, so a labelled
+                button cannot join the strip below. The three selectors keep that
+                strip and Generate docks at the text's bottom-right.
+              */}
               <button
                 className="design-generate-button"
                 type="button"
@@ -1817,6 +2328,209 @@ const DesignAssistant = memo(function DesignAssistant({
               >
                 {sendLabel}
               </button>
+            </div>
+            {skillResultNotice ? (
+              <div className="design-skill-result" role="status">
+                {skillResultNotice}
+              </div>
+            ) : null}
+            <div className="design-composer-footer">
+              <div className="design-composer-controls">
+                <DesignSkillModeControl
+                  skillSelection={skillSelection}
+                  onSkillModeChange={onSkillModeChange}
+                  onCraftOpen={onCraftOpen}
+                  onCraftReadMore={onCraftReadMore}
+                />
+                <div className="design-agent-picker-wrap" ref={providerPickerWrapRef}>
+                  <button
+                    ref={providerButtonRef}
+                    className="design-provider-button"
+                    type="button"
+                    // A session keeps the agent it was opened with. While a generation is idle,
+                    // let the user choose a new provider; that choice closes this session and a
+                    // later generation opens a fresh one for the selected agent.
+                    aria-label={
+                      providerButtonDisabled
+                        ? `Choose provider: ${providerLabel}. A generation is running; wait for it to finish to change the agent.`
+                        : `Choose provider: ${providerLabel}`
+                    }
+                    title={
+                      providerButtonDisabled
+                        ? "A generation is running; wait for it to finish to change the agent."
+                        : undefined
+                    }
+                    aria-expanded={providerButtonDisabled ? undefined : providerPickerOpen}
+                    aria-controls={providerButtonDisabled ? undefined : "design-provider-picker"}
+                    disabled={providerButtonDisabled}
+                    onClick={() => {
+                      if (consentProvider !== null) return;
+                      setProviderPickerOpen((open) => !open);
+                      setModelPickerOpen(false);
+                    }}
+                  >
+                    <span className="design-provider-dot" aria-hidden="true" />
+                    {providerLabel}
+                    {providerButtonDisabled ? null : " ▾"}
+                  </button>
+                  {providerPickerOpen && !providerButtonDisabled ? (
+                    <div
+                      id="design-provider-picker"
+                      className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
+                      role={consentProvider === null ? "listbox" : "group"}
+                      aria-label={consentProvider === null ? "Choose provider" : "Confirm provider"}
+                    >
+                      {consentProvider !== null ? (
+                        <>
+                          <div className="design-agent-picker-label">Confirm provider</div>
+                          {/*
+                          Focus moves to Confirm as soon as this card appears, so a screen reader
+                          announces that button and whatever describes it — and nothing else. The
+                          description therefore has to carry the command itself: approving a
+                          package download while hearing only the word "Confirm" is not consent.
+                        */}
+                          <p className="design-agent-picker-notice" id="design-consent-notice">
+                            Approve this command to download and run third-party code:
+                          </p>
+                          <code className="design-agent-picker-command" id="design-consent-command">
+                            {consentCommandLine}
+                          </code>
+                          <div className="design-agent-picker-actions">
+                            <button
+                              type="button"
+                              className="design-agent-picker-secondary"
+                              onClick={cancelConsent}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              ref={consentConfirmRef}
+                              type="button"
+                              className="design-agent-picker-primary"
+                              aria-describedby="design-consent-notice design-consent-command"
+                              onClick={confirmConsent}
+                              disabled={consentInFlight}
+                            >
+                              Confirm
+                            </button>
+                          </div>
+                        </>
+                      ) : providersLoading ? (
+                        <>
+                          <div className="design-agent-picker-label">Choose agent</div>
+                          <div className="design-agent-picker-status">Loading agents…</div>
+                        </>
+                      ) : providers.length === 0 ? (
+                        <>
+                          <div className="design-agent-picker-label">Choose agent</div>
+                          <div className="design-agent-picker-status">
+                            No chat-capable agents found.
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="design-agent-picker-label">Choose agent</div>
+                          <div className="design-agent-picker-options">
+                            {providers.map((providerOption) => (
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={providerOption.id === selectedProviderId}
+                                data-provider-id={providerOption.id}
+                                className="design-agent-picker-option"
+                                key={providerOption.id}
+                                onClick={(event) => {
+                                  if (requiresConsent(providerOption)) {
+                                    consentRestoreRef.current = event.currentTarget;
+                                    consentRestoreProviderIdRef.current = providerOption.id;
+                                    requestConsent(providerOption);
+                                    return;
+                                  }
+                                  onProviderSelect(providerOption);
+                                  setProviderPickerOpen(false);
+                                }}
+                              >
+                                {providerOption.id}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="design-agent-picker-wrap">
+                  <button
+                    className="design-provider-button"
+                    type="button"
+                    aria-label={
+                      modelButtonDisabled ? modelButtonUnavailableLabel : `Model: ${modelLabel}`
+                    }
+                    title={modelButtonDisabled ? modelButtonUnavailableLabel : undefined}
+                    aria-expanded={modelButtonDisabled ? undefined : modelPickerOpen}
+                    aria-controls={modelButtonDisabled ? undefined : "design-model-picker"}
+                    disabled={modelButtonDisabled}
+                    onClick={() => {
+                      setModelPickerOpen((open) => !open);
+                      setProviderPickerOpen(false);
+                    }}
+                  >
+                    <span className="design-provider-dot" aria-hidden="true" />
+                    {modelButtonLabel}
+                    {modelButtonDisabled ? null : " ▾"}
+                  </button>
+                  {modelButtonDisabled ? null : modelPickerOpen ? (
+                    <div
+                      id="design-model-picker"
+                      className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
+                      role="group"
+                      aria-label="Choose model"
+                      aria-busy={pendingSwitch}
+                    >
+                      <>
+                        <div className="design-agent-picker-label">
+                          {manifest.providerId ?? providerLabel}
+                        </div>
+                        {manifest.models.length > 1 ? (
+                          <select
+                            aria-label="Model"
+                            value={manifest.currentModelId ?? ""}
+                            disabled={pendingSwitch}
+                            onChange={(event) => onModelSelect(event.target.value)}
+                          >
+                            {manifest.models.map((model) => (
+                              <option key={model.modelId} value={model.modelId}>
+                                {model.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="design-agent-picker-model-name">
+                            {manifest.models[0].name}
+                          </span>
+                        )}
+                        {efforts.length > 0 ? (
+                          <label className="design-agent-picker-effort">
+                            <span>Thinking effort</span>
+                            <select
+                              aria-label="Thinking effort"
+                              value={confirmedEffort(currentModel)}
+                              disabled={pendingSwitch}
+                              onChange={(event) => onEffortSelect(event.target.value)}
+                            >
+                              {efforts.map((effort) => (
+                                <option key={effort.id} value={effort.id}>
+                                  {effort.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
+                      </>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
             </div>
           </div>
           <div className="design-composer-hint">
@@ -1830,17 +2544,9 @@ const DesignAssistant = memo(function DesignAssistant({
 
 export interface DesignSurfaceProps {
   host: DesignHost;
-  disclosure?: DesignDisclosure;
 }
 
-function resolveDesignDisclosure(
-  disclosure: DesignDisclosure | undefined,
-  context: { session: Session | null; selectedWorkspace: Workspace | null },
-): string | undefined {
-  return typeof disclosure === "function" ? disclosure(context) : disclosure;
-}
-
-export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
+export function DesignSurface({ host }: DesignSurfaceProps) {
   const storedDocument = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.document : null,
   );
@@ -1882,17 +2588,9 @@ export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
     };
   }, [host]);
 
-  const initialDisclosure = resolveDesignDisclosure(disclosure, {
-    session: null,
-    selectedWorkspace: null,
-  });
-
   if (loadError !== null) {
     return (
       <section className="surface-card design-surface" data-screen-label="Design">
-        {initialDisclosure ? (
-          <div className="design-demo-disclosure">{initialDisclosure}</div>
-        ) : null}
         <div role="alert">Unable to load the design document: {loadError}</div>
       </section>
     );
@@ -1901,26 +2599,44 @@ export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
   if (document === null) {
     return (
       <section className="surface-card design-surface" data-screen-label="Design">
-        {initialDisclosure ? (
-          <div className="design-demo-disclosure">{initialDisclosure}</div>
-        ) : null}
         <div role="status">Loading…</div>
       </section>
     );
   }
 
-  return <DesignSurfaceContent host={host} document={document} disclosure={disclosure} />;
+  return <DesignSurfaceContent host={host} document={document} />;
 }
 
 interface DesignSurfaceContentProps {
   host: DesignHost;
   document: DesignDocument;
-  disclosure?: DesignDisclosure;
 }
 
-function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceContentProps) {
+function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
+  const daemon = useWorkspaceDaemon();
+  const [lastKnownDaemonCapabilities, setLastKnownDaemonCapabilities] = useState<
+    readonly string[] | null
+  >(null);
+  useEffect(() => {
+    if (daemon.state === "connected" && daemon.capabilities.includes("typed_permissions")) {
+      setLastKnownDaemonCapabilities((previous) => previous ?? daemon.capabilities);
+    }
+  }, [daemon]);
+  // A failed poll reports an empty capability list, but that means "unknown", not "absent".
+  // A permission event itself proves this session negotiated typed permissions, so keep the
+  // card visible even before the first successful status poll; thereafter use the last connected
+  // capability snapshot while the daemon is reconnecting.
+  const permissionCapabilities =
+    daemon.state === "connected"
+      ? (lastKnownDaemonCapabilities ?? daemon.capabilities)
+      : (lastKnownDaemonCapabilities ?? ["typed_permissions"]);
+  const daemonConnected = daemon.state === "connected";
   const messages = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.messages : EMPTY_DESIGN_MESSAGES,
+  );
+  // Anchored agent notes: document field mirrored in the store, like messages.
+  const sectionNotes = useAppStore((state) =>
+    state.designSession.host === host ? state.designSession.sectionNotes : EMPTY_SECTION_NOTES,
   );
   const generation = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.generation : null,
@@ -1945,6 +2661,11 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     saved: document.initialState.saved,
   }));
   const [viewState, setViewState] = useState<DesignViewState>(initialViewState);
+  // Adaptive frame height for the generated page: width stays 1280, height
+  // follows the live canvas aspect (see artifactViewport). Seeded at the
+  // 800 baseline so mount and tests without a measured canvas keep the
+  // canonical sheet until a real canvas size arrives with an artifact.
+  const [artifactPageHeight, setArtifactPageHeight] = useState(ARTIFACT_PAGE_HEIGHT);
   const [composerContextLayerId, setComposerContextLayerId] = useState<string | null>(
     initialViewState.selectedLayerId,
   );
@@ -1956,13 +2677,13 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [skillSelection, setSkillSelectionState] = useState<DesignSkillSelection>(
     DEFAULT_DESIGN_SKILL_SELECTION,
   );
-  const [autoAppliedSkillSlugs, setAutoAppliedSkillSlugs] = useState<readonly string[] | null>(
-    null,
-  );
-  const [autoSkillNotice, setAutoSkillNotice] = useState<string | null>(null);
+  const [appliedSkillSlugs, setAppliedSkillSlugs] = useState<readonly string[] | null>(null);
+  const [skillResultNotice, setSkillResultNotice] = useState<string | null>(null);
+  const [craftSheetMode, setCraftSheetMode] = useState<"manual" | "readonly" | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
+  const [unavailableProviderId, setUnavailableProviderId] = useState<string | null>(null);
   const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProject[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
   const [workspacesRefreshing, setWorkspacesRefreshing] = useState(false);
@@ -1979,6 +2700,12 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [agentSessionRecord, setAgentSessionRecord] = useState<Session | null>(
     () => host.getAgentSessionRecord?.() ?? null,
   );
+  const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(
+    () => host.getPendingPermission?.() ?? null,
+  );
+  const [permissionNotice, setPermissionNotice] = useState<string | null>(
+    () => host.getPermissionNotice?.() ?? null,
+  );
   const [historyOpenResult, setHistoryOpenResult] = useState<DesignHistoryOpenResult | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
@@ -1988,6 +2715,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const documentRevisionRef = useRef(0);
   const layerCopyCounterRef = useRef(0);
   const skillSelectionInteractedRef = useRef(false);
+  const skillSelectionRef = useRef(skillSelection);
   const providerSelectionInteractedRef = useRef(false);
   const workspaceSelectionInteractedRef = useRef(false);
   const workspaceSelectionIdRef = useRef<string | null>(null);
@@ -2052,18 +2780,41 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       setAgentSession(next);
       setAgentState(next?.getState() ?? null);
       setAgentSessionRecord(nextRecord);
+      setPendingPermission(host.getPendingPermission?.() ?? null);
+      setPermissionNotice(host.getPermissionNotice?.() ?? null);
     };
     const unsubscribe = host.subscribeAgentSession?.(updateAgentSession);
     updateAgentSession();
     return () => unsubscribe?.();
   }, [host]);
 
+  const [streamingTranscript, setStreamingTranscript] =
+    useState<readonly DesignTranscriptItem[]>(EMPTY_TRANSCRIPT);
+  // Read by startGeneration's failure path and the stop/retry actions below.
+  // Those callbacks must see the rows live at the moment they run, not the
+  // rows live at the moment they were created, so they read this ref instead
+  // of taking streamingTranscript as a dependency (which would recreate them
+  // on every stream chunk).
+  const streamingTranscriptRef = useRef(streamingTranscript);
+
   useEffect(() => {
     if (agentSession === null) return;
-    const update = (): void => setAgentState(agentSession.getState());
+    // This subscription is the surface's single live view of the session, and it also keeps the
+    // transcript rows. The boundary comes from the host because it is recorded after the
+    // craft-selection pre-flight, whose items are the host's own question, not the agent's
+    // answer. Stop and failure run outside render, so they read the same rows the working card
+    // renders instead of taking a dependency on every chunk.
+    const update = (): void => {
+      const state = agentSession.getState();
+      setAgentState(state);
+      const start = host.getRunTranscriptStart?.() ?? null;
+      const next = start === null ? EMPTY_TRANSCRIPT : transcriptItems(state.items, start);
+      streamingTranscriptRef.current = next;
+      setStreamingTranscript(next);
+    };
     update();
     return agentSession.subscribe(update);
-  }, [agentSession]);
+  }, [agentSession, host]);
 
   useEffect(() => {
     let active = true;
@@ -2076,16 +2827,31 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           if (!active) return;
           if (providerSelectionInteractedRef.current) return;
           setSelectedProviderId(storedId);
+          setUnavailableProviderId(null);
           if (storedId !== null) {
             const storedProvider = available.find((provider) => provider.id === storedId);
-            if (storedProvider !== undefined) host.selectProvider?.(storedProvider);
+            if (storedProvider !== undefined) {
+              // Mount restores the preference only; the first generation owns session creation.
+              (host.setProviderPreference ?? host.selectProvider)?.(storedProvider);
+            }
+            return;
           }
+          return loadStoredDesignProviderId().then((rawStoredId) => {
+            if (!active || providerSelectionInteractedRef.current) return;
+            if (
+              rawStoredId !== null &&
+              !available.some((provider) => provider.id === rawStoredId)
+            ) {
+              setUnavailableProviderId(rawStoredId);
+            }
+          });
         });
       })
       .catch(() => {
         if (active) {
           setProviders([]);
           setSelectedProviderId(null);
+          setUnavailableProviderId(null);
         }
       })
       .finally(() => {
@@ -2162,14 +2928,16 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         if (candidateId !== null && selectedWorkspace !== undefined) {
           updateWorkspaceSelection(candidateId, false, null);
           if (existingSession === null && (storedSelection || (!initialLoad && wasUnresolved))) {
-            host.selectWorkspace?.(selectedWorkspace);
+            (host.setWorkspacePreference ?? host.selectWorkspace)?.(selectedWorkspace);
           }
         } else if (candidateId !== null && failedProjectExists) {
           updateWorkspaceSelection(candidateId, true, WORKSPACE_UNCONFIRMED_NOTICE);
-          if (!initialLoad && !wasUnresolved) host.selectWorkspace?.(null);
+          if (!initialLoad && !wasUnresolved) {
+            (host.setWorkspacePreference ?? host.selectWorkspace)?.(null);
+          }
         } else if (!initialLoad && candidateId !== null) {
           updateWorkspaceSelection(null, false, WORKSPACE_NOT_REGISTERED_NOTICE);
-          host.selectWorkspace?.(null);
+          (host.setWorkspacePreference ?? host.selectWorkspace)?.(null);
           void saveDesignWorkspaceId(null).then((saved) => reportPersistence("workspace", saved));
         } else if (candidateId !== null || initialLoad) {
           updateWorkspaceSelection(null, false, null);
@@ -2221,8 +2989,12 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
 
   useEffect(() => {
     messagesRef.current = messages;
-    if (assistantRef.current) assistantRef.current.scrollTop = assistantRef.current.scrollHeight;
-  }, [messages, busy]);
+    if (assistantRef.current && messages.length > 0) {
+      assistantRef.current.scrollTop = assistantRef.current.scrollHeight;
+    }
+    // The transcript also grows while a run streams, and following those rows is the same
+    // behaviour the Workspace chat has: text that arrives below the fold is not "shown".
+  }, [messages, busy, streamingTranscript]);
 
   useEffect(() => {
     let active = true;
@@ -2234,56 +3006,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     };
   }, [knownSkillSlugs]);
 
-  const selectedLayer = useMemo(
-    () => layers.find((layer) => layer.id === selectedLayerId) ?? null,
-    [layers, selectedLayerId],
-  );
-
-  // The same resolved list drives both the composer summary and each generation.
-  const selectedSkillSlugs = useMemo(
-    () => selectedSlugs(skillSelection, knownSkillSlugs),
-    [knownSkillSlugs, skillSelection],
-  );
-  const updateSkillSelection = useCallback(
-    (selection: DesignSkillSelection) => {
-      skillSelectionInteractedRef.current = true;
-      setSkillSelectionState(selection);
-      void saveDesignSkillSelection(selection).then((saved) => reportPersistence("skill", saved));
-    },
-    [reportPersistence],
-  );
-  const handleSkillModeChange = useCallback(
-    (mode: DesignSkillSelection["mode"]) => {
-      if (skillSelection.mode === mode) return;
-      setAutoSkillNotice(null);
-      setAutoAppliedSkillSlugs(null);
-      updateSkillSelection({ ...skillSelection, mode });
-    },
-    [skillSelection, updateSkillSelection],
-  );
-  const handleSkillToggle = useCallback(
-    (slug: string) => {
-      if (skillSelection.mode !== "manual") return;
-      const enabled = new Set(skillSelection.enabledSlugs);
-      if (enabled.has(slug)) enabled.delete(slug);
-      else enabled.add(slug);
-      updateSkillSelection({
-        ...skillSelection,
-        enabledSlugs: [...enabled],
-      });
-    },
-    [skillSelection, updateSkillSelection],
-  );
-
-  const layerRows = useMemo(
-    () =>
-      layers.map((layer) => ({
-        ...layer,
-        selected: layer.id === selectedLayerId,
-        hidden: isHidden(snapshot.hiddenLayerIds, layer.id),
-      })),
-    [layers, selectedLayerId, snapshot.hiddenLayerIds],
-  );
+  useEffect(() => {
+    skillSelectionRef.current = skillSelection;
+  }, [skillSelection]);
 
   const artifact = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.latestArtifact : null,
@@ -2299,8 +3024,157 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   );
   const artifactRect = useMemo(
     () =>
-      artifactHtml !== undefined || artifactError !== undefined ? artifactNodeRect(layers) : null,
-    [artifactError, artifactHtml, layers],
+      artifactHtml !== undefined || artifactError !== undefined
+        ? artifactNodeRect(layers, artifactPageHeight)
+        : null,
+    [artifactError, artifactHtml, artifactPageHeight, layers],
+  );
+
+  // Measured page structure for the current artifact. The critic feeds the
+  // module cache once per new artifact (same pass, no second measurement);
+  // this state only re-renders the surface when that result lands. A remount
+  // reads straight from the cache, so navigating back keeps the layers.
+  const [measuredArtifact, setMeasuredArtifact] = useState<{
+    html: string;
+    sections: readonly ArtifactSection[];
+  } | null>(null);
+  const handleArtifactMeasured = useCallback((html: string, result: ArtifactRenderCriticResult) => {
+    const sections = result.structure ?? EMPTY_SECTIONS;
+    setCachedArtifactSections(html, sections);
+    setMeasuredArtifact({ html, sections });
+  }, []);
+  const artifactSections: readonly ArtifactSection[] = useMemo(() => {
+    if (artifactHtml === undefined) return EMPTY_SECTIONS;
+    if (measuredArtifact !== null && measuredArtifact.html === artifactHtml) {
+      return measuredArtifact.sections;
+    }
+    return getCachedArtifactSections(artifactHtml) ?? EMPTY_SECTIONS;
+  }, [artifactHtml, measuredArtifact]);
+  const sectionAnchors = useMemo(
+    () => new Set(artifactSections.map((section) => section.anchor)),
+    [artifactSections],
+  );
+  const sectionLayers = useMemo(
+    () =>
+      artifactRect === null
+        ? []
+        : sectionsToLayers(artifactSections, { x: artifactRect.x, y: artifactRect.y }),
+    [artifactSections, artifactRect],
+  );
+  // Displayed layers: canvas nodes first, measured page sections after.
+  // Undo snapshots, saves, and fit math keep using `layers` (canvas nodes
+  // only); sections are derived from the artifact and never enter history.
+  const displayLayers = useMemo(() => [...layers, ...sectionLayers], [layers, sectionLayers]);
+
+  const selectedLayer = useMemo(
+    () => displayLayers.find((layer) => layer.id === selectedLayerId) ?? null,
+    [displayLayers, selectedLayerId],
+  );
+
+  // The same resolved list drives both the composer summary and each generation.
+  const selectedSkillSlugs = useMemo(
+    () => selectedSlugs(skillSelection, knownSkillSlugs),
+    [knownSkillSlugs, skillSelection],
+  );
+  const updateSkillSelection = useCallback(
+    (selection: DesignSkillSelection) => {
+      skillSelectionInteractedRef.current = true;
+      skillSelectionRef.current = selection;
+      setSkillSelectionState(selection);
+      void saveDesignSkillSelection(selection).then((saved) => reportPersistence("skill", saved));
+    },
+    [reportPersistence],
+  );
+  const handleSkillModeChange = useCallback(
+    (mode: DesignSkillSelection["mode"]) => {
+      if (skillSelection.mode === mode) return;
+      setSkillResultNotice(null);
+      setAppliedSkillSlugs(null);
+      updateSkillSelection({
+        ...skillSelection,
+        mode,
+        enabledSlugs:
+          mode === "manual"
+            ? skillSelection.enabledSlugs.slice(0, MAX_AUTOMATIC_SKILL_SECTIONS)
+            : skillSelection.enabledSlugs,
+      });
+    },
+    [skillSelection, updateSkillSelection],
+  );
+  const handleSkillToggle = useCallback(
+    (slug: string) => {
+      if (skillSelection.mode !== "manual") return;
+      const enabled = new Set(skillSelection.enabledSlugs);
+      if (enabled.has(slug)) enabled.delete(slug);
+      else {
+        if (enabled.size >= MAX_AUTOMATIC_SKILL_SECTIONS) return;
+        enabled.add(slug);
+      }
+      updateSkillSelection({
+        ...skillSelection,
+        enabledSlugs: [...enabled],
+      });
+      setSkillResultNotice(null);
+      setAppliedSkillSlugs(null);
+    },
+    [skillSelection, updateSkillSelection],
+  );
+  const openManualCraftSheet = useCallback(() => setCraftSheetMode("manual"), []);
+  const openCraftReadOnlySheet = useCallback(() => setCraftSheetMode("readonly"), []);
+  const closeCraftSheet = useCallback(() => setCraftSheetMode(null), []);
+
+  useEffect(() => {
+    if (craftSheetMode === null) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeCraftSheet();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [closeCraftSheet, craftSheetMode]);
+
+  const resolvedSkillSlugs =
+    appliedSkillSlugs !== null
+      ? appliedSkillSlugs
+      : skillSelection.mode === "auto"
+        ? null
+        : selectedSkillSlugs;
+  // Manual belongs here too: `resolvedSkillSlugs` is the user's own ticks, so the composition
+  // is as resolved as it is in `all`. Leaving it out meant a manual selection that overflowed
+  // the budget kept every box ticked and said nothing, which is the same lie this row status
+  // exists to prevent — and the larger the corpus grows, the easier it is to tick past the
+  // ceiling.
+  const hasResolvedComposition =
+    skillSelection.mode === "all" ||
+    skillSelection.mode === "manual" ||
+    (skillSelection.mode === "auto" && appliedSkillSlugs !== null);
+  const skillBlock = useMemo(
+    () => buildSkillBlock(builtInSkillSources(), resolvedSkillSlugs ?? []),
+    [resolvedSkillSlugs],
+  );
+  const resolvedSkillSlugSet = useMemo(
+    () => new Set(resolvedSkillSlugs ?? []),
+    [resolvedSkillSlugs],
+  );
+  const automaticBaselineSlugSet = useMemo(
+    () => new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS),
+    [],
+  );
+  const droppedSkillSlugSet = useMemo(() => new Set(skillBlock.dropped), [skillBlock]);
+
+  const layerRows = useMemo(
+    () =>
+      displayLayers.map((layer) => ({
+        ...layer,
+        selected: layer.id === selectedLayerId,
+        hidden: isHidden(snapshot.hiddenLayerIds, layer.id),
+        hasNote:
+          layer.kind === "SECTION" && layer.section !== undefined
+            ? sectionNotes.some((note) => note.anchor === layer.section?.anchor)
+            : false,
+      })),
+    [displayLayers, selectedLayerId, snapshot.hiddenLayerIds, sectionNotes],
   );
 
   const fitRects = useMemo<NodeRect[]>(() => {
@@ -2327,40 +3201,100 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const generate = host.generate;
   const canSave = saveDocument !== undefined;
   const canGenerate = generate !== undefined;
-  const selectedWorkspace = useMemo(
-    () =>
-      workspaceProjects
-        .flatMap((project) => project.workspaces)
-        .find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
-    [selectedWorkspaceId, workspaceProjects],
-  );
   const selectProvider = useCallback(
     (provider: ProviderInfo) => {
-      if (agentSession !== null) return;
+      if (busy) return;
       providerSelectionInteractedRef.current = true;
       setSelectedProviderId(provider.id);
-      host.selectProvider?.(provider);
+      setUnavailableProviderId(null);
+      (host.setProviderPreference ?? host.selectProvider)?.(provider);
       void saveDesignProviderId(provider.id).then((saved) => reportPersistence("provider", saved));
     },
-    [agentSession, host, reportPersistence],
+    [busy, host, reportPersistence],
   );
   const selectWorkspace = useCallback(
     (workspace: Workspace | null) => {
-      if (agentSession !== null) return;
+      if (busy) return;
       workspaceSelectionInteractedRef.current = true;
       updateWorkspaceSelection(workspace?.id ?? null, false, null);
-      host.selectWorkspace?.(workspace);
+      (host.setWorkspacePreference ?? host.selectWorkspace)?.(workspace);
       const workspaceId = workspace?.id ?? null;
       void saveDesignWorkspaceId(workspaceId).then((saved) =>
         reportPersistence("workspace", saved),
       );
     },
-    [agentSession, host, reportPersistence, updateWorkspaceSelection],
+    [busy, host, reportPersistence, updateWorkspaceSelection],
   );
   const openWorkspacePicker = useCallback(() => {
-    if (agentSession !== null) return;
+    if (busy) return;
     void refreshWorkspaceProjects(false);
-  }, [agentSession, refreshWorkspaceProjects]);
+  }, [busy, refreshWorkspaceProjects]);
+  const [folderAttachBusy, setFolderAttachBusy] = useState(false);
+  const [folderAttachError, setFolderAttachError] = useState<string | null>(null);
+
+  /**
+   * The local checkout a folder is worked in. A folder registered here but never
+   * used has none yet, and a session needs one, so attaching a folder also creates
+   * its first local checkout — the same step the Workspace surface takes when it
+   * starts an agent in a project. An existing local checkout is reused rather than
+   * duplicated.
+   */
+  const ensureFolderCheckout = useCallback(async (folder: Project): Promise<Workspace> => {
+    const existing = await workspacesList(folder.id);
+    const checkout = existing.find((workspace) => workspace.isolation === "local");
+    return checkout ?? workspaceCreate(folder.id, "local");
+  }, []);
+
+  const attachFolder = useCallback(async (): Promise<boolean> => {
+    if (busy || folderAttachBusy) return false;
+    setFolderAttachBusy(true);
+    setFolderAttachError(null);
+    try {
+      const selected = await openFolderDialog({ directory: true, title: "Attach a folder" });
+      if (typeof selected !== "string") return false;
+      // project_add canonicalizes the path and re-registers an already known folder
+      // instead of duplicating it, so the returned id is the one to use.
+      const folder = await projectAdd(selected);
+      const checkout = await ensureFolderCheckout(folder);
+      await refreshWorkspaceProjects(false);
+      selectWorkspace(checkout);
+      return true;
+    } catch (cause: unknown) {
+      setFolderAttachError(reasonFromCause(cause));
+      return false;
+    } finally {
+      setFolderAttachBusy(false);
+    }
+  }, [busy, ensureFolderCheckout, folderAttachBusy, refreshWorkspaceProjects, selectWorkspace]);
+
+  const useRegisteredFolder = useCallback(
+    async (folderId: string): Promise<boolean> => {
+      if (busy || folderAttachBusy) return false;
+      const folder = workspaceProjects.find((candidate) => candidate.id === folderId);
+      if (folder === undefined) return false;
+      setFolderAttachBusy(true);
+      setFolderAttachError(null);
+      try {
+        const checkout = await ensureFolderCheckout(folder);
+        await refreshWorkspaceProjects(false);
+        selectWorkspace(checkout);
+        return true;
+      } catch (cause: unknown) {
+        setFolderAttachError(reasonFromCause(cause));
+        return false;
+      } finally {
+        setFolderAttachBusy(false);
+      }
+    },
+    [
+      busy,
+      ensureFolderCheckout,
+      folderAttachBusy,
+      refreshWorkspaceProjects,
+      selectWorkspace,
+      workspaceProjects,
+    ],
+  );
   const selectModel = useCallback(
     (modelId: string) => {
       void agentSession?.setModel(modelId);
@@ -2373,6 +3307,15 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     },
     [agentSession],
   );
+  const respondPermission = useCallback(
+    (outcome: "allow_once" | "deny"): Promise<void> =>
+      host.respondPermission?.(outcome) ?? Promise.resolve(),
+    [host],
+  );
+  const endSession = useCallback(() => {
+    if (busy || agentSession === null) return;
+    void host.closeAgentSession?.();
+  }, [agentSession, busy, host]);
 
   const generationCount = useMemo(
     () =>
@@ -2387,29 +3330,45 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
 
   const generationLabel = `${generationCount} ${generationCount === 1 ? "generation" : "generations"}`;
   const composerContextTarget = useMemo(() => {
-    if (
-      composerContextLayerId === ARTIFACT_NODE_ID &&
-      (artifactHtml !== undefined || artifactError !== undefined)
-    ) {
+    const artifactPresent = artifactHtml !== undefined || artifactError !== undefined;
+    if (composerContextLayerId === ARTIFACT_NODE_ID && artifactPresent) {
+      const orphanBlock = formatSectionNotesScope(null, sectionNotes, sectionAnchors, true);
       return {
         label: ARTIFACT_CONTEXT_NAME,
-        scope: `${document.contextPrefix} ${ARTIFACT_CONTEXT_NAME}; the user is refining the artifact the agent just produced.`,
+        scope:
+          `${document.contextPrefix} ${ARTIFACT_CONTEXT_NAME}; the user is refining the artifact the agent just produced.` +
+          (orphanBlock.length > 0 ? `\n${orphanBlock}` : ""),
       };
     }
 
-    const layer = layers.find((candidate) => candidate.id === composerContextLayerId);
+    const layer = displayLayers.find((candidate) => candidate.id === composerContextLayerId);
     if (!layer) return null;
+    if (layer.kind === "SECTION" && layer.section !== undefined) {
+      const anchor = layer.section.anchor;
+      const base =
+        `${document.contextPrefix} ${layer.name} (page section <${layer.section.tag}>); ` +
+        `anchor: "${anchor}"; the user is pointing at the section named "${layer.name}".`;
+      const notesBlock = formatSectionNotesScope(anchor, sectionNotes, sectionAnchors, true);
+      return {
+        label: layer.name,
+        scope: notesBlock.length > 0 ? `${base}\n${notesBlock}` : base,
+      };
+    }
     const sourcePath = layer.source ? `; source file: ${layer.source.path}` : "";
     return {
       label: layer.name,
       scope: `${document.contextPrefix} ${layer.name} (${layer.kind})${sourcePath}; the user is pointing at the layer named "${layer.name}".`,
     };
-  }, [artifactError, artifactHtml, composerContextLayerId, document.contextPrefix, layers]);
+  }, [
+    artifactError,
+    artifactHtml,
+    composerContextLayerId,
+    displayLayers,
+    document.contextPrefix,
+    sectionAnchors,
+    sectionNotes,
+  ]);
   const composerContextLayerName = composerContextTarget?.label ?? null;
-  const resolvedDisclosure = resolveDesignDisclosure(disclosure, {
-    session: agentSessionRecord,
-    selectedWorkspace,
-  });
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
 
@@ -2444,10 +3403,43 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     },
     [composerContextLayerId, markDocumentDirty, selectedLayerId],
   );
+  const closeInspector = useCallback(() => {
+    selectLayer("");
+    queueMicrotask(() => {
+      designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas")?.focus();
+    });
+  }, [selectLayer]);
+
+  useEffect(() => {
+    if (selectedLayer === null) return;
+    const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      const surface = designSurfaceRef.current;
+      if (!surface) return;
+      const eventTarget = event.target;
+      const focusTarget =
+        eventTarget instanceof Element && eventTarget.isConnected
+          ? eventTarget
+          : globalThis.document.activeElement instanceof Element &&
+              globalThis.document.activeElement.isConnected
+            ? globalThis.document.activeElement
+            : null;
+      const escapeOwner = focusTarget?.closest<HTMLElement>(
+        '[role="dialog"], [role="listbox"], [role="group"][aria-label]',
+      );
+      if (escapeOwner) return;
+      event.preventDefault();
+      closeInspector();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [closeInspector, selectedLayer]);
 
   const duplicateLayer = useCallback(() => {
     const source = layers.find((layer) => layer.id === selectedLayerId);
-    if (!source) return;
+    // Measured page sections cannot be duplicated: they describe the generated
+    // page, they are not editable nodes.
+    if (!source || source.kind === "SECTION") return;
 
     layerCopyCounterRef.current += 1;
     const copy: DesignLayer = {
@@ -2465,7 +3457,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   }, [commitSnapshot, layers, selectedLayerId, selectLayer]);
 
   const deleteLayer = useCallback(() => {
-    if (layers.length <= 1 || selectedLayer === null) return;
+    // Measured page sections cannot be deleted, for the same reason.
+    if (layers.length <= 1 || selectedLayer === null || selectedLayer.kind === "SECTION") return;
 
     const selectedIndex = layers.findIndex((layer) => layer.id === selectedLayerId);
     const nextLayer = layers[selectedIndex + 1] ?? layers[selectedIndex - 1];
@@ -2478,6 +3471,77 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       hiddenLayerIds: current.hiddenLayerIds.filter((id) => id !== selectedLayerId),
     }));
   }, [commitSnapshot, layers, selectedLayer, selectedLayerId, selectLayer]);
+
+  const addSectionNote = useCallback(
+    (anchor: string, text: string) => {
+      const trimmed = text.trim().slice(0, MAX_SECTION_NOTE_CHARS);
+      if (trimmed.length === 0) return;
+      markDocumentDirty();
+      useAppStore
+        .getState()
+        .setSectionNotes(host, (current) =>
+          current.length >= MAX_SECTION_NOTES ? current : [...current, { anchor, text: trimmed }],
+        );
+    },
+    [host, markDocumentDirty],
+  );
+  const deleteSectionNote = useCallback(
+    (index: number) => {
+      markDocumentDirty();
+      useAppStore
+        .getState()
+        .setSectionNotes(host, (current) => current.filter((_, noteIndex) => noteIndex !== index));
+    },
+    [host, markDocumentDirty],
+  );
+
+  const selectedSectionAnchor =
+    selectedLayer !== null && selectedLayer.kind === "SECTION"
+      ? (selectedLayer.section?.anchor ?? null)
+      : null;
+  const selectedSectionNotes = useMemo(() => {
+    if (selectedSectionAnchor === null) return EMPTY_RESOLVED_NOTES;
+    const entries: ResolvedSectionNote[] = [];
+    sectionNotes.forEach((note, index) => {
+      if (note.anchor === selectedSectionAnchor) entries.push({ note, index });
+    });
+    return entries;
+  }, [sectionNotes, selectedSectionAnchor]);
+  const orphanNotes = useMemo(
+    () => resolveSectionNotes(sectionNotes, sectionAnchors, artifactHtml !== undefined).orphans,
+    [sectionNotes, sectionAnchors, artifactHtml],
+  );
+  const sectionHighlight = useMemo<NodeRect | null>(() => {
+    if (selectedLayer === null || selectedLayer.kind !== "SECTION") return null;
+    return {
+      id: selectedLayer.id,
+      x: selectedLayer.transform.x,
+      y: selectedLayer.transform.y,
+      w: selectedLayer.transform.width,
+      h: selectedLayer.transform.height,
+      z: 0,
+    };
+  }, [selectedLayer]);
+  const noteMarks = useMemo<NodeRect[]>(() => {
+    const marks: NodeRect[] = [];
+    const seen = new Set<string>();
+    for (const section of sectionLayers) {
+      const anchor = section.section?.anchor;
+      if (anchor === undefined || seen.has(anchor)) continue;
+      if (snapshot.hiddenLayerIds.includes(section.id)) continue;
+      if (!sectionNotes.some((note) => note.anchor === anchor)) continue;
+      seen.add(anchor);
+      marks.push({
+        id: section.id,
+        x: section.transform.x,
+        y: section.transform.y,
+        w: 0,
+        h: 0,
+        z: 0,
+      });
+    }
+    return marks;
+  }, [sectionLayers, sectionNotes, snapshot.hiddenLayerIds]);
 
   const toggleLayerVisibility = useCallback(
     (layerId: string) => {
@@ -2517,13 +3581,25 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       return { ...current, ...nextViewport };
     });
   }, []);
+  // True once the user pans, zooms, or wheels after the last fit, so a later
+  // reframe never tears the viewport out from under their hands. fitCanvas
+  // clears it; every manual viewport path sets it.
+  const viewportTouchedRef = useRef(false);
   const setZoom = useCallback((nextZoom: number | ((currentZoom: number) => number)) => {
+    viewportTouchedRef.current = true;
     setViewState((current) => {
       const requested = typeof nextZoom === "function" ? nextZoom(current.zoom) : nextZoom;
       const next = clampViewportZoom(requested);
       return current.zoom === next ? current : { ...current, zoom: next };
     });
   }, []);
+  const handleCanvasViewportChange = useCallback(
+    (nextViewport: DesignViewport) => {
+      viewportTouchedRef.current = true;
+      setViewport(nextViewport);
+    },
+    [setViewport],
+  );
   const zoomIn = useCallback(
     () => setZoom((currentZoom) => Number((currentZoom + 0.1).toFixed(1))),
     [setZoom],
@@ -2537,8 +3613,71 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
     if (!canvas) return;
     const bounds = canvas.getBoundingClientRect();
-    setViewport(fitViewport(nodesBounds(fitRectsRef.current), bounds.width, bounds.height));
+    const { pan: fittedPan, zoom: fittedZoom } = fitViewport(
+      nodesBounds(fitRectsRef.current),
+      bounds.width,
+      bounds.height,
+      DESIGN_FIT_MARGIN,
+    );
+    viewportTouchedRef.current = false;
+    setViewport({ pan: fittedPan, zoom: fittedZoom });
   }, [setViewport]);
+
+  // The artifact frame follows the live canvas aspect (width stays 1280, height
+  // adapts), but its height re-renders the iframe, so it must not chase every
+  // pixel. The ratio gate in shouldAdaptArtifactHeight and the new-artifact
+  // trigger below are the only two reframe paths.
+  const lastCanvasSizeRef = useRef<{ width: number; height: number } | null>(null);
+  useEffect(() => {
+    const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
+    if (!canvas || typeof ResizeObserver === "undefined") return;
+    const seed = canvas.getBoundingClientRect();
+    lastCanvasSizeRef.current = { width: seed.width, height: seed.height };
+    const observer = new ResizeObserver(() => {
+      const rect = canvas.getBoundingClientRect();
+      const prev = lastCanvasSizeRef.current;
+      lastCanvasSizeRef.current = { width: rect.width, height: rect.height };
+      if (prev === null) return;
+      if (!shouldAdaptArtifactHeight(prev.width, prev.height, rect.width, rect.height)) return;
+      const desired = artifactPageHeightForCanvas(rect.width, rect.height);
+      setArtifactPageHeight((current) => (current === desired ? current : desired));
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
+  // A new artifact is a full page, not a thumbnail: fit it into view the moment
+  // it lands, so the whole generated page is visible without a manual Fit. The
+  // ref is seeded with the artifact already on screen at mount, so reopening a
+  // document keeps the saved viewport instead of snapping the camera. A reframe
+  // (new artifact or adapted height) refits only while the viewport is still
+  // pristine after the last fit; a manual pan/zoom owns the camera from then on.
+  const fittedArtifactRef = useRef<string | undefined>(artifactHtml ?? artifactError);
+  const fittedHeightRef = useRef(artifactPageHeight);
+  useEffect(() => {
+    const artifact = artifactHtml ?? artifactError;
+    if (artifact === undefined) return;
+    const isNewArtifact = fittedArtifactRef.current !== artifact;
+    if (isNewArtifact) {
+      fittedArtifactRef.current = artifact;
+      const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        lastCanvasSizeRef.current = { width: rect.width, height: rect.height };
+        const desired = artifactPageHeightForCanvas(rect.width, rect.height);
+        if (desired !== artifactPageHeight) {
+          // Defer the fit until the reframed height commits, so the camera
+          // fits the sheet the user will actually see instead of the old one.
+          setArtifactPageHeight(desired);
+          return;
+        }
+      }
+    }
+    const heightChanged = fittedHeightRef.current !== artifactPageHeight;
+    if (!isNewArtifact && !heightChanged) return;
+    fittedHeightRef.current = artifactPageHeight;
+    if (!viewportTouchedRef.current) fitCanvas();
+  }, [artifactError, artifactHtml, artifactPageHeight, fitCanvas]);
 
   const undo = useCallback(() => {
     if (!canUndo) return;
@@ -2623,6 +3762,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       selectedLayerId,
       grounded,
       layers: cloneLayerList(layers),
+      sectionNotes: sectionNotes.map((note) => ({ ...note })),
       messages: terminalMessagesForSave(messages),
     };
 
@@ -2646,7 +3786,16 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       savingRef.current = false;
       if (mountedRef.current) setSaving(false);
     }
-  }, [document, grounded, history.present, layers, messages, saveDocument, selectedLayerId]);
+  }, [
+    document,
+    grounded,
+    history.present,
+    layers,
+    messages,
+    saveDocument,
+    sectionNotes,
+    selectedLayerId,
+  ]);
   const toggleGrounding = useCallback(() => {
     markDocumentDirty();
     setGrounded((value) => !value);
@@ -2663,6 +3812,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         return;
       }
 
+      // Provenance belongs to the generation that produced it. History entries do not persist
+      // that metadata, so clear the live result before showing a different artifact.
+      setAppliedSkillSlugs(null);
+      setSkillResultNotice(null);
       disposeHistoryOpen();
       historyOpenInFlightRef.current = true;
       const openGeneration = historyOpenGenerationRef.current;
@@ -2704,6 +3857,19 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     },
     [busy, disposeHistoryOpen, markDocumentDirty, setMessages],
   );
+
+  /**
+   * The directory the agent is actually given, when a session has been opened.
+   * The daemon echoes it back; it is the truth about where the agent is working,
+   * so it wins over the attachment the user picked. Before the first generation
+   * there is no session and the attachment is all that is known. Defined before
+   * startGeneration so the generation options can name the folder Oracle must
+   * search: grounding is about this folder, never the global index.
+   */
+  const attachedFolder = workspaceProjects
+    .flatMap((project) => project.workspaces)
+    .find((workspace) => workspace.id === selectedWorkspaceId);
+  const attachedFolderPath = agentSessionRecord?.cwd ?? attachedFolder?.path ?? null;
 
   const startGeneration = useCallback(
     (prompt: string) => {
@@ -2747,12 +3913,22 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       setMessages((current) => [...current, userMessage, assistantMessage]);
       useAppStore.getState().setDesignGeneration(host, { assistantId, controller });
       setDraft("");
-      setAutoSkillNotice(null);
-      setAutoAppliedSkillSlugs(null);
+      setPermissionNotice(null);
+      setSkillResultNotice(null);
+      setAppliedSkillSlugs(null);
+      const generationSkillSelection = skillSelectionRef.current;
+      // The wire mode repeats the persisted selection id: the caller knows
+      // which mode is active and states it, the host never infers intention
+      // from the list shape. `all` carries no list — the host ranks the
+      // corpus itself. folderPath names the folder Oracle must search, or
+      // null when nothing is attached (no grounding, no notice).
+      const folderPath = attachedFolderPath ?? null;
       const generationOptions =
         skillSelection.mode === "auto"
-          ? { skillMode: "auto" as const }
-          : { skills: selectedSkillSlugs };
+          ? { skillMode: "auto" as const, grounded, folderPath }
+          : skillSelection.mode === "manual"
+            ? { skillMode: "manual" as const, skills: selectedSkillSlugs, grounded, folderPath }
+            : { skillMode: "all" as const, grounded, folderPath };
       void generate(scopedPrompt, controller.signal, generationOptions)
         .then((result) => {
           const currentGeneration = useAppStore.getState().designSession.generation;
@@ -2775,8 +3951,11 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                     desc: result.desc,
                     sources: [...result.sources],
                     nodeIds: [...result.nodeIds],
+                    transcript:
+                      result.transcript === undefined ? message.transcript : [...result.transcript],
                     artifactHtml: result.artifactHtml,
                     artifactError: result.artifactError,
+                    groundingNotice: result.groundingNotice ?? null,
                     instruction: prompt,
                   }
                 : message,
@@ -2805,31 +3984,35 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
               },
             );
           }
-          if (skillSelection.mode === "auto" && result.appliedSkillSlugs !== undefined) {
-            const composedAutoSkillBlock = buildSkillBlock(
+          if (
+            skillSelectionRef.current === generationSkillSelection &&
+            result.appliedSkillSlugs !== undefined
+          ) {
+            const composedSkillBlock = buildSkillBlock(
               builtInSkillSources(),
               result.appliedSkillSlugs,
             );
-            const droppedAutoSkillSlugs = new Set(composedAutoSkillBlock.dropped);
-            const appliedTitles = result.appliedSkillSlugs
-              .filter((slug) => !droppedAutoSkillSlugs.has(slug))
-              .map((slug) => skillIndex.find((entry) => entry.slug === slug)?.title)
-              .filter((title): title is string => title !== undefined);
-            const droppedTitles = result.appliedSkillSlugs
-              .filter((slug) => droppedAutoSkillSlugs.has(slug))
-              .map((slug) => skillIndex.find((entry) => entry.slug === slug)?.title)
-              .filter((title): title is string => title !== undefined);
-            setAutoAppliedSkillSlugs([...result.appliedSkillSlugs]);
-            setAutoSkillNotice(
+            const droppedSkillSlugs = new Set(composedSkillBlock.dropped);
+            const appliedSlugs = result.appliedSkillSlugs.filter(
+              (slug) => !droppedSkillSlugs.has(slug),
+            );
+            const omittedSlugs = result.appliedSkillSlugs.filter((slug) =>
+              droppedSkillSlugs.has(slug),
+            );
+            const modeCopy = SKILL_MODE_LABELS[generationSkillSelection.mode];
+            const appliedSummary = appliedSlugs.length > 0 ? appliedSlugs.join(", ") : "none";
+            const omittedSummary =
+              omittedSlugs.length > 0
+                ? ` Omitted: ${omittedSlugs.join(", ")} did not fit within the ${composedSkillBlock.ceiling.toLocaleString()}-character budget.`
+                : "";
+            const fallbackSummary =
+              modeCopy.fallbackNotice ??
+              `${modeCopy.name} choice did not happen; the most important sections that fit were used, and the rest were omitted.`;
+            setAppliedSkillSlugs([...result.appliedSkillSlugs]);
+            setSkillResultNotice(
               result.skillSelectionFallback
-                ? "Automatic choice did not happen; the most important sections that fit were used, and the rest were omitted."
-                : appliedTitles.length > 0
-                  ? `Automatic craft: ${appliedTitles.join(", ")}${
-                      droppedTitles.length > 0
-                        ? `. Omitted: ${droppedTitles.join(", ")} did not fit within the ${composedAutoSkillBlock.ceiling.toLocaleString()}-character budget.`
-                        : ""
-                    }`
-                  : "Automatic craft: no sections were used.",
+                ? `${fallbackSummary} Applied: ${appliedSummary}.${omittedSummary}`
+                : `${modeCopy.name} craft: ${appliedSummary}.${omittedSummary}`,
             );
           }
           useAppStore.getState().setDesignGeneration(host, null);
@@ -2856,6 +4039,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                     status: "error",
                     title: "Generation failed",
                     desc: error instanceof Error ? error.message : "The design generation failed.",
+                    transcript: streamingTranscriptRef.current,
                   }
                 : message,
             ),
@@ -2867,6 +4051,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         });
     },
     [
+      attachedFolderPath,
       busy,
       composerContextLayerName,
       composerContextTarget,
@@ -2874,9 +4059,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       disposeHistoryOpen,
       document.workingMessage,
       generate,
+      grounded,
       host,
       reportPersistence,
-      skillIndex,
       skillSelection.mode,
       selectedSkillSlugs,
       setMessages,
@@ -2926,6 +4111,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                   status: "done",
                   title: "Stopped",
                   desc: "Cancelled before the host returned a result.",
+                  transcript: streamingTranscriptRef.current,
                 }
               : item,
           ),
@@ -2963,12 +4149,26 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       <h1 className="design-sr-only" id="design-surface-title">
         Design
       </h1>
-      {resolvedDisclosure ? (
-        <div className="design-demo-disclosure">{resolvedDisclosure}</div>
-      ) : null}
       <DesignToolbar
-        documentName={document.name}
-        documentPath={document.path}
+        folderControl={
+          <DesignFolderControl
+            folders={workspaceProjects}
+            loading={workspacesLoading}
+            refreshing={workspacesRefreshing}
+            foldersError={workspacesError}
+            selectionNotice={workspaceSelectionNotice}
+            selectedWorkspaceId={selectedWorkspaceId}
+            selectionUnresolved={workspaceSelectionUnresolved}
+            attachedPath={attachedFolderPath}
+            disabled={busy}
+            attachBusy={folderAttachBusy}
+            attachError={folderAttachError}
+            onOpen={openWorkspacePicker}
+            onSelect={selectWorkspace}
+            onAttach={attachFolder}
+            onUseFolder={useRegisteredFolder}
+          />
+        }
         grounded={grounded}
         canSave={canSave}
         saved={saved}
@@ -2976,10 +4176,13 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         saveError={saveError}
         canUndo={canUndo}
         canRedo={canRedo}
+        historyRefreshKey={historyRefreshKey}
+        liveSessionId={agentSessionRecord?.id ?? null}
         onGroundingToggle={toggleGrounding}
         onSave={save}
         onUndo={undo}
         onRedo={redo}
+        onHistoryOpen={openHistoryEntry}
       />
       {persistenceNotice ? (
         <div className="design-history-open-status" role="status">
@@ -2987,11 +4190,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         </div>
       ) : null}
 
-      <DesignHistoryList
-        refreshKey={historyRefreshKey}
-        liveSessionId={agentSessionRecord?.id ?? null}
-        onOpen={openHistoryEntry}
-      />
       {historyOpenResult?.status === "loading" ? (
         <div className="design-history-open-status" role="status">
           Opening design history…
@@ -3006,10 +4204,31 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         </div>
       ) : null}
 
+      {craftSheetMode !== null ? (
+        <DesignCraftSheet
+          skillIndex={skillIndex}
+          skillSelection={skillSelection}
+          selectedSkillSlugs={selectedSkillSlugs}
+          resolvedSkillSlugs={resolvedSkillSlugs}
+          appliedSkillSlugs={appliedSkillSlugs}
+          hasResolvedComposition={hasResolvedComposition}
+          skillBlock={skillBlock}
+          resolvedSkillSlugSet={resolvedSkillSlugSet}
+          automaticBaselineSlugSet={automaticBaselineSlugSet}
+          droppedSkillSlugSet={droppedSkillSlugSet}
+          readOnly={craftSheetMode === "readonly"}
+          onClose={closeCraftSheet}
+          onSkillToggle={handleSkillToggle}
+        />
+      ) : null}
+
       <div className="design-main">
-        <div className="design-workspace">
+        <div
+          className={`design-workspace${selectedLayer ? " design-workspace-inspector-open" : ""}`}
+        >
           <DesignCanvas
             layers={layers}
+            sectionLayers={sectionLayers}
             hiddenLayerIds={snapshot.hiddenLayerIds}
             pan={pan}
             selectedLayerId={selectedLayerId}
@@ -3018,14 +4237,22 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
             artifactHtml={artifactHtml}
             artifactError={artifactError}
             artifactMissingTokens={artifactMissingTokens}
+            artifactHeight={artifactPageHeight}
+            sectionHighlight={sectionHighlight}
+            noteMarks={noteMarks}
             onSelectLayer={selectLayer}
-            onViewportChange={setViewport}
+            onViewportChange={handleCanvasViewportChange}
+            onArtifactMeasured={handleArtifactMeasured}
           />
-          <LayerPanel
-            layers={layerRows}
-            onSelect={selectLayer}
-            onToggleVisibility={toggleLayerVisibility}
-          />
+          {layerRows.length > 0 || orphanNotes.length > 0 ? (
+            <LayerPanel
+              layers={layerRows}
+              onSelect={selectLayer}
+              onToggleVisibility={toggleLayerVisibility}
+              orphanNotes={orphanNotes}
+              onDeleteNote={deleteSectionNote}
+            />
+          ) : null}
           <ZoomControls
             zoom={zoom}
             canZoomIn={zoom < DESIGN_MAX_ZOOM}
@@ -3045,8 +4272,14 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
               onElevationChange={setElevation}
               onDuplicate={duplicateLayer}
               onDelete={deleteLayer}
-              canDuplicate={selectedLayer.source === undefined}
-              canDelete={layers.length > 1}
+              onClose={closeInspector}
+              canDuplicate={selectedLayer.source === undefined && selectedLayer.kind !== "SECTION"}
+              canDelete={layers.length > 1 && selectedLayer.kind !== "SECTION"}
+              sectionNotes={selectedSectionNotes}
+              onAddNote={(text) => {
+                if (selectedSectionAnchor !== null) addSectionNote(selectedSectionAnchor, text);
+              }}
+              onDeleteNote={deleteSectionNote}
             />
           ) : null}
         </div>
@@ -3059,18 +4292,22 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           providers={providers}
           providersLoading={providersLoading}
           selectedProviderId={selectedProviderId}
-          workspaceProjects={workspaceProjects}
-          workspacesLoading={workspacesLoading}
-          workspacesRefreshing={workspacesRefreshing}
-          workspacesError={workspacesError}
-          selectedWorkspaceId={selectedWorkspaceId}
-          workspaceSelectionNotice={workspaceSelectionNotice}
-          workspaceSelectionUnresolved={workspaceSelectionUnresolved}
+          unavailableProviderId={unavailableProviderId}
           agentSession={agentSession}
           agentState={agentState}
+          liveTranscript={streamingTranscript}
+          pendingPermission={pendingPermission}
+          permissionNotice={permissionNotice}
+          capabilities={permissionCapabilities}
+          daemonConnected={daemonConnected}
           draft={draft}
           draftPlaceholder={
-            composerContextLayerName ? document.draftPlaceholder : document.noContextPlaceholder
+            // The mock document's placeholder names a fixture layer. The context that
+            // can actually be selected is the generated artifact, so the placeholder
+            // is derived from what is selected instead of from the demo host.
+            composerContextLayerName
+              ? `Describe a change to ${composerContextLayerName}…`
+              : document.noContextPlaceholder
           }
           sendLabel={busy ? "Working…" : "Generate"}
           busy={busy}
@@ -3083,17 +4320,24 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           onClearContext={clearComposerContext}
           onMessageAction={handleMessageAction}
           onProviderSelect={selectProvider}
-          onWorkspaceSelect={selectWorkspace}
-          onWorkspacePickerOpen={openWorkspacePicker}
           onModelSelect={selectModel}
           onEffortSelect={selectEffort}
+          onPermissionRespond={respondPermission}
+          onEndSession={endSession}
           skillIndex={skillIndex}
           skillSelection={skillSelection}
           selectedSkillSlugs={selectedSkillSlugs}
-          autoAppliedSkillSlugs={autoAppliedSkillSlugs}
-          autoSkillNotice={autoSkillNotice}
+          resolvedSkillSlugs={resolvedSkillSlugs}
+          appliedSkillSlugs={appliedSkillSlugs}
+          hasResolvedComposition={hasResolvedComposition}
+          skillBlock={skillBlock}
+          resolvedSkillSlugSet={resolvedSkillSlugSet}
+          automaticBaselineSlugSet={automaticBaselineSlugSet}
+          droppedSkillSlugSet={droppedSkillSlugSet}
+          skillResultNotice={skillResultNotice}
           onSkillModeChange={handleSkillModeChange}
-          onSkillToggle={handleSkillToggle}
+          onCraftOpen={openManualCraftSheet}
+          onCraftReadMore={openCraftReadOnlySheet}
         />
       </div>
     </section>

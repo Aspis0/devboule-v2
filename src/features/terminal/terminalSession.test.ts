@@ -46,6 +46,8 @@ function makeHarness(options?: {
   missingFirstAttach?: boolean;
   missingFirstAttachError?: unknown;
   rejectDetach?: boolean;
+  failCreateView?: boolean;
+  failCreateChannel?: boolean;
 }): Harness {
   const written: string[] = [];
   const snapshots: SessionSnapshot[] = [];
@@ -183,17 +185,21 @@ function makeHarness(options?: {
   const channel = {
     onmessage: eventHandler,
   } as unknown as TerminalChannel;
+  const failCreateView = options?.failCreateView === true;
+  const failCreateChannel = options?.failCreateChannel === true;
   const deps: TerminalSessionDeps = {
     workspaceId: "rust-core",
     sessionId: options?.explicitSessionId,
     host: {} as HTMLElement,
-    createView: async (_viewHost, options) => {
-      inputHandler = options.onData;
+    createView: async (_viewHost, viewOptions) => {
+      if (failCreateView) throw new Error("view unavailable");
+      inputHandler = viewOptions.onData;
       return view;
     },
     invoke: invoke as unknown as TerminalSessionDeps["invoke"],
     registry,
     createChannel: (handler) => {
+      if (failCreateChannel) throw new Error("stream unavailable");
       eventHandler = handler;
       Object.defineProperty(channel, "onmessage", {
         configurable: true,
@@ -439,7 +445,7 @@ describe("TerminalSession startup and channel ordering", () => {
 });
 
 describe("TerminalSession lifecycle and errors", () => {
-  it("handles attach errors without closing the runtime-owned session", async () => {
+  it("closes the session it created when attach fails before a subscription exists", async () => {
     const harness = makeHarness();
     harness.invoke.mockImplementation(async (command: string) => {
       if (command === "sessions_list") return [];
@@ -458,13 +464,167 @@ describe("TerminalSession lifecycle and errors", () => {
     });
 
     await harness.session.start();
+
+    // The session exists in the daemon and no subscription can ever name it,
+    // so closing by id is the only thing that stops it leaking.
+    expect(
+      harness.invoke.mock.calls.filter(([command]) => command === "session_close"),
+    ).toHaveLength(1);
+    expect(harness.invoke).toHaveBeenCalledWith("session_close", {
+      id: "session-1",
+      subscriptionId: null,
+    });
+    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.view.disposeCount).toBe(1);
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_detach", expect.anything());
     expect(harness.banners).toContainEqual({
       kind: "error",
       message: "Could not attach to the terminal: No session with that id.",
     });
-    expect(harness.view.disposeCount).toBe(1);
+  });
+
+  it("leaves an adopted session alone when attach fails", async () => {
+    const harness = makeHarness({ existingSessionId: "existing-session" });
+    harness.invoke.mockImplementation(async (command: string) => {
+      if (command === "session_attach") throw new Error("attach failed");
+      return undefined;
+    });
+
+    await harness.session.start();
+
+    // Closing this one would kill a terminal the user already has.
     expect(harness.invoke).not.toHaveBeenCalledWith("session_close", expect.anything());
     expect(harness.invoke).not.toHaveBeenCalledWith("session_detach", expect.anything());
+    expect(harness.registry.remove).not.toHaveBeenCalled();
+    expect(harness.view.disposeCount).toBe(1);
+    expect(harness.banners).toContainEqual({
+      kind: "error",
+      message: "Could not attach to the terminal: attach failed",
+    });
+  });
+
+  it("closes the session it created when the terminal view cannot open", async () => {
+    const harness = makeHarness({ failCreateView: true });
+
+    await harness.session.start();
+
+    expect(harness.invoke).toHaveBeenCalledWith("session_close", {
+      id: "session-1",
+      subscriptionId: null,
+    });
+    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.banners).toContainEqual({
+      kind: "error",
+      message: "Could not open the terminal view: view unavailable",
+    });
+  });
+
+  it("leaves an adopted session alone when the terminal view cannot open", async () => {
+    const harness = makeHarness({ failCreateView: true, existingSessionId: "existing-session" });
+
+    await harness.session.start();
+
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_close", expect.anything());
+    expect(harness.registry.remove).not.toHaveBeenCalled();
+  });
+
+  it("closes the session it created when the event stream cannot open", async () => {
+    const harness = makeHarness({ failCreateChannel: true });
+
+    await harness.session.start();
+
+    expect(harness.invoke).toHaveBeenCalledWith("session_close", {
+      id: "session-1",
+      subscriptionId: null,
+    });
+    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(harness.view.disposeCount).toBe(1);
+    expect(harness.banners).toContainEqual({
+      kind: "error",
+      message: "Could not open the terminal stream: stream unavailable",
+    });
+  });
+
+  it("closes the session it created when it is disposed before the view opens", async () => {
+    const harness = makeHarness();
+    harness.invoke.mockImplementation(async (command: string) => {
+      if (command === "sessions_list") return [];
+      if (command === "session_create") {
+        harness.session.dispose();
+        return {
+          id: "session-1",
+          workspaceId: "rust-core",
+          kind: "terminal",
+          title: "Terminal",
+          state: { type: "live", generation: 1 },
+          elapsedMs: 0,
+        };
+      }
+      return undefined;
+    });
+
+    await harness.session.start();
+
+    expect(harness.invoke).toHaveBeenCalledWith("session_close", {
+      id: "session-1",
+      subscriptionId: null,
+    });
+    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+  });
+
+  it("keeps the attach error when the close is rejected", async () => {
+    const harness = makeHarness();
+    harness.invoke.mockImplementation(async (command: string) => {
+      if (command === "sessions_list") return [];
+      if (command === "session_create") {
+        return {
+          id: "session-1",
+          workspaceId: "rust-core",
+          kind: "terminal",
+          title: "Terminal",
+          state: { type: "live", generation: 1 },
+          elapsedMs: 0,
+        };
+      }
+      if (command === "session_attach") throw new Error("attach failed");
+      if (command === "session_close") throw new Error("close failed");
+      return undefined;
+    });
+
+    await harness.session.start();
+
+    expect(harness.invoke).toHaveBeenCalledWith("session_close", {
+      id: "session-1",
+      subscriptionId: null,
+    });
+    expect(harness.banners).toContainEqual({
+      kind: "error",
+      message: "Could not attach to the terminal: attach failed",
+    });
+    expect(harness.banners).not.toContainEqual({ kind: "error", message: "close failed" });
+  });
+
+  it("keeps the attach error when the close throws synchronously", async () => {
+    const harness = makeHarness();
+    const defaultInvoke = harness.invoke.getMockImplementation() as (
+      command: string,
+    ) => Promise<unknown>;
+    harness.invoke.mockImplementation((command: string) => {
+      if (command === "session_attach") throw new Error("attach failed");
+      if (command === "session_close") throw new Error("close exploded");
+      return defaultInvoke(command);
+    });
+
+    await harness.session.start();
+
+    expect(harness.invoke).toHaveBeenCalledWith("session_close", {
+      id: "session-1",
+      subscriptionId: null,
+    });
+    expect(harness.banners).toContainEqual({
+      kind: "error",
+      message: "Could not attach to the terminal: attach failed",
+    });
   });
 
   it("keeps the attach banner text when the backend rejects with a structured error", async () => {
@@ -739,6 +899,10 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(
       harness.invoke.mock.calls.filter(([command]) => command === "session_close"),
     ).toHaveLength(1);
+    expect(harness.invoke).toHaveBeenCalledWith("session_close", {
+      id: "session-1",
+      subscriptionId: 17,
+    });
     expect(
       harness.invoke.mock.calls.filter(([command]) => command === "session_detach"),
     ).toHaveLength(0);

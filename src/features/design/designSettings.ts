@@ -1,10 +1,59 @@
 import { surfaceSettingsGet, surfaceSettingsSet } from "../../lib/tauri";
+import { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
 
 export interface DesignSkillSelection {
   version: 1;
   mode: "all" | "manual" | "auto";
   enabledSlugs: readonly string[];
 }
+
+/**
+ * Visible copy is centralized because these persisted ids are deliberately
+ * stable — the ids (`all` | `manual` | `auto`) are written into surface
+ * settings and validated on parse; only the words under them may change.
+ * Deterministic request matching has landed, so `all` no longer means
+ * priority order: the sections are ranked against the request text with no
+ * model turn, and the priority order is only what a weak request falls back
+ * to. Each blurb is one self-sufficient sentence — it is shown as visible
+ * copy, not a tooltip — and each states who chooses and what the mode
+ * costs; `one extra model turn` in `auto` is the only real price difference
+ * between the modes, so it stays. The matched fallback is not crammed into
+ * the blurb: it is announced through `fallbackNotice` when a generation
+ * reports `skillSelectionFallback`.
+ */
+export const SKILL_MODE_LABELS: Record<
+  DesignSkillSelection["mode"],
+  {
+    name: string;
+    blurb: string;
+    summary?: string;
+    badge: string;
+    defaultNotice?: string;
+    fallbackNotice?: string;
+  }
+> = {
+  all: {
+    name: "Matched",
+    blurb: `Up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections matched to this request; no extra model turn.`,
+    summary: "request match · no extra turn",
+    badge: "Default",
+    defaultNotice:
+      "Matched is used when you do not choose a mode; it selects relevant sections from your request without another model turn.",
+    fallbackNotice: "No strong match — using the default order.",
+  },
+  manual: {
+    name: "Manual",
+    blurb: `Choose up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections yourself; no extra model turn.`,
+    summary: "choose sections",
+    badge: "You choose",
+  },
+  auto: {
+    name: "Automatic",
+    blurb: `Up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections chosen by the agent for this request; one extra model turn.`,
+    summary: "agent picks · +1 model turn",
+    badge: "Extra model turn",
+  },
+};
 
 export const DEFAULT_DESIGN_SKILL_SELECTION: DesignSkillSelection = {
   version: 1,
@@ -162,10 +211,15 @@ export async function loadDesignSkillSelection(
   const stored = await readStoredDesignSettings();
   if (stored === null || stored === undefined) return defaultSelection();
 
+  const enabledSlugs = orderedIntersection(stored.selection.enabledSlugs, knownSlugs);
+
   return {
     version: 1,
     mode: stored.selection.mode,
-    enabledSlugs: orderedIntersection(stored.selection.enabledSlugs, knownSlugs),
+    enabledSlugs:
+      stored.selection.mode === "manual"
+        ? enabledSlugs.slice(0, MAX_AUTOMATIC_SKILL_SECTIONS)
+        : enabledSlugs,
   };
 }
 
@@ -189,9 +243,20 @@ export async function saveDesignSkillSelection(selection: DesignSkillSelection):
 export async function loadDesignProviderId(
   knownProviderIds: readonly string[],
 ): Promise<string | null> {
+  const storedProviderId = await loadStoredDesignProviderId();
+  return storedProviderId !== null && knownProviderIds.includes(storedProviderId)
+    ? storedProviderId
+    : null;
+}
+
+/**
+ * Reads the provider preference without applying the current provider catalog. The Design
+ * surface uses this only to explain why a remembered provider cannot currently be selected.
+ */
+export async function loadStoredDesignProviderId(): Promise<string | null> {
   const stored = await readStoredDesignSettings();
   if (stored === null || stored === undefined || stored.providerId === null) return null;
-  return knownProviderIds.includes(stored.providerId) ? stored.providerId : null;
+  return stored.providerId;
 }
 
 export async function saveDesignProviderId(providerId: string | null): Promise<boolean> {
@@ -235,15 +300,22 @@ export async function saveDesignWorkspaceId(workspaceId: string | null): Promise
   }
 }
 
+export function selectPrioritySkillSlugs(knownSlugs: readonly string[]): readonly string[] {
+  return [...new Set(knownSlugs)];
+}
+
 export function selectedSlugs(
   selection: DesignSkillSelection,
   knownSlugs: readonly string[],
 ): readonly string[] {
-  if (selection.mode === "all") return [...new Set(knownSlugs)];
+  if (selection.mode === "all") return selectPrioritySkillSlugs(knownSlugs);
   // Automatic selection needs the request text and an agent round trip, so this pure helper
   // cannot resolve it. The generation path performs that resolution instead.
   if (selection.mode === "auto") return [];
-  return orderedIntersection(selection.enabledSlugs, knownSlugs);
+  return orderedIntersection(selection.enabledSlugs, knownSlugs).slice(
+    0,
+    MAX_AUTOMATIC_SKILL_SECTIONS,
+  );
 }
 
 export async function loadStoredDesignHistory(): Promise<readonly unknown[] | null> {

@@ -38,6 +38,11 @@ export interface DesignViewport {
   zoom: number;
 }
 
+export interface FitViewportResult extends DesignViewport {
+  /** True when the minimum zoom prevented the full bounds from fitting. */
+  fitWasTruncated: boolean;
+}
+
 export interface ViewportClientRect {
   left: number;
   top: number;
@@ -89,29 +94,33 @@ export function pointerToWorld(
   return screenToWorld(clientX - rect.left, clientY - rect.top, viewport.pan, viewport.zoom);
 }
 
+/** Fit bounds inside a uniform margin around the measured viewport. */
 export function fitViewport(
   bounds: Bounds | null,
   width: number,
   height: number,
-  margin?: number,
-): DesignViewport {
+  margin = 80,
+): FitViewportResult {
   if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
     const fitted = fitToBounds(bounds, width, height, margin);
-    return { ...fitted, zoom: clampViewportZoom(fitted.zoom) };
+    return { ...fitted, zoom: clampViewportZoom(fitted.zoom), fitWasTruncated: false };
   }
 
   // The ported engine's fit helper has a separate 2x clamp. Derive the valid
   // fit here so every Design viewport uses the same [0.2, 3] range and pan
   // convention as the interactive zoom path.
-  const fitMargin = margin ?? 80;
-  const availableWidth = Math.max(1, width - fitMargin * 2);
-  const availableHeight = Math.max(1, height - fitMargin * 2);
-  const zoom = clampViewportZoom(Math.min(availableWidth / bounds.w, availableHeight / bounds.h));
+  const availableWidth = Math.max(1, width - margin * 2);
+  const availableHeight = Math.max(1, height - margin * 2);
+  const requestedZoom = Math.min(availableWidth / bounds.w, availableHeight / bounds.h);
+  const zoom = clampViewportZoom(requestedZoom);
+  const scaledWidth = bounds.w * zoom;
+  const scaledHeight = bounds.h * zoom;
   return {
     zoom,
+    fitWasTruncated: requestedZoom < DESIGN_MIN_ZOOM,
     pan: {
-      x: (width - bounds.w * zoom) / 2 - bounds.x * zoom,
-      y: (height - bounds.h * zoom) / 2 - bounds.y * zoom,
+      x: margin + (availableWidth - scaledWidth) / 2 - bounds.x * zoom,
+      y: margin + (availableHeight - scaledHeight) / 2 - bounds.y * zoom,
     },
   };
 }

@@ -288,8 +288,8 @@ pub(super) struct TranscriptSession {
 }
 
 pub(super) enum RegistryEntry {
-    Live(super::PtySession),
-    Transcript(TranscriptSession),
+    Live(Box<super::PtySession>),
+    Transcript(Box<TranscriptSession>),
 }
 
 impl RegistryEntry {

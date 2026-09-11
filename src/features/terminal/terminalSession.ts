@@ -136,6 +136,10 @@ export class TerminalSession {
       requestedSessionId === null ? this.deps.registry.get(this.deps.workspaceId) : null;
     const adopted = requestedSessionId === null && existing !== null;
     let sessionId = requestedSessionId ?? existing?.sessionId ?? null;
+    // Whether THIS call created the session. Adopted, restored, and handed-in
+    // sessions belong to a terminal the user already has, so a startup failure
+    // here must never close one of those.
+    let createdHere = false;
 
     if (sessionId === null) {
       try {
@@ -162,12 +166,13 @@ export class TerminalSession {
         return;
       }
       sessionId = session.id;
+      createdHere = true;
       this.deps.registry.register(this.deps.workspaceId, sessionId);
     }
 
     this.sessionId = sessionId;
     if (this.disposed) {
-      this.requestBackendTeardown();
+      this.teardownFailedStartup(createdHere);
       return;
     }
 
@@ -179,12 +184,13 @@ export class TerminalSession {
       });
     } catch (error: unknown) {
       this.showError(`Could not open the terminal view: ${errorMessage(error)}`);
-      this.requestBackendTeardown();
+      this.teardownFailedStartup(createdHere);
       return;
     }
 
     if (this.disposed) {
       view.dispose();
+      this.teardownFailedStartup(createdHere);
       return;
     }
     this.view = view;
@@ -195,6 +201,7 @@ export class TerminalSession {
     } catch (error: unknown) {
       this.showError(`Could not open the terminal stream: ${errorMessage(error)}`);
       this.disposeViewAndChannel();
+      this.teardownFailedStartup(createdHere);
       return;
     }
     this.channel = channel;
@@ -228,7 +235,15 @@ export class TerminalSession {
 
     if (attachFailed) {
       if (this.subscriptionId !== null) {
-        this.backendTeardown = "detach";
+        // The attach did register a subscription, so the ordinary teardown is
+        // a detach. A session this call created is the exception: no other
+        // view will ever adopt it, so it is closed instead.
+        this.backendTeardown = createdHere ? "close" : "detach";
+        this.requestBackendTeardown();
+      } else if (createdHere) {
+        // session_create succeeded but attach never produced a subscription,
+        // so a close by id is the only teardown that can reach the daemon.
+        this.backendTeardown = "close";
         this.requestBackendTeardown();
       }
       this.clearSnapshotState();
@@ -648,6 +663,35 @@ export class TerminalSession {
     }
   }
 
+  /**
+   * Tear down a startup that will not end in an attached view. A session this
+   * call created is closed, because nothing else will ever adopt it and the
+   * daemon would keep its process alive forever; a session the user already
+   * had keeps the teardown it had before, because closing it would kill a live
+   * terminal.
+   */
+  private teardownFailedStartup(createdHere: boolean): void {
+    if (createdHere) this.backendTeardown = "close";
+    this.requestBackendTeardown();
+  }
+
+  /**
+   * Teardown is best-effort: a close or detach that fails must never replace
+   * the error explaining why the terminal did not open, so this swallows both
+   * a rejected promise and a synchronous throw from the injected invoke.
+   */
+  private invokeTeardown(
+    command: "session_close" | "session_detach",
+    args: Record<string, unknown>,
+  ): void {
+    try {
+      void this.deps.invoke<void>(command, args).catch(() => undefined);
+    } catch {
+      // Nothing to report here: the user-visible failure is reported at the
+      // call site that decided this startup failed.
+    }
+  }
+
   private requestBackendTeardown(): void {
     if (
       this.backendTeardown === null ||
@@ -662,15 +706,20 @@ export class TerminalSession {
     const sessionId = this.sessionId;
     const teardown = this.backendTeardown;
     const subscriptionId = this.subscriptionId;
-    this.backendTeardownSent = true;
     if (teardown === "close") {
+      // A close is keyed on the session id alone, so it runs even when this
+      // view never received a subscription. Removing the registry entry first
+      // keeps a later start() from adopting an id that is on its way out.
+      this.backendTeardownSent = true;
       this.deps.registry.remove(this.deps.workspaceId, sessionId);
-      void this.deps.invoke<void>("session_close", { id: sessionId }).catch(() => undefined);
+      this.invokeTeardown("session_close", { id: sessionId, subscriptionId });
       return;
     }
 
+    if (subscriptionId === null) return;
+    this.backendTeardownSent = true;
     this.subscriptionId = null;
-    void this.deps.invoke<void>("session_detach", { subscriptionId }).catch(() => undefined);
+    this.invokeTeardown("session_detach", { subscriptionId });
   }
 }
 

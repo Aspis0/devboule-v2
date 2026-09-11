@@ -21,9 +21,11 @@ use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, WireError};
 
 use super::acp_host::{AcpHost, RpcError, RpcRespond};
 use crate::acp_view::{
-    classify_line, current_mode_id_from_update, has_standard_modes, merge_handshake_manifest,
-    view_from_envelope_in, AcpLineKind,
+    add_vendor_surface, catalog_from_config_options, classify_line, current_mode_id_from_update,
+    has_standard_modes, merge_handshake_manifest, view_from_envelope_in, AcpLineKind,
+    ConfigOptionSurface, HandshakeManifest, ModelSwitchShape,
 };
+use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 use crate::server::ServerState;
@@ -402,23 +404,26 @@ pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
+    mcp: Option<McpLaunchConfig>,
     requested_mode: Option<String>,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, None, requested_mode)
+    spawn_process_with_load(state, command, None, mcp, requested_mode)
 }
 
 pub(super) fn spawn_process_resuming(
     state: &Arc<ServerState>,
     command: PtyCommand,
     peer_session_id: String,
+    mcp: Option<McpLaunchConfig>,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, Some(peer_session_id), None)
+    spawn_process_with_load(state, command, Some(peer_session_id), mcp, None)
 }
 
 fn spawn_process_with_load(
     state: &Arc<ServerState>,
     command: PtyCommand,
     load_session_id: Option<String>,
+    mcp: Option<McpLaunchConfig>,
     requested_mode: Option<String>,
 ) -> Result<SpawnedSession, WireError> {
     let mut process = Command::new(&command.program);
@@ -523,12 +528,13 @@ fn spawn_process_with_load(
         }
     };
     let mut reader = BufReader::new(stdout);
-    let (deferred, handshake_manifest, peer_session_id, agent_version) = match handshake(
+    let (deferred, handshake, peer_session_id, agent_version) = match handshake(
         &transport,
         &mut reader,
         &command.cwd,
         command.provider_id.clone(),
         load_session_id.as_deref(),
+        mcp.as_ref(),
         requested_mode.as_deref(),
     ) {
         Ok(handshake) => handshake,
@@ -549,21 +555,12 @@ fn spawn_process_with_load(
             }
             let stderr_lines = stderr_source.discard_and_join();
             drop(process_job);
-            if stderr_lines.is_empty() {
-                return Err(error);
-            }
-            return Err(WireError::new(
-                error.code,
-                format!(
-                    "{} Agent stderr: {}",
-                    error.message,
-                    stderr_lines.join(" | ")
-                ),
-            ));
+            return Err(redact_handshake_error(error, &stderr_lines, mcp.as_ref()));
         }
     };
     let session_id = transport.session_id();
-    transport.seed_manifest_from_event(handshake_manifest.as_ref());
+    transport.set_model_switch_shape(handshake.shape);
+    transport.seed_manifest_from_event(handshake.event.as_ref());
     let writer = AcpWriter {
         transport: Arc::clone(&transport),
         pending: Vec::new(),
@@ -585,7 +582,7 @@ fn spawn_process_with_load(
         Some(Arc::clone(&transport)),
         deferred,
         command.provider_id.clone(),
-        handshake_manifest,
+        handshake.event,
     );
     Ok(SpawnedSession {
         process_job,
@@ -611,6 +608,61 @@ fn terminate_process(process: &mut Child) {
     let _ = process.wait();
 }
 
+#[derive(Clone, Debug)]
+enum SwitchRequest {
+    Vendor {
+        model_id: String,
+        effort: Option<String>,
+    },
+    Config {
+        config_id: String,
+        value: String,
+        control: ConfigControl,
+    },
+}
+
+#[derive(Clone, Debug)]
+enum AlternateSwitch {
+    Request(SwitchRequest),
+    Blocked(String),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ConfigControl {
+    Model,
+    Effort,
+}
+
+#[derive(Clone, Debug)]
+struct FollowupSwitch {
+    request: SwitchRequest,
+    alternate: Option<AlternateSwitch>,
+    requested_model_id: Option<String>,
+    requested_effort: Option<String>,
+}
+
+/// A pending switch carries the requested values and the one permitted
+/// alternate surface. Errors are handled here, after the asynchronous reply;
+/// there is no verb preference negotiated at handshake time.
+#[derive(Clone, Debug)]
+enum PendingSwitch {
+    SetModel {
+        model_id: String,
+        effort: Option<String>,
+        alternate: Option<AlternateSwitch>,
+        followup: Option<FollowupSwitch>,
+    },
+    SetConfigOption {
+        config_id: String,
+        value: String,
+        control: ConfigControl,
+        requested_model_id: Option<String>,
+        requested_effort: Option<String>,
+        alternate: Option<AlternateSwitch>,
+        followup: Option<FollowupSwitch>,
+    },
+}
+
 struct AcpTransport {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     permission_broker: Arc<PermissionBroker>,
@@ -618,13 +670,14 @@ struct AcpTransport {
     turn: Arc<TurnWatch>,
     next_id: AtomicU64,
     pending: Arc<Mutex<HashSet<u64>>>,
-    model_switches: Arc<Mutex<HashMap<u64, Option<String>>>>,
+    model_switches: Arc<Mutex<HashMap<u64, PendingSwitch>>>,
     mode_switches: AcpModeResponses,
     remote_modes: AtomicBool,
     session_id: Mutex<Option<String>>,
     current_model_id: Mutex<Option<String>>,
     current_effort: Mutex<Option<String>>,
     last_manifest: Mutex<Option<SessionEvent>>,
+    model_switch_shape: Mutex<Option<ModelSwitchShape>>,
 }
 
 impl AcpTransport {
@@ -644,6 +697,7 @@ impl AcpTransport {
             current_model_id: Mutex::new(None),
             current_effort: Mutex::new(None),
             last_manifest: Mutex::new(None),
+            model_switch_shape: Mutex::new(None),
         }
     }
 
@@ -692,7 +746,7 @@ impl AcpTransport {
             "method": method,
             "params": params,
         })) {
-            let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
+            self.remove_pending_id(id);
             return Err(error);
         }
         Ok(id)
@@ -713,30 +767,8 @@ impl AcpTransport {
             .unwrap_or(false)
     }
 
-    fn pending_ids(&self) -> Arc<Mutex<HashSet<u64>>> {
-        Arc::clone(&self.pending)
-    }
-
-    fn model_switch_ids(&self) -> Arc<Mutex<HashMap<u64, Option<String>>>> {
-        Arc::clone(&self.model_switches)
-    }
-
     fn mode_switch_ids(&self) -> AcpModeResponses {
         Arc::clone(&self.mode_switches)
-    }
-
-    fn set_session_id(&self, session_id: String) {
-        if let Ok(mut current) = self.session_id.lock() {
-            *current = Some(session_id);
-        }
-    }
-
-    fn session_id(&self) -> String {
-        self.session_id
-            .lock()
-            .ok()
-            .and_then(|value| value.clone())
-            .unwrap_or_default()
     }
 
     fn set_remote_modes(&self, supported: bool) {
@@ -747,32 +779,96 @@ impl AcpTransport {
         self.remote_modes.load(Ordering::Acquire)
     }
 
-    fn current_model_id(&self) -> Option<String> {
-        self.current_model_id
-            .lock()
-            .ok()
-            .and_then(|value| value.clone())
-    }
-
-    fn update_current_model_id(&self, model_id: Option<String>) {
-        if let Some(model_id) = model_id.filter(|model_id| !model_id.is_empty()) {
-            if let Ok(mut current) = self.current_model_id.lock() {
-                *current = Some(model_id);
+    fn remove_pending_id(&self, id: u64) {
+        match self.pending.lock() {
+            Ok(mut pending) => {
+                pending.remove(&id);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().remove(&id);
             }
         }
     }
 
+    fn remove_model_switch(&self, id: u64) {
+        match self.model_switches.lock() {
+            Ok(mut switches) => {
+                switches.remove(&id);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().remove(&id);
+            }
+        }
+    }
+
+    fn pending_ids(&self) -> Arc<Mutex<HashSet<u64>>> {
+        Arc::clone(&self.pending)
+    }
+
+    fn model_switch_ids(&self) -> Arc<Mutex<HashMap<u64, PendingSwitch>>> {
+        Arc::clone(&self.model_switches)
+    }
+
+    fn set_model_switch_shape(&self, shape: Option<ModelSwitchShape>) {
+        let mut shape_slot = match self.model_switch_shape.lock() {
+            Ok(shape_slot) => shape_slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *shape_slot = shape;
+    }
+
+    fn model_switch_shape(&self) -> Option<ModelSwitchShape> {
+        match self.model_switch_shape.lock() {
+            Ok(shape) => shape.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn set_session_id(&self, session_id: String) {
+        let mut current = match self.session_id.lock() {
+            Ok(current) => current,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *current = Some(session_id);
+    }
+
+    fn session_id(&self) -> String {
+        match self.session_id.lock() {
+            Ok(value) => value.clone().unwrap_or_default(),
+            Err(poisoned) => poisoned.into_inner().clone().unwrap_or_default(),
+        }
+    }
+
+    fn current_model_id(&self) -> Option<String> {
+        match self.current_model_id.lock() {
+            Ok(value) => value.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn update_current_model_id(&self, model_id: Option<String>) {
+        if let Some(model_id) = model_id.filter(|model_id| !model_id.is_empty()) {
+            let mut current = match self.current_model_id.lock() {
+                Ok(current) => current,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *current = Some(model_id);
+        }
+    }
+
     fn current_effort(&self) -> Option<String> {
-        self.current_effort
-            .lock()
-            .ok()
-            .and_then(|effort| effort.clone())
+        match self.current_effort.lock() {
+            Ok(effort) => effort.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     fn update_current_effort(&self, effort: Option<String>) {
-        if let Ok(mut current) = self.current_effort.lock() {
-            *current = effort.filter(|effort| !effort.is_empty());
-        }
+        let mut current = match self.current_effort.lock() {
+            Ok(current) => current,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *current = effort.filter(|effort| !effort.is_empty());
     }
 
     fn update_manifest_from_sessions_changed(
@@ -811,9 +907,11 @@ impl AcpTransport {
                     .and_then(|model| model.current_effort.clone())
             });
             self.update_current_effort(effort);
-            if let Ok(mut last_manifest) = self.last_manifest.lock() {
-                *last_manifest = event.cloned();
-            }
+            let mut last_manifest = match self.last_manifest.lock() {
+                Ok(last_manifest) => last_manifest,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *last_manifest = event.cloned();
         }
     }
 
@@ -823,9 +921,11 @@ impl AcpTransport {
         } = event
         {
             self.update_current_model_id(current_model_id.clone());
-            if let Ok(mut last_manifest) = self.last_manifest.lock() {
-                *last_manifest = Some(event.clone());
-            }
+            let mut last_manifest = match self.last_manifest.lock() {
+                Ok(last_manifest) => last_manifest,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *last_manifest = Some(event.clone());
         }
     }
 
@@ -879,10 +979,10 @@ impl AcpTransport {
     }
 
     fn last_manifest(&self) -> Option<SessionEvent> {
-        self.last_manifest
-            .lock()
-            .ok()
-            .and_then(|manifest| manifest.clone())
+        match self.last_manifest.lock() {
+            Ok(manifest) => manifest.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     fn default_effort_for_model(&self, model_id: &str) -> Option<String> {
@@ -903,8 +1003,10 @@ impl AcpTransport {
 
     fn request_set_model(
         &self,
-        params: serde_json::Value,
+        model_id: String,
         effort: Option<String>,
+        alternate: Option<AlternateSwitch>,
+        followup: Option<FollowupSwitch>,
     ) -> io::Result<u64> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.pending
@@ -914,18 +1016,83 @@ impl AcpTransport {
         self.model_switches
             .lock()
             .map_err(|_| io::Error::other("ACP model-switch lock poisoned"))?
-            .insert(id, effort);
+            .insert(
+                id,
+                PendingSwitch::SetModel {
+                    model_id: model_id.clone(),
+                    effort: effort.clone(),
+                    alternate,
+                    followup,
+                },
+            );
+        let mut params = serde_json::json!({
+            "sessionId": self.session_id(),
+            "modelId": model_id,
+        });
+        if let Some(effort) = &effort {
+            params["_meta"] = serde_json::json!({ "reasoningEffort": effort });
+        }
         if let Err(error) = self.send_line(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "session/set_model",
             "params": params,
         })) {
-            let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
-            let _ = self
-                .model_switches
-                .lock()
-                .map(|mut switches| switches.remove(&id));
+            self.remove_pending_id(id);
+            self.remove_model_switch(id);
+            return Err(error);
+        }
+        Ok(id)
+    }
+
+    /// ACP v1 model/effort switch. Measured on
+    /// `@agentclientprotocol/claude-agent-acp@0.76.0`: the value is a
+    /// PLAIN STRING (`value: "haiku"`); the SDK's `{type:"id",value:…}`
+    /// wrapper is rejected by the agent's zod schema, and the reply carries
+    /// the full updated `configOptions`.
+    #[allow(clippy::too_many_arguments)]
+    fn request_set_config_option(
+        &self,
+        config_id: &str,
+        value: &str,
+        control: ConfigControl,
+        requested_model_id: Option<String>,
+        requested_effort: Option<String>,
+        alternate: Option<AlternateSwitch>,
+        followup: Option<FollowupSwitch>,
+    ) -> io::Result<u64> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.pending
+            .lock()
+            .map_err(|_| io::Error::other("ACP pending-id lock poisoned"))?
+            .insert(id);
+        self.model_switches
+            .lock()
+            .map_err(|_| io::Error::other("ACP model-switch lock poisoned"))?
+            .insert(
+                id,
+                PendingSwitch::SetConfigOption {
+                    config_id: config_id.to_string(),
+                    value: value.to_string(),
+                    control,
+                    requested_model_id,
+                    requested_effort,
+                    alternate,
+                    followup,
+                },
+            );
+        if let Err(error) = self.send_line(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "session/set_config_option",
+            "params": {
+                "sessionId": self.session_id(),
+                "configId": config_id,
+                "value": value,
+            },
+        })) {
+            self.remove_pending_id(id);
+            self.remove_model_switch(id);
             return Err(error);
         }
         Ok(id)
@@ -1008,39 +1175,32 @@ struct AcpSwitcher {
 
 impl ModelSwitcher for AcpSwitcher {
     fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError> {
-        let requested_model_id = model_id
-            .filter(|model_id| !model_id.is_empty())
+        let shape = self.transport.model_switch_shape().ok_or_else(|| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                "This agent's session carries no declared model or effort switch surface; \
+                 the switch verb is unknown. Reconnect the session to re-read the agent's \
+                 controls.",
+            )
+        })?;
+        let requested_model = model_id
+            .filter(|value| !value.is_empty())
             .map(str::to_string);
-        let model_id = requested_model_id
-            .clone()
-            .or_else(|| self.transport.current_model_id())
-            .ok_or_else(|| {
-                let message = if effort.is_some() {
-                    "Cannot change the effort before the provider reports its current model."
-                } else {
-                    "ACP provider has not reported a current model."
-                };
-                WireError::new(ErrorCode::InvalidRequest, message)
-            })?;
-        let effort = effort.map(str::to_string).or_else(|| {
-            requested_model_id
-                .as_deref()
-                .and_then(|model_id| self.transport.default_effort_for_model(model_id))
-        });
-        let mut params = serde_json::json!({
-            "sessionId": self.transport.session_id(),
-            "modelId": model_id,
-        });
-        if let Some(effort) = &effort {
-            // Grok intermittently acknowledges model-only switches without
-            // applying them. Carrying the target model's default effort makes
-            // the switch deterministic and is the honest neutral value for it.
-            params["_meta"] = serde_json::json!({ "reasoningEffort": effort });
+        let requested_effort = effort.filter(|value| !value.is_empty()).map(str::to_string);
+
+        if let Some(model_id) = requested_model {
+            return self.set_requested_model(shape, model_id, requested_effort);
         }
-        self.transport
-            .request_set_model(params, effort)
-            .map_err(acp_io_error)?;
-        Ok(())
+        if let Some(effort) = requested_effort {
+            return self.set_requested_effort(shape, effort);
+        }
+        let current_model = self.transport.current_model_id().ok_or_else(|| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                "ACP provider has not reported a current model.",
+            )
+        })?;
+        self.set_requested_model(shape, current_model, None)
     }
 
     fn set_mode(&self, mode_id: &str) -> Result<(), WireError> {
@@ -1062,6 +1222,234 @@ impl ModelSwitcher for AcpSwitcher {
     }
 }
 
+impl AcpSwitcher {
+    fn set_requested_model(
+        &self,
+        shape: ModelSwitchShape,
+        model_id: String,
+        effort: Option<String>,
+    ) -> Result<(), WireError> {
+        let effort_uses_config = shape.effort.config.is_some();
+        let followup = if effort_uses_config {
+            effort.as_ref().and_then(|effort| {
+                shape.effort.config.as_ref().map(|config| FollowupSwitch {
+                    request: SwitchRequest::Config {
+                        config_id: config.id.clone(),
+                        value: effort.clone(),
+                        control: ConfigControl::Effort,
+                    },
+                    alternate: self.vendor_effort_alternate(
+                        &shape,
+                        &model_id,
+                        effort,
+                        "the requested effort",
+                    ),
+                    requested_model_id: Some(model_id.clone()),
+                    requested_effort: Some(effort.clone()),
+                })
+            })
+        } else {
+            None
+        };
+        match shape.model.config.as_ref() {
+            Some(config) => {
+                let alternate = self.vendor_model_alternate(&shape, &model_id, effort.clone());
+                self.transport
+                    .request_set_config_option(
+                        &config.id,
+                        &model_id,
+                        ConfigControl::Model,
+                        Some(model_id.clone()),
+                        effort.clone(),
+                        alternate,
+                        followup,
+                    )
+                    .map_err(acp_io_error)?;
+            }
+            None => {
+                // The old vendor catalog sometimes carries a per-model
+                // default effort. Preserve that workaround only when the
+                // agent declared no config-option effort surface: once an
+                // effort option is declared, it is the spec-stable control
+                // and a model switch must not invent a value on its behalf.
+                let vendor_effort = if effort_uses_config {
+                    None
+                } else {
+                    effort
+                        .clone()
+                        .or_else(|| self.transport.default_effort_for_model(&model_id))
+                };
+                let alternate = self.config_model_alternate(&shape, &model_id);
+                self.transport
+                    .request_set_model(model_id, vendor_effort, alternate, followup)
+                    .map_err(acp_io_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn set_requested_effort(
+        &self,
+        shape: ModelSwitchShape,
+        effort: String,
+    ) -> Result<(), WireError> {
+        let current_model = self.transport.current_model_id();
+        match shape.effort.config.as_ref() {
+            Some(config) => {
+                let alternate = match current_model.as_deref() {
+                    Some(model_id) => self.vendor_effort_alternate(
+                        &shape,
+                        model_id,
+                        &effort,
+                        "the requested effort",
+                    ),
+                    None if shape.effort.vendor.is_some() => Some(AlternateSwitch::Blocked(
+                        "the vendor fallback needs the agent's current model, but the \
+                         handshake did not report one"
+                            .to_string(),
+                    )),
+                    None => None,
+                };
+                self.transport
+                    .request_set_config_option(
+                        &config.id,
+                        &effort,
+                        ConfigControl::Effort,
+                        current_model,
+                        Some(effort.clone()),
+                        alternate,
+                        None,
+                    )
+                    .map_err(acp_io_error)?;
+            }
+            None => {
+                let model_id = current_model.ok_or_else(|| {
+                    WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "Cannot change effort before the provider reports its current model.",
+                    )
+                })?;
+                let alternate = self.config_effort_alternate(&shape, &effort);
+                self.transport
+                    .request_set_model(model_id, Some(effort), alternate, None)
+                    .map_err(acp_io_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn vendor_model_alternate(
+        &self,
+        shape: &ModelSwitchShape,
+        model_id: &str,
+        effort: Option<String>,
+    ) -> Option<AlternateSwitch> {
+        let vendor = shape.model.vendor.as_ref()?;
+        if !vendor.values.iter().any(|value| value == model_id) {
+            return Some(AlternateSwitch::Blocked(format!(
+                "not retrying on the vendor model surface: model `{model_id}` is not one of its declared model ids"
+            )));
+        }
+        if let Some(effort) = &effort {
+            let values = self.vendor_effort_values(shape, model_id);
+            if !values.iter().any(|value| value == effort) {
+                return Some(AlternateSwitch::Blocked(format!(
+                    "not retrying on the vendor effort surface: effort `{effort}` is not declared for model `{model_id}`"
+                )));
+            }
+        }
+        Some(AlternateSwitch::Request(SwitchRequest::Vendor {
+            model_id: model_id.to_string(),
+            effort,
+        }))
+    }
+
+    fn config_model_alternate(
+        &self,
+        shape: &ModelSwitchShape,
+        model_id: &str,
+    ) -> Option<AlternateSwitch> {
+        let config = shape.model.config.as_ref()?;
+        if !config.values.iter().any(|value| value == model_id) {
+            return Some(AlternateSwitch::Blocked(format!(
+                "not retrying on the config-option model surface: model `{model_id}` is not one of option `{}`'s declared values",
+                config.id
+            )));
+        }
+        Some(AlternateSwitch::Request(SwitchRequest::Config {
+            config_id: config.id.clone(),
+            value: model_id.to_string(),
+            control: ConfigControl::Model,
+        }))
+    }
+
+    fn vendor_effort_alternate(
+        &self,
+        shape: &ModelSwitchShape,
+        model_id: &str,
+        effort: &str,
+        label: &str,
+    ) -> Option<AlternateSwitch> {
+        let vendor = shape.effort.vendor.as_ref()?;
+        if !vendor.values.iter().any(|value| value == effort) {
+            return Some(AlternateSwitch::Blocked(format!(
+                "not retrying on the vendor effort surface: {label} `{effort}` is not declared"
+            )));
+        }
+        if !vendor
+            .values_by_model
+            .iter()
+            .any(|(model, values)| model == model_id && values.iter().any(|value| value == effort))
+        {
+            return Some(AlternateSwitch::Blocked(format!(
+                "not retrying on the vendor effort surface: effort `{effort}` is not declared for model `{model_id}`"
+            )));
+        }
+        Some(AlternateSwitch::Request(SwitchRequest::Vendor {
+            model_id: model_id.to_string(),
+            effort: Some(effort.to_string()),
+        }))
+    }
+
+    fn config_effort_alternate(
+        &self,
+        shape: &ModelSwitchShape,
+        effort: &str,
+    ) -> Option<AlternateSwitch> {
+        let config = shape.effort.config.as_ref()?;
+        if !config.values.iter().any(|value| value == effort) {
+            return Some(AlternateSwitch::Blocked(format!(
+                "not retrying on config option `{}`: effort `{effort}` is not one of its declared values",
+                config.id
+            )));
+        }
+        Some(AlternateSwitch::Request(SwitchRequest::Config {
+            config_id: config.id.clone(),
+            value: effort.to_string(),
+            control: ConfigControl::Effort,
+        }))
+    }
+
+    fn vendor_effort_values<'a>(
+        &self,
+        shape: &'a ModelSwitchShape,
+        model_id: &str,
+    ) -> &'a [String] {
+        shape
+            .effort
+            .vendor
+            .as_ref()
+            .and_then(|vendor| {
+                vendor
+                    .values_by_model
+                    .iter()
+                    .find(|(model, _)| model == model_id)
+                    .map(|(_, values)| values.as_slice())
+            })
+            .unwrap_or(&[])
+    }
+}
+
 impl Drop for AcpTransport {
     fn drop(&mut self) {
         self.turn.shutdown();
@@ -1072,7 +1460,7 @@ impl Drop for AcpTransport {
 
 type HandshakeResult = (
     Vec<serde_json::Value>,
-    Option<SessionEvent>,
+    HandshakeManifest,
     String,
     Option<String>,
 );
@@ -1083,9 +1471,13 @@ fn handshake(
     cwd: &std::path::Path,
     provider_id: Option<String>,
     load_session_id: Option<&str>,
+    mcp: Option<&McpLaunchConfig>,
     requested_mode: Option<&str>,
 ) -> Result<HandshakeResult, WireError> {
     let mut deferred = Vec::new();
+    let mcp_servers = mcp
+        .map(|config| vec![config.acp_server_value()])
+        .unwrap_or_default();
     let initialize_id = transport
         .request("initialize", advertised_initialize_params()?)
         .map_err(acp_io_error)?;
@@ -1118,14 +1510,14 @@ fn handshake(
             serde_json::json!({
                 "sessionId": session_id,
                 "cwd": cwd.to_string_lossy(),
-                "mcpServers": []
+                "mcpServers": mcp_servers
             }),
         ),
         None => (
             "session/new",
             serde_json::json!({
                 "cwd": cwd.to_string_lossy(),
-                "mcpServers": []
+                "mcpServers": mcp_servers
             }),
         ),
     };
@@ -1145,7 +1537,7 @@ fn handshake(
     };
     transport.set_session_id(session_id.to_string());
     transport.host.set_session_id(session_id.to_string());
-    let mut manifest = merge_handshake_manifest(
+    let mut handshake = merge_handshake_manifest(
         initialize.get("result").unwrap_or(&serde_json::Value::Null),
         session.get("result").unwrap_or(&serde_json::Value::Null),
         provider_id,
@@ -1156,7 +1548,7 @@ fn handshake(
         .unwrap_or(false);
     transport.set_remote_modes(remote_modes);
     if let Some(requested_mode) = requested_mode {
-        let current_mode = manifest.as_ref().and_then(|event| match event {
+        let current_mode = handshake.event.as_ref().and_then(|event| match event {
             SessionEvent::SessionManifest { modes, .. } => modes.as_ref(),
             _ => None,
         });
@@ -1192,12 +1584,12 @@ fn handshake(
         }
         if let Some(SessionEvent::SessionManifest {
             modes: Some(modes), ..
-        }) = &mut manifest
+        }) = &mut handshake.event
         {
             modes.current_mode_id = requested_mode.to_string();
         }
     }
-    Ok((deferred, manifest, session_id.to_string(), agent_version))
+    Ok((deferred, handshake, session_id.to_string(), agent_version))
 }
 
 fn read_response(
@@ -1264,6 +1656,32 @@ fn acp_request_error_message(error: &serde_json::Value) -> String {
 
 fn acp_io_error(error: io::Error) -> WireError {
     WireError::new(ErrorCode::Io, format!("ACP stdio failed: {error}"))
+}
+
+fn redact_mcp_error(mut error: WireError, mcp: Option<&McpLaunchConfig>) -> WireError {
+    if let Some(mcp) = mcp {
+        error.message = mcp.redact_text(&error.message);
+    }
+    error
+}
+
+fn redact_handshake_error(
+    error: WireError,
+    stderr_lines: &[String],
+    mcp: Option<&McpLaunchConfig>,
+) -> WireError {
+    if stderr_lines.is_empty() {
+        return redact_mcp_error(error, mcp);
+    }
+    let message = format!(
+        "{} Agent stderr: {}",
+        error.message,
+        stderr_lines.join(" | ")
+    );
+    let message = mcp
+        .map(|config| config.redact_text(&message))
+        .unwrap_or(message);
+    WireError::new(error.code, message)
 }
 
 fn is_user_message_chunk(value: &serde_json::Value, session_id: &str) -> bool {
@@ -1375,7 +1793,7 @@ struct AcpReader {
     buffer: Vec<u8>,
     discarding_oversized_line: bool,
     pending: Arc<Mutex<HashSet<u64>>>,
-    model_switches: Arc<Mutex<HashMap<u64, Option<String>>>>,
+    model_switches: Arc<Mutex<HashMap<u64, PendingSwitch>>>,
     mode_switches: AcpModeResponses,
     session_id: String,
     permission_broker: Arc<PermissionBroker>,
@@ -1392,7 +1810,7 @@ impl AcpReader {
     #[allow(clippy::too_many_arguments)]
     fn new(
         pending: Arc<Mutex<HashSet<u64>>>,
-        model_switches: Arc<Mutex<HashMap<u64, Option<String>>>>,
+        model_switches: Arc<Mutex<HashMap<u64, PendingSwitch>>>,
         mode_switches: AcpModeResponses,
         session_id: String,
         permission_broker: Arc<PermissionBroker>,
@@ -1527,6 +1945,45 @@ impl AcpReader {
             other => other,
         }
     }
+
+    fn remove_model_switch(&self, id: u64) {
+        match self.model_switches.lock() {
+            Ok(mut switches) => {
+                switches.remove(&id);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().remove(&id);
+            }
+        }
+    }
+}
+
+fn observe_mcp_status(value: &serde_json::Value, runtime: &SessionRuntime) {
+    if !is_mcp_status(value) {
+        return;
+    }
+    let status = value
+        .pointer("/params/status")
+        .and_then(serde_json::Value::as_str);
+    let reason = value
+        .pointer("/params/reason")
+        .and_then(serde_json::Value::as_str);
+    if status == Some("ready") && reason == Some("initialized") {
+        // This is a provider hint only. The broker marks readiness after it
+        // has authenticated and served this session's tools/list request.
+        return;
+    }
+    if matches!(status, Some("failed") | Some("error")) {
+        runtime.fail_mcp("The ACP provider reported that the MCP broker failed.");
+    }
+}
+
+fn is_mcp_status(value: &serde_json::Value) -> bool {
+    value.get("method").and_then(serde_json::Value::as_str) == Some("_x.ai/mcp/server_status")
+        && value
+            .pointer("/params/name")
+            .and_then(serde_json::Value::as_str)
+            == Some(crate::mcp_broker::MCP_SERVER_NAME)
 }
 
 impl ReaderDispatch for AcpReader {
@@ -1668,18 +2125,25 @@ impl AcpReader {
     }
 
     fn dispatch_value(&self, value: &serde_json::Value, runtime: &Arc<SessionRuntime>) {
-        if matches!(classify_line(value), Some(AcpLineKind::Notification { .. }))
-            && value
-                .get("_meta")
-                .and_then(|meta| meta.get("isReplay"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
+        let value = runtime.redact_mcp_value(value);
+        if is_mcp_status(&value) {
+            observe_mcp_status(&value, runtime);
+            return;
+        }
+        if matches!(
+            classify_line(&value),
+            Some(AcpLineKind::Notification { .. })
+        ) && value
+            .get("_meta")
+            .and_then(|meta| meta.get("isReplay"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
         {
             self.replay_count.fetch_add(1, Ordering::Relaxed);
             return;
         }
         self.turn.note_activity();
-        if is_user_message_chunk(value, &self.session_id) {
+        if is_user_message_chunk(&value, &self.session_id) {
             // The daemon records the outbound prompt before writing. Never
             // allocate a sequence or journal grok's redundant
             // echo: burning a sequence without a row would look like a
@@ -1687,35 +2151,43 @@ impl AcpReader {
             // to map historical echo envelopes for backward compatibility.
             return;
         }
-        let event_seq = runtime.journal_agent_envelope(value);
-        match classify_line(value) {
+        let event_seq = runtime.journal_agent_envelope(&value);
+        match classify_line(&value) {
             Some(AcpLineKind::Request { method }) => {
                 if method == "session/request_permission" {
-                    self.dispatch_permission(value, runtime, event_seq);
+                    self.dispatch_permission(&value, runtime, event_seq);
                     return;
                 }
-                self.dispatch_client_request(&method, value, runtime);
+                self.dispatch_client_request(&method, &value, runtime);
             }
             Some(AcpLineKind::Response) => {
                 if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
-                    self.dispatch_response(id, value, runtime, event_seq);
+                    self.dispatch_response(id, &value, runtime, event_seq);
                 }
             }
             Some(AcpLineKind::Notification { .. }) => {
-                if let Some(mode_id) = current_mode_id_from_update(value, &self.session_id) {
+                if let Some(mode_id) = current_mode_id_from_update(&value, &self.session_id) {
                     self.dispatch_current_mode_update(&mode_id, runtime, event_seq);
                     return;
                 }
                 if value.get("method").and_then(serde_json::Value::as_str)
                     == Some("_x.ai/sessions/changed")
                 {
-                    self.dispatch_sessions_changed(value, runtime, event_seq);
+                    self.dispatch_sessions_changed(&value, runtime, event_seq);
                     return;
                 }
                 if let Some(view) =
-                    view_from_envelope_in(value, &self.session_id, Some(self.host.cwd()))
+                    view_from_envelope_in(&value, &self.session_id, Some(self.host.cwd()))
                 {
                     let view = self.with_provider(view);
+                    if value.get("method").and_then(serde_json::Value::as_str)
+                        == Some("_x.ai/models/update")
+                    {
+                        if let Some(transport) = &self.transport {
+                            let shape = add_vendor_surface(transport.model_switch_shape(), &view);
+                            transport.set_model_switch_shape(shape);
+                        }
+                    }
                     self.publish_at_seq(runtime, view, event_seq);
                 }
             }
@@ -1844,6 +2316,292 @@ impl AcpReader {
         self.host.dispatch(method, id, params, respond);
     }
 
+    fn send_switch_request(
+        &self,
+        request: SwitchRequest,
+        alternate: Option<AlternateSwitch>,
+        requested_model_id: Option<String>,
+        requested_effort: Option<String>,
+        followup: Option<FollowupSwitch>,
+    ) -> io::Result<()> {
+        let transport = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| io::Error::other("ACP transport is no longer live"))?;
+        match request {
+            SwitchRequest::Vendor { model_id, effort } => transport
+                .request_set_model(model_id, effort, alternate, followup)
+                .map(|_| ()),
+            SwitchRequest::Config {
+                config_id,
+                value,
+                control,
+            } => transport
+                .request_set_config_option(
+                    &config_id,
+                    &value,
+                    control,
+                    requested_model_id,
+                    requested_effort,
+                    alternate,
+                    followup,
+                )
+                .map(|_| ()),
+        }
+    }
+
+    fn retry_switch_or_publish_error(
+        &self,
+        runtime: &SessionRuntime,
+        error: &serde_json::Value,
+        pending: PendingSwitch,
+    ) {
+        let original = acp_request_error_message(error);
+        let (alternate, requested_model_id, requested_effort, followup) = match pending {
+            PendingSwitch::SetModel {
+                model_id,
+                effort,
+                alternate,
+                followup,
+            } => (alternate, Some(model_id), effort, followup),
+            PendingSwitch::SetConfigOption {
+                requested_model_id,
+                requested_effort,
+                alternate,
+                followup,
+                ..
+            } => (alternate, requested_model_id, requested_effort, followup),
+        };
+        match alternate {
+            Some(AlternateSwitch::Blocked(reason)) => self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: format!("{original}; {reason}; the original error is unchanged"),
+                },
+            ),
+            Some(AlternateSwitch::Request(request)) => {
+                // Keep the follow-up even when the vendor request carries an
+                // effort hint: a legacy peer may accept the model while
+                // ignoring that hint, so the declared effort surface must
+                // still get its own request.
+                if let Err(retry_error) = self.send_switch_request(
+                    request,
+                    None,
+                    requested_model_id,
+                    requested_effort,
+                    followup,
+                ) {
+                    self.publish(
+                        runtime,
+                        SessionEvent::AgentError {
+                            message: format!(
+                                "{original}; the alternate switch surface also failed to send: \
+                                 {retry_error}"
+                            ),
+                        },
+                    );
+                }
+            }
+            None => self.publish(runtime, SessionEvent::AgentError { message: original }),
+        }
+    }
+
+    fn complete_vendor_switch(
+        &self,
+        runtime: &SessionRuntime,
+        model_id: String,
+        effort: Option<String>,
+        followup: Option<FollowupSwitch>,
+        event_seq: Option<u64>,
+    ) {
+        let Some(transport) = &self.transport else {
+            return;
+        };
+        // A successful JSON-RPC response is success even when the legacy
+        // peer omits `_meta.model.Ok`; the requested values are the only
+        // usable acknowledgement in that case.
+        transport.update_current_model_id(Some(model_id.clone()));
+        if effort.is_some() {
+            transport.update_current_effort(effort.clone());
+        }
+        let manifest = match transport.last_manifest() {
+            Some(SessionEvent::SessionManifest {
+                provider_id,
+                models,
+                modes,
+                ..
+            }) => {
+                let models = models
+                    .into_iter()
+                    .map(|mut model| {
+                        if model.model_id == model_id {
+                            if let Some(effort) = &effort {
+                                model.current_effort = Some(effort.clone());
+                            }
+                        }
+                        model
+                    })
+                    .collect();
+                SessionEvent::SessionManifest {
+                    provider_id,
+                    current_model_id: Some(model_id.clone()),
+                    models,
+                    modes,
+                }
+            }
+            _ => SessionEvent::SessionManifest {
+                provider_id: self.provider_id.clone(),
+                current_model_id: Some(model_id.clone()),
+                models: Vec::new(),
+                modes: None,
+            },
+        };
+        self.publish_at_seq(runtime, manifest, event_seq);
+        self.send_followup(runtime, followup);
+    }
+
+    fn send_followup(&self, runtime: &SessionRuntime, followup: Option<FollowupSwitch>) {
+        let Some(followup) = followup else {
+            return;
+        };
+        if let Err(error) = self.send_switch_request(
+            followup.request,
+            followup.alternate,
+            followup.requested_model_id,
+            followup.requested_effort,
+            None,
+        ) {
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: format!(
+                        "The first switch succeeded, but its follow-up failed: {error}"
+                    ),
+                },
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn complete_config_switch(
+        &self,
+        runtime: &SessionRuntime,
+        response: &serde_json::Value,
+        config_id: String,
+        control: ConfigControl,
+        requested_model_id: Option<String>,
+        requested_effort: Option<String>,
+        followup: Option<FollowupSwitch>,
+        event_seq: Option<u64>,
+    ) {
+        let Some(transport) = &self.transport else {
+            return;
+        };
+        let previous = transport.last_manifest();
+        let (provider_id, modes) = match previous.as_ref() {
+            Some(SessionEvent::SessionManifest {
+                provider_id, modes, ..
+            }) => (provider_id.clone(), modes.clone()),
+            _ => (self.provider_id.clone(), None),
+        };
+        let known_ids = transport.model_switch_shape().and_then(|shape| {
+            if let (Some(model), effort) = (shape.model.config, shape.effort.config) {
+                Some((model.id, effort.map(|option| option.id)))
+            } else {
+                None
+            }
+        });
+        let known_refs = known_ids
+            .as_ref()
+            .map(|(model, effort)| (model.as_str(), effort.as_deref()));
+        let catalog = response.get("result").and_then(|result| {
+            catalog_from_config_options(result, provider_id.clone(), modes.clone(), known_refs)
+        });
+
+        let response_model_id = catalog
+            .as_ref()
+            .and_then(|catalog| match &catalog.manifest {
+                SessionEvent::SessionManifest {
+                    current_model_id, ..
+                } => current_model_id.clone(),
+                _ => None,
+            });
+        let manifest = catalog
+            .as_ref()
+            .map(|catalog| catalog.manifest.clone())
+            .or(previous)
+            .unwrap_or_else(|| SessionEvent::SessionManifest {
+                provider_id: provider_id.clone(),
+                current_model_id: None,
+                models: Vec::new(),
+                modes: modes.clone(),
+            });
+        let SessionEvent::SessionManifest {
+            provider_id: manifest_provider,
+            mut current_model_id,
+            mut models,
+            modes: manifest_modes,
+        } = manifest
+        else {
+            return;
+        };
+        let reported_effort = catalog.as_ref().and_then(|_| {
+            current_model_id.as_deref().and_then(|model_id| {
+                models
+                    .iter()
+                    .find(|model| model.model_id == model_id)
+                    .and_then(|model| model.current_effort.clone())
+            })
+        });
+        if matches!(control, ConfigControl::Model) && response_model_id.is_none() {
+            current_model_id = requested_model_id.clone().or(current_model_id);
+        }
+        let effective_effort = reported_effort.or_else(|| match control {
+            ConfigControl::Effort => requested_effort.clone(),
+            ConfigControl::Model => None,
+        });
+        if let Some(current_model_id) = current_model_id.as_deref() {
+            for model in &mut models {
+                if model.model_id == current_model_id {
+                    if let Some(effort) = &effective_effort {
+                        model.current_effort = Some(effort.clone());
+                    }
+                }
+            }
+        }
+        transport.update_current_model_id(current_model_id.clone());
+        if effective_effort.is_some() {
+            transport.update_current_effort(effective_effort.clone());
+        }
+        if let Some(catalog) = catalog {
+            if let Some(mut shape) = transport.model_switch_shape() {
+                shape.model.config = Some(ConfigOptionSurface {
+                    id: catalog.model_option_id,
+                    values: catalog.model_values,
+                });
+                if let Some(effort_id) = catalog.effort_option_id {
+                    shape.effort.config = Some(ConfigOptionSurface {
+                        id: effort_id,
+                        values: catalog.effort_values,
+                    });
+                }
+                transport.set_model_switch_shape(Some(shape));
+            }
+        }
+        self.publish_at_seq(
+            runtime,
+            SessionEvent::SessionManifest {
+                provider_id: manifest_provider,
+                current_model_id,
+                models,
+                modes: manifest_modes,
+            },
+            event_seq,
+        );
+        self.send_followup(runtime, followup);
+        let _ = config_id;
+    }
+
     fn dispatch_response(
         &self,
         id: u64,
@@ -1851,11 +2609,23 @@ impl AcpReader {
         runtime: &SessionRuntime,
         event_seq: Option<u64>,
     ) {
-        let response_was_pending = self
-            .pending
-            .lock()
-            .map(|mut pending| pending.remove(&id))
-            .unwrap_or(false);
+        let response_was_pending = match self.pending.lock() {
+            Ok(mut pending) => pending.remove(&id),
+            Err(poisoned) => {
+                poisoned.into_inner().remove(&id);
+                self.remove_model_switch(id);
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: format!(
+                            "ACP response tracking lock was poisoned while handling response {id}; \
+                             the switch outcome is unknown"
+                        ),
+                    },
+                );
+                return;
+            }
+        };
         if !response_was_pending {
             eprintln!("skipping ACP response with unknown id {id}");
             return;
@@ -1872,63 +2642,52 @@ impl AcpReader {
             let _ = sender.send(result);
             return;
         }
-        let requested_effort = self
-            .model_switches
-            .lock()
-            .map(|mut switches| switches.remove(&id))
-            .unwrap_or(None);
-        if let Some(requested_effort) = requested_effort {
-            if let Some(error) = value.get("error") {
+        let pending_switch = match self.model_switches.lock() {
+            Ok(mut switches) => switches.remove(&id),
+            Err(poisoned) => {
+                poisoned.into_inner().remove(&id);
                 self.publish(
                     runtime,
                     SessionEvent::AgentError {
-                        message: acp_request_error_message(error),
+                        message: format!(
+                            "ACP model-switch tracking lock was poisoned while handling response {id}; \
+                             the switch outcome is unknown"
+                        ),
                     },
                 );
-            } else if let Some(model_id) = value
-                .pointer("/result/_meta/model/Ok")
-                .and_then(serde_json::Value::as_str)
-                .filter(|model_id| !model_id.is_empty())
-            {
-                if let Some(transport) = &self.transport {
-                    // The successful reply is the provider's runtime
-                    // confirmation. A later push supersedes the model and
-                    // catalog, but grok reports the catalog-default effort,
-                    // so the tracked current effort remains authoritative.
-                    transport.update_current_model_id(Some(model_id.to_string()));
-                    if requested_effort.is_some() {
-                        transport.update_current_effort(requested_effort.clone());
-                    }
-                    if let Some(SessionEvent::SessionManifest {
-                        provider_id,
-                        models,
-                        modes,
-                        ..
-                    }) = transport.last_manifest()
-                    {
-                        let current_effort = transport.current_effort();
-                        let models = models
-                            .into_iter()
-                            .map(|mut model| {
-                                if model.model_id == model_id {
-                                    if let Some(effort) = &current_effort {
-                                        model.current_effort = Some(effort.clone());
-                                    }
-                                }
-                                model
-                            })
-                            .collect();
-                        self.publish(
-                            runtime,
-                            SessionEvent::SessionManifest {
-                                provider_id,
-                                current_model_id: Some(model_id.to_string()),
-                                models,
-                                modes,
-                            },
-                        );
-                    }
-                }
+                return;
+            }
+        };
+        if let Some(pending) = pending_switch {
+            if let Some(error) = value.get("error") {
+                self.retry_switch_or_publish_error(runtime, error, pending);
+                return;
+            }
+            match pending {
+                PendingSwitch::SetModel {
+                    model_id,
+                    effort,
+                    followup,
+                    ..
+                } => self.complete_vendor_switch(runtime, model_id, effort, followup, event_seq),
+                PendingSwitch::SetConfigOption {
+                    config_id,
+                    value: _config_value,
+                    control,
+                    requested_model_id,
+                    requested_effort,
+                    followup,
+                    ..
+                } => self.complete_config_switch(
+                    runtime,
+                    value,
+                    config_id,
+                    control,
+                    requested_model_id,
+                    requested_effort,
+                    followup,
+                    event_seq,
+                ),
             }
             return;
         }
@@ -2179,7 +2938,7 @@ impl AcpStderr {
                                             state.pending.push_back(line.clone());
                                         } else {
                                             eprintln!(
-                                                "dropping ACP stderr while handshake is pending: {line}"
+                                                "dropping ACP stderr while handshake is pending"
                                             );
                                         }
                                         None
@@ -2248,7 +3007,12 @@ impl StderrSource for AcpStderr {
 }
 
 fn publish_stderr_line(runtime: &SessionRuntime, line: String) {
-    let _ = runtime.publish_agent_event(SessionEvent::AgentStderr { data: line }, None);
+    let _ = runtime.publish_agent_event(
+        SessionEvent::AgentStderr {
+            data: runtime.redact_mcp_text(&line),
+        },
+        None,
+    );
 }
 
 #[cfg(test)]
@@ -2257,16 +3021,108 @@ mod tests {
         permission, permission_path, test_broker, PermissionBroker, MAX_ACP_PERMISSION_FIELD_BYTES,
     };
     use super::{
-        acp_request_error_message, complete_lines, AcpReader, MAX_ACP_PERMISSION_LINE_BYTES,
+        acp_request_error_message, complete_lines, is_mcp_status, observe_mcp_status,
+        redact_handshake_error, AcpReader, PendingSwitch, MAX_ACP_PERMISSION_LINE_BYTES,
     };
     use crate::journal::Journal;
     use crate::session::{ConnHandle, ReaderDispatch, SessionKiller, SessionRuntime};
-    use devboule_protocol::{PermissionOutcome, SessionEvent, SessionKind};
+    use devboule_protocol::{
+        ErrorCode, PermissionOutcome, SessionEvent, SessionKind, SessionModel, WireError,
+    };
     use std::collections::HashSet;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn mcp_status_is_parsed_as_a_hint_and_failure_is_reported() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.require_mcp();
+        let ready = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "_x.ai/mcp/server_status",
+            "params": {
+                "name": "devboule",
+                "status": "ready",
+                "reason": "initialized"
+            }
+        });
+        assert!(is_mcp_status(&ready));
+        observe_mcp_status(&ready, &runtime);
+        assert!(runtime
+            .wait_for_mcp_ready(Duration::from_millis(1))
+            .is_err());
+
+        let failed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "_x.ai/mcp/server_status",
+            "params": {
+                "name": "devboule",
+                "status": "failed"
+            }
+        });
+        observe_mcp_status(&failed, &runtime);
+        let error = runtime
+            .wait_for_mcp_ready(Duration::from_secs(1))
+            .expect_err("provider failure must wake the gate");
+        assert!(error.message.contains("ACP provider reported"));
+    }
+
+    #[test]
+    fn mcp_bearer_is_redacted_from_stderr_before_delivery() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stderr-redaction", broker);
+        runtime.set_mcp_bearer("opaque-bearer".to_string());
+        runtime.set_mcp_url("http://127.0.0.1:4567/mcp".to_string());
+        super::publish_stderr_line(
+            &runtime,
+            "provider echoed Bearer opaque-bearer at http://127.0.0.1:4567/mcp".to_string(),
+        );
+        let event = conn
+            .pull_events()
+            .into_iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::AgentStderr { data } => Some(data),
+                _ => None,
+            })
+            .expect("stderr event");
+        assert_eq!(event, "provider echoed Bearer [redacted] at [redacted]");
+        let journal_value = runtime.redact_mcp_value(&serde_json::json!({
+            "echo": "Bearer opaque-bearer at http://127.0.0.1:4567/mcp"
+        }));
+        let journal_text = serde_json::to_string(&journal_value).expect("redacted JSON");
+        assert!(!journal_text.contains("opaque-bearer"));
+        assert!(!journal_text.contains("4567"));
+    }
+
+    #[test]
+    fn spawn_handshake_errors_redact_broker_details_with_and_without_stderr() {
+        let config = crate::mcp_broker::McpLaunchConfig::for_test(
+            "http://127.0.0.1:4567/mcp",
+            "opaque-bearer",
+        );
+        let without_stderr = redact_handshake_error(
+            WireError::new(
+                ErrorCode::Io,
+                "ACP request failed: Bearer opaque-bearer at http://127.0.0.1:4567/mcp",
+            ),
+            &[],
+            Some(&config),
+        );
+        assert!(!without_stderr.message.contains("opaque-bearer"));
+        assert!(!without_stderr.message.contains("4567"));
+
+        let with_stderr = redact_handshake_error(
+            WireError::new(ErrorCode::Io, "ACP request failed: handshake rejected"),
+            &["provider echoed Bearer opaque-bearer at http://127.0.0.1:4567/mcp".to_string()],
+            Some(&config),
+        );
+        assert!(with_stderr.message.contains("Agent stderr"));
+        assert!(!with_stderr.message.contains("opaque-bearer"));
+        assert!(!with_stderr.message.contains("4567"));
+    }
+
     #[test]
     fn request_error_without_a_message_never_serializes_the_object() {
         let error = serde_json::json!({
@@ -2279,6 +3135,153 @@ mod tests {
             "structured error data must not reach a user-facing banner: {text}"
         );
         assert!(text.contains("(-32000)"), "code must stay visible: {text}");
+    }
+
+    #[test]
+    fn poisoned_pending_response_tracking_publishes_an_agent_error() {
+        let pending = Arc::new(Mutex::new(HashSet::from([7_u64])));
+        let poisoned = Arc::clone(&pending);
+        let panic = thread::spawn(move || {
+            let _guard = poisoned.lock().expect("pending lock");
+            panic!("poison pending lock");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test(pending, "stub-session".to_string(), broker);
+        reader.dispatch_line(r#"{"jsonrpc":"2.0","id":7,"result":{}}"#, &runtime);
+
+        let events = conn.pull_events();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.envelope.event,
+                SessionEvent::AgentError { message }
+                    if message.contains("response tracking lock was poisoned")
+                        && message.contains("switch outcome is unknown")
+            )
+        }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn vendor_switch_without_a_manifest_still_publishes_the_new_model() {
+        use super::{AcpHost, AcpTransport};
+        use crate::process_tree::JobObject;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/c", "exit"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("cmd");
+        let stdin = child.stdin.take().expect("stdin");
+        let cwd = std::env::temp_dir();
+        let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+        let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
+        transport.set_session_id("stub-session".to_string());
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test_with_transport(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            broker,
+            host,
+            transport,
+        );
+
+        reader.complete_vendor_switch(&runtime, "fallback-model".to_string(), None, None, None);
+
+        let events = conn.pull_events();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.envelope.event,
+                SessionEvent::SessionManifest {
+                    current_model_id: Some(model_id),
+                    ..
+                } if model_id == "fallback-model"
+            )
+        }));
+        let _ = child.wait();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn poisoned_manifest_lock_preserves_the_prior_model_catalog() {
+        use super::{AcpHost, AcpTransport};
+        use crate::process_tree::JobObject;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/c", "exit"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("cmd");
+        let stdin = child.stdin.take().expect("stdin");
+        let cwd = std::env::temp_dir();
+        let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+        let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
+        transport.remember_manifest(&SessionEvent::SessionManifest {
+            provider_id: Some("stub".to_string()),
+            current_model_id: Some("old-model".to_string()),
+            models: vec![
+                SessionModel {
+                    model_id: "old-model".to_string(),
+                    name: "Old model".to_string(),
+                    description: None,
+                    context_tokens: None,
+                    current_effort: None,
+                    efforts: None,
+                },
+                SessionModel {
+                    model_id: "new-model".to_string(),
+                    name: "New model".to_string(),
+                    description: None,
+                    context_tokens: None,
+                    current_effort: None,
+                    efforts: None,
+                },
+            ],
+            modes: None,
+        });
+        let poisoned = Arc::clone(&transport);
+        let panic = thread::spawn(move || {
+            let _guard = poisoned.last_manifest.lock().expect("manifest lock");
+            panic!("poison manifest lock");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test_with_transport(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            broker,
+            host,
+            transport,
+        );
+        reader.complete_vendor_switch(&runtime, "new-model".to_string(), None, None, None);
+
+        let events = conn.pull_events();
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.envelope.event,
+                SessionEvent::SessionManifest {
+                    current_model_id: Some(model_id),
+                    models,
+                    ..
+                } if model_id == "new-model"
+                    && models.len() == 2
+                    && models.iter().any(|model| model.model_id == "new-model")
+            )
+        }));
+        let _ = child.wait();
     }
 
     #[test]
@@ -2373,7 +3376,15 @@ mod tests {
             .model_switches
             .lock()
             .expect("model-switch lock")
-            .insert(42, None);
+            .insert(
+                42,
+                PendingSwitch::SetModel {
+                    model_id: "new-model".to_string(),
+                    effort: None,
+                    alternate: None,
+                    followup: None,
+                },
+            );
         reader.turn.start_prompt(42);
         let mut reader = reader;
         reader

@@ -181,7 +181,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
 
   return (
     <main
-      className="app-shell"
+      className={`app-shell${activeSurface === "design" ? " app-shell-design" : ""}`}
       onPointerMove={handlePointerMove}
       onPointerLeave={closeNav}
       onKeyDown={handleKeyDown}

@@ -16,14 +16,17 @@ import {
   loadDesignProviderId,
   loadDesignSkillSelection,
   loadDesignWorkspaceId,
+  loadStoredDesignProviderId,
   loadStoredDesignWorkspaceId,
   saveDesignProviderId,
   saveDesignSkillSelection,
   saveDesignWorkspaceId,
+  SKILL_MODE_LABELS,
   selectedSlugs,
   updateStoredDesignHistory,
   type DesignSkillSelection,
 } from "./designSettings";
+import { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
 import { recordDesignHistoryEntry, type DesignHistoryEntry } from "./designHistory";
 
 const KNOWN_SLUGS = ["color", "motion", "spacing"] as const;
@@ -60,6 +63,28 @@ beforeEach(() => {
 });
 
 describe("loadDesignSkillSelection", () => {
+  it("keeps the visible mode names centralized", () => {
+    expect(SKILL_MODE_LABELS).toMatchObject({
+      all: {
+        name: "Matched",
+        summary: "request match · no extra turn",
+        badge: "Default",
+        defaultNotice:
+          "Matched is used when you do not choose a mode; it selects relevant sections from your request without another model turn.",
+        fallbackNotice: "No strong match — using the default order.",
+      },
+      manual: { name: "Manual", summary: "choose sections", badge: "You choose" },
+      auto: {
+        name: "Automatic",
+        summary: "agent picks · +1 model turn",
+        badge: "Extra model turn",
+      },
+    });
+    // The fallback microcopy must be readable on its own, not embedded in the blurb.
+    expect(SKILL_MODE_LABELS.all.blurb).not.toContain("No strong match");
+    expect(SKILL_MODE_LABELS.all.blurb).toContain("no extra model turn");
+  });
+
   it("falls back for null", async () => {
     await expectDefaultFor(null);
   });
@@ -139,6 +164,24 @@ describe("loadDesignSkillSelection", () => {
       version: 1,
       mode: "manual",
       enabledSlugs: expectedSlugs,
+    });
+  });
+
+  it("clamps persisted manual selections to the derived safe maximum", async () => {
+    const knownSlugs = ["one", "two", "three", "four", "five"];
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "value",
+      value: {
+        version: 1,
+        mode: "manual",
+        enabledSlugs: knownSlugs,
+      },
+    });
+
+    await expect(loadDesignSkillSelection(knownSlugs)).resolves.toEqual({
+      version: 1,
+      mode: "manual",
+      enabledSlugs: knownSlugs.slice(0, MAX_AUTOMATIC_SKILL_SECTIONS),
     });
   });
 
@@ -275,15 +318,44 @@ describe("saveDesignSkillSelection", () => {
   });
 });
 describe("design provider settings", () => {
-  it("resolves only a provider still present in the catalog", async () => {
+  it("can read a remembered provider before the current catalog is validated", async () => {
     mocks.surfaceSettingsGet.mockResolvedValueOnce({
-      version: 1,
-      mode: "all",
-      enabledSlugs: [],
-      providerId: "removed-agent",
+      status: "value",
+      value: {
+        version: 1,
+        mode: "all",
+        enabledSlugs: [],
+        providerId: "removed-agent",
+      },
     });
 
+    await expect(loadStoredDesignProviderId()).resolves.toBe("removed-agent");
+  });
+
+  it("resolves only a provider still present in the catalog", async () => {
+    // Both directions go through the real SurfaceSettingsRead wrapper on purpose: a raw
+    // document reads as "absent", which would pass this test without comparing any ids.
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "value",
+      value: {
+        version: 1,
+        mode: "all",
+        enabledSlugs: [],
+        providerId: "removed-agent",
+      },
+    });
     await expect(loadDesignProviderId(["grok"])).resolves.toBeNull();
+
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "value",
+      value: {
+        version: 1,
+        mode: "all",
+        enabledSlugs: [],
+        providerId: "grok",
+      },
+    });
+    await expect(loadDesignProviderId(["grok"])).resolves.toBe("grok");
   });
 
   it("stores the provider and reports the save as persisted", async () => {

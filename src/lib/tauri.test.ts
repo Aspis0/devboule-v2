@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import {
   COMMAND_ARG_KEYS,
   invokeTyped,
@@ -8,9 +10,12 @@ import {
   journalRetentionGet,
   journalRetentionSet,
   journalUsage,
+  oracleAskFolder,
+  oracleFolderStatus,
   providersRefresh,
   sessionAttach,
   sessionClaim,
+  sessionClose,
   sessionDetach,
   sessionInterrupt,
   sessionPermissionRespond,
@@ -23,6 +28,222 @@ import {
   surfaceSettingsGet,
   surfaceSettingsSet,
 } from "./tauri";
+
+function rustCommandFiles(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true })
+    .flatMap((entry) => {
+      const path = join(root, entry.name);
+      if (entry.isDirectory()) return rustCommandFiles(path);
+      return entry.isFile() && entry.name.endsWith(".rs") ? [path] : [];
+    })
+    .sort();
+}
+
+function maskRustComments(source: string): string {
+  const characters = [...source];
+  let lineComment = false;
+  let blockCommentDepth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (lineComment) {
+      if (character === "\n") lineComment = false;
+      else characters[index] = " ";
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (character === "/" && next === "*") {
+        characters[index] = " ";
+        characters[index + 1] = " ";
+        blockCommentDepth += 1;
+        index += 1;
+      } else if (character === "*" && next === "/") {
+        characters[index] = " ";
+        characters[index + 1] = " ";
+        blockCommentDepth -= 1;
+        index += 1;
+      } else if (character !== "\n") {
+        characters[index] = " ";
+      }
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      characters[index] = " ";
+      characters[index + 1] = " ";
+      lineComment = true;
+      index += 1;
+    } else if (character === "/" && next === "*") {
+      characters[index] = " ";
+      characters[index + 1] = " ";
+      blockCommentDepth = 1;
+      index += 1;
+    }
+  }
+  return characters.join("");
+}
+
+function matchingParenthesis(source: string, openIndex: number): number {
+  let depth = 0;
+  let lineComment = false;
+  let blockCommentDepth = 0;
+  let quote: '"' | null = null;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (lineComment) {
+      if (character === "\n") lineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (character === "/" && next === "*") {
+        blockCommentDepth += 1;
+        index += 1;
+      } else if (character === "*" && next === "/") {
+        blockCommentDepth -= 1;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote !== null) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      blockCommentDepth = 1;
+      index += 1;
+      continue;
+    }
+    if (character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === "(") depth += 1;
+    else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  throw new Error(`Unclosed Rust command signature at character ${openIndex}.`);
+}
+
+function splitRustParameters(signature: string): string[] {
+  const parameters: string[] = [];
+  let start = 0;
+  let angleDepth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let quote: '"' | null = null;
+  for (let index = 0; index < signature.length; index += 1) {
+    const character = signature[index];
+    if (quote !== null) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === "<") angleDepth += 1;
+    else if (character === ">") angleDepth -= 1;
+    else if (character === "(") parenDepth += 1;
+    else if (character === ")") parenDepth -= 1;
+    else if (character === "[") bracketDepth += 1;
+    else if (character === "]") bracketDepth -= 1;
+    else if (character === "{") braceDepth += 1;
+    else if (character === "}") braceDepth -= 1;
+    else if (
+      character === "," &&
+      angleDepth === 0 &&
+      parenDepth === 0 &&
+      bracketDepth === 0 &&
+      braceDepth === 0
+    ) {
+      const parameter = signature.slice(start, index).trim();
+      if (parameter !== "") parameters.push(parameter);
+      start = index + 1;
+    }
+  }
+  const finalParameter = signature.slice(start).trim();
+  if (finalParameter !== "") parameters.push(finalParameter);
+  return parameters;
+}
+
+function rustParameterColon(parameter: string): number {
+  let angleDepth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  for (let index = 0; index < parameter.length; index += 1) {
+    const character = parameter[index];
+    if (character === "<") angleDepth += 1;
+    else if (character === ">") angleDepth -= 1;
+    else if (character === "(") parenDepth += 1;
+    else if (character === ")") parenDepth -= 1;
+    else if (character === "[") bracketDepth += 1;
+    else if (character === "]") bracketDepth -= 1;
+    else if (character === ":" && angleDepth === 0 && parenDepth === 0 && bracketDepth === 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function snakeToCamel(name: string): string {
+  return name.replace(/_([a-z])/g, (_match, character: string) => character.toUpperCase());
+}
+
+function parseRustCommandArguments(): Record<string, readonly string[]> {
+  const sourceRoot = resolve(process.cwd(), "src-tauri", "src");
+  if (!existsSync(sourceRoot)) throw new Error(`Rust source root not found: ${sourceRoot}`);
+  const commands: Record<string, readonly string[]> = {};
+  for (const file of rustCommandFiles(sourceRoot)) {
+    const source = readFileSync(file, "utf8");
+    const searchableSource = maskRustComments(source);
+    const attribute = /#\[tauri::command(?:\([^\]]*\))?\]/g;
+    let match: RegExpExecArray | null;
+    while ((match = attribute.exec(searchableSource)) !== null) {
+      const declarationStart = match.index + match[0].length;
+      const declaration = source.slice(declarationStart);
+      const functionMatch = declaration.match(
+        /^\s*(?:(?:pub)(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\s*\(/,
+      );
+      if (functionMatch === null) {
+        throw new Error(`Could not parse Tauri command declaration in ${file}.`);
+      }
+      const openIndex = declaration.indexOf(
+        "(",
+        (functionMatch.index ?? 0) + functionMatch[0].length - 1,
+      );
+      if (openIndex === -1) throw new Error(`Missing parameter list in ${file}.`);
+      const closeIndex = matchingParenthesis(declaration, openIndex);
+      const rustArguments = splitRustParameters(declaration.slice(openIndex + 1, closeIndex))
+        .map((parameter) => {
+          const colon = rustParameterColon(parameter);
+          if (colon === -1) throw new Error(`Could not parse parameter in ${file}: ${parameter}`);
+          const name = parameter
+            .slice(0, colon)
+            .trim()
+            .replace(/^mut\s+/, "");
+          const type = parameter.slice(colon + 1).trim();
+          return /\bState\s*</.test(type) || /\bAppHandle\b/.test(type) ? null : snakeToCamel(name);
+        })
+        .filter((name): name is string => name !== null);
+      const commandName = functionMatch[1];
+      if (commands[commandName] !== undefined) {
+        throw new Error(`Duplicate Tauri command declaration: ${commandName}.`);
+      }
+      commands[commandName] = rustArguments;
+    }
+  }
+  return commands;
+}
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -230,6 +451,31 @@ describe("create and attach command wrappers", () => {
     });
     expect(invoke).toHaveBeenNthCalledWith(6, "session_detach", { subscriptionId: 41 });
   });
+
+  it("passes the subscription id when closing a session", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionClose("s.owner.1", 41);
+
+    expect(invoke).toHaveBeenCalledWith("session_close", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+    });
+  });
+
+  it("omits the subscription when closing a session that never had one", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionClose("s.owner.1");
+
+    // The key must be absent, not present-and-undefined: a session created
+    // before its attach never held a subscription, and the daemon closes it by
+    // id alone.
+    expect(invoke).toHaveBeenCalledWith("session_close", { id: "s.owner.1" });
+    expect(vi.mocked(invoke).mock.calls[0]?.[1]).not.toHaveProperty("subscriptionId");
+  });
 });
 
 describe("bridge wire-key convention", () => {
@@ -251,6 +497,29 @@ describe("bridge wire-key convention", () => {
         "object. Command NAMES stay snake_case; only argument keys are camelCase.\n" +
         offenders.map((line) => `  - ${line}`).join("\n"),
     ).toEqual([]);
+  });
+
+  it("matches every command key to its Rust Tauri command signature", () => {
+    const expected = Object.fromEntries(
+      Object.entries(COMMAND_ARG_KEYS).map(([command, keys]) => [command, [...keys]]),
+    );
+    const actual = parseRustCommandArguments();
+    const missing = Object.keys(expected).filter((command) => actual[command] === undefined);
+    const extra = Object.keys(actual).filter((command) => expected[command] === undefined);
+    const mismatched = Object.keys(expected)
+      .filter((command) => actual[command] !== undefined)
+      .filter((command) => JSON.stringify(actual[command]) !== JSON.stringify(expected[command]))
+      .map((command) => ({
+        command,
+        expected: expected[command],
+        actual: actual[command],
+      }));
+
+    expect(
+      { missing, extra, mismatched },
+      "TypeScript Tauri argument keys must match the Rust command signatures. State and " +
+        "AppHandle parameters are injected by Tauri and intentionally omitted.",
+    ).toEqual({ missing: [], extra: [], mismatched: [] });
   });
 });
 
@@ -279,5 +548,50 @@ describe("provider refresh wrapper", () => {
     await providersRefresh();
 
     expect(invoke).toHaveBeenCalledWith("providers_refresh", undefined);
+  });
+});
+
+describe("folder-scoped Oracle wrappers", () => {
+  it("sends only the folder path to oracle_folder_status", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({
+      path: "/abs/folder",
+      data_dir: "/abs/folder/oracle-data",
+      state: "never_indexed",
+      indexed_files: 0,
+      total_files: 0,
+      pending_files: 0,
+      stale_files: 0,
+      indexed_chunks: 0,
+      message: "Oracle has no index for this folder yet.",
+    } as never);
+
+    const status = await oracleFolderStatus("/abs/folder");
+
+    expect(invoke).toHaveBeenCalledWith("oracle_folder_status", { path: "/abs/folder" });
+    // Exactly one key: the command has no runtime argument on the wire, which
+    // is why it cannot switch the active root.
+    expect(vi.mocked(invoke).mock.calls[0]?.[1]).toEqual({ path: "/abs/folder" });
+    expect(status.state).toBe("never_indexed");
+  });
+
+  it("keeps the query key present even when it is an empty string", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({ query: "", results: [] } as never);
+
+    await oracleAskFolder("/abs/folder", "");
+
+    // Tauri v2 drops a key only when it is absent from the payload, so an
+    // empty string must still travel: the backend's own validation is what
+    // rejects it, not a silently missing argument.
+    expect(vi.mocked(invoke).mock.calls[0]?.[1]).toHaveProperty("query", "");
+    expect(vi.mocked(invoke).mock.calls[0]?.[1]).toEqual({ path: "/abs/folder", query: "" });
+  });
+
+  it("declares both folder commands in the bridge manifest", () => {
+    // The structural parity test below compares these with the Rust
+    // signatures; this pins the exact keys so a rename cannot pass unnoticed.
+    expect(COMMAND_ARG_KEYS.oracle_folder_status).toEqual(["path"]);
+    expect(COMMAND_ARG_KEYS.oracle_ask_folder).toEqual(["path", "query"]);
   });
 });

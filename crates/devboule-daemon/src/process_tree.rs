@@ -13,9 +13,14 @@ mod platform {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    // `CloseHandle` and `HANDLE` serve `JobObject` in every build. The
+    // remaining names are used only by `ProcessHandle`, which is behind
+    // `server`, so they carry the same gate rather than sitting here as
+    // unused imports in a GUI-only build.
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    #[cfg(feature = "server")]
     use windows_sys::Win32::Foundation::{
-        CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, STILL_ACTIVE, WAIT_OBJECT_0,
-        WAIT_TIMEOUT,
+        DuplicateHandle, DUPLICATE_SAME_ACCESS, STILL_ACTIVE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
@@ -23,8 +28,10 @@ mod platform {
         TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
+    use windows_sys::Win32::System::Threading::ResumeThread;
+    #[cfg(feature = "server")]
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetExitCodeProcess, ResumeThread, WaitForSingleObject,
+        GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject,
     };
 
     /// An owned Job Object configured to kill its members when this handle is
@@ -149,14 +156,22 @@ mod platform {
 
     /// Owned duplicate of a process handle. Held so liveness can be queried
     /// without a PID, which the OS may reuse after the original process dies.
+    ///
+    /// Only the `server` feature constructs one: the PTY session and the agent
+    /// clients hold it for liveness queries. A GUI-only build has no session
+    /// code, so it does not see the type at all.
+    #[cfg(feature = "server")]
     #[derive(Debug)]
     pub struct ProcessHandle {
         handle: HANDLE,
     }
 
+    #[cfg(feature = "server")]
     unsafe impl Send for ProcessHandle {}
+    #[cfg(feature = "server")]
     unsafe impl Sync for ProcessHandle {}
 
+    #[cfg(feature = "server")]
     impl ProcessHandle {
         pub fn duplicate(source: RawHandle) -> io::Result<Self> {
             if source.is_null() {
@@ -209,6 +224,7 @@ mod platform {
         }
     }
 
+    #[cfg(feature = "server")]
     impl Drop for ProcessHandle {
         fn drop(&mut self) {
             if !self.handle.is_null() {
@@ -243,10 +259,13 @@ mod platform {
     }
 
     /// Unix keeps the type so session code can store `Option<ProcessHandle>`
-    /// without cfg on the struct. This milestone observes liveness on Windows.
+    /// without a cfg at each use site. It exists under `server`, the only
+    /// build that has session code; liveness is observed on Windows only.
+    #[cfg(feature = "server")]
     #[derive(Debug)]
     pub struct ProcessHandle;
 
+    #[cfg(feature = "server")]
     impl ProcessHandle {
         pub fn is_alive(&self) -> bool {
             true
@@ -258,9 +277,17 @@ mod platform {
     }
 }
 
-pub use platform::{JobObject, ProcessHandle};
+// `JobObject` stays unconditional: lib.rs re-exports it as public API, so a
+// GUI-only build can still name the type and nothing here is dead. The only
+// reachable paths to `ProcessHandle` run through the `server` session modules,
+// so both this re-export and the definition above carry the same gate; without
+// it the re-export is the dead import clippy reports and the struct is
+// unreachable. The guard test needs `server` for the same reason.
+pub use platform::JobObject;
+#[cfg(feature = "server")]
+pub use platform::ProcessHandle;
 
-#[cfg(all(test, windows))]
+#[cfg(all(test, windows, feature = "server"))]
 mod tests {
     use super::ProcessHandle;
     use std::os::windows::io::AsRawHandle;

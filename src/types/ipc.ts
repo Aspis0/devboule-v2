@@ -732,6 +732,32 @@ export interface OracleIndexStats {
 }
 
 /**
+ * Where an arbitrary folder's Oracle index stands.
+ *
+ * `unreadable` is deliberately distinct from `never_indexed`: a folder whose
+ * index cannot be read is not an empty index, and reporting "nothing indexed"
+ * there would invite a full re-index over a store that may be intact.
+ */
+export type OracleFolderIndexState = "never_indexed" | "partial" | "ready" | "unreadable";
+
+/** The answer to "does this folder have an index, and how complete is it?". */
+export interface OracleFolderIndexStatus {
+  /** The folder that was probed, canonicalized when the filesystem allowed. */
+  path: string;
+  /** The Oracle data directory derived for that folder. */
+  data_dir: string;
+  state: OracleFolderIndexState;
+  indexed_files: number;
+  /** Expected indexable files; zero when there is no index and no walk was done. */
+  total_files: number;
+  pending_files: number;
+  stale_files: number;
+  indexed_chunks: number;
+  /** Why the folder is not fully indexed; `null` only when the state is `ready`. */
+  message: string | null;
+}
+
+/**
  * One installed plugin, as discovery found it. A refused plugin is reported
  * here with its reason rather than left out: telling someone who installed a
  * plugin that nothing is installed sends them to fix the wrong thing.

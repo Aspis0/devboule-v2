@@ -146,6 +146,9 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
     },
 ];
 
+// Only the `server` provider-update path needs an id -> package lookup; the
+// `npm_package` field itself stays public on `KnownAgent` for other readers.
+#[cfg(feature = "server")]
 pub(crate) fn known_npm_package(id: &str) -> Option<&'static str> {
     KNOWN_AGENTS
         .iter()
