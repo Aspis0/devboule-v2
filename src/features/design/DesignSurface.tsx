@@ -321,6 +321,13 @@ interface ZoomControlsProps {
   artifactHtml?: string;
   /** Title of the assistant message that produced the artifact, for the exported document. */
   artifactTitle?: string;
+  /**
+   * The output shape the producing run recorded on the artifact, or undefined
+   * when it recorded none (an artifact reopened from design history). It decides
+   * how the artifact paginates when printed, so it travels from the artifact
+   * rather than from the output switch, which answers about the next run.
+   */
+  artifactOutputMode?: DesignOutputMode;
 }
 
 interface WorkspaceProject extends Project {
@@ -1424,6 +1431,7 @@ const ZoomControls = memo(function ZoomControls({
   onFit,
   artifactHtml,
   artifactTitle,
+  artifactOutputMode,
 }: ZoomControlsProps) {
   const zoomLabel = `${Math.round(zoom * 100)}%`;
 
@@ -1468,7 +1476,11 @@ const ZoomControls = memo(function ZoomControls({
         <>
           <ArtifactCopyControl html={artifactHtml} title={artifactTitle} />
           <ArtifactSaveControl html={artifactHtml} title={artifactTitle} />
-          <ArtifactPrintControl html={artifactHtml} title={artifactTitle} />
+          <ArtifactPrintControl
+            html={artifactHtml}
+            title={artifactTitle}
+            outputMode={artifactOutputMode}
+          />
         </>
       ) : null}
     </div>
@@ -5251,6 +5263,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             onFit={fitCanvas}
             artifactHtml={artifactHtml}
             artifactTitle={artifactSourceTitle}
+            artifactOutputMode={artifactOutputMode}
           />
         </div>
 

@@ -38,7 +38,8 @@
 import { ARTIFACT_CSP } from "./artifactCsp";
 import { buildStandaloneArtifactHtml } from "./artifactExport";
 import { stripArtifactScriptsAndHandlers } from "./artifactRenderCritic";
-import { readArtifactSlideShape, type ArtifactSlideShape } from "./artifactSlides";
+import { SLIDE_ID_PREFIX, readArtifactSlideShape, type ArtifactSlideShape } from "./artifactSlides";
+import type { DesignOutputMode } from "./designHost";
 
 /**
  * Who a print report comes from. Named so a message that merely looks like one
@@ -122,19 +123,60 @@ export function deriveArtifactPrintCsp(base: string): string {
 export const ARTIFACT_PRINT_CSP = deriveArtifactPrintCsp(ARTIFACT_CSP);
 
 /**
- * How the artifact paginates, decided from the shape `artifactSlides.ts` reports.
+ * How the artifact paginates: a page per slide in landscape, or one continuous
+ * sheet in portrait.
  *
- * A document with sections is a deck and gets a page per slide in landscape; a
- * document without sections is a page and gets the continuous flow in portrait.
- * The decision is made on `sectionCount > 0`, NOT on the verdict: the verdict
- * describes the note-anchor contract (`slide-1` .. `slide-N` in order), and an
- * artifact whose ids are wrong is still a document whose slides must not share a
- * page. Refusing it, or falling back to portrait because the ids are off, would
- * punish the wrong thing — `artifactIdNotice` already reports the naming, and
- * this module has no business repeating it.
+ * THE DECISION, AND THE MEASURED DEFECT THAT RESHAPED IT
+ *
+ * This used to be decided by the shape alone, on `sectionCount > 0`. Measured
+ * live on 2026-09-11: a pricing page — three plan cards, a FAQ, a footer, one
+ * continuous document — is built from three `<section>` elements carrying no
+ * ids, and it printed as three landscape sheets cut at boundaries its author
+ * never drew. `<section>` is an ordinary HTML landmark; documentation pages,
+ * pricing pages and articles all use it. "Has at least one section" was a proxy
+ * for "is a deck", and the common case failed it.
+ *
+ * So the mode the producing run recorded decides, and it decides outright: it
+ * is a fact about the artifact (`DesignOutputMode`, carried on the artifact by
+ * the run that produced it), not a reading of its markup. A recorded `page` is
+ * continuous portrait no matter how many sections the document contains, and a
+ * recorded `slides` is a deck no matter how badly the ids are spelled. Reading
+ * it off the artifact is the same rule the slides notice already follows, and
+ * for the same reason: the toggle beside the canvas states what the *next* run
+ * will ask for and regenerates nothing, so it cannot describe what is on screen.
+ *
+ * ABSENT MODE IS A THIRD STATE, NOT `page`
+ *
+ * An artifact reopened from design history records none, so the mode is
+ * genuinely missing and the markup is the only evidence left. The fallback
+ * asks the question the shape can actually answer — did this document attempt
+ * the slides contract? — and the answer is whether any section carries a
+ * `slide-N` id. That is read from the exported `SLIDE_ID_PREFIX` and the shape's
+ * own `ids` list, which keeps `""` for a section with no usable id, so no new
+ * field is needed to tell "some sections are numbered" from "none is".
+ *
+ * The rule is one predicate over the ids rather than a table over the verdicts,
+ * because the verdicts are about the naming and this question is about the
+ * attempt, and the two disagree in both directions:
+ *
+ * - `no-sections` — no ids, so a page. Nothing attempted the contract.
+ * - `missing-ids` with none numbered (`["", "", ""]`) — the pricing page
+ *   above, and a page. This is the measured case.
+ * - `missing-ids` with some numbered (`["slide-1", "", ""]`) — a deck whose
+ *   naming is incomplete, so a deck.
+ * - `duplicate-ids` and `off-sequence` — a deck when an id carries the prefix
+ *   (`["slide-1", "slide-1"]`, `["slide-2", "slide-1"]`) and a page when none
+ *   does (`["cover", "agenda", "close"]`, a pricing page with `id="pricing"`
+ *   and `id="faq"`). A verdict-only table would call the second group decks,
+ *   which is the same defect one step narrower.
+ * - `matches` — every id carries the prefix, so a deck, and the predicate agrees.
+ *
+ * Note what is deliberately NOT used here: the verdict alone. `artifactSlideNotice`
+ * reports the naming contract and keeps doing exactly that; this module answers a
+ * different question and does not restate that one.
  */
 export interface ArtifactPrintLayout {
-  /** True when the artifact carries `<section>` elements, whatever their ids. */
+  /** True when the artifact prints as a page-per-slide deck. */
   readonly deck: boolean;
   /** `landscape` for a deck, `portrait` for a page. */
   readonly orientation: "landscape" | "portrait";
@@ -142,8 +184,25 @@ export interface ArtifactPrintLayout {
   readonly pageSize: string;
 }
 
-export function readArtifactPrintLayout(shape: ArtifactSlideShape): ArtifactPrintLayout {
-  const deck = shape.sectionCount > 0;
+/**
+ * Whether the document attempted the slides contract: at least one section id
+ * carries `SLIDE_ID_PREFIX`. Used only when the producing run recorded no mode,
+ * because a recorded mode is a fact about the artifact and outranks a reading of
+ * its markup.
+ */
+function shapeReadsAsDeck(shape: ArtifactSlideShape): boolean {
+  return shape.ids.some((id) => id.startsWith(SLIDE_ID_PREFIX));
+}
+
+/**
+ * The deck/page decision. The recorded mode wins outright; absent falls back to
+ * the shape; nothing else is consulted.
+ */
+export function readArtifactPrintLayout(
+  shape: ArtifactSlideShape,
+  outputMode?: DesignOutputMode,
+): ArtifactPrintLayout {
+  const deck = outputMode === undefined ? shapeReadsAsDeck(shape) : outputMode === "slides";
   return {
     deck,
     orientation: deck ? "landscape" : "portrait",
@@ -171,12 +230,17 @@ export function readArtifactPrintLayout(shape: ArtifactSlideShape): ArtifactPrin
  * is exactly the shape that produces a leading blank page in some engines. The
  * break exists to separate slides from each other, not from the paper.
  *
- * A page-mode artifact gets no `section` rules at all. It has no sections (that
- * is what put it in page mode), and emitting dead selectors would invite a later
- * reader to think pagination was decided twice.
+ * A page-mode artifact gets no `section` rules at all, and that now matters for
+ * documents that DO have sections: a recorded `page` whose markup is full of
+ * `<section>` landmarks — the measured pricing page — must flow continuously, so
+ * the absence of these rules is the fix, not a leftover. Emitting dead selectors
+ * would also invite a later reader to think pagination was decided twice.
  */
-export function buildArtifactPrintCss(shape: ArtifactSlideShape): string {
-  const layout = readArtifactPrintLayout(shape);
+export function buildArtifactPrintCss(
+  shape: ArtifactSlideShape,
+  outputMode?: DesignOutputMode,
+): string {
+  const layout = readArtifactPrintLayout(shape, outputMode);
   const rules = [
     `@page {
   size: ${layout.pageSize} ${layout.orientation};
@@ -383,17 +447,23 @@ function applyPrintPolicy(document: Document): void {
  * The artifact is stripped of scripts and `on*` handlers first, because the
  * policy this document runs under permits inline script — the artifact's own
  * scripts would otherwise execute for the first time at print. The shape is read
- * from the exported document (not from the caller's fragment), so portrait or
- * landscape and one-slide-per-page describe the bytes that actually print.
+ * from the exported document (not from the caller's fragment), so one-slide-per-
+ * page and the orientation describe the bytes that actually print; the recorded
+ * mode is passed through untouched and decides deck-vs-page before the shape is
+ * consulted at all.
  */
-export function buildArtifactPrintDocument(fragment: string, title?: string | null): string {
+export function buildArtifactPrintDocument(
+  fragment: string,
+  title?: string | null,
+  outputMode?: DesignOutputMode,
+): string {
   const standalone = buildStandaloneArtifactHtml(stripArtifactScriptsAndHandlers(fragment), title);
   const shape = readArtifactSlideShape(standalone);
   const document = new DOMParser().parseFromString(standalone, "text/html");
   applyPrintPolicy(document);
 
   const style = document.createElement("style");
-  style.textContent = buildArtifactPrintCss(shape);
+  style.textContent = buildArtifactPrintCss(shape, outputMode);
   document.head.append(style);
 
   const script = document.createElement("script");

@@ -32,8 +32,8 @@ function deckFragment(ids: readonly string[]): string {
     .join("");
 }
 
-function layoutFor(fragment: string) {
-  return readArtifactPrintLayout(readArtifactSlideShape(fragment));
+function layoutFor(fragment: string, outputMode?: "page" | "slides") {
+  return readArtifactPrintLayout(readArtifactSlideShape(fragment), outputMode);
 }
 
 function parse(html: string): Document {
@@ -112,33 +112,84 @@ describe("the print policy", () => {
   });
 });
 
-describe("the portrait/landscape decision", () => {
-  it("reads a document with sections as a deck and prints it landscape", () => {
+describe("the deck/page decision", () => {
+  it("prints a recorded slides run as a deck, however badly its ids are spelled", () => {
+    // The mode is a fact about the artifact, so it wins outright: a recorded deck
+    // whose ids are a mess is still a deck, and the naming is reported by
+    // `artifactSlideNotice`, not here.
+    for (const fragment of [
+      deckFragment(["slide-1", "slide-2"]),
+      deckFragment(["cover", "agenda"]),
+      deckFragment(["slide-1", "slide-1"]),
+      PAGE_FRAGMENT,
+    ]) {
+      expect(layoutFor(fragment, "slides")).toEqual({
+        deck: true,
+        orientation: "landscape",
+        pageSize: "A4",
+      });
+    }
+  });
+
+  it("prints a recorded page run continuously, even when it is full of sections", () => {
+    // THE REGRESSION, measured live 2026-09-11. A pricing page — three plan
+    // cards, a FAQ, a footer, one continuous document — is three `<section>`
+    // elements with no ids, and `sectionCount > 0` read it as a three-sheet
+    // landscape deck. The decision is not allowed to look at the sections once
+    // the producing run has said what it produced.
+    const pricingPage = [
+      '<section class="plans"><h2>Plans</h2></section>',
+      '<section class="faq"><h2>FAQ</h2></section>',
+      '<section class="footer"><p>Contact</p></section>',
+    ].join("");
+    expect(readArtifactSlideShape(pricingPage).sectionCount).toBe(3);
+    expect(layoutFor(pricingPage, "page")).toEqual({
+      deck: false,
+      orientation: "portrait",
+      pageSize: "A4",
+    });
+    // And the stylesheet that follows from it carries no break rule at all.
+    const css = buildArtifactPrintCss(readArtifactSlideShape(pricingPage), "page");
+    expect(css).toContain("size: A4 portrait");
+    expect(css).not.toContain("break-before");
+  });
+
+  it("falls back to the shape when the run recorded no mode, and the shape is a deck", () => {
+    // Absent is the artifact reopened from design history. The only evidence left
+    // is the markup, and a section carrying a `slide-N` id is what shows the
+    // document attempted the contract.
     expect(layoutFor(deckFragment(["slide-1", "slide-2", "slide-3"]))).toEqual({
       deck: true,
       orientation: "landscape",
       pageSize: "A4",
     });
+    // One numbered section among unnamed ones is still an attempt.
+    expect(layoutFor(deckFragment(["slide-1", "", ""]))).toEqual({
+      deck: true,
+      orientation: "landscape",
+      pageSize: "A4",
+    });
+    // Numbered but out of order, and duplicated: naming problems, not a page.
+    expect(layoutFor(deckFragment(["slide-2", "slide-1"])).deck).toBe(true);
+    expect(layoutFor(deckFragment(["slide-1", "slide-1"])).deck).toBe(true);
   });
 
-  it("reads a document without sections as a page and prints it portrait", () => {
-    expect(layoutFor(PAGE_FRAGMENT)).toEqual({
+  it("falls back to the shape when the run recorded no mode, and unnamed sections are a page", () => {
+    // The measured document itself, with no mode recorded: three sections, no
+    // ids. It is a page, and so is one section with no id at all.
+    expect(layoutFor('<section class="plans"><h2>Plans</h2></section>')).toEqual({
       deck: false,
       orientation: "portrait",
       pageSize: "A4",
     });
-  });
-
-  it("still prints a deck whose ids do not match the contract", () => {
-    // The verdict describes the note-anchor contract, not the pagination. A deck
-    // with wrong ids is still a deck, and falling back to portrait because of a
-    // naming problem would punish the wrong thing — `artifactSlideNotice`
-    // already reports the naming.
-    const shape = readArtifactSlideShape(deckFragment(["cover", "agenda"]));
-    expect(shape.verdict).toBe("off-sequence");
-    expect(readArtifactPrintLayout(shape)).toEqual({
-      deck: true,
-      orientation: "landscape",
+    expect(layoutFor("<section></section><section></section>").deck).toBe(false);
+    // Ids that are not the contract's are not an attempt at it: `pricing` and
+    // `faq` name landmarks of a page, and a document with no sections is a page.
+    expect(layoutFor(deckFragment(["pricing", "faq", "footer"])).deck).toBe(false);
+    expect(layoutFor(deckFragment(["cover", "agenda"])).deck).toBe(false);
+    expect(layoutFor(PAGE_FRAGMENT)).toEqual({
+      deck: false,
+      orientation: "portrait",
       pageSize: "A4",
     });
   });
@@ -146,7 +197,10 @@ describe("the portrait/landscape decision", () => {
 
 describe("the print stylesheet", () => {
   it("gives a deck one slide per page, in landscape, with no paper margin", () => {
-    const css = buildArtifactPrintCss(readArtifactSlideShape(deckFragment(["slide-1", "slide-2"])));
+    const css = buildArtifactPrintCss(
+      readArtifactSlideShape(deckFragment(["slide-1", "slide-2"])),
+      "slides",
+    );
 
     expect(css).toContain("size: A4 landscape");
     expect(css).toContain("margin: 0");
@@ -168,8 +222,11 @@ describe("the print stylesheet", () => {
   });
 
   it("keeps backgrounds and stops orphan headings in both modes", () => {
-    for (const fragment of [PAGE_FRAGMENT, deckFragment(["slide-1"])]) {
-      const css = buildArtifactPrintCss(readArtifactSlideShape(fragment));
+    for (const [fragment, mode] of [
+      [PAGE_FRAGMENT, "page"],
+      [deckFragment(["slide-1"]), "slides"],
+    ] as const) {
+      const css = buildArtifactPrintCss(readArtifactSlideShape(fragment), mode);
       // Exact colour, or the panels and bands most artifacts are made of are
       // dropped to save ink.
       expect(css).toContain("print-color-adjust: exact");
@@ -232,12 +289,23 @@ describe("the print document", () => {
     expect([...doc.querySelectorAll("script")]).toHaveLength(1);
   });
 
-  it("takes the shape from the document it prints, not from the caller's fragment", () => {
-    const documentHtml = buildArtifactPrintDocument(deckFragment(["slide-1", "slide-2"]), "T");
+  it("takes the shape from the document it prints, and the mode from the run", () => {
+    const documentHtml = buildArtifactPrintDocument(
+      deckFragment(["slide-1", "slide-2"]),
+      "T",
+      "slides",
+    );
     const doc = parse(documentHtml);
 
     expect(printStyle(doc)).toContain("size: A4 landscape");
     expect(printStyle(doc)).toContain("break-before: page");
+
+    // Same markup, recorded as a page: continuous portrait, no section rules.
+    const asPage = parse(
+      buildArtifactPrintDocument(deckFragment(["slide-1", "slide-2"]), "T", "page"),
+    );
+    expect(printStyle(asPage)).toContain("size: A4 portrait");
+    expect(printStyle(asPage)).not.toContain("break-before");
   });
 
   it("prints a page-mode artifact instead of refusing it", () => {

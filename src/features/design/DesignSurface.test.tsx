@@ -4524,4 +4524,66 @@ describe("artifact export copy", () => {
     expect(container.textContent).not.toContain("Copied.");
     await act(async () => root.unmount());
   });
+
+  it("prints under the mode the producing run recorded, not the shape of the markup", async () => {
+    // The end-to-end half of the live defect: `readArtifactPrintLayout` now
+    // decides from the recorded mode, and this pins that the surface actually
+    // hands it over. Both halves are chosen so that a missing prop fails them:
+    // the page half carries `slide-N` ids, which the shape-only fallback reads
+    // as a deck, and the deck half is the measured pricing page, which the
+    // fallback reads as a page. Either direction alone would pass on the other
+    // side's answer.
+    const slideDeck =
+      '<section id="slide-1"><h2>One</h2></section><section id="slide-2"><h2>Two</h2></section>';
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async (): Promise<DesignGenerationResult> => ({
+          ...ARTIFACT_RESULT,
+          artifactHtml: slideDeck,
+          outputMode: "page",
+        })),
+      }),
+    );
+    await generateArtifact(container, "Write it as one page.");
+
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Print / PDF"]');
+    if (button === null) throw new Error("Print / PDF action missing");
+    await act(async () => button.click());
+
+    const frame = document.body.querySelector<HTMLIFrameElement>(".design-artifact-print-frame");
+    if (frame === null) throw new Error("Print frame missing");
+    const srcDoc = frame.getAttribute("srcdoc") ?? "";
+    expect(srcDoc).toContain("size: A4 portrait");
+    expect(srcDoc).not.toContain("break-before");
+
+    // And a recorded deck made of the measured pricing page: landscape, one
+    // slide per page, because the run said so.
+    await act(async () => root.unmount());
+    const pricingPage =
+      '<section class="plans"><h2>Plans</h2></section><section class="faq"><h2>FAQ</h2></section>';
+    const slides = await renderDesign(
+      createHost({
+        generate: vi.fn(async (): Promise<DesignGenerationResult> => ({
+          ...ARTIFACT_RESULT,
+          artifactHtml: pricingPage,
+          outputMode: "slides",
+        })),
+      }),
+    );
+    await generateArtifact(slides.container, "Turn it into a deck.");
+    const deckButton = slides.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Print / PDF"]',
+    );
+    if (deckButton === null) throw new Error("Print / PDF action missing");
+    await act(async () => deckButton.click());
+
+    const deckFrame = document.body.querySelector<HTMLIFrameElement>(
+      ".design-artifact-print-frame",
+    );
+    if (deckFrame === null) throw new Error("Print frame missing");
+    const deckSrcDoc = deckFrame.getAttribute("srcdoc") ?? "";
+    expect(deckSrcDoc).toContain("size: A4 landscape");
+    expect(deckSrcDoc).toContain("break-before: page");
+    await act(async () => slides.root.unmount());
+  });
 });

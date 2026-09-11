@@ -158,11 +158,19 @@ under the canvas policy they never ran, so nothing the user previewed is lost. T
 removed when it reports (`afterprint`, which fires for a cancel too) and again in the effect
 teardown, and the control says "Print dialog closed." rather than claiming a copy exists,
 because no engine distinguishes a print from a cancel. The pagination lives in
-`artifactPrint.ts`: a deck of `<section>`s gets landscape and one slide per page
+`artifactPrint.ts` and is decided by the mode the producing run recorded on the artifact —
+the same `outputMode` the slides notice reads, and for the same reason: the switch beside the
+canvas answers about the next run. That replaced a shape-only test, because "has at least one
+`<section>`" is not "is a deck": measured live, a pricing page built from three id-less
+`<section>` landmarks printed as three landscape sheets cut at boundaries its author never
+drew. A recorded `page` is continuous and portrait however many sections the document contains;
+a recorded `slides` is a deck however badly the ids are spelled. When the run recorded no mode
+— an artifact reopened from design history — the fallback asks whether the document attempted
+the contract, which is whether any section carries a `slide-N` id; unnamed sections, and ids
+like `pricing` and `faq`, are a page. A deck then gets landscape and one slide per page
 (`break-before: page`, `break-inside: avoid`, the first section exempted so no blank page
-leads), a document without sections gets portrait and a continuous flow, and both get a
-zero-margin `@page` and `print-color-adjust: exact` so the artifact's own layout and
-backgrounds survive.
+leads), a page gets portrait and a continuous flow, and both get a zero-margin `@page` and
+`print-color-adjust: exact` so the artifact's own layout and backgrounds survive.
 
 ## Design doctrine
 

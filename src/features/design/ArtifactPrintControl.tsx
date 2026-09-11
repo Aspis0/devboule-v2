@@ -29,6 +29,7 @@ import {
   buildArtifactPrintDocument,
   readArtifactPrintMessage,
 } from "./artifactPrint";
+import type { DesignOutputMode } from "./designHost";
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import { reasonFromCause } from "../../lib/tauri";
 
@@ -41,7 +42,25 @@ type PrintState = { kind: "idle" } | { kind: "closed" } | { kind: "failed"; mess
  */
 const PRINT_CLOSED_LABEL_MS = 4_000;
 
-export function ArtifactPrintControl({ html, title }: { html: string; title: string | undefined }) {
+export function ArtifactPrintControl({
+  html,
+  title,
+  outputMode,
+}: {
+  html: string;
+  title: string | undefined;
+  /**
+   * The output shape the run that produced this artifact recorded, or undefined
+   * for an artifact that recorded none (one reopened from design history).
+   *
+   * It decides the pagination, and it has to come from the artifact rather than
+   * from the output switch beside the canvas: the switch states what the next
+   * run will ask for, and flipping it reasons about nothing already on screen.
+   * A recorded `page` full of `<section>` landmarks prints continuously; that is
+   * a measured defect, not a hypothetical (see `artifactPrint.ts`).
+   */
+  outputMode?: DesignOutputMode;
+}) {
   const [printState, setPrintState] = useState<PrintState>({ kind: "idle" });
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -103,7 +122,7 @@ export function ArtifactPrintControl({ html, title }: { html: string; title: str
     clearResetTimer();
     setPrintState({ kind: "idle" });
     try {
-      const printDocument = buildArtifactPrintDocument(html, title);
+      const printDocument = buildArtifactPrintDocument(html, title, outputMode);
       const frame = document.createElement("iframe");
       frame.className = "design-artifact-print-frame";
       // Same viewport the page is authored and previewed at, so the print

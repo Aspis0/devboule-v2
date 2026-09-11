@@ -86,6 +86,42 @@ describe("ArtifactPrintControl", () => {
     });
   }
 
+  it("threads the producing run's recorded mode into the print document", async () => {
+    // The landing point for the live defect: the control must hand the recorded
+    // mode to the document builder, because that is what decides whether a
+    // `<section>`-heavy document is a deck or one continuous sheet. A control
+    // that swallowed the prop would render the pricing page as a landscape deck
+    // again with every other test still green.
+    await act(async () => {
+      root.render(<ArtifactPrintControl html={FRAGMENT} title={RUN_TITLE} outputMode="page" />);
+    });
+    await click();
+    expect(mocks.buildArtifactPrintDocument).toHaveBeenLastCalledWith(FRAGMENT, RUN_TITLE, "page");
+
+    // A recorded slides run, and then an artifact that recorded none (one
+    // reopened from design history), where the mode stays undefined so the
+    // document falls back to the shape.
+    await act(async () => {
+      root.render(<ArtifactPrintControl html={FRAGMENT} title={RUN_TITLE} outputMode="slides" />);
+    });
+    await click();
+    expect(mocks.buildArtifactPrintDocument).toHaveBeenLastCalledWith(
+      FRAGMENT,
+      RUN_TITLE,
+      "slides",
+    );
+
+    await act(async () => {
+      root.render(<ArtifactPrintControl html={FRAGMENT} title={RUN_TITLE} />);
+    });
+    await click();
+    expect(mocks.buildArtifactPrintDocument).toHaveBeenLastCalledWith(
+      FRAGMENT,
+      RUN_TITLE,
+      undefined,
+    );
+  });
+
   it("offers one labelled button and says nothing before it is used", async () => {
     await render();
 
@@ -104,7 +140,7 @@ describe("ArtifactPrintControl", () => {
 
     const frame = frameInBody();
     if (frame === null) throw new Error("the print frame did not mount");
-    expect(mocks.buildArtifactPrintDocument).toHaveBeenCalledWith(FRAGMENT, RUN_TITLE);
+    expect(mocks.buildArtifactPrintDocument).toHaveBeenCalledWith(FRAGMENT, RUN_TITLE, undefined);
     expect(frame.getAttribute("sandbox")).toBe(ARTIFACT_PRINT_SANDBOX);
     expect(frame.srcdoc).toContain(ARTIFACT_PRINT_CSP);
     expect(frame.srcdoc).toContain("window.print()");
