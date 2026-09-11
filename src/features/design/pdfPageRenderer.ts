@@ -53,8 +53,11 @@
  * chooses is the default ceiling, and that number is measured rather than
  * picked: twelve photographic A4 plates encode to ~24 KiB each at scale 0.5
  * and ~79 KiB each at scale 1.0 (JPEG quality 0.82), so a 96 KiB ceiling holds
- * a readable page at the starting scale on both flat vector decks (~31 KiB at
- * scale 1.0) and scanned plates, and only the heaviest plates step down. The
+ * a readable page at the starting scale on flat vector decks (~31 KiB at
+ * scale 1.0) and on four of the five scanned shapes measured (~17, ~40, ~71
+ * and ~90 KiB at scale 1.0), while dense 300 dpi greyscale text breaches it on
+ * every page measured (119–123 KiB) and takes the 0.75 rung instead: the
+ * population is bimodal and the ceiling sits between the modes. The
  * ladder itself is fixed at 1.0, 0.75 and 0.5 — three render passes at most per
  * page, each smaller than the last, because re-rendering is the expensive step
  * and an unbounded halving loop on a hostile page is a denial of service with
@@ -114,25 +117,64 @@ export const PDF_READABILITY_FLOOR = 0.5;
 /**
  * Largest encoded page this module produces by default, in bytes (96 KiB).
  *
- * Measured, not picked: twelve photographic A4 plates average ~79 KiB at scale
- * 1.0 and ~24 KiB at scale 0.5 (JPEG quality 0.82), and twelve flat vector
- * pages average ~31 KiB at scale 1.0 — so the ceiling holds a readable page at
- * the starting scale on both populations, and only the heaviest plates step
- * down to 0.75. A forty-page mixed deck streams to ~1.8 MiB total at this
- * ceiling, which is why the ceiling is a default the caller re-decides rather
- * than a constant the transport can assume: see `PdfRenderOptions.maxBytes`.
+ * Measured, not picked, and the population it sits in is bimodal — this
+ * ceiling is between the modes. Under it: twelve photographic A4 plates
+ * average ~79 KiB at scale 1.0 and ~24 KiB at scale 0.5 (JPEG quality 0.82),
+ * twelve flat vector pages average ~31 KiB at scale 1.0, and four of the five
+ * scanned shapes measured clear at the starting scale (~17, ~40, ~71 and
+ * ~90 KiB a page — the 200 dpi colour shape by 591 bytes on its noisy twin).
+ * Over it: dense 300 dpi greyscale text, the ordinary office-scanner output,
+ * at 119–123 KiB a page, 8 of 8 pages measured across a clean and a noisy
+ * twin, so every page of that shape takes the 0.75 rung and lands at 78–80 KiB.
+ *
+ * What that second pass costs and buys is measured too. It costs two full
+ * render passes per page instead of one, and the render is decode-bound, so
+ * the wall roughly doubles for that shape; it buys text-crop PSNR 32.9–38.1 dB
+ * and SSIM 0.97–0.99, flat across rungs and above the 0.95 artefact line.
+ *
+ * The number does not move, because it is load-bearing outside this file: the
+ * session budget is derived from it. 200 pages × 96 KiB is 19,660,800 bytes on
+ * disk, and one frame's worth of inline attachments adds at most the stored
+ * equivalent of `MAX_ATTACHMENTS_TOTAL_BYTES` in `devboule-protocol` — that
+ * constant is 384 KiB of *base64*, so ~288 KiB once decoded — for 19,955,712,
+ * which is where the 20 MiB per-owner budget comes from. The two halves are
+ * quoted in stored bytes on purpose: the frame limit counts encoded bytes and
+ * the disk budget counts decoded ones, and adding them as if they were the
+ * same unit is an error this project has already caught once in a peer's
+ * spec. Changing the ceiling here changes that protocol constant. It stays a
+ * default the caller
+ * re-decides rather than a constant the transport can assume: see
+ * `PdfRenderOptions.maxBytes`.
  */
 export const PDF_DEFAULT_MAX_BYTES_PER_PAGE = 96 * 1024;
 
 /**
- * Largest PDF accepted for parsing, in bytes (32 MiB). A forty-page mixed deck
- * with photographic plates is ~1.7 MiB; a scanned forty-page deck at 300 dpi
- * JPEG is single-digit MiB. 32 MiB is an order of magnitude above either,
- * while still bounding the bytes one `getDocument` call takes ownership of —
- * pdf.js transfers the buffer to the worker, so the file lives in memory at
- * least twice over during the parse.
+ * Largest PDF accepted for parsing, in bytes (64 MiB).
+ *
+ * Measured against the shape the old 32 MiB turned away at the door. A dense
+ * 300 dpi greyscale scan carries ~1.47 MB of embedded JPEG per page clean
+ * (5,891,099 bytes for 4 pages) and ~2.5 MB a page on its noisy twin
+ * (10,044,450 bytes for 4 pages), so forty such pages are ~59 MB clean and
+ * ~100 MB noisy. 64 MiB covers the clean shape with a little room. It does not
+ * cover the noisy twin, and that line is drawn deliberately: the twin is
+ * synthetic sigma=6 sensor noise laid over an already-dense scan, which the
+ * measurement's own author flagged as an upper bound — real scanners denoise,
+ * and many use true greyscale, MRC segmentation or JBIG2 text, all of which
+ * compress better than the imitation's desaturated RGB at q0.85.
+ *
+ * What bounds this number is memory, not the wire. pdf.js takes ownership of
+ * the buffer it is handed, so peak occupancy is roughly the file's own bytes
+ * plus one decoded page bitmap at a time (~2 MB for an A4 at scale 1): at
+ * 64 MiB that is a peak around 66 MiB inside the WebView, which is acceptable
+ * on a desktop and is the real thing that would break if someone later raised
+ * this to 512 MiB.
+ *
+ * It caps what will be parsed, not what travels. A 59 MB source yields forty
+ * pages at ~79 KiB each — about 3.1 MiB on the wire, comfortably inside the
+ * session budget — so input size and output cost are only loosely related.
+ * That is why this ceiling is generous while the per-page one is strict.
  */
-export const PDF_MAX_FILE_BYTES = 32 * 1024 * 1024;
+export const PDF_MAX_FILE_BYTES = 64 * 1024 * 1024;
 
 /**
  * Most pages one render call walks (200). Forty-page decks exist and must be
