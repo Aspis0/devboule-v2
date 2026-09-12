@@ -107,6 +107,7 @@ import { useProviderConsent } from "../workspace/useProviderConsent";
 import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
 import { chatCapableProviders, requiresConsent } from "../workspace/workspaceSessions";
 import { PermissionCard } from "../../components/PermissionCard";
+import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import {
   projectAdd,
   projectsList,
@@ -2732,6 +2733,8 @@ const DesignAssistant = memo(function DesignAssistant({
   const consentRestoreProviderIdRef = useRef<string | null>(null);
   const manifest = agentState?.manifest ?? null;
   const currentModel = manifestModel(manifest);
+  const modes = manifest?.modes;
+  const currentModeId = agentState?.pendingModeId ?? modes?.currentModeId ?? null;
   const sessionClosed = agentState?.status === "closed";
   const sessionErrored = agentState?.status === "error";
   const sessionUnavailable = sessionClosed || sessionErrored;
@@ -3419,6 +3422,21 @@ const DesignAssistant = memo(function DesignAssistant({
                     </div>
                   ) : null}
                 </div>
+                {modes !== undefined ? (
+                  <PickerChip
+                    label="Session mode"
+                    options={modes.availableModes.map((mode) => ({
+                      id: mode.id,
+                      name: mode.name,
+                      description: mode.description,
+                    }))}
+                    currentId={currentModeId}
+                    onSelect={(modeId) => void agentSession?.setMode(modeId)}
+                    chipTestId="design-mode-chip"
+                    optionTestId={(id) => `design-mode-option-${id}`}
+                    dotFor={modeDotClass}
+                  />
+                ) : null}
               </div>
             </div>
           </div>

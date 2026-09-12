@@ -421,4 +421,5 @@ export interface DesignAgentSession {
   getState(): AgentSessionState;
   subscribe(listener: () => void): () => void;
   setModel(modelId?: string, effort?: string): Promise<void>;
+  setMode(modeId: string): Promise<void>;
 }

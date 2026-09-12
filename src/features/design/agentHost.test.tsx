@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   sessionAttach: vi.fn(),
   sessionSend: vi.fn(),
   sessionSetModel: vi.fn(),
+  sessionSetMode: vi.fn(),
   sessionInterrupt: vi.fn(),
   sessionDetach: vi.fn(),
   sessionClose: vi.fn(),
@@ -69,6 +70,7 @@ vi.mock("../../lib/tauri", () => ({
   sessionAttach: mocks.sessionAttach,
   sessionSend: mocks.sessionSend,
   sessionSetModel: mocks.sessionSetModel,
+  sessionSetMode: mocks.sessionSetMode,
   sessionInterrupt: mocks.sessionInterrupt,
   sessionDetach: mocks.sessionDetach,
   sessionClose: mocks.sessionClose,
@@ -306,6 +308,7 @@ beforeEach(() => {
   mocks.sessionAttach.mockReset();
   mocks.sessionSend.mockReset();
   mocks.sessionSetModel.mockReset();
+  mocks.sessionSetMode.mockReset();
   mocks.sessionInterrupt.mockReset();
   mocks.sessionDetach.mockReset();
   mocks.sessionClose.mockReset();
@@ -371,6 +374,7 @@ beforeEach(() => {
   });
   mocks.sessionSend.mockResolvedValue(undefined);
   mocks.sessionSetModel.mockResolvedValue(undefined);
+  mocks.sessionSetMode.mockResolvedValue(undefined);
   mocks.sessionInterrupt.mockResolvedValue(undefined);
   mocks.sessionDetach.mockResolvedValue(undefined);
   mocks.sessionClose.mockResolvedValue(undefined);
@@ -696,6 +700,19 @@ describe("ACP design host", () => {
     await session.setModel("grok-4", "high");
 
     expect(mocks.sessionSetModel).toHaveBeenCalledWith("session-1", "grok-4", "high");
+    channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
+  });
+
+  it("routes mode changes through the existing session controller", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const session = host.getAgentSession?.();
+    if (session === null || session === undefined) throw new Error("agent session missing");
+
+    await session.setMode("ask");
+
+    expect(mocks.sessionSetMode).toHaveBeenCalledWith("session-1", "ask");
     channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
     await expect(run).resolves.toMatchObject(QUIET_RESULT);
   });

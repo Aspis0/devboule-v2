@@ -12,6 +12,7 @@ import {
   sessionInterrupt,
   sessionSend,
   sessionPermissionRespond,
+  sessionSetMode,
   sessionSetModel,
   type SessionChannel,
 } from "../../lib/tauri";
@@ -815,6 +816,8 @@ export function invokeAgentCommand<T>(
         args.modelId as string | undefined,
         args.effort as string | undefined,
       ) as Promise<T>;
+    case "session_set_mode":
+      return sessionSetMode(args.id as string, args.modeId as string) as Promise<T>;
     case "session_detach":
       return sessionDetach(args.subscriptionId as number) as Promise<T>;
     default:

@@ -399,6 +399,9 @@ function fakeAgentSession(initialState: AgentSessionState) {
     setModel: vi.fn(async (modelId?: string, effort?: string) => {
       updateState({ ...state, pendingSwitch: { modelId, effort, at: Date.now() } });
     }),
+    setMode: vi.fn(async (modeId: string) => {
+      updateState({ ...state, pendingModeId: modeId });
+    }),
   };
   return { session, updateState };
 }
@@ -1252,6 +1255,59 @@ describe("DesignSurface host capabilities", () => {
       effort.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(session.setModel).toHaveBeenCalledWith(undefined, "low");
+    await act(async () => root.unmount());
+  });
+
+  it("renders the session mode chip only once the manifest carries modes", async () => {
+    const model: SessionModel = { modelId: "deepseek-v4-flash", name: "DeepSeek V4 Flash" };
+    const { session, updateState } = fakeAgentSession(
+      agentState({
+        type: "session_manifest",
+        providerId: "pi",
+        currentModelId: model.modelId,
+        models: [model],
+      }),
+    );
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        getAgentSession: () => session,
+      }),
+    );
+    expect(container.querySelector('[data-testid="design-mode-chip"]')).toBeNull();
+
+    await act(async () => {
+      updateState(
+        agentState({
+          type: "session_manifest",
+          providerId: "pi",
+          currentModelId: model.modelId,
+          models: [model],
+          modes: {
+            currentModeId: "ask",
+            availableModes: [
+              { id: "bypass", name: "Bypass", description: "Tools run without asking" },
+              { id: "ask", name: "Always ask", description: "Ask before every tool call" },
+            ],
+          },
+        }),
+      );
+    });
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="design-mode-chip"]');
+    if (chip === null) throw new Error("mode chip did not render");
+    expect(chip.textContent).toContain("Always ask");
+
+    await act(async () => chip.click());
+    const bypass = container.querySelector<HTMLButtonElement>(
+      '[data-testid="design-mode-option-bypass"]',
+    );
+    if (bypass === null) throw new Error("bypass option did not render");
+    await act(async () => bypass.click());
+
+    expect(session.setMode).toHaveBeenCalledWith("bypass");
+    // The chip reads the optimistic value the session publishes, not a local copy.
+    expect(chip.textContent).toContain("Bypass");
     await act(async () => root.unmount());
   });
 

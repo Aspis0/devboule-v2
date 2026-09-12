@@ -251,7 +251,12 @@ pub(super) fn spawn_process(
     command: PtyCommand,
     requested_mode: Option<String>,
 ) -> Result<SpawnedSession, WireError> {
-    let mode_id = requested_mode.as_deref().unwrap_or("bypass");
+    // Pi has no permission gate of its own: the gate is the TypeScript extension
+    // this module writes just below and passes to the spawn. Inheriting Pi's native
+    // behaviour as the default meant the surface that authorises "Create or
+    // overwrite a file" never asked, so a session nobody asked a mode for starts in
+    // "ask". The chip is the only way back to "bypass", and it is a deliberate click.
+    let mode_id = requested_mode.as_deref().unwrap_or("ask");
     if !matches!(mode_id, "bypass" | "ask") {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
