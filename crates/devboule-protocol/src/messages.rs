@@ -105,13 +105,37 @@ impl Drop for PairingSecret {
 /// `name` is the user's file name and is display metadata only. It may contain
 /// `..`, a path separator, or a drive letter, so it is never used to build a
 /// path — see `attachment_store` in the daemon for the name that is used.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptAttachment {
     pub name: String,
     pub mime_type: String,
     /// The bytes, base64. Never a path.
     pub data: String,
+}
+
+/// Hand-written, and it must stay hand-written: `data` is a whole image.
+///
+/// `ClientMessage` derives `Debug`, and the daemon formats whole frames into
+/// error text — `dispatch_session`'s fallback arm says
+/// `format!("unexpected session frame {other:?}")`, and that string is sent
+/// back over the wire. A derived `Debug` here would put the full base64 of
+/// every attached image into that reply, and into any log line or panic that
+/// ever formats a frame. One rendered PDF page is ~128 KiB of base64 and a
+/// deck is forty of them.
+///
+/// What someone debugging a frame needs is which attachment and how big; the
+/// bytes have never once been the answer. The same treatment is applied to
+/// `AcpImageBlock` in the daemon, for the same reason.
+impl std::fmt::Debug for PromptAttachment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PromptAttachment")
+            .field("name", &self.name)
+            .field("mime_type", &self.mime_type)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
 }
 
 /// Messages the client writes.
