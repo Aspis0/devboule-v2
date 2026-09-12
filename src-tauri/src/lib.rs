@@ -82,6 +82,8 @@ pub fn run() {
             backend::devices::pairing_confirm,
             backend::devices::peer_revoke,
             backend::devices::peer_set_caps,
+            backend::tool_policy::tool_policy_get,
+            backend::tool_policy::tool_policy_set,
             backend::providers::providers_list,
             backend::providers::providers_refresh,
             backend::providers::provider_update,

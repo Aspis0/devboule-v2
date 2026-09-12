@@ -175,6 +175,71 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[KnownAgent {
 #[cfg(not(debug_assertions))]
 const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
 
+/// Every tool the daemon's MCP broker can serve, in `tools/list` order.
+///
+/// One source of truth for the broker's `tools/list` body and for the
+/// `ProviderInfo.tools` the Settings panel renders, so the panel and the wire
+/// cannot disagree about a tool's name or its description.
+pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[(
+    MCP_ROSTER_TOOL,
+    "Lists live Devboule agent sessions known by the daemon. Stable agent names are not available yet; name is null and title is display-only.",
+)];
+
+/// The read-only roster tool, and the one name a tool policy can never
+/// disable: an agent that cannot list its siblings cannot be steered at all,
+/// and the tool reads only its own bearer's roster.
+pub const MCP_ROSTER_TOOL: &str = "devboule_list_agents";
+
+/// Which providers can be served the broker's tools, keyed by catalog id.
+///
+/// The broker registers for the ACP and Claude stream-json session kinds
+/// only; `codex` (app-server) and `pi` (RPC) have no MCP channel, and a
+/// provider absent from this table advertises no tools — the panel then hides
+/// its tool section, because there is nothing there to gate.
+pub const AGENT_MCP_TOOLS: &[(&str, &[(&str, &str)])] = &[
+    ("claude", MCP_BROKER_TOOLS),
+    ("gemini", MCP_BROKER_TOOLS),
+    ("grok", MCP_BROKER_TOOLS),
+    ("qwen", MCP_BROKER_TOOLS),
+];
+
+/// The broker tools `agent_id` is served, in catalog order. Unknown ids (a
+/// registry wrapper, or a provider that cannot host the broker) get none.
+pub fn mcp_tools_for(agent_id: &str) -> Vec<devboule_protocol::ToolDescriptor> {
+    AGENT_MCP_TOOLS
+        .iter()
+        .find(|(id, _)| id.eq_ignore_ascii_case(agent_id))
+        .map(|(_, tools)| {
+            tools
+                .iter()
+                .map(|(name, description)| devboule_protocol::ToolDescriptor {
+                    name: (*name).to_string(),
+                    description: (*description).to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The exact id the catalog publishes for `agent_id`, when it publishes tools
+/// under any spelling of it.
+///
+/// The row match above is case-insensitive — a caller that spells a provider
+/// `CLAUDE` is naming the same provider — while everything keyed by a provider
+/// id (the tool policy file, `ProviderInfo.tools`) is keyed by the exact string.
+/// That gap is C-1: an id admitted case-insensitively and then looked up exactly
+/// is admitted and never found. Callers that store or compare an id resolve it
+/// here first, so the admission check and the later lookup cannot disagree on
+/// case. The predicate is the same `AGENT_MCP_TOOLS` match `mcp_tools_for`
+/// performs, and `the_canonical_id_agrees_with_the_tool_lookup` pins the two
+/// together.
+pub fn mcp_catalog_id(agent_id: &str) -> Option<&'static str> {
+    AGENT_MCP_TOOLS
+        .iter()
+        .find(|(id, _)| id.eq_ignore_ascii_case(agent_id))
+        .map(|(id, _)| *id)
+}
+
 /// Registry wrappers that a better native chat-capable provider covers in the
 /// workspace picker. This is an explicit product-policy map from §1.1:
 /// `claude-acp` is a proprietary npx wrapper, while native `claude` already
@@ -296,6 +361,11 @@ pub struct InstalledAgent {
     pub latest_version: Option<String>,
     pub install_channel: InstallChannel,
     pub npm_package: Option<&'static str>,
+    /// Tools the daemon's MCP broker serves to this provider's sessions, from
+    /// [`AGENT_MCP_TOOLS`]. Empty for a provider with no MCP channel: the row
+    /// then carries no `tools` key on the wire and the panel hides the tool
+    /// section rather than offering toggles with nothing behind them.
+    pub tools: Vec<devboule_protocol::ToolDescriptor>,
 }
 
 /// PATH scan result. `unreadable_dirs` is the number of unique PATH entries
@@ -367,6 +437,7 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
                 latest_version: None,
                 install_channel,
                 npm_package: spec.npm_package,
+                tools: mcp_tools_for(spec.id),
             })
         })
         .collect();
@@ -561,6 +632,7 @@ fn add_missing_npm_rows(
             latest_version: crate::registry::cached_latest_npm_version(package),
             install_channel: InstallChannel::Npm,
             npm_package: Some(package),
+            tools: mcp_tools_for(spec.id),
         });
     }
     local
@@ -575,6 +647,8 @@ fn registry_agent(
     let crate::registry::RegistryNpxEntry { id, package, args } = entry;
     let pickable = registry_picker_policy(&id, native);
     let acp_command = npx_acp_command(directories, &package, &args);
+    // Resolved before the literal moves `id` into the row.
+    let tools = mcp_tools_for(&id);
     InstalledAgent {
         id,
         aliases: &[],
@@ -594,6 +668,7 @@ fn registry_agent(
             .and_then(crate::provider_catalog::cap_external_version),
         install_channel: InstallChannel::NpxRegistry,
         npm_package: None,
+        tools,
     }
 }
 
@@ -2273,5 +2348,32 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         );
         let _ = fs::remove_dir_all(dir);
         let _ = fs::remove_dir_all(cache);
+    }
+
+    /// C-1's other half: the id a caller stores or compares comes from the same
+    /// match that fills `tools`, so the two cannot drift into admitting an id
+    /// the lookup does not serve, or the reverse.
+    #[test]
+    fn the_canonical_id_agrees_with_the_tool_lookup() {
+        for spelling in ["claude", "CLAUDE", "Claude", "grok", "GROK", "Grok"] {
+            let canonical = super::mcp_catalog_id(spelling).expect("a catalog id");
+            assert_eq!(
+                super::mcp_catalog_id(canonical),
+                Some(canonical),
+                "the catalog's own id must resolve to itself"
+            );
+            assert!(!super::mcp_tools_for(spelling).is_empty());
+            assert_eq!(
+                super::mcp_tools_for(spelling),
+                super::mcp_tools_for(canonical),
+                "{spelling} and {canonical} are one provider and must be served one tool list"
+            );
+        }
+        // A name the catalog does not publish is no id and is served no tools:
+        // the predicate the policy store admits a row with, on both sides.
+        for unknown in ["claude-acp", "codex", "does-not-exist", ""] {
+            assert_eq!(super::mcp_catalog_id(unknown), None, "{unknown}");
+            assert!(super::mcp_tools_for(unknown).is_empty(), "{unknown}");
+        }
     }
 }

@@ -101,8 +101,8 @@ pub use messages::{
     ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits, JournalRetention,
     JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole, PeerRow,
     PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit,
-    RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope, Unreclaimable, PEER_CAPS,
-    PEER_DEFAULT_CAPS,
+    RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope, ToolDescriptor,
+    ToolPolicyEntry, Unreclaimable, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -162,6 +162,14 @@ pub mod caps {
     /// clients only: `peer_allows` denies all six device variants to peers.
     pub const DEVICES: &str = "devices";
     pub const TYPED_PERMISSIONS: &str = "typed_permissions";
+    /// Per-provider MCP tool policy (`ToolPolicyGet`/`ToolPolicySet`).
+    ///
+    /// A client must not send those two requests to a daemon that predates
+    /// them: the daemon's reader cannot deserialize the variants and the
+    /// connection would fail on a frame the old peer never knew. The client
+    /// helpers refuse the pair unless this name was negotiated, which is what
+    /// this name exists for.
+    pub const TOOL_POLICY: &str = "tool_policy";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -425,6 +433,7 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     ];
     capabilities.push(Capability::new(caps::TYPED_PERMISSIONS));
     capabilities.push(Capability::new(caps::DEVICES));
+    capabilities.push(Capability::new(caps::TOOL_POLICY));
     capabilities
 }
 
@@ -443,6 +452,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // Devices panel would be refused its own RPCs. Whether a *connection* may
     // use it is `peer_allows`, not this list.
     capabilities.push(Capability::new(caps::DEVICES));
+    // Same reason, and here the client acts on it: `DaemonClient` refuses
+    // `tool_policy_get`/`tool_policy_set` unless this name was negotiated, so
+    // a client that did not offer it would refuse its own RPCs.
+    capabilities.push(Capability::new(caps::TOOL_POLICY));
     capabilities
 }
 
@@ -484,6 +497,21 @@ mod tests {
         assert!(daemon.iter().any(|cap| cap.as_str() == caps::JOURNAL));
         assert!(client.iter().any(|cap| cap.as_str() == caps::JOURNAL));
         assert_eq!(daemon, client);
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_tool_policy_capability() {
+        // The capability the two new RPCs are gated on. It has to be in both
+        // lists: the handshake negotiates the intersection, so a name only one
+        // side offers is never negotiated, and the client helper that refuses
+        // `tool_policy_get`/`tool_policy_set` without it would refuse every
+        // call against every daemon.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::TOOL_POLICY));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::TOOL_POLICY));
     }
 
     #[test]

@@ -671,6 +671,7 @@ mod tests {
                 install_channel: Some("native".to_string()),
                 installed: true,
                 npm_package: None,
+                tools: crate::provider_catalog::mcp_tools_for("grok"),
             }],
             os_version: "Windows".to_string(),
             app_version: "0.1.0".to_string(),

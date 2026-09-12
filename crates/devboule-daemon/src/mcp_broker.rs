@@ -21,7 +21,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use devboule_protocol::{OwnerId, SessionEvent, SessionKind, SessionState, WireError};
+use devboule_protocol::{
+    OwnerId, SessionEvent, SessionKind, SessionState, ToolPolicyEntry, WireError,
+};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -80,6 +82,10 @@ impl McpLaunchConfig {
 #[derive(Clone)]
 struct RegisteredSession {
     owner: OwnerId,
+    /// Catalog provider this session was created for (`claude`, `grok`, …).
+    /// The tool policy is keyed by it; `None` is a caller that had no
+    /// provider id, which serves every broker tool (the pre-policy default).
+    provider_id: Option<String>,
     bearer: String,
     claude_config_path: Option<PathBuf>,
     runtime: Option<Weak<crate::session::SessionRuntime>>,
@@ -139,11 +145,42 @@ impl McpBroker {
         })
     }
 
+    /// Register a session whose catalog provider the caller did not supply.
+    /// Equivalent to [`Self::register_with_provider`] with no provider id.
+    /// Test-only seam: the ungated registration every session used before
+    /// `session.rs` passed its provider id. It exists so a unit test can prove
+    /// the policy is consulted only through `register_with_provider`.
+    #[cfg(test)]
     pub(crate) fn register(
         self: &Arc<Self>,
         session_id: &str,
         owner: &OwnerId,
         kind: &SessionKind,
+    ) -> Result<Option<McpSessionGuard>, WireError> {
+        self.register_with_provider(session_id, owner, kind, None)
+    }
+
+    /// Register `session_id` for `kind`, recording the catalog provider it
+    /// belongs to so `tools/list` and `tools/call` can apply that provider's
+    /// tool policy (`SessionCreate.provider`).
+    ///
+    /// The provider id is the sole key of that gate. A `None` id means "no
+    /// policy consulted" — the pre-policy default — and is reachable in
+    /// production only through the same-user development override
+    /// `DEVBOULE_ACP_COMMAND` set without `DEVBOULE_ACP_PROVIDER_ID`: the
+    /// command resolver reads the provider id from the environment and
+    /// `session.rs` passes what it resolved. No policy row can name such a
+    /// session, so the path cannot be widened from the app: `tool_policy.rs`
+    /// refuses a `set` for any id the catalog publishes no tools for, and a
+    /// lookup with no id yields `None`. A caller with a provider id therefore
+    /// cannot lose its policy, and a caller without one cannot be given
+    /// another session's.
+    pub(crate) fn register_with_provider(
+        self: &Arc<Self>,
+        session_id: &str,
+        owner: &OwnerId,
+        kind: &SessionKind,
+        provider_id: Option<&str>,
     ) -> Result<Option<McpSessionGuard>, WireError> {
         if !matches!(kind, SessionKind::Acp | SessionKind::Claude) {
             return Ok(None);
@@ -185,6 +222,7 @@ impl McpBroker {
 
         let registration = RegisteredSession {
             owner: owner.clone(),
+            provider_id: provider_id.map(str::to_string),
             bearer: bearer.clone(),
             claude_config_path: claude_config_path.clone(),
             runtime: None,
@@ -643,21 +681,28 @@ fn handle_rpc(
             // An authenticated tools/list is the broker's proof that this
             // provider has connected with this session's Bearer.
             broker.mark_broker_ready(registration);
+            let policy = state.tool_policy.get(registration.provider_id.as_deref());
             Ok(Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {"tools": [
-                    {
-                        "name": "devboule_list_agents",
-                        "description": "Lists live Devboule agent sessions known by the daemon. Stable agent names are not available yet; name is null and title is display-only.",
-                        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
-                    }
-                ]},
+                "result": {"tools": enabled_tool_list(
+                    crate::provider_catalog::MCP_BROKER_TOOLS,
+                    policy.as_ref(),
+                )},
             })))
         }
         "tools/call" => {
-            let name = message.pointer("/params/name").and_then(Value::as_str);
-            if name != Some("devboule_list_agents") {
+            let tool_name = message.pointer("/params/name").and_then(Value::as_str);
+            // The policy guard runs before the name check, so a disabled tool
+            // is refused for the reason that actually applies and an
+            // unserved name cannot be probed past the policy.
+            let policy = state.tool_policy.get(registration.provider_id.as_deref());
+            if let Some(tool_name) = tool_name {
+                if !crate::tool_policy::is_tool_enabled(policy.as_ref(), tool_name) {
+                    return Ok(Some(rpc_error(id, -32601, "Tool disabled by policy")));
+                }
+            }
+            if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 return Ok(Some(rpc_error(id, -32601, "Unknown tool")));
             }
             // Deliberately do not read params.arguments. The bearer maps to
@@ -690,6 +735,23 @@ fn handle_rpc(
 
 fn rpc_error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+}
+
+/// The `tools/list` body for one policy: the catalog minus the tools that
+/// policy disables. The catalog is a parameter so the filter can be tested
+/// against a tool other than the always-on roster tool.
+fn enabled_tool_list(catalog: &[(&str, &str)], policy: Option<&ToolPolicyEntry>) -> Vec<Value> {
+    catalog
+        .iter()
+        .filter(|(name, _)| crate::tool_policy::is_tool_enabled(policy, name))
+        .map(|(name, description)| {
+            json!({
+                "name": name,
+                "description": description,
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+            })
+        })
+        .collect()
 }
 
 fn agent_value(
@@ -892,7 +954,11 @@ fn write_protected_json(path: &Path, value: &Value) -> io::Result<()> {
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        protect_file(&temp)?;
+        // The DACL is narrowed on the temp file, before the rename: the helper
+        // lives in `security.rs` so this config and the tool policy cannot
+        // drift on what "protected" means; off Windows there is no DACL.
+        #[cfg(windows)]
+        crate::security::apply_current_user_dacl(&temp)?;
         fs::rename(&temp, path)
     })();
     if result.is_err() {
@@ -918,56 +984,6 @@ fn cleanup_stale_configs(runtime_dir: &Path) -> io::Result<()> {
             let _ = fs::remove_file(path);
         }
     }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn protect_file(path: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr;
-    use windows_sys::Win32::Foundation::{GetLastError, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    };
-    use windows_sys::Win32::Security::{
-        SetFileSecurityW, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    };
-
-    let sid = crate::security::current_user_sid()?;
-    let sddl = crate::security::user_only_sddl(&sid);
-    let wide_sddl: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
-    let converted = unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            wide_sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            ptr::null_mut(),
-        )
-    };
-    if converted == 0 || descriptor.is_null() {
-        return Err(io::Error::from_raw_os_error(
-            unsafe { GetLastError() } as i32
-        ));
-    }
-    let wide_path: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let result =
-        unsafe { SetFileSecurityW(wide_path.as_ptr(), DACL_SECURITY_INFORMATION, descriptor) };
-    let error = (result == 0).then(|| unsafe { GetLastError() });
-    unsafe {
-        LocalFree(descriptor as _);
-    }
-    error.map_or(Ok(()), |error| {
-        Err(io::Error::from_raw_os_error(error as i32))
-    })
-}
-
-#[cfg(not(windows))]
-fn protect_file(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -1366,6 +1382,266 @@ mod tests {
             .expect_err("a stopped broker must revoke readiness");
         assert!(error.message.contains("MCP broker stopped"));
         drop(guard);
+    }
+
+    #[test]
+    fn the_tool_list_filter_drops_a_named_disabled_tool() {
+        let catalog: &[(&str, &str)] = &[
+            (crate::provider_catalog::MCP_ROSTER_TOOL, "the roster"),
+            ("some_future_tool", "a tool a policy can turn off"),
+        ];
+        assert_eq!(enabled_tool_list(catalog, None).len(), 2);
+
+        let selective = ToolPolicyEntry {
+            provider_id: "claude".to_string(),
+            enabled: Some(true),
+            disabled_tools: vec!["some_future_tool".to_string()],
+        };
+        let filtered = enabled_tool_list(catalog, Some(&selective));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0]["name"],
+            crate::provider_catalog::MCP_ROSTER_TOOL
+        );
+
+        let globally_off = ToolPolicyEntry {
+            provider_id: "claude".to_string(),
+            enabled: Some(false),
+            disabled_tools: Vec::new(),
+        };
+        let always_on = enabled_tool_list(catalog, Some(&globally_off));
+        assert_eq!(
+            always_on.len(),
+            1,
+            "a disabled policy still lists the always-on roster tool"
+        );
+    }
+
+    #[test]
+    fn a_disabled_tool_is_refused_at_call_time_and_the_roster_still_answers() {
+        let state = ServerState::new("mcp-tool-policy-call".to_string());
+        let owner = owner("mcp-policy-user", "mcp-policy-client");
+        let guard = state
+            .mcp
+            .register_with_provider("policy-session", &owner, &SessionKind::Acp, Some("claude"))
+            .expect("registration")
+            .expect("MCP guard");
+        state
+            .tool_policy
+            .set("claude", Some(true), vec!["some_future_tool".to_string()])
+            .expect("policy");
+        let token = state.mcp.test_token("policy-session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let refused = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"some_future_tool"}}"#,
+        );
+        let refused_body = response_json(&refused);
+        assert_eq!(refused_body.pointer("/error/code"), Some(&json!(-32601)));
+        assert_eq!(
+            refused_body.pointer("/error/message"),
+            Some(&json!("Tool disabled by policy"))
+        );
+
+        // The same policy leaves the always-on roster tool working: a toggle
+        // that locked the agent out of its own roster would be a footgun.
+        let allowed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_list_agents"}}"#,
+        );
+        assert!(allowed.starts_with("HTTP/1.1 200"));
+        assert_eq!(response_json(&allowed)["result"]["isError"], false);
+
+        // A name no policy mentions is still `Unknown tool`: the two refusals
+        // mean different things to the agent.
+        let unknown = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"no_such_tool"}}"#,
+        );
+        assert_eq!(
+            response_json(&unknown).pointer("/error/message"),
+            Some(&json!("Unknown tool"))
+        );
+
+        // And `tools/list` for the same session still reports the roster tool.
+        let listed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#,
+        );
+        assert_eq!(
+            response_json(&listed)
+                .pointer("/result/tools")
+                .and_then(Value::as_array)
+                .map(|tools| tools.len()),
+            Some(1)
+        );
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(server);
+        drop(guard);
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    #[test]
+    fn a_globally_disabled_policy_still_lists_the_always_on_tool() {
+        let state = ServerState::new("mcp-tool-policy-list".to_string());
+        let owner = owner("mcp-policy-list-user", "mcp-policy-list-client");
+        let guard = state
+            .mcp
+            .register_with_provider("silent-session", &owner, &SessionKind::Acp, Some("grok"))
+            .expect("registration")
+            .expect("MCP guard");
+        state
+            .tool_policy
+            .set(
+                "grok",
+                Some(false),
+                vec![crate::provider_catalog::MCP_ROSTER_TOOL.to_string()],
+            )
+            .expect("policy");
+        let token = state.mcp.test_token("silent-session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let body = response_json(&response);
+        let tools = body
+            .pointer("/result/tools")
+            .and_then(Value::as_array)
+            .expect("tool list");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], crate::provider_catalog::MCP_ROSTER_TOOL);
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(server);
+        drop(guard);
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// What a `None` provider id means at HEAD, and nothing more.
+    ///
+    /// [`McpBroker::register`] is a `#[cfg(test)]` seam: both production call
+    /// sites in `session.rs` — spawn and ACP resume — register through
+    /// [`McpBroker::register_with_provider`], so this test does not exercise a
+    /// live production path. It pins one behaviour: a session registered
+    /// without a provider id has `provider_id: None`, `is_tool_enabled(None,
+    /// _)` is therefore true for every tool, and the whole catalog is served
+    /// whatever the store holds — no name is ever refused as `Tool disabled by
+    /// policy`. The same request against the same stored policy is refused in
+    /// `the_provider_registered_path_applies_that_policy`; the two differ only
+    /// in the provider id the session registered with, so together they pin
+    /// the gate to that id rather than to the policy file alone.
+    ///
+    /// The `None` id is reachable in production only through the same-user
+    /// `DEVBOULE_ACP_COMMAND` development override, described on
+    /// [`McpBroker::register_with_provider`].
+    #[test]
+    fn a_registration_without_a_provider_id_consults_no_policy() {
+        let state = ServerState::new("mcp-tool-policy-gap".to_string());
+        let owner = owner("mcp-policy-gap-user", "mcp-policy-gap-client");
+        let guard = state
+            .mcp
+            .register("unnamed-session", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        state
+            .tool_policy
+            .set("claude", Some(true), vec!["some_future_tool".to_string()])
+            .expect("policy");
+        let token = state.mcp.test_token("unnamed-session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        // A policy that disables `some_future_tool` for claude is on disk and
+        // this session has no provider id, so the lookup yields nothing and
+        // the name falls through to the unknown-tool answer. "Tool disabled
+        // by policy" here would mean the gate had been reached.
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"some_future_tool"}}"#,
+        );
+        assert_eq!(
+            response_json(&response).pointer("/error/message"),
+            Some(&json!("Unknown tool")),
+            "a registration without a provider id consults no policy"
+        );
+
+        // And the broker still lists its whole catalog — measured against
+        // the catalog rather than against a literal, so the claim stays
+        // "every tool" as the catalog grows.
+        let listed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        );
+        let listed_body = response_json(&listed);
+        assert_eq!(
+            listed_body
+                .pointer("/result/tools")
+                .and_then(Value::as_array)
+                .map(|tools| tools.len()),
+            Some(crate::provider_catalog::MCP_BROKER_TOOLS.len())
+        );
+
+        // The one tool the catalog does serve still answers, so the session
+        // is fully served: nothing on this path consults a policy.
+        let roster = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"devboule_list_agents"}}"#,
+        );
+        assert!(roster.starts_with("HTTP/1.1 200"));
+        assert_eq!(response_json(&roster)["result"]["isError"], false);
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(server);
+        drop(guard);
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The inverse of `a_registration_without_a_provider_id_consults_no_policy`:
+    /// the same request and the same stored policy, refused by the policy
+    /// because this session did name its provider. Both production call sites
+    /// in `session.rs` register through [`McpBroker::register_with_provider`],
+    /// so this is the production path.
+    #[test]
+    fn the_provider_registered_path_applies_that_policy() {
+        let state = ServerState::new("mcp-tool-policy-gated".to_string());
+        let owner = owner("mcp-policy-gated-user", "mcp-policy-gated-client");
+        let guard = state
+            .mcp
+            .register_with_provider("gated-session", &owner, &SessionKind::Acp, Some("claude"))
+            .expect("registration")
+            .expect("MCP guard");
+        state
+            .tool_policy
+            .set("claude", Some(true), vec!["some_future_tool".to_string()])
+            .expect("policy");
+        let token = state.mcp.test_token("gated-session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"some_future_tool"}}"#,
+        );
+        assert_eq!(
+            response_json(&response).pointer("/error/message"),
+            Some(&json!("Tool disabled by policy"))
+        );
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(server);
+        drop(guard);
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
     }
 
     #[test]

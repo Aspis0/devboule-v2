@@ -52,11 +52,21 @@ describe("ACP agent session", () => {
     expect(assistantMessages).toEqual(["Hello"]);
   });
 
-  it("reduces a session notice to a system item without changing status", async () => {
+  it("carries each session_notice severity onto its system item without changing status", async () => {
+    // The severity field is the only thing separating a notice the user has
+    // to act on (warning) from one they can read past (info), so assert the
+    // field itself instead of re-running the info case through a whole-item
+    // equality: one notice of each severity must land as its own system
+    // item, in order, with its own severity intact.
     const harness = makeHarness();
     await harness.session.start();
     expect(harness.session.getState().status).toBe("idle");
 
+    harness.emit({
+      type: "session_notice",
+      text: "Codex extension needs approval to read the workspace.",
+      severity: "warning",
+    });
     harness.emit({
       type: "session_notice",
       text: "Codex declined an out-of-scope request.",
@@ -64,13 +74,15 @@ describe("ACP agent session", () => {
     });
 
     expect(harness.session.getState().status).toBe("idle");
-    expect(harness.session.getState().items).toEqual([
-      {
-        id: "system-1",
-        role: "system",
-        text: "Codex declined an out-of-scope request.",
-        severity: "info",
-      },
+    const items = harness.session.getState().items;
+    expect(items.map((item) => (item.role === "system" ? item.severity : null))).toEqual([
+      "warning",
+      "info",
+    ]);
+    expect(items.map((item) => item.id)).toEqual(["system-1", "system-2"]);
+    expect(items.map(itemRoleText)).toEqual([
+      { role: "system", text: "Codex extension needs approval to read the workspace." },
+      { role: "system", text: "Codex declined an out-of-scope request." },
     ]);
   });
 

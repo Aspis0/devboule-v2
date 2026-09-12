@@ -2109,7 +2109,12 @@ impl SessionRegistry {
             &self.paths,
         );
         let mcp_session = if matches!(kind, SessionKind::Acp | SessionKind::Claude) {
-            state.mcp.register(&metadata.id, owner, &kind)?
+            state.mcp.register_with_provider(
+                &metadata.id,
+                owner,
+                &kind,
+                session_provider.as_deref(),
+            )?
         } else {
             None
         };
@@ -2325,7 +2330,12 @@ impl SessionRegistry {
                 "daemon is shutting down",
             ));
         }
-        let mcp_session = match state.mcp.register(session_id, owner, &SessionKind::Acp) {
+        let mcp_session = match state.mcp.register_with_provider(
+            session_id,
+            owner,
+            &SessionKind::Acp,
+            Some(provider.as_str()),
+        ) {
             Ok(mcp_session) => mcp_session,
             Err(error) => {
                 state.session_finished();

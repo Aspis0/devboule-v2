@@ -58,6 +58,13 @@ pub fn peer_allows(role: PeerRole, request: &ClientMessage) -> PeerDecision {
         ClientMessage::PeerRevoke { .. } => PeerDecision::Deny("peer.revoke"),
         ClientMessage::PeerSetCaps { .. } => PeerDecision::Deny("peer.set_caps"),
 
+        // Tool policies are this device's own settings, read and written by
+        // its user through the app. A paired device toggling them would be
+        // changing what this machine hands to its agents, so both the read
+        // and the write are refused rather than projected.
+        ClientMessage::ToolPolicyGet { .. } => PeerDecision::Deny("tool.policy.get"),
+        ClientMessage::ToolPolicySet { .. } => PeerDecision::Deny("tool.policy.set"),
+
         // Local-only information: pid, instance id, live counts and the
         // secret-store selector, none of which a peer needs. Peers use `Ping`
         // and `DevicesList.self_info` (muse M7, §8b A13).
@@ -318,6 +325,13 @@ mod tests {
                 id: 1,
                 device_id: "dev-1".to_string(),
                 caps: vec!["view".to_string()],
+            },
+            ClientMessage::ToolPolicyGet { id: 1 },
+            ClientMessage::ToolPolicySet {
+                id: 1,
+                provider_id: "claude".to_string(),
+                enabled: Some(false),
+                disabled_tools: Vec::new(),
             },
         ];
         for role in [PeerRole::Client, PeerRole::Daemon] {

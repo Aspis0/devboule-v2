@@ -12,6 +12,23 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
       (error: unknown) =>
         typeof error === "object" && error !== null && "code" in error && "message" in error,
     ),
+    daemonStatus: vi.fn(async () => ({
+      state: "connected",
+      pid: 1,
+      instanceId: "settings-test",
+      protocolVersion: 4,
+      clients: 1,
+      capabilities: [
+        "ping",
+        "status",
+        "sessions",
+        "journal",
+        "typed_permissions",
+        "devices",
+        "tool_policy",
+      ],
+      message: null,
+    })),
     journalRetentionGet: vi.fn(),
     journalRetentionSet: vi.fn(),
     journalUsage: vi.fn(),
@@ -20,6 +37,8 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
     providersList: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providersRefresh: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providerUpdate: vi.fn(async () => ({ ok: true, exitCode: 0, log: "" })),
+    toolPolicyGet: vi.fn(async () => ({ policies: [] })),
+    toolPolicySet: vi.fn(async () => undefined),
     workspacesList: vi.fn(async () => []),
   };
 });
@@ -33,6 +52,7 @@ vi.mock("../oracle/OraclePanel", () => ({
 }));
 
 import {
+  daemonStatus,
   journalRetentionGet,
   journalRetentionSet,
   journalUsage,
@@ -41,16 +61,20 @@ import {
   providerUpdate,
   providersList,
   providersRefresh,
+  toolPolicyGet,
+  toolPolicySet,
   workspacesList,
 } from "../../lib/tauri";
 import type {
+  DaemonStatus,
   JournalRetention,
   Project,
   ProviderCatalog,
   ProviderInfo,
   ProviderUpdateOutcome,
+  ToolPolicyReply,
 } from "../../types/ipc";
-import { SettingsSurface } from "./SettingsSurface";
+import { ALWAYS_ON_REASON, SettingsSurface, toolPolicyFor } from "./SettingsSurface";
 import { open } from "@tauri-apps/plugin-dialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -1381,5 +1405,487 @@ describe("Settings removed placeholder rows", () => {
     expect(container.textContent).not.toContain("Base branch");
     expect(container.textContent).not.toContain("Setup script");
     expect(container.textContent).not.toContain("Remove worktree when archived");
+  });
+});
+
+describe("Settings provider tool toggles", () => {
+  let container: HTMLDivElement;
+  let root: Root | undefined;
+
+  // The daemon sends no `tools` key for wrappers and non-MCP providers; an
+  // empty list here stands in for that omitted key on the JSON row.
+  function mcpProviderWith(overrides: Partial<ProviderInfo> = {}): ProviderInfo {
+    return {
+      id: "grok",
+      executable: "C:\\npm\\grok.cmd",
+      acpAvailable: true,
+      authentication: "unknown",
+      protocol: "acp",
+      tools: [
+        { name: "devboule_list_agents", description: "List the agents on this device." },
+        { name: "other_tool", description: "Something the provider can do." },
+      ],
+      ...overrides,
+    };
+  }
+
+  /** A connected supervisor status whose capability list is the handshake's. */
+  function daemonStatusWith(capabilities: string[]): DaemonStatus {
+    return {
+      state: "connected",
+      pid: 1,
+      instanceId: "settings-test",
+      protocolVersion: 4,
+      clients: 1,
+      capabilities,
+      message: null,
+    };
+  }
+
+  // Opens the per-card disclosure and answers the async policy fetch, so
+  // every assertion below sees the toggles in their settled state.
+  async function renderToolSettings(policies: ToolPolicyReply = { policies: [] }) {
+    vi.mocked(toolPolicyGet).mockResolvedValueOnce(policies);
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const summary = container.querySelector<HTMLElement>(".provider-tools summary");
+    if (!summary) throw new Error("Tool settings disclosure did not render");
+    await act(async () => summary.click());
+    await act(async () => undefined);
+    return summary;
+  }
+
+  function toolRow(name: string): HTMLElement {
+    const row = Array.from(container.querySelectorAll<HTMLElement>(".provider-tool-row")).find(
+      (label) => label.textContent?.includes(name),
+    );
+    if (!row) throw new Error(`tool row ${name} did not render`);
+    return row;
+  }
+
+  function toolCheckbox(name: string): HTMLInputElement {
+    const box = toolRow(name).querySelector<HTMLInputElement>("input[type='checkbox']");
+    if (!box) throw new Error(`tool checkbox ${name} did not render`);
+    return box;
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(providersList).mockImplementation(async () => ({
+      providers: [],
+      unreadableDirs: 0,
+    }));
+  });
+
+  afterEach(async () => {
+    if (root !== undefined) await act(async () => root!.unmount());
+    container.remove();
+    vi.clearAllMocks();
+    // `clearAllMocks` keeps queued `mockImplementationOnce` entries, so a
+    // test that queues an unsettled write and fails before consuming both
+    // would leave the next test's click reading a stale (hanging) write
+    // instead of its own mock. Reset this one back to the resolved default.
+    vi.mocked(toolPolicySet).mockReset();
+    vi.mocked(toolPolicySet).mockImplementation(async () => undefined);
+  });
+
+  it("treats a missing policy row as enabled, never as an error", () => {
+    container.remove();
+    expect(toolPolicyFor("grok", null)).toEqual({ enabled: true, disabledTools: [] });
+    expect(toolPolicyFor("grok", [])).toEqual({ enabled: true, disabledTools: [] });
+    expect(
+      toolPolicyFor("grok", [{ providerId: "other", enabled: false, disabledTools: [] }]),
+    ).toEqual({ enabled: true, disabledTools: [] });
+  });
+
+  it("reads enabled:false as all-off and a present row as the deny list", () => {
+    container.remove();
+    expect(
+      toolPolicyFor("grok", [{ providerId: "grok", enabled: false, disabledTools: [] }]),
+    ).toEqual({ enabled: false, disabledTools: [] });
+    expect(
+      toolPolicyFor("grok", [{ providerId: "grok", enabled: null, disabledTools: ["x"] }]),
+    ).toEqual({ enabled: true, disabledTools: ["x"] });
+  });
+
+  it("strips a stale stored row that names the always-on tool", () => {
+    container.remove();
+    expect(
+      toolPolicyFor("grok", [
+        { providerId: "grok", enabled: null, disabledTools: ["devboule_list_agents", "x"] },
+      ]),
+    ).toEqual({ enabled: true, disabledTools: ["x"] });
+  });
+
+  it("renders one switch per tool with the always-on tool locked on", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    await renderToolSettings();
+
+    const rosterBox = toolCheckbox("devboule_list_agents");
+    expect(rosterBox.checked).toBe(true);
+    expect(rosterBox.disabled).toBe(true);
+    expect(toolRow("devboule_list_agents").textContent).toContain(ALWAYS_ON_REASON);
+
+    const otherBox = toolCheckbox("other_tool");
+    expect(otherBox.checked).toBe(true);
+    expect(otherBox.disabled).toBe(false);
+    expect(toolRow("other_tool").textContent).toContain("Something the provider can do.");
+
+    const master = container.querySelector<HTMLInputElement>(
+      "input[aria-label='Enable tools for grok']",
+    );
+    expect(master?.checked).toBe(true);
+  });
+
+  it("associates each tool checkbox with its name through the label", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    await renderToolSettings();
+
+    const otherBox = toolCheckbox("other_tool");
+    const label = toolRow("other_tool").querySelector<HTMLLabelElement>("label[for]");
+    if (!label) throw new Error("tool label with htmlFor did not render");
+    expect(label.getAttribute("for")).toBe(otherBox.id);
+    expect(otherBox.id).toContain("other_tool");
+    // Clicking the name text toggles the box: the implicit-wrap form was
+    // replaced by an explicit htmlFor association.
+    await act(async () => {
+      label.click();
+    });
+    await act(async () => undefined);
+    expect(toolPolicySet).toHaveBeenCalledTimes(1);
+    expect(toolPolicySet).toHaveBeenCalledWith("grok", null, ["other_tool"]);
+    expect(otherBox.checked).toBe(false);
+  });
+
+  it("hides the toggles section when the provider carries no tools", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        mcpProviderWith({ tools: [] }),
+        mcpProviderWith({ id: "plain", tools: undefined }),
+      ],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    expect(toolPolicyGet).not.toHaveBeenCalled();
+    expect(container.querySelector(".provider-tools")).toBeNull();
+    expect(container.textContent).not.toContain("Tool settings");
+  });
+
+  // Audit finding B-2: `tool_policy` is a negotiated capability. A daemon
+  // that does not advertise it cannot answer `tool_policy_get`, and an older
+  // daemon may still publish `tools` for its providers — so the section must
+  // be absent, not attempted.
+  it("hides the toggles and never fetches when the daemon lacks tool_policy", async () => {
+    vi.mocked(daemonStatus).mockResolvedValueOnce(
+      daemonStatusWith(["ping", "status", "sessions", "journal", "typed_permissions", "devices"]),
+    );
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    // The gate reads the handshake, and only the per-tool section goes: the
+    // provider card itself still renders.
+    expect(daemonStatus).toHaveBeenCalled();
+    expect(container.querySelector(".provider-name")?.textContent).toBe("grok");
+    expect(toolPolicyGet).not.toHaveBeenCalled();
+    expect(container.querySelector(".provider-tools")).toBeNull();
+    expect(container.textContent).not.toContain("Tool settings");
+    expect(container.textContent).not.toContain("Enable tools");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("draws the toggles once the daemon advertises tool_policy", async () => {
+    vi.mocked(daemonStatus).mockResolvedValueOnce(daemonStatusWith(["devices", "tool_policy"]));
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    await renderToolSettings();
+
+    expect(toolPolicyGet).toHaveBeenCalledTimes(1);
+    expect(
+      container.querySelector<HTMLInputElement>("input[aria-label='Enable tools for grok']"),
+    ).not.toBeNull();
+  });
+
+  it("turning the master switch off sends enabled:false with the full deny list", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    await renderToolSettings({
+      policies: [{ providerId: "grok", enabled: null, disabledTools: ["other_tool"] }],
+    });
+
+    const master = container.querySelector<HTMLInputElement>(
+      "input[aria-label='Enable tools for grok']",
+    );
+    if (!master) throw new Error("master switch did not render");
+    await act(async () => {
+      master.click();
+    });
+    await act(async () => undefined);
+
+    expect(toolPolicySet).toHaveBeenCalledTimes(1);
+    expect(toolPolicySet).toHaveBeenCalledWith("grok", false, ["other_tool"]);
+    expect(master.checked).toBe(false);
+  });
+
+  it("unchecking one tool sends the complete disabledTools array", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    await renderToolSettings();
+
+    const otherBox = toolCheckbox("other_tool");
+    await act(async () => {
+      otherBox.click();
+    });
+    await act(async () => undefined);
+
+    expect(toolPolicySet).toHaveBeenCalledTimes(1);
+    expect(toolPolicySet).toHaveBeenCalledWith("grok", null, ["other_tool"]);
+    expect(otherBox.checked).toBe(false);
+  });
+
+  it("never sends the always-on tool in disabledTools, even from a stale stored row", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    // A stale daemon row names the always-on tool: the panel strips it on
+    // read (the row renders as fully enabled) and never sends it back.
+    await renderToolSettings({
+      policies: [
+        {
+          providerId: "grok",
+          enabled: null,
+          disabledTools: ["devboule_list_agents"],
+        },
+      ],
+    });
+
+    expect(toolCheckbox("devboule_list_agents").checked).toBe(true);
+    expect(toolCheckbox("other_tool").checked).toBe(true);
+
+    const otherBox = toolCheckbox("other_tool");
+    await act(async () => {
+      otherBox.click();
+    });
+    await act(async () => undefined);
+
+    expect(toolPolicySet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(toolPolicySet).mock.calls[0]?.[2] ?? [];
+    expect(sent).toEqual(["other_tool"]);
+    expect(sent).not.toContain("devboule_list_agents");
+  });
+
+  it("keeps the second write when two rapid toggles race and the first is rejected", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    await renderToolSettings();
+
+    // Regression test for the audit's finding 1 stale revert: two persists
+    // fired before either settled, the first rejected, the second accepted.
+    // Before the fix both entered `persist` (the `busy` state guard reads
+    // stale `false` in the same tick) and the first rejection's
+    // `setPolicies(previous)` clobbered the second write's optimistic row.
+    // The fix keeps both writes on the wire, in click order — the second
+    // click is never dropped — and hands the UI to the newest sequence:
+    // a rejection that a newer write superseded reverts nothing and reports
+    // nothing. This test pins that: the two writes run with a render flush
+    // between them, but the first write is still unsettled (its promise
+    // resolves only via `rejectFirst` below) while the second starts.
+    let rejectFirst!: (cause: unknown) => void;
+    let resolveSecond!: () => void;
+    vi.mocked(toolPolicySet)
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+    // Toggle A unchecks other_tool; toggle B re-checks it from A's
+    // optimistic row. `fireToggle` calls the real `onChange` handler (the
+    // same function a click calls); the render flush between the fires is
+    // what lets B's closure read A's optimistic row instead of the pre-A
+    // state. `persist` itself is not exported; the handlers close over it.
+    function fireToggle(name: string, next: boolean) {
+      const box = toolCheckbox(name);
+      const reactKey = Object.keys(box).find((key) => key.startsWith("__reactProps"));
+      const onChange = (box as unknown as Record<string, unknown>)[reactKey ?? ""] as
+        | { onChange?: (event: { target: { checked: boolean } }) => void }
+        | undefined;
+      const handler = onChange as { onChange?: unknown } | undefined as
+        | { onChange: (event: { target: { checked: boolean } }) => void }
+        | undefined;
+      if (!handler?.onChange) throw new Error(`onChange for ${name} did not render`);
+      return act(async () => {
+        handler.onChange({ target: { checked: next } });
+      });
+    }
+    const first = fireToggle("other_tool", false);
+    await first;
+    // Let A's optimistic row render before B fires: A is still unsettled
+    // (its promise resolves only via `rejectFirst` below), so this is the
+    // audit's interleaving — the second write starts while the first is
+    // still in flight — with B reading A's row as its base.
+    await act(async () => undefined);
+    const second = fireToggle("other_tool", true);
+    await second;
+    expect(toolPolicySet).toHaveBeenCalledTimes(2);
+    expect(toolPolicySet).toHaveBeenNthCalledWith(1, "grok", null, ["other_tool"]);
+    expect(toolPolicySet).toHaveBeenNthCalledWith(2, "grok", null, []);
+
+    await act(async () => {
+      rejectFirst({ code: "io", message: "first write lost" });
+    });
+    await act(async () => {
+      resolveSecond();
+    });
+    await act(async () => undefined);
+
+    // The second (accepted) write is the final state: the tool is enabled,
+    // no error is shown, and the first rejection reported nothing.
+    expect(toolCheckbox("other_tool").checked).toBe(true);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("keeps a tool toggle and a master toggle fired in one tick, in order", async () => {
+    // Finding 8: the master switch toggled while the tool write is in
+    // flight. Both handlers run before React re-renders `policies`, so the
+    // second write must read the row the first one just wrote — reading the
+    // render's `disabledSet` instead would turn the master off with a deny
+    // list that omits the tool the user just unchecked, and the stored row
+    // would lose it. Both writes still reach the daemon, in click order.
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    await renderToolSettings();
+
+    function fire(element: HTMLInputElement, checked: boolean) {
+      const reactKey = Object.keys(element).find((key) => key.startsWith("__reactProps"));
+      const props = (element as unknown as Record<string, unknown>)[reactKey ?? ""] as
+        | { onChange?: (event: { target: { checked: boolean } }) => void }
+        | undefined;
+      if (!props?.onChange) throw new Error("onChange did not render");
+      props.onChange({ target: { checked } });
+    }
+    const master = container.querySelector<HTMLInputElement>(
+      "input[aria-label='Enable tools for grok']",
+    );
+    if (!master) throw new Error("master switch did not render");
+
+    await act(async () => {
+      fire(toolCheckbox("other_tool"), false);
+      fire(master, false);
+    });
+
+    expect(toolPolicySet).toHaveBeenCalledTimes(2);
+    expect(toolPolicySet).toHaveBeenNthCalledWith(1, "grok", null, ["other_tool"]);
+    expect(toolPolicySet).toHaveBeenNthCalledWith(2, "grok", false, ["other_tool"]);
+  });
+
+  it("does not reuse one provider's policy state for another provider", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        mcpProviderWith({
+          id: "grok",
+          tools: [{ name: "grok_tool", description: "Grok-only tool." }],
+        }),
+        mcpProviderWith({
+          id: "claude",
+          tools: [{ name: "claude_tool", description: "Claude-only tool." }],
+        }),
+      ],
+      unreadableDirs: 0,
+    });
+    vi.mocked(toolPolicyGet).mockResolvedValueOnce({
+      policies: [{ providerId: "grok", enabled: null, disabledTools: ["grok_tool"] }],
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    await act(async () => {
+      for (const summary of container.querySelectorAll<HTMLElement>(".provider-tools summary")) {
+        summary.click();
+      }
+    });
+    await act(async () => undefined);
+
+    // Each card shows its own provider's state: grok's tool disabled, the
+    // claude card (keyed by provider id) enabled, not grok's stale row.
+    expect(toolCheckbox("grok_tool").checked).toBe(false);
+    expect(toolCheckbox("claude_tool").checked).toBe(true);
+  });
+
+  it("reverts the optimistic toggle and shows the daemon sentence verbatim on error", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    vi.mocked(toolPolicySet).mockRejectedValueOnce({
+      code: "io",
+      message: "policy file unwritable",
+    });
+    await renderToolSettings();
+
+    const otherBox = toolCheckbox("other_tool");
+    await act(async () => {
+      otherBox.click();
+    });
+    await act(async () => undefined);
+
+    expect(toolCheckbox("other_tool").checked).toBe(true);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "policy file unwritable",
+    );
+  });
+
+  it("shows the fetch rejection verbatim inside the card", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    vi.mocked(toolPolicyGet).mockRejectedValueOnce({
+      code: "io",
+      message: "daemon did not answer",
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const summary = container.querySelector<HTMLElement>(".provider-tools summary");
+    if (!summary) throw new Error("Tool settings disclosure did not render");
+    await act(async () => summary.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "daemon did not answer",
+    );
   });
 });
