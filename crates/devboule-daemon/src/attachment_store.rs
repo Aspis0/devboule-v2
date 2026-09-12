@@ -346,7 +346,10 @@ impl AttachmentStore {
         // keyed and never counted — this store builds every folder here from a
         // `&str` — so such a folder is removed like any other and reported as
         // nothing: there is no total it was ever part of.
-        let key = dir.file_name().and_then(|name| name.to_str()).map(str::to_string);
+        let key = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string);
         // Read before the removal, because the removal takes the entry with it.
         let held = key.as_deref().map(|name| held_bytes(&state, name));
         if std::fs::remove_dir_all(dir).is_err() {
@@ -550,9 +553,7 @@ impl AttachmentStore {
     /// Same lock and the same warning as [`AttachmentStore::store_bytes`]: a
     /// `std::sync::Mutex` is not reentrant, and this takes the guard.
     pub(crate) fn session_bytes(&self, session_id: &str) -> Option<u64> {
-        let Some(session) = self.session(session_id) else {
-            return None;
-        };
+        let session = self.session(session_id)?;
         let mut state = self
             .write_lock
             .lock()

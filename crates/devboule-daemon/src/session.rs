@@ -10770,6 +10770,13 @@ mod tests {
             ClientMessage::Shutdown { .. } => None,
             ClientMessage::SessionCreate { .. } => None,
             ClientMessage::SessionDetach { .. } => None,
+            // A deposit names a session and will be ownership-checked like any
+            // other frame that does — but it has no registry path yet, so this
+            // harness has nothing to walk. `None` here is "not reachable from
+            // this harness", not "exempt": writing the registry method is what
+            // turns this into `Some(&["deposit"])`, and the deposit branch that
+            // adds the method is the change that has to do it.
+            ClientMessage::SessionDeposit { .. } => None,
             ClientMessage::SessionReportAgent { .. } => None,
             ClientMessage::SessionsList { .. } => None,
             ClientMessage::SessionsWatch { .. } => None,

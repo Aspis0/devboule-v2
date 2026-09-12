@@ -1850,7 +1850,7 @@ mod tests {
                 text: "hello".to_string(),
                 attachments: Vec::new(),
                 active_turn_behavior: None,
-            attachment_references: Vec::new(),
+                attachment_references: Vec::new(),
                 idempotency_key: None,
             }
         );

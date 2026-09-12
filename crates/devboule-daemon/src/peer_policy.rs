@@ -320,7 +320,7 @@ impl ConnPeer {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use devboule_protocol::OwnerId;
+    use devboule_protocol::{OwnerId, PromptAttachment};
 
     fn ping() -> ClientMessage {
         ClientMessage::Ping { id: 1 }
@@ -421,6 +421,7 @@ pub(crate) mod tests {
             text: "hi".to_string(),
             attachments: Vec::new(),
             active_turn_behavior: None,
+            attachment_references: Vec::new(),
             idempotency_key: None,
         };
         let respond = || ClientMessage::SessionPermissionRespond {
@@ -732,6 +733,12 @@ pub(crate) mod tests {
             // An agent message is a send: it puts text into a session, so it
             // needs the capability `SessionSend` needs and nothing more.
             ClientMessage::AgentMessageSend { .. } => under(CAP_SEND),
+            // A deposit is the precursor to a send and holds no opinion of its
+            // own, so it reads the same capability: a peer allowed to send must
+            // be able to deposit or it can never attach a picture, and a peer
+            // not allowed to send must not, or it writes bytes into a session
+            // folder nothing on this machine can consume.
+            ClientMessage::SessionDeposit { .. } => under(CAP_SEND),
             ClientMessage::SessionPermissionRespond { .. } => under(CAP_ANSWER_PERMISSIONS),
             ClientMessage::Status { .. } => always("status"),
             ClientMessage::DaemonDiagnostics { .. } => always("diagnostics"),
@@ -778,7 +785,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 45;
+    pub(crate) const VARIANT_COUNT: usize = 46;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -798,6 +805,7 @@ pub(crate) mod tests {
             ClientMessage::SessionClose { .. } => "SessionClose",
             ClientMessage::SessionStop { .. } => "SessionStop",
             ClientMessage::SessionSend { .. } => "SessionSend",
+            ClientMessage::SessionDeposit { .. } => "SessionDeposit",
             ClientMessage::AgentMessageSend { .. } => "AgentMessageSend",
             ClientMessage::SessionResize { .. } => "SessionResize",
             ClientMessage::SessionInterrupt { .. } => "SessionInterrupt",
@@ -884,7 +892,17 @@ pub(crate) mod tests {
                 text: "hi".to_string(),
                 attachments: Vec::new(),
                 active_turn_behavior: None,
+                attachment_references: Vec::new(),
                 idempotency_key: None,
+            },
+            ClientMessage::SessionDeposit {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                attachment: PromptAttachment {
+                    name: "page.png".to_string(),
+                    mime_type: "image/png".to_string(),
+                    data: String::new(),
+                },
             },
             ClientMessage::AgentMessageSend {
                 id: 1,
