@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 #[cfg(not(test))]
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -248,6 +249,10 @@ impl ServerState {
         };
         let journal_for_peers = journal.clone();
         let paths_for_state = paths.clone();
+        // The store cell is built before the state exists: production leaves it
+        // empty and `secret_store()` selects lazily, a test build pins it to the
+        // file store under this runtime dir. See `initial_secret_store`.
+        let secret_store = Self::initial_secret_store(&paths_for_state.dir);
         let state = Arc::new(Self {
             instance_id,
             started: Instant::now(),
@@ -270,7 +275,7 @@ impl ServerState {
             npm_install_runner,
             paths: paths_for_state,
             journal: journal_for_peers,
-            secret_store: OnceLock::new(),
+            secret_store,
             device_identity: OnceLock::new(),
             remote: Mutex::new(RemoteState::Disabled(
                 "the remote listener is not running".to_string(),
@@ -730,10 +735,46 @@ impl ServerState {
         }
     }
 
+    /// The secret-store cell a fresh `ServerState` starts with.
+    ///
+    /// Production leaves the cell empty: [`ServerState::secret_store`] selects
+    /// and caches the store on first use — the OS credential store when it
+    /// initialises, the private file store when it does not.
+    #[cfg(not(test))]
+    fn initial_secret_store(_dir: &Path) -> OnceLock<(Arc<dyn SecretStore>, &'static str)> {
+        OnceLock::new()
+    }
+
+    /// A test build pins the cell to the private file store under this state's
+    /// runtime directory, which every test creates as its own temp dir: a
+    /// test-built identity is written to `<runtime dir>/secrets/noise-static.bin`
+    /// and dies with that directory.
+    ///
+    /// Measured, before this: a test that reached `device_identity()` got the
+    /// OS credential store instead, keyed by the hash of that same temp dir, and
+    /// nothing ever removed the entry. One `cargo test -p devboule-daemon` run
+    /// left 146 `noise-static-<16 hex>` entries in the real Windows Credential
+    /// Manager; after ~6 runs (869 entries) `CredWrite` started failing with
+    /// `Windows error code 8`, which turned six pairing/transport/server tests
+    /// red on `credential store failure`. The credential store is not a
+    /// behaviour under test here: this key is per-test scratch, and the file
+    /// store is the one the integration tests and a headless daemon already use
+    /// (`DEVBOULE_SECRET_STORE=file`).
+    #[cfg(test)]
+    fn initial_secret_store(dir: &Path) -> OnceLock<(Arc<dyn SecretStore>, &'static str)> {
+        let store: Arc<dyn SecretStore> = Arc::new(crate::secret_store::FileStore::new(dir));
+        let cell = OnceLock::new();
+        let _ = cell.set((store, crate::secret_store::SecretStoreKind::File.as_str()));
+        cell
+    }
+
     /// The selected secret store: the OS credential store when it
     /// initialises, the private file store otherwise. Selected once, lazily,
     /// so a unit test that builds a `ServerState` does not read the OS
-    /// credential store unless it asks about the remote listener.
+    /// credential store unless it asks about the remote listener — and in a
+    /// test build the cell is already pinned by
+    /// [`ServerState::initial_secret_store`], so the selector below is never
+    /// reached from a test at all.
     fn secret_store(&self) -> &(Arc<dyn SecretStore>, &'static str) {
         self.secret_store.get_or_init(|| {
             let (store, kind) = crate::secret_store::select_secret_store(&self.paths);
@@ -5270,6 +5311,47 @@ mod tests {
             serde_json::to_value(&missing).expect("json")["state"],
             "disabled",
             "a missing key is not the same state as a disabled listener"
+        );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// The leak that this guards: a state built by a test must not reach the OS
+    /// credential store.
+    ///
+    /// `ServerState::initial_secret_store` pins a test build to the file store,
+    /// so the identity lands in `<runtime dir>/secrets/noise-static.bin` and
+    /// dies with the temp dir. The credential store is deliberately not read
+    /// here — reading it is still touching it, and keeping this suite out of it
+    /// is the point; `cmdkey /list | Select-String noise-static-` from outside
+    /// the process is the gate that observes that, and the store selector plus
+    /// the file path below are what is observable from in here.
+    ///
+    /// See `reports/remote-agents/keyring-test-leak-fix-report.md`.
+    #[test]
+    fn a_test_built_state_uses_the_file_store_and_never_the_credential_store() {
+        let (path, state) = temp_state("secret-store-pin");
+        assert_eq!(
+            state.secret_store().1,
+            "file",
+            "a test build must select the file store, never the credential store"
+        );
+
+        let identity = state.device_identity().as_ref().expect("identity");
+        let stored = path.join("secrets").join("noise-static.bin");
+        let bytes = std::fs::read(&stored).expect("the static key under the runtime dir");
+        // The bytes under the temp dir are this identity's own envelope: the
+        // store is rooted in this state's runtime directory, not somewhere else.
+        let expected = crate::device_identity::encode_envelope(identity.private_key());
+        assert_eq!(bytes.as_slice(), &expected[..]);
+        // ...and the path is the one the file store derives for that name, so a
+        // later test cannot satisfy this through some other mechanism.
+        assert_eq!(
+            crate::secret_store::FileStore::new(&path)
+                .path_for(crate::device_identity::NOISE_STATIC_SECRET_NAME)
+                .expect("plain secret name"),
+            stored
         );
 
         drop(state);
