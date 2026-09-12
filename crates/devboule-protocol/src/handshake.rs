@@ -201,6 +201,22 @@ mod tests {
             .any(|capability| capability.as_str() == crate::caps::PING));
     }
 
+    /// The deposit name is the whole of what tells a client this daemon accepts
+    /// a `SessionDeposit`, so it has to survive the intersection the handshake
+    /// takes and not merely sit in one list.
+    #[test]
+    fn the_agreed_capabilities_carry_the_attachment_deposit_name() {
+        let agreed = negotiate(
+            &client(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
+            &daemon(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
+        )
+        .expect("overlap");
+        assert!(agreed
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::ATTACHMENTS_DEPOSIT));
+    }
+
     #[test]
     fn daemon_newer_overlapping_speaks_app_version() {
         let agreed = negotiate(&client(1, 1), &daemon(2, 1)).expect("overlap");

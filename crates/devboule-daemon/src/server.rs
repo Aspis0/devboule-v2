@@ -3614,12 +3614,6 @@ fn wire_journal_usage(usage: crate::journal::JournalUsage) -> WireJournalUsage {
     }
 }
 
-/// What a deposit is told while the handler for it does not exist yet. Constant
-/// text, deliberately: the frame has not been validated when this is sent, so
-/// nothing from it may reach the answer. It goes away with the arm that sends
-/// it, in the same commit as the handler.
-const DEPOSITS_UNSUPPORTED: &str = "deposits are not accepted yet";
-
 fn dispatch_session(
     state: &Arc<ServerState>,
     owner: &OwnerId,
@@ -4015,25 +4009,24 @@ fn dispatch_session(
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
             }
         }
-        // Scaffolding, and it says so: the deposit handler is the next commit's
-        // work, so a deposit that reaches here is answered with one constant
-        // sentence rather than falling through to the arm below. That arm
-        // formats the whole frame into the error text, and this frame has not
-        // been validated yet: `name` and `mime_type` are unbounded strings
-        // inside a frame that may be close to `MAX_FRAME_BYTES`, so the answer
-        // could exceed the wire cap and would mirror bytes this daemon has
-        // never checked. Nothing of the frame's *content* is echoed — not the
-        // `name`, not the `mime_type`, not the `session_id`. The request `id`
-        // is not content: it is the correlation token the caller chose, it is a
-        // bounded `u64`, and a refusal that does not name its call is a
-        // silence, not a refusal. (`PromptAttachment::Debug` is hand-written
-        // for this same family of problems.) This arm is deleted, not moved,
-        // when the handler lands and starts answering
-        // `DaemonMessage::SessionDeposited`.
-        ClientMessage::SessionDeposit { .. } => DaemonMessage::Error(match request.request_id() {
-            Some(id) => WireError::new(ErrorCode::InvalidRequest, DEPOSITS_UNSUPPORTED).with_id(id),
-            None => WireError::new(ErrorCode::InvalidRequest, DEPOSITS_UNSUPPORTED),
-        }),
+        // The door to the deposit handler. `deposit` checks ownership, then the
+        // wire's own limits, and only then asks the store to write — so a frame
+        // this daemon refuses costs no decode and leaves no file (DEP-06).
+        ClientMessage::SessionDeposit {
+            id,
+            session_id,
+            attachment,
+        } => {
+            let reply = reply_result(
+                id,
+                state
+                    .sessions
+                    .deposit(&session_id, owner, conn, &attachment)
+                    .map(|reference| DaemonMessage::SessionDeposited { id, reference }),
+            );
+            audit_peer_unauthorized(state, conn, "SessionDeposit", Some(session_id), &reply);
+            reply
+        }
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("unexpected session frame {other:?}"),
@@ -7072,8 +7065,8 @@ mod tests {
     /// is the frame that carries an attachment that is refused and a deposit
     /// carries exactly one by construction. The discriminator is the sentence:
     /// drop the `SessionDeposit` arm from `peer_refusal_before_mode` and the
-    /// deposit is answered by the deposit scaffold in `dispatch_session`
-    /// instead, whose constant sentence is a different one.
+    /// deposit is answered by the deposit handler in `dispatch_session`
+    /// instead, whose answer about an absent session is a different sentence.
     #[test]
     fn a_peers_deposit_is_refused_with_the_attachment_sentence() {
         let (path, state) = temp_state("peer-deposit-refused");
@@ -7141,19 +7134,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(path);
     }
 
-    /// DEP-09: a deposit has no handler yet, and the frame it arrives in has
-    /// not been validated when the refusal is built — `name` and `mime_type`
-    /// are unbounded strings inside a frame that may be close to
-    /// `MAX_FRAME_BYTES`. The answer must be a constant sentence: the
-    /// assertions that matter are the *absences*, because the fallback arm
-    /// this replaces formatted the whole frame — `PromptAttachment`'s own
-    /// `Debug` prints `name` and `mime_type` — into the error text. The one
-    /// field that *must* survive is the request `id`: it is the caller's
-    /// correlation token, and a refusal without it is a silence.
+    /// DEP-09's property, on the handler that now answers: a deposit replies
+    /// with the store's reference, and a frame the wire refuses is still
+    /// answered with a sentence rather than with its own contents — `name` and
+    /// `mime_type` are unbounded strings inside a frame that may be close to
+    /// `MAX_FRAME_BYTES`, and the fallback arm this used to reach formatted the
+    /// whole frame — `PromptAttachment`'s own `Debug` prints both — into the
+    /// error text. The one field that *must* survive a refusal is the request
+    /// `id`: it is the caller's correlation token, and a refusal without it is
+    /// a silence.
     #[test]
-    fn a_local_deposit_is_refused_with_a_constant_sentence_that_echoes_nothing() {
-        let (path, state) = temp_state("deposit-scaffold");
+    fn a_local_deposit_answers_a_reference_and_a_refusal_echoes_nothing() {
+        let (path, state) = temp_state("deposit-handler");
         let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let session_id =
+            devboule_protocol::compose_session_id(&owner.session_token(), "depo01").expect("id");
+        crate::session::insert_test_live_agent(&state.sessions, &session_id, owner.clone());
+        // The accepted half: the arm answers with the store's reference, under
+        // the id the caller chose, and the file it names is on the disk.
+        let stored = match dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionDeposit {
+                id: 8,
+                session_id: session_id.clone(),
+                attachment: wire_attachment("a.png", &crate::raster_metadata::clean_png(0x0b)),
+            },
+            &ConnHandle::new(4),
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("the gate answers")
+        {
+            DaemonMessage::SessionDeposited { id, reference } => {
+                assert_eq!(id, 8, "the reply names the call it answers");
+                reference
+            }
+            other => panic!("a local deposit is answered, not refused: {other:?}"),
+        };
+        assert_eq!(stored.session_id, session_id);
+        let files = files_under(&path.join("attachments"));
+        assert_eq!(
+            files[0].file_stem().and_then(|value| value.to_str()),
+            Some(stored.digest.as_str()),
+            "the reply's digest names the file the store wrote"
+        );
+        assert_eq!(
+            stored.stored_bytes,
+            std::fs::metadata(&files[0]).expect("stat").len()
+        );
+
         // Long enough that echoing them would dominate the reply: a frame is
         // capped near 1 MiB, so this is what a real one can carry.
         let name = "n".repeat(300_000);
@@ -7167,7 +7199,7 @@ mod tests {
             &owner,
             ClientMessage::SessionDeposit {
                 id: 9,
-                session_id: "s.test-client.deposit1".to_string(),
+                session_id: session_id.clone(),
                 attachment,
             },
             &ConnHandle::new(4),
@@ -7179,11 +7211,10 @@ mod tests {
         .expect("the gate answers");
         let error = match reply {
             DaemonMessage::Error(error) => error,
-            other => panic!("a deposit has no handler yet, so it is an error: {other:?}"),
+            other => panic!("a refused deposit is an error: {other:?}"),
         };
 
         assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
-        assert_eq!(error.message, "deposits are not accepted yet");
         assert_eq!(
             error.id,
             Some(9),
@@ -7198,18 +7229,18 @@ mod tests {
             "the answer must not mirror the frame's mime type"
         );
         assert!(
-            !error.message.contains("s.test-client.deposit1"),
+            !error.message.contains(&session_id),
             "the answer must not mirror the frame's session"
         );
         assert!(
-            error.message.len() < 64,
+            error.message.len() < 512,
             "the sentence is a sentence, not a frame: {} bytes",
             error.message.len()
         );
         assert_eq!(
             files_under(&path.join("attachments")).len(),
-            0,
-            "no handler, no attachment file"
+            1,
+            "the refused frame wrote nothing: only the accepted deposit's file is there"
         );
 
         drop(state);

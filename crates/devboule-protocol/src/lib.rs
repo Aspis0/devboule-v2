@@ -174,6 +174,16 @@ pub mod caps {
     /// helpers refuse the pair unless this name was negotiated, which is what
     /// this name exists for.
     pub const TOOL_POLICY: &str = "tool_policy";
+
+    /// Prompt-attachment deposits (`SessionDeposit`/`SessionDeposited`).
+    ///
+    /// A client must not send `SessionDeposit` to a daemon that predates it:
+    /// the daemon's reader cannot deserialize the variant and the connection
+    /// would fail on a frame the old peer never knew. No client helper sends
+    /// that frame today, so nothing in this crate refuses it on this name yet;
+    /// the name exists so a client can tell a daemon that accepts deposits
+    /// from one that does not.
+    pub const ATTACHMENTS_DEPOSIT: &str = "attachments.deposit";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -487,6 +497,9 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     capabilities.push(Capability::new(caps::TYPED_PERMISSIONS));
     capabilities.push(Capability::new(caps::DEVICES));
     capabilities.push(Capability::new(caps::TOOL_POLICY));
+    // A deposit is a session RPC this daemon serves, so the daemon offers the
+    // name; the app has to offer it too or the intersection drops it.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_DEPOSIT));
     capabilities
 }
 
@@ -509,6 +522,11 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // `tool_policy_get`/`tool_policy_set` unless this name was negotiated, so
     // a client that did not offer it would refuse its own RPCs.
     capabilities.push(Capability::new(caps::TOOL_POLICY));
+    // Same reason as `tool_policy`, and the same pairing: the handshake
+    // negotiates the intersection, so a name only the daemon offers is never
+    // negotiated, and a client could not then tell a daemon that accepts
+    // deposits from one that does not.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_DEPOSIT));
     capabilities
 }
 

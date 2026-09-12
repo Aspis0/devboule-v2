@@ -78,9 +78,9 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_attachments, validate_session_id,
-    ActiveTurnBehavior, Cursor, ErrorCode, ErrorDetails, JournalRetention, JournalStats, OwnerId,
-    PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session, SessionEvent,
-    SessionKind, SessionModel, SessionOrigin, SessionOriginKind, SessionState,
+    ActiveTurnBehavior, AttachmentReference, Cursor, ErrorCode, ErrorDetails, JournalRetention,
+    JournalStats, OwnerId, PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session,
+    SessionEvent, SessionKind, SessionModel, SessionOrigin, SessionOriginKind, SessionState,
     SessionStateSnapshot, WireError, Workspace, WorkspaceIsolation, MAX_WRITE_BYTES,
 };
 #[cfg(test)]
@@ -3393,6 +3393,50 @@ impl SessionRegistry {
                 format!("Effort '{effort}' is not supported by Claude model '{model_id}'."),
             ))
         }
+    }
+
+    /// Store one prompt attachment for a session and answer the reference the
+    /// send that follows will name.
+    ///
+    /// The connection is threaded through for the same reason `set_mode`'s is:
+    /// `SessionDeposit` is under `CAP_SEND` (`peer_policy.rs`), so a paired
+    /// device *is* reachable here, and the requestor's identity is part of the
+    /// authorization the ownership check makes (§8b A3/A4/A5, H5).
+    ///
+    /// The wire's own limits are enforced before the store sees the attachment
+    /// (DEP-06). The store's `prepare` decodes the base64 and walks the image,
+    /// which is the expensive half of a deposit, and a frame the protocol
+    /// already refuses must not pay for it; the refusal is also the protocol's
+    /// sentence rather than a store error, so an attachment that is too large
+    /// reads the same here as it does on a send.
+    ///
+    /// The reference's digest and `stored_bytes` are the store's to state, not
+    /// this function's: the digest names the bytes *as stored* (the strip makes
+    /// them differ from what was sent) and the size is the file's own, read from
+    /// the disk.
+    pub(crate) fn deposit(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        attachment: &PromptAttachment,
+    ) -> Result<AttachmentReference, WireError> {
+        {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = map.get(session_id).ok_or_else(not_found)?;
+            check_user_owner(entry, owner, &conn.conn_peer)?;
+        }
+        validate_attachments(std::slice::from_ref(attachment))
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let deposited = self.attachments.deposit(session_id, attachment)?;
+        Ok(AttachmentReference {
+            session_id: session_id.to_string(),
+            digest: deposited.digest,
+            stored_bytes: deposited.stored_bytes,
+        })
     }
 
     #[cfg(test)]
@@ -7968,9 +8012,161 @@ mod tests {
         registry.runtime_dir().join("attachments").join(session_id)
     }
 
+    /// Every file under `dir`, recursively. A missing `dir` is zero files,
+    /// which is what "wrote nothing" looks like when the folder was never made.
+    fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return files;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(files_under(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
+    }
+
     fn attachment_message(error: &WireError) -> &str {
         assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
         &error.message
+    }
+
+    // --- prompt deposits ---------------------------------------------------
+
+    /// A deposit by the session's owner answers the reference of the file the
+    /// store wrote, with the digest and the size that file really has.
+    #[test]
+    fn an_owners_deposit_answers_the_reference_of_the_file_on_disk() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-deposit-owner", "process-deposit");
+        let id = compose_session_id(&owner.session_token(), "depo01").expect("id");
+        insert_live(&registry, &id, owner.clone());
+        let conn = ConnHandle::new(4);
+        let image = clean_png(0x0b);
+
+        let reference = registry
+            .deposit(
+                &id,
+                &owner,
+                &conn,
+                &attachment("photo.png", "image/png", &image),
+            )
+            .expect("the owner may deposit into their own session");
+
+        let files = files_under(&attachment_folder(&registry, &id));
+        assert_eq!(files.len(), 1, "one deposit, one file");
+        assert_eq!(reference.session_id, id, "the reference names the session");
+        assert_eq!(
+            files[0].file_stem().and_then(|value| value.to_str()),
+            Some(reference.digest.as_str()),
+            "the digest is the name of the file on disk"
+        );
+        assert_eq!(
+            reference.stored_bytes,
+            std::fs::metadata(&files[0])
+                .expect("stat the stored file")
+                .len(),
+            "stored_bytes is the file's own size, not the request's"
+        );
+        // The store's own digest, computed here from the bytes that were sent:
+        // `clean_png` carries no metadata to strip, so the two agree and the
+        // assertion above is about the stored bytes rather than about a name
+        // that happens to be some digest.
+        assert_eq!(
+            reference.digest,
+            crate::attachment_store::sha256_hex(&image)
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A deposit by another user is refused and nothing reaches the disk: the
+    /// refusal is the ownership one, before the store is asked, so the session's
+    /// folder is not created at all.
+    #[test]
+    fn a_deposit_by_another_user_is_unauthorized_and_writes_nothing() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-deposit-theirs", "process-theirs");
+        let other = test_owner("S-1-5-21-deposit-other", "process-other");
+        let id = compose_session_id(&owner.session_token(), "depo02").expect("id");
+        insert_live(&registry, &id, owner.clone());
+        let conn = ConnHandle::new(4);
+
+        let error = registry
+            .deposit(
+                &id,
+                &other,
+                &conn,
+                &attachment("photo.png", "image/png", &clean_png(0x0b)),
+            )
+            .expect_err("another user may not deposit into this session");
+        assert_eq!(error.code, ErrorCode::Unauthorized, "{error:?}");
+
+        let folder = attachment_folder(&registry, &id);
+        assert!(
+            !folder.exists(),
+            "a refused deposit must not create the session's folder: {:?}",
+            files_under(&folder)
+        );
+        assert!(
+            files_under(&registry.runtime_dir().join("attachments")).is_empty(),
+            "nothing under the store's root belongs to a refused deposit"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// DEP-06: the wire's limits refuse before the store is called, so a frame
+    /// the protocol rejects costs no decode and no file.
+    ///
+    /// The discriminator has to be the size cap and not the type: the store
+    /// refuses an unsupported type and a bad base64 with the *same* sentences
+    /// the wire does (it calls `unsupported_attachment_type_message` and
+    /// `invalid_base64_message` too), so an `image/gif` or a `"!!!"` attachment
+    /// would read identically whichever layer refused it. An `image/svg+xml`
+    /// past the per-file cap decodes, is not a raster, and is written as it
+    /// arrived — so a `deposit` that reached the store first would answer `Ok`
+    /// and leave a file here. The sentence and the empty folder together are
+    /// what make the order observable from outside.
+    #[test]
+    fn an_oversized_deposit_is_refused_by_the_wire_before_the_store_writes_anything() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-deposit-size", "process-deposit");
+        let id = compose_session_id(&owner.session_token(), "depo03").expect("id");
+        insert_live(&registry, &id, owner.clone());
+        let conn = ConnHandle::new(4);
+        // Bypassing `attachment()` on purpose, like the total-limit send test:
+        // it encodes, and what the cap counts is the encoded length.
+        let over = PromptAttachment {
+            name: "big.svg".to_string(),
+            mime_type: "image/svg+xml".to_string(),
+            data: "A".repeat(MAX_ATTACHMENT_DATA_BYTES + 4),
+        };
+
+        let error = registry
+            .deposit(&id, &owner, &conn, &over)
+            .expect_err("an attachment over the per-file cap is refused");
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+        assert!(
+            error
+                .message
+                .contains(&MAX_ATTACHMENT_DATA_BYTES.to_string()),
+            "{}",
+            error.message
+        );
+        assert!(
+            files_under(&attachment_folder(&registry, &id)).is_empty(),
+            "a refused deposit leaves no file, which is the half the store could not answer"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -10532,6 +10728,21 @@ mod tests {
                 "agent_message_send",
                 registry.agent_message_send(id, "s.nobody.1", "hi", owner, conn),
             ),
+            // The one path that writes bytes rather than reading state: the
+            // attachment is built by the same helper and the same PNG the send
+            // tests use, so this row proves the ownership check and nothing
+            // about attachment handling.
+            (
+                "deposit",
+                registry
+                    .deposit(
+                        id,
+                        owner,
+                        conn,
+                        &attachment("photo.png", "image/png", &clean_png(0x0b)),
+                    )
+                    .map(|_| ()),
+            ),
         ]
     }
 
@@ -10753,6 +10964,7 @@ mod tests {
     fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> {
         match request {
             ClientMessage::SessionSend { .. } => Some(&["send"]),
+            ClientMessage::SessionDeposit { .. } => Some(&["deposit"]),
             ClientMessage::AgentMessageSend { .. } => Some(&["agent_message_send"]),
             ClientMessage::SessionStop { .. } => Some(&["stop", "stop_with_subscription"]),
             ClientMessage::SessionClose { .. } => Some(&["close"]),
@@ -10770,13 +10982,6 @@ mod tests {
             ClientMessage::Shutdown { .. } => None,
             ClientMessage::SessionCreate { .. } => None,
             ClientMessage::SessionDetach { .. } => None,
-            // A deposit names a session and will be ownership-checked like any
-            // other frame that does — but it has no registry path yet, so this
-            // harness has nothing to walk. `None` here is "not reachable from
-            // this harness", not "exempt": writing the registry method is what
-            // turns this into `Some(&["deposit"])`, and the deposit branch that
-            // adds the method is the change that has to do it.
-            ClientMessage::SessionDeposit { .. } => None,
             ClientMessage::SessionReportAgent { .. } => None,
             ClientMessage::SessionsList { .. } => None,
             ClientMessage::SessionsWatch { .. } => None,
