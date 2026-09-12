@@ -22,6 +22,7 @@ import {
   sessionCreateFromProvider,
   sessionDotTone,
   sessionOriginBadge,
+  sessionOriginUnknown,
   sessionStateLabel,
   sessionTitle,
   useWorkspaceSessions,
@@ -703,6 +704,10 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
         <div className="workspace-session-tabs" role="tablist" aria-label="Sessions">
           {sessions.map((session) => {
             const originBadge = sessionOriginBadge(session, peerNames);
+            // A badge for a session the daemon described as a peer's, or the
+            // unknown one for a session it did not describe at all. The two are
+            // told apart by their words and by the mark on the unknown pill.
+            const originUnknown = sessionOriginUnknown(session);
             return (
               <button
                 type="button"
@@ -719,7 +724,14 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                 />
                 <span className="workspace-tab-label">{sessionTitle(session)}</span>
                 {originBadge !== null ? (
-                  <span className="workspace-session-origin-badge" title={originBadge}>
+                  <span
+                    className={
+                      originUnknown
+                        ? "workspace-session-origin-badge workspace-session-origin-badge-unknown"
+                        : "workspace-session-origin-badge"
+                    }
+                    title={originBadge}
+                  >
                     {originBadge}
                   </span>
                 ) : null}

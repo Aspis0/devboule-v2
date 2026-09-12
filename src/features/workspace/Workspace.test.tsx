@@ -2206,6 +2206,9 @@ describe("Workspace sessions", () => {
   });
 
   it("shows no origin badge on a local session's tab", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      { ...terminal("local-session", "shell one"), origin: { kind: "local" } },
+    ]);
     const devicesRead = deferred<DevicesReply>();
     vi.mocked(devicesList).mockReturnValue(devicesRead.promise);
     root = createRoot(container);
@@ -2225,6 +2228,32 @@ describe("Workspace sessions", () => {
     const tab = container.querySelector(".workspace-session-tab");
     if (tab === null) throw new Error("session tab did not render");
     expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
+  });
+
+  it("marks an unknown origin on the tab of a session the daemon did not describe", async () => {
+    // The default fixture carries no origin, which is what an older daemon
+    // sends: the tab says so instead of reading as a local session.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    const badge = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>(
+        ".workspace-session-tab .workspace-session-origin-badge",
+      );
+      if (found === null) throw new Error("origin badge did not render");
+      expect(found.textContent).toBe("origin unknown");
+      return found;
+    });
+    // The full text survives the tab's truncation, which CSS does.
+    expect(badge.title).toBe("origin unknown");
+    // Its own class beside the peer pill's, so the two are never one element.
+    expect(badge.className).toBe(
+      "workspace-session-origin-badge workspace-session-origin-badge-unknown",
+    );
+    // And never the peer badge's wording.
+    expect(badge.textContent).not.toContain("from ");
   });
 
   it("names the device on a peer session's tab", async () => {
@@ -2254,6 +2283,32 @@ describe("Workspace sessions", () => {
     expect(badge?.textContent).toBe("from Xiaomi 14");
     // The full text survives the tab's truncation, which CSS does.
     expect(badge?.title).toBe("from Xiaomi 14");
+  });
+
+  it("keeps the peer badge on a tab whose peer origin names no device", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      {
+        ...terminal("peer-guard-session", "remote shell"),
+        origin: { kind: "peer", role: "daemon" },
+      },
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    const badge = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>(
+        ".workspace-session-tab .workspace-session-origin-badge",
+      );
+      if (found === null) throw new Error("origin badge did not render");
+      expect(found.textContent).toBe("from unknown");
+      return found;
+    });
+    // Still the peer pill, not the one an absent origin gets: a peer whose
+    // device is unknown is still a named peer.
+    expect(badge.className).toBe("workspace-session-origin-badge");
+    expect(badge.title).toBe("from unknown");
   });
 
   it("falls back to the device id for a device the list does not know", async () => {

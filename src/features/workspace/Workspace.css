@@ -552,6 +552,16 @@
   white-space: nowrap;
 }
 
+/* The unknown-origin badge (A14's third state): same slot, dashed and dimmer, so
+   a session whose origin the daemon did not send never reads as a device and
+   never reads as a local one either. */
+.workspace-session-origin-badge-unknown {
+  border-style: dashed;
+  color: var(--silence);
+  background: transparent;
+  font-style: italic;
+}
+
 .workspace-session-add {
   width: 25px;
   height: 25px;

@@ -137,11 +137,18 @@ describe("permissionOriginLabel", () => {
     expect(shortenDeviceId("device-1")).toBe("device-1");
   });
 
-  it("has nothing to say about a local or absent origin", () => {
-    // The daemon stamps a local origin on every local request, so a present-
-    // but-local origin must render exactly like no origin at all.
+  it("says nothing about a local origin, which is not provenance", () => {
+    // The daemon stamps `local` on every local request. The card's wording is
+    // about the agent, not the machine, so a local session keeps the card it had
+    // before peer sessions existed.
     expect(permissionOriginLabel({ kind: "local" })).toBeNull();
-    expect(permissionOriginLabel(undefined)).toBeNull();
+  });
+
+  it("calls an absent origin unknown instead of rendering it as a local one", () => {
+    // Absent is a third state: only a daemon older than the field sends it, and
+    // staying silent would render that request exactly like a local one.
+    expect(permissionOriginLabel(undefined)).toBe("Origin: unknown");
+    expect(permissionOriginLabel(undefined, new Map())).toBe("Origin: unknown");
   });
 
   it("stands in for a field a peer origin did not carry", () => {
@@ -224,8 +231,11 @@ describe("PermissionCard", () => {
     await act(async () => root.unmount());
   });
 
-  it("leaves a card without a peer origin unchanged", async () => {
-    const renderCard = async (origin?: PermissionRequest["origin"]) => {
+  it("keeps the three origins apart on the card: unknown, local and peer", async () => {
+    const renderCard = async (
+      origin?: PermissionRequest["origin"],
+      deviceNames?: ReadonlyMap<string, string>,
+    ) => {
       const container = document.createElement("div");
       document.body.appendChild(container);
       const root = createRoot(container);
@@ -237,25 +247,42 @@ describe("PermissionCard", () => {
             request={request}
             capabilities={["typed_permissions"]}
             origin={origin}
+            deviceNames={deviceNames}
           />,
         );
       });
-      return { container, root };
+      const card = container.querySelector(".permission-card");
+      if (card === null) throw new Error("permission card did not render");
+      return { card, root };
     };
 
+    // Absent: only an older daemon sends this, and it must not read as local.
     const absent = await renderCard();
-    const cardWithout = absent.container.querySelector(".permission-card");
-    expect(cardWithout?.querySelector(".permission-card-origin")).toBeNull();
-    expect(cardWithout?.firstElementChild?.className).toBe("permission-card-heading");
-    // The daemon stamps `local` on every local request, so that origin must
-    // render exactly like no origin at all.
+    const unknown = absent.card.firstElementChild;
+    expect(unknown?.className).toBe("permission-card-origin");
+    expect(unknown?.textContent).toBe("Origin: unknown");
+    // The request's own text renders below the provenance, in elements of its
+    // own: a command that prints a header cannot land in the provenance element.
+    expect(absent.card.querySelector(".permission-card-command")?.textContent).toBe(
+      "cmd.exe /c echo alpha",
+    );
+
+    // Local: the card says nothing, exactly as it did before peer sessions.
     const local = await renderCard({ kind: "local" });
-    const cardLocal = local.container.querySelector(".permission-card");
-    expect(cardLocal?.querySelector(".permission-card-origin")).toBeNull();
-    expect(cardLocal?.firstElementChild?.className).toBe("permission-card-heading");
+    expect(local.card.querySelector(".permission-card-origin")).toBeNull();
+    expect(local.card.firstElementChild?.className).toBe("permission-card-heading");
+
+    // Peer: the device line, in the very element the unknown line uses.
+    const peer = await renderCard(
+      { kind: "peer", deviceId: "device-1", role: "daemon" },
+      new Map([["device-1", "Xiaomi 14"]]),
+    );
+    expect(peer.card.firstElementChild?.className).toBe("permission-card-origin");
+    expect(peer.card.firstElementChild?.textContent).toBe("Device: Xiaomi 14 · Role: daemon");
 
     await act(async () => absent.root.unmount());
     await act(async () => local.root.unmount());
+    await act(async () => peer.root.unmount());
   });
 
   it("says what is being asked about instead of printing the tool's name", async () => {

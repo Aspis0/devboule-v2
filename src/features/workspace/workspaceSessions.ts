@@ -161,22 +161,44 @@ export function peerDeviceNames(peers: readonly PeerRow[]): Map<string, string> 
   return new Map(peers.map((peer) => [peer.deviceId, peer.displayName]));
 }
 
+/** The badge for a session whose origin the daemon did not send at all. */
+const UNKNOWN_ORIGIN_BADGE = "origin unknown";
+
+/**
+ * True when the daemon sent no origin for this session at all. The daemon now
+ * stamps an origin on every session, so an absent one only comes from an older
+ * daemon: unknown provenance, never local.
+ */
+export function sessionOriginUnknown(session: Pick<Session, "origin">): boolean {
+  return session.origin === undefined;
+}
+
 /**
  * The tab badge for a session of remote origin, or null for a local one.
  *
  * The device is named, never guessed: the daemon stamps only the device id on
  * the origin, and the name comes from the devices list the workspace holds. An
  * id the list does not know yet falls back to the id itself, which is still a
- * true statement about where the session came from; an origin that names no
- * device at all yields no badge rather than an invented one.
+ * true statement about where the session came from. A peer origin that names no
+ * device reads `from unknown` — the card's word for a field the daemon did not
+ * send — rather than yielding no badge: the session still came from a peer, and
+ * silence is the one reading the tab may not give.
+ *
+ * An absent origin is a third state, not a local one: the tab says `origin
+ * unknown` rather than staying silent, which would read as a local session. It
+ * is not this badge: a peer whose device is unknown is still a named peer.
  */
 export function sessionOriginBadge(
   session: Pick<Session, "origin">,
   deviceNames: ReadonlyMap<string, string>,
 ): string | null {
+  if (sessionOriginUnknown(session)) return UNKNOWN_ORIGIN_BADGE;
   const origin = session.origin;
-  if (origin?.kind !== "peer" || origin.deviceId === undefined) return null;
-  return `from ${deviceNames.get(origin.deviceId) ?? origin.deviceId}`;
+  if (origin?.kind !== "peer") return null;
+  const { deviceId } = origin;
+  const name = deviceId === undefined ? undefined : deviceNames.get(deviceId);
+  const device = name ?? (deviceId === undefined ? "unknown" : deviceId);
+  return `from ${device}`;
 }
 
 export function createWorkspaceSessionController(

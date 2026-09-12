@@ -40,6 +40,11 @@ export type SessionOriginKind = "local" | "peer";
  * `SessionOrigin`). `deviceId` is the key the session badge resolves to a
  * display name; `role` says which grade of device it is, in `PeerRole`'s own
  * vocabulary. Both are absent on a local origin.
+ *
+ * The value as a whole may be absent, which is a third state and not a local
+ * one: the daemon now stamps an origin on every session, so a missing one only
+ * comes from a daemon older than the field. It renders as unknown — see
+ * `Session.origin`.
  */
 export interface SessionOrigin {
   kind: SessionOriginKind;
@@ -76,7 +81,10 @@ export interface PermissionRequest {
   /**
    * The origin of the session this request belongs to, when the daemon sends
    * it. The card renders a `peer` origin as its own provenance line, in its own
-   * element: the request's own text must never be able to imitate it.
+   * element: the request's own text must never be able to imitate it. A `local`
+   * origin renders no line at all, and an absent one — only an older daemon
+   * sends that — renders `Origin: unknown` in that same element, because
+   * staying silent would make it read exactly like a local request.
    */
   origin?: SessionOrigin;
 }
@@ -274,8 +282,9 @@ export interface Session {
   /**
    * Where the session came from. Absent means the daemon did not say — a
    * record written before the field existed, or a roster push that omitted it
-   * for a row no list response has described yet. When absent the frontend
-   * shows no peer badge rather than guessing.
+   * for a row no list response has described yet. Absent is a third state, not
+   * a local one: the tab shows an `origin unknown` badge rather than staying
+   * silent and looking like a local session.
    */
   origin?: SessionOrigin;
 }
@@ -384,7 +393,8 @@ export interface SessionStateSnapshot {
   attention?: Attention;
   /**
    * The session's origin, when the daemon carries it on the push. A push that
-   * omits it leaves a row already listed by `sessionsList` its known origin.
+   * omits it leaves a row already listed by `sessionsList` its known origin; a
+   * row no list has described keeps none, which renders as unknown, never local.
    */
   origin?: SessionOrigin;
 }

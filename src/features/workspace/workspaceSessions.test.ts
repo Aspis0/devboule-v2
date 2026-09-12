@@ -14,6 +14,7 @@ import {
   requiresConsent,
   sessionCreateFromProvider,
   sessionOriginBadge,
+  sessionOriginUnknown,
   sessionStateLabel,
 } from "./workspaceSessions";
 import { workspaceView } from "./workspaceProjects";
@@ -578,10 +579,19 @@ describe("session origin badge", () => {
     ).toBe("from Xiaomi 14");
   });
 
-  it("shows nothing for a local or absent origin", () => {
+  it("shows nothing for a local origin, exactly as before peer sessions", () => {
     const names = peerDeviceNames([pairedPhone]);
     expect(sessionOriginBadge({ origin: { kind: "local" } }, names)).toBeNull();
-    expect(sessionOriginBadge({}, names)).toBeNull();
+  });
+
+  it("says the origin is unknown for a session the daemon sent none for", () => {
+    // Absent is a third state, not a local one: only a daemon older than the
+    // field sends it, and a silent tab would read exactly like a local session.
+    const names = peerDeviceNames([pairedPhone]);
+    expect(sessionOriginBadge({}, names)).toBe("origin unknown");
+    expect(sessionOriginBadge({ origin: undefined }, new Map())).toBe("origin unknown");
+    expect(sessionOriginUnknown({})).toBe(true);
+    expect(sessionOriginUnknown({ origin: { kind: "local" } })).toBe(false);
   });
 
   it("keeps the device id when no list has named the device yet", () => {
@@ -590,8 +600,17 @@ describe("session origin badge", () => {
     ).toBe("from device-phone");
   });
 
-  it("shows no badge for a peer origin that names no device at all", () => {
-    expect(sessionOriginBadge({ origin: { kind: "peer" } }, new Map())).toBeNull();
+  it("calls a peer origin that names no device unknown instead of dropping the badge", () => {
+    // The card reads `Device: unknown` for this guard, so the tab says
+    // `from unknown`: the session still came from a peer, and no badge at all
+    // is the one reading it may not give.
+    expect(sessionOriginBadge({ origin: { kind: "peer" } }, new Map())).toBe("from unknown");
+    expect(
+      sessionOriginBadge(
+        { origin: { kind: "peer", role: "daemon" } },
+        peerDeviceNames([pairedPhone]),
+      ),
+    ).toBe("from unknown");
   });
 
   it("keeps the name of a revoked device, whose sessions still exist", () => {

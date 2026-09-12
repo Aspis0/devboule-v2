@@ -124,8 +124,16 @@ export function shortenDeviceId(deviceId: string): string {
 }
 
 /**
- * The provenance line for a permission card, or null when the session is not a
- * peer's.
+ * The provenance line for a permission card, or null when the session's origin
+ * is known and local.
+ *
+ * Three states, three renderings. A `peer` origin names the device and the
+ * role. A `local` origin says nothing: the card's own wording is about the
+ * agent, not the machine it runs on, and a local request is the case the card
+ * had before peer sessions existed. An ABSENT origin is neither of those — the
+ * daemon now stamps an origin on every request, so `undefined` can only come
+ * from a daemon older than the field — and it gets the word `unknown` instead,
+ * because staying silent would render it exactly like a local one.
  *
  * The line is built from the origin alone, never from the request's own text:
  * on a remote-origin turn the tool input is chosen upstream, so a header it
@@ -140,7 +148,8 @@ export function permissionOriginLabel(
   origin: SessionOrigin | undefined,
   deviceNames?: ReadonlyMap<string, string> | null,
 ): string | null {
-  if (origin?.kind !== "peer") return null;
+  if (origin === undefined) return "Origin: unknown";
+  if (origin.kind === "local") return null;
   const { deviceId } = origin;
   const name = deviceId === undefined ? undefined : deviceNames?.get(deviceId);
   const device = name ?? (deviceId === undefined ? "unknown" : shortenDeviceId(deviceId));
@@ -163,7 +172,9 @@ export interface PermissionCardProps {
   /**
    * The origin of the session this request belongs to. A host that already
    * knows the session's origin passes it here; otherwise the card falls back to
-   * the `origin` the daemon put on the request itself.
+   * the `origin` the daemon put on the request itself. Passing nothing while
+   * the request carries nothing either is the absent-origin state — an older
+   * daemon — which renders as `Origin: unknown`, not as a local request.
    */
   origin?: SessionOrigin;
   /**
