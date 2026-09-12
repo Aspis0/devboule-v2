@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PermissionRequest } from "../types/ipc";
+import type { PermissionRequest, SessionOriginKind } from "../types/ipc";
 
 const mocks = vi.hoisted(() => ({
   sessionPermissionRespond: vi.fn(),
@@ -151,6 +151,14 @@ describe("permissionOriginLabel", () => {
     expect(permissionOriginLabel(undefined, new Map())).toBe("Origin: unknown");
   });
 
+  it("calls an origin kind it cannot read unknown instead of rendering it as a local one", () => {
+    // The daemon's own word for a journal row whose origin column it could not
+    // interpret, and a kind no build has heard of: both are provenance the app
+    // does not have. A silent card would say they came from this machine.
+    expect(permissionOriginLabel({ kind: "unknown" })).toBe("Origin: unknown");
+    expect(permissionOriginLabel({ kind: "kiosk" as SessionOriginKind })).toBe("Origin: unknown");
+  });
+
   it("stands in for a field a peer origin did not carry", () => {
     // A peer origin always carries both fields; this is the guard, not a case
     // in normal use, and the provenance is not allowed to vanish for it.
@@ -283,6 +291,38 @@ describe("PermissionCard", () => {
     await act(async () => absent.root.unmount());
     await act(async () => local.root.unmount());
     await act(async () => peer.root.unmount());
+  });
+
+  it("draws an origin kind it cannot read as the unknown line, never as a local card", async () => {
+    // The daemon's `unknown` for a journal row it could not interpret, and a
+    // kind this build has never heard of: both take the line an absent origin
+    // gets, in the same element, because the one thing they may not be is the
+    // machine the card is running on.
+    for (const kind of ["unknown", "kiosk"] as SessionOriginKind[]) {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <PermissionCard
+            sessionId="session-1"
+            subscriptionId={41}
+            request={request}
+            capabilities={["typed_permissions"]}
+            origin={{ kind }}
+          />,
+        );
+      });
+
+      const provenance = container.querySelector(".permission-card-origin");
+      expect(provenance?.className).toBe("permission-card-origin");
+      expect(provenance?.textContent).toBe("Origin: unknown");
+      // And it leads the card, where a peer device line would be.
+      expect(container.querySelector(".permission-card")?.firstElementChild).toBe(provenance);
+
+      await act(async () => root.unmount());
+      container.remove();
+    }
   });
 
   it("says what is being asked about instead of printing the tool's name", async () => {

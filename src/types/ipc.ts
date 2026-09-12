@@ -32,8 +32,15 @@ export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" 
 export type SendIntent = "interrupt" | "steer" | "queue";
 export type PermissionOutcome = "allow_once" | "deny";
 
-/** Which device a session belongs to, in the protocol's own words. */
-export type SessionOriginKind = "local" | "peer";
+/**
+ * Which device a session belongs to, in the protocol's own words.
+ *
+ * `unknown` is the daemon's own word for a journal row whose origin column it
+ * could not interpret. It is provenance the app does not have, and it is not a
+ * synonym for `local`: both the card and the tab render it exactly as they
+ * render an absent origin.
+ */
+export type SessionOriginKind = "local" | "peer" | "unknown";
 
 /**
  * Where a session came from: this machine, or a paired peer (protocol
@@ -44,7 +51,8 @@ export type SessionOriginKind = "local" | "peer";
  * The value as a whole may be absent, which is a third state and not a local
  * one: the daemon now stamps an origin on every session, so a missing one only
  * comes from a daemon older than the field. It renders as unknown — see
- * `Session.origin`.
+ * `Session.origin`. A `kind` of `unknown` is a fourth state and renders exactly
+ * as the absent one does: as provenance the app does not have.
  */
 export interface SessionOrigin {
   kind: SessionOriginKind;
@@ -84,7 +92,9 @@ export interface PermissionRequest {
    * element: the request's own text must never be able to imitate it. A `local`
    * origin renders no line at all, and an absent one — only an older daemon
    * sends that — renders `Origin: unknown` in that same element, because
-   * staying silent would make it read exactly like a local request.
+   * staying silent would make it read exactly like a local request. A `kind`
+   * of `unknown` renders that same line: it is a request the app cannot place,
+   * not a local one.
    */
   origin?: SessionOrigin;
 }

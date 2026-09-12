@@ -165,12 +165,17 @@ export function peerDeviceNames(peers: readonly PeerRow[]): Map<string, string> 
 const UNKNOWN_ORIGIN_BADGE = "origin unknown";
 
 /**
- * True when the daemon sent no origin for this session at all. The daemon now
+ * True when the app does not know where this session came from: the daemon sent
+ * no origin at all, or it sent a kind this build cannot read. The daemon now
  * stamps an origin on every session, so an absent one only comes from an older
- * daemon: unknown provenance, never local.
+ * daemon; a kind of `unknown` is the daemon's own word for a journal row whose
+ * origin column it could not interpret. Both are unknown provenance, never
+ * local, and they get the same badge and the same mark on it.
  */
 export function sessionOriginUnknown(session: Pick<Session, "origin">): boolean {
-  return session.origin === undefined;
+  const origin = session.origin;
+  if (origin === undefined) return true;
+  return origin.kind !== "local" && origin.kind !== "peer";
 }
 
 /**
@@ -186,7 +191,10 @@ export function sessionOriginUnknown(session: Pick<Session, "origin">): boolean 
  *
  * An absent origin is a third state, not a local one: the tab says `origin
  * unknown` rather than staying silent, which would read as a local session. It
- * is not this badge: a peer whose device is unknown is still a named peer.
+ * is not this badge: a peer whose device is unknown is still a named peer. A
+ * `kind` of `unknown` — and any other kind string this build does not know —
+ * gets that same badge and that same `-unknown` mark, so `local` stays the only
+ * silent kind.
  */
 export function sessionOriginBadge(
   session: Pick<Session, "origin">,
@@ -194,7 +202,8 @@ export function sessionOriginBadge(
 ): string | null {
   if (sessionOriginUnknown(session)) return UNKNOWN_ORIGIN_BADGE;
   const origin = session.origin;
-  if (origin?.kind !== "peer") return null;
+  if (origin?.kind === "local") return null;
+  if (origin?.kind !== "peer") return UNKNOWN_ORIGIN_BADGE;
   const { deviceId } = origin;
   const name = deviceId === undefined ? undefined : deviceNames.get(deviceId);
   const device = name ?? (deviceId === undefined ? "unknown" : deviceId);

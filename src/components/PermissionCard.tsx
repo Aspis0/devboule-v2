@@ -133,7 +133,10 @@ export function shortenDeviceId(deviceId: string): string {
  * had before peer sessions existed. An ABSENT origin is neither of those — the
  * daemon now stamps an origin on every request, so `undefined` can only come
  * from a daemon older than the field — and it gets the word `unknown` instead,
- * because staying silent would render it exactly like a local one.
+ * because staying silent would render it exactly like a local one. A `kind` of
+ * `unknown`, and any other kind string this build does not know, take that same
+ * line: `local` is the one case that stays silent, and no unknown may fall into
+ * it.
  *
  * The line is built from the origin alone, never from the request's own text:
  * on a remote-origin turn the tool input is chosen upstream, so a header it
@@ -150,6 +153,7 @@ export function permissionOriginLabel(
 ): string | null {
   if (origin === undefined) return "Origin: unknown";
   if (origin.kind === "local") return null;
+  if (origin.kind !== "peer") return "Origin: unknown";
   const { deviceId } = origin;
   const name = deviceId === undefined ? undefined : deviceNames?.get(deviceId);
   const device = name ?? (deviceId === undefined ? "unknown" : shortenDeviceId(deviceId));

@@ -4,6 +4,7 @@ import type {
   ProviderInfo,
   Session,
   SessionKind,
+  SessionOriginKind,
   SessionStateSnapshot,
   Workspace,
 } from "../../types/ipc";
@@ -592,6 +593,23 @@ describe("session origin badge", () => {
     expect(sessionOriginBadge({ origin: undefined }, new Map())).toBe("origin unknown");
     expect(sessionOriginUnknown({})).toBe(true);
     expect(sessionOriginUnknown({ origin: { kind: "local" } })).toBe(false);
+  });
+
+  it("says the origin is unknown for an origin kind it cannot read", () => {
+    // The daemon's own `unknown`, for a journal row whose origin column would
+    // not parse, and a kind no build has heard of: `local` is the one kind that
+    // may go unmentioned, and neither of these is it. The mark on the pill comes
+    // from the same predicate, so the tab cannot word a session one way and
+    // colour it another.
+    const names = peerDeviceNames([pairedPhone]);
+    expect(sessionOriginBadge({ origin: { kind: "unknown" } }, names)).toBe("origin unknown");
+    expect(sessionOriginBadge({ origin: { kind: "kiosk" as SessionOriginKind } }, new Map())).toBe(
+      "origin unknown",
+    );
+    expect(sessionOriginUnknown({ origin: { kind: "unknown" } })).toBe(true);
+    expect(sessionOriginUnknown({ origin: { kind: "kiosk" as SessionOriginKind } })).toBe(true);
+    // A peer whose device is unnamed is still a named peer, not an unknown one.
+    expect(sessionOriginUnknown({ origin: { kind: "peer" } })).toBe(false);
   });
 
   it("keeps the device id when no list has named the device yet", () => {

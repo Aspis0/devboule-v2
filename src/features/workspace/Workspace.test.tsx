@@ -2256,6 +2256,33 @@ describe("Workspace sessions", () => {
     expect(badge.textContent).not.toContain("from ");
   });
 
+  it("marks an unknown origin on the tab of a session the daemon could not place", async () => {
+    // The daemon stamps `unknown` on a journal row whose origin column it could
+    // not interpret. That is not a local session: the tab gets the same badge
+    // and the same pill an absent origin gets, and never the peer pill.
+    vi.mocked(sessionsList).mockResolvedValue([
+      { ...terminal("unplaced-session", "remote shell"), origin: { kind: "unknown" } },
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    const badge = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>(
+        ".workspace-session-tab .workspace-session-origin-badge",
+      );
+      if (found === null) throw new Error("origin badge did not render");
+      expect(found.textContent).toBe("origin unknown");
+      return found;
+    });
+    expect(badge.title).toBe("origin unknown");
+    expect(badge.className).toBe(
+      "workspace-session-origin-badge workspace-session-origin-badge-unknown",
+    );
+    expect(badge.textContent).not.toContain("from ");
+  });
+
   it("names the device on a peer session's tab", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       {
