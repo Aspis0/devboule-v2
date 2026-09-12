@@ -22,7 +22,7 @@ use super::permission_broker::{PermissionBroker, PermissionSender};
 use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
-    SpawnedSession, StderrSource, StdioWaitableChild,
+    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::claude_view::ClaudeView;
@@ -329,7 +329,7 @@ pub(super) fn spawn_process(
         Arc::clone(&controls),
         Arc::clone(&mode_responses),
         Arc::clone(&next_id),
-        ClaudeModeGateWiring::new(Arc::clone(&stdin), mode_gate),
+        ClaudeModeGateWiring::new(Arc::clone(&stdin), Arc::clone(&mode_gate)),
     );
     Ok(SpawnedSession {
         process_job,
@@ -339,6 +339,7 @@ pub(super) fn spawn_process(
             stdin: Arc::clone(&stdin),
             next_id: Arc::clone(&next_id),
             mode_responses,
+            mode_gate: Some(Arc::clone(&mode_gate)),
         })),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
@@ -426,14 +427,24 @@ fn control_response_frame(request_id: &str, input: &Value, result: &Value) -> Va
     })
 }
 
-fn frame_user_message(text: &str) -> io::Result<Vec<u8>> {
-    let frame = serde_json::json!({
+fn frame_user_message(
+    text: &str,
+    uuid: Option<&str>,
+    priority: Option<&str>,
+) -> io::Result<Vec<u8>> {
+    let mut frame = serde_json::json!({
         "type": "user",
         "message": {
             "role": "user",
             "content": [{"type": "text", "text": text}]
         }
     });
+    if let Some(uuid) = uuid {
+        frame["uuid"] = serde_json::Value::String(uuid.to_string());
+    }
+    if let Some(priority) = priority {
+        frame["priority"] = serde_json::Value::String(priority.to_string());
+    }
     let mut bytes = serde_json::to_vec(&frame)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     bytes.push(b'\n');
@@ -702,7 +713,7 @@ impl Write for ClaudeWriter {
         // The text-only frame, unchanged. The static route frames its prompts
         // through `frame_user_message_with_images`, which is these same bytes
         // when it carries no block; both then go through `write_gated_frame`.
-        let bytes = frame_user_message(&text)?;
+        let bytes = frame_user_message(&text, None, None)?;
         write_gated_frame(&self.stdin, self.mode_gate.as_ref(), bytes)
     }
 }
@@ -738,6 +749,50 @@ fn write_gated_frame(
     write_child_stdin(stdin, &bytes, "Claude")
 }
 
+/// Writes one already-framed *steer* through the mode gate, refusing instead of
+/// queueing while the gate is still awaiting the initial mode response (A2-01).
+///
+/// The gate's queue exists for the frames that start a session — the initial
+/// mode request and the prompt behind it — and for those it is correct: they
+/// are one ordered batch that `flush_gate_frames` writes together, ahead of
+/// anything else, and a gate that fails drops the whole batch rather than
+/// delivering it late. A *steer* that lands in that queue is a different thing:
+/// it is answered `Ok(true)`, which tells the caller its bytes reached the
+/// provider inside the running turn, when in fact the provider has not yet
+/// been sent a prompt at all. The honest answer for that window is the same
+/// refusal every other unavailable steer gets — `Ok(false)`, and the caller's
+/// pre-existing fallback — so this route does not queue.
+///
+/// The decision and the write are one critical section under the gate lock, so
+/// the gate cannot release between the check and the write: once it is `Ready`
+/// it stays `Ready` (only `Failed` follows, which is an error here, as it is
+/// for every other frame through `write_gated_frame`).
+fn write_gated_steer_frame(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    mode_gate: Option<&ClaudeModeGateRef>,
+    bytes: &[u8],
+) -> io::Result<bool> {
+    if let Some(mode_gate) = mode_gate {
+        // The guard is held across the write below: the decision and the write
+        // are one critical section, which is what the comment above claims
+        // (S4-09). `flush_gate_frames` takes the same order — gate, then stdin.
+        let gate = mode_gate
+            .lock()
+            .map_err(|_| io::Error::other("Claude mode gate lock poisoned"))?;
+        match &gate.state {
+            ClaudeModeGateState::Ready => {}
+            ClaudeModeGateState::Failed(message) => {
+                return Err(io::Error::other(message.clone()));
+            }
+            ClaudeModeGateState::AwaitingResponse { .. } => return Ok(false),
+        }
+        write_child_stdin(stdin, bytes, "Claude")?;
+        return Ok(true);
+    }
+    write_child_stdin(stdin, bytes, "Claude")?;
+    Ok(true)
+}
+
 struct ClaudeKiller {
     process: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
@@ -750,6 +805,52 @@ struct ClaudeSwitcher {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
     mode_responses: ClaudeModeResponses,
+    mode_gate: Option<ClaudeModeGateRef>,
+}
+
+struct ClaudeSteerer {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    mode_gate: Option<ClaudeModeGateRef>,
+}
+
+impl SessionSteerer for ClaudeSteerer {
+    fn steer_active_turn(
+        &mut self,
+        text: &str,
+        _turn: &mut TurnToken<'_>,
+    ) -> Result<bool, WireError> {
+        if text.trim_start().starts_with('/') {
+            return Ok(false);
+        }
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let bytes = frame_user_message(text, Some(&uuid), Some("next")).map_err(send_failure)?;
+        // The gate is refused, not queued, while it is `AwaitingResponse`
+        // (A2-01). That window is between spawn and the initial mode response:
+        // Claude has not been sent the mode request's answer — let alone a
+        // prompt — so no turn was ever started for the steer to join, and the
+        // caller's answer has to be the refusal every unavailable steer gets,
+        // with its pre-existing fallback, not `Ok(true)` for bytes sitting in a
+        // queue. The queue itself stays, for the frames that legitimately start
+        // the session: `write_gated_frame` still holds them in one ordered
+        // batch that a single `flush_gate_frames` writes, and a gate that fails
+        // drops the whole batch rather than delivering it late
+        // (`fail_initial_mode_parts`). The trace is in
+        // `slice-4-daemon-fix-2-report.md`.
+        if write_gated_steer_frame(&self.stdin, self.mode_gate.as_ref(), &bytes)
+            .map_err(send_failure)?
+        {
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
+        Box::new(Self {
+            stdin: Arc::clone(&self.stdin),
+            mode_gate: self.mode_gate.clone(),
+        })
+    }
 }
 
 /// Build a Claude control_request frame.
@@ -969,6 +1070,14 @@ impl ModelSwitcher for ClaudeSwitcher {
             stdin: Arc::clone(&self.stdin),
             next_id: Arc::clone(&self.next_id),
             mode_responses: Arc::clone(&self.mode_responses),
+            mode_gate: self.mode_gate.clone(),
+        })
+    }
+
+    fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
+        Box::new(ClaudeSteerer {
+            stdin: Arc::clone(&self.stdin),
+            mode_gate: self.mode_gate.clone(),
         })
     }
 }
@@ -1910,7 +2019,8 @@ mod tests {
 
     #[test]
     fn writer_frames_buffered_text_as_a_user_message() {
-        let bytes = frame_user_message("Reply with exactly one word: PONG").expect("frame");
+        let bytes =
+            frame_user_message("Reply with exactly one word: PONG", None, None).expect("frame");
         let line = std::str::from_utf8(&bytes).expect("utf8");
         assert!(line.ends_with('\n'));
         let value: Value = serde_json::from_str(line.trim_end()).expect("json");
@@ -1920,6 +2030,15 @@ mod tests {
         assert_eq!(
             value["message"]["content"][0]["text"],
             "Reply with exactly one word: PONG"
+        );
+    }
+
+    #[test]
+    fn claude_steer_frame_is_byte_exact_and_carries_priority() {
+        assert_eq!(
+            frame_user_message("hello", Some("uuid-1"), Some("next")).expect("frame"),
+            br#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]},"uuid":"uuid-1","priority":"next"}
+"#
         );
     }
 
@@ -2095,6 +2214,188 @@ mod tests {
         drop(writer);
         let _ = harness.child.kill();
         let _ = harness.child.wait();
+    }
+
+    /// A2-01: a steer that arrives while the mode gate is still
+    /// `AwaitingResponse` is *refused*, not queued.
+    ///
+    /// The queue is for the frames that start a session: the mode request and
+    /// the prompt behind it are one ordered batch, and a gate that fails drops
+    /// it rather than delivering it late. A steer in that queue is a different
+    /// thing entirely — the caller is answered `Ok(true)`, which says its bytes
+    /// reached the provider inside the running turn, while in fact the provider
+    /// has not been sent a prompt at all. The honest answer for that window is
+    /// the refusal every unavailable steer gets, with its pre-existing fallback.
+    #[test]
+    fn a_steer_while_the_mode_gate_is_awaiting_is_refused_not_queued() {
+        let mut harness = initial_mode_test_setup();
+        let runtime = Arc::new(SessionRuntime::new());
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        // The running turn's own prompt: queued, not written, because the gate
+        // has not released yet.
+        writer.write_all(b"Reply DONE").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+        // The daemon counts that prompt as a running turn, which is what admits
+        // a steer for it.
+        runtime.begin_turn();
+        let mut steerer = ClaudeSteerer {
+            stdin: Arc::clone(&harness.stdin),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        let steered = runtime.with_active_turn(runtime.turn_counter(), |turn| {
+            steerer.steer_active_turn("Turn left instead", turn)
+        });
+        assert!(
+            matches!(steered, Some(Ok(false))),
+            "the gate is still awaiting the mode response: the steerer refuses"
+        );
+
+        // The queue holds the prompt and nothing else, so the batch that will be
+        // written is exactly the batch that was queued before the steer arrived.
+        let queued = harness.gate.lock().expect("gate").pending_frames.clone();
+        assert_eq!(
+            queued.len(),
+            1,
+            "the refused steer added nothing to the queue"
+        );
+        let prompt: Value = serde_json::from_slice(&queued[0]).expect("prompt json");
+        assert_eq!(prompt["message"]["content"][0]["text"], "Reply DONE");
+
+        // The release writes that one frame, and only that one.
+        let request = read_json_line(&mut harness.stdout);
+        assert_eq!(request["request"]["subtype"], "set_permission_mode");
+        let mut view = ClaudeView::new(None);
+        {
+            let mut gate = harness.gate.lock().expect("gate");
+            assert!(
+                flush_gate_frames(&mut gate, &harness.stdin, &mut view, "default").is_none(),
+                "the batch writes cleanly"
+            );
+        }
+        let first = read_json_line(&mut harness.stdout);
+        assert_eq!(first["message"]["content"][0]["text"], "Reply DONE");
+        assert!(
+            harness.gate.lock().expect("gate").pending_frames.is_empty(),
+            "the flush wrote everything that was queued"
+        );
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    #[test]
+    fn a_refused_steer_leaves_the_gate_s_failing_batch_untouched() {
+        // The same refusal on a gate that never releases: the steer is never in
+        // the batch, so what the failure drops is exactly the prompt that was
+        // queued for it — the steer contributed nothing to lose.
+        let mut harness = initial_mode_test_setup();
+        let runtime = Arc::new(SessionRuntime::new());
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        writer.write_all(b"Reply DONE").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+        runtime.begin_turn();
+        let mut steerer = ClaudeSteerer {
+            stdin: Arc::clone(&harness.stdin),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        let steered = runtime.with_active_turn(runtime.turn_counter(), |turn| {
+            steerer.steer_active_turn("Turn left instead", turn)
+        });
+        assert!(matches!(steered, Some(Ok(false))));
+        assert_eq!(
+            harness.gate.lock().expect("gate").pending_frames.len(),
+            1,
+            "the gate holds the prompt and nothing the steer added"
+        );
+
+        let request = read_json_line(&mut harness.stdout);
+        let request_id = request["request_id"]
+            .as_str()
+            .expect("the mode request names itself")
+            .to_string();
+        assert!(
+            fail_initial_mode_parts(
+                &harness.gate,
+                Some(&harness.stdin),
+                &runtime,
+                Some(&request_id),
+                true,
+                "Claude mode response timed out; queued prompt(s) were not delivered because Claude never confirmed the permission mode.",
+            ),
+            "the gate fails on the request it is awaiting"
+        );
+        assert!(
+            harness.gate.lock().expect("gate").pending_frames.is_empty(),
+            "the queued steer is dropped with the batch"
+        );
+        assert!(
+            harness.stdin.lock().expect("stdin").is_none(),
+            "the transport a late delivery would use is closed"
+        );
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    /// S4-09: the gate guard is held across the write, so the decision and the
+    /// write really are one critical section — which is what the function claims.
+    ///
+    /// The frame is bigger than any pipe buffer and the fake child never reads it,
+    /// so the write is *inside* the gate while this test looks. A guard released
+    /// before the write leaves the gate free for the whole window.
+    #[test]
+    fn the_steer_write_holds_the_gate_while_it_writes() {
+        use std::process::Stdio;
+
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        // A fake Claude that never reads its stdin, so a large write blocks in the
+        // pipe and stays there.
+        let mut child = std::process::Command::new("node")
+            .args(["-e", "setTimeout(() => {}, 60000)"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("node is required for the Claude gate-hold test");
+        let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+        let gate: super::ClaudeModeGateRef = Arc::new(Mutex::new(super::ClaudeModeGate {
+            state: super::ClaudeModeGateState::Ready,
+            pending_frames: Vec::new(),
+        }));
+        let mut steerer = super::ClaudeSteerer {
+            stdin: Arc::clone(&stdin),
+            mode_gate: Some(Arc::clone(&gate)),
+        };
+        let text = "x".repeat(1024 * 1024);
+        let steer = std::thread::spawn(move || {
+            crate::test_support::steer_through_the_turn(&mut steerer, &text)
+        });
+        // Let the write reach the pipe, then look at the gate for a bounded
+        // window: it must never be free while the bytes are going out.
+        std::thread::sleep(Duration::from_millis(150));
+        let mut available = 0;
+        for _ in 0..200 {
+            if gate.try_lock().is_ok() {
+                available += 1;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            available, 0,
+            "the gate was free during the write: the guard is not held across it (S4-09)"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = steer.join();
     }
 
     #[test]
@@ -2374,6 +2675,7 @@ mod tests {
             stdin: Arc::clone(&harness.stdin),
             next_id: Arc::clone(&harness.next_id),
             mode_responses,
+            mode_gate: Some(Arc::clone(&harness.gate)),
         };
         let user_mode = std::thread::spawn(move || switcher.set_mode("acceptEdits"));
         let initial_request = read_json_line(&mut harness.stdout);
@@ -3222,7 +3524,7 @@ mod tests {
         // block-less prompt would move bytes the moment the route took it.
         assert_eq!(
             frame_user_message_with_images("logo", &[]).expect("frame"),
-            frame_user_message("logo").expect("frame"),
+            frame_user_message("logo", None, None).expect("frame"),
         );
     }
 

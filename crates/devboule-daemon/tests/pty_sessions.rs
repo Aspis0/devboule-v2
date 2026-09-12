@@ -283,6 +283,7 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::AgentMessage { .. }
         | SessionEvent::AgentUserMessage { .. }
+        | SessionEvent::Steered { .. }
         | SessionEvent::AgentThought { .. }
         | SessionEvent::AvailableCommands { .. }
         | SessionEvent::AgentToolCall { .. }
@@ -690,6 +691,7 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::Snapshot { .. }
             | SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::Steered { .. }
             | SessionEvent::AgentThought { .. }
             | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }
@@ -1035,6 +1037,7 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::Snapshot { .. }
             | SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::Steered { .. }
             | SessionEvent::AgentThought { .. }
             | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }
@@ -1565,6 +1568,7 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::AgentMessage { .. }
         | SessionEvent::AgentUserMessage { .. }
+        | SessionEvent::Steered { .. }
         | SessionEvent::AgentThought { .. }
         | SessionEvent::AvailableCommands { .. }
         | SessionEvent::AgentToolCall { .. }
@@ -1969,6 +1973,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::Snapshot { .. }
         | SessionEvent::AgentMessage { .. }
         | SessionEvent::AgentUserMessage { .. }
+        | SessionEvent::Steered { .. }
         | SessionEvent::AgentThought { .. }
         | SessionEvent::AvailableCommands { .. }
         | SessionEvent::AgentToolCall { .. }
@@ -2347,6 +2352,7 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::Snapshot { .. }
             | SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::Steered { .. }
             | SessionEvent::AgentThought { .. }
             | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }
@@ -2621,6 +2627,7 @@ fn journal_growth_after_13mb_flood() {
             SessionEvent::Snapshot { .. } => {}
             SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::Steered { .. }
             | SessionEvent::AgentThought { .. }
             | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }
@@ -2921,6 +2928,7 @@ fn attach_during_flood_delivers_every_sequence_once() {
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::AgentMessage { .. }
             | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::Steered { .. }
             | SessionEvent::AgentThought { .. }
             | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }

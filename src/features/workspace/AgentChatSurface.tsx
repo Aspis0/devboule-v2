@@ -11,6 +11,7 @@ import {
   type SessionChannel,
 } from "../../lib/tauri";
 import type {
+  ActiveTurnBehavior,
   PermissionRequest,
   PromptAttachment,
   SessionManifest,
@@ -73,11 +74,19 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
     const attachments = args?.attachments as readonly PromptAttachment[] | undefined;
     const text = typeof args?.text === "string" ? args.text : "";
     const subscriptionId = args?.subscriptionId as SubscriptionId;
-    return (
-      attachments === undefined
-        ? sessionSend(id, subscriptionId, text)
-        : sessionSend(id, subscriptionId, text, attachments)
-    ) as Promise<T>;
+    // The controller only ever names the one behaviour that differs from the
+    // daemon's default. Anything else is a bug on this side of the wire and is
+    // refused loudly: silently dropping it would turn a misspelling into an
+    // interrupt-and-replace the caller never asked for.
+    const behavior = args?.activeTurnBehavior;
+    if (behavior !== undefined && behavior !== "steer") {
+      return Promise.reject(new Error(`Unsupported active turn behavior: ${String(behavior)}`));
+    }
+    const activeTurnBehavior: ActiveTurnBehavior | undefined = behavior;
+    if (attachments === undefined && activeTurnBehavior === undefined) {
+      return sessionSend(id, subscriptionId, text) as Promise<T>;
+    }
+    return sessionSend(id, subscriptionId, text, attachments, activeTurnBehavior) as Promise<T>;
   }
   if (command === "session_set_model") {
     return sessionSetModel(
@@ -624,7 +633,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         disabled={composerDisabled}
         disabledReason={disabledReason}
         availableCommands={state.availableCommands}
-        onSend={(text) => void sessionRef.current?.send(text)}
+        onSend={(text) =>
+          // A send while the agent is mid-turn steers that turn; an idle send
+          // omits the field and the daemon keeps its interrupt-and-replace
+          // default. Enter is the steering key: the send button is the Stop
+          // button while the turn runs, and the textarea stays enabled.
+          void sessionRef.current?.send(text, [], state.streaming ? "steer" : undefined)
+        }
         onStop={() => void sessionRef.current?.interrupt()}
         controls={
           <>

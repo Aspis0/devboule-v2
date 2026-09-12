@@ -890,6 +890,34 @@ describe("ACP agent session", () => {
     emit({ type: "permission_resolved", toolCallId: "tool-timeout" });
     expect(onPermissionResolved).toHaveBeenCalledWith("tool-timeout");
   });
+
+  it("carries the resolution of a card a steer superseded while the turn runs", async () => {
+    // The daemon cancels every pending permission before it delivers a steer
+    // and publishes PermissionResolved for each cancelled card. The controller
+    // must hand that through mid-turn, or the card on screen would never leave.
+    let emit: (event: SessionEvent) => void = () => undefined;
+    const onPermissionResolved = vi.fn();
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke: vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"],
+      createChannel: (onEvent) => {
+        emit = onEvent;
+        return {} as AgentChannel;
+      },
+      onPermissionResolved,
+    });
+    await session.start();
+    await session.send("Start the task");
+    emit({ type: "agent_message", messageId: "answer-1", text: "Working" });
+
+    await session.send("Turn left instead", [], "steer");
+    emit({ type: "permission_resolved", toolCallId: "tool-cancelled" });
+
+    expect(onPermissionResolved).toHaveBeenCalledWith("tool-cancelled");
+    expect(session.getState().streaming).toBe(true);
+  });
   it("keeps its subscription id for commands and its own detach", async () => {
     const harness = makeHarness();
 
@@ -920,6 +948,65 @@ describe("ACP agent session", () => {
       text: "look at this",
       attachments: [{ name: "photo.png", mimeType: "image/png", data: "AAAA" }],
     });
+  });
+
+  it("joins the running turn on a steer instead of opening a second one", async () => {
+    const harness = makeHarness();
+
+    await harness.session.start();
+    await harness.session.send("Start the task");
+    harness.emit({ type: "agent_user_message", messageId: "user-1", text: "Start the task" });
+    harness.emit({ type: "agent_message", messageId: "answer-1", text: "Work" });
+
+    await harness.session.send("Turn left instead", [], "steer");
+
+    // The wire key is what asks the daemon to deliver into the live turn.
+    expect(harness.invoke).toHaveBeenCalledWith("session_send", {
+      id: "agent-1",
+      subscriptionId: 41,
+      text: "Turn left instead",
+      activeTurnBehavior: "steer",
+    });
+
+    // The daemon echoes the steer as an AgentUserMessage, the same echo every
+    // send gets, and the answer that was already arriving keeps coming.
+    harness.emit({ type: "agent_user_message", messageId: "user-2", text: "Turn left instead" });
+    harness.emit({ type: "agent_message", messageId: "answer-1", text: "ing" });
+
+    const items = harness.session.getState().items;
+    // One inline user bubble for the steer — no locally appended second copy —
+    // and the assistant stream stayed in the one bubble it started in: the
+    // turn counter was not bumped, so the block key did not change.
+    expect(items.map(itemRoleText)).toEqual([
+      { role: "user", text: "Start the task" },
+      { role: "assistant", text: "Working" },
+      { role: "user", text: "Turn left instead" },
+    ]);
+    expect(items.filter((item) => item.role === "assistant")).toHaveLength(1);
+    expect(harness.session.getState().streaming).toBe(true);
+    expect(harness.session.getState().status).toBe("running");
+  });
+
+  it("opens a turn for a steer when no turn is live", async () => {
+    const harness = makeHarness();
+
+    await harness.session.start();
+    await harness.session.send("First task");
+    harness.emit({ type: "agent_message", messageId: "answer-1", text: "A" });
+    harness.emit({ type: "agent_finished", stopReason: "end_turn" });
+
+    // The turn is over, so the daemon cannot steer into it and starts a new
+    // one; the transcript must open a new turn too. A chunk under the old
+    // message id therefore lands in a second bubble rather than extending
+    // the finished one.
+    await harness.session.send("Second task", [], "steer");
+    harness.emit({ type: "agent_message", messageId: "answer-1", text: "B" });
+
+    const assistantTexts = harness.session
+      .getState()
+      .items.filter((item) => item.role === "assistant")
+      .map((item) => (item.role === "assistant" ? item.text : ""));
+    expect(assistantTexts).toEqual(["A", "B"]);
   });
 
   it("does not detach when attach did not return a subscription id", async () => {

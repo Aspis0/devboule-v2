@@ -8,8 +8,8 @@ use crate::error::WireError;
 use crate::handshake::{ClientHello, DaemonHello};
 use crate::project::{Project, Workspace, WorkspaceIsolation};
 use crate::session::{
-    AgentActivityState, Cursor, PermissionOutcome, Persistence, ResumeResult, Session,
-    SessionEvent, SessionKind, SubscriptionId,
+    ActiveTurnBehavior, AgentActivityState, Cursor, PermissionOutcome, Persistence, ResumeResult,
+    Session, SessionEvent, SessionKind, SubscriptionId,
 };
 
 /// The role a device is paired as, on the wire as `"client"` or `"daemon"`.
@@ -226,6 +226,21 @@ pub enum ClientMessage {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<PromptAttachment>,
+        #[serde(
+            rename = "activeTurnBehavior",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        active_turn_behavior: Option<ActiveTurnBehavior>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
+    /// Deliver text from one live agent session to another.
+    AgentMessageSend {
+        id: u64,
+        from_session: String,
+        to_session: String,
+        text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
@@ -445,6 +460,7 @@ impl ClientMessage {
             | Self::SessionClose { id, .. }
             | Self::SessionStop { id, .. }
             | Self::SessionSend { id, .. }
+            | Self::AgentMessageSend { id, .. }
             | Self::SessionResize { id, .. }
             | Self::SessionInterrupt { id, .. }
             | Self::SessionSetModel { id, .. }
@@ -486,6 +502,9 @@ impl ClientMessage {
                 idempotency_key, ..
             }
             | Self::SessionSend {
+                idempotency_key, ..
+            }
+            | Self::AgentMessageSend {
                 idempotency_key, ..
             }
             | Self::SessionPermissionRespond {
@@ -559,6 +578,7 @@ impl ClientMessage {
             Self::SessionClose { .. } => "SessionClose",
             Self::SessionStop { .. } => "SessionStop",
             Self::SessionSend { .. } => "SessionSend",
+            Self::AgentMessageSend { .. } => "AgentMessageSend",
             Self::SessionResize { .. } => "SessionResize",
             Self::SessionInterrupt { .. } => "SessionInterrupt",
             Self::SessionSetModel { .. } => "SessionSetModel",
@@ -625,6 +645,7 @@ impl ClientMessage {
             | Self::SessionClose { .. }
             | Self::SessionStop { .. }
             | Self::SessionSend { .. }
+            | Self::AgentMessageSend { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
@@ -650,6 +671,28 @@ impl ClientMessage {
             | Self::ToolPolicySet { .. } => true,
         }
     }
+}
+
+/// Lifecycle state reported for an inter-agent message.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageState {
+    Accepted,
+    Queued,
+    Delivered,
+    Started,
+    Completed,
+    RejectedAbsent,
+    RejectedUnpaired,
+    /// The caller was authenticated — a paired device, or the person at this
+    /// machine — and the message was refused anyway: the session exists and is
+    /// the caller's to reach, but it will not take this message (A2-07). A
+    /// refusal by *identity* is `RejectedUnpaired`; this one is a refusal by
+    /// policy, which is what the daemon answers with `ErrorCode::Unauthorized`
+    /// for a steer a paired device may not turn into an interrupt.
+    RejectedDenied,
+    Expired,
+    Failed,
 }
 
 /// Messages the daemon writes.
@@ -711,6 +754,10 @@ pub enum DaemonMessage {
     },
     Ok {
         id: u64,
+    },
+    AgentMessageReceipt {
+        id: u64,
+        state: AgentMessageState,
     },
     Resume {
         id: u64,
@@ -1619,6 +1666,7 @@ mod tests {
             subscription_id: 1,
             text: "hi".to_string(),
             attachments: Vec::new(),
+            active_turn_behavior: None,
             idempotency_key: None,
         }
         .is_state_changing());
@@ -1715,6 +1763,7 @@ mod tests {
                 subscription_id: 11,
                 text: "hello".to_string(),
                 attachments: Vec::new(),
+                active_turn_behavior: None,
                 idempotency_key: None,
             }
         );
@@ -1732,6 +1781,7 @@ mod tests {
                 mime_type: "image/png".to_string(),
                 data: "AA==".to_string(),
             }],
+            active_turn_behavior: None,
             idempotency_key: None,
         };
         let value = serde_json::to_value(&message).expect("json");
@@ -1743,6 +1793,75 @@ mod tests {
     }
 
     #[test]
+    fn session_send_accepts_only_the_steer_active_turn_behavior() {
+        let steer: ClientMessage = serde_json::from_str(
+            r#"{"type":"session_send","id":7,"sessionId":"s.a.1","subscriptionId":11,"text":"hello","activeTurnBehavior":"steer"}"#,
+        )
+        .expect("steer frame");
+        assert!(matches!(
+            steer,
+            ClientMessage::SessionSend {
+                active_turn_behavior: Some(ActiveTurnBehavior::Steer),
+                ..
+            }
+        ));
+        assert!(serde_json::from_str::<ClientMessage>(
+            r#"{"type":"session_send","id":7,"sessionId":"s.a.1","subscriptionId":11,"text":"hello","activeTurnBehavior":"replace"}"#
+        )
+        .is_err());
+        // The two shapes a hand-written frame gets wrong: an empty value (the
+        // field is present, so `default` does not apply) and a differently-cased
+        // spelling of the one behaviour. Both must be refused by the decoder,
+        // which is where the daemon's own frame reader refuses them: a steer the
+        // daemon read as "the default" would be an interrupt-and-replace the
+        // caller never asked for.
+        assert!(serde_json::from_str::<ClientMessage>(
+            r#"{"type":"session_send","id":7,"sessionId":"s.a.1","subscriptionId":11,"text":"hello","activeTurnBehavior":""}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<ClientMessage>(
+            r#"{"type":"session_send","id":7,"sessionId":"s.a.1","subscriptionId":11,"text":"hello","activeTurnBehavior":"Steer"}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn agent_message_receipt_round_trips_with_the_wire_state() {
+        let message = DaemonMessage::AgentMessageReceipt {
+            id: 9,
+            state: AgentMessageState::RejectedAbsent,
+        };
+        let value = serde_json::to_value(&message).expect("json");
+        assert_eq!(value["type"], "agent_message_receipt");
+        assert_eq!(value["state"], "rejected_absent");
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(value).expect("decode"),
+            message
+        );
+    }
+
+    /// A2-07: the receipt that says a caller was *denied* has its own wire
+    /// spelling, and it is not the one that blames the pairing.
+    #[test]
+    fn a_denied_agent_message_has_its_own_wire_state() {
+        let message = DaemonMessage::AgentMessageReceipt {
+            id: 10,
+            state: AgentMessageState::RejectedDenied,
+        };
+        let value = serde_json::to_value(&message).expect("json");
+        assert_eq!(value["state"], "rejected_denied");
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(value).expect("decode"),
+            message
+        );
+        assert_ne!(
+            serde_json::to_value(AgentMessageState::RejectedUnpaired).expect("json"),
+            serde_json::to_value(AgentMessageState::RejectedDenied).expect("json"),
+            "a denial is not an unpaired caller, and the wire must not say it is"
+        );
+    }
+
+    #[test]
     fn session_send_with_no_attachments_omits_the_field() {
         let value = serde_json::to_value(ClientMessage::SessionSend {
             id: 7,
@@ -1750,6 +1869,7 @@ mod tests {
             subscription_id: 11,
             text: "hello".to_string(),
             attachments: Vec::new(),
+            active_turn_behavior: None,
             idempotency_key: None,
         })
         .expect("json");
@@ -1927,6 +2047,7 @@ mod tests {
             subscription_id: 12,
             text: "x".to_string(),
             attachments: Vec::new(),
+            active_turn_behavior: None,
             idempotency_key: Some("k2".to_string()),
         };
         let perm = ClientMessage::SessionPermissionRespond {

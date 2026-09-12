@@ -462,6 +462,31 @@ describe("create and attach command wrappers", () => {
     expect(invoke).toHaveBeenNthCalledWith(6, "session_detach", { subscriptionId: 41 });
   });
 
+  it("sends the steering argument only when asked and pins the send's argument keys", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionSend("s.owner.1", 41, "keep going", undefined, "steer");
+
+    // The key is absent, not `undefined`, for a plain send (asserted above):
+    // an absent `activeTurnBehavior` is the daemon's interrupt-and-replace
+    // default, and the Rust parity guard checks this manifest against the
+    // command's own parameter list.
+    expect(invoke).toHaveBeenCalledWith("session_send", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+      text: "keep going",
+      activeTurnBehavior: "steer",
+    });
+    expect(COMMAND_ARG_KEYS.session_send).toEqual([
+      "id",
+      "subscriptionId",
+      "text",
+      "attachments",
+      "activeTurnBehavior",
+    ]);
+  });
+
   it("passes the subscription id when closing a session", async () => {
     vi.mocked(invoke).mockClear();
     vi.mocked(invoke).mockResolvedValue(undefined as never);

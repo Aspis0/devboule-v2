@@ -125,6 +125,7 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::SessionAttach { .. } => with_capability(caps, CAP_VIEW),
         ClientMessage::SessionCreate { .. } => with_capability(caps, CAP_CREATE_SESSIONS),
         ClientMessage::SessionSend { .. } => with_capability(caps, CAP_SEND),
+        ClientMessage::AgentMessageSend { .. } => with_capability(caps, CAP_SEND),
         ClientMessage::SessionPermissionRespond { .. } => {
             with_capability(caps, CAP_ANSWER_PERMISSIONS)
         }
@@ -310,7 +311,7 @@ impl ConnPeer {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use devboule_protocol::OwnerId;
 
@@ -412,6 +413,7 @@ mod tests {
             subscription_id: 1,
             text: "hi".to_string(),
             attachments: Vec::new(),
+            active_turn_behavior: None,
             idempotency_key: None,
         };
         let respond = || ClientMessage::SessionPermissionRespond {
@@ -720,6 +722,9 @@ mod tests {
             ClientMessage::SessionSend { .. } | ClientMessage::SessionSetMode { .. } => {
                 under(CAP_SEND)
             }
+            // An agent message is a send: it puts text into a session, so it
+            // needs the capability `SessionSend` needs and nothing more.
+            ClientMessage::AgentMessageSend { .. } => under(CAP_SEND),
             ClientMessage::SessionPermissionRespond { .. } => under(CAP_ANSWER_PERMISSIONS),
             ClientMessage::Status { .. } => always("status"),
             ClientMessage::DaemonDiagnostics { .. } => always("diagnostics"),
@@ -766,7 +771,7 @@ mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    const VARIANT_COUNT: usize = 44;
+    pub(crate) const VARIANT_COUNT: usize = 45;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -786,6 +791,7 @@ mod tests {
             ClientMessage::SessionClose { .. } => "SessionClose",
             ClientMessage::SessionStop { .. } => "SessionStop",
             ClientMessage::SessionSend { .. } => "SessionSend",
+            ClientMessage::AgentMessageSend { .. } => "AgentMessageSend",
             ClientMessage::SessionResize { .. } => "SessionResize",
             ClientMessage::SessionInterrupt { .. } => "SessionInterrupt",
             ClientMessage::SessionSetModel { .. } => "SessionSetModel",
@@ -822,7 +828,7 @@ mod tests {
     }
 
     /// One frame per variant, in `name()` order.
-    fn matrix_samples() -> Vec<ClientMessage> {
+    pub(crate) fn matrix_samples() -> Vec<ClientMessage> {
         let owner = OwnerId::new("S-1-5-21-1", "client").expect("owner");
         vec![
             ClientMessage::Hello(devboule_protocol::ClientHello::m3a(owner, "devboule-test")),
@@ -870,6 +876,14 @@ mod tests {
                 subscription_id: 1,
                 text: "hi".to_string(),
                 attachments: Vec::new(),
+                active_turn_behavior: None,
+                idempotency_key: None,
+            },
+            ClientMessage::AgentMessageSend {
+                id: 1,
+                from_session: "s.a.1".to_string(),
+                to_session: "s.b.2".to_string(),
+                text: "hi".to_string(),
                 idempotency_key: None,
             },
             ClientMessage::SessionResize {

@@ -8,11 +8,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
-    DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PairingSecret, PeerRole,
-    PeerRow, PermissionOutcome, Persistence, Project, PromptAttachment, ProviderInfo, ResumeResult,
-    RetentionPatch, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionStateSnapshot,
-    SubscriptionId, WireError, Workspace, WorkspaceIsolation,
+    ActiveTurnBehavior, AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello,
+    DaemonMessage, DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId,
+    PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence, Project, PromptAttachment,
+    ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope,
+    SessionKind, SessionStateSnapshot, SubscriptionId, WireError, Workspace, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -449,6 +449,7 @@ impl DaemonClient {
             self.control_subscription_id(session_id)?,
             text,
             &[],
+            None,
         )
     }
 
@@ -464,6 +465,7 @@ impl DaemonClient {
         subscription_id: SubscriptionId,
         text: &str,
         attachments: &[PromptAttachment],
+        active_turn_behavior: Option<ActiveTurnBehavior>,
     ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {
@@ -473,6 +475,7 @@ impl DaemonClient {
             text: text.to_string(),
             attachments: attachments.to_vec(),
             idempotency_key: None,
+            active_turn_behavior,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
@@ -1501,6 +1504,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Providers { id, .. }
         | DaemonMessage::ProviderUpdated { id, .. }
         | DaemonMessage::Ok { id }
+        | DaemonMessage::AgentMessageReceipt { id, .. }
         | DaemonMessage::Resume { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),
     }

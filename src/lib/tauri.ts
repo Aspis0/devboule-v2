@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
+  ActiveTurnBehavior,
   Cap,
   CommandError,
   DaemonDiagnostics,
@@ -75,6 +76,12 @@ export type CommandArgs = {
      * and the terminal surface's sends stay byte-identical to what they were.
      */
     attachments?: readonly PromptAttachment[];
+    /**
+     * Omitted for a plain send, which is what every caller before steering
+     * did: the daemon's default for an absent field is interrupt-and-replace.
+     * Present only when a turn is already running and the send must join it.
+     */
+    activeTurnBehavior?: ActiveTurnBehavior;
   };
   session_interrupt: { id: Id; subscriptionId: SubscriptionId };
   session_claim: { subscriptionId: SubscriptionId };
@@ -236,7 +243,7 @@ export const COMMAND_ARG_KEYS = {
   session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
-  session_send: ["id", "subscriptionId", "text", "attachments"],
+  session_send: ["id", "subscriptionId", "text", "attachments", "activeTurnBehavior"],
   session_interrupt: ["id", "subscriptionId"],
   session_claim: ["subscriptionId"],
   session_set_model: ["id", "modelId", "effort"],
@@ -429,12 +436,17 @@ export const sessionSend = (
   subscriptionId: SubscriptionId,
   text: string,
   attachments?: readonly PromptAttachment[],
+  activeTurnBehavior?: ActiveTurnBehavior,
 ) =>
   invokeTyped("session_send", {
     id,
     subscriptionId,
     text,
     ...(attachments === undefined || attachments.length === 0 ? {} : { attachments }),
+    // Absent for a plain send: the daemon reads an absent field as
+    // interrupt-and-replace, and an explicit `undefined` would travel as a
+    // key the old wire never carried.
+    ...(activeTurnBehavior === undefined ? {} : { activeTurnBehavior }),
   });
 export const sessionInterrupt = (id: Id, subscriptionId: SubscriptionId) =>
   invokeTyped("session_interrupt", { id, subscriptionId });

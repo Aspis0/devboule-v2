@@ -81,6 +81,7 @@ impl McpLaunchConfig {
 
 #[derive(Clone)]
 struct RegisteredSession {
+    session_id: String,
     owner: OwnerId,
     /// Catalog provider this session was created for (`claude`, `grok`, …).
     /// The tool policy is keyed by it; `None` is a caller that had no
@@ -221,6 +222,7 @@ impl McpBroker {
         };
 
         let registration = RegisteredSession {
+            session_id: session_id.to_string(),
             owner: owner.clone(),
             provider_id: provider_id.map(str::to_string),
             bearer: bearer.clone(),
@@ -702,31 +704,85 @@ fn handle_rpc(
                     return Ok(Some(rpc_error(id, -32601, "Tool disabled by policy")));
                 }
             }
-            if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
-                return Ok(Some(rpc_error(id, -32601, "Unknown tool")));
-            }
-            // Deliberately do not read params.arguments. The bearer maps to
-            // the caller; an agent id supplied by the model is not identity.
-            let agents = state
+            if tool_name == Some(crate::provider_catalog::MCP_SEND_MESSAGE_TOOL) {
+                let to_agent = message
+                    .pointer("/params/arguments/to_agent")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let text = message
+                    .pointer("/params/arguments/text")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let (Some(to_agent), Some(text)) = (to_agent, text) else {
+                    return Ok(Some(rpc_error(
+                        id,
+                        -32602,
+                        "to_agent and text are required",
+                    )));
+                };
+                let target = state
+                    .sessions
+                    .live_agent_entries(&registration.owner)
+                    .map_err(|error| {
+                        json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": error.message}})
+                    })?
+                    .into_iter()
+                    .find(|entry| entry.session.id == to_agent || entry.session.title == to_agent);
+                let Some(target) = target else {
+                    return Ok(Some(rpc_error(id, -32602, "target agent not found")));
+                };
+                let internal_conn = crate::session::ConnHandle::with_peer(0, None);
+                match state.sessions.agent_message_send(
+                    &registration.session_id,
+                    &target.session.id,
+                    text,
+                    &registration.owner,
+                    &internal_conn,
+                ) {
+                    Ok(()) => Ok(Some(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{"type": "text", "text": "accepted"}],
+                            "structuredContent": {"state": "accepted"},
+                            "isError": false,
+                        },
+                    }))),
+                    Err(error) => Ok(Some(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{"type": "text", "text": error.message}],
+                            "isError": true,
+                        },
+                    }))),
+                }
+            } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
+                Ok(Some(rpc_error(id, -32601, "Unknown tool")))
+            } else {
+                // Deliberately do not read params.arguments. The bearer maps to
+                // the caller; an agent id supplied by the model is not identity.
+                let agents = state
                 .sessions
                 .live_agent_entries(&registration.owner)
                 .map_err(|error| json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": error.message}}))?
                 .into_iter()
                 .map(|entry| agent_value(&entry.session, &entry.runtime))
                 .collect::<Vec<_>>();
-            let document = json!({"agents": agents});
-            let text = serde_json::to_string(&document).map_err(|error| {
+                let document = json!({"agents": agents});
+                let text = serde_json::to_string(&document).map_err(|error| {
                 json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": format!("Could not encode agent roster: {error}")}})
             })?;
-            Ok(Some(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "content": [{"type": "text", "text": text}],
-                    "structuredContent": document,
-                    "isError": false,
-                },
-            })))
+                Ok(Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{"type": "text", "text": text}],
+                        "structuredContent": document,
+                        "isError": false,
+                    },
+                })))
+            }
         }
         _ if message.get("id").is_none() => Ok(None),
         _ => Ok(Some(rpc_error(id, -32601, "Method not found"))),
@@ -745,10 +801,23 @@ fn enabled_tool_list(catalog: &[(&str, &str)], policy: Option<&ToolPolicyEntry>)
         .iter()
         .filter(|(name, _)| crate::tool_policy::is_tool_enabled(policy, name))
         .map(|(name, description)| {
+            let input_schema = if *name == crate::provider_catalog::MCP_SEND_MESSAGE_TOOL {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "to_agent": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["to_agent", "text"],
+                    "additionalProperties": false,
+                })
+            } else {
+                json!({"type": "object", "properties": {}, "additionalProperties": false})
+            };
             json!({
                 "name": name,
                 "description": description,
-                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+                "inputSchema": input_schema,
             })
         })
         .collect()
@@ -1348,6 +1417,13 @@ mod tests {
             .expect("other agent roster");
         assert!(!other_agents.iter().any(|agent| agent["id"] == "agent-a"));
         assert!(other_agents.iter().any(|agent| agent["id"] == "agent-b"));
+        let send_response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {caller_token}")),
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"devboule_send_message","arguments":{"to_agent":"agent-missing","text":"hello"}}}"#,
+        );
+        let send_body = response_json(&send_response);
+        assert_eq!(send_body["error"]["code"], -32602);
         drop(caller_guard);
         drop(other_guard);
         drop(server);
@@ -1415,6 +1491,16 @@ mod tests {
             1,
             "a disabled policy still lists the always-on roster tool"
         );
+
+        let broker_tools = enabled_tool_list(crate::provider_catalog::MCP_BROKER_TOOLS, None);
+        let send_tool = broker_tools
+            .iter()
+            .find(|tool| tool["name"] == crate::provider_catalog::MCP_SEND_MESSAGE_TOOL)
+            .expect("message tool");
+        assert_eq!(
+            send_tool["inputSchema"]["required"],
+            serde_json::json!(["to_agent", "text"])
+        );
     }
 
     #[test]
@@ -1467,7 +1553,8 @@ mod tests {
             Some(&json!("Unknown tool"))
         );
 
-        // And `tools/list` for the same session still reports the roster tool.
+        // And `tools/list` for the same session still reports both always-on
+        // tools: the roster, and the sender this slice adds.
         let listed = http_request(
             &state.mcp.url,
             Some(&format!("Bearer {token}")),
@@ -1478,7 +1565,7 @@ mod tests {
                 .pointer("/result/tools")
                 .and_then(Value::as_array)
                 .map(|tools| tools.len()),
-            Some(1)
+            Some(2)
         );
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);

@@ -22,6 +22,15 @@ pub enum SessionKind {
     Codex,
 }
 
+/// What a send does when the target agent already has a turn running.
+/// Omitting this field preserves the interrupt-and-replace behavior; only
+/// steering is an explicit alternative in this protocol revision.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActiveTurnBehavior {
+    Steer,
+}
+
 impl SessionKind {
     /// ACP, Claude stream-json, Pi RPC, and Codex app-server are live agent
     /// sessions.
@@ -367,6 +376,13 @@ pub enum SessionEvent {
     },
     /// Echo of the user prompt, one ACP `user_message_chunk` at a time.
     AgentUserMessage {
+        message_id: Option<String>,
+        text: String,
+    },
+    /// A prompt accepted by a running turn. This is journaled for audit but
+    /// intentionally not pushed to live observers; the normal user-message
+    /// echo is the transcript event.
+    Steered {
         message_id: Option<String>,
         text: String,
     },

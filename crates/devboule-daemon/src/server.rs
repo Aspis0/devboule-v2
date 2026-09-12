@@ -9,12 +9,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
-    caps, m3a_daemon_capabilities, negotiate, validate_idempotency_key, ClientMessage, DaemonHello,
-    DaemonMessage, DaemonStatusBody, ErrorCode, JournalLimits as WireJournalLimits,
-    JournalSessionUsage as WireJournalSessionUsage, JournalUsage as WireJournalUsage, OwnerId,
-    PersistenceKind, PromptAttachment, ResumeResult, RetentionPatch, SessionEvent,
-    SessionEventEnvelope, SessionKind, Unreclaimable as WireUnreclaimable, WireError,
-    PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
+    caps, m3a_daemon_capabilities, negotiate, validate_idempotency_key, AgentMessageState,
+    ClientMessage, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
+    JournalLimits as WireJournalLimits, JournalSessionUsage as WireJournalSessionUsage,
+    JournalUsage as WireJournalUsage, OwnerId, PersistenceKind, PromptAttachment, ResumeResult,
+    RetentionPatch, SessionEvent, SessionEventEnvelope, SessionKind,
+    Unreclaimable as WireUnreclaimable, WireError, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
 use crate::device_identity::RemoteState;
@@ -1981,6 +1981,7 @@ fn send_pending_event(
             SessionEvent::Snapshot { .. } => " snapshot".to_string(),
             SessionEvent::AgentMessage { .. } => " agent_message".to_string(),
             SessionEvent::AgentUserMessage { .. } => " agent_user_message".to_string(),
+            SessionEvent::Steered { .. } => " steered".to_string(),
             SessionEvent::AgentThought { .. } => " agent_thought".to_string(),
             SessionEvent::AvailableCommands { .. } => " available_commands".to_string(),
             SessionEvent::AgentToolCall { .. } => " agent_tool_call".to_string(),
@@ -2272,6 +2273,7 @@ fn dispatch_immediate(
         | ClientMessage::SessionClose { .. }
         | ClientMessage::SessionStop { .. }
         | ClientMessage::SessionSend { .. }
+        | ClientMessage::AgentMessageSend { .. }
         | ClientMessage::SessionResize { .. }
         | ClientMessage::SessionInterrupt { .. }
         | ClientMessage::SessionSetModel { .. }
@@ -3130,8 +3132,13 @@ fn peer_refusal_before_mode(
         ClientMessage::SessionAttach { session_id, .. }
         | ClientMessage::SessionSend { session_id, .. }
         | ClientMessage::SessionSetMode { session_id, .. } => session_id,
+        // An agent message names two sessions and its *target* is the one that
+        // receives the prompt, so the target is the one this gate authorizes —
+        // exactly as a `SessionSend` would. The source is decided by the
+        // registry's own ownership check inside `agent_message_send`.
+        ClientMessage::AgentMessageSend { to_session, .. } => to_session,
         // Every other shape: no session to authorize before the mode gate,
-        // which only reads a session for these three.
+        // which only reads a session for these four.
         _ => return None,
     };
     let error = state
@@ -3165,13 +3172,26 @@ fn peer_refusal_before_mode(
 /// the ownership check for the session-naming arms: `dispatch` asks
 /// `SessionRegistry::session_scope` first, so this function never answers a
 /// question about a session the caller may not reach (§8b A1, H6).
+///
+/// The match below is closed over `ClientMessage` with no `_` arm: a new
+/// variant does not compile until it says whether it carries a mode, which is
+/// what keeps this gate from silently ignoring one. `SessionCreate` takes two
+/// arms because its `mode` is optional; `AgentMessageSend` takes its own arm
+/// because the session it names is its *target*, not a `session_id` field.
 fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> Option<&'static str> {
     match request {
+        // A create names its own kind and mode in the frame, and ACP mode ids
+        // are the agent's own: `peer_policy::mode_refusal` vets the pair.
         ClientMessage::SessionCreate {
             kind,
             mode: Some(mode),
             ..
         } => crate::peer_policy::mode_refusal(kind.clone(), mode),
+        // A create that names no mode has nothing to vet: one variant, two
+        // arms, because `Some(mode)` is a mode question and `None` is not.
+        ClientMessage::SessionCreate { mode: None, .. } => None,
+        // A set-mode asks to *switch* a session into a mode, so the session's
+        // kind decides whether this daemon lets a peer name that mode at all.
         ClientMessage::SessionSetMode {
             session_id,
             mode_id,
@@ -3180,16 +3200,79 @@ fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> Option<&'s
             .sessions
             .session_mode_guard(session_id)
             .and_then(|(kind, _)| crate::peer_policy::mode_refusal(kind, mode_id)),
+        // A send puts a prompt into a session, so the mode that session is in
+        // *now* is what decides.
         ClientMessage::SessionSend { session_id, .. }
-        | ClientMessage::SessionAttach { session_id, .. } => state
-            .sessions
-            .session_mode_guard(session_id)
-            .and_then(|(kind, mode)| {
-                mode.map(|mode| crate::peer_policy::prompt_skipping_mode(kind, &mode))
-            })
-            .and_then(|skipping| skipping.then_some(crate::peer_policy::PROMPT_SKIPPING_REFUSED)),
-        _ => None,
+        | ClientMessage::SessionAttach { session_id, .. } => {
+            prompt_into_session_refusal(state, session_id)
+        }
+        // An agent message is a send whose session is its *target*: the target
+        // receives the prompt, so the target is the session this gate vets,
+        // exactly as `SessionSend`'s own session is. Spelled out rather than
+        // folded into the arm above: it is the decision this slice adds.
+        ClientMessage::AgentMessageSend { to_session, .. } => {
+            prompt_into_session_refusal(state, to_session)
+        }
+        // Every other frame carries no mode, so this gate has no verdict for it
+        // — one arm per variant and no `_` arm, because a new `ClientMessage`
+        // variant is a decision here. A frame that names a session but no mode
+        // is the registry's business, not this gate's.
+        ClientMessage::Hello(_) => None,
+        ClientMessage::Ping { .. } => None,
+        ClientMessage::Status { .. } => None,
+        ClientMessage::DaemonDiagnostics { .. } => None,
+        ClientMessage::Shutdown { .. } => None,
+        ClientMessage::SessionDetach { .. } => None,
+        ClientMessage::SessionClaim { .. } => None,
+        ClientMessage::SessionClose { .. } => None,
+        ClientMessage::SessionStop { .. } => None,
+        ClientMessage::SessionResize { .. } => None,
+        ClientMessage::SessionInterrupt { .. } => None,
+        ClientMessage::SessionSetModel { .. } => None,
+        ClientMessage::SessionPermissionRespond { .. } => None,
+        ClientMessage::SessionReportAgent { .. } => None,
+        ClientMessage::SessionsList { .. } => None,
+        ClientMessage::SessionsWatch { .. } => None,
+        ClientMessage::SessionsUnwatch { .. } => None,
+        ClientMessage::SessionsPresence { .. } => None,
+        ClientMessage::SessionResume { .. } => None,
+        ClientMessage::JournalUsage { .. } => None,
+        ClientMessage::JournalRetentionGet { .. } => None,
+        ClientMessage::JournalRetentionSet { .. } => None,
+        ClientMessage::SessionDelete { .. } => None,
+        ClientMessage::ProjectsList { .. } => None,
+        ClientMessage::ProjectAdd { .. } => None,
+        ClientMessage::WorkspacesList { .. } => None,
+        ClientMessage::WorkspaceCreate { .. } => None,
+        ClientMessage::WorkspaceDelete { .. } => None,
+        ClientMessage::ProvidersList { .. } => None,
+        ClientMessage::ProvidersRefresh { .. } => None,
+        ClientMessage::ProviderUpdate { .. } => None,
+        ClientMessage::Invoke { .. } => None,
+        ClientMessage::DevicesList { .. } => None,
+        ClientMessage::PairingStart { .. } => None,
+        ClientMessage::PairingComplete { .. } => None,
+        ClientMessage::PairingConfirm { .. } => None,
+        ClientMessage::PeerRevoke { .. } => None,
+        ClientMessage::PeerSetCaps { .. } => None,
+        ClientMessage::ToolPolicyGet { .. } => None,
+        ClientMessage::ToolPolicySet { .. } => None,
     }
+}
+
+/// The §8b A4/A5 answer for a frame that puts a prompt into `session_id`: the
+/// mode that session is in *now* decides, and a session sitting in a mode that
+/// skips the permission prompt refuses the prompt. `None` when the daemon has
+/// no mode for the session yet, or does not know the session at all — an
+/// unknown id is the ownership path's answer, not this gate's.
+fn prompt_into_session_refusal(state: &ServerState, session_id: &str) -> Option<&'static str> {
+    state
+        .sessions
+        .session_mode_guard(session_id)
+        .and_then(|(kind, mode)| {
+            mode.map(|mode| crate::peer_policy::prompt_skipping_mode(kind, &mode))
+        })
+        .and_then(|skipping| skipping.then_some(crate::peer_policy::PROMPT_SKIPPING_REFUSED))
 }
 
 /// The frame a peer gets when §8b A4/A5/R3 refuses its mode choice. The label
@@ -3206,6 +3289,54 @@ fn mode_refused(id: Option<u64>, reason: &'static str) -> DaemonMessage {
         error = error.with_id(id);
     }
     DaemonMessage::Error(error)
+}
+
+/// A request a paired device was allowed to make, and that the session layer
+/// then refused as unauthorized, recorded like the gate's own denials.
+///
+/// The peer gate writes `ok` for an allowed state-changing request *before* the
+/// handler runs, so a refusal raised inside the handler would otherwise leave
+/// only "the capability opened it" in the trail. "This paired device asked to
+/// take a running turn away from an agent, and was refused" is exactly the event
+/// the trail exists for (S4-01) — and a receipt sent back to the device is not a
+/// trail.
+fn audit_peer_unauthorized(
+    state: &Arc<ServerState>,
+    conn: &ConnHandle,
+    action: &str,
+    session_id: Option<String>,
+    reply: &DaemonMessage,
+) {
+    let Some(ConnPeer::Remote {
+        device_id, role, ..
+    }) = &conn.conn_peer
+    else {
+        return;
+    };
+    let refused = match reply {
+        DaemonMessage::Error(error) => error.code == ErrorCode::Unauthorized,
+        // A2-07: the receipt that names a *denied* caller is what this audit row
+        // records. The daemon no longer answers `RejectedUnpaired` from this
+        // dispatch — an unpaired connection is refused at the peer gate, before
+        // any message is looked at — so the denial is this state and only this
+        // one.
+        DaemonMessage::AgentMessageReceipt {
+            state: AgentMessageState::RejectedDenied,
+            ..
+        } => true,
+        _ => false,
+    };
+    if !refused {
+        return;
+    }
+    state.audit(AuditRecord {
+        device_id: device_id.clone(),
+        role: role.as_str().to_string(),
+        claimed_origin: None,
+        action: action.to_string(),
+        session_id,
+        outcome: "denied".to_string(),
+    });
 }
 
 /// Audit one request that came from a remote peer.
@@ -3290,6 +3421,10 @@ fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionClose { session_id, .. }
         | ClientMessage::SessionStop { session_id, .. }
         | ClientMessage::SessionSend { session_id, .. }
+        | ClientMessage::AgentMessageSend {
+            to_session: session_id,
+            ..
+        }
         | ClientMessage::SessionResize { session_id, .. }
         | ClientMessage::SessionInterrupt { session_id, .. }
         | ClientMessage::SessionSetModel { session_id, .. }
@@ -3589,18 +3724,101 @@ fn dispatch_session(
             subscription_id,
             text,
             attachments,
+            active_turn_behavior,
             idempotency_key,
-        } => session_send(
-            state,
-            owner,
-            conn,
+        } => {
+            let reply = session_send(
+                state,
+                owner,
+                conn,
+                id,
+                session_id.clone(),
+                subscription_id,
+                text,
+                attachments,
+                active_turn_behavior,
+                idempotency_key,
+            );
+            audit_peer_unauthorized(state, conn, "SessionSend", Some(session_id), &reply);
+            reply
+        }
+        ClientMessage::AgentMessageSend {
             id,
-            session_id,
-            subscription_id,
+            from_session,
+            to_session,
             text,
-            attachments,
             idempotency_key,
-        ),
+        } => {
+            let fingerprint = format!("agent-message:{from_session}:{to_session}:{text}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            let reply = match state.sessions.agent_message_send(
+                &from_session,
+                &to_session,
+                &text,
+                owner,
+                conn,
+            ) {
+                Ok(()) => {
+                    let reply = DaemonMessage::AgentMessageReceipt {
+                        id,
+                        state: AgentMessageState::Accepted,
+                    };
+                    remember(
+                        state,
+                        owner,
+                        idempotency_key.as_deref(),
+                        &fingerprint,
+                        &reply,
+                    );
+                    reply
+                }
+                Err(error) if error.code == ErrorCode::SessionNotFound => {
+                    let reply = DaemonMessage::AgentMessageReceipt {
+                        id,
+                        state: AgentMessageState::RejectedAbsent,
+                    };
+                    remember(
+                        state,
+                        owner,
+                        idempotency_key.as_deref(),
+                        &fingerprint,
+                        &reply,
+                    );
+                    reply
+                }
+                Err(error) if error.code == ErrorCode::Unauthorized => {
+                    // A2-07: an `Unauthorized` that reaches this dispatch is a
+                    // *denied* caller, not an unpaired one. An unpaired
+                    // connection never gets this far — the peer gate refuses a
+                    // request the device's capability set does not open, before
+                    // anything looks at what the request would do — so what
+                    // arrives here is a paired device (or the person at this
+                    // machine) refused the message itself, and the receipt must
+                    // say that rather than blame the pairing.
+                    let reply = DaemonMessage::AgentMessageReceipt {
+                        id,
+                        state: AgentMessageState::RejectedDenied,
+                    };
+                    remember(
+                        state,
+                        owner,
+                        idempotency_key.as_deref(),
+                        &fingerprint,
+                        &reply,
+                    );
+                    reply
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            };
+            // A receipt is not a trail: a paired device refused this message is
+            // recorded like the gate's own denials (S4-01).
+            audit_peer_unauthorized(state, conn, "AgentMessageSend", Some(to_session), &reply);
+            reply
+        }
         ClientMessage::SessionResize {
             id,
             session_id,
@@ -3819,9 +4037,10 @@ fn session_send(
     subscription_id: u64,
     text: String,
     attachments: Vec<PromptAttachment>,
+    active_turn_behavior: Option<devboule_protocol::ActiveTurnBehavior>,
     idempotency_key: Option<String>,
 ) -> DaemonMessage {
-    let fingerprint = send_fingerprint(&session_id, &text, &attachments);
+    let fingerprint = send_fingerprint(&session_id, &text, &attachments, active_turn_behavior);
     if let Some(reply) = idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
     {
         return reply;
@@ -3834,13 +4053,14 @@ fn session_send(
     // `SendRequest`; it is called from here rather than the private
     // one-argument form, which would leave this wrapper dead in a non-test
     // build.
-    match state.sessions.send_with_subscription(
+    match state.sessions.send_with_subscription_behavior(
         &session_id,
         subscription_id,
         &text,
         &attachments,
         owner,
         conn,
+        active_turn_behavior,
     ) {
         Ok(()) => {
             let reply = DaemonMessage::Ok { id };
@@ -3869,8 +4089,16 @@ fn session_send(
 /// The digests are sha256 hex, not the encoded bytes. This string is stored
 /// beside every key the daemon has seen and must not weigh as much as the
 /// images it identifies.
-fn send_fingerprint(session_id: &str, text: &str, attachments: &[PromptAttachment]) -> String {
-    let mut fingerprint = format!("send:{session_id}:{}", attachments.len());
+fn send_fingerprint(
+    session_id: &str,
+    text: &str,
+    attachments: &[PromptAttachment],
+    active_turn_behavior: Option<devboule_protocol::ActiveTurnBehavior>,
+) -> String {
+    let mut fingerprint = format!(
+        "send:{session_id}:{}:{active_turn_behavior:?}",
+        attachments.len()
+    );
     for attachment in attachments {
         fingerprint.push(':');
         fingerprint.push_str(&crate::attachment_store::attachment_digest(attachment));
@@ -4101,8 +4329,18 @@ mod tests {
         // The defect this closes: with the text alone in the fingerprint, the
         // second send comes back as an idempotent replay of the first, so the
         // user swaps the picture, presses Generate, and gets the old answer.
-        let first = send_fingerprint("s.a.1", "draw this", &[wire_attachment("a.png", b"one")]);
-        let second = send_fingerprint("s.a.1", "draw this", &[wire_attachment("a.png", b"two")]);
+        let first = send_fingerprint(
+            "s.a.1",
+            "draw this",
+            &[wire_attachment("a.png", b"one")],
+            None,
+        );
+        let second = send_fingerprint(
+            "s.a.1",
+            "draw this",
+            &[wire_attachment("a.png", b"two")],
+            None,
+        );
         assert_ne!(first, second);
     }
 
@@ -4113,8 +4351,8 @@ mod tests {
             wire_attachment("b.png", b"two"),
         ];
         assert_eq!(
-            send_fingerprint("s.a.1", "draw this", &attachments),
-            send_fingerprint("s.a.1", "draw this", &attachments),
+            send_fingerprint("s.a.1", "draw this", &attachments, None),
+            send_fingerprint("s.a.1", "draw this", &attachments, None),
         );
     }
 
@@ -4123,8 +4361,8 @@ mod tests {
         let first = wire_attachment("a.png", b"one");
         let second = wire_attachment("b.png", b"two");
         assert_ne!(
-            send_fingerprint("s.a.1", "draw this", &[first.clone(), second.clone()]),
-            send_fingerprint("s.a.1", "draw this", &[second, first]),
+            send_fingerprint("s.a.1", "draw this", &[first.clone(), second.clone()], None),
+            send_fingerprint("s.a.1", "draw this", &[second, first], None),
         );
     }
 
@@ -4135,15 +4373,20 @@ mod tests {
         let attachment = wire_attachment("a.png", b"one");
         let digest = crate::attachment_store::attachment_digest(&attachment);
         assert_ne!(
-            send_fingerprint("s.a.1", &format!(":{digest}"), &[]),
-            send_fingerprint("s.a.1", "", &[attachment]),
+            send_fingerprint("s.a.1", &format!(":{digest}"), &[], None),
+            send_fingerprint("s.a.1", "", &[attachment], None),
         );
     }
 
     #[test]
     fn the_fingerprint_does_not_carry_the_encoded_bytes() {
         let attachment = wire_attachment("a.png", b"the png bytes");
-        let fingerprint = send_fingerprint("s.a.1", "draw this", std::slice::from_ref(&attachment));
+        let fingerprint = send_fingerprint(
+            "s.a.1",
+            "draw this",
+            std::slice::from_ref(&attachment),
+            None,
+        );
         assert!(!fingerprint.contains(&attachment.data));
         assert!(fingerprint.contains(&crate::attachment_store::attachment_digest(&attachment)));
     }
@@ -5875,6 +6118,7 @@ mod tests {
             subscription_id: 1,
             text: "hello".to_string(),
             attachments: Vec::new(),
+            active_turn_behavior: None,
             idempotency_key: None,
         };
 
@@ -5921,6 +6165,135 @@ mod tests {
             rows.len(),
             2,
             "the refusal, then the allowed send: {rows:?}"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// §8b A9/A11 for the agent-message frame: the capability that names the act
+    /// is the one that opens it, and `view` is not it.
+    #[test]
+    fn an_agent_message_from_a_view_only_peer_is_refused() {
+        let (path, state) = temp_state("peer-agent-message-caps");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let viewer = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW],
+        );
+        match dispatch(
+            &state,
+            &owner,
+            ClientMessage::AgentMessageSend {
+                id: 1,
+                from_session: "s.msg.source".to_string(),
+                to_session: "s.msg.target".to_string(),
+                text: "hello".to_string(),
+                idempotency_key: None,
+            },
+            &viewer,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("the gate answers")
+        {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.code, ErrorCode::CapabilityNotSupported, "{error:?}");
+                assert!(error.message.contains("send"), "{error:?}");
+            }
+            other => panic!("a view-only peer must not send an agent message: {other:?}"),
+        }
+        drop(state);
+        assert_eq!(audit_rows(&path), vec!["AgentMessageSend:denied"]);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// Every receipt state the frame can answer with, each produced by the path
+    /// that produces it: a delivered message, an unknown target, and a paired
+    /// device refused a message it may not send (A2-07).
+    ///
+    /// `RejectedUnpaired` stays in the enum but is no longer produced here: an
+    /// unpaired connection never reaches this dispatch — the peer gate refuses a
+    /// request the device's capability set does not open, before anything looks
+    /// at what the request would do — so a refusal that arrives as
+    /// `ErrorCode::Unauthorized` is a *denied* caller, not an unpaired one, and
+    /// the receipt says what happened rather than blaming the pairing.
+    #[test]
+    fn every_agent_message_receipt_state_is_produced() {
+        let (path, state) = temp_state("agent-message-receipts");
+        let owner = OwnerId::new("S-user-a", "test-client").expect("owner");
+        let peer = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
+        );
+        let local = ConnHandle::new(11);
+        crate::session::insert_test_live_agent_with_writer(
+            &state.sessions,
+            "s.msg.source",
+            owner.clone(),
+            SessionKind::Pi,
+            Box::new(std::io::sink()),
+        );
+        crate::session::insert_test_live_agent_with_writer(
+            &state.sessions,
+            "s.msg.target",
+            owner.clone(),
+            SessionKind::Pi,
+            Box::new(std::io::sink()),
+        );
+        // A session of the other account: the paired device may reach the
+        // target but not this source.
+        let other = OwnerId::new("S-user-b", "test-client").expect("owner");
+        crate::session::insert_test_live_agent(&state.sessions, "s.msg.foreign", other);
+
+        let receipt = |from: &str, to: &str, conn: &Arc<ConnHandle>| match dispatch(
+            &state,
+            &owner,
+            ClientMessage::AgentMessageSend {
+                id: 1,
+                from_session: from.to_string(),
+                to_session: to.to_string(),
+                text: "hello".to_string(),
+                idempotency_key: None,
+            },
+            conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("the gate answers")
+        {
+            DaemonMessage::AgentMessageReceipt {
+                state: receipt_state,
+                ..
+            } => Some(receipt_state),
+            other => panic!("expected a receipt, got {other:?}"),
+        };
+
+        assert_eq!(
+            receipt("s.msg.source", "s.msg.target", &local),
+            Some(AgentMessageState::Accepted),
+            "a live target takes the envelope"
+        );
+        assert_eq!(
+            receipt("s.msg.source", "s.none.1", &local),
+            Some(AgentMessageState::RejectedAbsent),
+            "an unknown target is the absence the receipt names"
+        );
+        assert_eq!(
+            receipt("s.msg.foreign", "s.msg.target", &peer),
+            Some(AgentMessageState::RejectedDenied),
+            "a paired device refused a source it may not reach"
+        );
+
+        drop(state);
+        let rows = audit_rows(&path);
+        assert!(
+            rows.contains(&"AgentMessageSend:denied".to_string()),
+            "the paired device's refusal is in the trail: {rows:?}"
         );
         let _ = std::fs::remove_dir_all(path);
     }
@@ -5975,6 +6348,59 @@ mod tests {
             audit_rows(&path),
             vec!["SessionCreate:prompt_skipping_refused"]
         );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// A4/A5/R3, the frame side of the same rule: which frames have a mode
+    /// question *at all*.
+    ///
+    /// The match in `peer_mode_refusal` is closed over `ClientMessage` with no
+    /// `_` arm, so the compiler is what proves every variant has an answer. What
+    /// this test adds is the frame list: `peer_policy`'s matrix carries one
+    /// sample per variant, pinned by `VARIANT_COUNT`, so walking it here asks
+    /// every frame the gate will ever see. A frame whose sample names no mode
+    /// must answer `None` — the gate has no verdict for a mode it does not name
+    /// — and the samples that do name one are pinned as a list, so the two sides
+    /// cannot swap silently.
+    ///
+    /// `SessionCreate`'s pinned sample carries `mode: None`, so it lands on the
+    /// mode-free side here; its other flavour is the existing test's subject,
+    /// which asserts the refusal for a named prompt-skipping mode.
+    #[test]
+    fn only_a_frame_that_names_a_mode_is_vetted_for_one() {
+        let (path, state) = temp_state("peer-mode-sides");
+        let mut vetted: Vec<&'static str> = Vec::new();
+        for frame in crate::peer_policy::tests::matrix_samples() {
+            let names_a_mode = matches!(
+                &frame,
+                ClientMessage::SessionCreate { mode: Some(_), .. }
+                    | ClientMessage::SessionSetMode { .. }
+                    | ClientMessage::SessionSend { .. }
+                    | ClientMessage::SessionAttach { .. }
+                    | ClientMessage::AgentMessageSend { .. }
+            );
+            if names_a_mode {
+                vetted.push(frame.name());
+                continue;
+            }
+            assert_eq!(
+                peer_mode_refusal(&state, &frame),
+                None,
+                "{} carries no mode, so this gate has no verdict for it",
+                frame.name()
+            );
+        }
+        assert_eq!(
+            vetted,
+            vec![
+                "SessionAttach",
+                "SessionSend",
+                "AgentMessageSend",
+                "SessionSetMode"
+            ],
+            "the frames whose pinned sample names a mode, in `name()` order"
+        );
+        drop(state);
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -6057,7 +6483,22 @@ mod tests {
                     subscription_id: 1,
                     text: "hello".to_string(),
                     attachments: Vec::new(),
+                    active_turn_behavior: None,
                     idempotency_key: None,
+                }
+            ),
+            None
+        );
+        // The same holds for a mode: an unknown session is still not this
+        // function's verdict, even when the mode named is one §8b A5 refuses
+        // for a session the daemon does know.
+        assert_eq!(
+            peer_mode_refusal(
+                &state,
+                &ClientMessage::SessionSetMode {
+                    id: 3,
+                    session_id: "s.nobody.1".to_string(),
+                    mode_id: "bypassPermissions".to_string(),
                 }
             ),
             None
@@ -6188,6 +6629,7 @@ mod tests {
             subscription_id: 1,
             text: "hello".to_string(),
             attachments,
+            active_turn_behavior: None,
             idempotency_key: None,
         };
         let dispatch_send = |attachments: Vec<PromptAttachment>, conn: &Arc<ConnHandle>| {
@@ -6448,6 +6890,7 @@ mod tests {
                     subscription_id: 1,
                     text: "hi".to_string(),
                     attachments: Vec::new(),
+                    active_turn_behavior: None,
                     idempotency_key: None,
                 },
                 ClientMessage::SessionSetMode {
@@ -6510,6 +6953,7 @@ mod tests {
                 subscription_id: 1,
                 text: text.to_string(),
                 attachments,
+                active_turn_behavior: None,
                 idempotency_key: Some("retry-me".to_string()),
             };
         let message = |request: ClientMessage, conn: &Arc<ConnHandle>| match dispatch(

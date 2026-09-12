@@ -113,6 +113,22 @@ pub(crate) struct SessionRuntime {
     pub(crate) coalesced_bytes: AtomicU64,
     pub(crate) coalesced_frames: AtomicU64,
     pub(crate) journal_replays: AtomicU64,
+    turn_counter: AtomicU64,
+    turn_active: AtomicBool,
+    /// The turn-hold: taken by a `Steer`'s admission (`with_active_turn`),
+    /// by `begin_turn`, and by the `AgentFinished` transition (`finish_turn`).
+    /// Holding it across the provider write is what makes steer admission
+    /// atomic, so a turn cannot end between the check that admits a steer and
+    /// the write that delivers it (S4-02). A plain `Mutex<()>`: the guarded
+    /// value is nothing, so a lock poisoned by a panic cannot leave state
+    /// behind that a later lock would have to distrust.
+    turn_hold: Mutex<()>,
+    /// One-shot callbacks fired when a turn ends on this runtime. The
+    /// inter-agent message brakes register here so an in-flight message slot
+    /// is released at the boundary that ends it, not on some later probe of a
+    /// counter.
+    turn_end_hooks: Mutex<Vec<TurnEndHook>>,
+    next_turn_end_hook: AtomicU64,
     pub(crate) reader_finished: AtomicBool,
     pub(crate) child_reaped: AtomicBool,
     /// Transition notifications are suppressed until spawn has inserted all
@@ -280,6 +296,37 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
     }
 }
 
+/// One-shot callback registered on a runtime for the end of one of its turns.
+struct TurnEndHook {
+    id: u64,
+    callback: Box<dyn Fn() + Send + Sync>,
+}
+
+/// The proof that a steer's admission was atomic, handed to the provider
+/// adapter while the turn-hold is held.
+///
+/// The hold is the same lock the `AgentFinished` transition and `begin_turn`
+/// take, so neither a turn ending nor a new turn starting can slip between
+/// `with_active_turn`'s check and the provider write that follows it (S4-02).
+pub(crate) struct TurnToken<'a> {
+    hold: Option<MutexGuard<'a, ()>>,
+}
+
+impl TurnToken<'_> {
+    /// Run the provider write under the hold, then release it.
+    ///
+    /// A provider whose command is a round-trip splits here: the write must
+    /// stay under the hold — that is what makes the admission atomic — while
+    /// the wait for the answer must not. The answer is delivered by the reader
+    /// thread that also publishes `AgentFinished`, so holding the hold across
+    /// that wait would block the very thread the answer has to come from.
+    pub(crate) fn write_then_release<R>(&mut self, write: impl FnOnce() -> R) -> R {
+        let result = write();
+        self.hold = None;
+        result
+    }
+}
+
 impl SessionRuntime {
     #[cfg(test)]
     pub(crate) fn new() -> Self {
@@ -326,6 +373,11 @@ impl SessionRuntime {
             coalesced_bytes: AtomicU64::new(0),
             coalesced_frames: AtomicU64::new(0),
             journal_replays: AtomicU64::new(0),
+            turn_counter: AtomicU64::new(0),
+            turn_active: AtomicBool::new(false),
+            turn_hold: Mutex::new(()),
+            turn_end_hooks: Mutex::new(Vec::new()),
+            next_turn_end_hook: AtomicU64::new(1),
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
             transition_ready: AtomicBool::new(false),
@@ -591,6 +643,7 @@ impl SessionRuntime {
                 }
                 SessionEvent::AgentMessage { .. }
                 | SessionEvent::AgentUserMessage { .. }
+                | SessionEvent::Steered { .. }
                 | SessionEvent::AgentThought { .. }
                 | SessionEvent::AvailableCommands { .. }
                 | SessionEvent::AgentToolCall { .. }
@@ -972,15 +1025,24 @@ impl SessionRuntime {
     /// Publish a daemon-owned agent event as an AgentReport row rather than an
     /// ACP envelope. Provider echo envelopes remain replayable for history
     /// written before the echo was suppressed.
-    pub(crate) fn publish_agent_user_message(&self, text: String) -> bool {
+    pub(crate) fn publish_agent_user_message(&self, text: String) -> Option<String> {
+        // The id is built by the publisher, so the event, the transcript and the
+        // journal row that links to it (`Steered`) name one message: the caller
+        // takes the id back out of the event that was actually published rather
+        // than inventing a second one (A2-10).
         self.publish_journaled_agent_event(|generation, seq| SessionEvent::AgentUserMessage {
             message_id: Some(format!("devboule-user-{generation}-{seq}")),
             text,
+        })
+        .and_then(|event| match event {
+            SessionEvent::AgentUserMessage { message_id, .. } => message_id,
+            _ => None,
         })
     }
 
     pub(crate) fn publish_agent_error(&self, message: String) -> bool {
         self.publish_journaled_agent_event(|_, _| SessionEvent::AgentError { message })
+            .is_some()
     }
 
     pub(crate) fn publish_session_notice(&self, text: String, severity: NoticeSeverity) -> bool {
@@ -1022,17 +1084,24 @@ impl SessionRuntime {
         true
     }
 
-    fn publish_journaled_agent_event<F>(&self, build: F) -> bool
+    /// Publish one daemon-owned event and journal it as an AgentReport row.
+    ///
+    /// `Some(event)` is the event exactly as published — the caller needs the
+    /// `message_id` it carries, so the same id can be written into the row that
+    /// links to it (A2-10). `None` means the stream refused it (closed, or the
+    /// lock is gone), which callers report as a degraded session and never as an
+    /// error.
+    fn publish_journaled_agent_event<F>(&self, build: F) -> Option<SessionEvent>
     where
         F: FnOnce(u64, u64) -> SessionEvent,
     {
         let (event, generation, seq, was_silent) = {
             let Ok(mut stream) = self.lock_stream() else {
-                // A false result means the stream cannot accept the event.
-                return false;
+                // `None` means the stream cannot accept the event.
+                return None;
             };
             if stream.output_closed {
-                return false;
+                return None;
             }
             let was_silent = matches!(stream.disposition, Disposition::Silent);
             if !stream.process_exited {
@@ -1071,6 +1140,180 @@ impl SessionRuntime {
             self.notify_roster();
         }
         self.raise_attention_for_event(&event);
+        Some(event)
+    }
+
+    /// Start a turn. Taken under the turn-hold so a steer's admission cannot
+    /// observe "a turn is running" before the provider has the prompt that
+    /// starts it.
+    pub(crate) fn begin_turn(&self) {
+        let _hold = self.lock_turn_hold();
+        self.turn_active.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn turn_counter(&self) -> u64 {
+        self.turn_counter.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_turn_active(&self, expected_turn_id: u64) -> bool {
+        self.turn_active.load(Ordering::Acquire)
+            && self.turn_counter() == expected_turn_id
+            && !self.process_exited()
+    }
+
+    /// The turn-hold. A poisoned lock is recovered rather than propagated: the
+    /// guarded value is `()`, so nothing a panic could have left half-written
+    /// is behind it, and refusing to lock would freeze every later turn
+    /// transition on this session.
+    fn lock_turn_hold(&self) -> MutexGuard<'_, ()> {
+        self.turn_hold
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Compare-and-deliver: run `deliver` with a [`TurnToken`] only while this
+    /// runtime's turn is the one `expected_turn_id` names, holding the same
+    /// lock `finish_turn` and `begin_turn` take for as long as `deliver` runs
+    /// (unless the adapter releases it through `TurnToken::write_then_release`
+    /// once its write is done).
+    ///
+    /// `None` means the turn was over — or the process already gone — at the
+    /// moment of admission, so nothing may be written for it (S4-02).
+    pub(crate) fn with_active_turn<T>(
+        &self,
+        expected_turn_id: u64,
+        deliver: impl FnOnce(&mut TurnToken<'_>) -> T,
+    ) -> Option<T> {
+        let mut token = TurnToken {
+            hold: Some(self.lock_turn_hold()),
+        };
+        if !self.is_turn_active(expected_turn_id) {
+            return None;
+        }
+        Some(deliver(&mut token))
+    }
+
+    /// End the turn if one is running, advancing the turn counter. The
+    /// transition takes the turn-hold, so a steer admitted for this turn has
+    /// already issued its write by the time the counter moves (S4-02). The
+    /// hooks run after the hold is released: they take other locks, and this
+    /// is the reader thread.
+    fn finish_turn(&self) {
+        let ended = {
+            let _hold = self.lock_turn_hold();
+            if self.turn_active.swap(false, Ordering::AcqRel) {
+                self.turn_counter.fetch_add(1, Ordering::AcqRel);
+                true
+            } else {
+                false
+            }
+        };
+        if ended {
+            self.fire_turn_end_hooks();
+        }
+    }
+
+    /// Register a one-shot callback for the end of this runtime's next turn.
+    /// The inter-agent message brakes register here, so an in-flight slot is
+    /// released at the boundary that ends it. Returns the id `off_turn_end`
+    /// needs to forget a hook whose slot expired before any turn ended.
+    pub(crate) fn on_turn_end(&self, callback: impl Fn() + Send + Sync + 'static) -> u64 {
+        let id = self.next_turn_end_hook.fetch_add(1, Ordering::AcqRel);
+        if let Ok(mut hooks) = self.turn_end_hooks.lock() {
+            hooks.push(TurnEndHook {
+                id,
+                callback: Box::new(callback),
+            });
+        }
+        id
+    }
+
+    /// Forget a hook that never fired, so the target's list cannot outgrow the
+    /// slots that are still waiting for a boundary.
+    pub(crate) fn off_turn_end(&self, id: u64) {
+        if let Ok(mut hooks) = self.turn_end_hooks.lock() {
+            hooks.retain(|hook| hook.id != id);
+        }
+    }
+
+    /// Register a one-shot callback for the end of the turn `expected_turn_id`
+    /// names, but only while that turn is still the running one (S4-03).
+    ///
+    /// The check and the registration are one critical section under the same
+    /// lock `finish_turn` takes, so a turn that ends between a caller's earlier
+    /// look and this call is *observed* here instead of raced past: `None` is the
+    /// answer the caller must use to decide that there is no turn to join — so
+    /// the message goes as a plain prompt — and that the slot it is admitting has
+    /// no boundary to be released on.
+    pub(crate) fn on_turn_end_if_active(
+        &self,
+        expected_turn_id: u64,
+        callback: impl Fn() + Send + Sync + 'static,
+    ) -> Option<u64> {
+        let _hold = self.lock_turn_hold();
+        if !self.is_turn_active(expected_turn_id) {
+            return None;
+        }
+        Some(self.on_turn_end(callback))
+    }
+
+    /// How many boundary hooks are armed on this runtime right now (S4-02).
+    /// Test-only: a hook that is never unregistered is invisible from outside.
+    #[cfg(test)]
+    pub(crate) fn turn_end_hook_count(&self) -> usize {
+        self.turn_end_hooks
+            .lock()
+            .map(|hooks| hooks.len())
+            .unwrap_or(0)
+    }
+
+    fn fire_turn_end_hooks(&self) {
+        // Drained under this lock and called outside it: a hook takes the
+        // registry's message-brake lock, and holding this list across that
+        // would order two locks the messaging path does not order.
+        let hooks = match self.turn_end_hooks.lock() {
+            Ok(mut hooks) => std::mem::take(&mut *hooks),
+            Err(_) => return,
+        };
+        for hook in hooks {
+            (hook.callback)();
+        }
+    }
+
+    /// Journal one accepted steer as the `Steered` audit row (S4-12).
+    ///
+    /// `message_id` is the id of the `AgentUserMessage` echo this steer also
+    /// published — the *same* id, so a reader can pair the transcript message
+    /// with the journal row that recorded the steer (A2-10). It is `None` only
+    /// when there was no echo to point at (the stream refused it), never a fresh
+    /// id invented here: an id that names nothing would be worse than no id.
+    pub(crate) fn journal_steered(&self, message_id: Option<String>, text: String) -> bool {
+        let (event, generation, seq) = {
+            let Ok(mut stream) = self.lock_stream() else {
+                return false;
+            };
+            if stream.output_closed {
+                return false;
+            }
+            let generation = stream.generation;
+            let seq = stream.next_seq;
+            stream.next_seq = stream.next_seq.saturating_add(1);
+            stream.last_publish = Some(Instant::now());
+            (SessionEvent::Steered { message_id, text }, generation, seq)
+        };
+        if let Some(journal) = &self.journal {
+            if let Some(record) = crate::journal::agent_report_record(
+                self.session_id.clone(),
+                generation,
+                seq,
+                &event,
+            ) {
+                let accepted = journal.try_append(record);
+                if !accepted || journal.is_session_degraded(&self.session_id) {
+                    self.mark_journal_degraded();
+                }
+            }
+        }
         true
     }
 
@@ -1140,6 +1383,9 @@ impl SessionRuntime {
             self.notify_roster();
         }
         self.raise_attention_for_event(&event);
+        if matches!(&event, SessionEvent::AgentFinished { .. }) {
+            self.finish_turn();
+        }
         was_silent
     }
 
@@ -1700,6 +1946,7 @@ impl SessionRuntime {
                 | SessionEvent::Snapshot { .. }
                 | SessionEvent::AgentMessage { .. }
                 | SessionEvent::AgentUserMessage { .. }
+                | SessionEvent::Steered { .. }
                 | SessionEvent::AgentThought { .. }
                 | SessionEvent::AvailableCommands { .. }
                 | SessionEvent::AgentToolCall { .. }
@@ -2399,6 +2646,18 @@ mod tests {
         );
         assert_eq!(returned_modes.as_ref(), Some(&modes));
         assert_eq!(runtime.session_manifest(), Some(returned));
+    }
+
+    #[test]
+    fn turn_activity_uses_a_generation_token_and_clears_on_finish() {
+        let runtime = SessionRuntime::new();
+        assert!(!runtime.is_turn_active(0));
+        runtime.begin_turn();
+        let turn = runtime.turn_counter();
+        assert!(runtime.is_turn_active(turn));
+        runtime.finish_turn();
+        assert!(!runtime.is_turn_active(turn));
+        assert_ne!(runtime.turn_counter(), turn);
     }
 
     #[test]

@@ -24,7 +24,7 @@ use super::permission_broker::{PermissionBroker, PermissionSender};
 use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
-    SpawnedSession, StderrSource, StdioWaitableChild,
+    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
 };
 use crate::acp_view::PromptCapabilityState;
 use crate::atomic::atomic_write;
@@ -937,6 +937,52 @@ fn pi_prompt_frame(id: &str, text: &str, images: &[super::AcpImageBlock]) -> ser
     frame
 }
 
+/// The fields of one Pi steer frame: the text, and the literal empty `images`
+/// array Pi's own `steer(text, images)` sends. Deliberately unlike
+/// `pi_prompt_frame`, which omits `images` when it carries none. The `id` and
+/// the `type` come from [`pi_control_frame`], built with the id the round-trip
+/// registered.
+fn pi_steer_fields(text: &str) -> serde_json::Value {
+    serde_json::json!({"text": text, "images": []})
+}
+
+/// One Pi control frame: the id the response will name, the command, then the
+/// fields that command carries, in that order.
+fn pi_control_frame(id: &str, command: &str, fields: serde_json::Value) -> serde_json::Value {
+    let mut frame = serde_json::json!({"id": id, "type": command});
+    if let Some(object) = fields.as_object() {
+        frame
+            .as_object_mut()
+            .expect("control frame is an object")
+            .extend(object.clone());
+    }
+    frame
+}
+
+/// A steer Pi will not take is `Ok(false)`, not a failure: a Pi whose build has
+/// no such command answers `success: false` with `Unknown command: steer`, and
+/// the caller's job then is the pre-existing fallback, not an error. Everything
+/// else — a timeout, a broken pipe, a rejection this code does not recognise —
+/// stays an `Err`: the honest answer is that the steer's fate is unknown.
+fn map_pi_steer_error(error: WireError) -> Result<bool, WireError> {
+    // Case-insensitive on purpose (A2-11): a provider build may spell the
+    // refusal `Unknown command: steer` or `unknown command: steer`, and the two
+    // mean the same thing — this build has no such command, so the caller's
+    // pre-existing fallback is the answer, not an error. The comparison
+    // lowercases the message into an owned `String`; the `WireError` is moved
+    // into the `Err` arm unchanged, so the message a caller sees is the
+    // provider's own spelling.
+    if error
+        .message
+        .to_ascii_lowercase()
+        .contains("unknown command")
+    {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
 /// Prompt plan for one Pi send: the text plus any image entries. The
 /// capability rule is Paseo's `piModelSupportsImageInput` — `image` in the
 /// current model's `input` — read through the tri-state this daemon already
@@ -1240,26 +1286,43 @@ impl PiControl {
         }
     }
 
-    fn request(&self, command: &str, fields: Value) -> Result<Value, WireError> {
+    /// Register the pending sender and write one command, answering the id the
+    /// response will name and the channel that response arrives on.
+    ///
+    /// Split from the wait so a caller that must hold a lock across the *write*
+    /// — a steer, admitted under the runtime's turn-hold — does not hold it
+    /// across the answer: the answer is delivered by the reader thread, which a
+    /// lock held across the wait would block on the very response it has to
+    /// deliver.
+    fn begin(
+        &self,
+        command: &str,
+        fields: Value,
+    ) -> Result<(String, mpsc::Receiver<Result<Value, String>>), WireError> {
         let id = format!("c-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = mpsc::channel();
         self.pending
             .lock()
             .map_err(|_| WireError::new(ErrorCode::Io, "Pi control map is unavailable."))?
             .insert(id.clone(), tx);
-        let mut frame = serde_json::json!({"id": id, "type": command});
-        if let Some(object) = fields.as_object() {
-            frame
-                .as_object_mut()
-                .expect("control frame is an object")
-                .extend(object.clone());
-        }
+        let frame = pi_control_frame(&id, command, fields);
         if let Err(error) = send_json(&self.stdin, &frame, "Pi") {
             let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
             return Err(error);
         }
-        let response = rx.recv_timeout(RESPONSE_TIMEOUT).map_err(|error| {
-            let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
+        Ok((id, rx))
+    }
+
+    /// Wait for the response one command is answered with, refusing a
+    /// `success: false` the way the control protocol spells a rejection.
+    fn await_response(
+        &self,
+        command: &str,
+        id: &str,
+        response: mpsc::Receiver<Result<Value, String>>,
+    ) -> Result<Value, WireError> {
+        let response = response.recv_timeout(RESPONSE_TIMEOUT).map_err(|error| {
+            let _ = self.pending.lock().map(|mut pending| pending.remove(id));
             WireError::new(
                 ErrorCode::Io,
                 format!("Pi {command} response timed out: {error}"),
@@ -1281,6 +1344,11 @@ impl PiControl {
         Ok(response)
     }
 
+    fn request(&self, command: &str, fields: Value) -> Result<Value, WireError> {
+        let (id, response) = self.begin(command, fields)?;
+        self.await_response(command, &id, response)
+    }
+
     fn deliver(&self, value: &Value) -> bool {
         let Some(id) = value.get("id").and_then(Value::as_str) else {
             return false;
@@ -1292,6 +1360,25 @@ impl PiControl {
             .and_then(|mut pending| pending.remove(id));
         sender.is_some_and(|sender| sender.send(Ok(value.clone())).is_ok())
     }
+
+    /// Wake every waiter still registered with the reason the control channel
+    /// ended (A2-02).
+    ///
+    /// A response can no longer arrive for any of them — the child's output is
+    /// what delivers responses, and it is over — so a waiter left registered
+    /// would sit out its whole timeout for an answer that cannot come. The map
+    /// is drained under its lock and each sender is answered outside it.
+    fn fail_pending(&self, message: &str) {
+        let Ok(mut pending) = self.pending.lock() else {
+            return;
+        };
+        let waiters: Vec<Sender<Result<Value, String>>> =
+            pending.drain().map(|(_, sender)| sender).collect();
+        drop(pending);
+        for sender in waiters {
+            let _ = sender.send(Err(message.to_string()));
+        }
+    }
 }
 
 struct PiSwitcher {
@@ -1299,6 +1386,37 @@ struct PiSwitcher {
     catalog: Arc<Mutex<PiCatalog>>,
     mode_id: Arc<Mutex<String>>,
     permission_extension_active: Arc<AtomicBool>,
+}
+
+struct PiSteerer {
+    control: Arc<PiControl>,
+}
+
+impl SessionSteerer for PiSteerer {
+    fn steer_active_turn(
+        &mut self,
+        text: &str,
+        turn: &mut TurnToken<'_>,
+    ) -> Result<bool, WireError> {
+        // The steer goes through the id-correlated round-trip rather than a
+        // bare write (S4-01 of the provider fix): a write only says the bytes
+        // reached the pipe, and Pi's `success: false` response would then be
+        // dropped as an unclaimed frame while the daemon recorded a steer Pi
+        // never took. The write itself stays under the caller's turn-hold; the
+        // wait does not, because the reader thread delivers the response.
+        let (id, response) =
+            turn.write_then_release(|| self.control.begin("steer", pi_steer_fields(text)))?;
+        self.control
+            .await_response("steer", &id, response)
+            .map(|_response| true)
+            .or_else(map_pi_steer_error)
+    }
+
+    fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
+        Box::new(Self {
+            control: Arc::clone(&self.control),
+        })
+    }
 }
 
 impl ModelSwitcher for PiSwitcher {
@@ -1454,6 +1572,12 @@ impl ModelSwitcher for PiSwitcher {
             catalog: Arc::clone(&self.catalog),
             mode_id: Arc::clone(&self.mode_id),
             permission_extension_active: Arc::clone(&self.permission_extension_active),
+        })
+    }
+
+    fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
+        Box::new(PiSteerer {
+            control: Arc::clone(&self.control),
         })
     }
 }
@@ -1811,6 +1935,12 @@ impl ReaderDispatch for PiReader {
     }
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
+        // The child's output is over, so the control channel is: every waiter
+        // still holding a response channel is answered here with what that end
+        // means (A2-02), rather than being left to time out on a reply the
+        // reader can no longer deliver.
+        self.control
+            .fail_pending("Pi control channel closed before the response arrived.");
         self.permission_broker.close();
         if !self.buffer.is_empty() {
             self.publish(
@@ -1966,19 +2096,26 @@ impl StderrSource for PiStderr {
 mod tests {
     use super::{
         carried_pi_mime_types, is_ready_notify, perform_handshake, permission_extension_path,
-        permission_request_from_ui, pi_delivery, pi_image_entry, pi_permission_sender,
-        pi_prompt_frame, plan_pi_prompt, spawn_args, thinking_level_allowed,
-        write_permission_extension, PiCatalog, PiControl, PiStaticPrompt, PiStdout, PiSwitcher,
+        permission_request_from_ui, pi_control_frame, pi_delivery, pi_image_entry,
+        pi_permission_sender, pi_prompt_frame, pi_steer_fields, plan_pi_prompt, spawn_args,
+        thinking_level_allowed, write_permission_extension, PiCatalog, PiControl, PiReader,
+        PiStaticPrompt, PiStdout, PiSteerer, PiSwitcher,
     };
     use crate::acp_view::PromptCapabilityState;
     use crate::attachment_store::AttachmentStore;
     use crate::pi_view::events_from_line;
     use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
-    use crate::session::{ModelSwitcher, PtyCommand, ReaderDispatch, StaticImageSink};
+    use crate::session::{
+        ModelSwitcher, PtyCommand, ReaderDispatch, SessionRuntime, StaticImageSink,
+    };
+    // The shared admission helper (A2-03): one place, so the Pi and the Codex
+    // steer tests exercise the same token `with_active_turn` hands out.
+    use crate::test_support::steer_through_the_turn;
     use devboule_protocol::{PromptAttachment, SessionEvent};
     use std::collections::HashMap;
     use std::io::BufRead;
     use std::path::Path;
+    use std::process::ChildStdin;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -2066,6 +2203,12 @@ mod tests {
 
     #[test]
     fn handshake_does_not_require_the_ready_signal() {
+        // A2-13: the suite skips without `node` instead of turning a machine
+        // that lacks it into a red build.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
         let mut child = node_command()
             .args(["-e", "setTimeout(() => {}, 10000)"])
             .stdin(std::process::Stdio::piped())
@@ -2218,6 +2361,11 @@ mod tests {
 
     #[test]
     fn pi_auto_answer_failure_still_denies_the_extension_confirm() {
+        // A2-13: a machine without `node` skips this rather than failing it.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
         let mut child = node_command()
             .args([
                 "-e",
@@ -2288,6 +2436,11 @@ mod tests {
 
     #[test]
     fn permission_extension_prompts_unknown_tools_and_allows_confirmed_tools() {
+        // A2-13: a machine without `node` skips this rather than failing it.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
         let path = std::env::temp_dir().join(format!(
             "devboule-pi-permission-test-{}.mjs",
             std::process::id()
@@ -2671,6 +2824,349 @@ mod tests {
         assert_eq!(
             pi_prompt_frame("p-test", "describe this", &[]),
             serde_json::json!({"id": "p-test", "type": "prompt", "message": "describe this"})
+        );
+    }
+
+    #[test]
+    fn pi_steer_frame_is_byte_exact_and_has_literal_empty_images() {
+        // The frame `request` writes for a steer: the id it mints, the command,
+        // then the fields — with the literal empty `images` array Pi's own
+        // `steer(text, images)` sends, deliberately unlike `pi_prompt_frame`,
+        // which omits `images` when it carries none.
+        assert_eq!(
+            serde_json::to_vec(&pi_control_frame("c-1", "steer", pi_steer_fields("hello")))
+                .expect("frame"),
+            br#"{"id":"c-1","type":"steer","text":"hello","images":[]}"#
+        );
+        assert!(pi_prompt_frame("p-test", "hello", &[])
+            .get("images")
+            .is_none());
+    }
+
+    /// A fake Pi that answers every control frame with a response naming the
+    /// frame's own id, echoing the raw line it read. Pi answers commands this
+    /// way; what differs between builds is `success` and the error it spells.
+    fn fake_pi(
+        script: &str,
+    ) -> (
+        std::process::Child,
+        Arc<Mutex<Option<ChildStdin>>>,
+        std::io::BufReader<std::process::ChildStdout>,
+    ) {
+        let mut child = node_command()
+            .args(["-e", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| {
+                panic!("{}", node_unavailable("Pi steer round-trip test", &error))
+            });
+        let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+        let stdout = std::io::BufReader::new(child.stdout.take().expect("stdout"));
+        (child, stdin, stdout)
+    }
+
+    /// A Pi whose build has no `steer` command, as its control protocol
+    /// answers one.
+    const FAKE_PI_UNKNOWN_STEER: &str = r#"
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    process.stdout.write(
+      JSON.stringify({
+        id: frame.id,
+        type: "response",
+        success: false,
+        error: "Unknown command: steer",
+        received: line,
+      }) + "\n"
+    );
+  }
+});
+"#;
+
+    /// A Pi that takes the steer, and echoes the frame it took.
+    const FAKE_PI_STEERS: &str = r#"
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    process.stdout.write(
+      JSON.stringify({
+        id: frame.id,
+        type: "response",
+        success: true,
+        received: line,
+      }) + "\n"
+    );
+  }
+});
+"#;
+
+    /// The pieces one round-trip test drives.
+    struct AnsweringPi {
+        child: std::process::Child,
+        control: Arc<PiControl>,
+        answers: Arc<Mutex<Vec<serde_json::Value>>>,
+        reader: std::thread::JoinHandle<()>,
+    }
+
+    impl AnsweringPi {
+        /// Stop the fake Pi, join its reader, and hand back what that reader
+        /// read: each answer, in arrival order.
+        fn answers(mut self) -> Vec<serde_json::Value> {
+            let answers = self.answers.lock().expect("answers").clone();
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = self.reader.join();
+            answers
+        }
+    }
+
+    /// A fake Pi whose answers are delivered the way the real client delivers
+    /// them: a reader thread turns each stdout line into a pending response, so
+    /// the round-trip is correlated by id instead of timing out. Answers are
+    /// recorded before delivery, so a test can assert on them the moment the
+    /// steer returns.
+    fn fake_pi_answering(script: &str) -> AnsweringPi {
+        let (child, stdin, stdout) = fake_pi(script);
+        let control = Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1))));
+        let answers = Arc::new(Mutex::new(Vec::new()));
+        let reader_control = Arc::clone(&control);
+        let reader_answers = Arc::clone(&answers);
+        let reader = std::thread::spawn(move || {
+            let mut stdout = stdout;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match std::io::BufRead::read_line(&mut stdout, &mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {}
+                }
+                let Ok(answer) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if let Ok(mut answers) = reader_answers.lock() {
+                    answers.push(answer.clone());
+                }
+                let _ = reader_control.deliver(&answer);
+            }
+        });
+        AnsweringPi {
+            child,
+            control,
+            answers,
+            reader,
+        }
+    }
+
+    /// A reader with no child behind it, for the tests that drive the reader's
+    /// own ends — the end of the control channel and the id-correlated delivery
+    /// — rather than a spawned program. The extension path is empty, so nothing
+    /// on disk is touched.
+    fn reader_with_control(control: Arc<PiControl>) -> PiReader {
+        let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+        PiReader::new(
+            Vec::new(),
+            SessionEvent::SessionManifest {
+                provider_id: Some("pi".to_string()),
+                current_model_id: None,
+                models: Vec::new(),
+                modes: None,
+            },
+            super::PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(AtomicU64::new(1)),
+            control,
+            stdin,
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+    }
+
+    #[test]
+    fn the_control_channel_ending_wakes_every_waiter() {
+        // A2-02: the reader thread is what delivers answers, so when the child's
+        // output ends no answer can arrive for anyone still waiting. Left
+        // registered, each waiter would sit out the whole response timeout for a
+        // reply the reader can no longer deliver — the steer's own timeout is
+        // fifteen seconds of that.
+        let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+        let control = Arc::new(PiControl::new(
+            Arc::clone(&stdin),
+            Arc::new(AtomicU64::new(1)),
+        ));
+        let response = {
+            // Registered exactly as `begin` registers one, without a child to
+            // write to: what this pins is the wait.
+            let (sender, receiver) = std::sync::mpsc::channel();
+            control
+                .pending
+                .lock()
+                .expect("pending")
+                .insert("c-1".to_string(), sender);
+            receiver
+        };
+        let mut reader = reader_with_control(Arc::clone(&control));
+        let runtime = Arc::new(SessionRuntime::new());
+
+        reader.finish(&runtime);
+
+        let answer = response
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the waiter is woken by the end of the channel");
+        let message = answer.expect_err("no answer can arrive: the channel is over");
+        assert!(message.contains("control channel"), "{message}");
+        assert!(
+            control.pending.lock().expect("pending").is_empty(),
+            "and the table is left with no waiter to wake twice"
+        );
+    }
+
+    #[test]
+    fn a_control_response_for_an_id_nobody_waits_for_is_ignored() {
+        // A2-02: the id space carries answers that are not this control's — to
+        // commands no waiter registered, and to requests whose waiter already
+        // timed out. An unknown id is nothing to deliver, not an error and not a
+        // panic, and it must not disturb the waiter that *is* registered.
+        let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+        let control = PiControl::new(Arc::clone(&stdin), Arc::new(AtomicU64::new(1)));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        control
+            .pending
+            .lock()
+            .expect("pending")
+            .insert("c-1".to_string(), sender);
+
+        assert!(
+            !control.deliver(&serde_json::json!({
+                "id": "c-404",
+                "type": "response",
+                "success": true,
+            })),
+            "no waiter holds that id"
+        );
+        assert!(
+            !control.deliver(&serde_json::json!({ "type": "response", "success": true })),
+            "a response with no id at all names nobody"
+        );
+
+        assert!(control.deliver(&serde_json::json!({
+            "id": "c-1",
+            "type": "response",
+            "success": true,
+        })));
+        let answer = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the registered waiter still takes its own answer");
+        assert_eq!(answer.expect("an answer, not a failure")["id"], "c-1");
+    }
+
+    /// The refusal Pi sends for a command its build has no handler for, in the
+    /// spelling the test passes (A2-11): the script is `FAKE_PI_UNKNOWN_STEER`
+    /// with its error message replaced, so the two cases differ in nothing else.
+    fn fake_pi_refusing(error: &str) -> String {
+        FAKE_PI_UNKNOWN_STEER.replace("Unknown command: steer", error)
+    }
+
+    #[test]
+    fn a_pi_steer_refusal_is_recognised_whatever_its_case() {
+        // A2-11: what makes the steer unavailable is the app-server saying it
+        // has no such command, not the exact spelling. A case-sensitive match
+        // turns `unknown command: steer` into an `Err` — "the steer's fate is
+        // unknown" — for a build that said exactly what happened.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let pi = fake_pi_answering(&fake_pi_refusing("unknown command: steer"));
+        let mut steerer = PiSteerer {
+            control: Arc::clone(&pi.control),
+        };
+        assert!(
+            matches!(
+                steer_through_the_turn(&mut steerer, "turn left"),
+                Some(Ok(false))
+            ),
+            "a lower-case refusal is the same refusal"
+        );
+        let answers = pi.answers();
+        assert_eq!(answers.len(), 1, "one answer, read by the reader");
+        assert_eq!(
+            answers[0]["error"],
+            serde_json::json!("unknown command: steer")
+        );
+    }
+
+    #[test]
+    fn a_pi_that_does_not_know_the_steer_command_is_unavailable_rather_than_steered() {
+        // The answer Pi sends is the one that decides: a write alone reports
+        // that the bytes reached the pipe, which a build without `steer` also
+        // does before it rejects the command (the fix-pass rule for S4-01 on
+        // this provider). The daemon has to read the answer, so the steer goes
+        // through the id-correlated round-trip.
+        // A2-13: the fake Pi is a `node` script, so this skips where there is no
+        // node rather than failing there.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let pi = fake_pi_answering(FAKE_PI_UNKNOWN_STEER);
+        let mut steerer = PiSteerer {
+            control: Arc::clone(&pi.control),
+        };
+        assert!(
+            matches!(
+                steer_through_the_turn(&mut steerer, "turn left"),
+                Some(Ok(false))
+            ),
+            "an unknown command is unavailable, not steered"
+        );
+        let answers = pi.answers();
+        assert_eq!(
+            answers.len(),
+            1,
+            "one answer, read by the delivering reader"
+        );
+        assert_eq!(
+            answers[0]["error"],
+            serde_json::json!("Unknown command: steer"),
+            "the refusal is what made the steer unavailable"
+        );
+    }
+
+    #[test]
+    fn a_pi_that_takes_the_steer_is_steered_with_the_frame_the_round_trip_wrote() {
+        // A2-13: the fake Pi is a `node` script, so this skips where there is no
+        // node rather than failing there.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let pi = fake_pi_answering(FAKE_PI_STEERS);
+        let mut steerer = PiSteerer {
+            control: Arc::clone(&pi.control),
+        };
+        assert!(matches!(
+            steer_through_the_turn(&mut steerer, "hello"),
+            Some(Ok(true))
+        ));
+        let answers = pi.answers();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0]["success"], serde_json::json!(true));
+        // The frame as the child received it, byte for byte: `begin` mints the
+        // id that correlates the answer, and the steer's own fields follow it.
+        assert_eq!(
+            answers[0]["received"].as_str(),
+            Some(r#"{"id":"c-1","type":"steer","text":"hello","images":[]}"#)
         );
     }
 

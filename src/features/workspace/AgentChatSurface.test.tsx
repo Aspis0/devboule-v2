@@ -1353,6 +1353,149 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector('button[aria-label="Stop the current turn"]')).toBeNull();
   });
 
+  it("steers into the running turn and keeps the transcript in that turn", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <AgentChatSurface sessionId="steer-agent" title="Agent" observedState={LIVE_OBSERVED} />
+        </StrictMode>,
+      );
+    });
+    await act(async () => undefined);
+
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+
+    // Idle: the behavior is left off the send entirely, so the daemon keeps its
+    // interrupt-and-replace default.
+    setValue.call(textarea, "First task");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+    const idleCall = vi.mocked(sessionSend).mock.calls[0] ?? [];
+    expect(idleCall[0]).toBe("steer-agent");
+    expect(idleCall[2]).toBe("First task");
+    expect(idleCall).toHaveLength(3);
+
+    // The daemon echoes the prompt and the answer starts arriving.
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        messageId: "user-1",
+        text: "First task",
+      });
+      channelHarness.active?.({ type: "agent_message", messageId: "answer-1", text: "Work" });
+    });
+    const conversation = container.querySelector(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+
+    // Mid-turn: Enter is the steering key. The composer stays enabled (the
+    // button is Stop, not Send) and the textarea takes the next steer.
+    expect(textarea.disabled).toBe(false);
+    setValue.call(textarea, "Turn left instead");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    const steerCall = vi.mocked(sessionSend).mock.calls[1] ?? [];
+    expect(steerCall[1]).toBe(channelHarness.activeSubscriptionId);
+    expect(steerCall[2]).toBe("Turn left instead");
+    expect(steerCall[4]).toBe("steer");
+
+    // The accepted steer arrives as the daemon's own echo: `session.rs`
+    // publishes the `agent_user_message` every accepted input publishes once the
+    // provider has taken the text, and journals `Steered` beside it. The
+    // transcript must show one bubble per message and one answer bubble: a
+    // second turn would have split the answer instead of continuing it, and a
+    // local echo of its own send would show the steer twice.
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        messageId: "user-2",
+        text: "Turn left instead",
+      });
+      channelHarness.active?.({ type: "agent_message", messageId: "answer-1", text: "ing" });
+    });
+    expect(conversation.querySelectorAll(".workspace-chat-user")).toHaveLength(2);
+    expect(
+      Array.from(conversation.querySelectorAll(".workspace-chat-user")).filter((element) =>
+        element.textContent?.includes("Turn left instead"),
+      ),
+    ).toHaveLength(1);
+    expect(conversation.querySelectorAll(".workspace-chat-assistant")).toHaveLength(1);
+    expect(conversation.querySelector(".workspace-chat-assistant")?.textContent).toContain(
+      "Working",
+    );
+    // Still mid-turn: the working row is up and no finish line was written.
+    expect(container.querySelector(".workspace-chat-typing")).not.toBeNull();
+    expect(container.querySelector(".workspace-chat-finish")).toBeNull();
+    expect(textarea.disabled).toBe(false);
+  });
+
+  it("leaves Enter to an open IME composition instead of sending", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="ime-agent" title="Agent" observedState={LIVE_OBSERVED} />,
+      );
+    });
+    await act(async () => undefined);
+
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    if (textarea === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Turn left");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+
+    // Enter while the composition is open commits the candidate; it must not
+    // send the text before the candidate is chosen.
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(sessionSend).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("Turn left");
+
+    // Older engines report the composition commit as keyCode 229 without
+    // setting isComposing.
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          keyCode: 229,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(sessionSend).not.toHaveBeenCalled();
+
+    // Composition closed: the next Enter is a send.
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(sessionSend).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sessionSend).mock.calls[0]?.[2]).toBe("Turn left");
+  });
+
   it("renders auxiliary last in the conversation, before the composer", async () => {
     root = createRoot(container);
     await act(async () => {

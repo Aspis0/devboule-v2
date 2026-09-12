@@ -30,6 +30,22 @@ export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" 
   return kind === "acp" || kind === "claude" || kind === "pi" || kind === "codex";
 }
 export type SendIntent = "interrupt" | "steer" | "queue";
+
+/**
+ * What a `session_send` does when the target session already has a turn
+ * running: the protocol's `SessionSend.activeTurnBehavior`. Omitting the field
+ * is the daemon's default — interrupt the running turn and replace it — so the
+ * only member here is the one value that differs from it: `"steer"` delivers
+ * the text into the running turn. The protocol's third word, `"interrupt"`, is
+ * never sent and is expressed by leaving the field off; the wider `SendIntent`
+ * above spells all three and has no caller.
+ *
+ * `"queue"` is deliberately absent: no daemon branch implements it, and a
+ * value the daemon silently treats as interrupt-and-replace would be a type
+ * that promises behaviour nothing delivers. It can come back with the branch.
+ */
+export type ActiveTurnBehavior = "steer";
+
 export type PermissionOutcome = "allow_once" | "deny";
 
 /**
@@ -490,6 +506,15 @@ export type SessionEvent =
     }
   /** Echo of the user prompt, one ACP `user_message_chunk` at a time. */
   | { type: "agent_user_message"; messageId: string | null; text: string }
+  /**
+   * The daemon accepted a prompt into a turn that was already running
+   * (protocol `SessionEvent::Steered`). Journaled for audit and not emitted to
+   * observers, so no view renders it, and it is listed so the protocol snapshot
+   * and this union keep the same tags: what the sender sees live is the
+   * `agent_user_message` echo published for the same accepted text (S4-07).
+   * Rendering steered messages from this event is slice 4b (OQ-6).
+   */
+  | { type: "steered"; messageId: string | null; text: string }
   /** Agent reasoning, one ACP `agent_thought_chunk` at a time. */
   | {
       type: "agent_thought";
@@ -1019,4 +1044,57 @@ export interface PluginBackendStatus {
   pingOk: boolean;
   /** Host-side ownership token for generation-safe teardown. */
   generation: number;
+}
+
+/**
+ * The state a message to another session reports back to its sender, in the
+ * design's own vocabulary (D6). `accepted` and `queued` are the receiving
+ * daemon's intake states; the rest follow that session's turn. A target that
+ * is not live is `rejected_absent`. A caller the daemon refused is
+ * `rejected_unpaired` when the refusal is about *identity* — a device that is
+ * not paired to this session's user — and `rejected_denied` when the caller
+ * was authenticated and the message itself was refused (a paired device whose
+ * steer may not become an interrupt, for instance, A2-07). A message refused
+ * for a brake or for crossing two peers is a wire error, not a receipt.
+ */
+export type AgentMessageState =
+  | "accepted"
+  | "queued"
+  | "delivered"
+  | "started"
+  | "completed"
+  | "rejected_absent"
+  | "rejected_unpaired"
+  | "rejected_denied"
+  | "expired"
+  | "failed";
+
+/**
+ * Wire mirror of `ClientMessage::AgentMessageSend`: one session hands text to
+ * another session's turn. `fromSession` is imposed by the daemon — from the
+ * authenticated owner on the pipe path, from the bearer's registered session
+ * on the MCP tool path — never from anything the sender sets. `id` is the
+ * request id the receipt echoes.
+ *
+ * This is the daemon protocol's shape, not a Tauri command payload; the app
+ * has no send path for inter-agent messages yet, and the layer that adds one
+ * strips the request id from what the frontend sees, as `DevicesReply` does.
+ */
+export interface AgentMessageSend {
+  id: number;
+  fromSession: string;
+  toSession: string;
+  text: string;
+  idempotencyKey?: string;
+}
+
+/**
+ * Wire mirror of `DaemonMessage::AgentMessageReceipt`: the daemon's answer to
+ * one `AgentMessageSend`, returned on the sending connection. `id` is the
+ * request id being answered, so the sender can pair it with its own send even
+ * with several in flight; `state` is where that message ended up.
+ */
+export interface AgentMessageReceipt {
+  id: number;
+  state: AgentMessageState;
 }

@@ -180,15 +180,22 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
 /// One source of truth for the broker's `tools/list` body and for the
 /// `ProviderInfo.tools` the Settings panel renders, so the panel and the wire
 /// cannot disagree about a tool's name or its description.
-pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[(
-    MCP_ROSTER_TOOL,
-    "Lists live Devboule agent sessions known by the daemon. Stable agent names are not available yet; name is null and title is display-only.",
-)];
+pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
+    (
+        MCP_ROSTER_TOOL,
+        "Lists live Devboule agent sessions known by the daemon. Stable agent names are not available yet; name is null and title is display-only.",
+    ),
+    (
+        MCP_SEND_MESSAGE_TOOL,
+        "Sends a message to one live Devboule agent session.",
+    ),
+];
 
 /// The read-only roster tool, and the one name a tool policy can never
 /// disable: an agent that cannot list its siblings cannot be steered at all,
 /// and the tool reads only its own bearer's roster.
 pub const MCP_ROSTER_TOOL: &str = "devboule_list_agents";
+pub const MCP_SEND_MESSAGE_TOOL: &str = "devboule_send_message";
 
 /// Which providers can be served the broker's tools, keyed by catalog id.
 ///

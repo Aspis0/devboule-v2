@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -15,8 +16,8 @@ use serde_json::Value;
 use super::permission_broker::{PermissionBroker, PermissionSender};
 use super::session_runtime::SessionRuntime;
 use super::{
-    write_child_stdin, ModelSwitcher, PtyCommand, ReaderDispatch, SessionKiller, SpawnedSession,
-    StderrSource, StdioWaitableChild,
+    write_child_stdin, ModelSwitcher, PtyCommand, ReaderDispatch, SessionKiller, SessionSteerer,
+    SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::codex_view::{
@@ -29,6 +30,94 @@ use crate::server::ServerState;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const KILL_GRACE: Duration = Duration::from_secs(2);
+/// How long one `turn/steer` may wait for its response before the steer's fate
+/// is reported as unknown. The wait happens outside the runtime's turn-hold (see
+/// `CodexSteerer::steer_active_turn`), so this bound is what stops a silent
+/// app-server from parking a steer forever.
+const STEER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The requests this client is waiting on answers for, keyed by the JSON-RPC id
+/// the answer will name (A2-03).
+///
+/// Codex answers `turn/steer` with a response frame, and the response is the
+/// only thing that can turn the steer into a truthful `Ok(true)`: writing the
+/// request is not Codex taking it.
+/// One request's answer channel, in the shape both failures share: `Ok(value)` is
+/// the response, `Err(message)` is the transport ending before one came (S4-04).
+/// Named, so no signature has to carry the `Result` in a `Result`.
+type RequestAnswer = mpsc::Receiver<Result<Value, String>>;
+
+/// The sender end of one [`RequestAnswer`].
+type RequestAnswerSender = mpsc::Sender<Result<Value, String>>;
+
+#[derive(Default)]
+struct CodexRequests {
+    pending: Mutex<HashMap<String, RequestAnswerSender>>,
+}
+
+impl CodexRequests {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Register the channel one response id will be delivered on. `None` when
+    /// the map cannot be locked — the caller answers `Err`, never `Ok(true)`.
+    fn register(&self, id: &str) -> Option<RequestAnswer> {
+        let (tx, rx) = mpsc::channel();
+        self.pending
+            .lock()
+            .ok()
+            .map(|mut pending| pending.insert(id.to_string(), tx))?;
+        Some(rx)
+    }
+
+    /// Drop one registration: the request failed to write, or its answer never
+    /// came and the waiter is giving up on it.
+    fn forget(&self, id: &str) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(id);
+        }
+    }
+
+    /// Hand one response to the waiter that registered its id.
+    ///
+    /// A response whose id matches no waiter is *ignored*, deliberately: the id
+    /// space carries Codex's answers to every request this client makes (the
+    /// handshake's, the writer's `turn/start`, a `turn/steer` whose waiter
+    /// already timed out), and a response for none of them is not an error and
+    /// must not take anything down.
+    fn deliver(&self, value: &Value) -> bool {
+        let Some(id) = value.get("id").and_then(Value::as_str) else {
+            return false;
+        };
+        let sender = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(id));
+        sender.is_some_and(|sender| sender.send(Ok(value.clone())).is_ok())
+    }
+
+    /// Wake every waiter still registered with the reason the control channel
+    /// ended (S4-04).
+    ///
+    /// A response can no longer arrive for any of them — the app-server's output
+    /// is what delivers responses, and it is over — so a waiter left registered
+    /// would sit out its whole timeout for an answer that cannot come. The map is
+    /// drained under its lock and each sender is answered outside it.
+    fn fail_pending(&self, message: &str) {
+        let Ok(mut pending) = self.pending.lock() else {
+            return;
+        };
+        let waiters: Vec<RequestAnswerSender> = pending.drain().map(|(_, sender)| sender).collect();
+        drop(pending);
+        for sender in waiters {
+            let _ = sender.send(Err(message.to_string()));
+        }
+    }
+}
 
 pub(super) fn resolve_command(paths: &RuntimePaths) -> Result<PtyCommand, WireError> {
     let cwd = std::env::current_dir().map_err(|error| {
@@ -157,8 +246,15 @@ pub(super) fn spawn_process(
         mode_id,
     ));
     let peer_session_id = state.thread_id();
+    // One registration table for the requests this client awaits answers to
+    // (A2-03), shared by the steerer that registers and the reader that
+    // delivers.
+    let requests = Arc::new(CodexRequests::new());
     let switcher = CodexSwitcher {
+        stdin: Arc::clone(&stdin),
+        next_id: Arc::clone(&next_id),
         state: Arc::clone(&state),
+        requests: Arc::clone(&requests),
     };
     let response_ids = Arc::new(Mutex::new(HashMap::new()));
     let permission_broker = PermissionBroker::with_sender(codex_permission_sender(
@@ -197,6 +293,7 @@ pub(super) fn spawn_process(
         response_ids,
         stdin: Arc::clone(&stdin),
         next_id,
+        requests,
     };
     Ok(SpawnedSession {
         process_job,
@@ -231,7 +328,137 @@ fn terminate_shared_process(process: &Arc<Mutex<Child>>) {
 }
 
 struct CodexSwitcher {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
     state: Arc<CodexState>,
+    requests: Arc<CodexRequests>,
+}
+
+struct CodexSteerer {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    state: Arc<CodexState>,
+    requests: Arc<CodexRequests>,
+}
+
+impl SessionSteerer for CodexSteerer {
+    fn steer_active_turn(
+        &mut self,
+        text: &str,
+        turn: &mut TurnToken<'_>,
+    ) -> Result<bool, WireError> {
+        // The turn to steer is read here and checked again at the moment of
+        // writing, inside `begin_steer`: a steer written for a turn Codex has
+        // already left is not written at all. The daemon's admission token is
+        // what keeps this side honest — it is held across this write, so the
+        // runtime's turn cannot end between the caller's check and this frame
+        // (S4-02) — while the id Codex compares against is its own turn id,
+        // which is the only thing its protocol understands (S4-01 on this
+        // provider).
+        let Some(turn_id) = self.state.current_turn() else {
+            return Ok(false);
+        };
+        // The write stays under the token's hold; the *answer* does not
+        // (A2-03). A `turn/steer` is a request: writing it is not Codex taking
+        // it, and the response is what says whether it did. That response is
+        // delivered by the reader thread, which also publishes the events that
+        // take this runtime's turn-hold — so waiting for it under the hold
+        // would block the very thread that has to deliver it, exactly as it
+        // would for Pi. The hold therefore ends with the write, and the wait
+        // runs outside it: `Ok(true)` is only ever answered from a response
+        // that names this turn.
+        let request = turn.write_then_release(|| self.begin_steer(&turn_id, text))?;
+        let Some((command_id, response)) = request else {
+            return Ok(false);
+        };
+        self.await_steer_response(&command_id, &turn_id, response)
+    }
+
+    fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
+        Box::new(Self {
+            stdin: Arc::clone(&self.stdin),
+            next_id: Arc::clone(&self.next_id),
+            state: Arc::clone(&self.state),
+            requests: Arc::clone(&self.requests),
+        })
+    }
+}
+
+impl CodexSteerer {
+    /// Register the answer channel and write one `turn/steer` for
+    /// `expected_turn_id`, answering the id its response will name.
+    ///
+    /// `Ok(None)` with nothing written: Codex is no longer on the turn this
+    /// steer was admitted for.
+    fn begin_steer(
+        &self,
+        expected_turn_id: &str,
+        text: &str,
+    ) -> Result<Option<(String, RequestAnswer)>, WireError> {
+        let Some(params) = steer_params_if_current(&self.state, expected_turn_id, text) else {
+            return Ok(None);
+        };
+        let id = format!("d-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let Some(response) = self.requests.register(&id) else {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                "Codex request map is unavailable.",
+            ));
+        };
+        if let Err(error) = send_frame(
+            &self.stdin,
+            &request_frame(&id, "turn/steer", params),
+            "Codex",
+        ) {
+            self.requests.forget(&id);
+            return Err(error);
+        }
+        Ok(Some((id, response)))
+    }
+
+    /// Wait for the response to one `turn/steer` and answer whether Codex took
+    /// the steer for the turn it was written for.
+    ///
+    /// An error result, a response naming another turn, and a response with no
+    /// turn at all are all `Ok(false)`: none of them is evidence that the text
+    /// landed in this turn, so the caller's pre-existing fallback is the honest
+    /// answer, never `Ok(true)`. A timeout is an `Err` — the steer's fate is
+    /// then unknown, which is a different thing from knowing it did not land.
+    fn await_steer_response(
+        &self,
+        command_id: &str,
+        expected_turn_id: &str,
+        response: RequestAnswer,
+    ) -> Result<bool, WireError> {
+        let value = response
+            .recv_timeout(STEER_RESPONSE_TIMEOUT)
+            .map_err(|error| {
+                self.requests.forget(command_id);
+                WireError::new(
+                    ErrorCode::Io,
+                    format!("Codex turn/steer response timed out: {error}"),
+                )
+            })?
+            // The transport's own answer: the channel ended before a response
+            // came (S4-04), so the steer's fate is unknown — an `Err`, not a
+            // refusal, exactly as Pi answers one.
+            .map_err(|message| WireError::new(ErrorCode::Io, message))?;
+        Ok(steer_response_accepted(&value, expected_turn_id))
+    }
+}
+
+/// Whether one `turn/steer` response says Codex took the steer for
+/// `expected_turn_id` (A2-03).
+///
+/// The protocol's own confirmation is the turn the response reports: an error
+/// result means the request was refused, and a response for a different turn (or
+/// without one) is not evidence about *this* turn. Only a matching turn id is
+/// `true`.
+fn steer_response_accepted(value: &Value, expected_turn_id: &str) -> bool {
+    if value.get("error").is_some() {
+        return false;
+    }
+    turn_id_from_response(value).as_deref() == Some(expected_turn_id)
 }
 
 impl ModelSwitcher for CodexSwitcher {
@@ -249,7 +476,19 @@ impl ModelSwitcher for CodexSwitcher {
 
     fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
         Box::new(Self {
+            stdin: Arc::clone(&self.stdin),
+            next_id: Arc::clone(&self.next_id),
             state: Arc::clone(&self.state),
+            requests: Arc::clone(&self.requests),
+        })
+    }
+
+    fn clone_steerer(&self) -> Box<dyn SessionSteerer> {
+        Box::new(CodexSteerer {
+            stdin: Arc::clone(&self.stdin),
+            next_id: Arc::clone(&self.next_id),
+            state: Arc::clone(&self.state),
+            requests: Arc::clone(&self.requests),
         })
     }
 }
@@ -630,6 +869,31 @@ fn turn_start_params(
     Value::Object(params)
 }
 
+fn turn_steer_params(thread_id: &str, expected_turn_id: &str, text: &str) -> Value {
+    serde_json::json!({
+        "threadId": thread_id,
+        "expectedTurnId": expected_turn_id,
+        "input": [{"type": "text", "text": text}],
+    })
+}
+
+/// The `turn/steer` params for the turn the caller captured, or `None` when
+/// Codex is no longer running that turn.
+///
+/// This is the write-time check: `current_turn()` is read again here, after the
+/// caller's own capture, so a turn that ended (or a new one that started) in
+/// between makes the steer unavailable instead of sending Codex a frame for a
+/// turn that is over. `expectedTurnId` carries that same id, which is also the
+/// precondition Codex itself checks.
+fn steer_params_if_current(
+    state: &CodexState,
+    expected_turn_id: &str,
+    text: &str,
+) -> Option<Value> {
+    (state.current_turn().as_deref() == Some(expected_turn_id))
+        .then(|| turn_steer_params(&state.thread_id(), expected_turn_id, text))
+}
+
 /// One `turn/start` input entry for a materialized raster: the Paseo-measured
 /// `{"type": "localImage", "path": ...}` shape. The path is the one
 /// `materialize` returned, so the file at the other end is still the stripped
@@ -871,6 +1135,7 @@ struct CodexReader {
     response_ids: Arc<Mutex<HashMap<u64, Value>>>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
+    requests: Arc<CodexRequests>,
 }
 
 impl CodexReader {
@@ -904,6 +1169,10 @@ impl CodexReader {
                 let _ = send_frame(&self.stdin, &method_not_supported_frame(id), "Codex");
             }
         } else if value.get("id").is_some() {
+            // A response to one of this client's own requests: hand it to the
+            // waiter that registered that id before anything else looks at it
+            // (A2-03). A response whose id matches no waiter is ignored.
+            self.requests.deliver(&value);
             if let Some(turn_id) = turn_id_from_response(&value) {
                 self.state.set_turn(Some(turn_id));
             }
@@ -1039,6 +1308,12 @@ impl ReaderDispatch for CodexReader {
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
         self.permission_broker.close();
+        // (S4-04) The transport is over, so no answer can arrive for a request
+        // still waiting: failing them here is what stops a steer from waiting out
+        // the whole `STEER_RESPONSE_TIMEOUT` after the provider is gone. The same
+        // shape as Pi's `PiControl::fail_pending`.
+        self.requests
+            .fail_pending("Codex control channel closed before the response arrived.");
         if let Ok(mut ids) = self.response_ids.lock() {
             ids.clear();
         }
@@ -1128,18 +1403,22 @@ mod tests {
     use super::{
         carried_image_paths, codex_delivery, codex_local_image_entry, decline_input_result,
         initialize_params, interrupt_params, mode_values, notification_frame, permission_decision,
-        permission_decision_frame, plan_codex_prompt, send_interrupt_request, thread_start_params,
-        turn_id_from_response, turn_start_params, turn_start_params_for_prompt,
-        turn_start_params_with_images, validate_mode, CodexReader,
+        permission_decision_frame, plan_codex_prompt, request_frame, send_interrupt_request,
+        steer_params_if_current, thread_start_params, turn_id_from_response, turn_start_params,
+        turn_start_params_for_prompt, turn_start_params_with_images, turn_steer_params,
+        validate_mode, CodexReader, CodexRequests, CodexSteerer,
     };
     use crate::attachment_store::AttachmentStore;
     use crate::codex_view::{catalog_from_response, fixture_frames, CodexState, CodexView};
     use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
+    use crate::session::ReaderDispatch;
     use devboule_protocol::PromptAttachment;
     use devboule_protocol::SessionEvent;
+    use devboule_protocol::WireError;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     fn method_frame(source: &str, method: &str) -> serde_json::Value {
         fixture_frames(source)
@@ -1323,6 +1602,13 @@ mod tests {
     fn unknown_server_request_gets_a_method_not_supported_error() {
         use std::io::{BufRead, BufReader};
 
+        // S4-06: the fake app-server is a `node` script, so this skips where
+        // there is no node rather than failing there, like every other
+        // node-backed test in this file.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
         let mut child = std::process::Command::new("node")
             .args([
                 "-e",
@@ -1350,6 +1636,7 @@ mod tests {
             response_ids: Arc::new(Mutex::new(HashMap::new())),
             stdin,
             next_id: Arc::new(AtomicU64::new(1)),
+            requests: Arc::new(CodexRequests::new()),
         };
         let runtime = Arc::new(SessionRuntime::new());
         let request = serde_json::json!({
@@ -1454,6 +1741,7 @@ mod tests {
             response_ids: Arc::new(Mutex::new(HashMap::new())),
             stdin: Arc::new(Mutex::new(None)),
             next_id: Arc::new(AtomicU64::new(1)),
+            requests: Arc::new(CodexRequests::new()),
         };
         reader.dispatch_value(
             serde_json::json!({
@@ -1680,6 +1968,325 @@ mod tests {
                 "no carried path must not move a key"
             );
         }
+    }
+
+    #[test]
+    fn codex_turn_steer_frame_is_byte_exact() {
+        let frame = request_frame(
+            "d-7",
+            "turn/steer",
+            turn_steer_params("thread-1", "turn-2", "hello"),
+        );
+        assert_eq!(
+            serde_json::to_vec(&frame).expect("frame"),
+            br#"{"jsonrpc":"2.0","id":"d-7","method":"turn/steer","params":{"threadId":"thread-1","expectedTurnId":"turn-2","input":[{"type":"text","text":"hello"}]}}"#
+        );
+    }
+
+    /// A `CodexState` on `thread-1` whose running turn is `turn_id`.
+    fn state_on_turn(turn_id: &str) -> Arc<CodexState> {
+        let catalog = catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "model", "isDefault": true }]
+        }))
+        .expect("catalog");
+        let state = CodexState::new("thread-1".to_string(), catalog, "auto");
+        state.set_turn(Some(turn_id.to_string()));
+        Arc::new(state)
+    }
+
+    #[test]
+    fn a_codex_steer_carries_the_turn_it_was_checked_for() {
+        // The frame names the turn the caller captured as its precondition, so
+        // Codex itself refuses a steer aimed at a turn that is over.
+        let state = state_on_turn("turn-3");
+        let params = steer_params_if_current(&state, "turn-3", "turn left")
+            .expect("the captured turn is the current one");
+        assert_eq!(params["threadId"], "thread-1");
+        assert_eq!(params["expectedTurnId"], "turn-3");
+        assert_eq!(params["input"][0]["text"], "turn left");
+    }
+
+    #[test]
+    fn a_codex_steer_for_a_turn_that_has_moved_on_is_never_written() {
+        // The write-time check, not the caller's earlier one: the state says
+        // Codex is on `turn-4` while the steer was admitted for `turn-3`, and
+        // nothing is written at all. The stdin here is absent, so a write
+        // attempt would answer `Err` instead of `Ok(false)` — what this pins is
+        // that the frame is never built, and no answer is ever waited for.
+        let state = state_on_turn("turn-4");
+        assert!(steer_params_if_current(&state, "turn-3", "turn left").is_none());
+        let stdin: Arc<Mutex<Option<std::process::ChildStdin>>> = Arc::new(Mutex::new(None));
+        let steerer = CodexSteerer {
+            stdin,
+            next_id: Arc::new(AtomicU64::new(1)),
+            state,
+            requests: Arc::new(CodexRequests::new()),
+        };
+        assert!(matches!(
+            steerer.begin_steer("turn-3", "turn left"),
+            Ok(None)
+        ));
+    }
+
+    /// S4-04: the app-server's output ending fails every waiter still registered,
+    /// so a steer answers `Err` — the fate is unknown — instead of waiting out
+    /// the whole fifteen-second timeout for an answer that cannot come.
+    #[test]
+    fn a_codex_steer_is_not_left_waiting_when_the_app_server_ends() {
+        use std::io::BufReader;
+        use std::process::Stdio;
+
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        // A fake Codex that reads one request and exits without answering it.
+        let mut child = std::process::Command::new("node")
+            .args(["-e", "process.stdin.once('data', () => process.exit(0))"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("node is required for the Codex end-of-transport test");
+        let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+        let stdout = child.stdout.take().expect("stdout");
+        let requests = Arc::new(CodexRequests::new());
+        let mut steerer = CodexSteerer {
+            stdin,
+            next_id: Arc::new(AtomicU64::new(7)),
+            state: state_on_turn("turn-3"),
+            requests: Arc::clone(&requests),
+        };
+        let mut reader = CodexReader {
+            buffer: Vec::new(),
+            discarding_oversized_line: false,
+            deferred: Vec::new(),
+            manifest: None,
+            state: state_on_turn("turn-3"),
+            view: CodexView::new(None),
+            permission_broker: PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
+            response_ids: Arc::new(Mutex::new(HashMap::new())),
+            stdin: Arc::new(Mutex::new(None)),
+            next_id: Arc::new(AtomicU64::new(1)),
+            requests: Arc::clone(&requests),
+        };
+        // The reader runs the real end-of-transport path: read to EOF, then
+        // `finish`, which is where the waiters are failed.
+        let runtime = Arc::new(SessionRuntime::new());
+        let reader_runtime = Arc::clone(&runtime);
+        let reader_thread = std::thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            let mut bytes = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut stdout, &mut bytes);
+            reader.finish(&reader_runtime);
+        });
+
+        let started = Instant::now();
+        let answer = crate::test_support::steer_through_the_turn(&mut steerer, "turn left");
+        let error = match answer {
+            Some(Err(error)) => error,
+            other => panic!("the transport is over: expected an error, got {other:?}"),
+        };
+        assert!(
+            error.message.contains("control channel closed"),
+            "the failure is the transport ending, not a timeout: {}",
+            error.message
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the waiter was failed by the EOF, not by its own fifteen-second timeout"
+        );
+        let _ = child.wait();
+        reader_thread.join().expect("the reader thread");
+    }
+
+    /// Spawn a fake Codex that echoes each line it reads back, so a test can
+    /// read the frame the client wrote. The caller must have checked `node`
+    /// first (`external_program_skip_reason`).
+    fn spawn_codex_echoing() -> std::process::Child {
+        std::process::Command::new("node")
+            .args([
+                "-e",
+                "process.stdin.on('data', data => process.stdout.write(data))",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("node is required for the Codex steer tests")
+    }
+
+    /// Spawn a fake Codex that answers each `turn/steer` with `body`, whose `id`
+    /// it fills with the request's own — the app-server's shape, so the test
+    /// exercises the real id-correlated delivery. The caller must have checked
+    /// `node` first (`external_program_skip_reason`).
+    fn spawn_codex_answering(body: &str) -> std::process::Child {
+        let script = r#"
+let buf = '';
+process.stdin.on('data', data => {
+  buf += data;
+  let i;
+  while ((i = buf.indexOf('\n')) >= 0) {
+    const line = buf.slice(0, i);
+    buf = buf.slice(i + 1);
+    let request;
+    try { request = JSON.parse(line); } catch (error) { continue; }
+    if (request.method === 'turn/steer') {
+      const answer = __ANSWER__;
+      answer.id = request.id;
+      process.stdout.write(JSON.stringify(answer) + '\n');
+    }
+  }
+});
+"#
+        .replace("__ANSWER__", body);
+        std::process::Command::new("node")
+            .args(["-e", &script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("node is required for the Codex steer tests")
+    }
+
+    /// One steer against a fake Codex that answers `body`: the child, the real
+    /// delivery (`CodexRequests::deliver`, which is what the reader calls) and
+    /// the steer all run, so the answer the steerer returns is the one the
+    /// response produced.
+    fn codex_steer_against(body: &str) -> Result<bool, WireError> {
+        let requests = Arc::new(CodexRequests::new());
+        let mut child = spawn_codex_answering(body);
+        let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+        let stdout = child.stdout.take().expect("stdout");
+        let delivered = Arc::clone(&requests);
+        let reader = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut stdout = std::io::BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match stdout.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let value: serde_json::Value =
+                    serde_json::from_str(line.trim()).expect("the answer the fake Codex wrote");
+                assert!(
+                    delivered.deliver(&value),
+                    "the answer named an id no waiter registered"
+                );
+            }
+        });
+        let mut steerer = CodexSteerer {
+            stdin,
+            next_id: Arc::new(AtomicU64::new(7)),
+            state: state_on_turn("turn-3"),
+            requests,
+        };
+        let answer = crate::test_support::steer_through_the_turn(&mut steerer, "turn left");
+        let _ = child.kill();
+        let _ = child.wait();
+        reader.join().expect("the fake Codex reader");
+        answer.expect("the turn was running at admission")
+    }
+
+    #[test]
+    fn a_codex_steer_is_accepted_only_by_a_response_for_the_steered_turn() {
+        // A2-03: the write is a request, not a decision. The acceptance is the
+        // app-server's own response, and only one that names the turn the steer
+        // was written into counts as one.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        assert!(
+            matches!(
+                codex_steer_against(r#"{"jsonrpc":"2.0","result":{"turn":{"id":"turn-3"}}}"#),
+                Ok(true)
+            ),
+            "the response naming the steered turn is the acceptance"
+        );
+    }
+
+    #[test]
+    fn a_codex_steer_response_for_another_turn_is_a_refusal_not_an_acceptance() {
+        // The response says the app-server took a steer — for a *different*
+        // turn. Answering `Ok(true)` here would tell the caller its text landed
+        // in the turn it was admitted for when the provider said otherwise.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        assert!(matches!(
+            codex_steer_against(r#"{"jsonrpc":"2.0","result":{"turn":{"id":"turn-9"}}}"#),
+            Ok(false)
+        ));
+    }
+
+    #[test]
+    fn a_codex_steer_answered_by_an_error_or_no_turn_is_a_refusal() {
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        assert!(
+            matches!(
+                codex_steer_against(
+                    r#"{"jsonrpc":"2.0","error":{"code":-32600,"message":"steer refused"}}"#
+                ),
+                Ok(false)
+            ),
+            "an error result is not a steer"
+        );
+        assert!(
+            matches!(
+                codex_steer_against(r#"{"jsonrpc":"2.0","result":{}}"#),
+                Ok(false)
+            ),
+            "a response that names no turn is not a steer for this one"
+        );
+    }
+
+    #[test]
+    fn a_codex_steer_that_is_still_current_is_written_with_its_precondition() {
+        // The frame itself, read back from the child: the request names the turn
+        // the caller captured as its precondition, so Codex refuses a steer
+        // aimed at a turn that is over. The answer is not read here — this pins
+        // the bytes, and `CodexRequests` is what turns them into a decision.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        use std::io::{BufRead, BufReader};
+
+        let mut child = spawn_codex_echoing();
+        let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        let steerer = CodexSteerer {
+            stdin,
+            next_id: Arc::new(AtomicU64::new(7)),
+            state: state_on_turn("turn-3"),
+            requests: Arc::new(CodexRequests::new()),
+        };
+        let request = steerer
+            .begin_steer("turn-3", "turn left")
+            .expect("the frame was written");
+        assert!(
+            request.is_some(),
+            "the current turn is the one the steer is written for"
+        );
+        let mut line = String::new();
+        stdout
+            .read_line(&mut line)
+            .expect("the frame the child read");
+        let frame: serde_json::Value = serde_json::from_str(&line).expect("frame json");
+        assert_eq!(frame["jsonrpc"], "2.0");
+        assert_eq!(frame["method"], "turn/steer");
+        assert_eq!(frame["params"]["expectedTurnId"], "turn-3");
+        assert_eq!(frame["params"]["input"][0]["text"], "turn left");
+        assert_eq!(
+            frame["id"], "d-7",
+            "the request id is the one its answer will name"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

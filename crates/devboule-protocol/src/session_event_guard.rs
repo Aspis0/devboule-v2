@@ -58,6 +58,10 @@ fn session_event_samples() -> Vec<SessionEvent> {
             message_id: None,
             text: String::new(),
         },
+        Steered => SessionEvent::Steered {
+            message_id: None,
+            text: String::new(),
+        },
         AgentThought => SessionEvent::AgentThought {
             message_id: None,
             text: String::new(),

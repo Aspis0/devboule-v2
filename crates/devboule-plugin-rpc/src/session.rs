@@ -242,6 +242,7 @@ impl PluginSession {
                         | DaemonMessage::Providers { id, .. }
                         | DaemonMessage::ProviderUpdated { id, .. }
                         | DaemonMessage::Ok { id }
+                        | DaemonMessage::AgentMessageReceipt { id, .. }
                         | DaemonMessage::Resume { id, .. }
                         | DaemonMessage::InvokeResult { id, .. }
                         // The device RPCs are not on a plugin backend's path.

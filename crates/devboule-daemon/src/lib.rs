@@ -68,6 +68,8 @@ mod shell_unwrap;
 mod spawn;
 #[cfg(feature = "server")]
 mod tailscale_localapi;
+#[cfg(all(test, feature = "server"))]
+mod test_support;
 #[cfg(feature = "server")]
 mod tool_paths;
 #[cfg(feature = "server")]

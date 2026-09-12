@@ -11,8 +11,8 @@ use tauri::State;
 
 use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
 use devboule_protocol::{
-    ErrorCode, PermissionOutcome, Persistence, PersistenceKind, PromptAttachment, ResumeResult,
-    SubscriptionId, MAX_WRITE_BYTES,
+    ActiveTurnBehavior, ErrorCode, PermissionOutcome, Persistence, PersistenceKind,
+    PromptAttachment, ResumeResult, SubscriptionId, MAX_WRITE_BYTES,
 };
 
 use crate::client::DaemonBridge;
@@ -106,6 +106,18 @@ pub fn session_presence(
 /// every other caller that predates attachments sends no such key, and a missing
 /// key for a bare `Vec` is an `invalid args` rejection rather than an empty
 /// vector.
+///
+/// `active_turn_behavior` is the same kind of optional key for the slice-4
+/// steering field: `"steer"` asks the daemon to deliver this text into a turn
+/// that is already running, `"queue"` asks it to hold the text for the next
+/// turn, and an absent key keeps the old interrupt-and-replace default. The
+/// value travels as the protocol's own string; the daemon owns what the two
+/// words mean.
+///
+/// The word is parsed to the protocol's own type on the way in
+/// (`parse_active_turn_behavior` below), so a value the daemon would refuse is
+/// refused here as `InvalidRequest` instead of travelling as a frame the daemon
+/// answers with an error.
 #[tauri::command]
 pub fn session_send(
     bridge: State<'_, DaemonBridge>,
@@ -113,17 +125,20 @@ pub fn session_send(
     subscription_id: SubscriptionId,
     text: String,
     attachments: Option<Vec<PromptAttachment>>,
+    active_turn_behavior: Option<String>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     require_write_size(&text)?;
     let attachments = attachments.unwrap_or_default();
     require_attachment_limits(&attachments)?;
+    let active_turn_behavior = parse_active_turn_behavior(active_turn_behavior.as_deref())?;
     bridge.ensure_subscription_attached(subscription_id)?;
     Ok(require_client(&bridge)?.session_send_with_subscription(
         &id,
         subscription_id,
         &text,
         &attachments,
+        active_turn_behavior,
     )?)
 }
 
@@ -296,6 +311,29 @@ fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
     }
 }
 
+/// The app's `active_turn_behavior` word, as the protocol's own type.
+///
+/// The word travels as the protocol's (`"steer"`; absent is the daemon's
+/// interrupt-and-replace default), so the parse is the protocol's too: serde is
+/// what says which words exist, and a word the daemon would refuse is refused
+/// here as `InvalidRequest` instead of travelling as a frame the daemon answers
+/// with an error.
+fn parse_active_turn_behavior(
+    word: Option<&str>,
+) -> Result<Option<ActiveTurnBehavior>, CommandError> {
+    let Some(word) = word else {
+        return Ok(None);
+    };
+    serde_json::from_value::<ActiveTurnBehavior>(serde_json::Value::String(word.to_string()))
+        .map(Some)
+        .map_err(|_| {
+            CommandError::new(
+                ErrorCode::InvalidRequest,
+                format!("Unknown active turn behavior: {word}"),
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +354,25 @@ mod tests {
         let error = require_write_size(&"x".repeat(MAX_WRITE_BYTES + 1)).expect_err("rejected");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert_eq!(error.message, "Session input is too large.");
+    }
+
+    #[test]
+    fn only_a_word_the_protocol_has_is_a_send_behavior() {
+        assert_eq!(
+            parse_active_turn_behavior(None).expect("absent"),
+            None,
+            "an absent key is the daemon's interrupt-and-replace default"
+        );
+        assert_eq!(
+            parse_active_turn_behavior(Some("steer")).expect("steer"),
+            Some(ActiveTurnBehavior::Steer)
+        );
+        // `"queue"` is the word the app's TS union deliberately does not have:
+        // no daemon branch implements it, so it is refused here rather than
+        // travelling as a frame the daemon answers with an error.
+        let error = parse_active_turn_behavior(Some("queue")).expect_err("refused");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "Unknown active turn behavior: queue");
     }
 
     fn attachment(mime_type: &str, data: String) -> PromptAttachment {

@@ -98,21 +98,22 @@ pub use ids::{
     OwnerId,
 };
 pub use messages::{
-    ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits, JournalRetention,
-    JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole, PeerRow,
-    PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit,
-    RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope, ToolDescriptor,
-    ToolPolicyEntry, Unreclaimable, PEER_CAPS, PEER_DEFAULT_CAPS,
+    AgentMessageState, ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits,
+    JournalRetention, JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole,
+    PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind,
+    RetentionLimit, RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope,
+    ToolDescriptor, ToolPolicyEntry, Unreclaimable, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
 pub use session::{
-    cursor_replay_ok, AgentActivityState, AgentBackgroundTask, AgentTaskStatus, Attention,
-    AttentionReason, AvailableCommandView, Cursor, CursorShape, NoticeSeverity, PermissionEnvVar,
-    PermissionOption, PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor,
-    Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
-    SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState, SessionStateSnapshot,
-    SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage,
+    cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskStatus,
+    Attention, AttentionReason, AvailableCommandView, Cursor, CursorShape, NoticeSeverity,
+    PermissionEnvVar, PermissionOption, PermissionOutcome, Persistence, PersistenceKind,
+    ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView,
+    SessionModeView, SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind,
+    SessionState, SessionStateSnapshot, SubscriptionId, ToolLocation, TranscriptIntegrity,
+    TurnUsage,
 };
 
 /// Current protocol dialect spoken by this crate.

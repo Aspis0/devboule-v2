@@ -414,6 +414,7 @@ impl ConnHandle {
                 | SessionEvent::Snapshot { .. }
                 | SessionEvent::AgentMessage { .. }
                 | SessionEvent::AgentUserMessage { .. }
+                | SessionEvent::Steered { .. }
                 | SessionEvent::AgentThought { .. }
                 | SessionEvent::AvailableCommands { .. }
                 | SessionEvent::AgentToolCall { .. }
@@ -2518,6 +2519,7 @@ mod tests {
                 SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
                 SessionEvent::AgentMessage { .. } => "agent_message",
                 SessionEvent::AgentUserMessage { .. } => "agent_user_message",
+                SessionEvent::Steered { .. } => "steered",
                 SessionEvent::AgentThought { .. } => "agent_thought",
                 SessionEvent::AvailableCommands { .. } => "available_commands",
                 SessionEvent::AgentToolCall { .. } => "agent_tool_call",
@@ -2718,6 +2720,7 @@ mod tests {
                 SessionEvent::Snapshot { .. } => "snapshot",
                 SessionEvent::AgentMessage { .. } => "agent_message",
                 SessionEvent::AgentUserMessage { .. } => "agent_user_message",
+                SessionEvent::Steered { .. } => "steered",
                 SessionEvent::AgentThought { .. } => "agent_thought",
                 SessionEvent::AvailableCommands { .. } => "available_commands",
                 SessionEvent::AgentToolCall { .. } => "agent_tool_call",
