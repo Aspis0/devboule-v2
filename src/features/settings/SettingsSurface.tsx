@@ -20,6 +20,7 @@ import type {
   Workspace,
 } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
+import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import "./settings.css";
@@ -245,6 +246,14 @@ export const ALWAYS_ON_TOOL = "devboule_list_agents";
 export const ALWAYS_ON_REASON = "Always on: sessions need the agent roster.";
 
 /**
+ * The handshake capability that gates every tool-policy RPC. It is advertised
+ * beside `devices`, and it is deliberately spelled exactly like the daemon's
+ * own name for it. A daemon that does not advertise it cannot answer
+ * `tool_policy_get`, so the toggles are not drawn and no request is sent.
+ */
+export const TOOL_POLICY_CAPABILITY = "tool_policy";
+
+/**
  * What one provider's toggles read from a stored row. `undefined` is the
  * same as enabled: `ToolPolicyGet` returns stored rows only, so a provider
  * with no row is enabled by default — never an error, never "unknown".
@@ -268,13 +277,22 @@ export function toolPolicyFor(
  * Per-provider tool toggles, under one provider card. Renders nothing when
  * `provider.tools` is empty: the daemon sends the `tools` key only for the
  * four native MCP-capable providers, and an empty list means there is
- * nothing to toggle.
+ * nothing to toggle. It renders nothing either when the handshake did not
+ * negotiate [`TOOL_POLICY_CAPABILITY`], so a daemon that cannot answer
+ * `tool_policy_get` is never asked — the section is absent, not broken.
  *
  * The always-on tool stays checked and disabled with its one-line reason.
  * Every other change applies optimistically and reverts on rejection; the
  * daemon's own sentence is shown verbatim inside the card.
  */
-function ProviderToolSettings({ provider }: { provider: ProviderInfo }) {
+function ProviderToolSettings({
+  provider,
+  toolPolicySupported,
+}: {
+  provider: ProviderInfo;
+  /** True only when the handshake advertised `tool_policy`. */
+  toolPolicySupported: boolean;
+}) {
   const tools = provider.tools ?? [];
   const [policies, setPolicies] = useState<readonly ToolPolicyEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -289,7 +307,9 @@ function ProviderToolSettings({ provider }: { provider: ProviderInfo }) {
   useEffect(() => {
     // No fetch when there is nothing to toggle: the daemon omits `tools`
     // for wrappers and non-MCP providers, and the section stays hidden.
-    if (tools.length === 0) return;
+    // Same rule for the handshake: a daemon that never advertised
+    // `tool_policy` would refuse this request, so it is never sent.
+    if (!toolPolicySupported || tools.length === 0) return;
     let cancelled = false;
     void toolPolicyGet()
       .then((reply) => {
@@ -305,8 +325,8 @@ function ProviderToolSettings({ provider }: { provider: ProviderInfo }) {
     return () => {
       cancelled = true;
     };
-  }, [provider.id, tools.length]);
-  if (tools.length === 0) return null;
+  }, [provider.id, tools.length, toolPolicySupported]);
+  if (!toolPolicySupported || tools.length === 0) return null;
   const { enabled, disabledTools } = toolPolicyFor(provider.id, policies);
   const disabledSet = new Set(disabledTools);
   // The stored rows are still in flight: until they land, `toolPolicyFor`
@@ -463,6 +483,13 @@ function ProvidersPanel() {
   const consentInFlightRef = useRef(false);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
+
+  // The handshake's own capability list, through the same channel every other
+  // surface reads it (Workspace, Design): the supervisor's `daemon_status`.
+  // A daemon that never advertised `tool_policy` leaves the toggles off the
+  // screen, so no card asks it for a policy it cannot answer.
+  const daemon = useWorkspaceDaemon();
+  const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
 
   useEffect(() => {
     consentInFlightRef.current = false;
@@ -733,7 +760,11 @@ function ProvidersPanel() {
                       </button>
                     </div>
                   ) : null}
-                  <ProviderToolSettings key={provider.id} provider={provider} />
+                  <ProviderToolSettings
+                    key={provider.id}
+                    provider={provider}
+                    toolPolicySupported={toolPolicySupported}
+                  />
                 </div>
               );
             })}

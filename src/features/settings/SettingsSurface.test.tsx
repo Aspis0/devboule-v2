@@ -12,6 +12,23 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
       (error: unknown) =>
         typeof error === "object" && error !== null && "code" in error && "message" in error,
     ),
+    daemonStatus: vi.fn(async () => ({
+      state: "connected",
+      pid: 1,
+      instanceId: "settings-test",
+      protocolVersion: 4,
+      clients: 1,
+      capabilities: [
+        "ping",
+        "status",
+        "sessions",
+        "journal",
+        "typed_permissions",
+        "devices",
+        "tool_policy",
+      ],
+      message: null,
+    })),
     journalRetentionGet: vi.fn(),
     journalRetentionSet: vi.fn(),
     journalUsage: vi.fn(),
@@ -35,6 +52,7 @@ vi.mock("../oracle/OraclePanel", () => ({
 }));
 
 import {
+  daemonStatus,
   journalRetentionGet,
   journalRetentionSet,
   journalUsage,
@@ -48,6 +66,7 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import type {
+  DaemonStatus,
   JournalRetention,
   Project,
   ProviderCatalog,
@@ -1410,6 +1429,19 @@ describe("Settings provider tool toggles", () => {
     };
   }
 
+  /** A connected supervisor status whose capability list is the handshake's. */
+  function daemonStatusWith(capabilities: string[]): DaemonStatus {
+    return {
+      state: "connected",
+      pid: 1,
+      instanceId: "settings-test",
+      protocolVersion: 4,
+      clients: 1,
+      capabilities,
+      message: null,
+    };
+  }
+
   // Opens the per-card disclosure and answers the async policy fetch, so
   // every assertion below sees the toggles in their settled state.
   async function renderToolSettings(policies: ToolPolicyReply = { policies: [] }) {
@@ -1548,6 +1580,47 @@ describe("Settings provider tool toggles", () => {
     expect(toolPolicyGet).not.toHaveBeenCalled();
     expect(container.querySelector(".provider-tools")).toBeNull();
     expect(container.textContent).not.toContain("Tool settings");
+  });
+
+  // Audit finding B-2: `tool_policy` is a negotiated capability. A daemon
+  // that does not advertise it cannot answer `tool_policy_get`, and an older
+  // daemon may still publish `tools` for its providers — so the section must
+  // be absent, not attempted.
+  it("hides the toggles and never fetches when the daemon lacks tool_policy", async () => {
+    vi.mocked(daemonStatus).mockResolvedValueOnce(
+      daemonStatusWith(["ping", "status", "sessions", "journal", "typed_permissions", "devices"]),
+    );
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    // The gate reads the handshake, and only the per-tool section goes: the
+    // provider card itself still renders.
+    expect(daemonStatus).toHaveBeenCalled();
+    expect(container.querySelector(".provider-name")?.textContent).toBe("grok");
+    expect(toolPolicyGet).not.toHaveBeenCalled();
+    expect(container.querySelector(".provider-tools")).toBeNull();
+    expect(container.textContent).not.toContain("Tool settings");
+    expect(container.textContent).not.toContain("Enable tools");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("draws the toggles once the daemon advertises tool_policy", async () => {
+    vi.mocked(daemonStatus).mockResolvedValueOnce(daemonStatusWith(["devices", "tool_policy"]));
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    await renderToolSettings();
+
+    expect(toolPolicyGet).toHaveBeenCalledTimes(1);
+    expect(
+      container.querySelector<HTMLInputElement>("input[aria-label='Enable tools for grok']"),
+    ).not.toBeNull();
   });
 
   it("turning the master switch off sends enabled:false with the full deny list", async () => {
