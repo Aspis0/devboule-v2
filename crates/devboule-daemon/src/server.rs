@@ -2115,13 +2115,23 @@ fn dispatch_immediate(
             disabled_tools,
         } => match state.tool_policy.set(&provider_id, enabled, disabled_tools) {
             Ok(()) => DaemonMessage::ToolPolicySetOk { id },
-            Err(error) => DaemonMessage::Error(
-                WireError::new(
-                    ErrorCode::Io,
-                    format!("Could not save the tool policy for '{provider_id}': {error}"),
+            // A request over a cap, or one naming a provider the daemon
+            // publishes no tools for, is the caller's mistake and is reported
+            // as one: retrying it would fail the same way. A write failure is
+            // the daemon's, and the store kept the policy it already had.
+            Err(error) => {
+                let code = match error {
+                    crate::tool_policy::PolicyError::InvalidRequest(_) => ErrorCode::InvalidRequest,
+                    crate::tool_policy::PolicyError::Io(_) => ErrorCode::Io,
+                };
+                DaemonMessage::Error(
+                    WireError::new(
+                        code,
+                        format!("Could not save the tool policy for '{provider_id}': {error}"),
+                    )
+                    .with_id(id),
                 )
-                .with_id(id),
-            ),
+            }
         },
         ClientMessage::DevicesList { .. }
         | ClientMessage::PairingStart { .. }
@@ -4049,6 +4059,48 @@ mod tests {
             Some(Some(false))
         );
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn a_refused_tool_policy_set_is_an_invalid_request_not_an_io_failure() {
+        let state = ServerState::new("tool-policy-refused".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(5);
+
+        // A provider id the catalog publishes no tools for: the gate is keyed
+        // by that id, so the daemon refuses the row instead of storing one it
+        // could never consult. The code is what tells the app to fix the
+        // request rather than to retry a write that failed.
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ToolPolicySet {
+                id: 31,
+                provider_id: "does-not-exist".to_string(),
+                enabled: Some(false),
+                disabled_tools: Vec::new(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("dispatch reply");
+        let DaemonMessage::Error(error) = reply else {
+            panic!("a refused policy must be an error, got {reply:?}");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.id, Some(31));
+        assert!(
+            error.message.contains("does-not-exist"),
+            "the sentence names what was refused: {}",
+            error.message
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
     }
 
     #[test]

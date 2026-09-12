@@ -163,6 +163,18 @@ impl McpBroker {
     /// Register `session_id` for `kind`, recording the catalog provider it
     /// belongs to so `tools/list` and `tools/call` can apply that provider's
     /// tool policy (`SessionCreate.provider`).
+    ///
+    /// The provider id is the sole key of that gate. A `None` id means "no
+    /// policy consulted" — the pre-policy default — and is reachable in
+    /// production only through the same-user development override
+    /// `DEVBOULE_ACP_COMMAND` set without `DEVBOULE_ACP_PROVIDER_ID`: the
+    /// command resolver reads the provider id from the environment and
+    /// `session.rs` passes what it resolved. No policy row can name such a
+    /// session, so the path cannot be widened from the app: `tool_policy.rs`
+    /// refuses a `set` for any id the catalog publishes no tools for, and a
+    /// lookup with no id yields `None`. A caller with a provider id therefore
+    /// cannot lose its policy, and a caller without one cannot be given
+    /// another session's.
     pub(crate) fn register_with_provider(
         self: &Arc<Self>,
         session_id: &str,
@@ -942,7 +954,11 @@ fn write_protected_json(path: &Path, value: &Value) -> io::Result<()> {
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        protect_file(&temp)?;
+        // The DACL is narrowed on the temp file, before the rename: the helper
+        // lives in `security.rs` so this config and the tool policy cannot
+        // drift on what "protected" means; off Windows there is no DACL.
+        #[cfg(windows)]
+        crate::security::apply_current_user_dacl(&temp)?;
         fs::rename(&temp, path)
     })();
     if result.is_err() {
@@ -968,56 +984,6 @@ fn cleanup_stale_configs(runtime_dir: &Path) -> io::Result<()> {
             let _ = fs::remove_file(path);
         }
     }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn protect_file(path: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr;
-    use windows_sys::Win32::Foundation::{GetLastError, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    };
-    use windows_sys::Win32::Security::{
-        SetFileSecurityW, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    };
-
-    let sid = crate::security::current_user_sid()?;
-    let sddl = crate::security::user_only_sddl(&sid);
-    let wide_sddl: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
-    let converted = unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            wide_sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            ptr::null_mut(),
-        )
-    };
-    if converted == 0 || descriptor.is_null() {
-        return Err(io::Error::from_raw_os_error(
-            unsafe { GetLastError() } as i32
-        ));
-    }
-    let wide_path: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let result =
-        unsafe { SetFileSecurityW(wide_path.as_ptr(), DACL_SECURITY_INFORMATION, descriptor) };
-    let error = (result == 0).then(|| unsafe { GetLastError() });
-    unsafe {
-        LocalFree(descriptor as _);
-    }
-    error.map_or(Ok(()), |error| {
-        Err(io::Error::from_raw_os_error(error as i32))
-    })
-}
-
-#[cfg(not(windows))]
-fn protect_file(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -1514,8 +1480,11 @@ mod tests {
                 .map(|tools| tools.len()),
             Some(1)
         );
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);
         drop(guard);
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
     }
 
     #[test]
@@ -1550,31 +1519,32 @@ mod tests {
             .expect("tool list");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], crate::provider_catalog::MCP_ROSTER_TOOL);
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);
         drop(guard);
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
     }
 
-    /// The inertness proof the contract asks for: without the peer's
-    /// `register_with_provider` switch this gate cannot fire.
+    /// What a `None` provider id means at HEAD, and nothing more.
     ///
-    /// [`McpBroker::register`] carries no provider id, so a session
-    /// registered through it has `provider_id: None`, `is_tool_enabled(None,
-    /// _)` is true for every tool, and the whole catalog is served whatever
-    /// the store holds — no name is ever refused as `Tool disabled by
+    /// [`McpBroker::register`] is a `#[cfg(test)]` seam: both production call
+    /// sites in `session.rs` — spawn and ACP resume — register through
+    /// [`McpBroker::register_with_provider`], so this test does not exercise a
+    /// live production path. It pins one behaviour: a session registered
+    /// without a provider id has `provider_id: None`, `is_tool_enabled(None,
+    /// _)` is therefore true for every tool, and the whole catalog is served
+    /// whatever the store holds — no name is ever refused as `Tool disabled by
     /// policy`. The same request against the same stored policy is refused in
-    /// `the_provider_registered_path_applies_that_policy`; the two tests
-    /// differ only in the register call the session came through, so together
-    /// they pin the gate to the provider id taken at registration rather than
-    /// to the policy file alone.
+    /// `the_provider_registered_path_applies_that_policy`; the two differ only
+    /// in the provider id the session registered with, so together they pin
+    /// the gate to that id rather than to the policy file alone.
     ///
-    /// This is not a gap pinned for the record: `session.rs` still registers
-    /// through the three-argument call, so this is the live production path
-    /// today and the test runs. When the peer switches both call sites to
-    /// `register_with_provider`, `register` loses its last caller and this
-    /// test goes with it — until then it is the only thing standing between
-    /// "the gate is inert" and an assertion nobody executes.
+    /// The `None` id is reachable in production only through the same-user
+    /// `DEVBOULE_ACP_COMMAND` development override, described on
+    /// [`McpBroker::register_with_provider`].
     #[test]
-    fn the_unpatched_register_path_does_not_consult_a_stored_policy() {
+    fn a_registration_without_a_provider_id_consults_no_policy() {
         let state = ServerState::new("mcp-tool-policy-gap".to_string());
         let owner = owner("mcp-policy-gap-user", "mcp-policy-gap-client");
         let guard = state
@@ -1630,14 +1600,18 @@ mod tests {
         );
         assert!(roster.starts_with("HTTP/1.1 200"));
         assert_eq!(response_json(&roster)["result"]["isError"], false);
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);
         drop(guard);
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
     }
 
-    /// The inverse expectation of the ignored test above: the same request
-    /// and the same stored policy, refused by the policy because this session
-    /// did name its provider. This is the behaviour the peer's `session.rs`
-    /// patch switches the production path onto.
+    /// The inverse of `a_registration_without_a_provider_id_consults_no_policy`:
+    /// the same request and the same stored policy, refused by the policy
+    /// because this session did name its provider. Both production call sites
+    /// in `session.rs` register through [`McpBroker::register_with_provider`],
+    /// so this is the production path.
     #[test]
     fn the_provider_registered_path_applies_that_policy() {
         let state = ServerState::new("mcp-tool-policy-gated".to_string());
@@ -1663,8 +1637,11 @@ mod tests {
             response_json(&response).pointer("/error/message"),
             Some(&json!("Tool disabled by policy"))
         );
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);
         drop(guard);
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
     }
 
     #[test]
