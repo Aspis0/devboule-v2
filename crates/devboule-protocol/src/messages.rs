@@ -1850,7 +1850,7 @@ mod tests {
                 text: "hello".to_string(),
                 attachments: Vec::new(),
                 active_turn_behavior: None,
-                attachment_references: Vec::new(),
+            attachment_references: Vec::new(),
                 idempotency_key: None,
             }
         );
@@ -2054,6 +2054,7 @@ mod tests {
                 mime_type: "image/png".to_string(),
                 data: "AA==".to_string(),
             }],
+            active_turn_behavior: None,
             attachment_references: vec![reference('a'), reference('b')],
             idempotency_key: None,
         };
@@ -2093,6 +2094,7 @@ mod tests {
             subscription_id: 11,
             text: "hello".to_string(),
             attachments: Vec::new(),
+            active_turn_behavior: None,
             attachment_references: Vec::new(),
             idempotency_key: None,
         })

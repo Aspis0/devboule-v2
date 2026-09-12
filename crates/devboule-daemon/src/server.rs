@@ -1347,8 +1347,16 @@ fn run_windows() -> Result<(), DaemonError> {
     // killed first. Sweep the ones past the retention window on every start:
     // this is the fallback existence's only reason to be here.
     let swept = state.sessions.sweep_attachments(SystemTime::now());
-    if swept > 0 {
-        eprintln!("daemon removed {swept} attachment folder(s) left by sessions that never closed");
+    if !swept.is_empty() {
+        // The bytes are summed over the folders that could be read; one that
+        // could not is counted as a folder and not as zero bytes, so the line
+        // never claims to have reclaimed less than it did.
+        let reclaimed: u64 = swept.iter().filter_map(|(_, bytes)| *bytes).sum();
+        eprintln!(
+            "daemon removed {} attachment folder(s) left by sessions that never closed, \
+             reclaiming at least {reclaimed} byte(s)",
+            swept.len()
+        );
     }
     let mcp_server = state.mcp.start(&state).map_err(DaemonError::from)?;
     let (listener, shutdown) = transport::bind(&paths, Arc::clone(&state.stop))?;
@@ -3219,6 +3227,11 @@ fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> Option<&'s
         // variant is a decision here. A frame that names a session but no mode
         // is the registry's business, not this gate's.
         ClientMessage::Hello(_) => None,
+        // A deposit writes bytes into a session's folder and never reaches the
+        // agent: nothing is prompted, so there is no mode to vet. The send that
+        // later names the deposited reference is the frame this gate stops, and
+        // it is already covered by the `SessionSend` arm above.
+        ClientMessage::SessionDeposit { .. } => None,
         ClientMessage::Ping { .. } => None,
         ClientMessage::Status { .. } => None,
         ClientMessage::DaemonDiagnostics { .. } => None,
@@ -6139,6 +6152,7 @@ mod tests {
             text: "hello".to_string(),
             attachments: Vec::new(),
             active_turn_behavior: None,
+            attachment_references: Vec::new(),
             idempotency_key: None,
         };
 
@@ -6504,6 +6518,7 @@ mod tests {
                     text: "hello".to_string(),
                     attachments: Vec::new(),
                     active_turn_behavior: None,
+                    attachment_references: Vec::new(),
                     idempotency_key: None,
                 }
             ),
@@ -6650,6 +6665,7 @@ mod tests {
             text: "hello".to_string(),
             attachments,
             active_turn_behavior: None,
+            attachment_references: Vec::new(),
             idempotency_key: None,
         };
         let dispatch_send = |attachments: Vec<PromptAttachment>, conn: &Arc<ConnHandle>| {
@@ -6911,6 +6927,7 @@ mod tests {
                     text: "hi".to_string(),
                     attachments: Vec::new(),
                     active_turn_behavior: None,
+                    attachment_references: Vec::new(),
                     idempotency_key: None,
                 },
                 ClientMessage::SessionSetMode {
@@ -6974,6 +6991,7 @@ mod tests {
                 text: text.to_string(),
                 attachments,
                 active_turn_behavior: None,
+                attachment_references: Vec::new(),
                 idempotency_key: Some("retry-me".to_string()),
             };
         let message = |request: ClientMessage, conn: &Arc<ConnHandle>| match dispatch(

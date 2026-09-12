@@ -1398,7 +1398,18 @@ impl SessionRegistry {
     }
 
     /// Sweep attachment folders left behind by a session that never closed.
-    pub(crate) fn sweep_attachments(&self, now: std::time::SystemTime) -> usize {
+    ///
+    /// Returns what it reclaimed — one entry per swept session, with the bytes
+    /// it held, or `None` when the folder could not be read and the size is
+    /// unknown. A count alone would not be enough: whoever meters deposits per
+    /// device decrements against these numbers, and a sweep that did not say
+    /// what it freed would leave that counter charging for bytes that no longer
+    /// exist. An unreadable folder is `None` rather than zero for the same
+    /// reason — unknown is not empty.
+    pub(crate) fn sweep_attachments(
+        &self,
+        now: std::time::SystemTime,
+    ) -> Vec<(String, Option<u64>)> {
         self.attachments
             .sweep_older_than(now, crate::attachment_store::ATTACHMENT_RETENTION)
     }
