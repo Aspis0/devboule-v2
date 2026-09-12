@@ -29,8 +29,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use devboule_protocol::{
-    ErrorCode, JournalRetention, Project, RetentionPatch, Session, SessionEvent, SessionKind,
-    SessionState, TranscriptIntegrity, WireError, Workspace, WorkspaceIsolation,
+    ErrorCode, JournalRetention, PeerRole, Project, RetentionPatch, Session, SessionEvent,
+    SessionKind, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity, WireError,
+    Workspace, WorkspaceIsolation,
 };
 
 #[path = "journal_replay.rs"]
@@ -50,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 8;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 9;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -229,6 +230,10 @@ pub struct SessionRecord {
     pub reaped: bool,
     /// Provider-side session id used by a future resume/load handshake.
     pub peer_session_id: Option<String>,
+    /// Who asked for this session (§8 R2). Written once, by the create that
+    /// made the row; read by the peer gate and the permission card's
+    /// provenance line. Every row that predates v9 is `local`.
+    pub origin: SessionOrigin,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -416,6 +421,7 @@ impl SessionRecord {
             state,
             elapsed_ms: None,
             created_at_ms: self.created_at_ms,
+            origin: self.origin.clone(),
         }
     }
 }
@@ -2115,8 +2121,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
             generation, status, exit_code, closed, last_seq, degraded,
             dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
-            reaped, peer_session_id, provider
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20)
+            reaped, peer_session_id, provider, origin_kind, origin_device, origin_role
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -2131,7 +2137,10 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             trimmed_bytes = MAX(sessions.trimmed_bytes, excluded.trimmed_bytes),
             reaped = MAX(sessions.reaped, excluded.reaped),
             peer_session_id = COALESCE(excluded.peer_session_id, sessions.peer_session_id),
-            provider = COALESCE(excluded.provider, sessions.provider)",
+            provider = COALESCE(excluded.provider, sessions.provider),
+            origin_kind = COALESCE(excluded.origin_kind, sessions.origin_kind),
+            origin_device = COALESCE(excluded.origin_device, sessions.origin_device),
+            origin_role = COALESCE(excluded.origin_role, sessions.origin_role)",
         params![
             record.id,
             record.owner,
@@ -2153,6 +2162,9 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             if record.reaped { 1 } else { 0 },
             record.peer_session_id,
             record.provider,
+            origin_kind_str(&record.origin),
+            record.origin.device_id,
+            record.origin.role.map(|role| role.as_str().to_string()),
         ],
     )?;
     Ok(())
@@ -2504,6 +2516,51 @@ pub(super) fn parse_kind(value: &str) -> Result<SessionKind, JournalError> {
     }
 }
 
+/// The stored spelling of an origin kind. `local` is the v9 column default, so
+/// a row whose writer never touched the column still reads back as the person
+/// at this machine; `unknown` is what a row reads back as when the column says
+/// something this build does not know (`origin_from_columns`).
+fn origin_kind_str(origin: &SessionOrigin) -> &'static str {
+    match origin.kind {
+        SessionOriginKind::Local => "local",
+        SessionOriginKind::Peer => "peer",
+        SessionOriginKind::Unknown => "unknown",
+    }
+}
+
+/// The origin one row carries.
+///
+/// `peer` is the only kind that names a device, so it is the only one that
+/// opens anything to a peer: the `Daemon` branch of `check_user_owner` matches
+/// on `origin.device_id`, and a row whose `kind` is missing or is a spelling
+/// this build does not recognise reads back as [`SessionOriginKind::Unknown`]
+/// — not `local`. `local` is written by every pre-v9 row's `DEFAULT`, and it
+/// is a *claim* about who owns the session that only this machine's own user
+/// may act on; a `NULL` or unreadable column is not that claim.
+///
+/// A `peer` row missing its device id keeps `kind = peer` with no device, which
+/// refuses for the same reason: an origin that cannot name the device that
+/// asked is not authority for any device.
+pub(super) fn origin_from_columns(
+    kind: Option<String>,
+    device: Option<String>,
+    role: Option<String>,
+) -> SessionOrigin {
+    match kind.as_deref() {
+        Some("peer") => SessionOrigin {
+            kind: SessionOriginKind::Peer,
+            device_id: device,
+            role: role.as_deref().and_then(PeerRole::parse),
+        },
+        Some("local") => SessionOrigin::local(),
+        _ => SessionOrigin {
+            kind: SessionOriginKind::Unknown,
+            device_id: None,
+            role: None,
+        },
+    }
+}
+
 fn encode_chunks(chunks: &[(u64, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
@@ -2587,7 +2644,85 @@ pub fn new_session_record(
         trimmed_bytes: 0,
         reaped: false,
         peer_session_id: None,
+        origin: SessionOrigin::local(),
     }
+}
+
+/// The wire tag of a permission request in a stored event payload
+/// (`SessionEvent`'s internal tag).
+const PERMISSION_REQUEST_TAG: &str = "permission_request";
+
+/// What the v9 migration does with one stored payload.
+pub(crate) enum OriginBackfill {
+    /// Not a permission request, or it already carries an origin: leave it.
+    Nothing,
+    /// The same payload with a `local` origin written into it.
+    Rewritten(Vec<u8>),
+    /// The bytes are not a complete `SessionEvent` — leave them and count them.
+    Unreadable,
+    /// Larger than [`MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES`]: never read at all,
+    /// left byte-for-byte and counted (H8).
+    Oversized,
+}
+
+/// The largest stored payload the v9 backfill will look at (H8).
+///
+/// The migration runs at startup, before anything serves, and it used to read
+/// every `agent_report` payload into memory to decide what to do with it. One
+/// mebibyte is far above any real permission request (the field caps in
+/// `permission_broker.rs` are kilobytes) and bounds what a hostile or damaged
+/// journal can make the daemon allocate while nobody is watching.
+pub(crate) const MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES: usize = 1024 * 1024;
+
+/// The payload with a `local` origin written into it, when it is a permission
+/// request stored before the field existed.
+///
+/// The v9 migration (`journal_schema.rs`) calls this so that old data is made
+/// *valid* rather than left to degrade at replay — `origin` is required on the
+/// wire, and a pre-origin payload would be dropped by hydration and flagged by
+/// the live replay. `local` is a fact about those rows, not a guess: the daemon
+/// that wrote them had no paired devices.
+///
+/// Two bounds, both of them H8. The payload is read at all only under
+/// [`MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES`], and it is rewritten only when the
+/// **complete** `SessionEvent` it claims to be deserializes: a JSON object
+/// tagged `permission_request` whose event fields are wrong is a row replay
+/// would drop, and giving it an origin would make that damage look repaired.
+/// Anything not rewritten keeps its bytes and its checksum exactly.
+pub(crate) fn payload_with_origin(payload: &[u8]) -> OriginBackfill {
+    if payload.len() > MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES {
+        return OriginBackfill::Oversized;
+    }
+    let Ok(serde_json::Value::Object(mut object)) =
+        serde_json::from_slice::<serde_json::Value>(payload)
+    else {
+        return OriginBackfill::Unreadable;
+    };
+    if object.get("type").and_then(serde_json::Value::as_str) != Some(PERMISSION_REQUEST_TAG) {
+        return OriginBackfill::Nothing;
+    }
+    if object.contains_key("origin") {
+        return OriginBackfill::Nothing;
+    }
+    let mut origin = serde_json::Map::new();
+    origin.insert(
+        "kind".to_string(),
+        serde_json::Value::String("local".to_string()),
+    );
+    object.insert("origin".to_string(), serde_json::Value::Object(origin));
+    let rewritten = match serde_json::to_vec(&serde_json::Value::Object(object)) {
+        Ok(rewritten) => rewritten,
+        // Serializing a value that just parsed cannot fail in practice; if it
+        // ever did, the row is left alone rather than written half-valid.
+        Err(_) => return OriginBackfill::Unreadable,
+    };
+    // The shape is not the contract: only a payload the replay path could
+    // deserialize is worth rewriting, because that is the path this backfill
+    // exists to keep working.
+    if serde_json::from_slice::<SessionEvent>(&rewritten).is_err() {
+        return OriginBackfill::Unreadable;
+    }
+    OriginBackfill::Rewritten(rewritten)
 }
 
 pub fn agent_report_record(
@@ -2700,6 +2835,67 @@ mod tests {
     use super::*;
     use devboule_protocol::TranscriptIntegrity;
     use std::process::Command;
+
+    /// §8 R2 / H7: the origin a *row* reads back as. `local` is the pre-v9
+    /// column default and stays local; a missing or unrecognised `kind` is
+    /// `Unknown`, which is not local and names no device. The `Daemon`
+    /// ownership arm reads `device_id` and requires `kind == Peer`, so a row
+    /// that cannot name the device that asked is refused exactly like a local
+    /// session instead of being promoted to one.
+    #[test]
+    fn a_stored_origin_kind_reads_back_as_local_peer_or_unknown() {
+        let peer = origin_from_columns(
+            Some("peer".to_string()),
+            Some("device-phone".to_string()),
+            Some("client".to_string()),
+        );
+        assert_eq!(peer.kind, SessionOriginKind::Peer);
+        assert_eq!(peer.device_id.as_deref(), Some("device-phone"));
+        assert_eq!(peer.role, Some(PeerRole::Client));
+        assert!(!peer.is_local());
+
+        assert!(origin_from_columns(Some("local".to_string()), None, None).is_local());
+        // A NULL column is not a claim about who asked for the session.
+        for kind in [None, Some("relay".to_string()), Some("".to_string())] {
+            let unknown = origin_from_columns(kind.clone(), None, None);
+            assert_eq!(
+                unknown.kind,
+                SessionOriginKind::Unknown,
+                "kind {kind:?} is not local and is not peer"
+            );
+            assert!(!unknown.is_local());
+            assert_eq!(unknown.device_id, None);
+        }
+        // Even with a device in the row: the kind is the whole answer, so an
+        // unknown spelling names nobody.
+        let unknown = origin_from_columns(
+            Some("relay".to_string()),
+            Some("device-x".to_string()),
+            Some("daemon".to_string()),
+        );
+        assert_eq!(unknown.kind, SessionOriginKind::Unknown);
+        assert_eq!(unknown.device_id, None);
+        assert_eq!(unknown.role, None);
+
+        // What the writer stores is what the reader maps back: the three
+        // spellings round trip, including the one no writer produces yet.
+        for origin in [
+            SessionOrigin::local(),
+            SessionOrigin::peer("device-phone", PeerRole::Daemon),
+            SessionOrigin {
+                kind: SessionOriginKind::Unknown,
+                device_id: None,
+                role: None,
+            },
+        ] {
+            let columns = (
+                Some(origin_kind_str(&origin).to_string()),
+                origin.device_id.clone(),
+                origin.role.map(|role| role.as_str().to_string()),
+            );
+            assert_eq!(origin_from_columns(columns.0, columns.1, columns.2), origin);
+        }
+    }
 
     #[test]
     fn journal_test_directory_does_not_reuse_pid_counter_candidate() {

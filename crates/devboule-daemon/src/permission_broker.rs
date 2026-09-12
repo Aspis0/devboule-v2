@@ -3,13 +3,102 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use devboule_protocol::{PermissionOption, PermissionOutcome, SessionEvent};
+use devboule_protocol::{
+    PermissionOption, PermissionOutcome, SessionEvent, SessionOrigin, SessionOriginKind,
+};
 
 use super::SessionRuntime;
 
 const MAX_PENDING_ACP_PERMISSIONS: usize = 32;
+/// How many undecided permission cards one paired device may hold at once
+/// across **every** session (`§8b A14`, H2).
+///
+/// A peer's session can raise one card per tool call, and every one of them
+/// lands in the same queue the person at this machine reads. Three is the
+/// design's number: enough for an agent's immediate steps, small enough that a
+/// device cannot turn the desktop into its own approval prompt. The fourth is
+/// refused, not stacked.
+///
+/// The count lives in [`peer_cards`], one map for the whole daemon, not in the
+/// per-session table: a per-broker count gave a device three cards *per
+/// session*, so opening a second session bought it three more, and the third
+/// session nine. The scope of the promise is the device, so the scope of the
+/// counter is the device.
+const MAX_PENDING_FOR_PEER: usize = 3;
+
+/// The undecided cards this daemon is holding, per authenticated origin device.
+///
+/// One map for the whole server (this process): the broker table is per
+/// session, and the allowance is per device. The key is the **origin device id
+/// this daemon stamped** on the request (`stamp_origin` writes the session's
+/// stored origin; nothing a caller sends can reach it), which is the same id
+/// `check_user_owner` scopes a `Daemon` peer by.
+///
+/// `OnceLock` rather than a field because the brokers are built inside the
+/// provider clients: the counter has to exist before any of them, and one
+/// process is one daemon with one card allowance.
+fn peer_cards() -> &'static Mutex<HashMap<String, usize>> {
+    static PEER_CARDS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+    PEER_CARDS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn peer_cards_lock() -> std::sync::MutexGuard<'static, HashMap<String, usize>> {
+    peer_cards()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+/// Take one of `MAX_PENDING_FOR_PEER` slots for `device_id`. `false` when the
+/// device is already holding all of them.
+///
+/// Reserved *before* the card is inserted, so the allowance cannot be
+/// overrun by two sessions registering at the same moment.
+fn reserve_peer_card(device_id: &str) -> bool {
+    let mut cards = peer_cards_lock();
+    let count = cards.entry(device_id.to_string()).or_insert(0);
+    if *count >= MAX_PENDING_FOR_PEER {
+        return false;
+    }
+    *count += 1;
+    true
+}
+
+/// Give back one slot: the card this device was holding is decided, cancelled
+/// or gone with its session.
+fn release_peer_card(device_id: &str) {
+    let mut cards = peer_cards_lock();
+    if let Some(count) = cards.get_mut(device_id) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            cards.remove(device_id);
+        }
+    }
+}
+
+/// Forget every slot `device_id` holds. The peer's connections are gone, so
+/// the cards it was holding can no longer be answered by it; the cards
+/// themselves stay pending for the person at this machine.
+pub(crate) fn release_peer_cards(device_id: &str) {
+    peer_cards_lock().remove(device_id);
+}
+
+/// The slots `device_id` currently holds. Test-only: the count is the thing
+/// the allowance is about, and a test that cannot read it can only assert
+/// refusals.
+#[cfg(test)]
+pub(crate) fn peer_card_count(device_id: &str) -> usize {
+    peer_cards_lock().get(device_id).copied().unwrap_or(0)
+}
+
+/// Release the slot one removed card was holding, when it was a peer's.
+fn release_card_slot(request: &SessionEvent) {
+    if let Some(device_id) = peer_origin_device(request) {
+        release_peer_card(&device_id);
+    }
+}
+
 pub(super) const MAX_ACP_PERMISSION_FIELD_BYTES: usize = 8 * 1024;
 pub(super) const MAX_ACP_PERMISSION_OPTIONS: usize = 32;
 const MAX_ACP_PERMISSION_ARGS: usize = 256;
@@ -143,6 +232,12 @@ impl PermissionBroker {
         request: SessionEvent,
         runtime: &Arc<SessionRuntime>,
     ) -> Result<Arc<PendingPermission>, PermissionResponseError> {
+        // The origin is stamped here, at the one point a request becomes
+        // pending: the card renders a `peer` origin as its own first line, and
+        // the request's own text must never be able to imitate it (§8b A14).
+        // `publish_agent_event_with_seq` writes the same value again on the way
+        // out, which is what covers publishers that never come through here.
+        let request = stamp_origin(request, runtime.origin());
         let tool_call_id = match &request {
             SessionEvent::PermissionRequest { tool_call_id, .. } => tool_call_id.clone(),
             _ => {
@@ -180,12 +275,28 @@ impl PermissionBroker {
                 "permission request {tool_call_id} is already pending"
             )));
         }
+        // One paired device may hold at most `MAX_PENDING_FOR_PEER` undecided
+        // cards, across every session it owns: the queue a peer fills is the
+        // queue the person at this machine has to read. The slot is taken from
+        // the daemon-wide counter before the card exists, and the counter is
+        // keyed by the origin device this request was stamped with, so two
+        // devices' sessions never share the allowance and two sessions of one
+        // device never multiply it (H2).
+        if let Some(device_id) = peer_origin_device(&pending.request) {
+            if !reserve_peer_card(&device_id) {
+                return Err(PermissionResponseError::InvalidRequest(format!(
+                    "that device already has {MAX_PENDING_FOR_PEER} permission requests waiting"
+                )));
+            }
+        }
         let session_pending = table
             .entries
             .values()
             .filter(|pending| pending.session_id == runtime.session_id)
             .count();
         if session_pending >= MAX_PENDING_ACP_PERMISSIONS {
+            // The slot taken above belongs to a card that will not exist.
+            release_card_slot(&pending.request);
             return Err(PermissionResponseError::InvalidRequest(format!(
                 "session has reached the maximum of {MAX_PENDING_ACP_PERMISSIONS} pending permission requests"
             )));
@@ -317,6 +428,9 @@ impl PermissionBroker {
             .lock()
             .map(|mut table| table.entries.drain().map(|(_, pending)| pending).collect())
             .unwrap_or_else(|_| Vec::new());
+        for card in &pending {
+            release_card_slot(&card.request);
+        }
         self.complete_cancelled(pending);
     }
 
@@ -330,6 +444,9 @@ impl PermissionBroker {
                 table.entries.drain().map(|(_, pending)| pending).collect()
             })
             .unwrap_or_else(|_| Vec::new());
+        for card in &pending {
+            release_card_slot(&card.request);
+        }
         self.complete_cancelled(pending);
     }
 
@@ -361,10 +478,15 @@ impl PermissionBroker {
                 return Err(PermissionResponseError::NotFound);
             }
         }
-        table
+        let pending = table
             .entries
             .remove(tool_call_id)
-            .ok_or(PermissionResponseError::NotFound)
+            .ok_or(PermissionResponseError::NotFound)?;
+        // The card is gone, so the slot it held goes back to its device. This
+        // is the one place an entry leaves the table on its own, so an answer,
+        // the auto-answer path and a cancel all release through it.
+        release_card_slot(&pending.request);
+        Ok(pending)
     }
 
     /// Decide the auto-answer and remove the entry in the same lock. The
@@ -391,11 +513,12 @@ impl PermissionBroker {
         let Some(option) = select_allow_option(&options).cloned() else {
             return Ok(None);
         };
-        table
+        let pending = table
             .entries
             .remove(tool_call_id)
-            .map(|pending| Some(AutoAnswer { pending, option }))
-            .ok_or(PermissionResponseError::NotFound)
+            .ok_or(PermissionResponseError::NotFound)?;
+        release_card_slot(&pending.request);
+        Ok(Some(AutoAnswer { pending, option }))
     }
 
     fn complete(
@@ -502,7 +625,7 @@ impl PermissionBroker {
         request: SessionEvent,
         runtime: &Arc<SessionRuntime>,
     ) -> HostDecision {
-        let pending = match self.register_host(request.clone(), runtime) {
+        let pending = match self.register_host(request, runtime) {
             Ok(pending) => pending,
             Err(_) => return HostDecision::Cancelled,
         };
@@ -510,7 +633,9 @@ impl PermissionBroker {
             let _ = self.cancel(&pending.tool_call_id, &pending, "capability_not_supported");
             return HostDecision::Cancelled;
         }
-        let _ = runtime.publish_agent_event(request, None);
+        // The card the client is shown is the registered one, origin included:
+        // the caller's own event never carries a stamp.
+        let _ = runtime.publish_agent_event(pending.request.clone(), None);
         self.wait_for_decision(&pending)
     }
 
@@ -565,6 +690,56 @@ fn permission_resolved_event(
         selected_option_id: selected_option.map(|option| option.option_id.clone()),
         selected_option_kind: selected_option.map(|option| option.kind.clone()),
         selected_option_name: selected_option.map(|option| option.name.clone()),
+    }
+}
+
+/// The same event with the session's origin written into it, when it is a
+/// permission request.
+///
+/// Every field is named, deliberately: a pattern with `..` would silently drop
+/// the next field this variant gains, and the card's provenance line is
+/// written by whoever adds it. A compile error here is the reminder.
+///
+/// `origin` is not `Option`, so this **overwrites** whatever a provider client
+/// put there: the placeholder cannot survive to the wire, and a peer session's
+/// card cannot be mislabelled as this machine's own. Called from the broker
+/// (the pending entry carries the truth for the per-peer card count) and from
+/// `SessionRuntime::publish_agent_event_with_seq`, which is the one place a
+/// request leaves for a subscriber.
+pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> SessionEvent {
+    match request {
+        SessionEvent::PermissionRequest {
+            tool_call_id,
+            title,
+            description,
+            command,
+            args,
+            cwd,
+            env,
+            options,
+            origin: _,
+        } => SessionEvent::PermissionRequest {
+            tool_call_id,
+            title,
+            description,
+            command,
+            args,
+            cwd,
+            env,
+            options,
+            origin,
+        },
+        other => other,
+    }
+}
+
+/// The device id of a request's origin, when it came from a paired device.
+fn peer_origin_device(request: &SessionEvent) -> Option<String> {
+    match request {
+        SessionEvent::PermissionRequest { origin, .. } => (origin.kind == SessionOriginKind::Peer)
+            .then(|| origin.device_id.clone())
+            .flatten(),
+        _ => None,
     }
 }
 
@@ -782,6 +957,10 @@ pub(super) fn permission_with_kinds(tool_call_id: &str, kinds: &[(&str, &str)]) 
                 kind: (*kind).to_string(),
             })
             .collect(),
+        // A provider client writes `local` as a placeholder; the daemon
+        // overwrites it with the session's own origin before the request leaves
+        // for a subscriber.
+        origin: SessionOrigin::local(),
     }
 }
 
@@ -826,11 +1005,12 @@ pub(super) type SentResponses = Vec<(u64, serde_json::Value)>;
 mod tests {
     use super::SessionRuntime;
     use super::{
-        permission, permission_path, permission_with_kinds, test_broker, PermissionBroker,
-        PermissionSender, MAX_ACP_PERMISSION_ARGS, MAX_PENDING_ACP_PERMISSIONS,
+        peer_card_count, permission, permission_path, permission_with_kinds, test_broker,
+        PermissionBroker, PermissionSender, MAX_ACP_PERMISSION_ARGS, MAX_PENDING_ACP_PERMISSIONS,
+        MAX_PENDING_FOR_PEER,
     };
     use crate::journal::Journal;
-    use devboule_protocol::{PermissionOutcome, SessionEvent};
+    use devboule_protocol::{PeerRole, PermissionOutcome, SessionEvent, SessionOrigin};
     use rusqlite::Connection;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
@@ -1321,6 +1501,183 @@ mod tests {
             "rejection must name the arg cap: {error}"
         );
     }
+    /// §8b A14: the origin the broker stamps is what the card's provenance
+    /// line renders. A peer session's card names its device; a session whose
+    /// origin the registry never installed says `unknown`, which the app draws
+    /// as a line that does not claim to be this machine. `local` — drawn as no
+    /// line at all — is only ever what a *measured* local session gets.
+    #[test]
+    fn a_registered_request_carries_the_sessions_origin() {
+        let (broker, _sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_origin(SessionOrigin::peer("device-phone", PeerRole::Client));
+        broker
+            .register(1, permission("origin-peer"), &runtime)
+            .expect("register");
+        let pending = broker.take("origin-peer", None).expect("pending");
+        match &pending.request {
+            SessionEvent::PermissionRequest { origin, .. } => assert_eq!(
+                origin,
+                &SessionOrigin::peer("device-phone", PeerRole::Client)
+            ),
+            other => panic!("permission fixture is a PermissionRequest: {other:?}"),
+        }
+
+        // A runtime the registry never told is *not* this machine's: the
+        // broker stamps what `SessionRuntime::origin()` holds, and that is
+        // `unknown` until the registry measures the session. `local` here
+        // would be invented provenance — which is exactly what this test now
+        // refuses to accept.
+        let unstored_runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(2, permission("origin-unstored"), &unstored_runtime)
+            .expect("register");
+        let pending = broker.take("origin-unstored", None).expect("pending");
+        match &pending.request {
+            SessionEvent::PermissionRequest { origin, .. } => {
+                assert_eq!(origin, &SessionOrigin::unknown());
+                assert!(!origin.is_local());
+            }
+            other => panic!("permission fixture is a PermissionRequest: {other:?}"),
+        }
+    }
+
+    /// A device may hold three undecided cards; the fourth is refused rather
+    /// than stacked in the queue the person at this machine has to read.
+    ///
+    /// The device id is this test's own: the allowance is now daemon-wide, so
+    /// a shared id would let two tests running in parallel spend each other's
+    /// slots.
+    #[test]
+    fn a_peer_may_hold_three_permission_cards_and_not_four() {
+        let (broker, _sent) = test_broker();
+        let device = "device-three-cards";
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_origin(SessionOrigin::peer(device, PeerRole::Client));
+        for index in 0..MAX_PENDING_FOR_PEER {
+            broker
+                .register(index as u64, permission(&format!("card-{index}")), &runtime)
+                .expect("a card inside the allowance");
+        }
+        assert_eq!(peer_card_count(device), MAX_PENDING_FOR_PEER);
+        // `expect_err` would need `PendingPermission: Debug`, and the type holds
+        // a responder that is not printable on purpose; a match is the honest
+        // shape here.
+        let error = match broker.register(9, permission("card-over"), &runtime) {
+            Ok(_) => panic!("the fourth card for one device must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains(&MAX_PENDING_FOR_PEER.to_string()),
+            "the refusal names the allowance: {error}"
+        );
+        assert_eq!(broker.pending_len(), MAX_PENDING_FOR_PEER);
+        assert_eq!(
+            peer_card_count(device),
+            MAX_PENDING_FOR_PEER,
+            "a refusal must not spend a slot"
+        );
+        // Closing the session the cards belonged to gives all three back.
+        broker.close();
+        assert_eq!(peer_card_count(device), 0);
+    }
+
+    /// H2: the allowance is the *device's*, so two sessions of one paired
+    /// device share it. Three cards across two sessions, and the fourth is
+    /// refused whichever session asks for it.
+    #[test]
+    fn one_peer_holds_three_cards_across_two_sessions_and_not_four() {
+        let device = "device-two-sessions";
+        let (first, _) = test_broker();
+        let (second, _) = test_broker();
+        let first_runtime = Arc::new(SessionRuntime::new());
+        first_runtime.set_origin(SessionOrigin::peer(device, PeerRole::Client));
+        let second_runtime = Arc::new(SessionRuntime::new());
+        second_runtime.set_origin(SessionOrigin::peer(device, PeerRole::Client));
+
+        // Two cards in one session, one in the other: the device is full.
+        for index in 0..2u64 {
+            first
+                .register(index, permission(&format!("first-{index}")), &first_runtime)
+                .expect("a card inside the device's allowance");
+        }
+        second
+            .register(2, permission("second-0"), &second_runtime)
+            .expect("the third card of the same device");
+        assert_eq!(peer_card_count(device), MAX_PENDING_FOR_PEER);
+
+        for (broker, runtime, label) in [
+            (&first, &first_runtime, "the first session"),
+            (&second, &second_runtime, "the second session"),
+        ] {
+            let error = match broker.register(9, permission("over"), runtime) {
+                Ok(_) => panic!("{label} must not get a fourth card for this device"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains(&MAX_PENDING_FOR_PEER.to_string()),
+                "{label}: {error}"
+            );
+        }
+
+        // A second session closing releases the one card it held, and the
+        // device is back inside its allowance.
+        second.close();
+        assert_eq!(peer_card_count(device), 2);
+        first
+            .register(9, permission("after-close"), &first_runtime)
+            .expect("the slot the closed session held is available again");
+        assert_eq!(peer_card_count(device), MAX_PENDING_FOR_PEER);
+        first.close();
+        assert_eq!(peer_card_count(device), 0);
+    }
+
+    /// `release_peer_cards` is the disconnect half: the device is gone, so
+    /// nothing it left pending may hold a slot for the rest of the process.
+    #[test]
+    fn a_disconnected_peer_gives_every_slot_back() {
+        let device = "device-disconnect";
+        let (broker, _) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.set_origin(SessionOrigin::peer(device, PeerRole::Client));
+        broker
+            .register(1, permission("pending-card"), &runtime)
+            .expect("one card");
+        assert_eq!(peer_card_count(device), 1);
+        super::release_peer_cards(device);
+        assert_eq!(peer_card_count(device), 0);
+        // The card itself is still pending for the person at this machine.
+        assert_eq!(broker.pending_len(), 1);
+        broker.close();
+        assert_eq!(
+            peer_card_count(device),
+            0,
+            "closing a session whose slots were already released must not underflow"
+        );
+    }
+
+    /// The allowance is a peer's, not the local person's: a local session may
+    /// still queue more than three, which is what the desktop has always done.
+    #[test]
+    fn a_local_session_is_not_under_the_per_peer_allowance() {
+        let (broker, _sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        for index in 0..MAX_PENDING_FOR_PEER + 1 {
+            broker
+                .register(
+                    index as u64,
+                    permission(&format!("local-{index}")),
+                    &runtime,
+                )
+                .expect("a local session is not capped per peer");
+        }
+        assert_eq!(broker.pending_len(), MAX_PENDING_FOR_PEER + 1);
+    }
+
     #[test]
     fn two_permission_requests_correlate_independently() {
         let (broker, sent) = test_broker();

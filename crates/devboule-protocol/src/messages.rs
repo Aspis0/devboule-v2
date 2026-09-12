@@ -1749,6 +1749,7 @@ mod tests {
                     state: SessionState::Silent { generation: 3 },
                     elapsed_ms: Some(300_001),
                     attention: None,
+                    origin: crate::SessionOrigin::peer("device-phone", PeerRole::Client),
                 }],
             },
         });

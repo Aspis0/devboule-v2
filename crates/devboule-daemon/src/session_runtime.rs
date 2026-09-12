@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, NoticeSeverity, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionModel, TranscriptIntegrity, WireError,
+    SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin, TranscriptIntegrity, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -83,6 +83,12 @@ pub(crate) struct SessionRuntime {
     pub(crate) session_id: String,
     pub(crate) journal: Option<Arc<Journal>>,
     pub(crate) permission_broker: Option<Arc<PermissionBroker>>,
+    /// Who asked for this session (§8 R2), pushed in by the registry right
+    /// after the runtime is built. `OnceLock` because it is set exactly once
+    /// and read from the permission broker and the peer gate; an unset lock
+    /// reads as `Local`, which is what a session built by a test without an
+    /// origin is.
+    origin: OnceLock<SessionOrigin>,
     pub(crate) stream: Mutex<StreamState>,
     /// The PTY input side, for emulator-generated replies (DSR/CPR). Writes
     /// here are the fast path: never behind the journal, a snapshot, or a
@@ -285,6 +291,7 @@ impl SessionRuntime {
             session_id,
             journal,
             permission_broker: None,
+            origin: OnceLock::new(),
             stream: Mutex::new(StreamState {
                 next_seq: 1,
                 last_applied_seq: 0,
@@ -1073,6 +1080,17 @@ impl SessionRuntime {
         journal_text: Option<&str>,
         event_seq: Option<u64>,
     ) -> bool {
+        // One place, every publisher: a provider client writes `local` as a
+        // placeholder and never has to know which device asked for the session,
+        // because the request is overwritten with the session's stored origin
+        // here — on the way to the journal and to every subscriber (§8b A14).
+        // Overwrite, not fill-if-empty: an absent origin is not expressible, so
+        // the placeholder would otherwise survive as a lie.
+        let event = if matches!(&event, SessionEvent::PermissionRequest { .. }) {
+            super::permission_broker::stamp_origin(event, self.origin())
+        } else {
+            event
+        };
         let was_silent;
         let journal_output;
         {
@@ -1522,6 +1540,26 @@ impl SessionRuntime {
         if let Ok(mut stored) = self.agent_kind.lock() {
             *stored = Some(kind);
         }
+    }
+
+    /// Install the session's origin. Called once, by the registry, right after
+    /// the runtime exists; a second call is ignored rather than a panic,
+    /// because the value is a fact about the session and both writers would
+    /// have the same one.
+    pub(crate) fn set_origin(&self, origin: SessionOrigin) {
+        let _ = self.origin.set(origin);
+    }
+
+    /// The session's origin. `Unknown` before the registry has installed one:
+    /// `local` is measured for a session this machine created, never assumed,
+    /// so a runtime nobody told — a test-built one, or a session whose create
+    /// never reached the registry — cannot have its cards or its session row
+    /// read as this machine's own.
+    pub(crate) fn origin(&self) -> SessionOrigin {
+        self.origin
+            .get()
+            .cloned()
+            .unwrap_or_else(SessionOrigin::unknown)
     }
 
     pub(crate) fn agent_kind(&self) -> Option<SessionKind> {
@@ -2434,6 +2472,7 @@ mod tests {
                 trimmed_bytes: 0,
                 reaped: false,
                 peer_session_id: None,
+                origin: devboule_protocol::SessionOrigin::local(),
             })
             .expect("session row");
         let runtime = Arc::new(SessionRuntime::with_journal(

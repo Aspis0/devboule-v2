@@ -80,7 +80,8 @@ use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_attachments, validate_session_id, Cursor,
     ErrorCode, ErrorDetails, JournalRetention, JournalStats, OwnerId, PermissionOutcome, Project,
     PromptAttachment, RetentionPatch, Session, SessionEvent, SessionKind, SessionModel,
-    SessionState, SessionStateSnapshot, WireError, Workspace, WorkspaceIsolation, MAX_WRITE_BYTES,
+    SessionOrigin, SessionOriginKind, SessionState, SessionStateSnapshot, WireError, Workspace,
+    WorkspaceIsolation, MAX_WRITE_BYTES,
 };
 #[cfg(test)]
 use std::sync::Barrier;
@@ -89,6 +90,7 @@ use crate::attachment_store::AttachmentStore;
 use crate::journal::{new_session_record, Journal, PersistStatus, SessionRecord};
 use crate::mcp_broker::McpSessionGuard;
 use crate::paths::RuntimePaths;
+use crate::peer_policy::{ConnPeer, PeerRole};
 use crate::process_tree::{JobObject, ProcessHandle};
 #[cfg(test)]
 use crate::screen::Screen;
@@ -98,6 +100,10 @@ use devboule_protocol::TranscriptIntegrity;
 
 #[path = "permission_broker.rs"]
 mod permission_broker;
+/// The daemon-wide peer card allowance, re-exported for its disconnect call
+/// site: the boundary that drops a peer connection lives in `server.rs`, and
+/// the counters live beside the brokers that spend them (H2).
+pub(crate) use permission_broker::release_peer_cards;
 #[path = "session_runtime.rs"]
 mod session_runtime;
 pub(crate) use session_runtime::SessionRuntime;
@@ -405,6 +411,9 @@ fn session_metadata_for_resume(
         state: SessionState::Live { generation },
         elapsed_ms: Some(0),
         created_at_ms: record.created_at_ms,
+        // Resume does not re-origin a session: the row keeps the device that
+        // created it.
+        origin: record.origin.clone(),
     }
 }
 
@@ -464,6 +473,21 @@ fn unauthorized() -> WireError {
     )
 }
 
+/// The origin a create from this connection writes.
+///
+/// A local connection — and a `Local` peer identity — is the person at this
+/// machine. A remote one is the paired device with the role it was paired as,
+/// so the stored origin can be rendered on a permission card and scoped on by
+/// the `Daemon` role's ownership branch.
+pub(crate) fn session_origin_for(conn_peer: &Option<ConnPeer>) -> SessionOrigin {
+    match conn_peer {
+        Some(ConnPeer::Remote {
+            device_id, role, ..
+        }) => SessionOrigin::peer(device_id.clone(), *role),
+        _ => SessionOrigin::local(),
+    }
+}
+
 fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireError> {
     let mut parts = session_id.splitn(3, '.');
     if parts.next() != Some("s") {
@@ -487,11 +511,54 @@ fn check_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> 
     }
 }
 
-fn check_user_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> {
-    if entry.owner().user == owner.user {
-        Ok(())
-    } else {
-        Err(unauthorized())
+fn check_user_owner(
+    entry: &RegistryEntry,
+    owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
+) -> Result<(), WireError> {
+    match conn_peer {
+        // A paired `Client` speaks for the person who paired it: the register
+        // of sessions it reaches is that user's, and only that user's. The
+        // effective owner `server.rs` hands down is already that SID, so the
+        // comparison here is the same one a local call makes — stated in the
+        // role branch anyway, because "the peer reaches its paired user" is a
+        // rule about the role, not a side effect of how dispatch built the
+        // owner (`DESIGN-remote-agents.md` §8b A3).
+        Some(ConnPeer::Remote {
+            role: PeerRole::Client,
+            paired_by_user,
+            ..
+        }) => match paired_by_user.as_deref() {
+            Some(paired) if entry.owner().user == paired => Ok(()),
+            // No recorded pairing user, or another account's session: refuse.
+            _ => Err(unauthorized()),
+        },
+        // A `Daemon` peer's scope is the *origin*, not the owner name (§8 R2):
+        // the sessions it created here, and nothing else. A session this
+        // device created is refused even when the owner comparison would pass,
+        // because the origin is the authority A3 names.
+        Some(ConnPeer::Remote {
+            role: PeerRole::Daemon,
+            device_id,
+            ..
+        }) => {
+            let origin = entry.origin();
+            let own_origin = origin.kind == SessionOriginKind::Peer
+                && origin.device_id.as_deref() == Some(device_id.as_str());
+            if own_origin && entry.owner().user == owner.user {
+                Ok(())
+            } else {
+                Err(unauthorized())
+            }
+        }
+        // The pipe: the person at this machine, exactly as before.
+        _ => {
+            if entry.owner().user == owner.user {
+                Ok(())
+            } else {
+                Err(unauthorized())
+            }
+        }
     }
 }
 
@@ -1032,6 +1099,23 @@ enum ProviderProvenance {
     Env,
 }
 
+/// Everything one send needs beyond the registry itself.
+///
+/// Folded into one value rather than seven positional arguments: the call
+/// shape is read in one place, the send path stops growing a parameter per
+/// slice, and `server.rs::session_send` builds it from the frame in one
+/// literal. `origin` is deliberately not here — it is set once at create,
+/// stored on the session, and read from there.
+pub struct SendRequest<'a> {
+    pub session_id: &'a str,
+    pub subscription_id: u64,
+    pub text: &'a str,
+    pub attachments: &'a [PromptAttachment],
+    pub owner: &'a OwnerId,
+    pub conn: &'a ConnHandle,
+    pub mcp_timeout: Duration,
+}
+
 impl SessionRegistry {
     pub(crate) fn runtime_dir(&self) -> &std::path::Path {
         &self.paths.dir
@@ -1341,6 +1425,7 @@ impl SessionRegistry {
                 state: session.state,
                 elapsed_ms: session.elapsed_ms,
                 attention,
+                origin: session.origin,
             })
             .collect()
     }
@@ -1359,6 +1444,7 @@ impl SessionRegistry {
                         state: session.state,
                         elapsed_ms: session.elapsed_ms,
                         attention: entry.runtime().attention(),
+                        origin: session.origin,
                     }
                 })
         });
@@ -1999,6 +2085,12 @@ impl SessionRegistry {
         Self::env_override_cannot_launch_npx(id, provenance, origin)
     }
 
+    /// Create a session owned by `owner`, originating from `conn_peer` (`None`
+    /// for the local pipe).
+    ///
+    /// The origin is written here, once, and read-only afterwards: the journal
+    /// row and the wire metadata must agree on who asked for this session
+    /// (`DESIGN-remote-agents.md` §8 R2).
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         &self,
@@ -2008,7 +2100,7 @@ impl SessionRegistry {
         kind: SessionKind,
         provider: Option<String>,
         mode: Option<String>,
-        command: Option<PtyCommand>,
+        conn_peer: &Option<ConnPeer>,
     ) -> Result<Session, WireError> {
         let env_provider = std::env::var("DEVBOULE_AGENT_PROVIDER").ok();
         self.create_with_provider_env(
@@ -2018,7 +2110,8 @@ impl SessionRegistry {
             kind,
             provider,
             mode,
-            command,
+            None,
+            conn_peer,
             env_provider.as_deref(),
         )
     }
@@ -2035,6 +2128,7 @@ impl SessionRegistry {
         provider: Option<String>,
         mode: Option<String>,
         command: Option<PtyCommand>,
+        conn_peer: &Option<ConnPeer>,
         env_provider: Option<&str>,
     ) -> Result<Session, WireError> {
         let workspace_id_ref = workspace_id.as_deref();
@@ -2072,6 +2166,7 @@ impl SessionRegistry {
         };
         // One clock read: the journal row and the wire metadata must carry
         // the same instant so a caller can compare them.
+        let origin = session_origin_for(conn_peer);
         let mut record = new_session_record(
             id.clone(),
             owner.user.clone(),
@@ -2087,6 +2182,10 @@ impl SessionRegistry {
         );
         record.provider = session_provider.clone();
         record.status = PersistStatus::Live;
+        // The origin is a property of the create, not of the spawn: it is
+        // recorded before the row is journaled, so a create that dies during
+        // spawn still reads back as the device that asked for it.
+        record.origin = origin.clone();
         let record_generation = record.generation;
         let metadata = Session {
             id: id.clone(),
@@ -2101,6 +2200,7 @@ impl SessionRegistry {
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(0),
             created_at_ms: record.created_at_ms,
+            origin,
         };
         crate::agent_env::inject_session_env(
             &mut command,
@@ -2208,10 +2308,10 @@ impl SessionRegistry {
         owner: &OwnerId,
         typed_permissions: bool,
     ) -> Result<(), WireError> {
-        let runtime = match self.runtime_for_user(session_id, owner) {
+        let runtime = match self.runtime_for_user(session_id, owner, conn) {
             Ok(runtime) => runtime,
             Err(error) if error.code == ErrorCode::SessionNotFound => {
-                self.hydrate_transcript(session_id, from_cursor, owner)?
+                self.hydrate_transcript(session_id, from_cursor, owner, conn)?
             }
             Err(error) => return Err(error),
         };
@@ -2257,7 +2357,7 @@ impl SessionRegistry {
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
-        let runtime = self.runtime_for_user(session_id, owner)?;
+        let runtime = self.runtime_for_user(session_id, owner, conn)?;
         runtime.claim_resize(conn.id, subscription_id)
     }
 
@@ -2293,7 +2393,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             if let Some(entry) = map.get(session_id) {
-                check_user_owner(entry, owner)?;
+                check_user_owner(entry, owner, &conn.conn_peer)?;
                 if entry
                     .as_live()
                     .is_some_and(|session| !session.runtime.process_exited())
@@ -2410,6 +2510,7 @@ impl SessionRegistry {
         session_id: &str,
         from_cursor: Option<Cursor>,
         owner: &OwnerId,
+        conn: &ConnHandle,
     ) -> Result<Arc<SessionRuntime>, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -2441,6 +2542,10 @@ impl SessionRegistry {
         let metadata = record.to_session();
         let runtime =
             SessionRuntime::from_replay(session_id.to_string(), Some(Arc::clone(journal)), replay);
+        // A recovered session carries the origin of the create that made it,
+        // so the peer gate and the permission card read the same fact a live
+        // session would have had.
+        runtime.set_origin(metadata.origin.clone());
         if let Some(peer_session_id) = record.peer_session_id.clone() {
             runtime.restore_peer_session_id(peer_session_id);
         }
@@ -2450,7 +2555,7 @@ impl SessionRegistry {
                 return Err(internal("Session state is unavailable."));
             };
             if let Some(existing) = map.get(session_id) {
-                check_user_owner(existing, owner)?;
+                check_user_owner(existing, owner, &conn.conn_peer)?;
                 journal.unpin(session_id);
                 return Ok(existing.runtime());
             }
@@ -2483,7 +2588,7 @@ impl SessionRegistry {
         conn: &ConnHandle,
         owner: &OwnerId,
     ) -> Result<(), WireError> {
-        let runtime = self.runtime_for_user(session_id, owner)?;
+        let runtime = self.runtime_for_user(session_id, owner, conn)?;
         runtime.detach_subscription(conn.id, subscription_id);
         conn.untrack_subscription(subscription_id);
         self.drop_transcript_if_idle(session_id);
@@ -2533,7 +2638,7 @@ impl SessionRegistry {
                 "Permission request id is required.",
             ));
         }
-        let runtime = self.runtime_for_user(session_id, owner)?;
+        let runtime = self.runtime_for_user(session_id, owner, conn)?;
         check_attached(&runtime, conn, subscription_id)?;
         let broker = runtime.permission_broker().ok_or_else(|| {
             WireError::new(
@@ -2571,7 +2676,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let session = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(session, owner)?;
+            check_user_owner(session, owner, &None)?;
             let session = session.as_live_mut().ok_or_else(process_gone)?;
             session.preserve_on_exit.store(true, Ordering::SeqCst);
             session.killer.clone_killer()
@@ -2595,7 +2700,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let session = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(session, owner)?;
+            check_user_owner(session, owner, &conn.conn_peer)?;
             let session = session.as_live_mut().ok_or_else(process_gone)?;
             (session.killer.clone_killer(), Arc::clone(&session.runtime))
         };
@@ -2654,7 +2759,18 @@ impl SessionRegistry {
         }
     }
 
-    pub fn close(&self, session_id: &str, owner: &OwnerId) -> Result<bool, WireError> {
+    /// Close a session, or a previous run's row for the same user.
+    ///
+    /// `conn_peer` is the requestor's connection identity: a paired device
+    /// may close only what `check_user_owner` opens to it, and the internal
+    /// callers that reap a half-started session pass `&None` because no peer
+    /// asked for that close.
+    pub fn close(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+    ) -> Result<bool, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let session = {
@@ -2663,7 +2779,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             if let Some(entry) = map.get(session_id) {
-                check_user_owner(entry, owner)?;
+                check_user_owner(entry, owner, conn_peer)?;
                 if let Some(session) = entry.as_live() {
                     session
                         .runtime
@@ -2736,7 +2852,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner)?;
+            check_user_owner(entry, owner, &conn.conn_peer)?;
             let session = entry.as_live_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
@@ -2772,7 +2888,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner)?;
+            check_user_owner(entry, owner, &None)?;
             let session = entry.as_live_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
@@ -2814,11 +2930,20 @@ impl SessionRegistry {
         result
     }
 
+    /// Switch a live agent session's mode.
+    ///
+    /// The connection is threaded through like `interrupt_with_subscription`
+    /// and `close`: `SessionSetMode` is under `CAP_SEND`, so it *is* reachable
+    /// from a paired device, and the identity of the caller is part of the
+    /// authorization the ownership check makes (§8b A3/A4/A5, H5). Without the
+    /// connection the call site could only answer with the owner comparison,
+    /// which is what let a mode change arrive with no origin attached.
     pub fn set_mode(
         &self,
         session_id: &str,
         owner: &OwnerId,
         mode_id: &str,
+        conn: &ConnHandle,
     ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -2834,7 +2959,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner)?;
+            check_user_owner(entry, owner, &conn.conn_peer)?;
             let session = entry.as_live_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
@@ -2974,15 +3099,15 @@ impl SessionRegistry {
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
-        self.send_with_subscription_timeout(
+        self.send_with_subscription_timeout(&SendRequest {
             session_id,
             subscription_id,
             text,
             attachments,
             owner,
             conn,
-            crate::mcp_broker::ready_timeout(),
-        )
+            mcp_timeout: crate::mcp_broker::ready_timeout(),
+        })
     }
 
     #[cfg(test)]
@@ -2994,20 +3119,27 @@ impl SessionRegistry {
         conn: &ConnHandle,
         timeout: Duration,
     ) -> Result<(), WireError> {
-        self.send_with_subscription_timeout(session_id, conn.id, text, &[], owner, conn, timeout)
+        self.send_with_subscription_timeout(&SendRequest {
+            session_id,
+            subscription_id: conn.id,
+            text,
+            attachments: &[],
+            owner,
+            conn,
+            mcp_timeout: timeout,
+        })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn send_with_subscription_timeout(
-        &self,
-        session_id: &str,
-        subscription_id: u64,
-        text: &str,
-        attachments: &[PromptAttachment],
-        owner: &OwnerId,
-        conn: &ConnHandle,
-        mcp_timeout: Duration,
-    ) -> Result<(), WireError> {
+    fn send_with_subscription_timeout(&self, request: &SendRequest<'_>) -> Result<(), WireError> {
+        let SendRequest {
+            session_id,
+            subscription_id,
+            text,
+            attachments,
+            owner,
+            conn,
+            mcp_timeout,
+        } = *request;
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         // The daemon does not trust the app's copy of these checks: the pipe
@@ -3028,7 +3160,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner)?;
+            check_user_owner(entry, owner, &conn.conn_peer)?;
             let session = entry.as_live().ok_or_else(process_gone)?;
             (
                 Arc::clone(&session.writer),
@@ -3262,7 +3394,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner)?;
+            check_user_owner(entry, owner, &conn.conn_peer)?;
             let session = entry.as_live().ok_or_else(process_gone)?;
             (Arc::clone(&session.runtime), session.master.clone())
         };
@@ -3412,6 +3544,50 @@ impl SessionRegistry {
         }
     }
 
+    /// What the peer gate needs to refuse a session that runs without asking
+    /// the user's permission (§8b A4/A5): the session's provider kind and the
+    /// mode it is in now, when it has advertised one. `None` for a session
+    /// this daemon does not know.
+    pub(crate) fn session_mode_guard(
+        &self,
+        session_id: &str,
+    ) -> Option<(SessionKind, Option<String>)> {
+        let map = self.inner.lock().ok()?;
+        let entry = map.get(session_id)?;
+        let kind = entry.metadata().kind.clone();
+        Some((kind, entry.runtime().current_mode_id()))
+    }
+
+    /// Whether `conn_peer` may reach `session_id` at all — asked *before* any
+    /// question about what that session is (`session_mode_guard`, H6).
+    ///
+    /// The two failures are one answer on purpose. A session owned by someone
+    /// else and a session this daemon does not know both give `unauthorized()`
+    /// here, so a peer that probes another device's session ids learns nothing
+    /// from comparing the replies: without this, `SessionSetMode` on a
+    /// reachable-looking id answered "that session exists and runs this
+    /// provider" through the mode policy gate, before the ownership check ever
+    /// ran (§8b A1/A3).
+    ///
+    /// It is deliberately not a substitute for the checks the session methods
+    /// make: this is the *ordering* the gate needs, and every operation still
+    /// authorizes itself again at the point it touches the session.
+    pub(crate) fn session_scope(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+    ) -> Result<(), WireError> {
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        match map.get(session_id) {
+            Some(entry) => check_user_owner(entry, owner, conn_peer),
+            None => Err(unauthorized()),
+        }
+    }
+
     fn runtime(&self, session_id: &str) -> Result<Arc<SessionRuntime>, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -3427,6 +3603,7 @@ impl SessionRegistry {
         &self,
         session_id: &str,
         owner: &OwnerId,
+        conn: &ConnHandle,
     ) -> Result<Arc<SessionRuntime>, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -3435,7 +3612,7 @@ impl SessionRegistry {
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
         let session = map.get(session_id).ok_or_else(not_found)?;
-        check_user_owner(session, owner)?;
+        check_user_owner(session, owner, &conn.conn_peer)?;
         Ok(session.runtime())
     }
 }
@@ -3800,6 +3977,10 @@ fn start_spawned_session(
     if metadata.kind.is_agent() {
         runtime.set_agent_kind(metadata.kind.clone());
     }
+    // The origin the create wrote travels with the metadata; installing it on
+    // the runtime is what lets the permission broker stamp a card and the peer
+    // gate answer `prompt_skipping` without a registry lookup.
+    runtime.set_origin(metadata.origin.clone());
     let mcp_session = if matches!(metadata.kind, SessionKind::Acp | SessionKind::Claude) {
         runtime.require_mcp();
         state.mcp.bind_runtime(&metadata.id, &runtime);
@@ -3929,7 +4110,7 @@ fn start_spawned_session(
                 }) {
                 Ok(handle) => Some(handle),
                 Err(_) => {
-                    let _ = registry.close(&id, &owner);
+                    let _ = registry.close(&id, &owner, &None);
                     return Err(WireError::new(
                         ErrorCode::Internal,
                         "Could not start the terminal reader.",
@@ -3982,7 +4163,7 @@ fn start_spawned_session(
         }) {
         Ok(handle) => handle,
         Err(_) => {
-            let _ = registry.close(&id, &owner);
+            let _ = registry.close(&id, &owner, &None);
             return Err(WireError::new(
                 ErrorCode::Internal,
                 "Could not start the terminal reader.",
@@ -4514,7 +4695,7 @@ mod tests {
     use super::*;
     use crate::raster_metadata::clean_png;
     use devboule_protocol::{
-        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
+        ClientMessage, MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
     };
 
     /// A Write sink that records everything, standing in for the PTY input
@@ -5939,6 +6120,9 @@ mod tests {
             cwd: None,
             env: None,
             options: Vec::new(),
+            // A provider client writes `local` here; the daemon overwrites it
+            // with the session's stored origin on the way out.
+            origin: SessionOrigin::local(),
         }
     }
 
@@ -6236,6 +6420,7 @@ mod tests {
             provider: None,
             peer_session_id: None,
             created_at_ms: 1,
+            origin: SessionOrigin::local(),
         };
         let runtime = SessionRuntime::from_replay(
             id.to_string(),
@@ -6399,6 +6584,7 @@ mod tests {
             provider: Some("test-agent".to_string()),
             peer_session_id: None,
             created_at_ms: 1,
+            origin: SessionOrigin::local(),
         };
         let (broker, _) = permission_broker::test_broker();
         let runtime = SessionRuntime::for_acp(id.to_string(), registry.journal.clone(), broker);
@@ -7558,6 +7744,7 @@ mod tests {
             provider: None,
             peer_session_id: None,
             created_at_ms: 1,
+            origin: SessionOrigin::local(),
         };
         let runtime = Arc::new(SessionRuntime::with_journal(
             id.to_string(),
@@ -8346,7 +8533,7 @@ mod tests {
             .upsert_blocking(ended_record(&session_id, &original.user))
             .expect("row");
         assert!(!registry
-            .close(&session_id, &caller)
+            .close(&session_id, &caller, &None)
             .expect("same user, different client must close"));
         assert!(journal
             .list()
@@ -8367,7 +8554,7 @@ mod tests {
             .upsert_blocking(ended_record(&session_id, &original.user))
             .expect("row");
         let error = registry
-            .close(&session_id, &stranger)
+            .close(&session_id, &stranger, &None)
             .expect_err("different user must stay unauthorized");
         assert_eq!(error.code, ErrorCode::Unauthorized);
         assert!(journal
@@ -8736,6 +8923,7 @@ mod tests {
             provider: Some("claude".to_string()),
             peer_session_id: None,
             created_at_ms: 1,
+            origin: SessionOrigin::local(),
         };
         let session = PtySession {
             metadata,
@@ -8847,6 +9035,7 @@ mod tests {
             provider: Some("test-agent".to_string()),
             peer_session_id: None,
             created_at_ms: 1,
+            origin: SessionOrigin::local(),
         };
         let session = PtySession {
             metadata,
@@ -8876,7 +9065,7 @@ mod tests {
 
         let before = runtime.session_manifest();
         let error = registry
-            .set_mode(session_id, &owner, "missing")
+            .set_mode(session_id, &owner, "missing", &ConnHandle::new(1))
             .expect_err("unknown mode must be rejected before the switcher");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert_eq!(runtime.session_manifest(), before);
@@ -8919,6 +9108,7 @@ mod tests {
                 None,
                 None,
                 None,
+                &None,
                 Some("codex-acp"),
             )
             .expect_err("env npx create must fail");
@@ -8959,6 +9149,556 @@ mod tests {
             agent.origin,
             crate::provider_catalog::ProviderOrigin::NpxWrapper
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The ownership paths whose call site passes no requestor identity
+    /// (`&None`), and which therefore answer with the owner comparison alone.
+    ///
+    /// It is not a hand-written claim: the test below derives it from
+    /// `peer_policy::peer_allows`, so a path may only be identity-free while
+    /// **no** role holding **any** capability set can reach the act it serves.
+    /// `set_mode` left this list in the slice-3 fix pass: `SessionSetMode` is
+    /// under `CAP_SEND`, so a paired device can reach it and the call site has
+    /// to carry the requestor's identity (§8b A3/A4/A5, H5).
+    const IDENTITY_FREE_PATHS: [&str; 2] = ["stop", "set_model"];
+
+    /// A connection that speaks for a paired device, as `server.rs` builds one.
+    fn remote_conn(role: PeerRole, paired_by_user: Option<&str>) -> Arc<ConnHandle> {
+        ConnHandle::with_conn_peer(
+            7,
+            None,
+            Some(ConnPeer::Remote {
+                device_id: "dev-phone".to_string(),
+                role,
+                paired_by_user: paired_by_user.map(str::to_string),
+                binding: crate::peer_policy::TransportBinding::tailnet(
+                    "nstable",
+                    "node.tailnet.ts.net.",
+                    "user@example.com",
+                ),
+            }),
+        )
+    }
+
+    /// One recovered entry owned by `owner_user` whose row carries `origin`.
+    /// The ownership check reads exactly these two facts.
+    fn transcript_entry(owner_user: &str, origin: SessionOrigin) -> RegistryEntry {
+        let metadata = Session {
+            id: "s.x.1".to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: SessionKind::Acp,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: None,
+            provider: None,
+            peer_session_id: None,
+            created_at_ms: 1,
+            origin,
+        };
+        RegistryEntry::Transcript(Box::new(TranscriptSession {
+            metadata,
+            owner: test_owner(owner_user, "process-1"),
+            runtime: Arc::new(SessionRuntime::new()),
+        }))
+    }
+
+    /// Rewrite one live entry's stored origin, the way the create that made it
+    /// would have.
+    fn set_entry_origin(registry: &SessionRegistry, id: &str, origin: SessionOrigin) {
+        let mut map = registry.inner.lock().expect("registry");
+        let entry = map.get_mut(id).expect("entry");
+        entry.as_live_mut().expect("live").metadata.origin = origin;
+    }
+
+    /// Every ownership path this registry exposes, called for `id` by `owner`
+    /// over `conn`.
+    ///
+    /// `stop` and `set_model` take no connection: `IDENTITY_FREE_PATHS` names
+    /// exactly those two, and the test below proves the capability gate denies
+    /// them to every role and capability set. Every other path is called with
+    /// the real connection, so the requestor's identity reaches
+    /// `check_user_owner` (§8b A3).
+    fn ownership_paths(
+        registry: &SessionRegistry,
+        id: &str,
+        owner: &OwnerId,
+        conn: &Arc<ConnHandle>,
+    ) -> Vec<(&'static str, Result<(), WireError>)> {
+        vec![
+            (
+                "send",
+                registry.send_with_subscription(id, 1, "hi", &[], owner, conn),
+            ),
+            ("stop", registry.stop(id, owner)),
+            (
+                "stop_with_subscription",
+                registry.stop_with_subscription(id, 1, owner, conn),
+            ),
+            (
+                "close",
+                registry.close(id, owner, &conn.conn_peer).map(|_| ()),
+            ),
+            (
+                "interrupt",
+                registry.interrupt_with_subscription(id, 1, owner, conn),
+            ),
+            (
+                "set_model",
+                registry.set_model(id, owner, Some("model-x"), None),
+            ),
+            (
+                "set_mode",
+                registry.set_mode(id, owner, "acceptEdits", conn),
+            ),
+            (
+                "resize",
+                registry.resize_with_subscription(id, 1, 80, 24, owner, conn),
+            ),
+            (
+                "attach",
+                registry.attach_with_subscription(id, 1, None, conn, owner, false),
+            ),
+            (
+                "claim",
+                registry.claim_resize_with_subscription(id, 1, owner, conn),
+            ),
+            (
+                "permission_respond",
+                registry.permission_respond_with_subscription(
+                    PermissionResponse {
+                        session_id: id,
+                        request_id: "req-1",
+                        outcome: PermissionOutcome::Deny,
+                        option_id: None,
+                    },
+                    1,
+                    conn,
+                    owner,
+                ),
+            ),
+        ]
+    }
+
+    /// §8b A3, one arm at a time: the local pipe is the owner's SID, a `Client`
+    /// peer is the person who paired it, and a `Daemon` peer is the origin
+    /// device. Every path into a session goes through this check.
+    #[test]
+    fn the_ownership_check_branches_on_role_and_origin() {
+        let mine = test_owner("S-1-5-21-mine", "process-1");
+        let local = ConnHandle::new(9);
+        let owned = transcript_entry("S-1-5-21-mine", SessionOrigin::local());
+        assert!(check_user_owner(&owned, &mine, &local.conn_peer).is_ok());
+
+        let stranger = test_owner("S-1-5-21-other", "process-1");
+        assert_eq!(
+            check_user_owner(&owned, &stranger, &local.conn_peer)
+                .err()
+                .map(|error| error.code),
+            Some(ErrorCode::Unauthorized)
+        );
+
+        // A `Client` peer speaks for the user who paired it, and only for that
+        // user: its own answer is the paired SID, never another account.
+        let client = remote_conn(PeerRole::Client, Some("S-1-5-21-mine"));
+        assert!(check_user_owner(&owned, &mine, &client.conn_peer).is_ok());
+        let other_client = remote_conn(PeerRole::Client, Some("S-1-5-21-other"));
+        assert_eq!(
+            check_user_owner(&owned, &mine, &other_client.conn_peer)
+                .err()
+                .map(|error| error.code),
+            Some(ErrorCode::Unauthorized)
+        );
+        // A pairing row with no recorded user grants nothing.
+        let unlabelled = remote_conn(PeerRole::Client, None);
+        assert!(check_user_owner(&owned, &mine, &unlabelled.conn_peer).is_err());
+
+        // A `Daemon` peer is scoped by the origin, not by the owner name.
+        let daemon = remote_conn(PeerRole::Daemon, None);
+        let own = test_owner("peer_dev-phone", "daemon");
+        let own_origin = SessionOrigin::peer("dev-phone", PeerRole::Daemon);
+        let its_own = transcript_entry("peer_dev-phone", own_origin.clone());
+        assert!(check_user_owner(&its_own, &own, &daemon.conn_peer).is_ok());
+        // Same owner, another origin device: refused.
+        let another = transcript_entry(
+            "peer_dev-phone",
+            SessionOrigin::peer("dev-tablet", PeerRole::Daemon),
+        );
+        assert!(check_user_owner(&another, &own, &daemon.conn_peer).is_err());
+        // A local session at this machine: refused whatever the owner says.
+        let local_session = transcript_entry("peer_dev-phone", SessionOrigin::local());
+        assert!(check_user_owner(&local_session, &own, &daemon.conn_peer).is_err());
+        // And the owner comparison still holds: another user's session is out
+        // even when the origin names this device.
+        let someone_elses = transcript_entry("S-1-5-21-other", own_origin);
+        assert!(check_user_owner(&someone_elses, &own, &daemon.conn_peer).is_err());
+    }
+
+    /// A paired `Client` reaches the sessions of the person who paired it, and
+    /// no others, through every ownership path the registry exposes.
+    #[test]
+    fn a_client_peer_reaches_only_the_paired_users_sessions() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let mine = test_owner("S-1-5-21-mine", "process-1");
+        let theirs = test_owner("S-1-5-21-theirs", "process-2");
+        let mine_id = compose_session_id(&mine.session_token(), "mine01").expect("id");
+        let theirs_id = compose_session_id(&theirs.session_token(), "theirs01").expect("id");
+        insert_live(&registry, &mine_id, mine.clone());
+        insert_live(&registry, &theirs_id, theirs.clone());
+        let conn = remote_conn(PeerRole::Client, Some("S-1-5-21-mine"));
+
+        for (path, result) in ownership_paths(&registry, &theirs_id, &mine, &conn) {
+            assert_eq!(
+                result.err().map(|error| error.code),
+                Some(ErrorCode::Unauthorized),
+                "{path} must refuse another user's session to a paired device"
+            );
+        }
+        for (path, result) in ownership_paths(&registry, &mine_id, &mine, &conn) {
+            assert_ne!(
+                result.err().map(|error| error.code),
+                Some(ErrorCode::Unauthorized),
+                "{path} must let the paired user reach their own session"
+            );
+        }
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §8 R2: a `Daemon` peer reaches the sessions its own device created,
+    /// whatever their owner row says, and nothing else.
+    #[test]
+    fn a_daemon_peer_is_scoped_by_the_sessions_origin() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("peer_dev-phone", "daemon");
+        let own_id = compose_session_id(&owner.session_token(), "peer01").expect("id");
+        let other_id = compose_session_id(&owner.session_token(), "peer02").expect("id");
+        insert_live(&registry, &own_id, owner.clone());
+        insert_live(&registry, &other_id, owner.clone());
+        set_entry_origin(
+            &registry,
+            &own_id,
+            SessionOrigin::peer("dev-phone", PeerRole::Daemon),
+        );
+        set_entry_origin(
+            &registry,
+            &other_id,
+            SessionOrigin::peer("dev-tablet", PeerRole::Daemon),
+        );
+        let conn = remote_conn(PeerRole::Daemon, None);
+
+        for (path, result) in ownership_paths(&registry, &other_id, &owner, &conn) {
+            if IDENTITY_FREE_PATHS.contains(&path) {
+                // `stop` and `set_model` take no requestor identity, so the
+                // origin cannot answer for them; a peer never reaches them
+                // anyway (`peer_allows` denies both to both roles, pinned by
+                // `every_identity_free_path_is_denied_to_a_peer`). What they
+                // enforce is the owner comparison, which the Client test above
+                // exercises with two real users.
+                continue;
+            }
+            assert_eq!(
+                result.err().map(|error| error.code),
+                Some(ErrorCode::Unauthorized),
+                "{path} must refuse a session whose origin is another device"
+            );
+        }
+        for (path, result) in ownership_paths(&registry, &own_id, &owner, &conn) {
+            assert_ne!(
+                result.err().map(|error| error.code),
+                Some(ErrorCode::Unauthorized),
+                "{path} must let the origin device reach its own session"
+            );
+        }
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `ClientMessage` each ownership path serves, in the same order as
+    /// `ownership_paths`. The pairing is what lets the derivation test below
+    /// ask `peer_allows` the question the gate asks, for every path there is.
+    fn path_requests() -> Vec<(&'static str, ClientMessage)> {
+        let session_id = "s.a.1".to_string();
+        let stop = || ClientMessage::SessionStop {
+            id: 1,
+            session_id: session_id.clone(),
+            subscription_id: 1,
+        };
+        vec![
+            (
+                "send",
+                ClientMessage::SessionSend {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                    text: "hi".to_string(),
+                    attachments: Vec::new(),
+                    idempotency_key: None,
+                },
+            ),
+            ("stop", stop()),
+            ("stop_with_subscription", stop()),
+            (
+                "close",
+                ClientMessage::SessionClose {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    idempotency_key: None,
+                },
+            ),
+            (
+                "interrupt",
+                ClientMessage::SessionInterrupt {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                },
+            ),
+            (
+                "set_model",
+                ClientMessage::SessionSetModel {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    model_id: Some("model-x".to_string()),
+                    effort: None,
+                },
+            ),
+            (
+                "set_mode",
+                ClientMessage::SessionSetMode {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    mode_id: "acceptEdits".to_string(),
+                },
+            ),
+            (
+                "resize",
+                ClientMessage::SessionResize {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                    cols: 80,
+                    rows: 24,
+                },
+            ),
+            (
+                "attach",
+                ClientMessage::SessionAttach {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                    from_cursor: None,
+                },
+            ),
+            (
+                "claim",
+                ClientMessage::SessionClaim {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                },
+            ),
+            (
+                "permission_respond",
+                ClientMessage::SessionPermissionRespond {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                    request_id: "req-1".to_string(),
+                    outcome: PermissionOutcome::Deny,
+                    option_id: None,
+                    idempotency_key: None,
+                },
+            ),
+        ]
+    }
+
+    /// §8b A3/A4/A5, H5: the identity-free list is *derived*, not asserted.
+    ///
+    /// For every ownership path, `peer_allows` answers whether a paired device
+    /// can reach the act at all — over both roles and the capability sets that
+    /// bracket the space (nothing, each single capability, all four). Two rules
+    /// follow from that pairing: a path a peer *can* reach must hand
+    /// `check_user_owner` the connection's identity (which `ownership_paths`
+    /// does for every path not listed as identity-free), and a path that
+    /// passes `&None` must be denied to every role holding anything. `set_mode`
+    /// sat on that list while `SessionSetMode` was under `CAP_SEND`, which is
+    /// exactly the drift this test refuses.
+    #[test]
+    fn every_identity_free_path_is_denied_to_a_peer() {
+        use crate::peer_policy::{
+            peer_allows, PeerDecision, CAP_ANSWER_PERMISSIONS, CAP_CREATE_SESSIONS, CAP_SEND,
+            CAP_VIEW,
+        };
+        let cap = |name: &str| vec![name.to_string()];
+        let capability_sets = [
+            Vec::new(),
+            cap(CAP_VIEW),
+            cap(CAP_SEND),
+            cap(CAP_ANSWER_PERMISSIONS),
+            cap(CAP_CREATE_SESSIONS),
+            vec![
+                CAP_VIEW.to_string(),
+                CAP_SEND.to_string(),
+                CAP_ANSWER_PERMISSIONS.to_string(),
+                CAP_CREATE_SESSIONS.to_string(),
+            ],
+        ];
+        let reachable_by_a_peer = |request: &ClientMessage| {
+            [PeerRole::Client, PeerRole::Daemon].iter().any(|role| {
+                capability_sets
+                    .iter()
+                    .any(|caps| peer_allows(*role, caps, request) == PeerDecision::Allow)
+            })
+        };
+        let mut reachable_variants: Vec<(&'static str, &'static str)> = Vec::new();
+        for (path, request) in path_requests() {
+            // Requirement one: an act a peer may perform is served by a path
+            // that threads the connection. `stop_with_subscription` serves
+            // `SessionStop`, which no capability opens — a path may take the
+            // connection for an act no peer can reach, and that is what the
+            // harness does. What must never happen is the opposite: an act a
+            // peer *can* reach answered by a call site that passes `&None`.
+            if reachable_by_a_peer(&request) {
+                reachable_variants.push((path, request.name()));
+                assert!(
+                    !IDENTITY_FREE_PATHS.contains(&path),
+                    "{path} serves {}, which a paired device can reach, and must pass \
+                     `conn.conn_peer` into `check_user_owner`",
+                    request.name()
+                );
+            }
+            // Requirement two: every path on the skip list is denied to every
+            // role and every capability set, so `&None` is the whole truth
+            // there. `stop` and `set_model` are the two that qualify.
+            if IDENTITY_FREE_PATHS.contains(&path) {
+                assert!(
+                    !reachable_by_a_peer(&request),
+                    "{path} takes `&None`, but a paired device can reach {}: the call site \
+                     must carry the requestor's identity",
+                    request.name()
+                );
+            }
+        }
+        assert!(
+            reachable_variants.len() >= IDENTITY_FREE_PATHS.len(),
+            "the peer surface is larger than the skip list: {reachable_variants:?}"
+        );
+        // No path is missing from the table and none is on the skip list
+        // without serving a path the harness knows.
+        let names = ownership_paths_for_names();
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "one row per ownership path");
+        for skipped in IDENTITY_FREE_PATHS {
+            assert!(
+                names.contains(&skipped),
+                "{skipped} is on the skip list but no ownership path serves it"
+            );
+        }
+    }
+
+    /// The path names `ownership_paths` returns, without needing a registry:
+    /// read from the same table, so the two cannot drift apart.
+    fn ownership_paths_for_names() -> Vec<&'static str> {
+        path_requests().into_iter().map(|(path, _)| path).collect()
+    }
+
+    /// §8 R2, item 7: an origin the journal could not read is `Unknown`, and a
+    /// `Daemon` peer is refused it exactly like a local session. The ownership
+    /// arm reads `kind == Peer` plus a device id, so "not known" names no
+    /// device and therefore grants nothing.
+    #[test]
+    fn a_daemon_peer_is_refused_an_unknown_origin_like_a_local_one() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("peer_dev-phone", "daemon");
+        let local_id = compose_session_id(&owner.session_token(), "unkn01").expect("id");
+        let unknown_id = compose_session_id(&owner.session_token(), "unkn02").expect("id");
+        insert_live(&registry, &local_id, owner.clone());
+        insert_live(&registry, &unknown_id, owner.clone());
+        set_entry_origin(&registry, &local_id, SessionOrigin::local());
+        set_entry_origin(
+            &registry,
+            &unknown_id,
+            SessionOrigin {
+                kind: SessionOriginKind::Unknown,
+                device_id: None,
+                role: None,
+            },
+        );
+        let conn = remote_conn(PeerRole::Daemon, None);
+        for id in [&local_id, &unknown_id] {
+            for (path, result) in ownership_paths(&registry, id, &owner, &conn) {
+                if IDENTITY_FREE_PATHS.contains(&path) {
+                    continue;
+                }
+                assert_eq!(
+                    result.err().map(|error| error.code),
+                    Some(ErrorCode::Unauthorized),
+                    "{path} must refuse session {id} to a daemon peer"
+                );
+            }
+        }
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A live session of another provider kind, which is what the A4/A5 list
+    /// is keyed on: the guard reads the kind off the metadata.
+    fn set_entry_kind(registry: &SessionRegistry, id: &str, kind: SessionKind) {
+        let mut map = registry.inner.lock().expect("registry");
+        let entry = map.get_mut(id).expect("entry");
+        entry.as_live_mut().expect("live").metadata.kind = kind;
+    }
+
+    /// §8b A4/A5 need two facts about a session a peer names: its provider kind
+    /// and the mode it is in *now*. This is the registry's answer to both, and
+    /// the case the whole rule turns on — a session sitting in a mode that
+    /// skips the permission prompt.
+    #[test]
+    fn a_session_advertising_a_prompt_skipping_mode_is_reported_by_the_guard() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-mine", "process-1");
+        let id = compose_session_id(&owner.session_token(), "mode01").expect("id");
+        insert_live(&registry, &id, owner.clone());
+
+        // No manifest yet: the daemon cannot say which mode the session is in,
+        // so nothing is refused on this ground (the request is still refused on
+        // any other ground that applies).
+        assert_eq!(
+            registry.session_mode_guard(&id),
+            Some((SessionKind::Terminal, None))
+        );
+        assert_eq!(registry.session_mode_guard("s.nobody.1"), None);
+
+        set_entry_kind(&registry, &id, SessionKind::Claude);
+        let runtime = registry.runtime(&id).expect("runtime");
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "bypassPermissions".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        assert_eq!(
+            registry.session_mode_guard(&id),
+            Some((SessionKind::Claude, Some("bypassPermissions".to_string())))
+        );
+
+        // The composed decision: this session would run without asking, so a
+        // paired device's request must not reach it.
+        let Some((kind, mode)) = registry.session_mode_guard(&id) else {
+            panic!("the guard must know the session");
+        };
+        assert!(crate::peer_policy::prompt_skipping_mode(
+            kind,
+            &mode.expect("a mode")
+        ));
+        journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

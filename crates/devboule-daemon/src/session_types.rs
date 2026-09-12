@@ -6,7 +6,7 @@ use std::time::Instant;
 use portable_pty::CommandBuilder;
 
 use devboule_protocol::{
-    OwnerId, Session, SessionEvent, SessionEventEnvelope, TranscriptIntegrity,
+    OwnerId, Session, SessionEvent, SessionEventEnvelope, SessionOrigin, TranscriptIntegrity,
 };
 
 use crate::agent_report::AgentReportState;
@@ -298,6 +298,22 @@ impl RegistryEntry {
             Self::Live(session) => &session.owner,
             Self::Transcript(session) => &session.owner,
         }
+    }
+
+    /// The wire metadata of this entry, borrowed rather than cloned: the
+    /// ownership, origin and kind checks all read one field of it.
+    pub(super) fn metadata(&self) -> &Session {
+        match self {
+            Self::Live(session) => &session.metadata,
+            Self::Transcript(session) => &session.metadata,
+        }
+    }
+
+    /// Where this session came from (§8 R2). Read by the peer gate — the
+    /// `Daemon` role's whole scope — and never written after the create that
+    /// made the row.
+    pub(super) fn origin(&self) -> SessionOrigin {
+        self.metadata().origin.clone()
     }
 
     pub(super) fn runtime(&self) -> Arc<super::SessionRuntime> {

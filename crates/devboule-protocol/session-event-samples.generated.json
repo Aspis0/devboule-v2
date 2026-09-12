@@ -116,6 +116,9 @@
     "args": [],
     "env": [],
     "options": [],
+    "origin": {
+      "kind": "unknown"
+    },
     "title": "",
     "toolCallId": "",
     "type": "permission_request"

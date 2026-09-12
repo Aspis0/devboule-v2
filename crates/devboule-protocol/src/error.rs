@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::messages::PeerRole;
+
 /// Machine-readable failure. Serialized as a snake_case string.
 ///
 /// Mirrored by the `ErrorCode` union in `src/types/ipc.ts`. Alignment is
@@ -115,6 +117,197 @@ impl WireError {
         self.details = Some(details);
         self
     }
+
+    /// The same error, stripped of everything a paired device has no business
+    /// reading. `None` (a local pipe connection) is the person's own screen,
+    /// so it is returned unchanged.
+    ///
+    /// Three things in a daemon message are local facts: absolute paths into
+    /// this machine's filesystem, this device's own id, and bare 64-hex
+    /// digests (key fingerprints and content hashes). A remote reader gets
+    /// `<path>`, `<device>` and `<digest>` instead. The codes and the prose
+    /// stay: the point is that a peer can still tell *what* failed, never
+    /// *where* this machine keeps it (`DESIGN-remote-agents.md` §8 R7).
+    ///
+    /// `details` is **dropped whole** for a remote reader rather than
+    /// redacted field by field. Every variant of [`ErrorDetails`] carries a
+    /// path on this machine — `WorktreeDirty { path }`,
+    /// `WorktreeNotConfined { path, root }`, `WorktreeMismatch { path, .. }` —
+    /// and none of them is actionable from the far end: a peer cannot run git
+    /// here, cannot open that checkout, and has no field of its own to match
+    /// against. One rule instead of a per-variant redactor that the next
+    /// variant would have to remember to join (`DESIGN-remote-agents.md`
+    /// §8 R7). A message-only redactor plus a dropped struct is the whole
+    /// contract; the local pipe still sees every field.
+    pub fn redacted_for(self, role: Option<&PeerRole>) -> Self {
+        if role.is_none() {
+            return self;
+        }
+        Self {
+            message: redact_text(&self.message),
+            details: None,
+            ..self
+        }
+    }
+}
+
+/// What a redacted message says in place of the local fact it removed.
+const REDACTED_PATH: &str = "<path>";
+const REDACTED_DEVICE: &str = "<device>";
+const REDACTED_DIGEST: &str = "<digest>";
+
+/// Replace every local fact in `text`. Over-redaction is the safe direction: a
+/// path run swallows the text that follows it until a delimiter, so a path
+/// containing spaces cannot leak its tail.
+///
+/// The delimiters that end a run are the **bracket** (`(`, `[`, `{`, `<` and
+/// their closers), the **quote** (`"` and `'`), the **comma**, and the
+/// **newline** (with `\r`, `\t`, `;` and `|` alongside them) — see
+/// [`path_run_len`]. A **full stop is not one**: it appears inside the absolute
+/// paths this machine actually writes (`C:\Users\gualt\app.v2\runtime`,
+/// `C:\Users\gualt\.cache`), so treating it as a terminator would leave half a
+/// path on the wire. The price is the greedy behaviour the tests below pin: an
+/// unquoted path run consumes prose up to the next delimiter, which is
+/// over-redaction rather than a leak.
+fn redact_text(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut redacted = String::with_capacity(text.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if let Some((placeholder, length)) = redaction_at(text, index) {
+            redacted.push_str(placeholder);
+            index += length;
+            continue;
+        }
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        redacted.push(character);
+        index += character.len_utf8();
+    }
+    redacted
+}
+
+/// The replacement that starts at `index`, with how many bytes it covers.
+fn redaction_at(text: &str, index: usize) -> Option<(&'static str, usize)> {
+    let rest = &text[index..];
+    let bytes = rest.as_bytes();
+    let previous = if index == 0 {
+        None
+    } else {
+        text.as_bytes().get(index - 1).copied()
+    };
+    if previous.is_some_and(|byte| !starts_a_token(byte)) {
+        return None;
+    }
+    // `C:\…` and `C:/…`: a path that names a drive on this machine.
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+    {
+        return Some((REDACTED_PATH, path_run_len(bytes)));
+    }
+    // `\\host\share` (UNC) and `\\?\` device paths.
+    if bytes.len() >= 2 && bytes[0] == b'\\' && matches!(bytes[1], b'\\' | b'/') {
+        return Some((REDACTED_PATH, path_run_len(bytes)));
+    }
+    // A POSIX absolute path.
+    if bytes[0] == b'/' && bytes.len() > 1 && !bytes[1].is_ascii_whitespace() {
+        return Some((REDACTED_PATH, path_run_len(bytes)));
+    }
+    // A UUID first: it contains hex runs, so the digest rule must not claim it.
+    if let Some(length) = uuid_len(bytes) {
+        return Some((REDACTED_DEVICE, length));
+    }
+    if let Some(length) = hex_run_len(bytes, 64) {
+        return Some((REDACTED_DIGEST, length));
+    }
+    None
+}
+
+/// Whether a byte can precede a local fact. A path or a digest that starts in
+/// the middle of a word is not a path or a digest.
+fn starts_a_token(byte: u8) -> bool {
+    byte.is_ascii_whitespace()
+        || matches!(
+            byte,
+            b'(' | b'[' | b'{' | b'"' | b'\'' | b'=' | b',' | b';' | b':' | b'|' | b'<'
+        )
+}
+
+/// Bytes up to the punctuation that ends a path run, or the end of the text.
+fn path_run_len(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .position(|byte| {
+            matches!(
+                byte,
+                b'(' | b')'
+                    | b'['
+                    | b']'
+                    | b'{'
+                    | b'}'
+                    | b';'
+                    | b'"'
+                    | b'\''
+                    | b'|'
+                    | b'<'
+                    | b'>'
+                    | b','
+                    | b'\n'
+                    | b'\r'
+                    | b'\t'
+            )
+        })
+        .unwrap_or(bytes.len())
+}
+
+/// `8-4-4-4-12` lowercase or uppercase hex, and nothing hex-or-dash after it.
+fn uuid_len(bytes: &[u8]) -> Option<usize> {
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    if bytes.len() < 36 {
+        return None;
+    }
+    let mut offset = 0usize;
+    for (group, length) in GROUPS.iter().enumerate() {
+        if group > 0 {
+            if bytes[offset] != b'-' {
+                return None;
+            }
+            offset += 1;
+        }
+        for _ in 0..*length {
+            if !bytes[offset].is_ascii_hexdigit() {
+                return None;
+            }
+            offset += 1;
+        }
+    }
+    if bytes
+        .get(offset)
+        .is_some_and(|byte| byte.is_ascii_hexdigit() || *byte == b'-')
+    {
+        return None;
+    }
+    Some(36)
+}
+
+/// Exactly `length` hex characters, not part of a longer hex run.
+fn hex_run_len(bytes: &[u8], length: usize) -> Option<usize> {
+    if bytes.len() < length {
+        return None;
+    }
+    if !bytes[..length].iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    if bytes
+        .get(length)
+        .is_some_and(|byte| byte.is_ascii_hexdigit() || *byte == b'-')
+    {
+        return None;
+    }
+    Some(length)
 }
 
 #[cfg(test)]
@@ -199,6 +392,210 @@ mod tests {
             rust_names, ts_names,
             "ErrorCode serde names and the TypeScript ErrorCode union in src/types/ipc.ts drifted"
         );
+    }
+
+    /// A remote reader must learn what failed, never where this machine keeps
+    /// it. Real message shapes from the daemon's own error paths.
+    #[test]
+    fn a_remote_error_redacts_paths_and_local_identities() {
+        let device = "6f1c1c2e-9b0a-4f6d-8f3a-2b1e5c7d9a01";
+        let digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        let error = WireError::new(
+            ErrorCode::Io,
+            format!(
+                "Could not store an attached file: replace failed (os error 5); keeping backup at \
+                 \"C:\\Users\\gualt\\AppData\\Local\\Temp\\devboule\\a.gguf\"; device {device}; \
+                 fingerprint {digest} (os error 5)"
+            ),
+        );
+        let redacted = error.clone().redacted_for(Some(&PeerRole::Client));
+        assert!(
+            !redacted.message.contains("C:\\Users"),
+            "{}",
+            redacted.message
+        );
+        assert!(!redacted.message.contains("gualt"), "{}", redacted.message);
+        assert!(!redacted.message.contains(device), "{}", redacted.message);
+        assert!(!redacted.message.contains(digest), "{}", redacted.message);
+        assert!(redacted.message.contains("<path>"), "{}", redacted.message);
+        assert!(
+            redacted.message.contains("<device>"),
+            "{}",
+            redacted.message
+        );
+        assert!(
+            redacted.message.contains("<digest>"),
+            "{}",
+            redacted.message
+        );
+        // The prose and the code stay, so the failure is still diagnosable.
+        assert_eq!(redacted.code, ErrorCode::Io);
+        assert!(
+            redacted
+                .message
+                .contains("Could not store an attached file"),
+            "{}",
+            redacted.message
+        );
+        assert!(
+            redacted.message.contains("(os error 5)"),
+            "{}",
+            redacted.message
+        );
+    }
+
+    /// The person at this machine reads their own paths; `None` is the pipe.
+    #[test]
+    fn a_local_error_preserves_paths() {
+        let error = WireError::new(
+            ErrorCode::Io,
+            "Could not store an attached file: C:\\Users\\gualt\\tmp\\a.png",
+        );
+        let kept = error.clone().redacted_for(None);
+        assert_eq!(kept, error);
+        assert!(kept.message.contains("C:\\Users\\gualt\\tmp\\a.png"));
+    }
+
+    /// Both shapes are redacted, and the prose between two local facts survives
+    /// when each fact is its own token. An *unquoted* run is deliberately
+    /// greedy — it swallows everything after the first path, because a path
+    /// with spaces in it would otherwise leak its tail — so this asserts the
+    /// quoted form as well as the plain one.
+    #[test]
+    fn a_posix_path_and_a_unc_path_are_both_redacted() {
+        let posix = WireError::new(ErrorCode::Io, "could not write /home/gualt/runtime/a.png")
+            .redacted_for(Some(&PeerRole::Daemon));
+        assert_eq!(posix.message, "could not write <path>");
+
+        let unc = WireError::new(ErrorCode::Io, "could not write \\\\host\\share\\b.png")
+            .redacted_for(Some(&PeerRole::Daemon));
+        assert_eq!(unc.message, "could not write <path>");
+
+        let both = WireError::new(
+            ErrorCode::Io,
+            "could not write \"/home/gualt/runtime/a.png\" and \"\\\\host\\\\share\\\\b.png\"",
+        )
+        .redacted_for(Some(&PeerRole::Daemon));
+        assert_eq!(both.message, "could not write \"<path>\" and \"<path>\"");
+
+        // Greedy is the safe direction: the tail after an unquoted path is
+        // over-redacted rather than half-redacted.
+        let greedy = WireError::new(
+            ErrorCode::Io,
+            "could not write /home/gualt/runtime/a.png and 31337 bytes",
+        )
+        .redacted_for(Some(&PeerRole::Daemon));
+        assert_eq!(greedy.message, "could not write <path>");
+    }
+
+    /// A digest is only a digest when it is a whole token: part of a longer
+    /// hex run or a session id is not one.
+    #[test]
+    fn a_hex_run_inside_a_longer_token_is_not_a_digest() {
+        let error = WireError::new(
+            ErrorCode::InvalidRequest,
+            "id s.9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.01 is not known",
+        );
+        let redacted = error.redacted_for(Some(&PeerRole::Client));
+        assert!(
+            !redacted.message.contains("<digest>"),
+            "{}",
+            redacted.message
+        );
+        assert!(
+            redacted.message.contains(".01 is not known"),
+            "{}",
+            redacted.message
+        );
+    }
+
+    /// §8 R7 for the struct half: **no** `details` variant reaches a remote
+    /// reader, whatever it carries, and the local pipe keeps every field. The
+    /// next variant cannot forget to join a per-variant redactor, because
+    /// there is none: the whole struct is dropped.
+    #[test]
+    fn every_error_detail_variant_is_dropped_for_a_remote_role() {
+        let details = [
+            ErrorDetails::VersionMismatch {
+                client: 1,
+                client_min: 1,
+                daemon: 2,
+                daemon_min: 2,
+            },
+            ErrorDetails::GenerationMismatch {
+                current: 1,
+                requested: 2,
+            },
+            ErrorDetails::WorktreeDirty {
+                path: "C:\\Users\\gualt\\work\\checkout".to_string(),
+                force_required: true,
+            },
+            ErrorDetails::WorktreeGitState {
+                recorded: "clean".to_string(),
+                observed: "dirty".to_string(),
+            },
+            ErrorDetails::WorktreeMismatch {
+                path: "C:\\Users\\gualt\\work\\checkout".to_string(),
+                expected_branch: "main".to_string(),
+                observed_branch: Some("dev".to_string()),
+            },
+            ErrorDetails::WorktreeLocked {
+                path: "C:\\Users\\gualt\\work\\checkout".to_string(),
+            },
+            ErrorDetails::WorktreeNotConfined {
+                path: "C:\\Users\\gualt\\elsewhere".to_string(),
+                root: "C:\\Users\\gualt\\work".to_string(),
+            },
+            ErrorDetails::WorktreeProjectGone {
+                leftover_checkout: Some("C:\\Users\\gualt\\work\\checkout".to_string()),
+            },
+        ];
+        for detail in details {
+            let error = WireError::new(ErrorCode::WorkspaceUnavailable, "Worktree removal refused")
+                .with_details(detail.clone());
+            let local = error.clone().redacted_for(None);
+            assert_eq!(
+                local.details,
+                Some(detail.clone()),
+                "the pipe keeps the fields it wrote"
+            );
+            for role in [PeerRole::Client, PeerRole::Daemon] {
+                let remote = error.clone().redacted_for(Some(&role));
+                assert_eq!(remote.details, None, "{role} must not see {detail:?}");
+                assert_eq!(remote.message, "Worktree removal refused");
+                assert_eq!(remote.code, ErrorCode::WorkspaceUnavailable);
+                assert_eq!(remote.id, None);
+            }
+        }
+    }
+
+    /// The delimiters `redact_text` names: a bracket, a quote, a comma and a
+    /// newline end a path run. A full stop does not — it lives inside the
+    /// paths this machine writes — so the quoted case below would read
+    /// `"<path>v2\runtime\a.png"` if it did.
+    #[test]
+    fn a_path_run_ends_at_a_bracket_quote_comma_or_newline() {
+        let role = Some(&PeerRole::Daemon);
+        for (text, expected) in [
+            ("write (C:\\work\\a.png) now", "write (<path>) now"),
+            ("write \"C:\\work\\a.png\" now", "write \"<path>\" now"),
+            (
+                "write C:\\work\\a.png, then stop",
+                "write <path>, then stop",
+            ),
+            (
+                "write C:\\work\\a.png\nnext line",
+                "write <path>\nnext line",
+            ),
+            // A full stop inside the run is part of the run, not its end.
+            (
+                "write \"C:\\Users\\gualt\\app.v2\\runtime\\a.png\" now",
+                "write \"<path>\" now",
+            ),
+        ] {
+            let redacted = WireError::new(ErrorCode::Io, text).redacted_for(role);
+            assert_eq!(redacted.message, expected, "for {text:?}");
+        }
     }
 
     fn frontend_ipc_ts_path() -> PathBuf {
