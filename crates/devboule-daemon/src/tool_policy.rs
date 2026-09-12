@@ -6,7 +6,8 @@
 //! `tools/call`, so a toggle takes effect on the next call rather than at the
 //! next session. The store is one JSON file beside the journal
 //! (`tool-policies.json`), written the way the MCP config is: a create-new temp
-//! file, a current-user-only DACL on Windows, then a rename over the target.
+//! file, a current-user-only DACL on Windows applied to that temp before its
+//! first byte is written, then a rename over the target.
 //! A crash leaves either the old policy or the new one, never half a file, and
 //! a policy that decides what an agent may call is never briefly readable by
 //! another user.
@@ -19,6 +20,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use devboule_protocol::ToolPolicyEntry;
@@ -128,14 +130,16 @@ impl ToolPolicyStore {
     /// `providerId`, or a provider id the catalog publishes no MCP tools for —
     /// is dropped instead of quarantining the document, and one line reports how
     /// many of each. Dropping is safe in both cases for the same reason: the row
-    /// could not have been consulted the way it was written.
+    /// could not have been consulted the way it was written. A key that names a
+    /// provider the catalog knows is admitted under the catalog's own spelling
+    /// of that id, so `CLAUDE` and `claude` are one provider and one row.
     pub(crate) fn load(runtime_dir: &Path) -> Self {
         let path = runtime_dir.join(POLICY_FILE);
         let policies = match load_policies(&path) {
             Ok((policies, dropped)) => {
                 if dropped.mismatched > 0 || dropped.unknown_provider > 0 {
                     eprintln!(
-                        "tool policy: {} dropped {} mismatched row(s) (key and providerId disagreed) and {} row(s) for provider ids with no MCP tools; starting without them",
+                        "tool policy: {} dropped {} mismatched row(s) (key and providerId did not name one provider, or two keys named one) and {} row(s) for provider ids with no MCP tools; starting without them",
                         path.display(),
                         dropped.mismatched,
                         dropped.unknown_provider
@@ -165,8 +169,13 @@ impl ToolPolicyStore {
     }
 
     /// This provider's policy, or `None` when it has none.
+    ///
+    /// The id is resolved to the catalog's own spelling before the lookup, the
+    /// same resolution `set` and `load` apply, so the store's keys and the ids a
+    /// session carries are one name per provider: a session registered as
+    /// `CLAUDE` reads the row a caller stored as `claude`.
     pub(crate) fn get(&self, provider_id: Option<&str>) -> Option<ToolPolicyEntry> {
-        let provider_id = provider_id?;
+        let provider_id = crate::provider_catalog::mcp_catalog_id(provider_id?)?;
         self.policies
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -198,6 +207,13 @@ impl ToolPolicyStore {
     /// MCP tools for, is refused before anything is written: the first is a
     /// caller bug the daemon will not store, the second could never be
     /// consulted, because the broker looks a session's own catalog id up.
+    ///
+    /// An admitted id is stored under the catalog's own spelling of it, which
+    /// C-1 made a rule rather than a nicety: the predicate below matches a
+    /// provider id case-insensitively while every lookup is an exact key, so a
+    /// row stored as the caller spelled it (`CLAUDE`) was admitted and then
+    /// unreachable — `CLAUDE` and `claude` were two providers. `set`, `load` and
+    /// `get` resolve through the same catalog, so one provider has one name.
     pub(crate) fn set(
         &self,
         provider_id: &str,
@@ -205,13 +221,13 @@ impl ToolPolicyStore {
         disabled_tools: Vec<String>,
     ) -> Result<(), PolicyError> {
         check_row(provider_id, &disabled_tools).map_err(PolicyError::InvalidRequest)?;
-        if !is_policy_provider(provider_id) {
+        let Some(canonical) = crate::provider_catalog::mcp_catalog_id(provider_id) else {
             return Err(PolicyError::InvalidRequest(format!(
                 "'{provider_id}' is not a provider the daemon publishes MCP tools for"
             )));
-        }
+        };
         let entry = ToolPolicyEntry {
-            provider_id: provider_id.to_string(),
+            provider_id: canonical.to_string(),
             enabled,
             disabled_tools,
         };
@@ -219,13 +235,13 @@ impl ToolPolicyStore {
             .policies
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if !policies.contains_key(provider_id) && policies.len() >= MAX_POLICY_ROWS {
+        if !policies.contains_key(canonical) && policies.len() >= MAX_POLICY_ROWS {
             return Err(PolicyError::InvalidRequest(format!(
                 "the store already holds its cap of {MAX_POLICY_ROWS} providers, so '{provider_id}' cannot be added"
             )));
         }
         let mut next: HashMap<String, ToolPolicyEntry> = (*policies).clone();
-        next.insert(provider_id.to_string(), entry);
+        next.insert(canonical.to_string(), entry);
         write_policies(&self.path, &next)?;
         *policies = next;
         Ok(())
@@ -253,21 +269,11 @@ fn load_policies(path: &Path) -> Result<(HashMap<String, ToolPolicyEntry>, Dropp
 /// document, an id with no broker tools is a name nothing can use.
 #[derive(Default)]
 struct Dropped {
-    /// Rows whose outer key and `providerId` disagreed.
+    /// Rows whose outer key and `providerId` disagreed, and second keys for a
+    /// provider already admitted — a document that named one provider twice.
     mismatched: usize,
     /// Rows for a provider id the catalog publishes no MCP tools for.
     unknown_provider: usize,
-}
-
-/// May a policy row name this provider?
-///
-/// The predicate is the catalog's own: [`crate::provider_catalog::mcp_tools_for`]
-/// is what fills `ProviderInfo.tools`, so a provider with no broker tools has
-/// nothing a policy could gate, and a row under its name could never be
-/// consulted. `set` and `load` both go through this one function, so a row the
-/// store accepts is a row it would also accept from its file.
-fn is_policy_provider(provider_id: &str) -> bool {
-    !crate::provider_catalog::mcp_tools_for(provider_id).is_empty()
 }
 
 /// Parse the file, refusing one larger than the cap before it is read.
@@ -302,14 +308,20 @@ fn read_policies(path: &Path) -> io::Result<HashMap<String, ToolPolicyEntry>> {
 /// plus what was dropped.
 ///
 /// Caps are checked on the document as it was written, then a row is dropped
-/// and counted when it cannot be consulted as written: its outer key disagrees
-/// with its own `providerId`, or its provider id is one the catalog publishes
-/// no MCP tools for ([`is_policy_provider`], the predicate `set` enforces too).
-/// Dropping is the right repair for both rather than a quarantine: neither row
-/// could have been reached by the lookup the broker performs — which is keyed by
-/// the session's own catalog id — so removing them cannot invent a policy, and
-/// trusting the outer key instead would hand one provider another provider's
-/// deny list.
+/// and counted when it cannot be consulted as written: its outer key does not
+/// name the same provider as its own `providerId` — both sides resolved to the
+/// catalog's own spelling first, so `CLAUDE` and `claude` are one provider and
+/// not a mismatch — or its provider id is one the catalog publishes no MCP tools
+/// for (the predicate `set` enforces too). Dropping is the right repair for both
+/// rather than a quarantine: neither row could have been reached by the lookup
+/// the broker performs — which is keyed by the session's own catalog id — so
+/// removing them cannot invent a policy, and trusting the outer key instead
+/// would hand one provider another provider's deny list.
+///
+/// Two keys that resolve to one provider are one row too: the first key in order
+/// is admitted and the second is counted as mismatched. The iteration is sorted
+/// for exactly that reason, so which row a document yields is a property of the
+/// document and not of `HashMap`'s order.
 fn admit(
     document: HashMap<String, ToolPolicyEntry>,
 ) -> Result<(HashMap<String, ToolPolicyEntry>, Dropped), String> {
@@ -321,17 +333,25 @@ fn admit(
     }
     let mut admitted = HashMap::with_capacity(document.len());
     let mut dropped = Dropped::default();
-    for (provider_id, entry) in document {
-        if provider_id != entry.provider_id {
+    let mut rows = document.into_iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    for (provider_id, mut entry) in rows {
+        let Some(canonical) = crate::provider_catalog::mcp_catalog_id(&provider_id) else {
+            dropped.unknown_provider += 1;
+            continue;
+        };
+        if crate::provider_catalog::mcp_catalog_id(&entry.provider_id) != Some(canonical)
+            || admitted.contains_key(canonical)
+        {
             dropped.mismatched += 1;
             continue;
         }
-        if !is_policy_provider(&provider_id) {
-            dropped.unknown_provider += 1;
-            continue;
-        }
-        check_row(&provider_id, &entry.disabled_tools)?;
-        admitted.insert(provider_id, entry);
+        check_row(canonical, &entry.disabled_tools)?;
+        // The row keeps the catalog's spelling on both sides: the key is what
+        // the broker looks the session's own id up with, and `providerId` is
+        // what the app renders and what the next write persists.
+        entry.provider_id = canonical.to_string();
+        admitted.insert(canonical.to_string(), entry);
     }
     Ok((admitted, dropped))
 }
@@ -366,30 +386,81 @@ fn check_row(provider_id: &str, disabled_tools: &[String]) -> Result<(), String>
     Ok(())
 }
 
+/// The most quarantine destinations one failed load tries before it gives up
+/// and leaves the file where it is.
+const MAX_QUARANTINE_ATTEMPTS: u64 = 32;
+
+/// Distinguishes the destinations of two quarantines inside one process, so two
+/// files refused in the same millisecond cannot be offered the same name.
+static QUARANTINE_NONCE: AtomicU64 = AtomicU64::new(0);
+
 /// Move a file the store refused aside, so the next write cannot erase it.
 ///
 /// Best effort by design: this runs while the daemon is already reporting a
 /// load failure, and a path that cannot be renamed is left exactly where it is
 /// — the caller's line then says so, rather than claiming a move that did not
-/// happen. The suffix is the unix time in milliseconds, so repeated failures
-/// keep one file each instead of overwriting the previous evidence.
+/// happen.
 fn quarantine(path: &Path) -> Option<PathBuf> {
     if !path.is_file() {
         return None;
     }
-    let millis = std::time::SystemTime::now()
+    quarantine_at(path, now_millis())
+}
+
+/// [`quarantine`] with the clock supplied.
+///
+/// The millisecond is a parameter so the names one call will consider are a
+/// property a test can occupy; `quarantine` reads the clock once and passes it
+/// down, so every attempt of one quarantine carries one timestamp.
+///
+/// The name is `tool-policies.json.corrupt-<unix millis>-<8 hex nonce>`, and the
+/// destination has to be free before it is used: `rename` replaces an existing
+/// destination on Windows as well as on Unix, so a name that is already taken
+/// would erase the evidence an earlier quarantine kept. The nonce is unique
+/// inside this process and the millisecond is what separates one process — and
+/// one restart — from the next; `exists` then covers what is left of the window
+/// between the check and the rename, which is best effort and not a reservation.
+/// A name that cannot be taken is passed over, and after
+/// [`MAX_QUARANTINE_ATTEMPTS`] of them the file stays where it is: the same
+/// outcome as a directory that refuses the rename, which would refuse the next
+/// name just as flatly.
+fn quarantine_at(path: &Path, millis: u128) -> Option<PathBuf> {
+    for _ in 0..MAX_QUARANTINE_ATTEMPTS {
+        let nonce = QUARANTINE_NONCE.fetch_add(1, Ordering::Relaxed);
+        let kept = quarantine_name(path, millis, nonce);
+        if kept.exists() {
+            continue;
+        }
+        return std::fs::rename(path, &kept).ok().map(|()| kept);
+    }
+    None
+}
+
+/// The name one quarantine attempt keeps `path` under: `path`'s own directory,
+/// the millisecond it was called at, and this process's nonce for that attempt.
+/// One function, so the name a test occupies is the name the writer picks.
+fn quarantine_name(path: &Path, millis: u128, nonce: u64) -> PathBuf {
+    path.with_file_name(format!("{POLICY_FILE}.corrupt-{millis}-{nonce:08x}"))
+}
+
+/// Unix time in milliseconds, or 0 before the epoch: the timestamp in a
+/// quarantine name, not a duration anything measures.
+fn now_millis() -> u128 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis())
-        .unwrap_or_default();
-    let kept = path.with_file_name(format!("{POLICY_FILE}.corrupt-{millis}"));
-    std::fs::rename(path, &kept).ok().map(|()| kept)
+        .unwrap_or_default()
 }
 
 /// Serialize the whole store and replace the file with it.
 ///
 /// The write is the MCP config's write (`mcp_broker::write_protected_json`): a
-/// temp file created with `create_new`, flushed to disk, given a
-/// current-user-only DACL on Windows, and only then renamed over the target.
+/// temp file created with `create_new`, its DACL replaced with a
+/// current-user-only one on Windows *before the first byte is written*, then
+/// `sync_all` and a rename over the target. The order is the point: a policy
+/// that decides which tools an agent may call is never on disk under a DACL
+/// weaker than the one it will carry, so the DACL is applied to the temp the
+/// moment the create succeeds and the bytes follow it.
 fn write_policies(path: &Path, policies: &HashMap<String, ToolPolicyEntry>) -> io::Result<()> {
     let bytes = serde_json::to_vec_pretty(policies).map_err(io::Error::other)?;
     let parent = path.parent().ok_or_else(|| {
@@ -412,15 +483,17 @@ fn write_policies(path: &Path, policies: &HashMap<String, ToolPolicyEntry>) -> i
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut file = options.open(&temp)?;
+        // The policy decides which tools an agent may call, so the temp file
+        // carries the same current-user-only DACL as the MCP config — applied
+        // here, after the create and before the first `write_all`, so no byte of
+        // it is ever on disk under a weaker DACL. `security.rs` owns that call,
+        // so neither writer can drift on what "protected" means. Off Windows
+        // there is no DACL to set.
+        #[cfg(windows)]
+        crate::security::apply_current_user_dacl(&temp)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
-        // The policy decides which tools an agent may call, so the temp file
-        // carries the same current-user-only DACL as the MCP config before the
-        // rename: `security.rs` owns that call, so neither writer can drift on
-        // what "protected" means. Off Windows there is no DACL to set.
-        #[cfg(windows)]
-        crate::security::apply_current_user_dacl(&temp)?;
         std::fs::rename(&temp, path)
     })();
     if result.is_err() {
@@ -788,7 +861,7 @@ mod tests {
         assert!(dir.join(POLICY_FILE).is_file());
         assert!(quarantined(&dir).is_empty());
         assert!(
-            !is_policy_provider("claude-acp"),
+            crate::provider_catalog::mcp_catalog_id("claude-acp").is_none(),
             "the predicate under test is the catalog's, not a second list"
         );
 
@@ -842,12 +915,255 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// C-1: the predicate admits a provider id case-insensitively while the
+    /// lookup is an exact key, so a row stored as the caller spelled it was
+    /// admitted and then unreachable. `CLAUDE` is admitted *as* `claude`.
+    #[test]
+    fn an_uppercase_set_is_stored_under_the_catalog_id() {
+        let dir = temp_dir();
+        let store = ToolPolicyStore::load(&dir);
+        store
+            .set("CLAUDE", Some(false), vec!["some_tool".to_string()])
+            .expect("set CLAUDE");
+        let expected = entry("claude", Some(false), &["some_tool"]);
+        assert_eq!(store.entries(), vec![expected.clone()]);
+
+        // The file carries the canonical key and the canonical providerId, so a
+        // reopened store — or the app reading the document — sees one provider.
+        let text = std::fs::read_to_string(dir.join(POLICY_FILE)).expect("policy file");
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert!(parsed.get("CLAUDE").is_none(), "{parsed}");
+        assert_eq!(parsed["claude"]["providerId"], "claude");
+        assert_eq!(parsed["claude"]["enabled"], false);
+        assert_eq!(
+            ToolPolicyStore::load(&dir).get(Some("claude")),
+            Some(expected)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// C-1 from the session's side: the row a caller set as `CLAUDE` is the row
+    /// a session registered as `claude` is gated by. The broker looks the
+    /// session's own catalog id up, and that is the lowercase one.
+    #[test]
+    fn a_session_registered_as_claude_sees_the_policy_set_as_uppercase() {
+        let dir = temp_dir();
+        let store = ToolPolicyStore::load(&dir);
+        store
+            .set("CLAUDE", Some(true), vec!["some_future_tool".to_string()])
+            .expect("set under CLAUDE");
+        let policy = store
+            .get(Some("claude"))
+            .expect("the row is stored under claude");
+        assert_eq!(policy.provider_id, "claude");
+        assert!(
+            !is_tool_enabled(Some(&policy), "some_future_tool"),
+            "the deny list the caller set as CLAUDE has to reach the session"
+        );
+        assert!(is_tool_enabled(Some(&policy), "another_tool"));
+        // The lookup resolves the id the same way, whichever spelling asks.
+        assert_eq!(store.get(Some("CLAUDE")), Some(policy.clone()));
+        assert_eq!(
+            ToolPolicyStore::load(&dir).get(Some("claude")),
+            Some(policy)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same fold on the load path: a hand-edited document that spells the
+    /// provider in caps is the row for the catalog's id, not a row nothing can
+    /// reach. Both sides of the row are canonical after the load.
+    #[test]
+    fn an_uppercase_key_in_the_file_is_admitted_under_the_catalog_id() {
+        let dir = temp_dir();
+        let document = serde_json::json!({
+            "CLAUDE": {
+                "providerId": "CLAUDE",
+                "enabled": false,
+                "disabledTools": ["some_tool"],
+            },
+            "grok": { "providerId": "GROK", "enabled": true, "disabledTools": [] },
+        });
+        std::fs::write(
+            dir.join(POLICY_FILE),
+            serde_json::to_vec_pretty(&document).expect("json"),
+        )
+        .expect("seed");
+
+        let store = ToolPolicyStore::load(&dir);
+        assert_eq!(
+            store.get(Some("claude")),
+            Some(entry("claude", Some(false), &["some_tool"]))
+        );
+        assert_eq!(
+            store.get(Some("grok")),
+            Some(entry("grok", Some(true), &[]))
+        );
+        assert_eq!(store.entries().len(), 2);
+        // A spelling is not corruption: the document is usable as written.
+        assert!(dir.join(POLICY_FILE).is_file());
+        assert!(quarantined(&dir).is_empty());
+
+        // And the next write persists the canonical spelling on both sides.
+        store.set("gemini", Some(true), Vec::new()).expect("set");
+        let text = std::fs::read_to_string(dir.join(POLICY_FILE)).expect("policy file");
+        assert!(text.contains("\"claude\""), "{text}");
+        assert!(!text.contains("CLAUDE"), "{text}");
+        assert!(!text.contains("GROK"), "{text}");
+        assert_eq!(ToolPolicyStore::load(&dir).entries().len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two keys that fold to one provider are one row, not two: the document is
+    /// read in sorted key order, so the row that survives is a property of the
+    /// document rather than of the hash map's iteration order.
+    #[test]
+    fn two_keys_for_one_provider_leave_one_row() {
+        let dir = temp_dir();
+        let document = serde_json::json!({
+            "CLAUDE": {
+                "providerId": "claude",
+                "enabled": false,
+                "disabledTools": ["some_tool"],
+            },
+            "claude": { "providerId": "claude", "enabled": true, "disabledTools": [] },
+        });
+        std::fs::write(
+            dir.join(POLICY_FILE),
+            serde_json::to_vec_pretty(&document).expect("json"),
+        )
+        .expect("seed");
+
+        let store = ToolPolicyStore::load(&dir);
+        assert_eq!(store.entries().len(), 1, "one provider, one row");
+        assert_eq!(
+            store.get(Some("claude")),
+            Some(entry("claude", Some(false), &["some_tool"])),
+            "the first key in order is the one admitted"
+        );
+        // One row for one provider is not corruption.
+        assert!(dir.join(POLICY_FILE).is_file());
+        assert!(quarantined(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The destination names one quarantine call will consider, in the order the
+    /// nonce offers them. The counter is process-wide, so this is read right
+    /// before the call under test: no test in this module moves it far.
+    fn quarantine_names(path: &Path, millis: u128, count: u64) -> Vec<PathBuf> {
+        let first = QUARANTINE_NONCE.load(Ordering::Relaxed);
+        (first..first + count)
+            .map(|nonce| quarantine_name(path, millis, nonce))
+            .collect()
+    }
+
+    /// S-3c: `rename` replaces an existing destination on Windows as well as on
+    /// Unix, so a name already in use has to be passed over. Nothing under a
+    /// taken name is overwritten, and the refused file lands on a free one.
+    #[test]
+    fn a_quarantine_never_replaces_a_file_already_at_its_destination() {
+        let dir = temp_dir();
+        let live = dir.join(POLICY_FILE);
+        std::fs::write(&live, b"{ this is not json").expect("seed");
+        let millis = 1_700_000_000_000;
+        // Fewer names than the window `quarantine_at` walks, so a free name is
+        // always reachable while the taken ones are still passed over.
+        let occupied = quarantine_names(&live, millis, 8);
+        for name in &occupied {
+            std::fs::write(name, b"evidence a previous quarantine kept").expect("occupy");
+        }
+
+        let kept = quarantine_at(&live, millis).expect("a free name exists");
+        assert!(!live.exists(), "the refused file was moved out of the way");
+        assert_eq!(
+            std::fs::read(&kept).expect("kept bytes"),
+            b"{ this is not json".to_vec(),
+            "the moved file is the refused one"
+        );
+        assert!(
+            !occupied.contains(&kept),
+            "the move must land on a free name, not on {}",
+            kept.display()
+        );
+        for name in &occupied {
+            assert_eq!(
+                std::fs::read(name).expect("occupant"),
+                b"evidence a previous quarantine kept".to_vec(),
+                "{} was overwritten",
+                name.display()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S-3c's other arm: when no name can be taken the file stays exactly where
+    /// it is. A directory at every candidate name fails the rename the way a
+    /// read-only directory does, so the caller keeps the bytes it refused to
+    /// read instead of losing them.
+    #[test]
+    fn a_quarantine_with_no_free_name_leaves_the_file_in_place() {
+        let dir = temp_dir();
+        let live = dir.join(POLICY_FILE);
+        std::fs::write(&live, b"{ this is not json").expect("seed");
+        let millis = 1_700_000_000_001;
+        // Twice the window `quarantine_at` walks: every test in this binary
+        // shares the counter, so its first attempt may start further in.
+        for name in quarantine_names(&live, millis, MAX_QUARANTINE_ATTEMPTS * 2) {
+            std::fs::create_dir(&name).expect("occupy");
+        }
+
+        assert_eq!(quarantine_at(&live, millis), None);
+        assert_eq!(
+            std::fs::read(&live).expect("the refused file is still there"),
+            b"{ this is not json".to_vec()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same arm through `load`: nothing is destroyed, the store starts
+    /// empty, and the one line the daemon prints says the file could not be
+    /// moved aside. A directory at the policy name is a file the store cannot
+    /// read as a policy and cannot move either, which is the shape a refused
+    /// rename leaves behind.
+    #[test]
+    fn a_file_that_cannot_be_moved_aside_is_left_and_the_store_starts_empty() {
+        let dir = temp_dir();
+        std::fs::create_dir(dir.join(POLICY_FILE)).expect("squat the policy name");
+        let store = ToolPolicyStore::load(&dir);
+        assert!(store.entries().is_empty());
+        assert!(dir.join(POLICY_FILE).is_dir(), "the file stays where it is");
+        assert!(quarantined(&dir).is_empty(), "nothing was quarantined");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S-1: the temp is the one name a half-written policy could sit under, so
+    /// it carries the target's DACL before it holds any of its bytes. The order
+    /// itself — DACL the moment `create_new` succeeds, `write_all` only after —
+    /// is not observable from outside, so what is pinned here is the end state
+    /// that order produces: a `tool-policies.tmp` left by a run that died
+    /// mid-write is removed rather than written through or renamed over the
+    /// target, the target holds this write and not the stale bytes, and it
+    /// carries the current-user-only DACL.
     #[cfg(windows)]
     #[test]
     fn the_policy_file_dacl_names_only_the_current_user() {
         let dir = temp_dir();
+        let stale = dir.join("tool-policies.tmp");
+        std::fs::write(&stale, b"stale temp from a run that died mid-write").expect("seed stale");
         let store = ToolPolicyStore::load(&dir);
         store.set("claude", Some(false), Vec::new()).expect("set");
+        assert!(
+            !stale.exists(),
+            "the stale temp is removed, not written through"
+        );
+        let text = std::fs::read_to_string(dir.join(POLICY_FILE)).expect("policy file");
+        let document: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(
+            document["claude"]["enabled"], false,
+            "the target holds this write, not the stale temp's bytes"
+        );
         let sddl =
             crate::security::dacl_sddl_for_path(&dir.join(POLICY_FILE)).expect("policy DACL");
         let sid = crate::security::current_user_sid().expect("sid");

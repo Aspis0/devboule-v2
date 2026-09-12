@@ -221,6 +221,25 @@ pub fn mcp_tools_for(agent_id: &str) -> Vec<devboule_protocol::ToolDescriptor> {
         .unwrap_or_default()
 }
 
+/// The exact id the catalog publishes for `agent_id`, when it publishes tools
+/// under any spelling of it.
+///
+/// The row match above is case-insensitive — a caller that spells a provider
+/// `CLAUDE` is naming the same provider — while everything keyed by a provider
+/// id (the tool policy file, `ProviderInfo.tools`) is keyed by the exact string.
+/// That gap is C-1: an id admitted case-insensitively and then looked up exactly
+/// is admitted and never found. Callers that store or compare an id resolve it
+/// here first, so the admission check and the later lookup cannot disagree on
+/// case. The predicate is the same `AGENT_MCP_TOOLS` match `mcp_tools_for`
+/// performs, and `the_canonical_id_agrees_with_the_tool_lookup` pins the two
+/// together.
+pub fn mcp_catalog_id(agent_id: &str) -> Option<&'static str> {
+    AGENT_MCP_TOOLS
+        .iter()
+        .find(|(id, _)| id.eq_ignore_ascii_case(agent_id))
+        .map(|(id, _)| *id)
+}
+
 /// Registry wrappers that a better native chat-capable provider covers in the
 /// workspace picker. This is an explicit product-policy map from §1.1:
 /// `claude-acp` is a proprietary npx wrapper, while native `claude` already
@@ -2329,5 +2348,32 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         );
         let _ = fs::remove_dir_all(dir);
         let _ = fs::remove_dir_all(cache);
+    }
+
+    /// C-1's other half: the id a caller stores or compares comes from the same
+    /// match that fills `tools`, so the two cannot drift into admitting an id
+    /// the lookup does not serve, or the reverse.
+    #[test]
+    fn the_canonical_id_agrees_with_the_tool_lookup() {
+        for spelling in ["claude", "CLAUDE", "Claude", "grok", "GROK", "Grok"] {
+            let canonical = super::mcp_catalog_id(spelling).expect("a catalog id");
+            assert_eq!(
+                super::mcp_catalog_id(canonical),
+                Some(canonical),
+                "the catalog's own id must resolve to itself"
+            );
+            assert!(!super::mcp_tools_for(spelling).is_empty());
+            assert_eq!(
+                super::mcp_tools_for(spelling),
+                super::mcp_tools_for(canonical),
+                "{spelling} and {canonical} are one provider and must be served one tool list"
+            );
+        }
+        // A name the catalog does not publish is no id and is served no tools:
+        // the predicate the policy store admits a row with, on both sides.
+        for unknown in ["claude-acp", "codex", "does-not-exist", ""] {
+            assert_eq!(super::mcp_catalog_id(unknown), None, "{unknown}");
+            assert!(super::mcp_tools_for(unknown).is_empty(), "{unknown}");
+        }
     }
 }

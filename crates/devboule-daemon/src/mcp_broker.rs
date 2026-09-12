@@ -1571,7 +1571,7 @@ mod tests {
         assert_eq!(
             response_json(&response).pointer("/error/message"),
             Some(&json!("Unknown tool")),
-            "the unpatched path must not reach the policy"
+            "a registration without a provider id consults no policy"
         );
 
         // And the broker still lists its whole catalog — measured against
