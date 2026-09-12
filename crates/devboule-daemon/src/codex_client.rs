@@ -18,9 +18,6 @@ use super::{
     write_child_stdin, ModelSwitcher, PtyCommand, ReaderDispatch, SessionKiller, SpawnedSession,
     StderrSource, StdioWaitableChild,
 };
-// Reached only by the image-plan builders below, which are still test-only
-// until the send path is wired to them.
-#[cfg(test)]
 use crate::attachment_store::AttachmentStore;
 use crate::codex_view::{
     catalog_from_response, mode_values, thread_mode_values, validate_mode, CodexCatalog,
@@ -174,6 +171,13 @@ pub(super) fn spawn_process(
         state: Arc::clone(&state),
         pending: Vec::new(),
     };
+    // The static prompt route sends Codex's own `turn/start`: it shares the
+    // stdin, the request-id counter and the thread state with the writer.
+    let static_prompt = Arc::new(CodexStaticPrompt::new(
+        Arc::clone(&stdin),
+        Arc::clone(&next_id),
+        Arc::clone(&state),
+    ));
     let killer = CodexKiller {
         process: Arc::clone(&process),
         stdin: Arc::clone(&stdin),
@@ -201,8 +205,10 @@ pub(super) fn spawn_process(
         switcher: Some(Box::new(switcher)),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
-        // Not an ACP session: no structured prompt route.
+        // Not an ACP session: no negotiated structured route. The static one
+        // sends Codex's own `turn/start` frame.
         image_sink: None,
+        static_image_sink: Some(static_prompt),
         reader: Box::new(stdout),
         reader_dispatch: Some(Box::new(reader)),
         stderr: Some(Box::new(CodexStderr::start(stderr))),
@@ -248,6 +254,88 @@ impl ModelSwitcher for CodexSwitcher {
     }
 }
 
+/// The static prompt route for Codex: it plans, then sends Codex's own
+/// `turn/start` — the frame this provider's protocol defines for a prompt that
+/// carries images.
+pub(crate) struct CodexStaticPrompt {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    state: Arc<CodexState>,
+}
+
+impl CodexStaticPrompt {
+    fn new(
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
+        next_id: Arc<AtomicU64>,
+        state: Arc<CodexState>,
+    ) -> Self {
+        Self {
+            stdin,
+            next_id,
+            state,
+        }
+    }
+}
+
+impl super::StaticImageSink for CodexStaticPrompt {
+    fn plan_prompt(
+        &self,
+        store: &AttachmentStore,
+        session_id: &str,
+        text: &str,
+        attachments: &[devboule_protocol::PromptAttachment],
+    ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
+        let Some(plan) = plan_codex_prompt(store, session_id, text, attachments)? else {
+            return Ok(None);
+        };
+        Ok(Some(Box::new(CodexPlannedPrompt {
+            stdin: Arc::clone(&self.stdin),
+            next_id: Arc::clone(&self.next_id),
+            state: Arc::clone(&self.state),
+            plan,
+        })))
+    }
+}
+
+/// One planned Codex prompt, ready to send. It carries the plan whole, so the
+/// text on the wire and the text the caller journals cannot be two different
+/// strings.
+struct CodexPlannedPrompt {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    state: Arc<CodexState>,
+    plan: CodexPromptPlan,
+}
+
+impl CodexPlannedPrompt {
+    /// The `turn/start` params this prompt sends: the model, effort and policy
+    /// override are read at send time, the way the writer reads them, so a
+    /// model switched between prompt and send is not sent a stale name.
+    fn params(&self) -> Value {
+        turn_start_params_for_prompt(
+            &self.state,
+            &self.plan.fallback_text,
+            &self.plan.image_paths,
+        )
+    }
+}
+
+impl super::PlannedStaticPrompt for CodexPlannedPrompt {
+    fn text(&self) -> &str {
+        &self.plan.fallback_text
+    }
+
+    fn send(&self) -> Result<(), WireError> {
+        send_request(
+            &self.stdin,
+            &self.next_id,
+            "turn/start",
+            self.params(),
+            "Codex",
+        )
+    }
+}
+
 struct CodexWriter {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
@@ -267,12 +355,12 @@ impl Write for CodexWriter {
         }
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
-        // Unchanged text-only `turn/start`: `localImage` entries stay a
-        // plan-side shape until the send-path follow-up sequences the Codex
-        // wiring. `turn_start_params_with_images` pins the measured input
-        // shape for that follow-up; the writer keeps today's literal so the
-        // two cannot drift under a shared name before the plan has a
-        // production caller.
+        // The text-only `turn/start`, unchanged. A prompt that carries
+        // images is sent by the static route's own `turn/start` instead of by
+        // this writer, so `turn_start_params_with_images` has one production
+        // caller and this literal keeps the other: with no carried path the
+        // two build the same params, which
+        // `a_params_builder_without_images_is_the_text_only_one` pins.
         let (model, effort) = self.state.model_and_effort();
         let policy_mode = self.state.mode_override();
         send_request(
@@ -549,9 +637,7 @@ fn turn_start_params(
 /// server's own default and sending it would assert an unmeasured choice.
 /// Stays on `localImage` even though the schema also lists `image`: Paseo
 /// sends `localImage` and that is what was verified live, while `image` on
-/// this surface has not been measured. `#[cfg(test)]` while the send-path
-/// follow-up is unsequenced, like the params builder below.
-#[cfg(test)]
+/// this surface has not been measured.
 fn codex_local_image_entry(path: &std::path::Path) -> serde_json::Value {
     serde_json::json!({
         "type": "localImage",
@@ -563,10 +649,11 @@ fn codex_local_image_entry(path: &std::path::Path) -> serde_json::Value {
 /// raster, in attachment order, after the single text entry. The text entry
 /// is the shared fallback text: the user's text plus the path lines for the
 /// attachments that stay prose (SVG, which takes no inline shape).
-/// `#[cfg(test)]` while the send-path follow-up is unsequenced: the writer
-/// still builds today's text-only `input` inline above, and this stays the
-/// pinned shape for the follow-up rather than a second production caller.
-#[cfg(test)]
+///
+/// With no carried path it builds exactly what `turn_start_params` builds —
+/// `a_params_builder_without_images_is_the_text_only_one` pins that — which is
+/// what lets the static route send every prompt it plans through this one
+/// builder.
 fn turn_start_params_with_images(
     thread_id: &str,
     text: &str,
@@ -593,6 +680,26 @@ fn turn_start_params_with_images(
     Value::Object(params)
 }
 
+/// The `turn/start` params for one planned prompt: the model, effort and policy
+/// override are read here, at send time, the way the writer reads them, so a
+/// model switched between planning and sending is never sent a stale name.
+fn turn_start_params_for_prompt(
+    state: &CodexState,
+    text: &str,
+    image_paths: &[std::path::PathBuf],
+) -> Value {
+    let (model, effort) = state.model_and_effort();
+    let policy_mode = state.mode_override();
+    turn_start_params_with_images(
+        &state.thread_id(),
+        text,
+        image_paths,
+        policy_mode.as_deref(),
+        Some(&model),
+        effort.as_deref(),
+    )
+}
+
 /// Prompt plan for one Codex send: the text plus one `localImage` path per
 /// raster. `fallback_text` is the user's text with the path lines for the
 /// non-raster attachments (SVG). `image_paths` are the `materialize` paths
@@ -600,32 +707,31 @@ fn turn_start_params_with_images(
 /// first, exactly the call the shared `with_attachment_paths` makes, so a
 /// request that fails on its third attachment leaves nothing half-built.
 ///
-/// Not yet sent: the `session.rs` send path still takes the legacy path-line
-/// write for Codex, so this plan has no production caller until that
-/// follow-up lands.
-#[cfg(test)]
+/// It is handed to `CodexStaticPrompt`, which sends it as Codex's own
+/// `turn/start`.
 struct CodexPromptPlan {
     fallback_text: String,
     image_paths: Vec<std::path::PathBuf>,
 }
 
 /// The delivery Codex is authorised for: a fact about the protocol, not a
-/// fact the peer agreed to — no negotiation, no capability probe. Uses the
-/// variant the sibling seam in `session.rs` reserved for this follow-up.
-/// `#[cfg(test)]` with the plan: the only reader is the gate above until the
-/// send-path follow-up lands. There is deliberately no probe here: an unknown
-/// method on this surface answers `-32600`, not `-32601`, so a
-/// method-not-found fallback would never fire and the feature would fail
-/// silent.
-#[cfg(test)]
+/// fact the peer agreed to — no negotiation, no capability probe. There is
+/// deliberately no probe here: an unknown method on this surface answers
+/// `-32600`, not `-32601`, so a method-not-found fallback would never fire and
+/// the feature would fail silent.
 fn codex_delivery() -> super::ImageDelivery {
     super::ImageDelivery::StaticImageBlock
 }
 
 /// Splits one request's attachments into `localImage` paths and path-line
-/// fallbacks. `#[cfg(test)]` with the plan: the only caller is the tests
-/// below until the send-path follow-up lands.
-#[cfg(test)]
+/// fallbacks, each attachment materialized exactly once — the call the shared
+/// `with_attachment_paths` makes.
+///
+/// `None` means the route did not run at all: no attachments, or a delivery
+/// this sender is not authorised for. When it does run it answers with the
+/// text as well, even if no raster became a `localImage` path, so that the
+/// caller never has to walk the attachments a second time; with no carried
+/// path the frame is the text-only `turn/start`, byte for byte.
 fn plan_codex_prompt(
     store: &AttachmentStore,
     session_id: &str,
@@ -657,9 +763,6 @@ fn plan_codex_prompt(
             fallback_paths.push(path);
         }
     }
-    if image_paths.is_empty() {
-        return Ok(None);
-    }
     Ok(Some(CodexPromptPlan {
         fallback_text: super::prompt_text_with_fallback_paths(text, &fallback_paths),
         image_paths,
@@ -671,8 +774,13 @@ fn plan_codex_prompt(
 /// a child.
 #[cfg(test)]
 fn carried_image_paths(plan: Option<&CodexPromptPlan>) -> Vec<&std::path::Path> {
-    plan.map(|plan| plan.image_paths.iter().map(std::path::PathBuf::as_path).collect())
-        .unwrap_or_default()
+    plan.map(|plan| {
+        plan.image_paths
+            .iter()
+            .map(std::path::PathBuf::as_path)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 fn interrupt_params(thread_id: &str, turn_id: &str) -> Value {
@@ -1019,10 +1127,10 @@ mod tests {
     use super::super::session_runtime::SessionRuntime;
     use super::{
         carried_image_paths, codex_delivery, codex_local_image_entry, decline_input_result,
-        initialize_params, interrupt_params, mode_values, notification_frame,
-        permission_decision, permission_decision_frame, plan_codex_prompt,
-        send_interrupt_request, thread_start_params, turn_id_from_response,
-        turn_start_params, turn_start_params_with_images, validate_mode, CodexReader,
+        initialize_params, interrupt_params, mode_values, notification_frame, permission_decision,
+        permission_decision_frame, plan_codex_prompt, send_interrupt_request, thread_start_params,
+        turn_id_from_response, turn_start_params, turn_start_params_for_prompt,
+        turn_start_params_with_images, validate_mode, CodexReader,
     };
     use crate::attachment_store::AttachmentStore;
     use crate::codex_view::{catalog_from_response, fixture_frames, CodexState, CodexView};
@@ -1368,7 +1476,7 @@ mod tests {
             .any(|event| matches!(event.envelope.event, SessionEvent::AgentMessage { .. })));
     }
 
-    // --- image delivery (plan-side; the send-path follow-up is unsequenced)
+    // --- image delivery (the static route) --------------------------------
     //
     // The routing decision lives in `plan_codex_prompt`, tested here
     // against the attachment store directly, without spawning a child — the
@@ -1380,8 +1488,7 @@ mod tests {
 
     impl PlanTempDir {
         fn new(tag: &str) -> Self {
-            static COUNTER: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(1);
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
             let dir = std::env::temp_dir().join(format!(
                 "devboule-codex-plan-{}-{}-{}",
                 std::process::id(),
@@ -1409,12 +1516,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_delivery_is_the_reserved_static_variant() {
+    fn codex_delivery_is_the_static_variant() {
         // No handshake to negotiate with and deliberately no probe: an
         // unknown method on this surface answers `-32600`, not `-32601`, so
         // a method-not-found fallback would never fire. The format accepts
-        // images, so the delivery is the static one the sibling seam
-        // reserved for this follow-up.
+        // images, so the delivery is the static one the route reads.
         assert_eq!(
             codex_delivery(),
             super::super::ImageDelivery::StaticImageBlock
@@ -1483,20 +1589,97 @@ mod tests {
     }
 
     #[test]
-    fn an_svg_only_codex_prompt_plans_no_paths_and_keeps_the_path_line() {
-        // SVG takes no inline shape on this surface. An SVG-only prompt
-        // plans nothing, so the caller takes the legacy path-line write.
+    fn an_svg_only_codex_prompt_plans_no_paths_and_still_builds_the_legacy_text() {
+        // SVG takes no inline shape on this surface. The plan still answers
+        // with the text, and that text is exactly what the legacy write would
+        // have produced, which is why a prompt with no carried path can take
+        // the route without moving a byte on the wire. (This test used to
+        // assert `plan.is_none()`: the route answers with the text now, so
+        // that the send path never walks the attachments twice.)
         let temp = PlanTempDir::new("svg-only");
         let store = AttachmentStore::new(&temp.0);
+        let session_id = "codex-plan-svg-only";
         let source = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let attachment = plan_attachment("drawing.svg", "image/svg+xml", source);
         let plan = plan_codex_prompt(
             &store,
-            "codex-plan-svg-only",
+            session_id,
             "logo",
-            &[plan_attachment("drawing.svg", "image/svg+xml", source)],
+            std::slice::from_ref(&attachment),
         )
-        .expect("materialized");
-        assert!(plan.is_none(), "an SVG plans no paths");
+        .expect("materialized")
+        .expect("an SVG plans no path, but the plan still carries the text");
+        assert!(plan.image_paths.is_empty(), "an SVG plans no path");
+        let stored = store
+            .session(session_id)
+            .expect("session")
+            .materialize(&attachment)
+            .expect("stored");
+        assert_eq!(
+            plan.fallback_text,
+            format!("logo\n\n[Image available at: {}]", stored.to_string_lossy()),
+            "the plan's text is the legacy path line, byte for byte"
+        );
+    }
+
+    #[test]
+    fn the_static_route_builds_the_turn_the_plan_decided() {
+        // The route's frame is the measured `turn/start`: one text entry, then
+        // one `localImage` per carried path, and nothing else moved — the
+        // thread id and the model still come from the live state.
+        let catalog = catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "model", "isDefault": true }]
+        }))
+        .expect("catalog");
+        let state = CodexState::new("thread".to_string(), catalog, "auto");
+        let temp = PlanTempDir::new("route");
+        let store = AttachmentStore::new(&temp.0);
+        let plan = plan_codex_prompt(
+            &store,
+            "codex-route",
+            "describe this",
+            &[plan_attachment("photo.png", "image/png", &clean_png(0x51))],
+        )
+        .expect("materialized")
+        .expect("a raster plans a path");
+        assert_eq!(plan.image_paths.len(), 1);
+        let carried = turn_start_params_for_prompt(&state, &plan.fallback_text, &plan.image_paths);
+        assert_eq!(carried["threadId"], "thread");
+        let input = carried["input"].as_array().expect("input array");
+        assert_eq!(input.len(), 2, "the text entry, then the path");
+        assert_eq!(
+            input[0],
+            serde_json::json!({ "type": "text", "text": "describe this" })
+        );
+        assert_eq!(input[1]["type"], "localImage");
+        // No carried path: the text-only turn, one entry.
+        let bare = turn_start_params_for_prompt(&state, "describe this", &[]);
+        assert_eq!(bare["input"].as_array().expect("input array").len(), 1);
+    }
+
+    #[test]
+    fn a_params_builder_without_images_is_the_text_only_one() {
+        // The static route sends every planned prompt through the images
+        // builder, including one whose paths are all path lines. With no
+        // carried path it has to be the text-only `turn/start` this surface
+        // has always sent: same keys, same values, same order.
+        for (policy_mode, model, effort) in [
+            (None, None, None),
+            (Some("workspace-write"), Some("gpt-5-codex"), Some("high")),
+        ] {
+            assert_eq!(
+                turn_start_params_with_images(
+                    "thread-1",
+                    "describe this",
+                    &[],
+                    policy_mode,
+                    model,
+                    effort,
+                ),
+                turn_start_params("thread-1", "describe this", policy_mode, model, effort),
+                "no carried path must not move a key"
+            );
+        }
     }
 
     #[test]
@@ -1524,7 +1707,11 @@ mod tests {
             "{}",
             plan.fallback_text
         );
-        assert!(plan.fallback_text.ends_with(".svg]"), "{}", plan.fallback_text);
+        assert!(
+            plan.fallback_text.ends_with(".svg]"),
+            "{}",
+            plan.fallback_text
+        );
         assert!(
             !plan.fallback_text.contains(".png]"),
             "the raster left no path line: {}",

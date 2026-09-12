@@ -427,20 +427,30 @@ pub(super) fn spawn_process(
         remove_permission_extension(&extension_path);
         WireError::new(ErrorCode::Io, format!("Could not drain Pi stderr: {error}"))
     })?;
+    // The static prompt route reads the live model from the same catalog the
+    // switcher keeps, so the two share one `Arc`.
+    let catalog = Arc::new(Mutex::new(handshake.catalog));
+    let static_prompt = Arc::new(PiStaticPrompt::new(
+        Arc::clone(&stdin),
+        Arc::clone(&next_id),
+        Arc::clone(&catalog),
+    ));
     Ok(SpawnedSession {
         process_job,
         master: None,
         killer: Box::new(killer),
         switcher: Some(Box::new(PiSwitcher {
             control,
-            catalog: Arc::new(Mutex::new(handshake.catalog)),
+            catalog,
             mode_id: Arc::new(Mutex::new(mode_id.to_string())),
             permission_extension_active,
         })),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
-        // Not an ACP session: no structured prompt route.
+        // Not an ACP session: no negotiated structured route. The static one
+        // sends Pi's own `prompt` frame.
         image_sink: None,
+        static_image_sink: Some(static_prompt),
         reader: Box::new(stdout),
         reader_dispatch: Some(Box::new(reader_dispatch)),
         stderr: Some(Box::new(stderr_source)),
@@ -886,9 +896,7 @@ fn pi_permission_sender(
 /// `{"type": "image", "data": ..., "mimeType": ...}` — flat, with a
 /// capital-T `mimeType`, unlike Claude's nested `source`/`media_type`. The
 /// bytes are the stripped bytes read back from the file `materialize`
-/// wrote, never the base64 that arrived on the wire. `#[cfg(test)]` while
-/// the send-path follow-up is unsequenced, like the frame below.
-#[cfg(test)]
+/// wrote, never the base64 that arrived on the wire.
 fn pi_image_entry(mime_type: &str, data_base64: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "image",
@@ -900,11 +908,11 @@ fn pi_image_entry(mime_type: &str, data_base64: &str) -> serde_json::Value {
 /// The `prompt` frame with the optional `images` field: present only when at
 /// least one raster travels. Absent otherwise, matching Paseo's
 /// `...(images?.length ? { images } : {})` — the child must not see an empty
-/// array where the measured sender omits the field. `#[cfg(test)]` while the
-/// send-path follow-up is unsequenced: the writer still builds today's
-/// text-only frame inline, and this stays the pinned shape for the
-/// follow-up rather than a second production caller.
-#[cfg(test)]
+/// array where the measured sender omits the field.
+///
+/// With no entries it is the text-only frame the writer has always sent, byte
+/// for byte — `a_frame_without_entries_is_the_text_only_frame` pins that —
+/// which is what lets the static route send every prompt through it.
 fn pi_prompt_frame(id: &str, text: &str, images: &[super::AcpImageBlock]) -> serde_json::Value {
     let mut frame = serde_json::json!({
         "id": id,
@@ -924,16 +932,6 @@ fn pi_prompt_frame(id: &str, text: &str, images: &[super::AcpImageBlock]) -> ser
     frame
 }
 
-/// Frame builder the writer shares with the plan: `images` is always the
-/// carried blocks, empty on the legacy text-only path. `#[cfg(test)]` so
-/// the production writer cannot drift from the shape the tests pin.
-/// (Kept while the send-path follow-up is unsequenced: the writer still
-/// builds its frame inline below.)
-#[cfg(test)]
-fn pi_prompt_frame_for_test(text: &str, images: &[super::AcpImageBlock]) -> serde_json::Value {
-    pi_prompt_frame("p-test", text, images)
-}
-
 /// Prompt plan for one Pi send: the text plus any image entries. The
 /// capability rule is Paseo's `piModelSupportsImageInput` — `image` in the
 /// current model's `input` — read through the tri-state this daemon already
@@ -941,19 +939,15 @@ fn pi_prompt_frame_for_test(text: &str, images: &[super::AcpImageBlock]) -> serd
 /// keep the path line. A model whose inputs we do not know gets the path
 /// line, never an attempt.
 ///
-/// Not yet sent: the `session.rs` send path still takes the legacy path-line
-/// write for Pi, so this plan has no production caller until that follow-up
-/// lands.
-#[cfg(test)]
+/// `PiStaticPrompt` sends it as the `prompt` frame above.
 struct PiPromptPlan {
     fallback_text: String,
     images: Vec<super::AcpImageBlock>,
 }
 
 /// The delivery the current Pi model authorises, read from the catalog the
-/// handshake filled. `#[cfg(test)]` with the plan: the only reader is the
-/// gate above until the send-path follow-up lands.
-#[cfg(test)]
+/// handshake filled — at prompt time, not copied at spawn, so a model switched
+/// since then is the model this answers for.
 fn pi_delivery(catalog: &PiCatalog, model_id: Option<&str>) -> super::ImageDelivery {
     let image = model_id
         .and_then(|id| catalog.input_kinds(id))
@@ -970,9 +964,13 @@ fn pi_delivery(catalog: &PiCatalog, model_id: Option<&str>) -> super::ImageDeliv
 /// Splits one request's attachments into inline image entries and path-line
 /// fallbacks. Every attachment is materialized first — exactly the call the
 /// shared `with_attachment_paths` makes — so a request that fails on its
-/// third attachment leaves nothing half-built. `#[cfg(test)]` with the plan:
-/// the only caller is the tests below until the send-path follow-up lands.
-#[cfg(test)]
+/// third attachment leaves nothing half-built.
+///
+/// `None` means the route did not run at all: no attachments, or a model whose
+/// `input` does not declare `image` (declared-without-image and not-declared
+/// are both no). When it does run it answers with the text as well, even if no
+/// raster became an entry, so the caller never walks the attachments a second
+/// time; with no entry the frame is the text-only `prompt`, byte for byte.
 fn plan_pi_prompt(
     store: &crate::attachment_store::AttachmentStore,
     session_id: &str,
@@ -1013,9 +1011,6 @@ fn plan_pi_prompt(
             fallback_paths.push(path);
         }
     }
-    if images.is_empty() {
-        return Ok(None);
-    }
     Ok(Some(PiPromptPlan {
         fallback_text: super::prompt_text_with_fallback_paths(text, &fallback_paths),
         images,
@@ -1027,8 +1022,113 @@ fn plan_pi_prompt(
 /// a child.
 #[cfg(test)]
 fn carried_pi_mime_types(plan: Option<&PiPromptPlan>) -> Vec<&str> {
-    plan.map(|plan| plan.images.iter().map(|image| image.mime_type.as_str()).collect())
-        .unwrap_or_default()
+    plan.map(|plan| {
+        plan.images
+            .iter()
+            .map(|image| image.mime_type.as_str())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// The static prompt route for Pi: it plans, then sends Pi's own `prompt`
+/// frame with the `images[]` field the measured sender uses.
+pub(crate) struct PiStaticPrompt {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    catalog: Arc<Mutex<PiCatalog>>,
+}
+
+impl PiStaticPrompt {
+    fn new(
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
+        next_id: Arc<AtomicU64>,
+        catalog: Arc<Mutex<PiCatalog>>,
+    ) -> Self {
+        Self {
+            stdin,
+            next_id,
+            catalog,
+        }
+    }
+}
+
+impl super::StaticImageSink for PiStaticPrompt {
+    fn plan_prompt(
+        &self,
+        store: &crate::attachment_store::AttachmentStore,
+        session_id: &str,
+        text: &str,
+        attachments: &[devboule_protocol::PromptAttachment],
+    ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
+        // The catalog is read here, at prompt time: a model switched since
+        // spawn must not be answered for with the inputs of the model that was
+        // current then.
+        let catalog = self
+            .catalog
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Io, "Pi model catalog is unavailable."))?;
+        let model_id = catalog.current_model_id.clone();
+        let Some(plan) = plan_pi_prompt(
+            store,
+            session_id,
+            text,
+            attachments,
+            &catalog,
+            model_id.as_deref(),
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Box::new(PiPlannedPrompt {
+            stdin: Arc::clone(&self.stdin),
+            next_id: Arc::clone(&self.next_id),
+            plan,
+        })))
+    }
+}
+
+/// One planned Pi prompt, ready to send. It carries the plan whole, so the
+/// text on the wire and the text the caller journals cannot be two different
+/// strings.
+struct PiPlannedPrompt {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    plan: PiPromptPlan,
+}
+
+impl PiPlannedPrompt {
+    /// The `prompt` frame for this plan. The request id comes off the shared
+    /// counter the writer and the control channel use, taken at send time.
+    fn frame(&self) -> serde_json::Value {
+        pi_prompt_frame(
+            &format!("p-{}", self.next_id.fetch_add(1, Ordering::Relaxed)),
+            &self.plan.fallback_text,
+            &self.plan.images,
+        )
+    }
+}
+
+impl super::PlannedStaticPrompt for PiPlannedPrompt {
+    fn text(&self) -> &str {
+        &self.plan.fallback_text
+    }
+
+    fn send(&self) -> Result<(), WireError> {
+        let mut bytes = serde_json::to_vec(&self.frame()).map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not encode the Pi prompt frame: {error}"),
+            )
+        })?;
+        bytes.push(b'\n');
+        write_child_stdin(&self.stdin, &bytes, "Pi").map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not send input to the terminal: {error}"),
+            )
+        })
+    }
 }
 
 struct PiWriter {
@@ -1049,11 +1149,11 @@ impl Write for PiWriter {
         }
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
-        // Unchanged text-only frame: `images` stays a plan-side shape until
-        // the send-path follow-up sequences the Pi wiring. `pi_prompt_frame`
-        // pins the omission (`...(images?.length ? { images } : {})`) for
-        // that follow-up; the writer keeps today's literal so the two cannot
-        // drift under a shared name before the plan has a production caller.
+        // The text-only frame, unchanged. A prompt that carries images is
+        // sent by the static route's own `prompt` frame instead of by this
+        // writer, so `pi_prompt_frame` has one production caller and this
+        // literal keeps the other: with no entry the two build the same frame,
+        // which `a_frame_without_entries_is_the_text_only_frame` pins.
         let frame = serde_json::json!({
             "id": format!("p-{}", self.next_id.fetch_add(1, Ordering::Relaxed)),
             "type": "prompt",
@@ -1858,21 +1958,20 @@ impl StderrSource for PiStderr {
 mod tests {
     use super::{
         carried_pi_mime_types, is_ready_notify, perform_handshake, permission_extension_path,
-        permission_request_from_ui, pi_delivery, pi_image_entry, pi_prompt_frame,
-        pi_prompt_frame_for_test, plan_pi_prompt, pi_permission_sender, spawn_args,
-        thinking_level_allowed, write_permission_extension, PiCatalog, PiControl, PiStdout,
-        PiSwitcher,
+        permission_request_from_ui, pi_delivery, pi_image_entry, pi_permission_sender,
+        pi_prompt_frame, plan_pi_prompt, spawn_args, thinking_level_allowed,
+        write_permission_extension, PiCatalog, PiControl, PiStaticPrompt, PiStdout, PiSwitcher,
     };
     use crate::acp_view::PromptCapabilityState;
     use crate::attachment_store::AttachmentStore;
     use crate::pi_view::events_from_line;
     use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
-    use crate::session::{ModelSwitcher, PtyCommand, ReaderDispatch};
+    use crate::session::{ModelSwitcher, PtyCommand, ReaderDispatch, StaticImageSink};
     use devboule_protocol::{PromptAttachment, SessionEvent};
     use std::collections::HashMap;
     use std::io::BufRead;
     use std::path::Path;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
     /// One `node` spawner for the Pi tests, so a missing binary fails the
@@ -2341,7 +2440,7 @@ mod tests {
         assert!(empty.declared.is_empty());
     }
 
-    // --- image delivery (plan-side; the send-path follow-up is unsequenced)
+    // --- image delivery (the static route) --------------------------------
     //
     // The routing decision lives in `plan_pi_prompt`, tested here against
     // the attachment store directly, without spawning a child — the same
@@ -2354,8 +2453,7 @@ mod tests {
 
     impl PlanTempDir {
         fn new(tag: &str) -> Self {
-            static COUNTER: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(1);
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
             let dir = std::env::temp_dir().join(format!(
                 "devboule-pi-plan-{}-{}-{}",
                 std::process::id(),
@@ -2464,7 +2562,7 @@ mod tests {
         let images = frame["images"].as_array().expect("images array");
         assert_eq!(images.len(), 1);
         assert_eq!(images[0]["mimeType"], "image/png");
-        let bare = pi_prompt_frame_for_test("describe this", &[]);
+        let bare = pi_prompt_frame("p-test", "describe this", &[]);
         assert_eq!(bare["message"], "describe this");
         assert!(
             bare.get("images").is_none(),
@@ -2542,7 +2640,11 @@ mod tests {
             "{}",
             plan.fallback_text
         );
-        assert!(plan.fallback_text.ends_with(".svg]"), "{}", plan.fallback_text);
+        assert!(
+            plan.fallback_text.ends_with(".svg]"),
+            "{}",
+            plan.fallback_text
+        );
         assert!(
             !plan.fallback_text.contains(".png]"),
             "the raster left no path line: {}",
@@ -2551,6 +2653,56 @@ mod tests {
         let frame = pi_prompt_frame("p-2", &plan.fallback_text, &plan.images);
         assert!(frame["message"].as_str().expect("text").ends_with(".svg]"));
         assert_eq!(frame["images"].as_array().expect("array").len(), 1);
+    }
+
+    #[test]
+    fn a_frame_without_entries_is_the_text_only_frame() {
+        // The static route frames every prompt it plans through this builder,
+        // including one whose entries are all path lines. With no entry it has
+        // to be the frame the writer builds inline, byte for byte.
+        assert_eq!(
+            pi_prompt_frame("p-test", "describe this", &[]),
+            serde_json::json!({"id": "p-test", "type": "prompt", "message": "describe this"})
+        );
+    }
+
+    #[test]
+    fn the_static_route_answers_for_the_model_current_at_prompt_time() {
+        // The route reads the live catalog rather than a copy taken at spawn:
+        // a model switched since then must not be answered for with the inputs
+        // the old model declared. Both directions are pinned here.
+        let temp = PlanTempDir::new("route-model");
+        let store = AttachmentStore::new(&temp.0);
+        let catalog = Arc::new(Mutex::new(capable_catalog()));
+        let route = PiStaticPrompt::new(
+            Arc::new(Mutex::new(None)),
+            Arc::new(AtomicU64::new(1)),
+            Arc::clone(&catalog),
+        );
+        let attachment = plan_attachment("photo.png", "image/png", &clean_png(0x41));
+        catalog.lock().expect("catalog").current_model_id = Some("minimax-m3".to_string());
+        let planned = route
+            .plan_prompt(
+                &store,
+                "pi-route",
+                "describe this",
+                std::slice::from_ref(&attachment),
+            )
+            .expect("planned")
+            .expect("a model that declared image plans a frame");
+        assert_eq!(planned.text(), "describe this", "no path line");
+        // The same route on a text-only model declines, and the caller takes
+        // the legacy write.
+        catalog.lock().expect("catalog").current_model_id = Some("deepseek-v4-flash".to_string());
+        assert!(route
+            .plan_prompt(
+                &store,
+                "pi-route",
+                "describe this",
+                std::slice::from_ref(&attachment)
+            )
+            .expect("planned")
+            .is_none());
     }
 
     #[test]
