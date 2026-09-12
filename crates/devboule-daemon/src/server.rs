@@ -3447,6 +3447,7 @@ fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionClose { session_id, .. }
         | ClientMessage::SessionStop { session_id, .. }
         | ClientMessage::SessionSend { session_id, .. }
+        | ClientMessage::SessionDeposit { session_id, .. }
         | ClientMessage::AgentMessageSend {
             to_session: session_id,
             ..
@@ -4373,6 +4374,21 @@ mod tests {
                     row.get::<_, String>(1)?
                 ))
             })
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows")
+    }
+
+    /// The session each audit row names, in insertion order. `None` is a row
+    /// whose frame names no session, or one the daemon could not read a session
+    /// out of (`request_session_id`).
+    fn audit_sessions(path: &std::path::Path) -> Vec<Option<String>> {
+        let connection = rusqlite::Connection::open(path.join("journal.db")).expect("journal");
+        let mut statement = connection
+            .prepare("SELECT session_id FROM audit ORDER BY id")
+            .expect("prepare");
+        statement
+            .query_map([], |row| row.get::<_, Option<String>>(0))
             .expect("query")
             .collect::<Result<Vec<_>, _>>()
             .expect("rows")
@@ -7131,6 +7147,12 @@ mod tests {
         );
 
         drop(state);
+        assert_eq!(
+            audit_sessions(&path),
+            vec![Some("s.none.1".to_string())],
+            "the refused deposit's audit row must name the session the frame named: \
+             a row with no session cannot say which session a device asked about"
+        );
         let _ = std::fs::remove_dir_all(path);
     }
 

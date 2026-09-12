@@ -1085,6 +1085,11 @@ type JournalRosterAfterListHook = Arc<dyn Fn() + Send + Sync>;
 #[cfg(test)]
 type AgentMessageAfterAdmissionHook = Arc<dyn Fn() + Send + Sync>;
 
+/// Runs between a deposit's ownership check and the store write (HND-01).
+/// Test-only: it is the only way to land a close inside that gap.
+#[cfg(test)]
+type DepositAfterOwnershipHook = Arc<dyn Fn() + Send + Sync>;
+
 #[derive(Clone)]
 struct ConnectionPresence {
     user: String,
@@ -1124,6 +1129,8 @@ pub struct SessionRegistry {
     journal_roster_after_list_hook: Arc<Mutex<Option<JournalRosterAfterListHook>>>,
     #[cfg(test)]
     agent_message_after_admission_hook: Arc<Mutex<Option<AgentMessageAfterAdmissionHook>>>,
+    #[cfg(test)]
+    deposit_after_ownership_hook: Arc<Mutex<Option<DepositAfterOwnershipHook>>>,
 }
 
 pub(crate) struct MessageBrake {
@@ -1447,6 +1454,8 @@ impl SessionRegistry {
             journal_roster_after_list_hook: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             agent_message_after_admission_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            deposit_after_ownership_hook: Arc::new(Mutex::new(None)),
         };
         spawn_os_liveness_sweeper(&registry);
         registry.reconcile_worktree_journal();
@@ -1538,6 +1547,28 @@ impl SessionRegistry {
     fn fire_agent_message_after_admission_hook(&self) {
         let hook = self
             .agent_message_after_admission_hook
+            .lock()
+            .ok()
+            .and_then(|mut hook| hook.take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Arm a one-shot callback that runs after a deposit's ownership check and
+    /// before the store write (HND-01).
+    #[cfg(test)]
+    fn set_deposit_after_ownership_hook(&self, hook: DepositAfterOwnershipHook) {
+        *self
+            .deposit_after_ownership_hook
+            .lock()
+            .expect("deposit test hook") = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn fire_deposit_after_ownership_hook(&self) {
+        let hook = self
+            .deposit_after_ownership_hook
             .lock()
             .ok()
             .and_then(|mut hook| hook.take());
@@ -3414,6 +3445,14 @@ impl SessionRegistry {
     /// this function's: the digest names the bytes *as stored* (the strip makes
     /// them differ from what was sent) and the size is the file's own, read from
     /// the disk.
+    ///
+    /// The window between the ownership check and the store write is closed from
+    /// the far side: the store writes with no registry lock held, so a `close`
+    /// that lands in the middle of it is detected by the re-check below and the
+    /// write is undone with it. A close that lands *after* that re-check is the
+    /// same race every operation in this file has with close, and it is
+    /// accepted — the folder goes away with the session, as it would for a send
+    /// whose bytes were already in the provider's hands.
     pub(crate) fn deposit(
         &self,
         session_id: &str,
@@ -3429,9 +3468,29 @@ impl SessionRegistry {
             let entry = map.get(session_id).ok_or_else(not_found)?;
             check_user_owner(entry, owner, &conn.conn_peer)?;
         }
+        #[cfg(test)]
+        self.fire_deposit_after_ownership_hook();
         validate_attachments(std::slice::from_ref(attachment))
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let deposited = self.attachments.deposit(session_id, attachment)?;
+        // The store wrote outside the registry lock, so a `close` that landed in
+        // the meantime has already removed this session's folder and the file
+        // just written belongs to a session that no longer exists: nothing will
+        // ever close it, and it stays charged to the store's budget until the
+        // retention sweep. The entry's absence is the receipt that the close won,
+        // so the write is undone under the lock that decides it — taken *after*
+        // the store released its own, never across it.
+        let gone = {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            map.get(session_id).is_none()
+        };
+        if gone {
+            self.attachments.remove_session(session_id);
+            return Err(not_found());
+        }
         Ok(AttachmentReference {
             session_id: session_id.to_string(),
             digest: deposited.digest,
@@ -8169,6 +8228,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// HND-01: a close that lands between the ownership check and the store write
+    /// must not leave a folder behind. The error alone would not say so — the
+    /// orphan is the finding, so both halves are asserted.
+    #[test]
+    fn a_close_inside_a_deposit_is_refused_and_leaves_no_orphan_folder() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-deposit-close", "process-deposit");
+        let id = compose_session_id(&owner.session_token(), "depo04").expect("id");
+        insert_live(&registry, &id, owner.clone());
+        let conn = ConnHandle::new(4);
+        // The window is real, and it is the store write the hook lands in: the
+        // ownership check has passed, nothing has been written yet, and no
+        // registry lock is held, so a close can take it.
+        let closing = registry.clone();
+        let closing_id = id.clone();
+        let closing_owner = owner.clone();
+        registry.set_deposit_after_ownership_hook(Arc::new(move || {
+            closing
+                .close(&closing_id, &closing_owner, &None)
+                .expect("the close wins the race");
+        }));
+
+        let error = registry
+            .deposit(
+                &id,
+                &owner,
+                &conn,
+                &attachment("photo.png", "image/png", &clean_png(0x0b)),
+            )
+            .expect_err("a deposit into a session that closed under it is refused");
+        assert_eq!(error.code, ErrorCode::SessionNotFound, "{error:?}");
+
+        // The half that matters: the file written after the close is gone with
+        // the session, not left for the retention sweep to find.
+        let folder = attachment_folder(&registry, &id);
+        assert!(
+            !folder.exists(),
+            "the write that lost the race must be undone: {:?}",
+            files_under(&folder)
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn a_fallback_session_writes_an_attachment_path_line() {
         let (dir, registry, journal) = tmp_delete_registry();
@@ -10679,10 +10783,6 @@ mod tests {
                 registry.stop_with_subscription(id, 1, owner, conn),
             ),
             (
-                "close",
-                registry.close(id, owner, &conn.conn_peer).map(|_| ()),
-            ),
-            (
                 "interrupt",
                 registry.interrupt_with_subscription(id, 1, owner, conn),
             ),
@@ -10742,6 +10842,14 @@ mod tests {
                         &attachment("photo.png", "image/png", &clean_png(0x0b)),
                     )
                     .map(|_| ()),
+            ),
+            // `close` is destructive, and this vector is evaluated eagerly and in
+            // order: it goes last, or every row behind it would run against the
+            // session it just removed, answer `SessionNotFound`, and satisfy the
+            // positive loops' "not `Unauthorized`" for the wrong reason (HND-03).
+            (
+                "close",
+                registry.close(id, owner, &conn.conn_peer).map(|_| ()),
             ),
         ]
     }
@@ -10888,6 +10996,64 @@ mod tests {
                 "{path} must let the paired user reach their own session"
             );
         }
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// HND-03: `ownership_paths` builds a `vec![...]`, so its rows are evaluated
+    /// eagerly and in order. `close` removes the session, so a `close` row that
+    /// is not last makes every row behind it answer `SessionNotFound` — which the
+    /// positive loops read as "not `Unauthorized`" and which therefore proves
+    /// nothing about ownership. This is the measurement that keeps `close` last:
+    /// every other row has to answer about the session itself.
+    #[test]
+    fn every_ownership_path_before_close_runs_on_a_live_session() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let mine = test_owner("S-1-5-21-mine", "process-1");
+        let id = compose_session_id(&mine.session_token(), "live01").expect("id");
+        insert_live(&registry, &id, mine.clone());
+        let conn = remote_conn(PeerRole::Client, Some("S-1-5-21-mine"));
+
+        let mut all: Vec<(&'static str, Option<ErrorCode>)> = Vec::new();
+        let mut missing: Vec<&'static str> = Vec::new();
+        for (path, result) in ownership_paths(&registry, &id, &mine, &conn) {
+            let code = result.err().map(|error| error.code);
+            all.push((path, code));
+            // `close` is the row that removes the session, and
+            // `agent_message_send` names an absent *target* by construction (its
+            // row decides the source's ownership check), so both are allowed to
+            // talk about a session that is not there. Nothing else is.
+            if path != "close"
+                && path != "agent_message_send"
+                && code == Some(ErrorCode::SessionNotFound)
+            {
+                missing.push(path);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these rows answered `SessionNotFound` for a live session, so they prove \
+             nothing about ownership: {missing:?} (all rows: {all:?})"
+        );
+        assert!(
+            all.len() >= 10,
+            "the loop has to walk the table, not a subset: {all:?}"
+        );
+        // Measured, not assumed (HND-03): with `close` last, the rows that used
+        // to sit behind it answer about the session rather than about its
+        // absence. `interrupt` and `set_mode` say the kind cannot do that, and
+        // `deposit` succeeds — three answers that were all `SessionNotFound`
+        // while the destructive row sat in the middle.
+        let answer = |path: &str| {
+            all.iter()
+                .find(|(name, _)| *name == path)
+                .expect("each row this test names is in the table")
+                .1
+        };
+        assert_eq!(answer("interrupt"), Some(ErrorCode::InvalidRequest));
+        assert_eq!(answer("set_mode"), Some(ErrorCode::InvalidRequest));
+        assert_eq!(answer("deposit"), None);
+
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
