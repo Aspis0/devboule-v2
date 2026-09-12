@@ -6,16 +6,15 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ATTACHMENT_INPUT_ACCEPT,
+  attachmentPillKey,
   base64Length,
   collectAttachmentFiles,
-  countPdfPages,
   encodeSvgSourceBase64,
   formatAttachmentSize,
   importDesignAttachments,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
   MAX_ATTACHMENT_TOTAL_BYTES,
-  PDF_COUNT_PROBE_PAGE,
   pdfDocumentNotice,
   pdfPageBudget,
   pdfProgressNotice,
@@ -28,6 +27,7 @@ import {
 } from "./designAttachments";
 import type { DesignAttachment } from "./designHost";
 import {
+  countPdfPages,
   PDF_MAX_FILE_BYTES,
   pdfTooLargeMessage,
   renderPdfPages,
@@ -45,7 +45,7 @@ import {
  */
 vi.mock("./pdfPageRenderer", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./pdfPageRenderer")>();
-  return { ...actual, renderPdfPages: vi.fn() };
+  return { ...actual, countPdfPages: vi.fn(), renderPdfPages: vi.fn() };
 });
 
 /**
@@ -340,6 +340,35 @@ describe("nothing is dropped without a reason", () => {
 
     expect(result.rejections[0].reason).toBe(
       "huge.png is 128.0 KB; one attached file may be at most 128.0 KB.",
+    );
+  });
+
+  it("holds a PDF-declared file that carries a raster to the per-file ceiling", async () => {
+    // The declaration earned this file the 64 MiB parse ceiling, and its bytes
+    // turned out to be a JPEG: the metadata walk keeps entropy-coded data bit for
+    // bit, so a raster with a big scan really does weigh 200 KiB once carried.
+    // (Padding would not prove it — bytes after EOI are removed as a hiding place,
+    // which is a different rule with the same outcome for the user.) What travels
+    // is the bytes, so what applies is the ceiling every other attachment is
+    // held to, whatever the file called itself.
+    const scan = new Uint8Array(200 * 1024).fill(0x41);
+    const large = Uint8Array.from([
+      0xff,
+      0xd8,
+      ...jpegSegment(0xe0, JFIF_PAYLOAD),
+      ...jpegSegment(0xda, [0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]),
+      ...scan,
+      0xff,
+      0xd9,
+    ]);
+    const result = await importDesignAttachments(
+      [rasterFile("deck.pdf", large, "application/pdf")],
+      [],
+    );
+
+    expect(result.attachments).toEqual([]);
+    expect(result.rejections[0].reason).toBe(
+      `deck.pdf is ${formatAttachmentSize(200 * 1024)}; one attached file may be at most ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)}.`,
     );
   });
 
@@ -800,6 +829,7 @@ describe("the numbers the limits are made of", () => {
 });
 
 const rendererMock = vi.mocked(renderPdfPages);
+const counterMock = vi.mocked(countPdfPages);
 
 /** A whole PDF, because a document is read by its header and not by its name. */
 const PDF_BYTES = Uint8Array.from([...asciiBytes("%PDF-1.4"), 0x0a]);
@@ -843,11 +873,12 @@ function outcomeOf(input: {
 }
 
 /**
- * The renderer as this module uses it: a count call, then a render call. The
- * count is recognised by the page range it asks for, which is past the end of any
- * document, and answers with the page count alone. The render stamps out the
- * pages it was given and stops at an abort the way the real walk does, so a stop
- * decided in the sink is not followed by pages the renderer would never draw.
+ * The renderer as this module uses it: the count first, then the render. Two
+ * exports, two mocks, because the importer calls them separately — the count is
+ * what lets the composer decide what fits before it spends a render, and the
+ * render is what produces the pages. The render streams the pages it was given
+ * and stops at an abort the way the real walk does, so a stop decided in the
+ * sink is not followed by pages the renderer would never draw.
  */
 function rendererServes(input: {
   readonly pageCount: number;
@@ -857,10 +888,8 @@ function rendererServes(input: {
   readonly stoppedEarly?: PdfRenderOutcome["stoppedEarly"];
   readonly failure?: string;
 }): void {
+  counterMock.mockResolvedValue({ ok: true, pageCount: input.pageCount });
   rendererMock.mockImplementation(async (_bytes, name, sink, options) => {
-    if (options?.pageRange?.from === PDF_COUNT_PROBE_PAGE) {
-      return { ok: true, outcome: outcomeOf({ name, pageCount: input.pageCount }) };
-    }
     if (input.failure !== undefined) return { ok: false, failure: { reason: input.failure } };
     const outcome = outcomeOf({
       name,
@@ -880,16 +909,11 @@ function rendererServes(input: {
 
 /** The call that draws pages, as opposed to the one that only counts them. */
 function renderLeg(): PdfRenderOptions | undefined {
-  const call = rendererMock.mock.calls.find(
-    ([, , , options]) => options?.pageRange?.from !== PDF_COUNT_PROBE_PAGE,
-  );
-  return call?.[3];
+  return rendererMock.mock.calls[0]?.[3];
 }
 
 function countLegs(): number {
-  return rendererMock.mock.calls.filter(
-    ([, , , options]) => options?.pageRange?.from === PDF_COUNT_PROBE_PAGE,
-  ).length;
+  return counterMock.mock.calls.length;
 }
 
 /** Two full rasters: the composer's whole attachment budget, already spent. */
@@ -905,6 +929,7 @@ const FULL_COMPOSER: readonly DesignAttachment[] = ["a.png", "b.png"].map((name)
 describe("a PDF the composer carries as pictures of its pages", () => {
   beforeEach(() => {
     rendererMock.mockReset();
+    counterMock.mockReset();
   });
 
   it("counts the document before it renders a page of it", async () => {
@@ -918,14 +943,12 @@ describe("a PDF the composer carries as pictures of its pages", () => {
 
     const result = await importDesignAttachments([pdfFile("deck.pdf")], []);
 
-    // The count comes first, and it asks for a page past the end on purpose:
-    // that opens the document and draws nothing, which is what lets the composer
-    // decide what fits before it spends a render finding out.
+    // The count comes first, and it is the call that draws nothing: that is what
+    // lets the composer decide what fits before it spends a render finding out.
     expect(countLegs()).toBe(1);
-    expect(rendererMock.mock.calls[0][3]?.pageRange).toEqual({
-      from: PDF_COUNT_PROBE_PAGE,
-      to: PDF_COUNT_PROBE_PAGE,
-    });
+    expect(rendererMock.mock.invocationCallOrder[0] ?? 0).toBeGreaterThan(
+      counterMock.mock.invocationCallOrder[0] ?? 0,
+    );
     expect(renderLeg()?.pageRange).toEqual({ from: 1, to: 2 });
     expect(renderLeg()?.maxPages).toBe(2);
     expect(renderLeg()?.maxBytes).toBe(96 * 1024);
@@ -1026,6 +1049,30 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     expect(page.document).toMatchObject({ name: "long.pdf", pageCount: 5, travelled: 2 });
   });
 
+  it("keys a document's pages as one pill, and a plain file as itself", async () => {
+    rendererServes({
+      pageCount: 2,
+      pages: [
+        { pageNumber: 1, bytes: 512 },
+        { pageNumber: 2, bytes: 640 },
+      ],
+    });
+
+    const result = await importDesignAttachments(
+      [pdfFile("deck.pdf"), rasterFile("shot.png", PNG_BYTES, "image/png")],
+      [],
+    );
+
+    const [one, two, plain] = result.attachments;
+    // The rule the pills, the removal control and the page budget all read: one
+    // key for a document's pages, and a file's own id for everything else. Two
+    // two-page documents used to spend four of the composer's four slots because
+    // this counted attachments instead — while the row showed two pills.
+    expect(attachmentPillKey(one)).toBe(attachmentPillKey(two));
+    expect(attachmentPillKey(one)).not.toBe(one.id);
+    expect(attachmentPillKey(plain)).toBe(plain.id);
+  });
+
   it("refuses a document that does not fit, before rendering any of it", async () => {
     rendererServes({ pageCount: 12 });
 
@@ -1080,27 +1127,94 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     ]);
   });
 
-  it("stops the walk when a page measures more than the composer can carry", async () => {
+  it("holds a manufactured page to the ceiling every other attachment is held to", async () => {
     rendererServes({
       pageCount: 2,
       pages: [
-        { pageNumber: 1, bytes: MAX_ATTACHMENT_TOTAL_BYTES - 100 },
+        // Over the per-file ceiling and well under the composer's total: the
+        // shape a page takes when no rung of the renderer's ladder fits it
+        // (`renderOnePage` returns the smallest candidate anyway).
+        { pageNumber: 1, bytes: MAX_ATTACHMENT_BYTES + 1 },
         { pageNumber: 2, bytes: 400 },
       ],
     });
 
     const result = await importDesignAttachments([pdfFile("deck.pdf")], []);
 
-    // The renderer's per-page ceiling is a target, not a guarantee: a page that
-    // fits no rung of its ladder comes back anyway, so the ceiling that binds is
-    // the composer's, measured against the bytes a page actually carries.
-    expect(result.attachments.map((attachment) => attachment.bytes)).toEqual([
-      MAX_ATTACHMENT_TOTAL_BYTES - 100,
+    // A page the composer manufactured is an attachment like any other, and the
+    // ceiling the user's own files are held to holds it too. This test used to
+    // assert the opposite — that such a page travels — which certified the hole
+    // the wire's own 144 KiB limit closes by refusing the whole run.
+    expect(result.attachments.map((attachment) => attachment.name)).toEqual([
+      "deck.pdf page 2 of 2",
     ]);
     expect(result.notices).toEqual([
-      "deck.pdf was attached in part: page 2 was left out because the composer's remaining attachment budget ran out after page 1, so 1 of its 2 pages travels as a picture.",
+      "deck.pdf was attached in part: page 1 was left out because one attached file may be at most 128.0 KB, so 1 of its 2 pages travels as a picture.",
     ]);
+  });
+
+  it("refuses a document whose only page is larger than one attachment may be", async () => {
+    rendererServes({
+      pageCount: 1,
+      pages: [{ pageNumber: 1, bytes: MAX_ATTACHMENT_BYTES + 4096 }],
+    });
+
+    const result = await importDesignAttachments([pdfFile("deck.pdf")], []);
+
+    expect(result.attachments).toEqual([]);
+    expect(result.rejections[0].reason).toBe(
+      "deck.pdf has 1 page, and none of it was attached: one attached file may be at most 128.0 KB, and every page of this one is larger — its first page renders to 132.0 KB. Export the pages as PNGs and attach those instead.",
+    );
+  });
+
+  it("stops the walk when the composer runs out of room mid-document", async () => {
+    // 150 KiB already attached leaves 106 KiB, which is room for one page by the
+    // budget and not enough for the page this render turns out to produce: the
+    // ceiling binds on measured bytes, not on the ceiling the budget assumed.
+    const existing: readonly DesignAttachment[] = [
+      {
+        id: "first",
+        kind: "raster",
+        name: "first.png",
+        mimeType: "image/png",
+        bytes: 150 * 1024,
+        base64: "AA==",
+      },
+    ];
+    rendererServes({ pageCount: 2, pages: [{ pageNumber: 1, bytes: 120 * 1024 }] });
+
+    const result = await importDesignAttachments([pdfFile("deck.pdf")], existing);
+
+    expect(result.attachments).toEqual([]);
+    expect(result.rejections[0].reason).toContain("its first page renders to 120.0 KB");
+    expect(result.rejections[0].reason).toContain("106.0 KB");
+    // The walk was stopped rather than left to draw pages nobody can carry.
     expect(renderLeg()?.signal?.aborted).toBe(true);
+  });
+
+  it("counts a document as one attachment, not as its pages", async () => {
+    // Two two-page documents are four pictures and two pills. Counting the
+    // pictures against the composer's four slots spent the whole row on them —
+    // a sentence about "4 files" while the row showed two — and refused the next
+    // file. The pill key is what a slot is now.
+    rendererServes({
+      pageCount: 2,
+      pages: [
+        { pageNumber: 1, bytes: 512 },
+        { pageNumber: 2, bytes: 512 },
+      ],
+    });
+    const first = await importDesignAttachments([pdfFile("one.pdf"), pdfFile("two.pdf")], []);
+    expect(first.rejections).toEqual([]);
+    expect(first.attachments).toHaveLength(4);
+
+    const second = await importDesignAttachments(
+      [rasterFile("third.png", PNG_BYTES, "image/png")],
+      first.attachments,
+    );
+
+    expect(second.rejections).toEqual([]);
+    expect(second.attachments.map((attachment) => attachment.name)).toEqual(["third.png"]);
   });
 
   it("passes through what the renderer says about a downscaled page", async () => {
@@ -1125,10 +1239,8 @@ describe("a PDF the composer carries as pictures of its pages", () => {
 
   it("attaches nothing and says nothing when the user stops it", async () => {
     const controller = new AbortController();
-    rendererMock.mockImplementation(async (_bytes, name, sink, options) => {
-      if (options?.pageRange?.from === PDF_COUNT_PROBE_PAGE) {
-        return { ok: true, outcome: outcomeOf({ name, pageCount: 3 }) };
-      }
+    counterMock.mockResolvedValue({ ok: true, pageCount: 3 });
+    rendererMock.mockImplementation(async (_bytes, name, sink) => {
       sink.onPage(pageOf(1, 512));
       // Stopped while the first page was rendering: the renderer reports a
       // cancelled walk, and the page it already drew is not wanted either.
@@ -1206,13 +1318,11 @@ describe("a PDF the composer carries as pictures of its pages", () => {
   });
 
   it("renders on the budget alone when the count cannot be taken", async () => {
-    rendererMock.mockImplementation(async (_bytes, name, sink, options) => {
-      if (options?.pageRange?.from === PDF_COUNT_PROBE_PAGE) {
-        return {
-          ok: false,
-          failure: { reason: "deck.pdf is password-protected, so its pages could not be read." },
-        };
-      }
+    counterMock.mockResolvedValue({
+      ok: false,
+      reason: "deck.pdf is password-protected, so its pages could not be read.",
+    });
+    rendererMock.mockImplementation(async (_bytes, name, sink) => {
       const outcome = outcomeOf({
         name,
         pageCount: 4,
@@ -1253,9 +1363,9 @@ describe("a PDF the composer carries as pictures of its pages", () => {
   });
 
   it("passes the renderer's reason on when a document that cannot fit cannot be read", async () => {
-    rendererMock.mockResolvedValue({
+    counterMock.mockResolvedValue({
       ok: false,
-      failure: { reason: "deck.pdf is password-protected, so its pages could not be read." },
+      reason: "deck.pdf is password-protected, so its pages could not be read.",
     });
 
     const result = await importDesignAttachments([pdfFile("deck.pdf")], FULL_COMPOSER);
@@ -1275,31 +1385,19 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     });
   });
 
-  it("counts a real document by asking the renderer for a page past the last", async () => {
-    // The probe is the one clever step in this file, so it is checked against the
-    // real walk rather than against the mock the tests above use. `getPage`
-    // rejects, so a probe that tried to draw anything would fail here; the
-    // renderer's own page-range resolution is what makes this a count and not a
-    // render, and this is where that dependency is pinned.
+  it("counts a real document without drawing one of it", async () => {
+    // The count is the one clever step in this file, so it is checked against the
+    // real walk rather than against the mock the tests above use: `getPage`
+    // rejects, so a count that tried to draw anything would fail here, and
+    // `countOnly` is what makes this a count and not a render.
     pdfjsStub.state.pageCount = 7;
     pdfjsStub.state.getPageCalls = 0;
     const actual = await vi.importActual<typeof import("./pdfPageRenderer")>("./pdfPageRenderer");
 
-    const result = await actual.renderPdfPages(
-      PDF_BYTES,
-      "deck.pdf",
-      {
-        onPage: () => {
-          throw new Error("the probe drew a page");
-        },
-      },
-      { pageRange: { from: PDF_COUNT_PROBE_PAGE, to: PDF_COUNT_PROBE_PAGE } },
-    );
+    const result = await actual.countPdfPages(PDF_BYTES, "deck.pdf");
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("expected a count");
-    expect(result.outcome.pageCount).toBe(7);
-    expect(result.outcome.pages).toEqual([]);
+    expect(result).toEqual({ ok: true, pageCount: 7 });
+    // And nothing was asked to render: no page, no canvas.
     expect(pdfjsStub.state.getPageCalls).toBe(0);
   });
 
@@ -1316,27 +1414,39 @@ describe("a PDF the composer carries as pictures of its pages", () => {
       raster(1, `small-${index}.png`),
     );
 
-    // 256 KiB of budget against a 96 KiB worst-case page is two pages, and four
-    // slots is more than two: the bytes decide, and the slots only ever lower it.
-    expect(pdfPageBudget([])).toBe(2);
-    expect(pdfPageBudget([raster(MAX_ATTACHMENT_BYTES, "a.png")])).toBe(1);
-    expect(pdfPageBudget(FULL_COMPOSER)).toBe(0);
-    expect(pdfPageBudget(small)).toBe(1);
-    expect(pdfPageBudget([...small, raster(1, "last.png")])).toBe(0);
+    // 256 KiB of budget against a 96 KiB worst-case page is two pages: the bytes
+    // decide, and the slots only ever refuse the document its one pill.
+    expect(pdfPageBudget([])).toEqual({ pages: 2, blockedBy: null });
+    expect(pdfPageBudget([raster(MAX_ATTACHMENT_BYTES, "a.png")])).toEqual({
+      pages: 1,
+      blockedBy: null,
+    });
+    // Two full rasters leave no bytes and three pills of room: bytes ran out.
+    expect(pdfPageBudget(FULL_COMPOSER)).toEqual({ pages: 0, blockedBy: "bytes" });
+    // Three small files leave 255.9 KiB free and one pill of room, and a document
+    // is one pill whatever its page count: it fits, with a page to spend.
+    expect(pdfPageBudget(small)).toEqual({ pages: 2, blockedBy: null });
+    // The fourth pill fills the row, so the next document has nowhere to go —
+    // and that is slots, not bytes, however much budget is free.
+    expect(pdfPageBudget([...small, raster(1, "last.png")])).toEqual({
+      pages: 0,
+      blockedBy: "slots",
+    });
   });
 
   it("has three sentences for three outcomes, and none of them is another", () => {
     const refused = pdfRefusalNotice({
       name: "deck.pdf",
       pageCount: 40,
+      cause: "budget",
       freeBytes: 0,
-      firstLoss: "budget",
     });
     const whole = pdfDocumentNotice({
       name: "deck.pdf",
       pageCount: 2,
       attached: [1, 2],
       lostToBudget: [],
+      lostToSize: [],
       lostToRender: [],
     });
     const part = pdfDocumentNotice({
@@ -1344,6 +1454,7 @@ describe("a PDF the composer carries as pictures of its pages", () => {
       pageCount: 40,
       attached: [1, 2],
       lostToBudget: [3, 4, 5],
+      lostToSize: [],
       lostToRender: [6],
     });
 

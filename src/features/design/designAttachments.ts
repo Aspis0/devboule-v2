@@ -1,5 +1,6 @@
 import type { DesignAttachment } from "./designHost";
 import {
+  countPdfPages,
   PDF_DEFAULT_MAX_BYTES_PER_PAGE,
   PDF_MAX_FILE_BYTES,
   pdfInvalidMessage,
@@ -581,6 +582,29 @@ export function unreadableNotice(count: number): string {
   return `${subject}, so nothing was attached from it. A folder cannot be attached; drop the image files themselves.`;
 }
 
+/**
+ * What to tell the user when the import threw rather than refused.
+ *
+ * A refusal is a decision this module made and can explain: too large, wrong
+ * type, no room. A throw is something that went wrong underneath — a file
+ * moved between the picker and the read, a lazily loaded chunk that did not
+ * arrive. Those deserve a different sentence, because "it did not fit" would
+ * be a lie and silence would be worse than either: a drop that lights up the
+ * composer and then does nothing is indistinguishable from a broken app.
+ *
+ * The files are named because the user picked them and can pick them again,
+ * and the underlying reason is quoted rather than paraphrased — this is the
+ * one case where we genuinely do not know what happened.
+ */
+export function attachmentReadFailureMessage(files: readonly File[], cause: unknown): string {
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  const subject =
+    files.length === 1 && files[0] !== undefined
+      ? files[0].name
+      : `${files.length.toString()} files`;
+  return `${subject} could not be read, so nothing was attached: ${reason}. Try attaching it again.`;
+}
+
 function totalBytes(attachments: readonly DesignAttachment[]): number {
   return attachments.reduce((sum, attachment) => sum + attachment.bytes, 0);
 }
@@ -617,81 +641,64 @@ export interface DesignAttachmentImportOptions {
 }
 
 /**
- * The page number a count-only call asks for: past the last page of any real
- * document, so the request opens the PDF and renders nothing.
+ * What the composer shows as one pill, which is not always one attachment.
  *
- * The renderer reports the page count from inside a render call and offers no
- * entry point that only opens the document. This is that call: a page range
- * beyond the last page resolves to an empty list before any render starts
- * (`pdfInRangePages`), so the parse happens, `outcome.pageCount` comes back, and
- * zero pages are drawn. It costs the parse — which the render that follows pays
- * again anyway — and it is what lets the composer refuse a document up front,
- * naming the pages it has and the pages that would fit, instead of discovering
- * the same thing at page three of forty.
+ * A picture that is a page of a document carries its document's id
+ * (`DesignAttachmentDocument`), and the user picked that document once: the
+ * pill is the document, and removing it takes every page. Everything else
+ * answers with its own id, which is what it answered before documents existed.
  *
- * A million is far past any page count pdf.js will report; nothing here depends
- * on the exact value, only on it being larger than any `numPages`.
+ * One rule, two callers, and that is the point: `DesignSurface.tsx` keys pills
+ * and removals on this, and the budget below counts attachments the way the
+ * composer shows them rather than the way the transport carries them. Counting
+ * pages against `MAX_ATTACHMENT_COUNT` is what let four slots be spent by two
+ * two-page documents — two pills — and then refused the next file with a
+ * sentence about the four it could see.
  */
-export const PDF_COUNT_PROBE_PAGE = 1_000_000;
+export function attachmentPillKey(attachment: DesignAttachment): string {
+  return (attachment.kind === "raster" ? attachment.document?.id : undefined) ?? attachment.id;
+}
 
-/**
- * How many pages a PDF has, without rendering one of them.
- *
- * A failure is advisory, not fatal: every reason `renderPdfPages` can give here
- * (a password, bytes that are not a PDF, a file over `PDF_MAX_FILE_BYTES`, the
- * clock) is a reason the render would give too, so a caller may pass it on — but
- * a count that could not be taken must not stop a document from being attached,
- * so the caller falls back to rendering on the budget alone.
- */
-export async function countPdfPages(
-  bytes: Uint8Array,
-  name: string,
-  signal?: AbortSignal,
-): Promise<{ ok: true; pageCount: number } | { ok: false; reason: string }> {
-  const counted = await renderPdfPages(
-    bytes,
-    name,
-    { onPage: () => undefined },
-    { pageRange: { from: PDF_COUNT_PROBE_PAGE, to: PDF_COUNT_PROBE_PAGE }, signal },
-  );
-  return counted.ok
-    ? { ok: true, pageCount: counted.outcome.pageCount }
-    : { ok: false, reason: counted.failure.reason };
+/** How many pills the composer shows for these attachments. */
+function pillCount(attachments: readonly DesignAttachment[]): number {
+  return new Set(attachments.map((attachment) => attachmentPillKey(attachment))).size;
 }
 
 /**
  * What the composer can carry of one PDF, in pages — the one place the number is
- * computed.
+ * computed — and which of its two limits blocked it when the answer is none.
  *
- * A PDF is one attachment whose pages travel as pictures, so the pictures are
- * what the composer holds and what the budget bounds; the document itself is
- * parsed and released. Three numbers decide the answer, and each is already
- * stated where it belongs:
+ * A PDF is one pill whose pages travel as pictures, so the pills bound how many
+ * *documents* the composer holds and the bytes bound how many pictures one of
+ * them contributes. Three numbers decide the answer, each stated where it
+ * belongs: `MAX_ATTACHMENT_COUNT` (4) and `MAX_ATTACHMENT_TOTAL_BYTES` (256 KiB)
+ * are what the composer holds today — small on purpose, because an attachment
+ * rides base64 inside the frame that carries the prompt, under a structural
+ * ceiling that is not moving, so 256 KiB of raw bytes is already ~341 KiB
+ * encoded — and `PDF_DEFAULT_MAX_BYTES_PER_PAGE` (96 KiB) is the largest page
+ * the renderer produces by default, measured rather than picked: flat vector
+ * decks encode to ~31 KiB a page at scale 1.0, photographic plates to ~79 KiB.
  *
- * - `MAX_ATTACHMENT_COUNT` (4) and `MAX_ATTACHMENT_TOTAL_BYTES` (256 KiB) are
- *   what the composer holds today, and they are small on purpose: an attachment
- *   rides base64 inside the frame that carries the prompt, under a structural
- *   ceiling that is not moving, so 256 KiB of raw bytes is already ~341 KiB
- *   encoded. The slot term is the row of pills: a page is one attachment here,
- *   so the budget never asks for more pages than the composer can show.
- * - `PDF_DEFAULT_MAX_BYTES_PER_PAGE` (96 KiB) is the largest page the renderer
- *   produces by default, and it is measured rather than picked: flat vector
- *   decks encode to ~31 KiB a page at scale 1.0 and photographic plates to
- *   ~79 KiB. The budget holds the worst page the renderer will produce, not the
- *   average, which is why an empty composer floors at two pages even though the
- *   measured average on a mixed deck (~46.7 KiB) would fit five.
- *
- * So two pages is the honest capacity today, and a forty-page deck is attached
- * in part with the pages named (never silently, never discovered at page three).
- * When the attachment deposit lands — one page per frame, references instead of
- * inline bytes — both terms below are replaced at once, and this function is the
- * only place that has to know.
+ * The budget holds the worst page the renderer will produce, not the average,
+ * which is why an empty composer floors at two pages even though the measured
+ * average on a mixed deck (~46.7 KiB) would fit five. So two pages is the honest
+ * capacity today, and a forty-page deck is attached in part with the pages
+ * named. When the attachment deposit lands — one page per frame, references
+ * instead of inline bytes — both terms below are replaced at once, and this
+ * function is the only place that has to know.
  */
-export function pdfPageBudget(existing: readonly DesignAttachment[]): number {
-  const slots = MAX_ATTACHMENT_COUNT - existing.length;
-  if (slots <= 0) return 0;
+export interface PdfPageBudget {
+  /** Pages one document may contribute. */
+  readonly pages: number;
+  /** Which limit blocked it, when no page fits. Null when at least one does. */
+  readonly blockedBy: "slots" | "bytes" | null;
+}
+
+export function pdfPageBudget(existing: readonly DesignAttachment[]): PdfPageBudget {
+  if (pillCount(existing) >= MAX_ATTACHMENT_COUNT) return { pages: 0, blockedBy: "slots" };
   const free = MAX_ATTACHMENT_TOTAL_BYTES - totalBytes(existing);
-  return Math.max(0, Math.min(slots, Math.floor(free / PDF_DEFAULT_MAX_BYTES_PER_PAGE)));
+  const pages = Math.floor(free / PDF_DEFAULT_MAX_BYTES_PER_PAGE);
+  return { pages: Math.max(0, pages), blockedBy: pages > 0 ? null : "bytes" };
 }
 
 /** `page 4`, `pages 4-9`, `pages 4, 7 and 9`: the pages a sentence has to name. */
@@ -703,14 +710,19 @@ function pageList(pages: readonly number[]): string {
   return `pages ${listWithAnd(pages.map((page) => page.toString()))}`;
 }
 
-/** Why pages did not travel: the composer's budget, or a render that gave up. */
-export type PdfPageLossCause = "budget" | "render";
+/** Why pages did not travel: the composer's budget, its per-file ceiling, or a render that gave up. */
+export type PdfPageLossCause = "budget" | "size" | "render";
+
+/** Why nothing was attached at all, in the terms the sentence has to name. */
+export type PdfRefusalCause = "slots" | "budget" | "size" | "render";
 
 export interface PdfRefusalNoticeInput {
   readonly name: string;
   /** Pages in the document, read from the parsed file. */
   readonly pageCount: number;
-  /** Raw bytes the composer can still carry. */
+  /** Which limit or failure refused the document. */
+  readonly cause: PdfRefusalCause;
+  /** Raw bytes the composer can still carry. Read for the `budget` cause only. */
   readonly freeBytes: number;
   /**
    * What the document's first page measured, when a render produced one. Absent
@@ -718,29 +730,44 @@ export interface PdfRefusalNoticeInput {
    * sentence quotes the renderer's own per-page ceiling instead.
    */
   readonly firstPageBytes?: number;
-  readonly firstLoss: PdfPageLossCause;
 }
 
 /**
  * What the composer says about a PDF nothing was attached from: one sentence,
- * naming the document, how many pages it has, how many would fit and what to do.
+ * naming the document, how many pages it has, which limit refused it and what to
+ * do about it.
  *
  * This is the sentence the whole feature turns on. A deck of forty pages does
  * not fit a composer that carries two, and finding that out at page three — with
  * two pages attached and thirty-eight gone — is worse than an error, because an
  * agent handed half a deck answers confidently and wrongly. So the document is
- * refused before it is rendered, and the refusal states the arithmetic.
+ * refused before it is rendered, and the refusal states the constraint that
+ * actually bound: the slots the composer has left, the bytes it can carry, the
+ * size one attachment may reach, or a render that ran out of time.
  */
 export function pdfRefusalNotice(input: PdfRefusalNoticeInput): string {
-  const pages = `${input.pageCount} ${input.pageCount === 1 ? "page" : "pages"}`;
-  if (input.firstLoss === "render") {
-    return `${input.name} has ${pages}, and none of them was attached: the render ran out of time on its first page. Attach the PDF again, or export the pages as PNGs.`;
+  const pages = `${input.pageCount.toString()} ${input.pageCount === 1 ? "page" : "pages"}`;
+  const them = input.pageCount === 1 ? "it" : "them";
+  const head = `${input.name} has ${pages}, and none of ${them} `;
+  const retry = "Remove an attached file and attach the PDF again.";
+  if (input.cause === "slots") {
+    return `${head}fits: the composer can hold ${MAX_ATTACHMENT_COUNT.toString()} attachments and it is holding them, and a document is one of them. ${retry}`;
+  }
+  if (input.cause === "size") {
+    const measured =
+      input.firstPageBytes === undefined
+        ? ""
+        : ` — its first page renders to ${formatAttachmentSize(input.firstPageBytes)}`;
+    return `${head}was attached: one attached file may be at most ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)}, and every page of this one is larger${measured}. Export the pages as PNGs and attach those instead.`;
+  }
+  if (input.cause === "render") {
+    return `${head}was attached: the render ran out of time on its first page. Attach the PDF again, or export the pages as PNGs.`;
   }
   const needs =
     input.firstPageBytes === undefined
       ? `one rendered page needs up to ${formatAttachmentSize(PDF_DEFAULT_MAX_BYTES_PER_PAGE)}`
       : `its first page renders to ${formatAttachmentSize(input.firstPageBytes)}`;
-  return `${input.name} has ${pages}, and none of them fits: ${needs} and the composer has ${formatAttachmentSize(input.freeBytes)} of its attachment budget free, so nothing was attached. Remove an attached file and attach the PDF again.`;
+  return `${head}fits: ${needs} and the composer has ${formatAttachmentSize(input.freeBytes)} of its attachment budget free, so nothing was attached. ${retry}`;
 }
 
 export interface PdfDocumentNoticeInput {
@@ -751,6 +778,8 @@ export interface PdfDocumentNoticeInput {
   readonly attached: readonly number[];
   /** 1-based pages the composer's budget could not hold, in document order. */
   readonly lostToBudget: readonly number[];
+  /** 1-based pages larger than the ceiling one attached file may reach. */
+  readonly lostToSize: readonly number[];
   /** 1-based pages a render failure lost, in document order. */
   readonly lostToRender: readonly number[];
 }
@@ -782,6 +811,11 @@ export function pdfDocumentNotice(input: PdfDocumentNoticeInput): string {
     const last = input.attached[input.attached.length - 1];
     reasons.push(
       `${pageList(input.lostToBudget)} ${input.lostToBudget.length === 1 ? "was" : "were"} left out because the composer's remaining attachment budget ran out after page ${last}`,
+    );
+  }
+  if (input.lostToSize.length > 0) {
+    reasons.push(
+      `${pageList(input.lostToSize)} ${input.lostToSize.length === 1 ? "was" : "were"} left out because one attached file may be at most ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)}`,
     );
   }
   if (input.lostToRender.length > 0) {
@@ -845,12 +879,15 @@ const NOTHING_IMPORTED: Omit<PdfDocumentImport, "stop"> = {
  * and the running byte total is enforced there — against the bytes a page
  * actually carries, because a page that fits no rung of the renderer's scale
  * ladder is returned anyway and can be larger than the per-page ceiling this
- * budget assumed.
+ * budget assumed. So is the per-file ceiling every other attachment is held to:
+ * a manufactured page is an attachment like any other, and the wire refuses one
+ * over 144 KiB whatever produced it.
  */
 async function importPdfDocument(input: {
   readonly name: string;
   readonly bytes: Uint8Array;
-  readonly budget: number;
+  /** `pdfPageBudget` for the composer as it stands, with the reason it is empty. */
+  readonly budget: PdfPageBudget;
   /** Raw bytes the composer already carries, this batch included. */
   readonly carried: number;
   readonly seen: ReadonlySet<string>;
@@ -862,7 +899,7 @@ async function importPdfDocument(input: {
   const counted = await countPdfPages(bytes, name, signal);
   if (attachmentAborted(signal)) return { ...NOTHING_IMPORTED, stop: true };
 
-  if (budget === 0) {
+  if (budget.pages === 0) {
     return {
       ...NOTHING_IMPORTED,
       stop: false,
@@ -871,12 +908,14 @@ async function importPdfDocument(input: {
         // Refused before a page is rendered, so the sentence carries the count
         // when the document could be read and the renderer's own words when it
         // could not (a password, an unreadable file, one over the file ceiling).
+        // The cause is the budget's, not this function's: slots and bytes are
+        // different constraints and the sentence names the one that bound.
         reason: counted.ok
           ? pdfRefusalNotice({
               name,
               pageCount: counted.pageCount,
+              cause: budget.blockedBy === "slots" ? "slots" : "budget",
               freeBytes: MAX_ATTACHMENT_TOTAL_BYTES - carried,
-              firstLoss: "budget",
             })
           : counted.reason,
       },
@@ -890,7 +929,7 @@ async function importPdfDocument(input: {
       rejection: { name, reason: `${name} has no pages, so there was nothing to attach.` },
     };
   }
-  const planned = pageCount === null ? budget : Math.min(budget, pageCount);
+  const planned = pageCount === null ? budget.pages : Math.min(budget.pages, pageCount);
 
   const controller = new AbortController();
   const forwardAbort = (): void => controller.abort();
@@ -902,6 +941,8 @@ async function importPdfDocument(input: {
   const pages: PdfRenderedPage[] = [];
   let measured = 0;
   let firstPageBytes: number | undefined;
+  /** Pages this document rendered larger than one attachment may be. */
+  const oversized: number[] = [];
   const rendered = await renderPdfPages(
     bytes,
     name,
@@ -911,6 +952,18 @@ async function importPdfDocument(input: {
         // sink is where the abort is decided: nothing is collected after it.
         if (attachmentAborted(controller.signal)) return;
         if (firstPageBytes === undefined) firstPageBytes = page.bytes.length;
+        if (page.bytes.length > MAX_ATTACHMENT_BYTES) {
+          // A page the composer manufactured is an attachment like any other, so
+          // the ceiling every other attachment is held to applies here too. The
+          // renderer returns the smallest candidate it produced even when no rung
+          // of the ladder fits (`renderOnePage`), which is above this ceiling for
+          // a large enough page; without this check the composer would promise an
+          // attachment the wire then refuses, and the run would fail for a reason
+          // it could have computed. The walk continues: a later page may be
+          // smaller, and the sentence names whatever was left out.
+          oversized.push(page.pageNumber);
+          return;
+        }
         if (carried + measured + page.bytes.length > MAX_ATTACHMENT_TOTAL_BYTES) {
           // The ceiling binds on the bytes a page really carries: the renderer
           // guarantees no such thing (see `renderOnePage`), so the walk stops
@@ -945,16 +998,28 @@ async function importPdfDocument(input: {
   const outcome = rendered.outcome;
   const total = pageCount ?? outcome.pageCount;
   const travelled = pages.map((page) => page.pageNumber);
+  const lostToSize = oversized;
   const lostToRender =
     outcome.stoppedEarly === "timeout"
-      ? outcome.omittedPages.filter((page) => !travelled.includes(page))
+      ? outcome.omittedPages.filter(
+          (page) => !travelled.includes(page) && !lostToSize.includes(page),
+        )
       : [];
   const lostToBudget: number[] = [];
   for (let page = 1; page <= total; page += 1) {
-    if (!travelled.includes(page) && !lostToRender.includes(page)) lostToBudget.push(page);
+    if (travelled.includes(page) || lostToSize.includes(page) || lostToRender.includes(page)) {
+      continue;
+    }
+    lostToBudget.push(page);
   }
 
   if (pages.length === 0) {
+    // Nothing travelled at all, and which constraint refused it is decided here
+    // rather than defaulted: a document whose every page is over the per-file
+    // ceiling is a different sentence — and a different thing to do about it —
+    // from one the composer had no room for.
+    const cause: PdfRefusalCause =
+      lostToSize.length > 0 ? "size" : outcome.stoppedEarly === "timeout" ? "render" : "budget";
     return {
       ...NOTHING_IMPORTED,
       stop: false,
@@ -963,9 +1028,9 @@ async function importPdfDocument(input: {
         reason: pdfRefusalNotice({
           name,
           pageCount: total,
+          cause,
           freeBytes: MAX_ATTACHMENT_TOTAL_BYTES - carried,
           ...(firstPageBytes === undefined ? {} : { firstPageBytes }),
-          firstLoss: outcome.stoppedEarly === "timeout" ? "render" : "budget",
         }),
       },
     };
@@ -1007,6 +1072,7 @@ async function importPdfDocument(input: {
       pageCount: total,
       attached: travelled,
       lostToBudget,
+      lostToSize,
       lostToRender,
     }),
   ];
@@ -1051,11 +1117,14 @@ export async function importDesignAttachments(
   const rejections: DesignAttachmentRejection[] = [];
   const notices: string[] = [];
   const seen = new Set(existing.map((attachment) => `${attachment.name}:${attachment.bytes}`));
-  let accepted = existing.length;
   let carried = totalBytes(existing);
 
   for (const file of files) {
-    if (accepted >= MAX_ATTACHMENT_COUNT) {
+    // Counted in pills, because that is what the user sees and what the row can
+    // hold: a four-page document is one attachment to them, and counting its
+    // pages here spent four slots on it and then refused the next file with a
+    // sentence about four files the composer was not showing.
+    if (pillCount([...existing, ...attachments]) >= MAX_ATTACHMENT_COUNT) {
       rejections.push({
         name: file.name,
         reason: `${file.name} was not added: at most ${MAX_ATTACHMENT_COUNT} files can be attached.`,
@@ -1105,7 +1174,6 @@ export async function importDesignAttachments(
       notices.push(...imported.notices);
       if (imported.attachments.length > 0) {
         attachments.push(...imported.attachments);
-        accepted += imported.attachments.length;
         carried += imported.bytes;
         for (const key of imported.keys) seen.add(key);
       }
@@ -1146,6 +1214,18 @@ export async function importDesignAttachments(
       const metadataNotice = rasterMetadataNotice(file.name, stripped.removed);
       if (metadataNotice !== "") notices.push(metadataNotice);
       carriedBytes = stripped.bytes.length;
+      // The up-front ceiling read the file's size and its declaration; a file
+      // that declared itself a PDF was allowed the far larger parse ceiling
+      // before its bytes said otherwise. What the wire counts is what is
+      // carried, so the per-file ceiling is applied to that too: a 200 KiB PNG
+      // named `.pdf` is a 200 KiB attachment whatever it claimed to be.
+      if (carriedBytes > MAX_ATTACHMENT_BYTES) {
+        rejections.push({
+          name: file.name,
+          reason: `${file.name} is ${formatAttachmentSize(carriedBytes)}; one attached file may be at most ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)}.`,
+        });
+        continue;
+      }
       attachment = {
         id,
         kind: "raster",
@@ -1218,7 +1298,6 @@ export async function importDesignAttachments(
     }
 
     attachments.push(attachment);
-    accepted += 1;
     carried += carriedBytes;
     seen.add(`${file.name}:${carriedBytes}`);
   }

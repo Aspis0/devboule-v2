@@ -86,6 +86,8 @@ import {
 import { DesignFolderControl } from "./DesignFolderControl";
 import {
   ATTACHMENT_INPUT_ACCEPT,
+  attachmentPillKey,
+  attachmentReadFailureMessage,
   collectAttachmentFiles,
   formatAttachmentSize,
   importDesignAttachments,
@@ -404,6 +406,12 @@ interface AssistantProps extends DesignSkillViewProps {
    * know about a file that was attached anyway. Empty renders nothing.
    */
   attachmentMessages: readonly AttachmentMessage[];
+  /**
+   * The import in flight, as a page count (`deck.pdf: page 2 of 3.`), or null
+   * when nothing is importing. A count rather than a spinner: the work is
+   * countable, and a spinner would say less than the truth.
+   */
+  attachmentProgress: string | null;
   messages: readonly DesignMessage[];
   assistantRef: RefObject<HTMLDivElement | null>;
   onDraftChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
@@ -2559,22 +2567,9 @@ function attachmentPreviewNotice(name: string): string {
   return `${name} was attached, but its preview could not be drawn.`;
 }
 
-/**
- * What identifies a pill, which is not always the attachment's own id.
- *
- * A picture that is a page of a document carries its document's id
- * (`DesignAttachmentDocument`), and the pill stands for the document: this is
- * the key the remove control hands back, so removing one page of a deck is not
- * something the composer can express. Everything else answers with its own id,
- * which is what it answered before documents existed.
- */
-function attachmentGroupKey(attachment: DesignAttachment): string {
-  return (attachment.kind === "raster" ? attachment.document?.id : undefined) ?? attachment.id;
-}
-
 /** One pill: a file the user picked, or the document that file turned into. */
 interface AttachmentGroup {
-  /** `attachmentGroupKey` of every member, and what removal is asked for. */
+  /** `attachmentPillKey` of every member, and what removal is asked for. */
   readonly key: string;
   /** The document's name, or the file's own name when it is not a document. */
   readonly name: string;
@@ -2604,7 +2599,7 @@ function attachmentGroups(attachments: readonly DesignAttachment[]): readonly At
   const members = new Map<string, DesignAttachment[]>();
   const sources = new Map<string, DesignAttachmentDocument>();
   for (const attachment of attachments) {
-    const key = attachmentGroupKey(attachment);
+    const key = attachmentPillKey(attachment);
     const source = attachment.kind === "raster" ? attachment.document : undefined;
     const bucket = members.get(key);
     if (bucket === undefined) {
@@ -2676,6 +2671,7 @@ const DesignAssistant = memo(function DesignAssistant({
   busy,
   attachments,
   attachmentMessages,
+  attachmentProgress,
   messages,
   assistantRef,
   onDraftChange,
@@ -2988,6 +2984,9 @@ const DesignAssistant = memo(function DesignAssistant({
   // the pills are what the user is looking at.
   const attachmentPills = attachmentGroups(attachments);
   const attachmentFeedback: readonly AttachmentMessage[] = [
+    // The work in flight first: it is the only line here that describes what is
+    // happening now rather than what happened.
+    ...(attachmentProgress === null ? [] : [{ kind: "note" as const, text: attachmentProgress }]),
     ...attachmentMessages,
     ...attachmentPills.flatMap((pill) =>
       pill.attachments.some((attachment) => undrawnPreviewIds.includes(attachment.id))
@@ -3608,6 +3607,23 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
    * started before the consumption cannot write after it.
    */
   const attachmentEpochRef = useRef(0);
+  /**
+   * The import in flight, if any.
+   *
+   * It exists so that work which is no longer wanted can be stopped rather than
+   * finished: a run that consumes the composer aborts it (the epoch above would
+   * discard the result anyway, and a render is not a thing to spend on a
+   * composer that has moved on), and unmounting aborts it too. The renderer
+   * checks the signal between pages and inside a page's own render loop, so an
+   * abort costs the page in flight, not the call.
+   */
+  const attachControllerRef = useRef<AbortController | null>(null);
+  /**
+   * What the import is doing right now, as a page count (`deck.pdf: page 2 of
+   * 3.`). Live state rather than an import message: it describes work in
+   * progress and has to leave when the work does.
+   */
+  const [attachmentProgress, setAttachmentProgress] = useState<string | null>(null);
 
   /**
    * The one place the two are written together. `setAttachments` alone would leave
@@ -3929,6 +3945,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      // An import outliving the surface is a render drawing pages for nobody:
+      // the abort stops it at the page boundary (see `attachControllerRef`).
+      attachControllerRef.current?.abort();
     };
   }, []);
 
@@ -4954,6 +4973,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       // what makes that clear final: an import already reading a file finishes
       // into this emptied composer and is abandoned rather than re-adding it.
       attachmentEpochRef.current += 1;
+      // The import this abandons is stopped rather than allowed to finish: its
+      // result is dropped either way, and a render is seconds of work the
+      // composer no longer has a use for.
+      attachControllerRef.current?.abort();
       commitAttachments([]);
       setAttachmentMessages([]);
       setPermissionNotice(null);
@@ -5152,7 +5175,40 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         // belongs to the composer it was measured against, not the one the run
         // left behind.
         const epoch = attachmentEpochRef.current;
-        const result = await importDesignAttachments(files, attachmentsRef.current);
+        // The controller makes the import stoppable rather than only cancelable
+        // in theory: a run that consumes the composer aborts it instead of
+        // waiting for pages that run will discard, and unmounting aborts it too.
+        // The progress line is the import's own page count and leaves with it.
+        const controller = new AbortController();
+        attachControllerRef.current = controller;
+        setAttachmentProgress(null);
+        // The whole body is guarded because this promise IS the queue: if it
+        // rejects, `attachQueueRef.current` becomes a rejected promise and
+        // every later `.then` on it silently skips its callback. One throw
+        // would kill attaching for the rest of the session — the drop zone
+        // would still light up and nothing would ever happen again. The import
+        // reads files and lazily loads the PDF renderer, so throwing is not
+        // hypothetical: a file moved between the picker and the read, or a
+        // chunk that fails to load, both land here.
+        let result: Awaited<ReturnType<typeof importDesignAttachments>>;
+        try {
+          result = await importDesignAttachments(files, attachmentsRef.current, {
+            signal: controller.signal,
+            onProgress: setAttachmentProgress,
+          });
+        } catch (cause) {
+          if (attachmentEpochRef.current !== epoch) return;
+          setAttachmentMessages([
+            {
+              kind: "error",
+              text: attachmentReadFailureMessage(files, cause),
+            },
+          ]);
+          return;
+        } finally {
+          if (attachControllerRef.current === controller) attachControllerRef.current = null;
+          setAttachmentProgress(null);
+        }
         if (attachmentEpochRef.current !== epoch) return;
         if (result.attachments.length > 0) {
           commitAttachments([...attachmentsRef.current, ...result.attachments]);
@@ -5184,7 +5240,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     // missing. A page's own id is nobody's pill key, so asking to remove one
     // removes nothing rather than half a document.
     (key: string) =>
-      commitAttachments(attachmentsRef.current.filter((item) => attachmentGroupKey(item) !== key)),
+      commitAttachments(attachmentsRef.current.filter((item) => attachmentPillKey(item) !== key)),
     [commitAttachments],
   );
 
@@ -5410,6 +5466,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           busy={busy}
           attachments={attachments}
           attachmentMessages={attachmentMessages}
+          attachmentProgress={attachmentProgress}
           messages={messages}
           assistantRef={assistantRef}
           onDraftChange={handleDraftChange}

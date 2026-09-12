@@ -258,9 +258,17 @@ describe("the numbers the renderer is made of", () => {
     expect(PDF_JPEG_QUALITY).toBe(0.82);
   });
 
-  it("holds the readability floor at the smallest ladder rung", () => {
-    expect(PDF_READABILITY_FLOOR).toBe(0.5);
-    expect(PDF_FALLBACK_SCALES[PDF_FALLBACK_SCALES.length - 1]).toBe(PDF_READABILITY_FLOOR);
+  it("puts the readability floor above the last ladder rung", () => {
+    // This test used to assert the floor EQUALS the last rung — the arithmetic
+    // that made "downscaled past readability" unreachable: no page is scaled
+    // below the last rung, so a strict `<` could never hold, `downscaledPages`
+    // was always empty, and the composer passed through a sentence this module
+    // could not produce. The relationship is the other way round: the last rung
+    // sits below the floor, so a page that has to fall to it is rendered (a small
+    // picture of the right page beats silence about it) and reported.
+    const lastRung = PDF_FALLBACK_SCALES[PDF_FALLBACK_SCALES.length - 1];
+    expect(lastRung).toBeLessThan(PDF_READABILITY_FLOOR);
+    expect(PDF_READABILITY_FLOOR).toBe(0.75);
   });
 
   it("sizes a payload the way base64 does", () => {
@@ -409,5 +417,59 @@ describe("the walk's endings", () => {
     expect(result.failure.reason).toContain("this is a bug in the caller");
     // Never the unreadable-PDF sentence: this page rendered fine.
     expect(result.failure.reason).not.toContain("not a readable PDF");
+  });
+});
+
+describe("the count and the rung below the floor", () => {
+  it("reports the page count without asking for a page", async () => {
+    stubRender(4);
+    const drawn: number[] = [];
+
+    const result = await renderPdfPages(
+      PDF_BYTES,
+      "deck.pdf",
+      { onPage: (page) => drawn.push(page.pageNumber) },
+      { countOnly: true },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.outcome.pageCount).toBe(4);
+    expect(result.outcome.pages).toEqual([]);
+    // Nothing was asked of the document beyond its own count: no page, no
+    // canvas, no range. That is what the composer refuses a document on.
+    expect(drawn).toEqual([]);
+    expect(pdfPageNotice(result.outcome)).toBe("");
+  });
+
+  it("names a page that had to fall to the last rung, below the readable floor", async () => {
+    stubRender(1);
+    // The helper above answers every rung with 40 bytes, so no page it renders
+    // ever leaves the first rung; this is the only test that steps the ladder.
+    // The canvas is 595 px wide at scale 1, 446 at 0.75 and 297 at 0.5, so a
+    // payload that fits only at the last rung is a page the ceiling forced down.
+    const small = Uint8Array.from({ length: 40 }, (_, index) => index);
+    const large = Uint8Array.from({ length: 200 }, (_, index) => index);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockImplementation(
+      function (this: HTMLCanvasElement) {
+        const payload = this.width > 350 ? large : small;
+        return `data:image/jpeg;base64,${btoa(String.fromCharCode(...payload))}`;
+      },
+    );
+
+    const result = await renderPdfPages(
+      PDF_BYTES,
+      "deck.pdf",
+      { onPage: () => undefined },
+      { maxBytes: 96 },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.outcome.pages[0]?.scale).toBe(0.5);
+    expect(result.outcome.downscaledPages).toEqual([1]);
+    // And the sentence exists, which is the whole point of the floor sitting
+    // above the rung that produced it: the composer passes this through.
+    expect(pdfPageNotice(result.outcome)).toContain("downscaled past readability");
   });
 });

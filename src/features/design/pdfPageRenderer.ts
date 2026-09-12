@@ -106,13 +106,26 @@ export const PDF_START_SCALE = 1;
 export const PDF_FALLBACK_SCALES = [0.75, 0.5] as const;
 
 /**
- * A page rendered below this scale is reported as downscaled past readability.
- * At 0.5 an A4 page is 297 x 421 px and body text is ~5 px tall — legible for
- * layout and headings, marginal for small print, and anything smaller stops
- * being a picture of the page. The notice names the pages; the pictures still
- * travel, because a small picture of the right page beats silence about it.
+ * The smallest scale at which this module still calls a page readable (0.75):
+ * a page that lands below it is rendered anyway and reported as downscaled
+ * past readability, because a small picture of the right page beats silence
+ * about it.
+ *
+ * It sits above the ladder's last rung on purpose, and that is the whole
+ * reason it is not 0.5. The floor used to be 0.5, which is also
+ * `PDF_FALLBACK_SCALES`'s last entry: `chosen.scale < PDF_READABILITY_FLOOR`
+ * could then never be true, `downscaledPages` was always empty, and the
+ * sentence the composer passes through for a marginal page was unreachable
+ * code with a test asserting the equality that made it so. A page at 0.75 is
+ * readable — dense 300 dpi text lands there at 78-80 KiB with SSIM 0.97-0.99 —
+ * while 0.5 is the rung this module's own measurement calls "marginal for
+ * small print", which is exactly the page a user should be told about.
+ *
+ * The relationship is asserted in `pdfPageRenderer.test.ts`, and so is the
+ * behaviour it exists for: a page that settles on the last rung is named in
+ * `downscaledPages`.
  */
-export const PDF_READABILITY_FLOOR = 0.5;
+export const PDF_READABILITY_FLOOR = 0.75;
 
 /**
  * Largest encoded page this module produces by default, in bytes (96 KiB).
@@ -227,6 +240,13 @@ export interface PdfRenderOptions {
   readonly timeoutMs?: number;
   /** Longest one page waits, in milliseconds. Defaults to `PDF_PAGE_TIMEOUT_MS`. */
   readonly pageTimeoutMs?: number;
+  /**
+   * Open the document, report its page count, and draw nothing (false, the
+   * default). The one caller that wants this is `countPdfPages`: the check the
+   * composer refuses a document on happens before a page is spent, and the
+   * count rides the same open path, error mapping and timeout as a render.
+   */
+  readonly countOnly?: boolean;
   /**
    * Stops the render when the caller no longer wants it — the composer Run
    * button becoming a Stop button, a batch moving on without this file. The
@@ -360,6 +380,7 @@ export function resolvePdfRenderOptions(options?: PdfRenderOptions): {
   readonly maxPages: number;
   readonly timeoutMs: number;
   readonly pageTimeoutMs: number;
+  readonly countOnly: boolean;
 } {
   return {
     from: Math.max(1, Math.floor(options?.pageRange?.from ?? 1)),
@@ -369,6 +390,7 @@ export function resolvePdfRenderOptions(options?: PdfRenderOptions): {
     maxPages: Math.floor(positiveOr(options?.maxPages, PDF_DEFAULT_MAX_PAGES)),
     timeoutMs: Math.floor(positiveOr(options?.timeoutMs, PDF_RENDER_TIMEOUT_MS)),
     pageTimeoutMs: Math.floor(positiveOr(options?.pageTimeoutMs, PDF_PAGE_TIMEOUT_MS)),
+    countOnly: options?.countOnly === true,
   };
 }
 
@@ -718,7 +740,24 @@ export async function renderPdfPages(
     };
   }
 
-  const pdfjs = await import("pdfjs-dist");
+  // The lazy import sits inside the same contract as everything below it: this
+  // module answers with `{ ok: false, failure }` rather than throwing, because
+  // a chunk that fails to load is not a defect in the user's file, and a
+  // caller forced to wrap every call in try/catch is a caller that forgets
+  // once. The surface still guards its own call — a file read can reject
+  // before this point — but that guard is a backstop, not this path.
+  let pdfjs: typeof import("pdfjs-dist");
+  try {
+    pdfjs = await import("pdfjs-dist");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      failure: {
+        reason: `${name} could not be read: the PDF engine failed to load (${detail}), so nothing was attached. Try attaching it again.`,
+      },
+    };
+  }
   configurePdfWorker((source) => {
     pdfjs.GlobalWorkerOptions.workerSrc = source;
   });
@@ -764,6 +803,22 @@ export async function renderPdfPages(
     }
 
     const pageCount = pdfDocument.numPages;
+    if (resolved.countOnly) {
+      // Nothing is drawn and no range is resolved: the caller wanted the count
+      // the open produced. The `finally` below destroys the document the same
+      // way it does after a render.
+      return {
+        ok: true,
+        outcome: {
+          name,
+          pageCount,
+          pages: [],
+          omittedPages: [],
+          downscaledPages: [],
+          stoppedEarly: null,
+        },
+      };
+    }
     if (to !== null && to < from) {
       return { ok: false, failure: { reason: pdfBackwardsRangeMessage(name, from, to) } };
     }
@@ -930,4 +985,36 @@ export async function renderPdfPages(
       // above already names it, so there is nothing left to report.
     }
   }
+}
+
+/**
+ * How many pages a document has, without drawing one of them.
+ *
+ * The composer decides what to refuse before it spends a render, so it needs
+ * this number first. It rides the same open path as `renderPdfPages` — same
+ * worker configuration, same timeout, same error sentences, `countOnly` — and
+ * the only cost is the parse, which the render that follows pays again.
+ *
+ * A failure is advisory: the caller may pass the sentence on, or ignore it and
+ * render on its own budget.
+ */
+export async function countPdfPages(
+  bytes: Uint8Array,
+  name: string,
+  signal?: AbortSignal,
+): Promise<{ ok: true; pageCount: number } | { ok: false; reason: string }> {
+  const counted = await renderPdfPages(
+    bytes,
+    name,
+    { onPage: () => undefined },
+    { countOnly: true, signal },
+  );
+  if (!counted.ok) return { ok: false, reason: counted.failure.reason };
+  if (counted.outcome.stoppedEarly === "cancelled") {
+    // Not a count of zero: the document was never opened. Saying "0 pages"
+    // would be a fact about the caller's cancellation dressed up as a fact
+    // about the file.
+    return { ok: false, reason: `${name} was not counted: the read was cancelled.` };
+  }
+  return { ok: true, pageCount: counted.outcome.pageCount };
 }
