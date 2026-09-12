@@ -87,8 +87,10 @@ mod session;
 mod session_event_guard;
 
 pub use attachments::{
-    attachment_name_too_long_message, empty_attachment_message, invalid_base64_message,
-    unsupported_attachment_type_message, validate_attachments, ATTACHMENT_MIME_TYPES,
+    attachment_name_too_long_message, attachment_reference_session_mismatch_message,
+    empty_attachment_message, invalid_attachment_digest_message, invalid_base64_message,
+    unsupported_attachment_type_message, validate_attachment_references, validate_attachments,
+    validate_session_send_attachments, ATTACHMENT_MIME_TYPES,
 };
 pub use capability::{intersect_capabilities, Capability};
 pub use error::{ErrorCode, ErrorDetails, WireError};
@@ -98,7 +100,8 @@ pub use ids::{
     OwnerId,
 };
 pub use messages::{
-    AgentMessageState, ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits,
+    AgentMessageState, AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody,
+    JournalLimits,
     JournalRetention, JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole,
     PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind,
     RetentionLimit, RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope,
@@ -262,6 +265,55 @@ pub const MAX_ATTACHMENT_NAME_BYTES: usize = 255;
 /// received and parsed, and writes them to the provider, not to the wire. What
 /// *is* in the frame is `name`, which is why it is capped above.
 pub const MAX_ATTACHMENTS_TOTAL_BYTES: usize = 384 * 1024;
+
+/// At most this many stored attachments one `session_send` may refer to (200).
+///
+/// Derived, not chosen. 200 is `PDF_DEFAULT_MAX_PAGES` in
+/// `src/features/design/pdfPageRenderer.ts`, the page ceiling the renderer
+/// already ships and justifies as "forty-page decks exist and a thousand-page
+/// catalogue is not a mockup". A prompt that can name a rendered deck must be
+/// able to name every page of the largest deck the renderer will produce, so
+/// the wire bound and the renderer bound are the same rule stated twice —
+/// exactly the relationship [`MAX_ATTACHMENT_COUNT`] has with the composer's
+/// `MAX_ATTACHMENT_COUNT`.
+///
+/// A reference does not carry the bytes again: the deposit frame did. One
+/// reference is a session id, a 64-character digest and a byte count, so 200
+/// of them are a few tens of KiB against [`MAX_FRAME_BYTES`]. The count is a
+/// policy bound, not a frame bound.
+///
+/// One deposit frame carries one attachment, so it is at most one
+/// attachment's base64. A rendered page at the renderer's per-page ceiling is
+/// 96 KiB of bytes, which base64 maps to 128 KiB — a factor of eight under
+/// [`MAX_FRAME_BYTES`]. The wire's own per-attachment cap,
+/// [`MAX_ATTACHMENT_DATA_BYTES`] = 192 KiB of base64, is the largest a
+/// deposit frame can present and is still better than five times under. That
+/// margin is the reason one attachment per frame is the shape that stops the
+/// frame from ever being the thing that breaks.
+pub const MAX_ATTACHMENT_REFERENCES: usize = 200;
+
+/// Most stored bytes one owner may hold across their sessions (20 MiB).
+///
+/// Derived, not chosen. The renderer caps one rendered page at
+/// `PDF_DEFAULT_MAX_BYTES_PER_PAGE` = 96 KiB and one document at
+/// [`MAX_ATTACHMENT_REFERENCES`] pages, so the worst deck the renderer can
+/// produce is 200 x 96 KiB = 19,200 KiB. A prompt may also carry the inline
+/// budget ([`MAX_ATTACHMENTS_TOTAL_BYTES`] = 384 KiB, itself derived from the
+/// composer's 256 KiB of raw bytes), and both live in the same owner's tree:
+///
+/// 200 x 96 KiB + 384 KiB = 20,054,016 bytes
+///
+/// which is 19.13 MiB; 20 MiB is that with the headroom the neighbouring
+/// constants use. The multiplier is the *per-page ceiling*, not the measured
+/// 46.7 KiB average page, because the budget must hold the worst deck the
+/// renderer will produce rather than the typical one.
+///
+/// This is the cumulative bound. It is enforced by walking the owner's
+/// session folders under the store's write lock; there is no counter to drift
+/// out of step with the tree, because the tree is the truth. The per-prompt
+/// half of it is the sum of `AttachmentReference::stored_bytes` checked
+/// against this value in `attachments::validate_attachment_references`.
+pub const MAX_ATTACHMENT_OWNER_BYTES: usize = 20 * 1024 * 1024;
 
 /// Default plugin-invoke payload budget, in bytes (16 MiB).
 ///

@@ -126,6 +126,13 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::SessionCreate { .. } => with_capability(caps, CAP_CREATE_SESSIONS),
         ClientMessage::SessionSend { .. } => with_capability(caps, CAP_SEND),
         ClientMessage::AgentMessageSend { .. } => with_capability(caps, CAP_SEND),
+        // A deposit is meaningless except as the precursor to a send, so it
+        // holds no opinion of its own: the same predicate, deliberately. A
+        // peer allowed to send must be able to deposit or it can never attach
+        // a picture, which is most of the point of a paired phone; and a peer
+        // not allowed to send must not be able to deposit, or it writes bytes
+        // into a session folder that nothing on this machine can consume.
+        ClientMessage::SessionDeposit { .. } => with_capability(caps, CAP_SEND),
         ClientMessage::SessionPermissionRespond { .. } => {
             with_capability(caps, CAP_ANSWER_PERMISSIONS)
         }

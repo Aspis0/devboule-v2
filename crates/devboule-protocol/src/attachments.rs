@@ -6,15 +6,21 @@
 //! the same arrangement [`crate::MAX_WRITE_BYTES`] has, one step further
 //! because a rule set of seven checks is not worth writing out twice.
 //!
+//! The inline attachments and the references to deposited ones are validated
+//! by the same file: [`validate_attachments`] for the bytes that travel in the
+//! frame, [`validate_attachment_references`] for the digests that do not, and
+//! [`validate_session_send_attachments`] as the one entry point both sides
+//! call so neither can validate one half and forget the other.
+//!
 //! This is a *client* check. The daemon does not trust it: it decodes every
 //! `data` itself before writing a file, and that decode is the authoritative
 //! one. Passing here only means the request is well-formed enough to be worth
 //! decoding.
 
-use crate::messages::PromptAttachment;
+use crate::messages::{AttachmentReference, PromptAttachment};
 use crate::{
     MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
-    MAX_ATTACHMENT_NAME_BYTES,
+    MAX_ATTACHMENT_NAME_BYTES, MAX_ATTACHMENT_OWNER_BYTES, MAX_ATTACHMENT_REFERENCES,
 };
 
 /// The media types a prompt may carry.
@@ -23,6 +29,12 @@ use crate::{
 /// attachment to disk and names a path in a prompt is making a promise about
 /// what is in that file, and it can only keep a promise about formats it knows.
 pub const ATTACHMENT_MIME_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/svg+xml"];
+
+/// The number of hex characters a SHA-256 digest has (32 bytes).
+///
+/// Not a cap to round: it is the one length the store's `sha256_hex` emits, and
+/// a digest that is not this long did not come from a deposit.
+const DIGEST_HEX_LEN: usize = 64;
 
 /// The rejection for a `data` that is not base64.
 pub fn invalid_base64_message() -> String {
@@ -80,6 +92,26 @@ fn excerpt(value: &str) -> String {
     format!("{}…", &value[..end])
 }
 
+/// The rejection for a digest that is not a SHA-256 hex string.
+pub fn invalid_attachment_digest_message() -> String {
+    format!("An attachment reference's digest is not {DIGEST_HEX_LEN} lowercase hex characters.")
+}
+
+/// The rejection for a reference to a session other than the request's.
+///
+/// Both session ids go through [`excerpt`]: each is untrusted wire input, and
+/// echoing either whole would put the flood back into a string the app renders.
+pub fn attachment_reference_session_mismatch_message(
+    reference_session: &str,
+    request_session: &str,
+) -> String {
+    format!(
+        "An attachment reference belongs to session '{}', not '{}'.",
+        excerpt(reference_session),
+        excerpt(request_session)
+    )
+}
+
 /// Which attachment a rejection is about: its 1-based position and its name.
 ///
 /// The name goes through [`excerpt`], which is why a rejection about a file
@@ -92,6 +124,19 @@ fn attachment_label(index: usize, name: &str) -> String {
         return format!("Attachment {position}: ");
     }
     format!("Attachment {position} ('{}'): ", excerpt(name))
+}
+
+/// Which reference a rejection is about: its 1-based position and its digest.
+///
+/// Like [`attachment_label`], but there is no name on a reference and the
+/// digest is what a person can act on. It goes through [`excerpt`], so a
+/// malformed megabyte-long digest is still a sentence.
+fn reference_label(index: usize, digest: &str) -> String {
+    format!(
+        "Attachment reference {} ('{}'): ",
+        index + 1,
+        excerpt(digest)
+    )
 }
 
 /// The first reason these attachments cannot be sent, or `Ok(())`.
@@ -146,6 +191,94 @@ pub fn validate_attachments(attachments: &[PromptAttachment]) -> Result<(), Stri
         ));
     }
     Ok(())
+}
+
+/// The first reason these stored-attachment references cannot be sent, or
+/// `Ok(())`.
+///
+/// The order matches [`validate_attachments`]: the count first, then each
+/// reference, then the total. Two rules here are not about one reference's
+/// shape:
+///
+/// - A reference must name **this** session. A digest resolves only inside the
+///   session it was deposited to, so a reference to another session is refused
+///   before the digest is looked at; the store enforces the same rule against
+///   its directory layout, and this is the wire half that keeps a digest from
+///   ever arriving with no session attached to it.
+/// - The references' stored bytes are summed against
+///   [`MAX_ATTACHMENT_OWNER_BYTES`], the cumulative budget for one owner. A
+///   single prompt can only be refused here when it alone would exceed what the
+///   owner may store; the daemon's directory walk is what enforces the total
+///   across prompts. `stored_bytes` is advisory for that reason and is never
+///   the number the daemon's own budget trusts.
+///
+/// An empty list is `Ok(())`: a prompt that carries only inline attachments, or
+/// no attachments at all, is the common case and not a mistake.
+pub fn validate_attachment_references(
+    session_id: &str,
+    references: &[AttachmentReference],
+) -> Result<(), String> {
+    if references.len() > MAX_ATTACHMENT_REFERENCES {
+        return Err(format!(
+            "A prompt may refer to at most {MAX_ATTACHMENT_REFERENCES} stored attachments; {} were sent.",
+            references.len()
+        ));
+    }
+    let mut total: u64 = 0;
+    for (index, reference) in references.iter().enumerate() {
+        let label = reference_label(index, &reference.digest);
+        if reference.session_id != session_id {
+            return Err(format!(
+                "{label}{}",
+                attachment_reference_session_mismatch_message(&reference.session_id, session_id)
+            ));
+        }
+        if !is_valid_digest(&reference.digest) {
+            return Err(format!("{label}{}", invalid_attachment_digest_message()));
+        }
+        // Saturating, because the sum is attacker-controlled and a wrapping
+        // add could land back under the limit. The loop is bounded by
+        // MAX_ATTACHMENT_REFERENCES, so the true sum never approaches u64::MAX
+        // anyway; saturation is for the malformed case, not the real one.
+        total = total.saturating_add(reference.stored_bytes);
+    }
+    if total > MAX_ATTACHMENT_OWNER_BYTES as u64 {
+        return Err(format!(
+            "The stored attachments this prompt refers to add up to {total} bytes; the limit is {MAX_ATTACHMENT_OWNER_BYTES}."
+        ));
+    }
+    Ok(())
+}
+
+/// Both halves of one `session_send`'s attachments: the inline files and the
+/// references to stored ones.
+///
+/// The single entry point for the app and the daemon. Inline first, because
+/// those bytes are in the frame the caller already built; the references are
+/// validated against `session_id`, which the caller must pass rather than let
+/// the references imply.
+pub fn validate_session_send_attachments(
+    session_id: &str,
+    attachments: &[PromptAttachment],
+    references: &[AttachmentReference],
+) -> Result<(), String> {
+    validate_attachments(attachments)?;
+    validate_attachment_references(session_id, references)
+}
+
+/// Whether `digest` is a SHA-256 digest as the store writes it: 64 lowercase
+/// hex characters.
+///
+/// Uppercase is refused as well as non-hex. `sha256_hex` emits lowercase, the
+/// deposit reply hands back exactly that, and a client is meant to use the
+/// value it was given rather than re-case it; accepting both spellings would
+/// make two strings for one file and leave the store to decide which one keys
+/// the lookup.
+fn is_valid_digest(digest: &str) -> bool {
+    digest.len() == DIGEST_HEX_LEN
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Whether `data` is well-formed base64 in the standard alphabet (RFC 4648 §4).
@@ -353,5 +486,191 @@ mod tests {
         let each = "A".repeat(MAX_ATTACHMENTS_TOTAL_BYTES / MAX_ATTACHMENT_COUNT);
         let four = vec![attachment("image/jpeg", &each); MAX_ATTACHMENT_COUNT];
         validate_attachments(&four).expect("at every cap");
+    }
+
+    /// A digest shaped the way `sha256_hex` writes one: 64 lowercase hex
+    /// characters. `seed` must itself be a lowercase hex character.
+    fn digest_of(seed: char) -> String {
+        seed.to_string().repeat(DIGEST_HEX_LEN)
+    }
+
+    fn reference(session_id: &str, digest: &str) -> AttachmentReference {
+        AttachmentReference {
+            session_id: session_id.to_string(),
+            digest: digest.to_string(),
+            stored_bytes: 1024,
+        }
+    }
+
+    #[test]
+    fn a_prompt_may_name_at_most_the_renderer_page_ceiling() {
+        let too_many = vec![reference("s.a.1", &digest_of('a')); MAX_ATTACHMENT_REFERENCES + 1];
+        let message = validate_attachment_references("s.a.1", &too_many).expect_err("rejected");
+        assert!(
+            message.contains(&MAX_ATTACHMENT_REFERENCES.to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&(MAX_ATTACHMENT_REFERENCES + 1).to_string()),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_empty_reference_list_is_fine() {
+        // The common request: inline attachments only, or none at all. The
+        // reference rules must not turn "no references" into a refusal, and
+        // the combined entry point has to keep accepting a send that predates
+        // the deposit call entirely.
+        validate_attachment_references("s.a.1", &[]).expect("no references is not an error");
+        validate_session_send_attachments("s.a.1", &[], &[]).expect("no attachments at all");
+    }
+
+    #[test]
+    fn a_reference_over_the_owner_byte_budget_is_refused() {
+        let mut item = reference("s.a.1", &digest_of('b'));
+        item.stored_bytes = MAX_ATTACHMENT_OWNER_BYTES as u64 + 1;
+        let message = validate_attachment_references("s.a.1", &[item]).expect_err("rejected");
+        assert!(
+            message.contains(&MAX_ATTACHMENT_OWNER_BYTES.to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&(MAX_ATTACHMENT_OWNER_BYTES as u64 + 1).to_string()),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn references_at_the_owner_byte_budget_pass_and_one_byte_over_does_not() {
+        // Two halves, so the rule is the *sum* and not a single value that
+        // happens to sit near the bound.
+        let half = (MAX_ATTACHMENT_OWNER_BYTES / 2) as u64;
+        let mut first = reference("s.a.1", &digest_of('c'));
+        let mut second = reference("s.a.1", &digest_of('d'));
+        first.stored_bytes = half;
+        second.stored_bytes = MAX_ATTACHMENT_OWNER_BYTES as u64 - half;
+        validate_attachment_references("s.a.1", &[first.clone(), second.clone()])
+            .expect("exactly the budget is allowed");
+        second.stored_bytes += 1;
+        let message =
+            validate_attachment_references("s.a.1", &[first, second]).expect_err("one over");
+        assert!(
+            message.contains(&MAX_ATTACHMENT_OWNER_BYTES.to_string()),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_digest_is_refused_and_the_valid_shape_is_defined() {
+        let owned = [
+            // Uppercase is the same digest with a second spelling. Refusing it
+            // keeps one string per stored file.
+            "A".repeat(DIGEST_HEX_LEN),
+            "g".repeat(DIGEST_HEX_LEN),
+            "a".repeat(DIGEST_HEX_LEN - 1),
+            "a".repeat(DIGEST_HEX_LEN + 1),
+        ];
+        let mut malformed: Vec<&str> = vec!["not a digest", ""];
+        malformed.extend(owned.iter().map(String::as_str));
+        for bad in malformed {
+            let message = validate_attachment_references("s.a.1", &[reference("s.a.1", bad)])
+                .expect_err("rejected");
+            assert_eq!(
+                message,
+                format!(
+                    "Attachment reference 1 ('{}'): {}",
+                    excerpt(bad),
+                    invalid_attachment_digest_message()
+                )
+            );
+        }
+        // Every character a `sha256_hex` digest may contain, 64 of them.
+        let every_hex = "0123456789abcdef".repeat(4);
+        validate_attachment_references("s.a.1", &[reference("s.a.1", &every_hex)])
+            .expect("64 lowercase hex characters");
+    }
+
+    #[test]
+    fn a_reference_from_another_session_is_refused_before_the_digest_is_looked_at() {
+        // Deposited in `s.a.1`, presented for `s.a.2`. The session rule runs
+        // first, so the refusal is about the session even when the digest is
+        // also malformed; a digest resolves only inside its own session.
+        let item = reference("s.a.1", "not a digest");
+        let message = validate_attachment_references("s.a.2", &[item]).expect_err("rejected");
+        assert_eq!(
+            message,
+            format!(
+                "Attachment reference 1 ('not a digest'): {}",
+                attachment_reference_session_mismatch_message("s.a.1", "s.a.2")
+            )
+        );
+        assert!(message.contains("s.a.1"), "{message}");
+        assert!(message.contains("s.a.2"), "{message}");
+    }
+
+    #[test]
+    fn an_enormous_digest_is_not_echoed_whole() {
+        let shouting = "z".repeat(200_000);
+        let message = validate_attachment_references("s.a.1", &[reference("s.a.1", &shouting)])
+            .expect_err("rejected");
+        assert!(
+            message.len() < 200,
+            "the rejection is a sentence: {}",
+            message.len()
+        );
+        assert!(!message.contains(&shouting));
+        assert!(message.contains('…'));
+    }
+
+    #[test]
+    fn a_reference_rejection_names_the_reference_it_is_about() {
+        let refs = vec![
+            reference("s.a.1", &digest_of('9')),
+            reference("s.a.1", "not a digest"),
+            reference("s.a.1", &digest_of('8')),
+        ];
+        let message = validate_attachment_references("s.a.1", &refs).expect_err("rejected");
+        assert!(
+            message.starts_with("Attachment reference 2 ('"),
+            "two good references must not make the message ambiguous: {message}"
+        );
+    }
+
+    #[test]
+    fn references_and_inline_attachments_are_both_validated() {
+        let good_inline = attachment("image/png", "AA==");
+        let good_reference = reference("s.a.1", &digest_of('f'));
+        validate_session_send_attachments(
+            "s.a.1",
+            std::slice::from_ref(&good_inline),
+            std::slice::from_ref(&good_reference),
+        )
+        .expect("one inline image and one stored reference together");
+
+        // A broken inline attachment is reported first: those bytes are in the
+        // frame the caller already built, and the reference half must not mask
+        // the inline half.
+        let bad_inline = attachment("image/gif", "AA==");
+        let other_session = reference("s.a.2", &digest_of('f'));
+        let message = validate_session_send_attachments(
+            "s.a.1",
+            std::slice::from_ref(&bad_inline),
+            std::slice::from_ref(&other_session),
+        )
+        .expect_err("rejected");
+        assert!(message.starts_with("Attachment 1 ('a.png'): "), "{message}");
+        assert!(message.contains("image/gif"), "{message}");
+
+        // With the inline half valid, the reference half is what refuses; an
+        // inline attachment does not turn the reference rules off.
+        let message = validate_session_send_attachments(
+            "s.a.1",
+            std::slice::from_ref(&good_inline),
+            std::slice::from_ref(&other_session),
+        )
+        .expect_err("rejected");
+        assert!(message.starts_with("Attachment reference 1"), "{message}");
+        assert!(message.contains("s.a.2"), "{message}");
     }
 }

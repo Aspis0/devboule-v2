@@ -138,6 +138,47 @@ impl std::fmt::Debug for PromptAttachment {
     }
 }
 
+/// One stored attachment a prompt refers to, by digest and by session.
+///
+/// # Which digest this is
+///
+/// `digest` is the SHA-256, lowercase hex, of the bytes **as stored** — the
+/// bytes `materialize` wrote after the metadata strip. It is the value the
+/// stored file is named after, and it is the only digest that names a stored
+/// file.
+///
+/// It is *not* the daemon's internal `attachment_digest`. That one hashes the
+/// **decoded wire bytes** before the strip, exists only as the idempotency
+/// fingerprint, and falls back to hashing the base64 text when the data does
+/// not decode. A client cannot compute the stored digest — it cannot know what
+/// the strip removed — which is why [`ClientMessage::SessionDeposit`] answers
+/// with it.
+///
+/// # Why `session_id` is here and not merely implied by the frame
+///
+/// A digest resolves only inside the session it was deposited to, so a
+/// reference that did not name its session would be a value with nowhere to
+/// resolve. Carrying the session on every reference keeps a digest from ever
+/// being handled on its own; `validate_attachment_references` refuses a
+/// reference whose session is not the request's, and the store enforces the
+/// same rule against the directory layout.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentReference {
+    /// The session the deposit was made to.
+    pub session_id: String,
+    /// SHA-256, lowercase hex, of the stored bytes (64 characters). Never the
+    /// daemon's wire-byte `attachment_digest`.
+    pub digest: String,
+    /// The size of the stored bytes, in bytes.
+    ///
+    /// [`DaemonMessage::SessionDeposited`] reports it so the app can refuse an
+    /// over-budget import before depositing anything. Advisory only: the
+    /// daemon re-stats the file on disk and never uses this number for the
+    /// budget it enforces.
+    pub stored_bytes: u64,
+}
+
 /// Messages the client writes.
 ///
 /// # Session operations that cannot be collapsed
@@ -234,6 +275,14 @@ pub enum ClientMessage {
         active_turn_behavior: Option<ActiveTurnBehavior>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
+        /// References to attachments deposited earlier, resolved inside
+        /// `session_id`.
+        ///
+        /// `#[serde(default)]` keeps recorded journal frames readable without
+        /// moving the journal version. The inline `attachments` field above is
+        /// untouched: one to four small images still travel in one round trip.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachment_references: Vec<AttachmentReference>,
     },
     /// Deliver text from one live agent session to another.
     AgentMessageSend {
@@ -243,6 +292,27 @@ pub enum ClientMessage {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
+    },
+    /// Store one attachment for a session and answer with a reference to the
+    /// bytes **as stored**.
+    ///
+    /// One attachment per frame, deliberately. A rendered deck is several
+    /// [`crate::MAX_FRAME_BYTES`] of base64, and the frame cap is also the
+    /// per-connection buffer ceiling on the tailnet, so the bytes leave the
+    /// frame here and [`ClientMessage::SessionSend`] later refers to them by
+    /// digest. A single attachment is bounded by
+    /// [`crate::MAX_ATTACHMENT_DATA_BYTES`], so every deposit frame is well
+    /// under the ceiling.
+    ///
+    /// State-changing: it writes a file under the session, which is why
+    /// [`ClientMessage::is_state_changing`] says `true` and the audit trail
+    /// carries it. The reply is [`DaemonMessage::SessionDeposited`]; there is
+    /// no notification form, because only the daemon can compute the stored
+    /// digest.
+    SessionDeposit {
+        id: u64,
+        session_id: String,
+        attachment: PromptAttachment,
     },
     SessionResize {
         id: u64,
@@ -461,6 +531,7 @@ impl ClientMessage {
             | Self::SessionStop { id, .. }
             | Self::SessionSend { id, .. }
             | Self::AgentMessageSend { id, .. }
+            | Self::SessionDeposit { id, .. }
             | Self::SessionResize { id, .. }
             | Self::SessionInterrupt { id, .. }
             | Self::SessionSetModel { id, .. }
@@ -531,6 +602,7 @@ impl ClientMessage {
             | Self::SessionDetach { .. }
             | Self::SessionClaim { .. }
             | Self::SessionStop { .. }
+            | Self::SessionDeposit { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
@@ -579,6 +651,7 @@ impl ClientMessage {
             Self::SessionStop { .. } => "SessionStop",
             Self::SessionSend { .. } => "SessionSend",
             Self::AgentMessageSend { .. } => "AgentMessageSend",
+            Self::SessionDeposit { .. } => "SessionDeposit",
             Self::SessionResize { .. } => "SessionResize",
             Self::SessionInterrupt { .. } => "SessionInterrupt",
             Self::SessionSetModel { .. } => "SessionSetModel",
@@ -646,6 +719,7 @@ impl ClientMessage {
             | Self::SessionStop { .. }
             | Self::SessionSend { .. }
             | Self::AgentMessageSend { .. }
+            | Self::SessionDeposit { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
@@ -762,6 +836,17 @@ pub enum DaemonMessage {
     Resume {
         id: u64,
         result: ResumeResult,
+    },
+    /// The reply to [`ClientMessage::SessionDeposit`]: the reference to the
+    /// bytes that were stored.
+    ///
+    /// `reference.digest` is of the **stored** bytes, after the metadata
+    /// strip — not of the wire bytes the request carried. See
+    /// [`AttachmentReference`] for why the client cannot compute it and why
+    /// the session travels with it.
+    SessionDeposited {
+        id: u64,
+        reference: AttachmentReference,
     },
     InvokeResult {
         id: u64,
@@ -1667,6 +1752,7 @@ mod tests {
             text: "hi".to_string(),
             attachments: Vec::new(),
             active_turn_behavior: None,
+            attachment_references: Vec::new(),
             idempotency_key: None,
         }
         .is_state_changing());
@@ -1764,6 +1850,7 @@ mod tests {
                 text: "hello".to_string(),
                 attachments: Vec::new(),
                 active_turn_behavior: None,
+                attachment_references: Vec::new(),
                 idempotency_key: None,
             }
         );
@@ -1782,6 +1869,7 @@ mod tests {
                 data: "AA==".to_string(),
             }],
             active_turn_behavior: None,
+            attachment_references: Vec::new(),
             idempotency_key: None,
         };
         let value = serde_json::to_value(&message).expect("json");
@@ -1870,12 +1958,148 @@ mod tests {
             text: "hello".to_string(),
             attachments: Vec::new(),
             active_turn_behavior: None,
+            attachment_references: Vec::new(),
             idempotency_key: None,
         })
         .expect("json");
         assert!(
             value.get("attachments").is_none(),
             "an empty list must not add a field to every send frame"
+        );
+    }
+
+    #[test]
+    fn session_deposit_names_itself_and_is_state_changing() {
+        // A deposit writes a file under a session, so it sits on the audit side
+        // of `is_state_changing` and names itself in the audit rows. A design
+        // that quietly made it read-only to avoid the audit line would be
+        // wrong, and this is where that decision is pinned.
+        let deposit = ClientMessage::SessionDeposit {
+            id: 4,
+            session_id: "s.a.1".to_string(),
+            attachment: PromptAttachment {
+                name: "page-1.jpg".to_string(),
+                mime_type: "image/jpeg".to_string(),
+                data: "AA==".to_string(),
+            },
+        };
+        assert_eq!(deposit.name(), "SessionDeposit");
+        assert!(deposit.is_state_changing());
+        assert_eq!(deposit.request_id(), Some(4));
+        assert_eq!(deposit.idempotency_key(), None);
+    }
+
+    #[test]
+    fn session_deposit_round_trips_with_a_camel_case_envelope() {
+        let message = ClientMessage::SessionDeposit {
+            id: 4,
+            session_id: "s.a.1".to_string(),
+            attachment: PromptAttachment {
+                name: "page-1.jpg".to_string(),
+                mime_type: "image/jpeg".to_string(),
+                data: "AA==".to_string(),
+            },
+        };
+        let value = serde_json::to_value(&message).expect("json");
+        assert_eq!(value["type"], "session_deposit");
+        assert_eq!(value["sessionId"], "s.a.1");
+        assert_eq!(value["attachment"]["mimeType"], "image/jpeg");
+        assert_eq!(value["attachment"]["name"], "page-1.jpg");
+        let decoded: ClientMessage = serde_json::from_value(value).expect("round trip");
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn session_deposited_carries_the_stored_digest_and_its_session() {
+        // One reference value, and it is exactly the one a later `session_send`
+        // carries: session, digest and size together, so a digest is never
+        // handled without the session it resolves in.
+        let reference = AttachmentReference {
+            session_id: "s.a.1".to_string(),
+            digest: "a".repeat(64),
+            stored_bytes: 4096,
+        };
+        let value = serde_json::to_value(DaemonMessage::SessionDeposited {
+            id: 4,
+            reference: reference.clone(),
+        })
+        .expect("json");
+        assert_eq!(value["type"], "session_deposited");
+        assert_eq!(value["reference"]["sessionId"], "s.a.1");
+        assert_eq!(value["reference"]["digest"], "a".repeat(64));
+        assert_eq!(value["reference"]["storedBytes"], 4096);
+        let decoded: DaemonMessage = serde_json::from_value(value).expect("round trip");
+        assert_eq!(
+            decoded,
+            DaemonMessage::SessionDeposited { id: 4, reference }
+        );
+    }
+
+    #[test]
+    fn session_send_with_references_round_trips_beside_inline_attachments() {
+        // The inline list is untouched; the references are a second list in
+        // the same frame and both survive the round trip.
+        let reference = |seed: char| AttachmentReference {
+            session_id: "s.a.1".to_string(),
+            digest: seed.to_string().repeat(64),
+            stored_bytes: 2048,
+        };
+        let message = ClientMessage::SessionSend {
+            id: 7,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 11,
+            text: "summarise the deck".to_string(),
+            attachments: vec![PromptAttachment {
+                name: "cover.png".to_string(),
+                mime_type: "image/png".to_string(),
+                data: "AA==".to_string(),
+            }],
+            attachment_references: vec![reference('a'), reference('b')],
+            idempotency_key: None,
+        };
+        let value = serde_json::to_value(&message).expect("json");
+        assert_eq!(value["attachments"][0]["name"], "cover.png");
+        assert_eq!(value["attachmentReferences"][0]["digest"], "a".repeat(64));
+        assert_eq!(value["attachmentReferences"][0]["sessionId"], "s.a.1");
+        assert_eq!(value["attachmentReferences"][0]["storedBytes"], 2048);
+        let decoded: ClientMessage = serde_json::from_value(value).expect("round trip");
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn an_old_send_frame_without_references_still_deserializes() {
+        // `#[serde(default)]` is what keeps recorded journal frames (and v4
+        // clients) readable without moving the journal version.
+        let frame = r#"{"type":"session_send","id":7,"sessionId":"s.a.1","subscriptionId":11,"text":"hello","attachments":[{"name":"a.png","mimeType":"image/png","data":"AA=="}]}"#;
+        let message: ClientMessage = serde_json::from_str(frame).expect("old frame");
+        match message {
+            ClientMessage::SessionSend {
+                attachment_references,
+                attachments,
+                ..
+            } => {
+                assert!(attachment_references.is_empty());
+                assert_eq!(attachments.len(), 1);
+            }
+            other => panic!("expected SessionSend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_send_with_no_references_omits_the_field() {
+        let value = serde_json::to_value(ClientMessage::SessionSend {
+            id: 7,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 11,
+            text: "hello".to_string(),
+            attachments: Vec::new(),
+            attachment_references: Vec::new(),
+            idempotency_key: None,
+        })
+        .expect("json");
+        assert!(
+            value.get("attachmentReferences").is_none(),
+            "an empty reference list must not add a field to every send frame"
         );
     }
 
@@ -2048,6 +2272,7 @@ mod tests {
             text: "x".to_string(),
             attachments: Vec::new(),
             active_turn_behavior: None,
+            attachment_references: Vec::new(),
             idempotency_key: Some("k2".to_string()),
         };
         let perm = ClientMessage::SessionPermissionRespond {
