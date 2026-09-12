@@ -70,6 +70,8 @@ mod spawn;
 mod tailscale_localapi;
 #[cfg(feature = "server")]
 mod tool_paths;
+#[cfg(feature = "server")]
+mod tool_policy;
 mod transport;
 #[cfg(feature = "server")]
 mod wire_json;

@@ -101,8 +101,8 @@ pub use messages::{
     ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits, JournalRetention,
     JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole, PeerRow,
     PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit,
-    RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope, Unreclaimable, PEER_CAPS,
-    PEER_DEFAULT_CAPS,
+    RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope, ToolDescriptor,
+    ToolPolicyEntry, Unreclaimable, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};

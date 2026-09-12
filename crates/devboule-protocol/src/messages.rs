@@ -388,6 +388,22 @@ pub enum ClientMessage {
         device_id: String,
         caps: Vec<String>,
     },
+    /// Read every stored per-provider tool policy. Local-only: a paired
+    /// device may not read or change this device's tool gates.
+    ToolPolicyGet {
+        id: u64,
+    },
+    /// Replace one provider's tool policy. An absent `enabled` means enabled;
+    /// so does `true`. `disabled_tools` is the complete per-tool set, never a
+    /// delta.
+    ToolPolicySet {
+        id: u64,
+        provider_id: String,
+        #[serde(default)]
+        enabled: Option<bool>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        disabled_tools: Vec<String>,
+    },
 }
 
 impl ClientMessage {
@@ -434,7 +450,9 @@ impl ClientMessage {
             | Self::PairingComplete { id, .. }
             | Self::PairingConfirm { id, .. }
             | Self::PeerRevoke { id, .. }
-            | Self::PeerSetCaps { id, .. } => Some(*id),
+            | Self::PeerSetCaps { id, .. }
+            | Self::ToolPolicyGet { id }
+            | Self::ToolPolicySet { id, .. } => Some(*id),
         }
     }
 
@@ -495,7 +513,9 @@ impl ClientMessage {
             | Self::PairingComplete { .. }
             | Self::PairingConfirm { .. }
             | Self::PeerRevoke { .. }
-            | Self::PeerSetCaps { .. } => None,
+            | Self::PeerSetCaps { .. }
+            | Self::ToolPolicyGet { .. }
+            | Self::ToolPolicySet { .. } => None,
         }
     }
 
@@ -545,6 +565,8 @@ impl ClientMessage {
             Self::PairingConfirm { .. } => "PairingConfirm",
             Self::PeerRevoke { .. } => "PeerRevoke",
             Self::PeerSetCaps { .. } => "PeerSetCaps",
+            Self::ToolPolicyGet { .. } => "ToolPolicyGet",
+            Self::ToolPolicySet { .. } => "ToolPolicySet",
         }
     }
 
@@ -568,7 +590,8 @@ impl ClientMessage {
             | Self::ProjectsList { .. }
             | Self::WorkspacesList { .. }
             | Self::ProvidersList { .. }
-            | Self::DevicesList { .. } => false,
+            | Self::DevicesList { .. }
+            | Self::ToolPolicyGet { .. } => false,
 
             Self::Shutdown { .. }
             | Self::SessionCreate { .. }
@@ -599,7 +622,8 @@ impl ClientMessage {
             | Self::PairingComplete { .. }
             | Self::PairingConfirm { .. }
             | Self::PeerRevoke { .. }
-            | Self::PeerSetCaps { .. } => true,
+            | Self::PeerSetCaps { .. }
+            | Self::ToolPolicySet { .. } => true,
         }
     }
 }
@@ -741,6 +765,17 @@ pub enum DaemonMessage {
     PeerUpdated {
         id: u64,
         peer: PeerRow,
+    },
+    /// The reply to `ToolPolicyGet`: every stored policy, ordered by provider
+    /// id. A provider with no stored policy is absent here and reads as
+    /// enabled with nothing disabled, so an empty list is not an error.
+    ToolPolicy {
+        id: u64,
+        policies: Vec<ToolPolicyEntry>,
+    },
+    /// The reply to `ToolPolicySet` once the store is on disk.
+    ToolPolicySetOk {
+        id: u64,
     },
 }
 
@@ -884,6 +919,44 @@ pub struct ProviderInfo {
     /// Known npm package for this provider, including not-installed rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npm_package: Option<String>,
+    /// Tools the daemon's MCP broker serves to this provider's sessions, in
+    /// the broker's catalog order. Omitted when empty, so a provider without
+    /// an MCP channel keeps the older row's shape and the panel hides the
+    /// tool section.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolDescriptor>,
+}
+
+/// One tool a provider's sessions can be served by the daemon's MCP broker.
+///
+/// The name is the tool's identity in `tools/list` and in a tool policy's
+/// `disabled_tools`; the description is display text and may be reworded
+/// without breaking a stored policy.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDescriptor {
+    pub name: String,
+    pub description: String,
+}
+
+/// One provider's tool policy, as stored by the daemon and as listed by
+/// `ToolPolicy`.
+///
+/// An absent policy, and `enabled: null`, both mean enabled; only
+/// `enabled: false` turns every tool off. This mirrors the app's
+/// `enabled: boolean | null`, so a client cannot express "enabled" and
+/// "disabled" with two different spellings.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPolicyEntry {
+    pub provider_id: String,
+    /// `None` or `Some(true)` = enabled. `Some(false)` = every tool disabled.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Tools disabled one by one. The always-on roster tool is never read
+    /// from here: `is_tool_enabled` answers for it first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tools: Vec<String>,
 }
 
 fn default_provider_installed() -> bool {
@@ -1526,6 +1599,28 @@ mod tests {
         }
         .is_state_changing());
         assert!(ClientMessage::ProvidersRefresh { id: 1 }.is_state_changing());
+        assert!(!ClientMessage::ToolPolicyGet { id: 1 }.is_state_changing());
+        assert!(ClientMessage::ToolPolicySet {
+            id: 1,
+            provider_id: "claude".to_string(),
+            enabled: None,
+            disabled_tools: Vec::new(),
+        }
+        .is_state_changing());
+        assert_eq!(
+            ClientMessage::ToolPolicyGet { id: 1 }.name(),
+            "ToolPolicyGet"
+        );
+        assert_eq!(
+            ClientMessage::ToolPolicySet {
+                id: 1,
+                provider_id: "claude".to_string(),
+                enabled: Some(true),
+                disabled_tools: Vec::new(),
+            }
+            .name(),
+            "ToolPolicySet"
+        );
 
         assert_eq!(ClientMessage::Ping { id: 1 }.name(), "Ping");
         assert_eq!(
@@ -2241,6 +2336,116 @@ mod tests {
     }
 
     #[test]
+    fn tool_policy_wire_contract_round_trips_with_its_exact_field_names() {
+        // The Settings panel is built against this JSON, and a rename here is
+        // a silently inert toggle there, so the names are asserted on the
+        // serialised form rather than on the Rust fields.
+        let get = serde_json::to_value(ClientMessage::ToolPolicyGet { id: 31 }).expect("json");
+        assert_eq!(
+            get,
+            serde_json::json!({"type": "tool_policy_get", "id": 31})
+        );
+
+        let set = ClientMessage::ToolPolicySet {
+            id: 32,
+            provider_id: "claude".to_string(),
+            enabled: Some(false),
+            disabled_tools: vec!["devboule_list_agents".to_string()],
+        };
+        let set_json = serde_json::to_value(&set).expect("json");
+        assert_eq!(set_json["type"], "tool_policy_set");
+        assert_eq!(set_json["providerId"], "claude");
+        assert_eq!(set_json["enabled"], false);
+        assert_eq!(set_json["disabledTools"][0], "devboule_list_agents");
+        assert_eq!(
+            serde_json::from_value::<ClientMessage>(set_json).expect("back"),
+            set
+        );
+
+        // An absent `enabled` is the app's `null` and means enabled; so does
+        // an explicit `null`, because the field has a serde default.
+        for omitted in [
+            serde_json::json!({"type": "tool_policy_set", "id": 33, "providerId": "pi"}),
+            serde_json::json!({
+                "type": "tool_policy_set",
+                "id": 33,
+                "providerId": "pi",
+                "enabled": null
+            }),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<ClientMessage>(omitted).expect("absent enabled"),
+                ClientMessage::ToolPolicySet {
+                    id: 33,
+                    provider_id: "pi".to_string(),
+                    enabled: None,
+                    disabled_tools: Vec::new(),
+                }
+            );
+        }
+
+        let reply = DaemonMessage::ToolPolicy {
+            id: 34,
+            policies: vec![ToolPolicyEntry {
+                provider_id: "claude".to_string(),
+                enabled: None,
+                disabled_tools: Vec::new(),
+            }],
+        };
+        let reply_json = serde_json::to_value(&reply).expect("json");
+        assert_eq!(reply_json["type"], "tool_policy");
+        assert_eq!(reply_json["policies"][0]["providerId"], "claude");
+        assert_eq!(
+            reply_json["policies"][0]["enabled"],
+            serde_json::Value::Null
+        );
+        assert!(
+            reply_json["policies"][0].get("disabledTools").is_none(),
+            "an empty disabled list is omitted, not sent as []"
+        );
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(reply_json).expect("back"),
+            reply
+        );
+
+        assert_eq!(
+            serde_json::to_value(DaemonMessage::ToolPolicySetOk { id: 35 }).expect("json"),
+            serde_json::json!({"type": "tool_policy_set_ok", "id": 35})
+        );
+    }
+
+    #[test]
+    fn provider_tools_are_camel_case_and_omitted_when_empty() {
+        let mut row: ProviderInfo = serde_json::from_value(serde_json::json!({
+            "id": "grok",
+            "executable": "grok.exe",
+            "acpAvailable": true,
+            "authentication": "unknown"
+        }))
+        .expect("older row without tools");
+        assert!(row.tools.is_empty(), "an absent key means no tools");
+        assert!(serde_json::to_value(&row)
+            .expect("json")
+            .get("tools")
+            .is_none());
+
+        row.tools.push(ToolDescriptor {
+            name: "devboule_list_agents".to_string(),
+            description: "Lists live agent sessions.".to_string(),
+        });
+        let json = serde_json::to_value(&row).expect("json");
+        assert_eq!(json["tools"][0]["name"], "devboule_list_agents");
+        assert_eq!(
+            json["tools"][0]["description"],
+            "Lists live agent sessions."
+        );
+        assert_eq!(
+            serde_json::from_value::<ProviderInfo>(json).expect("back"),
+            row
+        );
+    }
+
+    #[test]
     fn providers_list_round_trips_with_camel_case_and_unknown_auth() {
         let request = ClientMessage::ProvidersList { id: 9 };
         let request_json = serde_json::to_value(&request).expect("json");
@@ -2264,6 +2469,7 @@ mod tests {
                 install_channel: None,
                 installed: true,
                 npm_package: None,
+                tools: Vec::new(),
             }],
             unreadable_dirs: 2,
         };
@@ -2306,6 +2512,7 @@ mod tests {
                     install_channel: Some("native".to_string()),
                     installed: true,
                     npm_package: None,
+                    tools: Vec::new(),
                 },
                 ProviderInfo {
                     id: "pi".to_string(),
@@ -2322,6 +2529,7 @@ mod tests {
                     install_channel: Some("native".to_string()),
                     installed: true,
                     npm_package: None,
+                    tools: Vec::new(),
                 },
             ],
             unreadable_dirs: 0,
@@ -2359,6 +2567,7 @@ mod tests {
                 install_channel: None,
                 installed: true,
                 npm_package: None,
+                tools: Vec::new(),
             }],
             unreadable_dirs: 0,
         };
@@ -2380,6 +2589,7 @@ mod tests {
             install_channel: None,
             installed: true,
             npm_package: None,
+            tools: Vec::new(),
         };
         let native_json = serde_json::to_value(&native).expect("json");
         assert_eq!(native_json["origin"], "user-binary");
@@ -2406,6 +2616,7 @@ mod tests {
             install_channel: None,
             installed: true,
             npm_package: None,
+            tools: Vec::new(),
         };
         let encoded = serde_json::to_value(&wrapper).expect("json");
         assert_eq!(encoded["launchArgs"][0], "--registry=https://evil");
@@ -2492,6 +2703,7 @@ mod tests {
             install_channel: Some("npm".to_string()),
             installed: false,
             npm_package: Some("@openai/codex".to_string()),
+            tools: Vec::new(),
         };
         let encoded = serde_json::to_value(&not_installed).expect("json");
         assert_eq!(encoded["installed"], false);
@@ -2531,6 +2743,7 @@ mod tests {
             install_channel: Some("npm".to_string()),
             installed: false,
             npm_package: Some("@qwen-code/qwen-code".to_string()),
+            tools: Vec::new(),
         };
         let encoded = serde_json::to_value(&synthetic).expect("synthetic json");
         assert_eq!(encoded["installed"], false);

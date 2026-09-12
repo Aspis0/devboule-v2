@@ -78,6 +78,11 @@ pub struct ServerState {
     idempotency: Mutex<IdempotencyStore>,
     pub(crate) process_job: Arc<JobObject>,
     pub(crate) mcp: Arc<crate::mcp_broker::McpBroker>,
+    /// Per-provider tool policy, read by the MCP broker on every
+    /// `tools/list` and `tools/call` and written by `ToolPolicySet`. One
+    /// instance per daemon: the file beside the journal is this daemon's,
+    /// and a paired device's toggles are its own.
+    pub(crate) tool_policy: Arc<crate::tool_policy::ToolPolicyStore>,
     pub sessions: SessionRegistry,
     conn_ids: AtomicU64,
     journal_error: Mutex<Option<String>>,
@@ -235,6 +240,8 @@ impl ServerState {
         let _ = paths.ensure_dir();
         let process_job = Arc::new(JobObject::new()?);
         let mcp = Arc::new(crate::mcp_broker::McpBroker::new(&paths.dir)?);
+        // Read before `paths` moves into the session registry below.
+        let tool_policy = Arc::new(crate::tool_policy::ToolPolicyStore::load(&paths.dir));
         let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
             Ok(journal) => (Some(Arc::new(journal)), None),
             Err(error) => (None, Some(error.to_string())),
@@ -251,6 +258,7 @@ impl ServerState {
             idempotency: Mutex::new(IdempotencyStore::default()),
             process_job,
             mcp,
+            tool_policy,
             sessions: SessionRegistry::new(paths, journal),
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
@@ -2096,6 +2104,25 @@ fn dispatch_immediate(
             dispatch_session(state, owner, request, conn, typed_permissions_ok)
         }
         ClientMessage::ProvidersList { id } => providers_reply(state, id, false),
+        ClientMessage::ToolPolicyGet { id } => DaemonMessage::ToolPolicy {
+            id,
+            policies: state.tool_policy.entries(),
+        },
+        ClientMessage::ToolPolicySet {
+            id,
+            provider_id,
+            enabled,
+            disabled_tools,
+        } => match state.tool_policy.set(&provider_id, enabled, disabled_tools) {
+            Ok(()) => DaemonMessage::ToolPolicySetOk { id },
+            Err(error) => DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not save the tool policy for '{provider_id}': {error}"),
+                )
+                .with_id(id),
+            ),
+        },
         ClientMessage::DevicesList { .. }
         | ClientMessage::PairingStart { .. }
         | ClientMessage::PairingComplete { .. }
@@ -2259,6 +2286,7 @@ fn wire_provider(
         install_channel: Some(agent.install_channel.as_wire().to_string()),
         installed: agent.installed,
         npm_package: agent.npm_package.map(str::to_string),
+        tools: agent.tools,
     }
 }
 
@@ -3957,6 +3985,73 @@ mod tests {
     }
 
     #[test]
+    fn tool_policy_set_then_get_round_trips_through_dispatch() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-tool-policy-dispatch-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let state = ServerState::with_paths(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+        )
+        .expect("state");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(4);
+
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ToolPolicySet {
+                id: 21,
+                provider_id: "claude".to_string(),
+                enabled: Some(false),
+                disabled_tools: vec!["devboule_list_agents".to_string()],
+            },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("set reply");
+        assert!(
+            matches!(reply, DaemonMessage::ToolPolicySetOk { id: 21 }),
+            "got {reply:?}"
+        );
+
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ToolPolicyGet { id: 22 },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("get reply");
+        let DaemonMessage::ToolPolicy { id, policies } = reply else {
+            panic!("tool_policy_get must reply with ToolPolicy, got {reply:?}");
+        };
+        assert_eq!(id, 22);
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0].provider_id, "claude");
+        assert_eq!(policies[0].enabled, Some(false));
+        assert_eq!(policies[0].disabled_tools, ["devboule_list_agents"]);
+
+        // The file lives beside the journal, and a store loaded fresh from
+        // the same directory sees the write — which is what a restart does.
+        assert!(path.join("tool-policies.json").is_file());
+        let reopened = crate::tool_policy::ToolPolicyStore::load(&path);
+        assert_eq!(
+            reopened.get(Some("claude")).map(|policy| policy.enabled),
+            Some(Some(false))
+        );
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
     fn diagnostics_rpc_reports_the_open_journal_without_user_content() {
         let state = state();
         let owner = OwnerId::new("test-user", "test-client").expect("owner");
@@ -4088,6 +4183,7 @@ mod tests {
             latest_version: None,
             install_channel,
             npm_package: package,
+            tools: crate::provider_catalog::mcp_tools_for(id),
         }
     }
 

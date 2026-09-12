@@ -769,6 +769,45 @@ impl DaemonClient {
         }
     }
 
+    /// Every stored per-provider tool policy, straight from the daemon's
+    /// frame. A provider with no stored policy is absent from `policies` and
+    /// reads as enabled, so the panel defaults it rather than guessing at a
+    /// fabricated row.
+    pub fn tool_policy_get(&self) -> Result<DaemonMessage, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ToolPolicyGet { id })? {
+            reply @ DaemonMessage::ToolPolicy { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Replaces one provider's tool policy. `enabled: None` (the app's `null`)
+    /// and `Some(true)` both mean enabled; `disabled_tools` is the complete
+    /// per-tool set, never a delta.
+    ///
+    /// The reply is the daemon's frame rather than `()`: this call is the
+    /// only place the write is acknowledged, so it hands the acknowledgement
+    /// on instead of re-shaping it into a value the daemon did not send.
+    pub fn tool_policy_set(
+        &self,
+        provider_id: &str,
+        enabled: Option<bool>,
+        disabled_tools: Vec<String>,
+    ) -> Result<DaemonMessage, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ToolPolicySet {
+            id,
+            provider_id: provider_id.to_string(),
+            enabled,
+            disabled_tools,
+        })? {
+            reply @ DaemonMessage::ToolPolicySetOk { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn journal_usage(&self) -> Result<JournalUsage, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalUsage { id })? {
@@ -1417,6 +1456,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::PairingDone { id, .. }
         | DaemonMessage::PeerUpdated { id, .. }
         | DaemonMessage::PairingDeclined { id, .. }
+        | DaemonMessage::ToolPolicy { id, .. }
+        | DaemonMessage::ToolPolicySetOk { id }
         | DaemonMessage::Pong { id, .. }
         | DaemonMessage::Status { id, .. }
         | DaemonMessage::Diagnostics { id, .. }

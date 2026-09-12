@@ -254,7 +254,13 @@ impl PluginSession {
                         | DaemonMessage::PairingPending { id, .. }
                         | DaemonMessage::PairingDone { id, .. }
                         | DaemonMessage::PeerUpdated { id, .. }
-                        | DaemonMessage::PairingDeclined { id, .. } => Some(*id),
+                        | DaemonMessage::PairingDeclined { id, .. }
+                        // Tool policies are local to the daemon's own UI; a
+                        // plugin backend never asks for one. Listed for the
+                        // same reason as the device RPCs: this match is
+                        // exhaustive on purpose.
+                        | DaemonMessage::ToolPolicy { id, .. }
+                        | DaemonMessage::ToolPolicySetOk { id } => Some(*id),
                         DaemonMessage::Hello(_)
                         | DaemonMessage::Event(_)
                         | DaemonMessage::SessionAttached { .. }
