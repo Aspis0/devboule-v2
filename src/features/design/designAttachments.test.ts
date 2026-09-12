@@ -966,6 +966,66 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     expect(progress).toEqual(["deck.pdf: page 1 of 2.", "deck.pdf: page 2 of 2."]);
   });
 
+  it("tags every page with the document it came from, and nothing else", async () => {
+    rendererServes({
+      pageCount: 2,
+      pages: [
+        { pageNumber: 1, bytes: 512 },
+        { pageNumber: 2, bytes: 640 },
+      ],
+    });
+
+    const first = await importDesignAttachments(
+      [pdfFile("deck.pdf"), rasterFile("shot.png", PNG_BYTES, "image/png")],
+      [],
+    );
+
+    const [one, two, plain] = first.attachments;
+    expect(one.kind).toBe("raster");
+    expect(two.kind).toBe("raster");
+    expect(plain.kind).toBe("raster");
+    if (one.kind !== "raster" || two.kind !== "raster" || plain.kind !== "raster") {
+      throw new Error("expected rasters");
+    }
+    // One id for the document, generated per import, plus the numbers a sentence
+    // about it needs without walking its pages.
+    expect(one.document).toEqual({
+      id: expect.any(String),
+      name: "deck.pdf",
+      page: 1,
+      pageCount: 2,
+      travelled: 2,
+    });
+    expect(two.document?.id).toBe(one.document?.id);
+    expect(two.document?.page).toBe(2);
+    // A picture the user picked is its own attachment: no document at all, not a
+    // document of one page.
+    expect(plain.document).toBeUndefined();
+
+    // The id is generated, never derived from the name: the same document
+    // imported again is a new document, which is also what keeps two decks that
+    // share a file name from collapsing into one pill.
+    const again = await importDesignAttachments([pdfFile("deck.pdf")], []);
+    const fresh = again.attachments[0];
+    if (fresh.kind !== "raster") throw new Error("expected a raster page");
+    expect(fresh.document?.id).not.toBe(one.document?.id);
+
+    // And the count is the pages that travelled, not the pages the document has:
+    // a pill claiming five on a run carrying two would be the silent truncation
+    // this whole path exists to prevent.
+    rendererServes({
+      pageCount: 5,
+      pages: [
+        { pageNumber: 1, bytes: 512 },
+        { pageNumber: 2, bytes: 512 },
+      ],
+    });
+    const partial = await importDesignAttachments([pdfFile("long.pdf")], []);
+    const page = partial.attachments[0];
+    if (page.kind !== "raster") throw new Error("expected a raster page");
+    expect(page.document).toMatchObject({ name: "long.pdf", pageCount: 5, travelled: 2 });
+  });
+
   it("refuses a document that does not fit, before rendering any of it", async () => {
     rendererServes({ pageCount: 12 });
 

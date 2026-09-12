@@ -240,6 +240,8 @@ export interface DesignRasterAttachment {
   bytes: number;
   /** The file's bytes, base64, with no `data:` prefix. */
   base64: string;
+  /** Present only on a picture that is a page of a document the user attached. */
+  document?: DesignAttachmentDocument;
 }
 
 export interface DesignSvgAttachment {
@@ -254,6 +256,40 @@ export interface DesignSvgAttachment {
 }
 
 export type DesignAttachment = DesignRasterAttachment | DesignSvgAttachment;
+
+/**
+ * The document a raster came from, when it did not come from a picture.
+ *
+ * A PDF is one attachment the user picked and N pictures the composer carries,
+ * one per page, because the wire is per-image: a provider takes `{ data,
+ * mimeType }` per image and the daemon stores what it is handed. That is a
+ * transport fact, and these fields are the other half of it — the pictures know
+ * which document they belong to, which is what lets the composer show one pill
+ * for the file the user chose and take the whole document away in one action
+ * rather than leaving a deck with a hole in it.
+ *
+ * Optional, and absent on a PNG, a JPEG or an SVG the user picked directly:
+ * those are their own attachment, which is what every reader of this type
+ * already assumes. Every page of one document carries the same `id`, generated
+ * once per import rather than derived from the file name, so two documents that
+ * happen to share a name stay two documents.
+ */
+export interface DesignAttachmentDocument {
+  /** Generated once per import; every page of the document carries this value. */
+  id: string;
+  /** What the user called it: the name of the file they picked. */
+  name: string;
+  /** This picture's page, 1-based. */
+  page: number;
+  /** Pages the document has. */
+  pageCount: number;
+  /**
+   * Pages that travelled: `pageCount` when the whole document fit, fewer when
+   * the composer's budget cut it short. The import's notice names the pages that
+   * stayed behind and which cause lost them.
+   */
+  travelled: number;
+}
 
 /**
  * Call-time options, never persisted. The skill mode is declared on the wire

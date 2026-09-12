@@ -12,6 +12,7 @@ import type {
 import type {
   DesignAssistantMessage,
   DesignAttachment,
+  DesignAttachmentDocument,
   DesignDocument,
   DesignAgentSession,
   DesignHost,
@@ -415,7 +416,13 @@ interface AssistantProps extends DesignSkillViewProps {
    */
   onAttachFiles: (files: readonly File[], problem: string | null) => void;
   onAttachmentProblem: (message: string) => void;
-  onRemoveAttachment: (id: string) => void;
+  /**
+   * Remove the pill this key belongs to: a file's own id, or — for a file that
+   * arrived as several pictures — the id of the document they came from, which
+   * takes every page of it away at once. Never a page id: see
+   * `attachmentGroupKey`.
+   */
+  onRemoveAttachment: (key: string) => void;
   onVisualCheck: () => void;
   onClearContext: () => void;
   onMessageAction: (action: MessageAction, message: DesignMessage) => void;
@@ -2552,6 +2559,101 @@ function attachmentPreviewNotice(name: string): string {
   return `${name} was attached, but its preview could not be drawn.`;
 }
 
+/**
+ * What identifies a pill, which is not always the attachment's own id.
+ *
+ * A picture that is a page of a document carries its document's id
+ * (`DesignAttachmentDocument`), and the pill stands for the document: this is
+ * the key the remove control hands back, so removing one page of a deck is not
+ * something the composer can express. Everything else answers with its own id,
+ * which is what it answered before documents existed.
+ */
+function attachmentGroupKey(attachment: DesignAttachment): string {
+  return (attachment.kind === "raster" ? attachment.document?.id : undefined) ?? attachment.id;
+}
+
+/** One pill: a file the user picked, or the document that file turned into. */
+interface AttachmentGroup {
+  /** `attachmentGroupKey` of every member, and what removal is asked for. */
+  readonly key: string;
+  /** The document's name, or the file's own name when it is not a document. */
+  readonly name: string;
+  readonly attachments: readonly DesignAttachment[];
+  /** The document every member is a page of, or null for a file of its own. */
+  readonly document: DesignAttachmentDocument | null;
+  /** Bytes the group carries, which is what the composer's caps hold. */
+  readonly bytes: number;
+}
+
+/**
+ * The pills, which are not the attachments: a document is one pill however many
+ * pictures it arrived as.
+ *
+ * A PDF is one file the user chose once, and its pages are something the
+ * composer derived from it. Forty pages of one deck are not forty things they
+ * attached, and a row of forty pills is one nobody can read. The pills are also
+ * where removal happens, so one pill per document is what makes taking a
+ * document away take all of it: a page left behind is a deck with a hole in it,
+ * handed to an agent that then answers confidently and wrongly.
+ *
+ * Order follows the attachments: each group sits where its first member sits,
+ * and a file with no document is a group of one.
+ */
+function attachmentGroups(attachments: readonly DesignAttachment[]): readonly AttachmentGroup[] {
+  const keys: string[] = [];
+  const members = new Map<string, DesignAttachment[]>();
+  const sources = new Map<string, DesignAttachmentDocument>();
+  for (const attachment of attachments) {
+    const key = attachmentGroupKey(attachment);
+    const source = attachment.kind === "raster" ? attachment.document : undefined;
+    const bucket = members.get(key);
+    if (bucket === undefined) {
+      keys.push(key);
+      members.set(key, [attachment]);
+      if (source !== undefined) sources.set(key, source);
+    } else {
+      bucket.push(attachment);
+    }
+  }
+  return keys.map((key) => {
+    const group = members.get(key) ?? [];
+    const source = sources.get(key) ?? null;
+    return {
+      key,
+      name: source?.name ?? group[0].name,
+      attachments: group,
+      document: source,
+      bytes: group.reduce((sum, attachment) => sum + attachment.bytes, 0),
+    };
+  });
+}
+
+/**
+ * What a pill holds: the measured type of a picture, which is the one thing the
+ * `kind` slot ever said. A document's pill answers with its page count instead —
+ * see `attachmentDocumentLabel`.
+ */
+function attachmentKindLabel(attachment: DesignAttachment): string {
+  if (attachment.kind === "svg") return "SVG";
+  return attachment.mimeType === "image/png" ? "PNG" : "JPEG";
+}
+
+/**
+ * How many pages of a document travelled: `2 pages`, or `2 of 40 pages` when the
+ * composer's budget cut the document short.
+ *
+ * The count is the pages that came through, never the pages the document has: a
+ * pill claiming forty on a run that carries two would be the silent truncation
+ * this feature exists to prevent, and the import's notice names the pages that
+ * stayed behind.
+ */
+function attachmentDocumentLabel(source: DesignAttachmentDocument): string {
+  if (source.travelled !== source.pageCount) {
+    return `${source.travelled} of ${source.pageCount} pages`;
+  }
+  return `${source.travelled} ${source.travelled === 1 ? "page" : "pages"}`;
+}
+
 const DesignAssistant = memo(function DesignAssistant({
   canGenerate,
   contextPrefix,
@@ -2880,15 +2982,16 @@ const DesignAssistant = memo(function DesignAssistant({
     };
   }, [dismissProviderPicker, providerPickerOpen]);
 
-  // Import feedback and preview failures in one list: they are read in the same
-  // place, because both say something about the files in the pills above. The
-  // preview sentences are derived from `attachments` rather than stored, so a
-  // removed file takes its sentence with it and no state has to be pruned.
+  // The pills, and the feedback about them. Both are read off `attachments` as
+  // it stands, so a removed file takes its sentence with it and no state has to
+  // be pruned — and a document's sentence is said once, for the document, since
+  // the pills are what the user is looking at.
+  const attachmentPills = attachmentGroups(attachments);
   const attachmentFeedback: readonly AttachmentMessage[] = [
     ...attachmentMessages,
-    ...attachments.flatMap((attachment) =>
-      undrawnPreviewIds.includes(attachment.id)
-        ? [{ kind: "note" as const, text: attachmentPreviewNotice(attachment.name) }]
+    ...attachmentPills.flatMap((pill) =>
+      pill.attachments.some((attachment) => undrawnPreviewIds.includes(attachment.id))
+        ? [{ kind: "note" as const, text: attachmentPreviewNotice(pill.name) }]
         : [],
     ),
   ];
@@ -3002,56 +3105,62 @@ const DesignAssistant = memo(function DesignAssistant({
             {attachments.length > 0 ? (
               <>
                 <div className="design-attachment-row">
-                  {attachments.map((attachment) => (
-                    <span className="design-attachment-pill" key={attachment.id}>
-                      {undrawnPreviewIds.includes(attachment.id) ? (
-                        // The same slot, emptied. Not hidden: an absent preview
-                        // and a preview that failed are the two things this
-                        // element exists to tell apart.
-                        <span
-                          className="design-attachment-preview design-attachment-preview-empty"
-                          role="img"
-                          aria-label={PREVIEW_UNAVAILABLE_LABEL}
-                          title={PREVIEW_UNAVAILABLE_LABEL}
-                        />
-                      ) : (
-                        <img
-                          className="design-attachment-preview"
-                          src={attachmentPreviewSrc(attachment)}
-                          // The file name is the next thing in the pill and is
-                          // already read aloud; naming the image would say it
-                          // twice.
-                          alt=""
-                          // A data: URL has nothing to defer: the bytes are
-                          // already here, so waiting to decode them would only
-                          // delay the one signal this element carries.
-                          loading="eager"
-                          onError={() => reportUndrawnPreview(attachment.id)}
-                        />
-                      )}
-                      <span className="design-attachment-name" title={attachment.name}>
-                        {attachment.name}
+                  {attachmentPills.map((pill) => {
+                    // The picture the pill draws: the first page of a document,
+                    // or the file itself. A document's preview is its cover.
+                    const lead = pill.attachments[0];
+                    return (
+                      <span className="design-attachment-pill" key={pill.key}>
+                        {undrawnPreviewIds.includes(lead.id) ? (
+                          // The same slot, emptied. Not hidden: an absent preview
+                          // and a preview that failed are the two things this
+                          // element exists to tell apart.
+                          <span
+                            className="design-attachment-preview design-attachment-preview-empty"
+                            role="img"
+                            aria-label={PREVIEW_UNAVAILABLE_LABEL}
+                            title={PREVIEW_UNAVAILABLE_LABEL}
+                          />
+                        ) : (
+                          <img
+                            className="design-attachment-preview"
+                            src={attachmentPreviewSrc(lead)}
+                            // The file name is the next thing in the pill and is
+                            // already read aloud; naming the image would say it
+                            // twice.
+                            alt=""
+                            // A data: URL has nothing to defer: the bytes are
+                            // already here, so waiting to decode them would only
+                            // delay the one signal this element carries.
+                            loading="eager"
+                            onError={() => reportUndrawnPreview(lead.id)}
+                          />
+                        )}
+                        <span className="design-attachment-name" title={pill.name}>
+                          {pill.name}
+                        </span>
+                        <span className="design-attachment-kind">
+                          {pill.document === null
+                            ? attachmentKindLabel(lead)
+                            : attachmentDocumentLabel(pill.document)}
+                        </span>
+                        <span className="design-attachment-size">
+                          {formatAttachmentSize(pill.bytes)}
+                        </span>
+                        <button
+                          className="design-attachment-remove"
+                          type="button"
+                          // One control, and for a document it says what it
+                          // takes: every page of it, not the one under the
+                          // pointer.
+                          aria-label={`Remove ${pill.name}`}
+                          onClick={() => onRemoveAttachment(pill.key)}
+                        >
+                          ✕
+                        </button>
                       </span>
-                      <span className="design-attachment-kind">
-                        {attachment.kind === "svg"
-                          ? "SVG"
-                          : attachment.mimeType === "image/png"
-                            ? "PNG"
-                            : "JPEG"}
-                      </span>
-                      <span className="design-attachment-size">
-                        {formatAttachmentSize(attachment.bytes)}
-                      </span>
-                      <button
-                        className="design-attachment-remove"
-                        type="button"
-                        aria-label={`Remove ${attachment.name}`}
-                        onClick={() => onRemoveAttachment(attachment.id)}
-                      >
-                        ✕
-                      </button>
-                    </span>
-                  ))}
+                    );
+                  })}
                 </div>
               </>
             ) : null}
@@ -5070,7 +5179,12 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   );
 
   const handleRemoveAttachment = useCallback(
-    (id: string) => commitAttachments(attachmentsRef.current.filter((item) => item.id !== id)),
+    // The key belongs to a pill, and a document's pill key is the document: one
+    // press takes every page of it, so a deck cannot be left with a page
+    // missing. A page's own id is nobody's pill key, so asking to remove one
+    // removes nothing rather than half a document.
+    (key: string) =>
+      commitAttachments(attachmentsRef.current.filter((item) => attachmentGroupKey(item) !== key)),
     [commitAttachments],
   );
 

@@ -971,6 +971,11 @@ async function importPdfDocument(input: {
     };
   }
 
+  // One id for the document, generated here rather than derived from the file
+  // name: two decks can share a name, and they are two documents. Every page
+  // carries it, which is what lets the composer show one pill for the file the
+  // user picked and take all of it away in one action.
+  const documentId = crypto.randomUUID();
   const attachments: DesignAttachment[] = pages.map((page) => ({
     id: crypto.randomUUID(),
     kind: "raster" as const,
@@ -978,6 +983,13 @@ async function importPdfDocument(input: {
     mimeType: "image/jpeg" as const,
     bytes: page.bytes.length,
     base64: encodeBase64(page.bytes),
+    document: {
+      id: documentId,
+      name,
+      page: page.pageNumber,
+      pageCount: total,
+      travelled: travelled.length,
+    },
   }));
   const keys = attachments.map((attachment) => `${attachment.name}:${attachment.bytes}`);
   if (keys.some((key) => seen.has(key))) {

@@ -4,9 +4,14 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
-import { ATTACHMENT_INPUT_ACCEPT, formatAttachmentSize } from "./designAttachments";
+import {
+  ATTACHMENT_INPUT_ACCEPT,
+  formatAttachmentSize,
+  PDF_COUNT_PROBE_PAGE,
+} from "./designAttachments";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationOptions } from "./designHost";
+import { renderPdfPages, type PdfRenderOutcome, type PdfRenderedPage } from "./pdfPageRenderer";
 
 const settingsMocks = vi.hoisted(() => ({
   load: vi.fn(),
@@ -70,6 +75,17 @@ vi.mock("../../lib/tauri", () => ({
   sessionsWatch: vi.fn(),
 }));
 
+/**
+ * The renderer is mocked for this file's PDF cases only: happy-dom has no 2d
+ * canvas, so a real render reports "could not be drawn" for every page. Every
+ * other export stays the real one — the sniff, the ceilings, the sentences — so
+ * a PDF dropped below goes through the importer's own path.
+ */
+vi.mock("./pdfPageRenderer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./pdfPageRenderer")>();
+  return { ...actual, renderPdfPages: vi.fn() };
+});
+
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -132,6 +148,57 @@ const CLEAN_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" heigh
 
 function imageFile(name: string, bytes: Uint8Array<ArrayBuffer>, type: string): File {
   return new File([bytes], name, { type });
+}
+
+/** A `%PDF-` header: as much of a document as the importer reads for itself. */
+const PDF_BYTES = Uint8Array.from([...asciiBytes("%PDF-1.7"), 0x0a]);
+
+function pdfPage(pageNumber: number, bytes: number): PdfRenderedPage {
+  return {
+    pageNumber,
+    width: 1,
+    height: 1,
+    scale: 1,
+    mimeType: "image/jpeg",
+    bytes: new Uint8Array(bytes),
+  };
+}
+
+function pdfOutcome(input: {
+  readonly name: string;
+  readonly pageCount: number;
+  readonly pages?: readonly PdfRenderedPage[];
+}): PdfRenderOutcome {
+  return {
+    name: input.name,
+    pageCount: input.pageCount,
+    pages: input.pages ?? [],
+    omittedPages: [],
+    downscaledPages: [],
+    stoppedEarly: null,
+  };
+}
+
+/**
+ * The renderer as the importer uses it: the count call first — recognised by the
+ * page range it asks for, which is past any real document — then the render,
+ * which streams the pages in range and reports the document's own page count.
+ * The budget decides how many of them are asked for, so a five-page document
+ * arrives as the two the composer can hold.
+ */
+function servePdf(pageCount: number, pageBytes: number): void {
+  vi.mocked(renderPdfPages).mockImplementation(async (_bytes, name, sink, options) => {
+    if (options?.pageRange?.from === PDF_COUNT_PROBE_PAGE) {
+      return { ok: true, outcome: pdfOutcome({ name, pageCount }) };
+    }
+    const last = Math.min(pageCount, options?.pageRange?.to ?? pageCount);
+    const rendered: PdfRenderedPage[] = [];
+    for (let pageNumber = 1; pageNumber <= last; pageNumber += 1) {
+      rendered.push(pdfPage(pageNumber, pageBytes));
+    }
+    for (const page of rendered) sink.onPage(page);
+    return { ok: true, outcome: pdfOutcome({ name, pageCount, pages: rendered }) };
+  });
 }
 
 function createHost(overrides: Partial<DesignHost> = {}): DesignHost {
@@ -247,7 +314,7 @@ describe("the picker is a keyboard-reachable control", () => {
     );
   });
 
-  it("hides the input it triggers and accepts exactly the three types", async () => {
+  it("hides the input it triggers and accepts the types this composer reads", async () => {
     await renderDesign(createHost());
 
     const input = document.querySelector<HTMLInputElement>(".design-attachment-input");
@@ -687,5 +754,111 @@ describe("an attached file reaches the host and then leaves the composer", () =>
     await act(async () => remove.click());
 
     expect(pillNames(container)).toEqual(["detail.png"]);
+  });
+});
+
+describe("a document the user picked once is one pill", () => {
+  beforeEach(() => {
+    // An implementation left behind by one of these tests would decide the next
+    // one: the file's own afterEach clears calls, not implementations.
+    vi.mocked(renderPdfPages).mockReset();
+  });
+
+  it("shows one pill for a document that arrived as several pictures", async () => {
+    servePdf(2, 512);
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [new File([PDF_BYTES], "deck.pdf", { type: "application/pdf" })],
+    });
+
+    // One pill for the file the user chose, whatever the transport did with it.
+    expect(pillNames(container)).toEqual(["deck.pdf"]);
+    expect(container.querySelectorAll(".design-attachment-pill")).toHaveLength(1);
+    const pill = container.querySelector(".design-attachment-pill");
+    expect(pill?.querySelector(".design-attachment-kind")?.textContent).toBe("2 pages");
+    // Two pages of 512 bytes: the pill prices the document, not one page of it.
+    expect(pill?.querySelector(".design-attachment-size")?.textContent).toBe(
+      formatAttachmentSize(1024),
+    );
+    // Its cover is the preview, and the sentence under the row still says what
+    // travelled: the pill and the notice agree.
+    const preview = pill?.querySelector<HTMLImageElement>("img")?.getAttribute("src");
+    expect(preview?.startsWith("data:image/jpeg;base64,")).toBe(true);
+    expect(feedback(container)).toEqual([
+      "deck.pdf was attached in full: all 2 of its pages travel as pictures.",
+    ]);
+  });
+
+  it("takes every page of the document away in one press", async () => {
+    servePdf(5, 512);
+    const generateMock = vi.fn(
+      async (_prompt: string, _signal: AbortSignal, _options?: DesignGenerationOptions) => ({
+        ...GENERATION_BASE,
+      }),
+    );
+    const { container } = await renderDesign(createHost({ generate: generateMock }));
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [new File([PDF_BYTES], "deck.pdf", { type: "application/pdf" })],
+    });
+    // Five pages in the document, two in the composer: the pill says which pages
+    // travelled, and one control stands for all of them.
+    expect(pillNames(container)).toEqual(["deck.pdf"]);
+    const pill = container.querySelector(".design-attachment-pill");
+    expect(pill?.querySelector(".design-attachment-kind")?.textContent).toBe("2 of 5 pages");
+    const remove = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove deck.pdf"]',
+    );
+    if (remove === null) throw new Error("remove control missing");
+
+    await act(async () => remove.click());
+
+    // Every page is gone. A page left behind would still render, as a pill of its
+    // own, which is the hole this grouping exists to close.
+    expect(pillNames(container)).toEqual([]);
+    expect(container.querySelectorAll(".design-attachment-pill")).toHaveLength(0);
+
+    // And the wire agrees: the run that follows carries no page of it.
+    await fillDraft(container, "Build the landing page around this.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => {
+      send.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(generateMock.mock.calls[0]?.[2]?.attachments).toEqual([]);
+  });
+
+  it("leaves a file that is not a document as its own pill", async () => {
+    servePdf(2, 512);
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [
+        imageFile("hero.png", PNG_BYTES, "image/png"),
+        new File([PDF_BYTES], "deck.pdf", { type: "application/pdf" }),
+        imageFile("detail.png", PNG_BYTES, "image/png"),
+      ],
+    });
+
+    // Three files, three pills: only the document's pages collapsed into one,
+    // and the pictures kept their names and their own type labels.
+    expect(pillNames(container)).toEqual(["hero.png", "deck.pdf", "detail.png"]);
+    const kinds = Array.from(container.querySelectorAll(".design-attachment-kind")).map(
+      (element) => element.textContent,
+    );
+    expect(kinds).toEqual(["PNG", "2 pages", "PNG"]);
+
+    const remove = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove hero.png"]',
+    );
+    if (remove === null) throw new Error("remove control missing");
+    await act(async () => remove.click());
+
+    // Removing a picture removes the picture, and the document beside it is
+    // untouched: its own control is what takes all of that.
+    expect(pillNames(container)).toEqual(["deck.pdf", "detail.png"]);
   });
 });
