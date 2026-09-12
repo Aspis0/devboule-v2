@@ -157,14 +157,19 @@ enum SessionBytes {
 #[derive(Clone)]
 pub(crate) struct AttachmentStore {
     root: PathBuf,
-    /// Whether this store's root is a folder of its own.
+    /// Whether this store's root is a folder of its own, and every folder under
+    /// it carries the current user's DACL.
     ///
     /// False when the root's name is a link or a junction: everything under it
     /// is somebody else's tree, and every path this store builds starts at the
-    /// root. It is one field rather than a check per call because it is a
-    /// property of the root as this store found it, and the open is the one
-    /// moment nothing else is writing into it — the same moment the scratch
-    /// sweep runs in. What it closes, path by path, is on [`AttachmentStore::new`].
+    /// root. False as well when the open could not narrow the DACL of the root
+    /// or of a folder that was already there ([`harden_and_sweep_in_store`]):
+    /// a folder whose DACL is not this user's is a folder another account can
+    /// read, and `resolve` reads a folder before any write has been through it.
+    /// It is one field rather than a check per call because it is a property of
+    /// the root as this store found it, and the open is the one moment nothing
+    /// else is writing into it — the same moment the walk runs in. What it
+    /// closes, path by path, is on [`AttachmentStore::new`].
     available: bool,
     /// Serializes writes across sessions. One process owns the runtime dir
     /// (single-instance lock), so this is enough to keep two client threads
@@ -290,17 +295,26 @@ impl AttachmentStore {
     /// certain not to race a write: this instance does not exist yet, and the
     /// daemon holds the single-instance lock on the runtime directory
     /// (`crate::lock`, and the struct comment above), so no other process is
-    /// writing into this root either. The walk does two things and is best
-    /// effort at both — the scratch a killed process left behind, which every
-    /// later walk would otherwise charge to the budget for the life of the
-    /// folder and which no `resolve` can ever name (see [`discard_scratch`]),
-    /// and the DACL of every folder it sees, because a folder that predates
-    /// this store is a folder no write has been through, and `resolve` reads
-    /// before the first write (`restrict_to_current_user`).
+    /// writing into this root either. The walk does two things — the scratch a
+    /// killed process left behind, which every later walk would otherwise charge
+    /// to the budget for the life of the folder and which no `resolve` can ever
+    /// name (see [`discard_scratch`]), and the DACL of every folder it sees,
+    /// because a folder that predates this store is a folder no write has been
+    /// through and `resolve` reads before the first write.
+    ///
+    /// The two halves answer for themselves. The scratch sweep is best effort:
+    /// it removes this store's own leftovers, and one that survives costs budget
+    /// until the next write into that folder. A DACL that could not be applied is
+    /// not: the folder keeps a DACL another account may be able to reach, and
+    /// `resolve` would read attachments out of it — so the walk answers `false`
+    /// and this open marks the store unavailable, which is the same refusal the
+    /// list above describes and the field's second reason.
     pub(crate) fn new(runtime_dir: &Path) -> Self {
         let root = runtime_dir.join(ATTACHMENTS_DIR);
-        let available = !is_redirect(&root);
-        harden_and_sweep_in_store(&root);
+        let walked = harden_and_sweep_in_store(&root);
+        // A root that is a link is refused for its own reason, so the walk's
+        // answer is only consulted when the root is the store's own folder.
+        let available = !is_redirect(&root) && walked;
         Self {
             root,
             available,
@@ -474,8 +488,10 @@ impl AttachmentStore {
         };
         let mut reclaimed: Vec<(String, Option<u64>)> = Vec::new();
         for entry in entries.flatten() {
-            // Before the metadata read, because that read is the one that
-            // follows the name.
+            // Before the metadata read and before the `is_dir` filter, which is
+            // where `seed_locked` asks the same question: a redirect is skipped
+            // by that filter today (see the doc comment above), and this check is
+            // what keeps it skipped rather than what first notices it.
             if is_redirect(&entry.path()) {
                 continue;
             }
@@ -800,6 +816,19 @@ impl AttachmentStore {
                         complete = false;
                         continue;
                     };
+                    // The same skip the sweep makes, in the same place relative
+                    // to the metadata read, and measured the same way: a
+                    // redirect is not a folder this store holds, so its bytes are
+                    // not this store's to count — a total that charged the tree
+                    // behind a junction is the number the limit is enforced
+                    // against. On today's toolchain the filter below already
+                    // passes one over (`entry.metadata` answers for the reparse
+                    // point), so this is a rule stated outright rather than a
+                    // miscount repaired; see the sweep's doc comment for the
+                    // measurement and for the version that says otherwise.
+                    if is_redirect(&entry.path()) {
+                        continue;
+                    }
                     let Ok(metadata) = entry.metadata() else {
                         complete = false;
                         continue;
@@ -1006,8 +1035,64 @@ fn discard_scratch(dir: &Path) -> u64 {
     reclaimed
 }
 
+// One folder name a test has asked `harden` to fail on.
+//
+// A thread-local rather than a field of the store, because the walk runs in
+// `AttachmentStore::new`: the failure has to be in place *before* the store
+// exists, and the store a test then inspects has to be the one that open
+// produced. Thread-local because the test harness runs each test on its own
+// thread, so one test's failure cannot reach a store another test opens. A `//`
+// comment and not a doc one: `thread_local!` is a macro, and a `///` above it
+// documents nothing.
+#[cfg(test)]
+thread_local! {
+    static HARDEN_FAILURE: std::cell::RefCell<Option<std::ffi::OsString>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Give one folder the current user's DACL, with a seam a test can pull.
+///
+/// The seam is here and not inside [`restrict_to_current_user`] because what
+/// DEP-17 decides is what the walk *does* with a failure, and that decision has
+/// to be reachable on a platform where the call underneath is a no-op: a test
+/// that could only fail a real DACL write would not run on POSIX at all, and the
+/// failure path would then be the one thing nobody exercises.
+fn harden(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(blocked) = HARDEN_FAILURE.with(|name| name.borrow().clone()) {
+        if path.file_name() == Some(blocked.as_os_str()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "a test asked this folder not to be hardened",
+            ));
+        }
+    }
+    restrict_to_current_user(path)
+}
+
+/// [`harden`] one folder and say whether it worked, printing the one that did
+/// not.
+///
+/// Printed rather than returned: the refusal a caller sees is the store being
+/// unavailable, and this line is what says which folder is behind it. Silence is
+/// the finding this answers — a store that opens with a folder nobody narrowed
+/// leaves nothing to look at afterwards.
+fn harden_or_report(path: &Path) -> bool {
+    match harden(path) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "could not narrow the attachment folder {} to the current user: {error}",
+                path.display()
+            );
+            false
+        }
+    }
+}
+
 /// Give every folder under a root the current user's DACL, and delete the
-/// scratch this store's own writer leaves behind.
+/// scratch this store's own writer leaves behind. Report whether every DACL it
+/// meant to set was set.
 ///
 /// Two duties in one walk because both are about a folder this store did not
 /// write into yet, and both are cheap to do once at the open:
@@ -1022,34 +1107,55 @@ fn discard_scratch(dir: &Path) -> u64 {
 ///
 /// *The scratch.* See [`discard_scratch`].
 ///
-/// Best effort and silent at both: a store whose root cannot be listed must
-/// still open, and scratch that survives here is charged again only until the
-/// next write into that folder, which removes it under the lock. Folders that
-/// are redirects are skipped — a junction in this root names somebody else's
-/// tree, and this store does not delete files in one nor set a DACL on one — and
-/// so is a root that is itself a redirect, which is the case
-/// [`AttachmentStore::new`] has already answered for every other call.
-fn harden_and_sweep_in_store(root: &Path) {
+/// A failure to narrow a folder is neither silent nor best effort. The folder
+/// keeps the DACL its parent granted — on a default Windows profile one that
+/// includes other accounts — and `resolve` would read attachments out of it
+/// afterwards, so the walk answers `false` and [`AttachmentStore::new`] makes the
+/// store unavailable for it ([`harden_or_report`] prints the folder and the
+/// error). The scratch half stays best effort for the reason it always was: it
+/// removes this store's own leftovers, and a leftover that survives costs budget
+/// for one folder's lifetime rather than secrecy.
+///
+/// A root that is *not there*, or that is *not a folder*, is nothing to harden:
+/// a fresh install has to open, and a file where the root belongs has no folders
+/// under it to narrow — the budget's own reading of that root answers for it, so
+/// a deposit there is still refused, and with the cause that says so. A root that
+/// is a folder and *cannot be listed* **is** a failure, and it is the one
+/// judgement call here: the walk cannot see the folders under it, so it cannot
+/// narrow the DACL of a folder `resolve` would then read, and a refusal to open is
+/// the only answer that cannot be wrong about a folder the store never looked at.
+///
+/// Folders that are redirects are skipped — a junction in this root names
+/// somebody else's tree, and this store does not delete files in one nor set a
+/// DACL on one — and so is a root that is itself a redirect, which
+/// [`AttachmentStore::new`] has already answered for every other call. A redirect
+/// root is not a failure *here*: this walk's answer is about the DACLs it meant
+/// to set, and `new` refuses that root on its own ground.
+fn harden_and_sweep_in_store(root: &Path) -> bool {
     if is_redirect(root) {
-        return;
+        return true;
     }
     let Ok(entries) = std::fs::read_dir(root) else {
-        return;
+        // Nothing to harden is not a failure — see the doc comment: a root that
+        // is not there is a fresh install, and a root that is not a folder has no
+        // folders under it. A root that is a folder and cannot be listed is the
+        // refusal, because the folders under it are folders this walk never saw.
+        return !(root.exists() && root.is_dir());
     };
-    // A listing that succeeded is a root that is there and is a folder — a
-    // missing root and a file named like one both land in the `return` above —
-    // so the root's own DACL is applied exactly when the root exists.
-    let _ = restrict_to_current_user(root);
+    // A listing that succeeded is a root that is there and is a folder, so the
+    // root's own DACL is applied exactly when the root exists.
+    let mut hardened = harden_or_report(root);
     for entry in entries.flatten() {
         let path = entry.path();
         if is_redirect(&path) {
             continue;
         }
         if entry.metadata().is_ok_and(|metadata| metadata.is_dir()) {
-            let _ = restrict_to_current_user(&path);
+            hardened &= harden_or_report(&path);
             discard_scratch(&path);
         }
     }
+    hardened
 }
 
 /// Refuse a path when the name is a link rather than a folder or file.
@@ -3944,5 +4050,101 @@ mod tests {
                 folder.display()
             );
         }
+    }
+
+    /// Ask [`harden`] to fail on one folder name, for the next store a test
+    /// opens on this thread.
+    ///
+    /// The seam exists because the decision to pin is what the *walk* does with a
+    /// failure, and `restrict_to_current_user` is a no-op on POSIX: a test that
+    /// could only fail a real DACL write would not run on every platform this
+    /// suite runs on, and the failure path would be the one thing never
+    /// exercised.
+    fn fail_hardening_of(name: &str) {
+        HARDEN_FAILURE.with(|blocked| *blocked.borrow_mut() = Some(name.into()));
+    }
+
+    /// Put [`harden`] back to refusing nothing, so the failure cannot leak into
+    /// the store another test opens on this thread.
+    fn stop_failing_hardening() {
+        HARDEN_FAILURE.with(|blocked| *blocked.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_folder_the_open_cannot_harden_makes_the_store_unavailable() {
+        // DEP-17: a DACL that could not be applied used to be swallowed and the
+        // store opened anyway — `session` handed the folder back, `resolve` read
+        // attachments out of it, and the folder kept whatever its parent granted,
+        // which is the whole reason the walk hardens it. The failure is planted
+        // through `harden`'s seam, so this holds on a platform where the call
+        // underneath is a no-op, and the folder predates the store, which is the
+        // case the walk hardens rather than the one a write creates later.
+        let temp = TempDir::new();
+        let dir = temp.0.join(ATTACHMENTS_DIR).join("s.a.1");
+        std::fs::create_dir_all(&dir).expect("a session folder from an earlier build");
+        fail_hardening_of("s.a.1");
+
+        let store = AttachmentStore::new(&temp.0);
+        stop_failing_hardening();
+
+        assert!(
+            store.session("s.a.1").is_none(),
+            "a store opened with a folder it could not narrow handed the folder back"
+        );
+        assert_eq!(
+            store.store_bytes(),
+            None,
+            "and the bytes of that folder are not a number this store may count"
+        );
+        assert!(
+            store
+                .sweep_older_than(
+                    SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(60),
+                    ATTACHMENT_RETENTION
+                )
+                .is_empty(),
+            "and nothing in it may be swept"
+        );
+
+        // The same tree opens and answers normally when the failure is not asked
+        // for, which is what keeps the assertions above about the failure rather
+        // than about the seam being stuck.
+        let reopened = AttachmentStore::new(&temp.0);
+        assert!(
+            reopened.session("s.a.1").is_some(),
+            "the store must open when every folder it hardens is hardened"
+        );
+        assert_eq!(
+            reopened.store_bytes(),
+            Some(0),
+            "and a store that opened may count what it holds"
+        );
+    }
+
+    #[test]
+    fn a_junction_in_the_root_is_not_part_of_the_stores_bytes() {
+        // The walk that builds the budget counts the folders in the root, and a
+        // junction there is a folder in somebody else's tree: charging what is
+        // behind it would hand this store a total counting files it does not
+        // hold, and that total is what the limit is enforced against. Asserted on
+        // the number and not on which check skips the entry: the redirect check
+        // and the `is_dir` filter below it are measured to agree on today's
+        // toolchain (see `seed_locked` and the sweep), and the property is what
+        // has to hold if that measurement ever stops being true.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let elsewhere = TempDir::new();
+        std::fs::write(elsewhere.0.join("outside.png"), vec![0x5a; 4096]).expect("outside");
+        std::fs::create_dir_all(store.root.join("s.real.1")).expect("a real session folder");
+        assert!(
+            junction_onto(&store.root.join("s.link.1"), &elsewhere.0),
+            "the platform refused to make the junction this test is about"
+        );
+
+        assert_eq!(
+            store.store_bytes(),
+            Some(0),
+            "the walk charged this store for the tree the junction names"
+        );
     }
 }
