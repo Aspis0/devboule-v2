@@ -17,10 +17,30 @@ use devboule_daemon::{
 };
 use devboule_protocol::{ClientHello, ClientMessage, ErrorCode, OwnerId, PROTOCOL_VERSION};
 
+/// Point the daemons these tests spawn at the **file** secret store, rooted in
+/// that daemon's own temp runtime dir, so the identity it writes dies with the
+/// directory.
+///
+/// The daemon binary is a production build: with no `DEVBOULE_SECRET_STORE` it
+/// selects the OS credential store and writes a `noise-static-<runtime dir
+/// hash>` entry that nothing ever deletes (measured: 66 entries from this file
+/// in one suite run, and enough of them make `CredWrite` fail with Windows
+/// error 8 -- see `reports/remote-agents/keyring-test-leak-fix-report.md`).
+/// Every spawn in this file passes through `daemon_bin()`, so the call lives
+/// there.
+fn file_secret_store() {
+    // Set once, before the first spawn: the tests run in parallel threads, so a
+    // process-wide write per call would race them.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::env::set_var("DEVBOULE_SECRET_STORE", "file"));
+}
+
 fn daemon_bin() -> PathBuf {
     // Cargo names this env var after the bin verbatim (dashes included); an
     // underscore lookup never matches. A stale-binary fallback would
     // silently run "the past" and report green, so refuse to guess.
+    file_secret_store();
+
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_devboule-daemon") {
         return PathBuf::from(path);
     }
