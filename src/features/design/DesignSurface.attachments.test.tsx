@@ -394,9 +394,14 @@ describe("a file that is not attached", () => {
       ],
     });
 
+    // Four bytes of `%PDF` and no `-`: this fixture was a stand-in for "any
+    // PDF" back when the composer refused the type outright, and it is now
+    // what it always literally was — a file that claims to be a PDF and does
+    // not carry the header. The refusal still names the file and the reason,
+    // which is what this test is about.
     expect(pillNames(container)).toEqual([]);
     expect(feedback(container)).toEqual([
-      "brief.pdf is a PDF, which this composer does not accept. Export the page as a PNG, or the artwork as an SVG.",
+      "brief.pdf is not a readable PDF: it does not begin with the %PDF- header, and its bytes are not an image or an SVG document either.",
     ]);
     expect(container.querySelector(".design-attachment-error")).not.toBeNull();
   });
