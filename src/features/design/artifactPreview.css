@@ -1,0 +1,63 @@
+/*
+ * The frame rules the canvas and the side panel's preview both render under.
+ *
+ * Both sides hand the artifact to the same `artifactSrcDoc` (artifactCsp.ts), so
+ * the rules that govern that frame belong beside that policy rather than inside
+ * `design.css`: the canvas is the only module of the feature that imports that
+ * 58 KB stylesheet, it is lazy-loaded with `DesignSurface`, and the side panel —
+ * which sits in the Workspace chunk loaded on every start — needs the three
+ * rules below and nothing else from it.
+ *
+ * Keep this file to the frame: the rules the artifact render needs on both
+ * sides, and no rule only one of them uses.
+ */
+
+.design-artifact-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  pointer-events: none;
+}
+
+/*
+ * The side panel shows the same page the canvas does, at a fixed reduction: the
+ * panel is 180-460px wide (workspaceResize.ts) and the page is authored at 1280
+ * (ARTIFACT_PAGE_WIDTH), so the page box keeps its intrinsic size and scale()
+ * shrinks the painted result to 320 x 200 at the 366px default panel width.
+ *
+ * The 800px is the canonical page height — a desktop browser's content viewport
+ * at that width (ARTIFACT_PAGE_MIN_HEIGHT, artifactViewport.ts) — and it is what
+ * makes the box finite. An artifact taller than that shows its first screen and
+ * no more: the rest of the page is not reachable from this panel, and no line of
+ * UI says so, because nothing in the panel can tell a clipped artifact from a
+ * complete one. Reading a height out of the frame is not available: the frame is
+ * `sandbox=""`, and that confinement is the reason this preview is worth having
+ * at all. The canvas does measure the page (its critic's off-screen pass lands in
+ * artifactStructure.ts's cache), so sizing this box to a cached height is
+ * possible — but the box would then grow and shrink with whether the canvas had
+ * measured the same html, and a mirror that crops differently depending on cache
+ * warmth is worse than one that always shows the top of the page.
+ *
+ * The viewport takes the scaled height back because a transform paints, it does
+ * not lay out: the page box would still claim its full 800px in the column and
+ * leave a hole four times the height of the preview. Overflow clips, so a panel
+ * narrowed below 320px crops the miniature instead of overflowing.
+ */
+.design-artifact-preview {
+  --design-artifact-preview-scale: 0.25;
+  width: 100%;
+  height: calc(800px * var(--design-artifact-preview-scale));
+  overflow: hidden;
+  background: var(--white);
+  border-top: 1px solid var(--border);
+  pointer-events: none;
+}
+
+.design-artifact-preview-page {
+  width: 1280px;
+  height: 800px;
+  transform: scale(var(--design-artifact-preview-scale));
+  transform-origin: top left;
+  pointer-events: none;
+}

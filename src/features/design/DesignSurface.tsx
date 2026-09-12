@@ -23,7 +23,7 @@ import type {
   PendingPermission,
   SectionNote,
 } from "./designHost";
-import { ARTIFACT_CSP_META } from "./artifactCsp";
+import { artifactSrcDoc } from "./artifactCsp";
 import { artifactSlideNotice, readArtifactSlideShape } from "./artifactSlides";
 import { ArtifactCopyControl } from "./ArtifactCopyControl";
 import { ArtifactPrintControl } from "./ArtifactPrintControl";
@@ -142,6 +142,7 @@ import {
   zoomViewport,
   type DesignViewport,
 } from "./designViewport";
+import "./artifactPreview.css";
 import "./design.css";
 import "./designSession.css";
 
@@ -1695,10 +1696,6 @@ export const LAYER_MOVE_BY_ARROW: ReadonlyMap<string, LayerMove> = new Map<strin
   ["ArrowLeft", "previous-sibling"],
   ["ArrowRight", "next-sibling"],
 ]);
-
-function artifactSrcDoc(html: string): string {
-  return `${ARTIFACT_CSP_META}\n${html}`;
-}
 
 interface ScrollCommitScheduler {
   schedule(offset: number): void;

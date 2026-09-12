@@ -1,6 +1,17 @@
 import { useMemo } from "react";
 import { useAppStore } from "../../store/appStore";
 import type { DesignAssistantMessage } from "./designHost";
+import { artifactSrcDoc } from "./artifactCsp";
+// The panel renders `design-artifact-frame` and the preview rules beside it, and those
+// live in their own stylesheet so importing them here cannot drag the 58 KB Design
+// stylesheet into the Workspace chunk, which loads on every start. Relying on
+// `DesignSurface` having been mounted instead would lean on an invariant that is true
+// today and will not stay true: the store is not persisted, so `latestArtifact` can only
+// come from a generation that went through the canvas — until a commissioned result
+// arrives from another session, at which point a panel styled by a stylesheet nobody
+// loaded would render a 1280px page into a 340px column. Vite serves one copy however
+// many modules ask for it.
+import "./artifactPreview.css";
 
 // Absence meanings in this panel:
 // - host === null: Design was never opened in this app session. The document is not
@@ -102,8 +113,30 @@ export function DesignPreviewPanel() {
                   ))}
                 </div>
               ) : null}
-              <div className="workspace-design-note">
-                The artifact renders on the Design canvas; a scaled preview here is next.
+              {/*
+                The panel renders the artifact itself, not a description of it: same
+                sandbox and the same `artifactSrcDoc`, so the preview cannot render
+                under a weaker policy than the canvas. Scaling is CSS-only on a
+                fixed-width page box, and pointer events stay off because this is a
+                picture of the page, not a surface the panel can click into.
+
+                `inert` is here for the same reason the canvas carries it
+                (`DesignSurface.tsx`, `design-canvas-artifact-content`), and it is not
+                the same guarantee as `pointerEvents: none`: that one stops the mouse,
+                this one takes the frame out of the focus order. A generated page may
+                contain links and fields, and without `inert` a Tab from the panel
+                walks into model-written markup that nothing here meant to be reachable.
+              */}
+              <div className="design-artifact-preview" inert>
+                <div className="design-artifact-preview-page">
+                  <iframe
+                    sandbox=""
+                    srcDoc={artifactSrcDoc(latestArtifact.html)}
+                    title="Generated artifact preview"
+                    className="design-artifact-frame"
+                    style={{ pointerEvents: "none" }}
+                  />
+                </div>
               </div>
             </div>
           ) : lastSettled !== undefined ? (
