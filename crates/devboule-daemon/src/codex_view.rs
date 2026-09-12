@@ -559,6 +559,9 @@ pub(crate) fn permission_request_event(params: &Value, file_change: bool) -> Opt
                 kind: "reject_once".to_string(),
             },
         ],
+        // A placeholder the daemon overwrites with the session's stored origin
+        // before the request leaves for a subscriber.
+        origin: devboule_protocol::SessionOrigin::local(),
     })
 }
 

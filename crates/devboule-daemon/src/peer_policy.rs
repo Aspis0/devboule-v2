@@ -7,13 +7,15 @@
 //! `ALL_SAMPLES` iteration would only restate what the compiler already
 //! enforces.
 //!
-//! The 1a surface is deliberately tiny: a peer of either role may complete
-//! the Noise handshake, send `Hello`, `Ping`, `SessionsList` (role-projected
-//! at the dispatch site) and `DevicesList`. Everything else, including
-//! `Status`, is refused with `CapabilityNotSupported`; liveness for a peer is
-//! `Ping`.
+//! The 1a surface was deliberately tiny; slice 3 opens exactly five session
+//! variants, each under the capability that names the act (`view`, `send`,
+//! `answer_permissions`, `create_sessions` — §8b A9/A11/A12). `Status`,
+//! pairing, capability changes and the tool bridge stay refused to a peer
+//! whatever it holds, because no capability names those acts. Scope — *which*
+//! sessions an allowed request reaches — is not decided here: it is the owner
+//! projection in `server.rs` plus the origin branch of `check_user_owner`.
 
-use devboule_protocol::{ClientMessage, SessionKind};
+use devboule_protocol::{ClientMessage, SessionKind, SessionOrigin};
 
 /// The role a peer was paired as. Stored in the `peers` row; the transcript
 /// separates the two Noise handshakes, so the role cannot be changed by the
@@ -29,13 +31,63 @@ pub enum PeerDecision {
     Deny(&'static str),
 }
 
-/// May `role` send `request`?
+/// The capability names this gate reads, spelled once. `PEER_CAPS` in the
+/// protocol crate is the wire set a `PeerSetCaps` may name; the test below
+/// pins these four to it so a rename cannot leave the gate enforcing a
+/// capability nobody can hold.
+pub const CAP_VIEW: &str = "view";
+pub const CAP_SEND: &str = "send";
+pub const CAP_ANSWER_PERMISSIONS: &str = "answer_permissions";
+pub const CAP_CREATE_SESSIONS: &str = "create_sessions";
+
+/// The audit outcome for a request refused because it would run a session
+/// without asking the user's permission (`DESIGN-remote-agents.md` §8b A5).
+/// One spelling, used by the refusal and by the audit row it writes.
+pub const PROMPT_SKIPPING_REFUSED: &str = "prompt_skipping_refused";
+
+/// Why a send from a paired device that carries attachments is refused, for
+/// now (`server.rs::session_send`). Temporary: it goes away when the deposit
+/// branch's counter lands and `budget_for` has a caller.
+pub const PEER_ATTACHMENTS_UNSUPPORTED: &str =
+    "attachments from a paired device are not accepted yet";
+
+/// Rendered pages one composer turn may carry (the app's own cap).
+const BUDGET_PAGES_PER_TURN: u64 = 200;
+/// What one rendered PDF page weighs once stored.
+const BUDGET_BYTES_PER_PAGE: u64 = 96 * 1024;
+/// One frame of inline attachments, on top of the pages.
+const BUDGET_INLINE_FRAME_BYTES: u64 = 384 * 1024;
+
+/// The attachment budget of one origin, in stored bytes.
 ///
-/// The `role` parameter participates in the signature because slice 3 splits
-/// `SessionSend`/`SessionAttach` by role; in 1a both roles share one
-/// allowlist, and the role only changes the *projection* of `SessionsList`
-/// and `DevicesList` at the dispatch site.
-pub fn peer_allows(role: PeerRole, request: &ClientMessage) -> PeerDecision {
+/// The peer case is the **local derivation reused**, not a second invention:
+/// 200 rendered PDF pages at 96 KiB plus one frame of inline attachments, the
+/// number the brief calls 20 MiB. The peer case is unmeasured, and it must be
+/// re-derived the first time a paired device actually sends something rather
+/// than inherited: a phone's working set is not a desktop's.
+///
+/// The counter itself belongs to the peer's deposit branch, keyed on
+/// `OwnerId::user` and walked through the session registry. This function is
+/// where that counter will read its figure, which is why it takes the origin.
+#[allow(dead_code)] // the peer's deposit branch is the caller to come.
+pub(crate) fn budget_for(origin: &SessionOrigin) -> u64 {
+    let _ = origin;
+    BUDGET_PAGES_PER_TURN * BUDGET_BYTES_PER_PAGE + BUDGET_INLINE_FRAME_BYTES
+}
+
+/// May `role`, holding `caps`, send `request`?
+///
+/// `caps` is the peer's own capability set, read from its `peers` row. The
+/// four names are the whole permission model for a paired device (§8b A9/A11):
+/// a variant that no capability names is refused to every peer, and a variant
+/// that one names is allowed exactly when the peer holds it.
+///
+/// `role` does not decide permission here: the capability set does. It stays
+/// in the signature because it decides *scope* one layer down (the owner
+/// projection in `server.rs` and the origin branch of `check_user_owner`), and
+/// because a future role-specific rule gets one place to live rather than a
+/// second allowlist.
+pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> PeerDecision {
     let _ = role;
     match request {
         // The handshake itself and the read-only liveness/identity pair.
@@ -49,9 +101,25 @@ pub fn peer_allows(role: PeerRole, request: &ClientMessage) -> PeerDecision {
         // `{device_id, display_name, role, online}` (design §8b A13).
         ClientMessage::DevicesList { .. } => PeerDecision::Allow,
 
+        // Slice 3: the five session variants a paired device may reach, each
+        // under the capability that names the act. `view` is what makes a peer
+        // a viewer at all; it is the one capability `validate_caps` will not
+        // remove from a `Client` (A11).
+        ClientMessage::SessionAttach { .. } => with_capability(caps, CAP_VIEW),
+        ClientMessage::SessionCreate { .. } => with_capability(caps, CAP_CREATE_SESSIONS),
+        ClientMessage::SessionSend { .. } => with_capability(caps, CAP_SEND),
+        ClientMessage::SessionPermissionRespond { .. } => {
+            with_capability(caps, CAP_ANSWER_PERMISSIONS)
+        }
+        // Switching the mode changes what the session will do with the next
+        // turn, which is the act `send` names. The prompt-skipping list (§8b
+        // A5) refuses the specific modes on top of this, in `dispatch`.
+        ClientMessage::SessionSetMode { .. } => with_capability(caps, CAP_SEND),
+
         // Pairing and revocation are local acts. A peer that could start a
         // pairing or revoke another peer would be able to change this device's
-        // trusted set, which is exactly what pairing exists to prevent.
+        // trusted set, which is exactly what pairing exists to prevent. No
+        // capability names them, so no capability opens them.
         ClientMessage::PairingStart { .. } => PeerDecision::Deny("pairing.start"),
         ClientMessage::PairingComplete { .. } => PeerDecision::Deny("pairing.complete"),
         ClientMessage::PairingConfirm { .. } => PeerDecision::Deny("pairing.confirm"),
@@ -86,24 +154,16 @@ pub fn peer_allows(role: PeerRole, request: &ClientMessage) -> PeerDecision {
         ClientMessage::SessionResume { .. } => PeerDecision::Deny("session.resume"),
         ClientMessage::SessionReportAgent { .. } => PeerDecision::Deny("session.report_agent"),
 
-        // Not on the deny list, but not on 1a's allowlist either: they land
-        // with their own slice (attach/send/modes, slice 3) and are refused
-        // until then rather than half-supported.
+        // Still outside a peer's reach after slice 3: their own slices or
+        // never. Refused rather than half-supported.
         ClientMessage::JournalUsage { .. } => PeerDecision::Deny("journal.usage"),
         ClientMessage::JournalRetentionGet { .. } => PeerDecision::Deny("journal.retention.get"),
-        ClientMessage::SessionCreate { .. } => PeerDecision::Deny("session.create"),
-        ClientMessage::SessionAttach { .. } => PeerDecision::Deny("session.attach"),
         ClientMessage::SessionDetach { .. } => PeerDecision::Deny("session.detach"),
         ClientMessage::SessionClose { .. } => PeerDecision::Deny("session.close"),
         ClientMessage::SessionStop { .. } => PeerDecision::Deny("session.stop"),
-        ClientMessage::SessionSend { .. } => PeerDecision::Deny("session.send"),
         ClientMessage::SessionResize { .. } => PeerDecision::Deny("session.resize"),
         ClientMessage::SessionInterrupt { .. } => PeerDecision::Deny("session.interrupt"),
         ClientMessage::SessionSetModel { .. } => PeerDecision::Deny("session.set_model"),
-        ClientMessage::SessionSetMode { .. } => PeerDecision::Deny("session.set_mode"),
-        ClientMessage::SessionPermissionRespond { .. } => {
-            PeerDecision::Deny("session.permission.respond")
-        }
         ClientMessage::SessionsWatch { .. } => PeerDecision::Deny("sessions.watch"),
         ClientMessage::SessionsUnwatch { .. } => PeerDecision::Deny("sessions.unwatch"),
         ClientMessage::SessionsPresence { .. } => PeerDecision::Deny("sessions.presence"),
@@ -113,23 +173,24 @@ pub fn peer_allows(role: PeerRole, request: &ClientMessage) -> PeerDecision {
     }
 }
 
+/// Allow when `caps` holds `capability`; otherwise refuse, naming the missing
+/// capability so the peer's error says what it would need.
+fn with_capability(caps: &[String], capability: &'static str) -> PeerDecision {
+    if caps.iter().any(|cap| cap == capability) {
+        PeerDecision::Allow
+    } else {
+        PeerDecision::Deny(capability)
+    }
+}
+
 /// Whether `mode_id` is a mode that can run without asking the target
 /// device's user (`DESIGN-remote-agents.md` §8b A5).
 ///
-/// Not called by 1a's dispatch: nothing reaches a session in this slice. It
-/// exists now (with its test) because the list is a policy decision that must
-/// live in one place before slice 3 starts asking remote-origin sessions for
-/// it.
-///
-/// The lists are concrete because "prompt skipping" is per provider and is
-/// Whether `mode_id` is a mode that can run without asking the target
-/// device's user (`DESIGN-remote-agents.md` §8b A5).
-///
-/// Called from the peer gate's audit path (`server.rs::peer_outcome`): a remote
-/// request that names one of these modes is refused and recorded as
-/// `prompt_skipping_refused`, so the trail distinguishes an attempt at
-/// unattended execution from an ordinary denial. Slice 3, which lets a `Daemon`
-/// peer reach a session, uses the same list to refuse the request outright.
+/// Called from the peer gate twice: the audit path (`server.rs::peer_outcome`)
+/// labels a denial that asked for one of these modes `prompt_skipping_refused`,
+/// and slice 3's refusal (`server.rs::peer_mode_refusal`) refuses the request
+/// outright — a paired device never drives a session that will not ask this
+/// machine's user.
 ///
 /// The lists are concrete because "prompt skipping" is per provider and is
 /// not exposed uniformly. Two consequences for the caller:
@@ -219,13 +280,169 @@ mod tests {
         ClientMessage::Ping { id: 1 }
     }
 
+    /// A capability set from names, as the `peers` row holds it.
+    fn caps(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// What a freshly paired device holds: `view` and nothing else (§8b A11).
+    fn default_caps() -> Vec<String> {
+        caps(&[CAP_VIEW])
+    }
+
+    /// Every capability the wire set names.
+    fn all_caps() -> Vec<String> {
+        caps(&[
+            CAP_VIEW,
+            CAP_SEND,
+            CAP_ANSWER_PERMISSIONS,
+            CAP_CREATE_SESSIONS,
+        ])
+    }
+
     #[test]
-    fn the_allowlist_is_exactly_the_1a_surface() {
+    fn the_four_capability_names_are_the_protocol_list() {
+        // The gate enforces these strings; the wire accepts exactly
+        // `PEER_CAPS`. Pinning them here means a rename on either side fails
+        // loudly instead of leaving a capability nobody can hold.
+        let mut named = [
+            CAP_VIEW,
+            CAP_SEND,
+            CAP_ANSWER_PERMISSIONS,
+            CAP_CREATE_SESSIONS,
+        ];
+        named.sort_unstable();
+        let mut listed = devboule_protocol::PEER_CAPS;
+        listed.sort_unstable();
+        assert_eq!(named, listed);
+    }
+
+    #[test]
+    fn the_allowlist_is_exactly_the_1a_surface_plus_the_slice_3_acts() {
         for role in [PeerRole::Client, PeerRole::Daemon] {
-            assert_eq!(peer_allows(role, &ping()), PeerDecision::Allow);
             assert_eq!(
-                peer_allows(role, &ClientMessage::SessionsList { id: 1 }),
+                peer_allows(role, &default_caps(), &ping()),
                 PeerDecision::Allow
+            );
+            assert_eq!(
+                peer_allows(
+                    role,
+                    &default_caps(),
+                    &ClientMessage::SessionsList { id: 1 }
+                ),
+                PeerDecision::Allow
+            );
+        }
+    }
+
+    /// One capability, one act. Holding `send` must not open `create`, and
+    /// holding nothing must not open a session at all.
+    #[test]
+    fn each_capability_opens_exactly_the_act_it_names() {
+        let create = || ClientMessage::SessionCreate {
+            id: 1,
+            workspace_id: None,
+            kind: SessionKind::Claude,
+            provider: None,
+            mode: None,
+            idempotency_key: None,
+        };
+        let attach = || ClientMessage::SessionAttach {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 1,
+            from_cursor: None,
+        };
+        let send = || ClientMessage::SessionSend {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 1,
+            text: "hi".to_string(),
+            attachments: Vec::new(),
+            idempotency_key: None,
+        };
+        let respond = || ClientMessage::SessionPermissionRespond {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 1,
+            request_id: "tool-1".to_string(),
+            outcome: devboule_protocol::PermissionOutcome::AllowOnce,
+            option_id: None,
+            idempotency_key: None,
+        };
+        let set_mode = || ClientMessage::SessionSetMode {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            mode_id: "acceptEdits".to_string(),
+        };
+
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            // No capability at all: every slice-3 act is refused, and the
+            // refusal names the capability the peer would need.
+            let none: Vec<String> = Vec::new();
+            assert_eq!(
+                peer_allows(role, &none, &attach()),
+                PeerDecision::Deny(CAP_VIEW)
+            );
+            assert_eq!(
+                peer_allows(role, &none, &create()),
+                PeerDecision::Deny(CAP_CREATE_SESSIONS)
+            );
+            assert_eq!(
+                peer_allows(role, &none, &send()),
+                PeerDecision::Deny(CAP_SEND)
+            );
+            assert_eq!(
+                peer_allows(role, &none, &respond()),
+                PeerDecision::Deny(CAP_ANSWER_PERMISSIONS)
+            );
+
+            // One capability each, and only its own act.
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_VIEW]), &attach()),
+                PeerDecision::Allow
+            );
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_VIEW]), &send()),
+                PeerDecision::Deny(CAP_SEND)
+            );
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_CREATE_SESSIONS]), &create()),
+                PeerDecision::Allow
+            );
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_CREATE_SESSIONS]), &attach()),
+                PeerDecision::Deny(CAP_VIEW)
+            );
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_SEND]), &send()),
+                PeerDecision::Allow
+            );
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_SEND]), &set_mode()),
+                PeerDecision::Allow,
+                "driving the mode is the act `send` names"
+            );
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_ANSWER_PERMISSIONS]), &respond()),
+                PeerDecision::Allow
+            );
+            // The full set opens exactly those five and nothing else.
+            assert_eq!(
+                peer_allows(role, &all_caps(), &create()),
+                PeerDecision::Allow
+            );
+            assert_eq!(
+                peer_allows(
+                    role,
+                    &all_caps(),
+                    &ClientMessage::SessionStop {
+                        id: 1,
+                        session_id: "s.a.1".to_string(),
+                        subscription_id: 1,
+                    }
+                ),
+                PeerDecision::Deny("session.stop")
             );
         }
     }
@@ -336,8 +553,9 @@ mod tests {
         ];
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for request in &denied {
+                let decision = peer_allows(role, &all_caps(), request);
                 assert!(
-                    matches!(peer_allows(role, request), PeerDecision::Deny(_)),
+                    matches!(decision, PeerDecision::Deny(_)),
                     "{role} may not send {request:?}"
                 );
             }
@@ -347,12 +565,14 @@ mod tests {
     #[test]
     fn status_is_denied_to_both_roles() {
         for role in [PeerRole::Client, PeerRole::Daemon] {
+            let status = ClientMessage::Status { id: 1 };
+            let diagnostics = ClientMessage::DaemonDiagnostics { id: 1 };
             assert_eq!(
-                peer_allows(role, &ClientMessage::Status { id: 1 }),
+                peer_allows(role, &all_caps(), &status),
                 PeerDecision::Deny("status")
             );
             assert_eq!(
-                peer_allows(role, &ClientMessage::DaemonDiagnostics { id: 1 }),
+                peer_allows(role, &all_caps(), &diagnostics),
                 PeerDecision::Deny("diagnostics")
             );
         }
@@ -400,8 +620,9 @@ mod tests {
     #[test]
     fn a_peer_may_read_the_device_list_but_may_not_change_the_trusted_set() {
         for role in [PeerRole::Client, PeerRole::Daemon] {
+            let devices = ClientMessage::DevicesList { id: 1 };
             assert_eq!(
-                peer_allows(role, &ClientMessage::DevicesList { id: 1 }),
+                peer_allows(role, &all_caps(), &devices),
                 PeerDecision::Allow
             );
             for request in [
@@ -424,8 +645,9 @@ mod tests {
                     caps: vec!["view".to_string()],
                 },
             ] {
+                let decision = peer_allows(role, &all_caps(), &request);
                 assert!(
-                    matches!(peer_allows(role, &request), PeerDecision::Deny(_)),
+                    matches!(decision, PeerDecision::Deny(_)),
                     "{role} may not send {request:?}"
                 );
             }
@@ -458,5 +680,19 @@ mod tests {
         let owner = OwnerId::new("peer_dev-1", "daemon").expect("remote owner token");
         assert_eq!(owner.user, "peer_dev-1");
         assert_eq!(owner.client, "daemon");
+    }
+
+    /// Both origins share one figure until a device is measured: the peer case
+    /// is the local derivation reused, not a second invention.
+    #[test]
+    fn both_origins_share_the_derived_attachment_budget() {
+        // 200 rendered PDF pages at 96 KiB plus one frame of inline
+        // attachments — the figure the brief names as 20 MiB.
+        let derived = BUDGET_PAGES_PER_TURN * BUDGET_BYTES_PER_PAGE + BUDGET_INLINE_FRAME_BYTES;
+        assert_eq!(budget_for(&SessionOrigin::local()), derived);
+        assert_eq!(
+            budget_for(&SessionOrigin::peer("device-phone", PeerRole::Client)),
+            derived
+        );
     }
 }

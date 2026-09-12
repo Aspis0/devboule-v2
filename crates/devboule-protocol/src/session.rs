@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorCode, ErrorDetails, WireError};
+use crate::messages::PeerRole;
 
 /// Identifies one live observer of a session. It is scoped by the daemon
 /// connection and must be retained by the client until that observer detaches.
@@ -30,6 +31,61 @@ impl SessionKind {
             Self::Acp | Self::Claude | Self::Pi | Self::Codex => true,
         }
     }
+}
+
+/// Where a session came from. Local is the person at this machine; Peer is a
+/// paired device, identified by its device id and the role it was paired as.
+///
+/// Set once, at the create that made the session, and read-only afterwards:
+/// a session's origin is a fact about who asked for it, and every later
+/// decision (a `Daemon` peer's ownership scope, a permission card's
+/// provenance line, an attachment budget) reads it rather than re-deriving it
+/// (`DESIGN-remote-agents.md` §8 R2, §8b A3/A14). Every pre-origin row is
+/// `local`, which is what the field's `Default` is.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionOrigin {
+    pub kind: SessionOriginKind,
+    /// The paired device that asked for this session. `None` for `Local`, and
+    /// for a peer row that predates the column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    /// The role that device was paired as. `None` for `Local`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<PeerRole>,
+}
+
+impl SessionOrigin {
+    /// The origin of a session the person at this machine created.
+    pub fn local() -> Self {
+        Self {
+            kind: SessionOriginKind::Local,
+            device_id: None,
+            role: None,
+        }
+    }
+
+    /// The origin of a session a paired device created.
+    pub fn peer(device_id: impl Into<String>, role: PeerRole) -> Self {
+        Self {
+            kind: SessionOriginKind::Peer,
+            device_id: Some(device_id.into()),
+            role: Some(role),
+        }
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.kind == SessionOriginKind::Local
+    }
+}
+
+/// `"local"` or `"peer"`, lowercase on the wire.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionOriginKind {
+    #[default]
+    Local,
+    Peer,
 }
 
 /// Activity the agent (or its hook) last reported. Wire names match herdr's
@@ -111,6 +167,11 @@ pub struct Session {
     /// caller whether a later session with the same id is the same session
     /// or a reissued id.
     pub created_at_ms: u64,
+    /// Who asked for this session, set once at create. `#[serde(default)]`
+    /// so a client that speaks an older dialect still parses a frame from a
+    /// daemon that carries one.
+    #[serde(default)]
+    pub origin: SessionOrigin,
 }
 
 /// The connection-scoped roster update. It carries the fields the tab strip
@@ -127,6 +188,11 @@ pub struct SessionStateSnapshot {
     pub elapsed_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention: Option<Attention>,
+    /// The session's origin. Carried on every push, because the tab strip
+    /// names the device a peer-created session came from and a push that
+    /// omitted it would leave that badge to the next full list.
+    #[serde(default)]
+    pub origin: SessionOrigin,
 }
 
 /// What the journal can honestly say about a finished transcript.
@@ -391,6 +457,17 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         env: Option<Vec<PermissionEnvVar>>,
         options: Vec<PermissionOption>,
+        /// The origin of the session this request belongs to. Always on the
+        /// wire, and deliberately **not** `Option`: an absent origin would be
+        /// read as local by every consumer, so "absent" must not be
+        /// expressible. The provider clients write `local` as a placeholder
+        /// and the daemon overwrites it with the session's stored origin at the
+        /// one place a request leaves for a subscriber — so a peer session's
+        /// card always carries the peer origin (`DESIGN-remote-agents.md` §8b
+        /// A14). The card renders a `peer` origin as its own first line, in
+        /// its own element: the request's own text must never be able to
+        /// imitate it.
+        origin: SessionOrigin,
     },
     /// The pending permission is no longer waiting (allow, deny, timeout, or
     /// cancel). `tool_call_id` matches the request the UI is displaying.
@@ -724,9 +801,18 @@ pub enum PersistenceKind {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResumeResult {
-    Resumed { session: Session },
+    /// Boxed because this variant carries the whole session metadata — the
+    /// reply is a thin wrapper around it, and an unboxed payload makes the
+    /// largest variant an order of magnitude bigger than its siblings
+    /// (`clippy::large_enum_variant`). The wire shape is unchanged: a `Box`
+    /// serializes as the value it points at.
+    Resumed {
+        session: Box<Session>,
+    },
     NotSupported,
-    Failed { message: String },
+    Failed {
+        message: String,
+    },
 }
 
 /// Decide whether `cursor` may replay against `current_generation`.
@@ -826,11 +912,17 @@ mod tests {
             state: SessionState::Live { generation: 1 },
             elapsed_ms: None,
             attention: None,
+            origin: SessionOrigin::local(),
         };
         let encoded = serde_json::to_value(snapshot).expect("snapshot json");
         assert_eq!(encoded["workspaceId"], "ws-1");
         assert_eq!(encoded["kind"], "acp");
         assert!(encoded.get("attention").is_none());
+        assert_eq!(encoded["origin"]["kind"], "local");
+        // A local origin names no device: the two optional fields stay off the
+        // wire rather than travelling as `null`.
+        assert!(encoded["origin"].get("deviceId").is_none());
+        assert!(encoded["origin"].get("role").is_none());
     }
 
     #[test]
@@ -846,6 +938,7 @@ mod tests {
             provider: None,
             peer_session_id: None,
             created_at_ms: 1,
+            origin: SessionOrigin::local(),
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["workspaceId"], "ws-1");
@@ -854,6 +947,44 @@ mod tests {
         assert!(value.get("generation").is_none());
         assert_eq!(value["state"]["type"], "live");
         assert_eq!(value["state"]["generation"], 1);
+    }
+
+    /// The app reads `session.origin?.kind === "peer"` to badge a session and
+    /// names the device from `deviceId`. The wire spelling is the contract.
+    #[test]
+    fn a_peer_origin_session_round_trips_and_a_missing_origin_reads_as_local() {
+        let session = Session {
+            id: "s.peer.1".to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: SessionKind::Claude,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: None,
+            provider: Some("claude".to_string()),
+            peer_session_id: None,
+            created_at_ms: 1,
+            origin: SessionOrigin::peer("device-phone", PeerRole::Client),
+        };
+        let value = serde_json::to_value(&session).expect("json");
+        assert_eq!(value["origin"]["kind"], "peer");
+        assert_eq!(value["origin"]["deviceId"], "device-phone");
+        assert_eq!(value["origin"]["role"], "client");
+        let decoded: Session = serde_json::from_value(value).expect("session");
+        assert_eq!(decoded.origin, session.origin);
+
+        // Every row written before the origin existed is the local person's.
+        let legacy = serde_json::json!({
+            "id": "s.client.1",
+            "workspaceId": null,
+            "kind": "terminal",
+            "title": "Terminal",
+            "state": { "type": "live", "generation": 1 },
+            "createdAtMs": 1
+        });
+        let decoded: Session = serde_json::from_value(legacy).expect("legacy session");
+        assert_eq!(decoded.origin, SessionOrigin::local());
+        assert!(decoded.origin.is_local());
     }
 
     #[test]
@@ -869,6 +1000,7 @@ mod tests {
             provider: None,
             peer_session_id: None,
             created_at_ms: 1,
+            origin: SessionOrigin::local(),
         };
         let mut value = serde_json::to_value(&session).expect("json");
         value
@@ -897,6 +1029,7 @@ mod tests {
             provider: None,
             peer_session_id: None,
             created_at_ms: 1,
+            origin: SessionOrigin::local(),
         };
         let encoded = serde_json::to_value(&session).expect("session json");
         assert_eq!(encoded["state"]["type"], "silent");
@@ -930,6 +1063,7 @@ mod tests {
             provider: Some("grok".to_string()),
             peer_session_id: Some("peer-session-1".to_string()),
             created_at_ms: 1,
+            origin: SessionOrigin::local(),
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["provider"], "grok");
@@ -1033,6 +1167,7 @@ mod tests {
                 name: "Allow once".to_string(),
                 kind: "allow_once".to_string(),
             }],
+            origin: SessionOrigin::peer("device-phone", PeerRole::Client),
         };
         let encoded = serde_json::to_value(&event).expect("json");
         assert_eq!(encoded["type"], "permission_request");
@@ -1044,8 +1179,67 @@ mod tests {
         assert_eq!(encoded["options"][0]["optionId"], "allow");
         assert_eq!(encoded["options"][0]["name"], "Allow once");
         assert_eq!(encoded["options"][0]["kind"], "allow_once");
+        assert_eq!(encoded["origin"]["kind"], "peer");
+        assert_eq!(encoded["origin"]["deviceId"], "device-phone");
+        assert_eq!(encoded["origin"]["role"], "client");
         let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
         assert_eq!(decoded, event);
+    }
+
+    /// The two shapes the app's `SessionOrigin` type names, in the protocol's
+    /// own words, plus the one thing the field must refuse: absence.
+    #[test]
+    fn a_permission_request_origin_round_trips_and_absence_is_a_wire_error() {
+        let local: SessionOrigin =
+            serde_json::from_str(r#"{"kind":"local"}"#).expect("local origin");
+        assert_eq!(local, SessionOrigin::local());
+        assert_eq!(
+            serde_json::to_string(&local).expect("json"),
+            r#"{"kind":"local"}"#
+        );
+
+        let peer: SessionOrigin =
+            serde_json::from_str(r#"{"kind":"peer","deviceId":"device-phone","role":"client"}"#)
+                .expect("peer origin");
+        assert_eq!(peer, SessionOrigin::peer("device-phone", PeerRole::Client));
+        assert_eq!(
+            serde_json::to_string(&peer).expect("json"),
+            r#"{"kind":"peer","deviceId":"device-phone","role":"client"}"#
+        );
+
+        let request = SessionEvent::PermissionRequest {
+            tool_call_id: "call-18".to_string(),
+            title: "Run command".to_string(),
+            description: None,
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            options: Vec::new(),
+            origin: SessionOrigin::local(),
+        };
+        let encoded = serde_json::to_value(&request).expect("json");
+        assert_eq!(encoded["origin"]["kind"], "local");
+        assert!(encoded["origin"].get("deviceId").is_none());
+        assert!(encoded["origin"].get("role").is_none());
+        let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, request);
+
+        // Absence is not "local": a card that does not say where it came from
+        // is a wire error, because "absent" would be read as this machine's own
+        // session on a device that asked for it.
+        let absent = serde_json::json!({
+            "type": "permission_request",
+            "toolCallId": "call-19",
+            "title": "Run command",
+            "options": []
+        });
+        let error = serde_json::from_value::<SessionEvent>(absent)
+            .expect_err("a permission request without an origin must not parse");
+        assert!(
+            error.to_string().contains("origin"),
+            "the error must name the missing field: {error}"
+        );
     }
 
     #[test]
@@ -1300,7 +1494,7 @@ mod tests {
     #[test]
     fn resume_resumed_and_failed_round_trip_on_the_wire() {
         let resumed = ResumeResult::Resumed {
-            session: Session {
+            session: Box::new(Session {
                 id: "s.client.1".to_string(),
                 workspace_id: None,
                 cwd: None,
@@ -1311,7 +1505,8 @@ mod tests {
                 provider: Some("grok".to_string()),
                 peer_session_id: Some("peer-1".to_string()),
                 created_at_ms: 1,
-            },
+                origin: SessionOrigin::local(),
+            }),
         };
         let value = serde_json::to_value(&resumed).expect("json");
         assert_eq!(value["type"], "resumed");

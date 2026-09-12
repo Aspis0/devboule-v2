@@ -109,6 +109,38 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
         if version < 8 {
             tx.execute_batch(PEERS_AUDIT_SQL)?;
         }
+        if version < 9 {
+            // The session origin (§8 R2/§8b A3). Three columns rather than one
+            // JSON blob: they are read by the ownership check on every request
+            // and written once, so the flat form is the one the query planner
+            // and a human in `sqlite3` can both use. `DEFAULT 'local'` is the
+            // rule for every row that predates the concept: a session that
+            // existed before devices could pair was this person's.
+            if !session_has_column(&tx, "origin_kind")? {
+                tx.execute(
+                    "ALTER TABLE sessions ADD COLUMN origin_kind TEXT NOT NULL DEFAULT 'local'",
+                    [],
+                )?;
+            }
+            if !session_has_column(&tx, "origin_device")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN origin_device TEXT", [])?;
+            }
+            if !session_has_column(&tx, "origin_role")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN origin_role TEXT", [])?;
+            }
+            // The schema half is not enough: `origin` is required on the wire,
+            // so a permission payload stored before the field existed would be
+            // dropped by hydration and flagged by the live replay. The old data
+            // is made valid here, in this same transaction.
+            let (rewritten, unreadable) = backfill_permission_origins(&tx)?;
+            if rewritten > 0 || unreadable > 0 {
+                // Counts only: no payload, no path, no prompt text.
+                eprintln!(
+                    "journal v9 migration gave {rewritten} stored permission payloads a local \
+                     origin and left {unreadable} unreadable payloads alone"
+                );
+            }
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -144,6 +176,74 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
 
 fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalError> {
     table_has_column(conn, "sessions", column)
+}
+
+/// Give every stored permission payload written before v9 the `local` origin it
+/// was written without, and return `(rewritten, unreadable)`.
+///
+/// Only `events` rows of kind `agent_report` hold a serialized `SessionEvent`
+/// (`journal.rs::agent_report_record`), so those are the rows both replay paths
+/// deserialize. Bounded per row: one payload is parsed to decide, then re-read,
+/// rewritten and written back one at a time — no pass over the whole table in
+/// memory, and the payload a row carries never leaves its own iteration.
+///
+/// The row's `crc32` is recomputed with the payload, because both replay paths
+/// verify that checksum (`journal_replay.rs` returns `JournalError::Checksum`
+/// on a mismatch) and a rewritten payload under the old checksum would be new
+/// corruption. A row whose bytes are not JSON at all is left exactly as it is
+/// and counted: the replay paths already skip it, and inventing content for a
+/// damaged row would hide the damage.
+fn backfill_permission_origins(tx: &Connection) -> Result<(usize, usize), JournalError> {
+    let (candidates, unreadable) = {
+        let mut statement = tx.prepare(
+            "SELECT session_id, generation, seq, payload FROM events WHERE kind = 'agent_report'",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })?;
+        let mut candidates = Vec::new();
+        let mut unreadable = 0usize;
+        for row in rows {
+            let (session_id, generation, seq, payload) = row?;
+            match super::payload_with_origin(&payload) {
+                super::OriginBackfill::Rewritten(_) => {
+                    candidates.push((session_id, generation, seq))
+                }
+                // Already carries an origin, or is not a permission request.
+                super::OriginBackfill::Nothing => {}
+                super::OriginBackfill::Unreadable => unreadable += 1,
+            }
+        }
+        (candidates, unreadable)
+    };
+
+    let mut rewritten = 0usize;
+    for (session_id, generation, seq) in &candidates {
+        let payload: Vec<u8> = tx.query_row(
+            "SELECT payload FROM events
+             WHERE session_id = ?1 AND generation = ?2 AND seq = ?3",
+            rusqlite::params![session_id, generation, seq],
+            |row| row.get(0),
+        )?;
+        let super::OriginBackfill::Rewritten(payload) = super::payload_with_origin(&payload) else {
+            // A row that stopped being a pre-origin permission request between
+            // the two passes is left alone rather than written blind.
+            continue;
+        };
+        let checksum = super::crc32(&payload) as i64;
+        tx.execute(
+            "UPDATE events SET payload = ?1, checksum = ?2
+             WHERE session_id = ?3 AND generation = ?4 AND seq = ?5",
+            rusqlite::params![payload, checksum, session_id, generation, seq],
+        )?;
+        rewritten += 1;
+    }
+    Ok((rewritten, unreadable))
 }
 
 fn workspace_has_column(conn: &Connection, column: &str) -> Result<bool, JournalError> {
@@ -503,13 +603,211 @@ CREATE TABLE IF NOT EXISTS permissions (
 mod tests {
     use rusqlite::Connection;
 
-    use devboule_protocol::{SessionState, TranscriptIntegrity};
+    use devboule_protocol::{
+        PeerRole, SessionEvent, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity,
+    };
 
     use super::super::{
-        sample_session, tmp_journal, AuditRecord, Journal, JournalError, PeerRecord,
+        crc32, sample_session, tmp_journal, AuditRecord, Journal, JournalError, PeerRecord,
         JOURNAL_MAX_AGE_MS, JOURNAL_MAX_SESSIONS, JOURNAL_SCHEMA_VERSION,
     };
     use super::SCHEMA_SQL;
+
+    /// Every column the base schema does not carry yet, up to v8. Written out
+    /// as SQL rather than replayed through `open_connection`, because a real
+    /// v8 file is exactly this and the migration under test must start from
+    /// the version it will find on disk.
+    const V8_DDL: &str = "
+ALTER TABLE sessions ADD COLUMN dropped_frames INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN dropped_bytes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN trimmed_bytes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN peer_session_id TEXT;
+ALTER TABLE sessions ADD COLUMN provider TEXT;
+CREATE TABLE IF NOT EXISTS journal_settings (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deleted_sessions (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    deleted_at_ms INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    bytes_removed INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL UNIQUE,
+    git_state TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    isolation TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS workspaces_project
+    ON workspaces(project_id, updated_at_ms, id);
+ALTER TABLE workspaces ADD COLUMN branch TEXT;
+";
+
+    #[test]
+    fn a_v8_journal_migrates_to_v9_and_every_old_row_reads_as_local() {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("v8 journal");
+        conn.execute_batch(SCHEMA_SQL).expect("base schema");
+        conn.execute_batch(V8_DDL).expect("v8 columns and tables");
+        conn.execute_batch(super::PEERS_AUDIT_SQL)
+            .expect("v8 peers and audit tables");
+        conn.execute(
+            "INSERT INTO sessions (
+                id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                generation, status, exit_code, closed, last_seq, degraded,
+                dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes,
+                unsnapshotted_bytes, reaped, peer_session_id, provider
+             ) VALUES ('s.before-origin', 'owner', NULL, 'terminal', 'Terminal', 1, 2,
+                       1, 'ended', 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, NULL, NULL)",
+            [],
+        )
+        .expect("v8 session row");
+        // A pre-origin permission payload, exactly what a v8 daemon wrote: the
+        // event a provider client builds, serialized before the field existed.
+        let legacy_permission = serde_json::to_vec(&serde_json::json!({
+            "type": "permission_request",
+            "toolCallId": "call-legacy",
+            "title": "Run command",
+            "options": []
+        }))
+        .expect("legacy payload");
+        // A payload that already carries an origin, and bytes that are not JSON
+        // at all: the migration must leave both exactly as they are.
+        let already_origin = serde_json::to_vec(&serde_json::json!({
+            "type": "permission_request",
+            "toolCallId": "call-peer",
+            "title": "Run command",
+            "options": [],
+            "origin": {"kind": "peer", "deviceId": "device-phone", "role": "client"}
+        }))
+        .expect("peer payload");
+        let damaged = b"not a session event".to_vec();
+        for (seq, kind, payload) in [
+            (2_i64, "agent_report", legacy_permission.clone()),
+            (3_i64, "agent_report", already_origin.clone()),
+            (4_i64, "agent_report", damaged.clone()),
+            (5_i64, "output", b"plain terminal bytes".to_vec()),
+        ] {
+            conn.execute(
+                "INSERT INTO events (session_id, generation, seq, kind, ts_ms, payload, checksum)
+                 VALUES ('s.before-origin', 1, ?1, ?2, 1, ?3, ?4)",
+                rusqlite::params![seq, kind, payload, crc32(&payload) as i64],
+            )
+            .expect("v8 event row");
+        }
+        conn.pragma_update(None, "user_version", 8)
+            .expect("v8 version");
+        drop(conn);
+
+        let journal = Journal::open(&path).expect("migrate");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.before-origin")
+            .expect("the v8 row survived");
+        assert_eq!(
+            row.origin,
+            devboule_protocol::SessionOrigin::local(),
+            "a session that predates devices pairing as this person's"
+        );
+        assert_eq!(row.to_session().origin.kind, SessionOriginKind::Local);
+
+        let check = Connection::open(&path).expect("check migrated schema");
+        for column in ["origin_kind", "origin_device", "origin_role"] {
+            let columns: i64 = check
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?1",
+                    [column],
+                    |row| row.get(0),
+                )
+                .expect("origin column");
+            assert_eq!(columns, 1, "missing migrated column {column}");
+        }
+        let version: i32 = check
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, JOURNAL_SCHEMA_VERSION);
+
+        // The migration is not only schema: the old *data* has to be valid too.
+        let read_payload = |seq: i64| -> (Vec<u8>, i64) {
+            check
+                .query_row(
+                    "SELECT payload, checksum FROM events
+                     WHERE session_id = 's.before-origin' AND generation = 1 AND seq = ?1",
+                    [seq],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("migrated payload")
+        };
+
+        // The pre-origin permission payload now parses as the event both replay
+        // paths deserialize, and it says `local` — a fact about the daemon that
+        // wrote it, which had no paired devices.
+        let (payload, checksum) = read_payload(2);
+        match serde_json::from_slice::<SessionEvent>(&payload) {
+            Ok(SessionEvent::PermissionRequest { origin, .. }) => {
+                assert_eq!(origin, SessionOrigin::local())
+            }
+            other => panic!("a migrated permission payload must parse: {other:?}"),
+        }
+        assert_eq!(
+            checksum,
+            crc32(&payload) as i64,
+            "the rewrite must recompute the row's checksum"
+        );
+
+        // A payload that already carries an origin is not this migration's
+        // business, and a damaged one is left alone rather than invented. Plain
+        // output rows are not even looked at.
+        assert_eq!(read_payload(3).0, already_origin);
+        assert_eq!(read_payload(4).0, damaged);
+        assert_eq!(read_payload(5).0, b"plain terminal bytes".to_vec());
+
+        drop(check);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The write path: a peer origin lands in the three columns and comes back
+    /// out of `list()` unchanged, which is what the ownership check reads.
+    #[test]
+    fn a_peer_origin_survives_a_journal_round_trip() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("journal");
+        let mut record = sample_session("s.peer.1");
+        record.origin = devboule_protocol::SessionOrigin::peer("device-phone", PeerRole::Client);
+        journal.upsert_blocking(record).expect("store");
+
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.peer.1")
+            .expect("peer row");
+        let origin = row.to_session().origin;
+        assert_eq!(origin.kind, SessionOriginKind::Peer);
+        assert_eq!(origin.device_id.as_deref(), Some("device-phone"));
+        assert_eq!(origin.role, Some(PeerRole::Client));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn previous_schema_migrates_and_preserves_zero_loss_amount() {

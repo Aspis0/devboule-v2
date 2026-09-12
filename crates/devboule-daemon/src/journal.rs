@@ -29,8 +29,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use devboule_protocol::{
-    ErrorCode, JournalRetention, Project, RetentionPatch, Session, SessionEvent, SessionKind,
-    SessionState, TranscriptIntegrity, WireError, Workspace, WorkspaceIsolation,
+    ErrorCode, JournalRetention, PeerRole, Project, RetentionPatch, Session, SessionEvent,
+    SessionKind, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity, WireError,
+    Workspace, WorkspaceIsolation,
 };
 
 #[path = "journal_replay.rs"]
@@ -50,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 8;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 9;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -229,6 +230,10 @@ pub struct SessionRecord {
     pub reaped: bool,
     /// Provider-side session id used by a future resume/load handshake.
     pub peer_session_id: Option<String>,
+    /// Who asked for this session (§8 R2). Written once, by the create that
+    /// made the row; read by the peer gate and the permission card's
+    /// provenance line. Every row that predates v9 is `local`.
+    pub origin: SessionOrigin,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -416,6 +421,7 @@ impl SessionRecord {
             state,
             elapsed_ms: None,
             created_at_ms: self.created_at_ms,
+            origin: self.origin.clone(),
         }
     }
 }
@@ -2115,8 +2121,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
             generation, status, exit_code, closed, last_seq, degraded,
             dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
-            reaped, peer_session_id, provider
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20)
+            reaped, peer_session_id, provider, origin_kind, origin_device, origin_role
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -2131,7 +2137,10 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             trimmed_bytes = MAX(sessions.trimmed_bytes, excluded.trimmed_bytes),
             reaped = MAX(sessions.reaped, excluded.reaped),
             peer_session_id = COALESCE(excluded.peer_session_id, sessions.peer_session_id),
-            provider = COALESCE(excluded.provider, sessions.provider)",
+            provider = COALESCE(excluded.provider, sessions.provider),
+            origin_kind = COALESCE(excluded.origin_kind, sessions.origin_kind),
+            origin_device = COALESCE(excluded.origin_device, sessions.origin_device),
+            origin_role = COALESCE(excluded.origin_role, sessions.origin_role)",
         params![
             record.id,
             record.owner,
@@ -2153,6 +2162,9 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             if record.reaped { 1 } else { 0 },
             record.peer_session_id,
             record.provider,
+            origin_kind_str(&record.origin),
+            record.origin.device_id,
+            record.origin.role.map(|role| role.as_str().to_string()),
         ],
     )?;
     Ok(())
@@ -2504,6 +2516,38 @@ pub(super) fn parse_kind(value: &str) -> Result<SessionKind, JournalError> {
     }
 }
 
+/// The stored spelling of an origin kind. `local` is the v9 column default, so
+/// a row whose writer never touched the column still reads back as the person
+/// at this machine.
+fn origin_kind_str(origin: &SessionOrigin) -> &'static str {
+    match origin.kind {
+        SessionOriginKind::Local => "local",
+        SessionOriginKind::Peer => "peer",
+    }
+}
+
+/// The origin one row carries.
+///
+/// `Unknown` and `NULL` read as `local`, and that is the safe end rather than
+/// the generous one: the `Daemon` branch of `check_user_owner` only opens a
+/// session whose origin names *that* device, so an unreadable origin refuses
+/// the peer. A `peer` row missing its device id keeps `kind = peer` with no
+/// device, which refuses for the same reason.
+pub(super) fn origin_from_columns(
+    kind: Option<String>,
+    device: Option<String>,
+    role: Option<String>,
+) -> SessionOrigin {
+    match kind.as_deref() {
+        Some("peer") => SessionOrigin {
+            kind: SessionOriginKind::Peer,
+            device_id: device,
+            role: role.as_deref().and_then(PeerRole::parse),
+        },
+        _ => SessionOrigin::local(),
+    }
+}
+
 fn encode_chunks(chunks: &[(u64, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
@@ -2587,6 +2631,55 @@ pub fn new_session_record(
         trimmed_bytes: 0,
         reaped: false,
         peer_session_id: None,
+        origin: SessionOrigin::local(),
+    }
+}
+
+/// The wire tag of a permission request in a stored event payload
+/// (`SessionEvent`'s internal tag).
+const PERMISSION_REQUEST_TAG: &str = "permission_request";
+
+/// What the v9 migration does with one stored payload.
+pub(crate) enum OriginBackfill {
+    /// Not a permission request, or it already carries an origin: leave it.
+    Nothing,
+    /// The same payload with a `local` origin written into it.
+    Rewritten(Vec<u8>),
+    /// The bytes are not JSON at all — leave them and count them.
+    Unreadable,
+}
+
+/// The payload with a `local` origin written into it, when it is a permission
+/// request stored before the field existed.
+///
+/// The v9 migration (`journal_schema.rs`) calls this so that old data is made
+/// *valid* rather than left to degrade at replay — `origin` is required on the
+/// wire, and a pre-origin payload would be dropped by hydration and flagged by
+/// the live replay. `local` is a fact about those rows, not a guess: the daemon
+/// that wrote them had no paired devices.
+pub(crate) fn payload_with_origin(payload: &[u8]) -> OriginBackfill {
+    let Ok(serde_json::Value::Object(mut object)) =
+        serde_json::from_slice::<serde_json::Value>(payload)
+    else {
+        return OriginBackfill::Unreadable;
+    };
+    if object.get("type").and_then(serde_json::Value::as_str) != Some(PERMISSION_REQUEST_TAG) {
+        return OriginBackfill::Nothing;
+    }
+    if object.contains_key("origin") {
+        return OriginBackfill::Nothing;
+    }
+    let mut origin = serde_json::Map::new();
+    origin.insert(
+        "kind".to_string(),
+        serde_json::Value::String("local".to_string()),
+    );
+    object.insert("origin".to_string(), serde_json::Value::Object(origin));
+    match serde_json::to_vec(&serde_json::Value::Object(object)) {
+        Ok(rewritten) => OriginBackfill::Rewritten(rewritten),
+        // Serializing a value that just parsed cannot fail in practice; if it
+        // ever did, the row is left alone rather than written half-valid.
+        Err(_) => OriginBackfill::Unreadable,
     }
 }
 

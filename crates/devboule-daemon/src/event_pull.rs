@@ -22,6 +22,15 @@ use super::{Disposition, PendingEvent, PendingItem, PullState, SessionRuntime};
 /// unbounded replay loop.
 const LIVE_AGENT_REPLAY_MAX_CATCH_UPS: u8 = 8;
 
+/// Subscriptions one connection may hold (`DESIGN-remote-agents.md` §8 R4).
+///
+/// A per-connection number, like every other brake in the design: a peer that
+/// attaches the same session sixty-five times is either broken or probing, and
+/// either way the daemon stops before the pull state does. 64 is far above a
+/// client's working set (one attachment per open tab) and far below anything
+/// that could grow the connection's bookkeeping without bound.
+pub const MAX_SUBSCRIPTIONS: usize = 64;
+
 fn mark_replay_parse_failure(
     runtime: &SessionRuntime,
     replay: &mut AgentReplay,
@@ -116,6 +125,12 @@ pub struct ConnHandle {
     /// to `peer` so `session.rs` does not have to learn a second type while
     /// the dispatch gate still needs the remote identity.
     pub conn_peer: Option<ConnPeer>,
+    /// The capability set of that peer, resolved from its `peers` row once, at
+    /// connect. Empty for a local connection. The gate reads it on every
+    /// request (`peer_policy::peer_allows`); a `PeerSetCaps` that removes a
+    /// capability also closes that device's live connections, so a running
+    /// connection can never keep a capability the row no longer grants.
+    pub peer_caps: Vec<String>,
     attached: Mutex<HashMap<u64, PullState>>,
     state_events: Mutex<VecDeque<SessionEventEnvelope>>,
     next_attachment_generation: AtomicU64,
@@ -136,11 +151,23 @@ impl ConnHandle {
         peer: Option<PeerIdentity>,
         conn_peer: Option<ConnPeer>,
     ) -> Arc<Self> {
+        Self::with_peer_caps(id, peer, conn_peer, Vec::new())
+    }
+
+    /// The connection constructor the serve loop uses: it has just read the
+    /// peer's capability set out of the `peers` row.
+    pub fn with_peer_caps(
+        id: u64,
+        peer: Option<PeerIdentity>,
+        conn_peer: Option<ConnPeer>,
+        peer_caps: Vec<String>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             id,
             outbound: ConnOut::new(),
             peer,
             conn_peer,
+            peer_caps,
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),
             next_attachment_generation: AtomicU64::new(1),
@@ -185,6 +212,12 @@ impl ConnHandle {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "subscription id is already in use on this connection",
+            ));
+        }
+        if map.len() >= MAX_SUBSCRIPTIONS {
+            return Err(WireError::new(
+                ErrorCode::CapabilityNotSupported,
+                format!("too many subscriptions on this connection (max {MAX_SUBSCRIPTIONS})"),
             ));
         }
         let attachment_generation = self
@@ -932,6 +965,42 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn a_connection_holds_at_most_sixty_four_subscriptions() {
+        // §8 R4's per-connection brake. A peer that attaches the same session
+        // sixty-five times is either broken or probing; either way the
+        // sixty-fifth is refused rather than booked.
+        let conn = ConnHandle::new(1);
+        let runtime = Arc::new(SessionRuntime::new());
+        for subscription_id in 1..=MAX_SUBSCRIPTIONS as u64 {
+            conn.track_with_subscription(
+                subscription_id,
+                Arc::clone(&runtime),
+                false,
+                None,
+                1,
+                None,
+            )
+            .expect("a subscription inside the cap is accepted");
+        }
+        let error = conn
+            .track_with_subscription(
+                MAX_SUBSCRIPTIONS as u64 + 1,
+                Arc::clone(&runtime),
+                false,
+                None,
+                1,
+                None,
+            )
+            .expect_err("the sixty-fifth subscription on one connection is refused");
+        assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
+        assert_eq!(
+            conn.attached.lock().unwrap().len(),
+            MAX_SUBSCRIPTIONS,
+            "the refused subscription must not be booked"
+        );
+    }
+
     fn live_agent_replay_fixture(
         session_id: &str,
         record: crate::journal::EventRecord,
@@ -1005,6 +1074,118 @@ mod tests {
             .iter()
             .any(|event| matches!(event, SessionEvent::JournalDegraded { .. })));
         assert!(runtime.journal_degraded());
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §8b A14 at the egress: the `local` a provider client writes as a
+    /// placeholder is replaced with the session's stored origin before the card
+    /// reaches a subscriber, so a peer session's card cannot be shown as this
+    /// machine's own.
+    #[test]
+    fn a_published_permission_request_carries_the_sessions_stored_origin() {
+        let session_id = "s.live.agent.replay.card-origin";
+        let record = crate::journal::EventRecord {
+            session_id: session_id.to_string(),
+            generation: 1,
+            seq: 1,
+            kind: crate::journal::EventKind::Output,
+            ts_ms: 0,
+            payload: b"ready".to_vec(),
+        };
+        let (dir, journal, runtime, conn) = live_agent_replay_fixture(session_id, record);
+        runtime.set_origin(devboule_protocol::SessionOrigin::peer(
+            "device-phone",
+            devboule_protocol::PeerRole::Client,
+        ));
+        // Clear whatever the attach replayed: this asserts what a *publish*
+        // hands the subscriber.
+        let _ = drain(&conn);
+
+        // Exactly what a provider client builds: a placeholder origin, because
+        // the client has no idea which device asked for the session.
+        runtime.publish_agent_event(
+            SessionEvent::PermissionRequest {
+                tool_call_id: "call-origin".to_string(),
+                title: "Run command".to_string(),
+                description: None,
+                command: None,
+                args: None,
+                cwd: None,
+                env: None,
+                options: Vec::new(),
+                origin: devboule_protocol::SessionOrigin::local(),
+            },
+            None,
+        );
+
+        let origin = drain(&conn)
+            .into_iter()
+            .find_map(|event| match event {
+                SessionEvent::PermissionRequest { origin, .. } => Some(origin),
+                _ => None,
+            })
+            .expect("the subscriber receives the card");
+        assert_eq!(
+            origin,
+            devboule_protocol::SessionOrigin::peer(
+                "device-phone",
+                devboule_protocol::PeerRole::Client
+            ),
+            "the placeholder must not survive the egress"
+        );
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The v9 migration and the replay path together: the bytes the migration
+    /// writes for a pre-origin permission payload are bytes the live replay
+    /// parses — no `JournalDegraded`, and the card says `local`.
+    #[test]
+    fn a_migrated_permission_payload_replays_as_a_local_card() {
+        let session_id = "s.live.agent.replay.migrated-origin";
+        // Exactly what a v8 daemon stored for a permission request.
+        let legacy = serde_json::to_vec(&serde_json::json!({
+            "type": "permission_request",
+            "toolCallId": "call-migrated",
+            "title": "Run command",
+            "options": []
+        }))
+        .expect("legacy payload");
+        let crate::journal::OriginBackfill::Rewritten(payload) =
+            crate::journal::payload_with_origin(&legacy)
+        else {
+            panic!("a pre-origin permission request is what the migration rewrites");
+        };
+        let record = crate::journal::EventRecord {
+            session_id: session_id.to_string(),
+            generation: 1,
+            seq: 1,
+            kind: crate::journal::EventKind::AgentReport,
+            ts_ms: 0,
+            payload,
+        };
+
+        let (dir, journal, runtime, conn) = live_agent_replay_fixture(session_id, record);
+        let events = drain(&conn);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SessionEvent::JournalDegraded { .. })),
+            "a migrated payload must not degrade the journal: {events:?}"
+        );
+        let origin = events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::PermissionRequest { origin, .. } => Some(origin.clone()),
+                _ => None,
+            })
+            .expect("the replayed card");
+        assert_eq!(origin, devboule_protocol::SessionOrigin::local());
 
         drop(runtime);
         drop(journal);

@@ -19,6 +19,23 @@ fn fingerprint_digest(fingerprint: &str) -> [u8; 32] {
     out
 }
 
+/// The largest reply the store will remember, in serialized bytes (F16).
+///
+/// The fingerprint is already a digest, but the *reply* was kept verbatim: a
+/// bulk send's result or a create result with a long title sat in the table at
+/// full size, up to `IDEMPOTENCY_MAX_ENTRIES` times. A large reply is rare,
+/// and dropping it costs a retry rather than correctness: `check` then reports
+/// `Miss` and the request runs again, which is exactly what a caller that
+/// never sent a key would get.
+pub const IDEMPOTENCY_MAX_RESPONSE_BYTES: usize = 256 * 1024;
+
+/// The serialized size of one reply frame. A frame that cannot be measured
+/// counts as over the bound: a store that cannot say how big a value is has no
+/// business keeping it.
+fn serialized_len(response: &DaemonMessage) -> usize {
+    serde_json::to_vec(response).map_or(usize::MAX, |bytes| bytes.len())
+}
+
 /// `Hit` stores a full reply frame. Boxing it would scatter clones on the
 /// retry path for a cache of a few thousand entries.
 #[derive(Debug, PartialEq)]
@@ -86,6 +103,13 @@ impl IdempotencyStore {
         now: Instant,
     ) {
         self.evict(now);
+        // F16: a reply too large to be worth keeping is not kept. Recording
+        // the key with no reply would report a `Conflict` on retry (the same
+        // key, a fingerprint the store never held), which is a lie about the
+        // request; a plain miss lets the request run again.
+        if serialized_len(&response) > IDEMPOTENCY_MAX_RESPONSE_BYTES {
+            return;
+        }
         self.entries
             .retain(|entry| !(entry.owner == owner && entry.key == key));
         if self.entries.len() >= self.cap {
@@ -114,6 +138,7 @@ impl IdempotencyStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use devboule_protocol::{ErrorCode, WireError};
     use std::time::Duration;
 
     fn pong(id: u64) -> DaemonMessage {
@@ -232,5 +257,38 @@ mod tests {
             store.check("app-1", "k", "send:s.a.1:0:other", now),
             IdempotencyOutcome::Conflict
         );
+    }
+
+    /// F16: the *reply* must not be kept verbatim without a bound. A reply
+    /// over the bound is dropped, and the retry that follows is a plain miss.
+    #[test]
+    fn a_reply_larger_than_the_bound_is_not_remembered() {
+        let mut store = IdempotencyStore::default();
+        let now = Instant::now();
+        let large =
+            DaemonMessage::Error(WireError::new(ErrorCode::Internal, "x".repeat(300 * 1024)));
+        assert!(serialized_len(&large) > IDEMPOTENCY_MAX_RESPONSE_BYTES);
+        store.remember("app-1".into(), "big".into(), "a".into(), large, now);
+        assert!(store.entries.is_empty(), "an oversized reply is not stored");
+        assert_eq!(
+            store.check("app-1", "big", "a", now),
+            IdempotencyOutcome::Miss,
+            "the retry runs the request again rather than replaying a frame \
+             the store refused to keep"
+        );
+    }
+
+    #[test]
+    fn a_reply_inside_the_bound_still_replays() {
+        let mut store = IdempotencyStore::default();
+        let now = Instant::now();
+        let small = DaemonMessage::Error(WireError::new(ErrorCode::Internal, "x".repeat(1024)));
+        assert!(serialized_len(&small) < IDEMPOTENCY_MAX_RESPONSE_BYTES);
+        store.remember("app-1".into(), "small".into(), "a".into(), small, now);
+        assert_eq!(store.entries.len(), 1);
+        assert!(matches!(
+            store.check("app-1", "small", "a", now),
+            IdempotencyOutcome::Hit(_)
+        ));
     }
 }

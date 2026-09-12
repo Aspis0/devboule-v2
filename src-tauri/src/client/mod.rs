@@ -1820,6 +1820,7 @@ mod tests {
             state: SessionState::Live { generation: 5 },
             elapsed_ms: None,
             attention: None,
+            origin: devboule_protocol::SessionOrigin::local(),
         }]);
         registry.reattach_all(&new_client);
 
@@ -1868,6 +1869,7 @@ mod tests {
             },
             elapsed_ms: None,
             attention: None,
+            origin: devboule_protocol::SessionOrigin::local(),
         }]);
         registry.reattach_all(&new_client);
 
@@ -2099,6 +2101,7 @@ mod tests {
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(1),
             attention: None,
+            origin: devboule_protocol::SessionOrigin::local(),
         }
     }
 

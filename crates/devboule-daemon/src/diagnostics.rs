@@ -635,6 +635,9 @@ mod tests {
             state,
             elapsed_ms: Some(123),
             created_at_ms: 1,
+            // A diagnostics fixture is the person at this machine: the only
+            // origin that carries no device id.
+            origin: devboule_protocol::SessionOrigin::local(),
         }
     }
 

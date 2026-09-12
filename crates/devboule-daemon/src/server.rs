@@ -959,6 +959,27 @@ impl ServerState {
         Ok(outcome)
     }
 
+    /// The capability set of one paired device, read from its `peers` row.
+    ///
+    /// Resolved once per connection, not once per request: the journal is the
+    /// slow path this design keeps out of dispatch (muse M1), and a
+    /// `PeerSetCaps` closes that device's live connections, so a running
+    /// connection can never hold a capability the row no longer grants.
+    ///
+    /// A missing row, an unreadable journal, a revoked device and an unknown
+    /// device all yield an empty set, which `peer_allows` reads as "holds
+    /// nothing": the fail-closed direction.
+    pub(crate) fn peer_caps(&self, device_id: &str) -> Vec<String> {
+        let Ok(peers) = self.peers() else {
+            return Vec::new();
+        };
+        peers
+            .into_iter()
+            .find(|record| record.device_id == device_id && !record.is_revoked())
+            .map(|record| record.caps)
+            .unwrap_or_default()
+    }
+
     /// Record a live remote connection so a revoke can close it.
     pub(crate) fn register_remote_conn(&self, conn_id: u64, device_id: &str) -> Arc<AtomicBool> {
         let close = Arc::new(AtomicBool::new(false));
@@ -1579,8 +1600,30 @@ pub(crate) fn handle_client(
         .any(|capability| capability.as_str() == caps::DEVICES);
     // The hello owner is diagnostic only. All idempotency and session access
     // below use the identity decided above.
-    let owner = true_owner;
-    let conn = ConnHandle::with_conn_peer(state.alloc_conn(), peer, conn_peer.clone());
+    //
+    // A paired `Client` speaks for the person who paired it, so every session
+    // request it makes is that user's request: the registry's owner-user filter
+    // is then the whole scope (§8b A3), and it is also what makes a
+    // peer-created session appear in the desktop's list. A `Daemon` peer keeps
+    // the `peer_<device_id>` identity slice 1 gave it, so the same filter
+    // scopes it to the sessions it created (R2).
+    let owner = match &conn_peer {
+        Some(ConnPeer::Remote {
+            role: PeerRole::Client,
+            paired_by_user: Some(paired),
+            ..
+        }) => OwnerId::new(paired.clone(), PeerRole::Client.as_str())
+            .unwrap_or_else(|_| true_owner.clone()),
+        _ => true_owner.clone(),
+    };
+    // The peer's capability set, resolved once from its `peers` row: the gate
+    // reads it on every request, and a `PeerSetCaps` closes this connection, so
+    // a running connection can never hold a capability the row dropped.
+    let peer_caps = match &conn_peer {
+        Some(ConnPeer::Remote { device_id, .. }) => state.peer_caps(device_id),
+        _ => Vec::new(),
+    };
+    let conn = ConnHandle::with_peer_caps(state.alloc_conn(), peer, conn_peer.clone(), peer_caps);
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();
@@ -1618,7 +1661,7 @@ pub(crate) fn handle_client(
                 pending_replies.extend(conn.outbound.pull_replies());
             }
             if let Some(reply) = pending_replies.pop_front() {
-                framed.send(&reply)?;
+                framed.send(&redact_for_conn(&conn, reply))?;
                 continue;
             }
             let (request, request_channel_closed) = match request_rx.try_recv() {
@@ -1717,7 +1760,7 @@ pub(crate) fn handle_client(
                 // the acknowledgement visible before teardown or a shutdown
                 // disconnect; the event stream below must never use that
                 // barrier per frame.
-                framed.send(&reply)?;
+                framed.send(&redact_for_conn(&conn, reply))?;
                 if shutting_down {
                     state.request_shutdown();
                     break;
@@ -1730,7 +1773,7 @@ pub(crate) fn handle_client(
                     pending_replies.extend(conn.outbound.pull_replies());
                 }
                 if let Some(reply) = pending_replies.pop_front() {
-                    framed.send(&reply)?;
+                    framed.send(&redact_for_conn(&conn, reply))?;
                     continue;
                 }
                 refill_pending_events(&conn, &mut pending_events);
@@ -1785,6 +1828,49 @@ pub(crate) fn handle_client(
     state.sessions.clear_presence(conn.id);
     state.unregister_remote_conn(conn.id);
     loop_result
+}
+
+/// The owner whose sessions a connection may read.
+///
+/// Derived from the connection's peer identity rather than from whatever owner
+/// the caller passed, so a caller cannot widen the projection: a `Client` peer
+/// reads the paired user's sessions, a `Daemon` peer reads what its own device
+/// created, and the local pipe reads its own. `handle_client` builds the same
+/// owner for a `Client` peer on every other request, so this restates the rule
+/// where the reply is built instead of trusting the argument
+/// (`DESIGN-remote-agents.md` §8b A3, §8 R2).
+fn session_list_owner(conn_peer: &Option<ConnPeer>, caller: &OwnerId) -> OwnerId {
+    let projected = match conn_peer {
+        Some(ConnPeer::Remote {
+            role: PeerRole::Client,
+            paired_by_user: Some(paired),
+            ..
+        }) => OwnerId::new(paired.clone(), PeerRole::Client.as_str()),
+        Some(ConnPeer::Remote {
+            role: PeerRole::Daemon,
+            device_id,
+            ..
+        }) => OwnerId::new(format!("peer_{device_id}"), PeerRole::Daemon.as_str()),
+        _ => return caller.clone(),
+    };
+    projected.unwrap_or_else(|_| caller.clone())
+}
+
+/// The one gate every reply passes on its way out to a peer connection.
+///
+/// A `DaemonMessage::Error` carries text written for the person at this
+/// machine: absolute paths, this device's own id, key fingerprints. A remote
+/// reader gets the same error with those facts replaced (`DESIGN-remote-agents.md`
+/// §8 R7); a local connection gets it untouched, because
+/// `WireError::redacted_for(None)` is the identity. It is deliberately not
+/// applied to the event stream: a permission card's text is the owner's own
+/// screen, shown to whoever is driving the session (§8b A14).
+fn redact_for_conn(conn: &ConnHandle, reply: DaemonMessage) -> DaemonMessage {
+    let role = conn.conn_peer.as_ref().and_then(|peer| peer.role());
+    match reply {
+        DaemonMessage::Error(error) => DaemonMessage::Error(error.redacted_for(role.as_ref())),
+        other => other,
+    }
 }
 
 fn refill_pending_events(conn: &ConnHandle, pending_events: &mut VecDeque<PendingEvent>) {
@@ -1964,14 +2050,31 @@ fn dispatch(
 ) -> Option<DaemonMessage> {
     // The peer gate is the first statement: nothing below (not the provider
     // spawns, not the readiness check) runs for a remote connection before
-    // its request has a decision (`DESIGN-remote-agents.md` §8b A1).
+    // its request has a decision (`DESIGN-remote-agents.md` §8b A1). The
+    // capability set is consulted first of all: it is the whole permission
+    // model for a paired device (A9/A11), and a request it does not open is
+    // refused before anything looks at what the request would do.
     if let Some(ConnPeer::Remote { role, .. }) = &conn.conn_peer {
-        match peer_allows(*role, &request) {
+        match peer_allows(*role, &conn.peer_caps, &request) {
             PeerDecision::Deny(reason) => {
                 audit_peer_request(state, &conn.conn_peer, &request, "denied");
                 return Some(capability_not_supported(request.request_id(), reason));
             }
             PeerDecision::Allow => {
+                // §8b A4/A5: an allowed request that would run a session
+                // without asking this machine's user is refused here, and
+                // recorded as such — a paired device asking for unattended
+                // execution is a different event in the trail from a device
+                // asking for something it may not have.
+                if peer_mode_refusal(state, &request) {
+                    audit_peer_request(
+                        state,
+                        &conn.conn_peer,
+                        &request,
+                        crate::peer_policy::PROMPT_SKIPPING_REFUSED,
+                    );
+                    return Some(prompt_skipping_refused(request.request_id()));
+                }
                 // Only state-changing requests audit on success. An allowed
                 // read must never write a row: a `Ping` loop would fill the
                 // disk (muse M1).
@@ -1981,33 +2084,21 @@ fn dispatch(
             }
         }
     }
-    // A remote peer's session list is a projection, not the local list:
-    // `Client` sees the sessions of the user it was paired by (the SID this
-    // daemon wrote into its own `peers` row at pairing time), `Daemon` sees
-    // none in 1a. Implemented here so `session.rs` keeps its single
-    // owner-user filter, which does exactly this for a synthetic `OwnerId`.
-    if let Some(ConnPeer::Remote {
-        role,
-        paired_by_user,
-        ..
-    }) = &conn.conn_peer
-    {
+    // A remote peer's session list is a projection, not the local list, and it
+    // is derived from the *connection* rather than from the `owner` this call
+    // was handed: a caller that passes something else cannot widen the
+    // projection. A `Client` sees the sessions of the user it was paired by
+    // (what `handle_client` computes for every other request too, §8b A3); a
+    // `Daemon` sees the sessions its own device created (§8 R2); the local pipe
+    // sees its own list. In all three cases the registry's single owner-user
+    // filter is the whole rule.
+    if let Some(ConnPeer::Remote { .. }) = &conn.conn_peer {
         if let ClientMessage::SessionsList { id } = &request {
-            let owner = match role {
-                PeerRole::Client => paired_by_user.clone(),
-                PeerRole::Daemon => None,
-            };
-            let sessions = match owner {
-                Some(paired_by) => match OwnerId::new(paired_by, "peer") {
-                    Ok(owner) => match state.sessions.list(&owner) {
-                        Ok(sessions) => sessions,
-                        Err(error) => return Some(DaemonMessage::Error(error.with_id(*id))),
-                    },
-                    Err(_) => Vec::new(),
-                },
-                None => Vec::new(),
-            };
-            return Some(DaemonMessage::Sessions { id: *id, sessions });
+            let projected = session_list_owner(&conn.conn_peer, owner);
+            return Some(match state.sessions.list(&projected) {
+                Ok(sessions) => DaemonMessage::Sessions { id: *id, sessions },
+                Err(error) => DaemonMessage::Error(error.with_id(*id)),
+            });
         }
     }
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
@@ -2726,13 +2817,21 @@ fn dispatch_devices(
                         WireError::new(ErrorCode::InvalidRequest, message).with_id(id),
                     ),
                     Ok(caps) => match state.peer_set_caps(&device_id, caps) {
-                        Ok(PeerMutation::Updated) => match state.peer_get(&device_id) {
-                            Ok(Some(refreshed)) => DaemonMessage::PeerUpdated {
-                                id,
-                                peer: crate::pairing::peer_row(state, &refreshed),
-                            },
-                            _ => DaemonMessage::Ok { id },
-                        },
+                        Ok(PeerMutation::Updated) => {
+                            // A capability change takes effect on the next
+                            // connection: the live one holds the set it read at
+                            // connect, and a device must not keep a capability
+                            // this row no longer grants. The flag is what drops
+                            // it, on that connection's own next turn.
+                            state.revoke_peer_connections(&device_id);
+                            match state.peer_get(&device_id) {
+                                Ok(Some(refreshed)) => DaemonMessage::PeerUpdated {
+                                    id,
+                                    peer: crate::pairing::peer_row(state, &refreshed),
+                                },
+                                _ => DaemonMessage::Ok { id },
+                            }
+                        }
                         // A revoked device's capabilities cannot be rewritten
                         // (C8): the stored state would disagree with the
                         // panel's "Revoked" section, and the old array would
@@ -2936,6 +3035,58 @@ fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage 
     DaemonMessage::Error(error)
 }
 
+/// §8b A4/A5: would this request run a session without asking this machine's
+/// user?
+///
+/// Two shapes reach here. `SessionCreate` names its own kind and mode in the
+/// frame, so no lookup is needed. `SessionSetMode`, `SessionSend` and
+/// `SessionAttach` name a session, and the registry answers with that
+/// session's kind and the mode it is in now (`SessionRegistry::session_mode_guard`):
+/// a local session sitting in a prompt-skipping mode refuses a remote send, and
+/// a peer-origin session refuses a switch into one.
+///
+/// A session this daemon does not know is not a refusal here: the request still
+/// has to pass the ownership check, and the answer for an unknown id is
+/// `SessionNotFound` rather than a policy verdict.
+fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> bool {
+    match request {
+        ClientMessage::SessionCreate {
+            kind,
+            mode: Some(mode),
+            ..
+        } => crate::peer_policy::prompt_skipping_mode(kind.clone(), mode),
+        ClientMessage::SessionSetMode {
+            session_id,
+            mode_id,
+            ..
+        } => state
+            .sessions
+            .session_mode_guard(session_id)
+            .is_some_and(|(kind, _)| crate::peer_policy::prompt_skipping_mode(kind, mode_id)),
+        ClientMessage::SessionSend { session_id, .. }
+        | ClientMessage::SessionAttach { session_id, .. } => state
+            .sessions
+            .session_mode_guard(session_id)
+            .and_then(|(kind, mode)| {
+                mode.map(|mode| crate::peer_policy::prompt_skipping_mode(kind, &mode))
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// The frame a peer gets when §8b A4/A5 refuses it.
+fn prompt_skipping_refused(id: Option<u64>) -> DaemonMessage {
+    let mut error = WireError::new(
+        ErrorCode::CapabilityNotSupported,
+        "Modes that skip the permission prompt are not available to a paired device.",
+    );
+    if let Some(id) = id {
+        error = error.with_id(id);
+    }
+    DaemonMessage::Error(error)
+}
+
 /// Audit one request that came from a remote peer.
 ///
 /// `device_id` and `role` come from the Noise-authenticated `ConnPeer`, never
@@ -2968,23 +3119,30 @@ fn audit_peer_request(
 ///
 /// `ClientMessage::SessionCreate` is the only request in the protocol carrying
 /// both a session kind and a mode, so it is the only one this can classify
-/// without a session lookup — and this gate runs before any session is touched.
-/// The request is refused either way; the two outcomes are worth distinguishing
-/// because "a paired machine asked for unattended execution" is a different
-/// event in the trail from "a paired machine asked for something it may not
-/// have" (design §8b A5).
+/// without a session lookup — and this gate runs before any session is
+/// touched. A `SessionSetMode` or `SessionSend` refusal is classified by the
+/// decision that made it (`peer_mode_refusal`), which has the registry in hand,
+/// and reaches the trail through this function unchanged. The request is
+/// refused either way; the two outcomes are worth distinguishing because "a
+/// paired machine asked for unattended execution" is a different event in the
+/// trail from "a paired machine asked for something it may not have" (design
+/// §8b A5).
 fn peer_outcome(request: &ClientMessage, outcome: &str) -> &'static str {
-    if outcome != "denied" {
-        return if outcome == "ok" { "ok" } else { "denied" };
-    }
-    match request {
-        ClientMessage::SessionCreate {
-            kind,
-            mode: Some(mode),
-            ..
-        } if crate::peer_policy::prompt_skipping_mode(kind.clone(), mode) => {
-            "prompt_skipping_refused"
-        }
+    const REFUSED: &str = crate::peer_policy::PROMPT_SKIPPING_REFUSED;
+    match outcome {
+        "ok" => "ok",
+        // The refusal already names itself: one label, one vocabulary.
+        REFUSED => REFUSED,
+        "denied" => match request {
+            ClientMessage::SessionCreate {
+                kind,
+                mode: Some(mode),
+                ..
+            } if crate::peer_policy::prompt_skipping_mode(kind.clone(), mode) => REFUSED,
+            _ => "denied",
+        },
+        // Any other word is not a decision this gate produces; the trail says
+        // `denied` rather than echoing it.
         _ => "denied",
     }
 }
@@ -3181,6 +3339,7 @@ fn dispatch_session(
         } => session_create(
             state,
             owner,
+            &conn.conn_peer,
             id,
             workspace_id,
             kind,
@@ -3243,7 +3402,7 @@ fn dispatch_session(
             {
                 return reply;
             }
-            match state.sessions.close(&session_id, owner) {
+            match state.sessions.close(&session_id, owner, &conn.conn_peer) {
                 Ok(removed) => {
                     if removed {
                         state.session_finished();
@@ -3370,7 +3529,9 @@ fn dispatch_session(
                 match state.sessions.resume(state, &handle, owner, conn) {
                     Ok(session) => DaemonMessage::Resume {
                         id,
-                        result: ResumeResult::Resumed { session },
+                        result: ResumeResult::Resumed {
+                            session: Box::new(session),
+                        },
                     },
                     Err(error) => DaemonMessage::Error(error.with_id(id)),
                 }
@@ -3464,6 +3625,7 @@ fn dispatch_session(
 fn session_create(
     state: &Arc<ServerState>,
     owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
     id: u64,
     workspace_id: Option<String>,
     kind: SessionKind,
@@ -3495,7 +3657,7 @@ fn session_create(
     }
     match state
         .sessions
-        .create(state, owner, workspace_id, kind, provider, mode, None)
+        .create(state, owner, workspace_id, kind, provider, mode, conn_peer)
     {
         Ok(session) => {
             let reply = DaemonMessage::Session { id, session };
@@ -3532,6 +3694,28 @@ fn session_send(
     {
         return reply;
     }
+    // The attachment counter is the peer's deposit branch (S7's scope
+    // correction): `budget_for` in `peer_policy.rs` is where it will be read.
+    // Until it lands, a send that arrived over a peer connection may not carry
+    // attachments at all — refused here, at the point where the origin is
+    // known, before anything decodes the base64 or touches the store. A local
+    // send is unchanged.
+    if !attachments.is_empty() {
+        let origin = crate::session::session_origin_for(&conn.conn_peer);
+        if !origin.is_local() {
+            return DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED,
+                )
+                .with_id(id),
+            );
+        }
+    }
+    // The public six-argument entry point is the one that builds the
+    // `SendRequest`; it is called from here rather than the private
+    // one-argument form, which would leave this wrapper dead in a non-test
+    // build.
     match state.sessions.send_with_subscription(
         &session_id,
         subscription_id,
@@ -3722,7 +3906,17 @@ mod tests {
     }
 
     fn remote_conn(role: PeerRole, paired_by_user: Option<&str>) -> Arc<ConnHandle> {
-        ConnHandle::with_conn_peer(
+        remote_conn_with_caps(role, paired_by_user, &[])
+    }
+
+    /// The same connection, holding the capability set `caps` names: what the
+    /// gate actually reads (`DESIGN-remote-agents.md` §8b A9/A11).
+    fn remote_conn_with_caps(
+        role: PeerRole,
+        paired_by_user: Option<&str>,
+        caps: &[&str],
+    ) -> Arc<ConnHandle> {
+        ConnHandle::with_peer_caps(
             7,
             None,
             Some(ConnPeer::Remote {
@@ -3735,7 +3929,25 @@ mod tests {
                     "user@example.com",
                 ),
             }),
+            caps.iter().map(|cap| cap.to_string()).collect(),
         )
+    }
+
+    /// Every file under `dir`, recursively. A missing `dir` is zero files.
+    fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut files = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return files;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(files_under(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
     }
 
     /// Audit rows as `action:outcome`, in insertion order.
@@ -5478,6 +5690,366 @@ mod tests {
             !state.ensure_remote_listener(),
             "a listener must not be started after it has been stopped"
         );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// A capability a peer does not hold is the whole answer: the request is
+    /// refused before anything looks at what it would do (§8b A9/A11). The
+    /// same request with the capability is answered by the session layer —
+    /// which is what proves the gate, and not the missing session, stopped it.
+    #[test]
+    fn a_peer_request_the_caps_do_not_open_never_reaches_the_session_layer() {
+        let (path, state) = temp_state("peer-caps-first");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let send = || ClientMessage::SessionSend {
+            id: 1,
+            session_id: "s.none.1".to_string(),
+            subscription_id: 1,
+            text: "hello".to_string(),
+            attachments: Vec::new(),
+            idempotency_key: None,
+        };
+
+        let viewer = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW],
+        );
+        match dispatch(&state, &owner, send(), &viewer, true, true, true, true)
+            .expect("the gate answers")
+        {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.code, ErrorCode::CapabilityNotSupported, "{error:?}")
+            }
+            other => panic!("a view-only peer must not reach a session: {other:?}"),
+        }
+
+        let sender = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
+        );
+        match dispatch(&state, &owner, send(), &sender, true, true, true, true)
+            .expect("the gate answers")
+        {
+            DaemonMessage::Error(error) => assert_ne!(
+                error.code,
+                ErrorCode::CapabilityNotSupported,
+                "with the capability the answer comes from the session layer: {error:?}"
+            ),
+            other => panic!("expected a session-layer error, got {other:?}"),
+        }
+
+        drop(state);
+        // The refusal is recorded, and the allowed send that followed is
+        // recorded as the decision it was: the trail distinguishes the two.
+        let rows = audit_rows(&path);
+        assert_eq!(
+            rows.first().map(String::as_str),
+            Some("SessionSend:denied"),
+            "the capability refusal comes first: {rows:?}"
+        );
+        assert_eq!(
+            rows.len(),
+            2,
+            "the refusal, then the allowed send: {rows:?}"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// §8b A5 in the trail: a paired device asking for a mode that runs without
+    /// the prompt is refused, and the row says *that*, not a plain denial.
+    #[test]
+    fn a_peer_create_in_a_prompt_skipping_mode_is_refused_and_labelled() {
+        let (path, state) = temp_state("peer-prompt-skipping");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let creator = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[
+                crate::peer_policy::CAP_VIEW,
+                crate::peer_policy::CAP_CREATE_SESSIONS,
+            ],
+        );
+
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionCreate {
+                id: 1,
+                workspace_id: None,
+                kind: SessionKind::Claude,
+                provider: Some("claude".to_string()),
+                mode: Some("bypassPermissions".to_string()),
+                idempotency_key: None,
+            },
+            &creator,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("the gate answers");
+        match reply {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.code, ErrorCode::CapabilityNotSupported, "{error:?}");
+                assert!(
+                    error.message.contains("permission prompt"),
+                    "the refusal must say why: {}",
+                    error.message
+                );
+            }
+            other => panic!("a prompt-skipping create must be refused: {other:?}"),
+        }
+
+        drop(state);
+        assert_eq!(
+            audit_rows(&path),
+            vec!["SessionCreate:prompt_skipping_refused"]
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// The A4/A5 decision itself, keyed on the frame's own facts. The
+    /// session-backed half (send, set-mode) is the registry guard — tested in
+    /// `session.rs` — composed with this same list.
+    #[test]
+    fn the_prompt_skipping_decision_reads_the_frame_and_refuses_unknown_sessions() {
+        let (path, state) = temp_state("peer-prompt-skipping-table");
+        let create = |kind: SessionKind, mode: &str| ClientMessage::SessionCreate {
+            id: 1,
+            workspace_id: None,
+            kind,
+            provider: None,
+            mode: Some(mode.to_string()),
+            idempotency_key: None,
+        };
+
+        assert!(peer_mode_refusal(
+            &state,
+            &create(SessionKind::Claude, "bypassPermissions")
+        ));
+        assert!(peer_mode_refusal(
+            &state,
+            &create(SessionKind::Claude, "auto")
+        ));
+        assert!(peer_mode_refusal(
+            &state,
+            &create(SessionKind::Codex, "full-access")
+        ));
+        // Codex `auto-review` and Claude's `acceptEdits` are refusals too, and
+        // the ones that only prompt are not.
+        assert!(!peer_mode_refusal(
+            &state,
+            &create(SessionKind::Codex, "auto")
+        ));
+        assert!(!peer_mode_refusal(
+            &state,
+            &create(SessionKind::Claude, "default")
+        ));
+        assert!(!peer_mode_refusal(
+            &state,
+            &create(SessionKind::Terminal, "bypassPermissions")
+        ));
+
+        // A session this daemon does not know is not a policy verdict: the
+        // answer for it is `SessionNotFound`, from the ownership path.
+        assert!(!peer_mode_refusal(
+            &state,
+            &ClientMessage::SessionSend {
+                id: 2,
+                session_id: "s.nobody.1".to_string(),
+                subscription_id: 1,
+                text: "hello".to_string(),
+                attachments: Vec::new(),
+                idempotency_key: None,
+            }
+        ));
+        assert!(!peer_mode_refusal(
+            &state,
+            &ClientMessage::SessionSetMode {
+                id: 3,
+                session_id: "s.nobody.1".to_string(),
+                mode_id: "bypassPermissions".to_string(),
+            }
+        ));
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// §8 R7 at the boundary: one gate, and every local fact in an error is
+    /// replaced for a peer while the person's own pipe sees it unchanged.
+    #[test]
+    fn a_remote_reply_is_redacted_at_the_boundary_and_a_local_one_is_not() {
+        let path = "C:\\Users\\me\\AppData\\Local\\devboule\\journal.db";
+        let digest = "a".repeat(64);
+        // Quoted, because a path run deliberately swallows an unquoted tail
+        // (`path_run_len` stops at punctuation, not at a colon or a space): the
+        // digest has to be its own token for this test to be about the digest.
+        let message =
+            format!("could not write \"{path}\"; key {digest} was rejected by device dev-phone");
+        let error = || WireError::new(ErrorCode::Io, message.clone());
+
+        let local = redact_for_conn(&ConnHandle::new(1), DaemonMessage::Error(error()));
+        match local {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.message, message, "the pipe is unchanged")
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+
+        let remote = redact_for_conn(
+            &remote_conn_with_caps(PeerRole::Client, Some("S-user-a"), &[]),
+            DaemonMessage::Error(error()),
+        );
+        match remote {
+            DaemonMessage::Error(error) => {
+                assert!(
+                    !error.message.contains("C:\\Users"),
+                    "a peer must not learn a path: {}",
+                    error.message
+                );
+                assert!(error.message.contains("<path>"), "{}", error.message);
+                assert!(
+                    !error.message.contains(&digest),
+                    "a peer must not learn a digest: {}",
+                    error.message
+                );
+                assert!(error.message.contains("<digest>"), "{}", error.message);
+                assert_eq!(error.code, ErrorCode::Io, "the code stays: what failed");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+
+        // Everything that is not an error is not a place to rewrite: the event
+        // stream carries the owner's own screen (§8b A14).
+        let event = DaemonMessage::Ok { id: 4 };
+        assert!(matches!(
+            redact_for_conn(&remote_conn_with_caps(PeerRole::Daemon, None, &[]), event),
+            DaemonMessage::Ok { id: 4 }
+        ));
+    }
+
+    /// The capability set is read from the device's own row, and every failure
+    /// — unknown device, revoked row — yields the empty set, which the gate
+    /// reads as "no capability".
+    #[test]
+    fn the_capability_set_of_a_device_comes_from_its_row_and_fails_closed() {
+        let (path, state) = temp_state("peer-caps-lookup");
+        assert!(state.peer_caps("dev-unknown").is_empty());
+
+        let mut record = PeerRecord {
+            device_id: "dev-phone".to_string(),
+            display_name: "Phone".to_string(),
+            role: "client".to_string(),
+            // The store refuses a peer key that is not a 32-byte X25519 public key,
+            // and that refusal is the point: a fixture cannot skip the shape.
+            public_key: vec![7u8; 32],
+            paired_by_user: Some("S-user-a".to_string()),
+            binding_kind: "tailnet".to_string(),
+            binding_stable_id: Some("nstable".to_string()),
+            binding_node_name: Some("node".to_string()),
+            binding_login_name: Some("user@example.com".to_string()),
+            address: "100.64.0.2:47831".to_string(),
+            paired_at: 1,
+            revoked_at: None,
+            caps: vec![
+                crate::peer_policy::CAP_VIEW.to_string(),
+                crate::peer_policy::CAP_SEND.to_string(),
+            ],
+        };
+        state.peer_upsert(record.clone()).expect("store");
+
+        let mut caps = state.peer_caps("dev-phone");
+        caps.sort();
+        assert_eq!(
+            caps,
+            vec![
+                crate::peer_policy::CAP_SEND.to_string(),
+                crate::peer_policy::CAP_VIEW.to_string()
+            ]
+        );
+
+        // A revoked row grants nothing, whatever it still carries.
+        record.revoked_at = Some(2);
+        state.peer_upsert(record).expect("re-store");
+        assert!(state.peer_caps("dev-phone").is_empty());
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// S7 after the scope correction: the attachment counter is the peer's
+    /// deposit branch, so until it lands a send from a paired device that
+    /// carries an attachment is refused — before any decode, and the store
+    /// stays empty. A peer's text-only send and a local send are unchanged.
+    #[test]
+    fn a_peer_send_with_attachments_is_refused_until_the_deposit_counter_lands() {
+        let (path, state) = temp_state("peer-attachments");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let sender = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
+        );
+        let send = |attachments: Vec<PromptAttachment>| ClientMessage::SessionSend {
+            id: 1,
+            session_id: "s.none.1".to_string(),
+            subscription_id: 1,
+            text: "hello".to_string(),
+            attachments,
+            idempotency_key: None,
+        };
+        let dispatch_send = |attachments: Vec<PromptAttachment>, conn: &Arc<ConnHandle>| {
+            dispatch(
+                &state,
+                &owner,
+                send(attachments),
+                conn,
+                true,
+                true,
+                true,
+                true,
+            )
+            .expect("the gate answers")
+        };
+
+        match dispatch_send(vec![wire_attachment("a.png", b"one")], &sender) {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+                assert_eq!(
+                    error.message,
+                    crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED
+                );
+            }
+            other => panic!("a peer's attachment send must be refused: {other:?}"),
+        }
+        assert_eq!(
+            files_under(&path.join("attachments")).len(),
+            0,
+            "a refused send must not write an attachment file"
+        );
+
+        match dispatch_send(Vec::new(), &sender) {
+            DaemonMessage::Error(error) => assert_ne!(
+                error.message,
+                crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED,
+                "the refusal is about the attachments, not the device"
+            ),
+            other => panic!("a peer's text-only send reaches the session layer: {other:?}"),
+        }
+
+        match dispatch_send(vec![wire_attachment("a.png", b"one")], &ConnHandle::new(3)) {
+            DaemonMessage::Error(error) => assert_ne!(
+                error.message,
+                crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED,
+                "the local pipe keeps its attachments"
+            ),
+            other => panic!("a local send reaches the session layer: {other:?}"),
+        }
 
         drop(state);
         let _ = std::fs::remove_dir_all(path);

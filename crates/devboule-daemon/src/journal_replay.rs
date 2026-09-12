@@ -3,8 +3,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use devboule_protocol::{SessionEvent, SessionKind};
 
 use super::{
-    crc32, decode_chunks, parse_kind, EventKind, EventRecord, JournalError, PersistStatus, Replay,
-    SessionRecord,
+    crc32, decode_chunks, origin_from_columns, parse_kind, EventKind, EventRecord, JournalError,
+    PersistStatus, Replay, SessionRecord,
 };
 
 #[derive(Debug)]
@@ -112,7 +112,7 @@ pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, Jou
         "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
                 generation, status, exit_code, closed, last_seq, degraded,
                 dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
-                peer_session_id, provider
+                peer_session_id, provider, origin_kind, origin_device, origin_role
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
@@ -150,6 +150,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         reaped: row.get::<_, i64>(17)? != 0,
         peer_session_id: row.get(18)?,
         provider: row.get(19)?,
+        origin: origin_from_columns(row.get(20)?, row.get(21)?, row.get(22)?),
     })
 }
 
@@ -163,7 +164,7 @@ pub(super) fn replay_session(
             "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
                     generation, status, exit_code, closed, last_seq, degraded,
                     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
-                    peer_session_id, provider
+                    peer_session_id, provider, origin_kind, origin_device, origin_role
              FROM sessions WHERE id = ?1",
             [session_id],
             row_to_session,

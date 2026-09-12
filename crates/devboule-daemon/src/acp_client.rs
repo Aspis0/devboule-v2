@@ -2948,6 +2948,10 @@ impl AcpReader {
                 cwd,
                 env: None,
                 options,
+                // `local` is a placeholder, never a claim: the daemon
+                // overwrites this with the session's stored origin at the
+                // single place a permission request leaves for a subscriber.
+                origin: devboule_protocol::SessionOrigin::local(),
             })
         })();
         let event = match parsed {

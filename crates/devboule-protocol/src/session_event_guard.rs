@@ -134,6 +134,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
             cwd: None,
             env: Some(Vec::new()),
             options: Vec::new(),
+            origin: crate::SessionOrigin::local(),
         },
         PermissionResolved => SessionEvent::PermissionResolved {
             tool_call_id: String::new(),

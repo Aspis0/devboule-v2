@@ -1714,6 +1714,9 @@ fn permission_request_from_ui(value: &Value, request_id: &str) -> SessionEvent {
                 kind: "reject_once".to_string(),
             },
         ],
+        // A placeholder the daemon overwrites with the session's stored origin
+        // before the request leaves for a subscriber.
+        origin: devboule_protocol::SessionOrigin::local(),
     }
 }
 

@@ -116,6 +116,9 @@
     "args": [],
     "env": [],
     "options": [],
+    "origin": {
+      "kind": "local"
+    },
     "title": "",
     "toolCallId": "",
     "type": "permission_request"
