@@ -244,6 +244,7 @@ impl PluginSession {
                         | DaemonMessage::Ok { id }
                         | DaemonMessage::AgentMessageReceipt { id, .. }
                         | DaemonMessage::Resume { id, .. }
+                        | DaemonMessage::SessionDeposited { id, .. }
                         | DaemonMessage::InvokeResult { id, .. }
                         // The device RPCs are not on a plugin backend's path.
                         // They carry an id like every other reply, so they are

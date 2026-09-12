@@ -2274,6 +2274,7 @@ fn dispatch_immediate(
         | ClientMessage::SessionStop { .. }
         | ClientMessage::SessionSend { .. }
         | ClientMessage::AgentMessageSend { .. }
+        | ClientMessage::SessionDeposit { .. }
         | ClientMessage::SessionResize { .. }
         | ClientMessage::SessionInterrupt { .. }
         | ClientMessage::SessionSetModel { .. }
@@ -3725,8 +3726,27 @@ fn dispatch_session(
             text,
             attachments,
             active_turn_behavior,
+            attachment_references,
             idempotency_key,
         } => {
+            // The resolution path — reference to stored path, under the store
+            // budget — is not written yet. Until it is, a prompt that names
+            // references is REFUSED and not quietly stripped: a deck that
+            // vanishes on the way to the agent reads to the user as an agent
+            // that ignored the pages, which is the one failure this whole
+            // feature exists to prevent. Deleting this guard is part of writing
+            // the resolution path, not a cleanup to do before it.
+            if !attachment_references.is_empty() {
+                return DaemonMessage::Error(
+                    WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "This daemon cannot resolve stored attachment references yet, so the \
+                         prompt was refused rather than sent without them."
+                            .to_string(),
+                    )
+                    .with_id(id),
+                );
+            }
             let reply = session_send(
                 state,
                 owner,

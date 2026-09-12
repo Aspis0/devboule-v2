@@ -474,6 +474,11 @@ impl DaemonClient {
             subscription_id,
             text: text.to_string(),
             attachments: attachments.to_vec(),
+            // Empty is the honest value, not a placeholder: this entry point
+            // sends inline bytes only. The references parameter arrives with
+            // the app's deposit wiring, and until it does there is no caller
+            // that holds a reference to pass.
+            attachment_references: Vec::new(),
             idempotency_key: None,
             active_turn_behavior,
         })? {
@@ -1506,6 +1511,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Ok { id }
         | DaemonMessage::AgentMessageReceipt { id, .. }
         | DaemonMessage::Resume { id, .. }
+        | DaemonMessage::SessionDeposited { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),
     }
 }
