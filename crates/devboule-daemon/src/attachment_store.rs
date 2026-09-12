@@ -19,18 +19,31 @@
 //! path, so a second turn with the same picture, or a replay of the history
 //! that rebuilds it, does not leave another copy behind.
 //!
-//! # The owner's byte budget
+//! # The store's byte budget
 //!
-//! Every file under every session folder of one owner counts against
-//! [`MAX_ATTACHMENT_OWNER_BYTES`]. That total is held in memory
-//! ([`StoreState`]) rather than walked per question: a forty-page deck is two
-//! hundred deposits, and walking an owner's folders under the store's single
-//! write lock would put every session's attachment work behind one owner's walk
+//! Every file in this store counts against [`MAX_ATTACHMENT_OWNER_BYTES`], and
+//! "this store" is one account's store: the runtime directory is
+//! `%LOCALAPPDATA%\Devboule` (`crate::paths::RuntimePaths::from_env`, with
+//! `from_dir` for a test runtime and a `DEVBOULE_RUNTIME_DIR` override), so the
+//! store is per-user by construction and the budget needs no key at all. The
+//! constant's name is the wire's; the quantity is the store's.
+//!
+//! There was a key once, and it was wrong. The middle segment of a session id
+//! looked like an owner and is not one: `compose_session_id` fills it from
+//! `OwnerId::session_token`, which is one *connection's* client token cut to
+//! sixteen characters. One user running two clients would have had two budgets
+//! of twenty megabytes, and two clients whose tokens share sixteen leading
+//! characters would have shared one. Nothing here parses a session id for
+//! anything but a folder name.
+//!
+//! The total is held in memory ([`StoreState`]) rather than walked per question:
+//! a forty-page deck is two hundred deposits, and walking the store under its
+//! single write lock would put every session's attachment work behind that walk
 //! (D4 of `DECIDE-deposit-open-questions`). The tree stays the truth. The cache
 //! is derived from it, built by one walk the first time a budget is needed, and
 //! moved by the same guard that moves the files. A folder that walk could not
-//! read makes its owner's total unknown rather than zero, and an unknown total
-//! is refused: a number below the truth admits the bytes the limit exists to
+//! read makes the total unknown rather than zero, and an unknown total is
+//! refused: a number below the truth admits the bytes the limit exists to
 //! refuse.
 
 use std::collections::HashMap;
@@ -74,7 +87,7 @@ const DIGEST_HEX_LEN: usize = 64;
 const STORED_EXTENSIONS: [&str; 3] = ["png", "jpg", "svg"];
 
 /// What the store's write lock carries besides the exclusion itself: the bytes
-/// each session folder holds, from which one owner's total is summed.
+/// each session folder holds, which is what the store's total is summed from.
 ///
 /// It is held inside that lock rather than behind a mutex of its own, and that
 /// is a decision rather than a convenience. The invariant is that a file and
@@ -89,11 +102,12 @@ const STORED_EXTENSIONS: [&str; 3] = ["png", "jpg", "svg"];
 struct StoreState {
     /// Session id -> what that session's folder holds.
     ///
-    /// Keyed per session rather than summed per owner, because every deletion
-    /// path here removes a whole folder (`remove_session`, and the retention
-    /// sweep through `remove_if_still_older_than`) and a flat per-owner number
-    /// cannot answer "how much did that folder hold" at deletion time without
-    /// the walk the cache exists to avoid. One entry, dropped, is that answer.
+    /// Keyed per session rather than kept as one running total, because every
+    /// deletion path here removes a whole folder (`remove_session`, and the
+    /// retention sweep through `remove_if_still_older_than`) and both have to
+    /// *report* what left with it: a caller releasing a reservation per device
+    /// needs the number, and one running total cannot say what a folder held.
+    /// `remove_session` and `sweep_older_than` read it back from here.
     ///
     /// An id that is absent is a session with no folder, which is a known zero.
     /// [`SessionBytes::Unknown`] is a folder that is there and could not be
@@ -105,8 +119,8 @@ struct StoreState {
     ///
     /// The same finding as [`SessionBytes::Unknown`] one level up: when the root
     /// cannot be listed, the walk never learns which session folders exist, so
-    /// no owner's total is knowable and every budget question answers "unknown"
-    /// until a walk succeeds. A root that is *missing* is not this — no store
+    /// no total is knowable and every budget question answers "unknown" until a
+    /// walk succeeds. A root that is *missing* is not this — no store
     /// yet is a store with nothing in it, which is the normal state of a fresh
     /// install.
     root_unreadable: bool,
@@ -146,7 +160,7 @@ pub(crate) struct AttachmentStore {
     /// Serializes writes across sessions. One process owns the runtime dir
     /// (single-instance lock), so this is enough to keep two client threads
     /// materializing the same image from racing over the same temp file. It is
-    /// also the lock the owner-budget cache is taken with ([`StoreState`]), so
+    /// also the lock the store's budget cache is taken with ([`StoreState`]), so
     /// a write and the total it moves are taken and left together.
     write_lock: Arc<Mutex<StoreState>>,
 }
@@ -163,9 +177,9 @@ impl AttachmentStore {
     ///
     /// `None` for `.` and `..`. Both pass `validate_session_id` — its alphabet
     /// is `[A-Za-z0-9._-]` — and both are path traversal when joined to a root.
-    /// A real id is composed as `s.<owner>.<n>`, so refusing them loses nothing
-    /// and removes the only way a session id could name a directory outside the
-    /// store.
+    /// A real id is composed as `s.<client token>.<n>`, and nothing here reads
+    /// either segment: refusing these two loses nothing and removes the only way
+    /// a session id could name a directory outside the store.
     pub(crate) fn session(&self, session_id: &str) -> Option<SessionAttachments> {
         if session_id == "." || session_id == ".." {
             return None;
@@ -177,8 +191,7 @@ impl AttachmentStore {
         })
     }
 
-    /// Drop one session's folder. Absent is not an error: close may run for a
-    /// session that never sent an attachment.
+    /// Drop one session's folder and report the bytes it held.
     ///
     /// The write lock is taken here for the same reason `materialize` takes it.
     /// The temp file plus rename protects a *reader* from observing half an
@@ -186,40 +199,93 @@ impl AttachmentStore {
     /// the temp write and the rename. Holding the lock across the removal makes
     /// a close wait for the write in flight instead of pulling the directory
     /// out from under it.
-    pub(crate) fn remove_session(&self, session_id: &str) {
-        if let Some(session) = self.session(session_id) {
-            // Poisoning is ignored the way `materialize` ignores it: a panic in
-            // some unrelated thread must not make session close start failing.
-            let mut state = self
-                .write_lock
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let removed = std::fs::remove_dir_all(&session.dir);
-            // The folder's whole contribution leaves with it, which is what
-            // the per-session key is for: nothing has to know which digests
-            // were in there. An entry goes when the folder is gone, including
-            // when it was never there — a close for a session that sent no
-            // attachment has nothing to subtract. A removal that failed keeps
-            // the entry, because the files may still be on disk and the owner
-            // still holds them: over-counting refuses, under-counting admits,
-            // and the next process's walk is what corrects it either way.
-            if removed.is_ok() || !session.dir.exists() {
-                state.sessions.remove(&session.session_id);
-            }
+    ///
+    /// # What the return value answers
+    ///
+    /// "How many bytes did this call take out of the store", which is what a
+    /// caller releasing a reservation needs, and `None` when the store cannot
+    /// answer that. It is deliberately *not* "did this session exist":
+    ///
+    /// - `Some(n)`: the folder is gone and held `n` bytes. A session that never
+    ///   existed and a session whose folder was empty both answer `Some(0)`.
+    ///   Those are two different questions, but the caller's next move is the
+    ///   same one — release nothing — and a return of `Option<u64>` has no third
+    ///   state to tell them apart with. A caller that genuinely needs the
+    ///   distinction keeps its own record of what it opened, or asks
+    ///   [`AttachmentStore::session_bytes`] before closing.
+    /// - `None`: no number is safe to act on, so the caller keeps what it had
+    ///   reserved. That is a folder the walk could not read, whose size was
+    ///   never known; a removal that failed and left the files on disk; or an id
+    ///   whose folder cannot be told from one in a root the walk never listed.
+    ///
+    /// It seeds the cache to answer, so the first close in a process pays the
+    /// one walk every other budget question pays.
+    pub(crate) fn remove_session(&self, session_id: &str) -> Option<u64> {
+        // `.` and `..` name no folder, so this call drops nothing and the caller
+        // releases nothing: the same answer as an id whose folder is not there.
+        let Some(session) = self.session(session_id) else {
+            return Some(0);
+        };
+        // Poisoning is ignored the way `materialize` ignores it: a panic in some
+        // unrelated thread must not make session close start failing.
+        let mut state = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // The answer is what the folder held, so the picture has to be built
+        // while the folder is still on the disk: a close is the first budget
+        // question in many processes, and an empty map would answer zero for a
+        // folder full of images.
+        self.seed_locked(&mut state);
+        let held = held_bytes(&state, &session.session_id);
+        let removed = std::fs::remove_dir_all(&session.dir);
+        if removed.is_err() && session.dir.exists() {
+            // The files are still on disk, so the store still holds them and no
+            // number is safe to hand back. The entry stays for the same reason:
+            // over-counting refuses, under-counting admits.
+            return None;
         }
+        // The folder's whole contribution leaves with it, which is what the
+        // per-session key is for: nothing has to know which digests were in
+        // there.
+        state.sessions.remove(&session.session_id);
+        held
     }
 
-    /// Delete every session folder whose newest write is older than `max_age`.
-    /// Returns how many were deleted.
+    /// Delete every session folder whose newest write is older than `max_age`,
+    /// and report what each removal took out of the store.
     ///
     /// `now` is a parameter so the retention rule can be tested without moving
     /// real file timestamps around.
-    pub(crate) fn sweep_older_than(&self, now: SystemTime, max_age: Duration) -> usize {
+    ///
+    /// # Why the shape is a list and not a total
+    ///
+    /// A caller keeping a counter per device has to subtract from the right one,
+    /// and this store cannot do that attribution for it: a session id's middle
+    /// segment is a connection token and not an identity (see the module
+    /// header), and a folder is otherwise just a name on a disk. So the sweep
+    /// hands back one entry per removal — `(session id, bytes reclaimed)` — and
+    /// the caller, which is the only party that knows which sessions belong to
+    /// which device, does the summing. A bare total would be unusable for that
+    /// caller; a count alone is what this used to return while a counter
+    /// elsewhere went on counting bytes the store had already deleted.
+    ///
+    /// The count is still here, as [`Vec::len`]: a folder that was not a
+    /// candidate, one whose removal failed, and one whose name is not a string
+    /// (never keyed, never counted toward the total) are all simply not in the
+    /// list. `None` for the bytes is a folder whose size the store never knew
+    /// ([`SessionBytes::Unknown`]), which a caller must keep counted rather than
+    /// release. Entries appear in the order the filesystem listed the folders.
+    pub(crate) fn sweep_older_than(
+        &self,
+        now: SystemTime,
+        max_age: Duration,
+    ) -> Vec<(String, Option<u64>)> {
         let Ok(entries) = std::fs::read_dir(&self.root) else {
             // No store yet is the normal state of a fresh install.
-            return 0;
+            return Vec::new();
         };
-        let mut removed = 0;
+        let mut reclaimed: Vec<(String, Option<u64>)> = Vec::new();
         for entry in entries.flatten() {
             let Ok(metadata) = entry.metadata() else {
                 continue;
@@ -233,16 +299,16 @@ impl AttachmentStore {
             if is_older_than(&entry.path(), now, max_age) != Some(true) {
                 continue;
             }
-            if self.remove_if_still_older_than(&entry.path(), now, max_age) {
-                removed += 1;
+            if let Some(removed) = self.remove_if_still_older_than(&entry.path(), now, max_age) {
+                reclaimed.push(removed);
             }
         }
-        removed
+        reclaimed
     }
 
     /// Remove one candidate folder, but only if it is still older than
-    /// `max_age` with the write lock held. Returns whether the folder was
-    /// removed.
+    /// `max_age` with the write lock held. Returns the session it removed and
+    /// the bytes that folder held, and `None` when it removed nothing.
     ///
     /// The sweep's age filter runs without the lock, so its answer can be out
     /// of date by the time the lock is held: a write into the folder can land
@@ -256,7 +322,17 @@ impl AttachmentStore {
     /// would park every materialize behind a directory scan; the race this
     /// closes is between one delete and one write into the folder being
     /// deleted, so the lock only has to cover the delete.
-    fn remove_if_still_older_than(&self, dir: &Path, now: SystemTime, max_age: Duration) -> bool {
+    ///
+    /// `None` for the bytes of a removal is a folder the walk could not read,
+    /// and it is not the same as failing to remove one: a removal that fails
+    /// returns `None` for the whole call, so a caller cannot release a
+    /// reservation for files that are still on the disk.
+    fn remove_if_still_older_than(
+        &self,
+        dir: &Path,
+        now: SystemTime,
+        max_age: Duration,
+    ) -> Option<(String, Option<u64>)> {
         // Poisoning is ignored the way `materialize` ignores it: a panic in
         // some unrelated thread must not make retention start failing.
         let mut state = self
@@ -264,23 +340,26 @@ impl AttachmentStore {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if is_older_than(dir, now, max_age) != Some(true) {
-            return false;
+            return None;
         }
-        let removed = std::fs::remove_dir_all(dir).is_ok();
-        if removed {
-            // The folder is gone, so its bytes are. The key is the folder's
-            // own name: a folder whose name is not a string was never keyed,
-            // and removing nothing from the map is the answer for it.
-            if let Some(session_id) = dir.file_name().and_then(|name| name.to_str()) {
-                state.sessions.remove(session_id);
-            }
+        // The folder's own name is the key. A name that is not a string was never
+        // keyed and never counted — this store builds every folder here from a
+        // `&str` — so such a folder is removed like any other and reported as
+        // nothing: there is no total it was ever part of.
+        let key = dir.file_name().and_then(|name| name.to_str()).map(str::to_string);
+        // Read before the removal, because the removal takes the entry with it.
+        let held = key.as_deref().map(|name| held_bytes(&state, name));
+        if std::fs::remove_dir_all(dir).is_err() {
+            return None;
         }
-        removed
+        let session_id = key?;
+        state.sessions.remove(&session_id);
+        Some((session_id, held.flatten()))
     }
 }
 
-/// The deposit half: the budget question, the write that answers it, and the
-/// lookup that hands a stored path back.
+/// The deposit half: the store's budget question, the per-session question, the
+/// write that answers them, and the lookup that hands a stored path back.
 ///
 /// Nothing in the daemon calls any of this yet. The caller is the
 /// `SessionDeposit` arm in `session.rs`, and the decision above these functions
@@ -300,20 +379,10 @@ impl AttachmentStore {
     /// neither: `session.rs` asks `check_user_owner` before it gets here, and
     /// calling this without that decision is a bug in the caller rather than
     /// something this function could notice. What it does enforce on its own is
-    /// the shape of the id — it has to name a folder inside the store — the
-    /// owner the id names, and that owner's byte budget.
-    ///
-    /// # The id has to name an owner
-    ///
-    /// A deposit is the unbounded write. The inline path carries at most one
-    /// prompt's worth of base64 and is refused by the wire long before it gets
-    /// here; this path has no ceiling of its own except the owner's budget, so
-    /// an id with nothing to charge is an id with no limit. Such an id is
-    /// refused ([`no_owner_segment`]) — by the store, on the string it was
-    /// handed, and not by a caller that is supposed to have checked first: the
-    /// arm that will call this has not been written, and a guard whose only
-    /// enforcement lives in unwritten code is not a guard. The inline path
-    /// keeps working for those ids, which is where they came from.
+    /// the shape of the id — it has to name a folder inside the store — and the
+    /// store's byte budget. Nothing here reads either segment of the id: the
+    /// budget is the store's own (see the module header), so no part of a
+    /// session id is a key.
     ///
     /// # A refusal leaves nothing behind
     ///
@@ -324,17 +393,16 @@ impl AttachmentStore {
     /// attachment is.
     ///
     /// A budget that cannot be *computed* is a refusal as well, and not a number
-    /// rounded down: when one of an owner's folders could not be read, their
-    /// total is unknown, and the honest answer is to refuse that owner rather
-    /// than admit everyone or guess (`owner_total`).
+    /// rounded down: when one folder could not be read the total is unknown, and
+    /// the honest answer is to refuse rather than guess (`store_total`).
     ///
     /// Depositing bytes this session already holds is accepted and adds
     /// nothing: that deposit creates no file, so it holds no bytes and asks no
     /// budget question. The exists check is therefore the first thing the guard
-    /// does, and neither the limit nor an unknown owner total can refuse a file
-    /// the session already has. The refusals about the id itself are different,
-    /// and they come first: an id that names no folder, or names no owner, is
-    /// refused whether or not those bytes are already stored.
+    /// does, and neither the limit nor an unknown total can refuse a file the
+    /// session already has. The one refusal that comes before it is the id's: an
+    /// id that names no folder is refused whether or not those bytes are already
+    /// stored.
     pub(crate) fn deposit(
         &self,
         session_id: &str,
@@ -342,11 +410,6 @@ impl AttachmentStore {
     ) -> Result<Deposited, WireError> {
         let Some(session) = self.session(session_id) else {
             return Err(no_such_session());
-        };
-        // Before any byte is decoded: an id this store cannot charge has no
-        // budget to check, and no amount of decoding would give it one.
-        let Some(owner) = owner_of(session_id) else {
-            return Err(no_owner_segment());
         };
         // Decoding and walking an image is the expensive half of a deposit and
         // depends on nothing the lock protects, so it runs outside it — the
@@ -363,8 +426,8 @@ impl AttachmentStore {
 
         if path.exists() {
             // The bytes are already here: no file, no bytes, no budget
-            // question. A session whose total cannot be computed is still handed
-            // back a file it already holds.
+            // question. A store whose total cannot be computed still hands back
+            // a file the session already holds.
             return Ok(Deposited {
                 digest,
                 stored_bytes: stored_size(&path)?,
@@ -374,7 +437,7 @@ impl AttachmentStore {
         // A total that could not be computed is not a total of zero, and a
         // budget check against a number below the truth admits exactly the bytes
         // the limit exists to refuse.
-        let Some(held) = owner_total(&state, owner) else {
+        let Some(held) = store_total(&state) else {
             return Err(budget_unknown());
         };
         let after = held.saturating_add(stored.len() as u64);
@@ -440,36 +503,62 @@ impl AttachmentStore {
         Ok((path, stored_bytes))
     }
 
-    /// The bytes one owner holds, across every session of theirs, or `None` when
-    /// the store cannot compute them.
+    /// Every byte this store holds, or `None` when they cannot be counted.
     ///
     /// The budget question, for a caller that has to ask it outside a write: a
     /// prompt's references are checked before a provider is asked to read
     /// anything, and the answer has to be the store's rather than the client's.
     /// The first call in a process is the walk; every later one is a sum over
-    /// one map.
+    /// one map, because the answer *is* that sum ([`store_total`]) — there is no
+    /// key to fold it by and none to be wrong about.
     ///
-    /// `None` is not zero and must not be rendered as one: it means a folder of
-    /// this owner's could not be listed, so their bytes cannot be counted at all
-    /// (`owner_total`). A caller with a budget to enforce refuses on `None` the
-    /// way `deposit` does; a caller showing a number has to say it does not
-    /// know.
+    /// `None` is not zero and must not be rendered as one: it means a folder
+    /// could not be listed, so the store's bytes cannot be counted at all. A
+    /// caller with a budget to enforce refuses on `None` the way `deposit`
+    /// does; a caller showing a number has to say it does not know.
     ///
     /// It takes the store's write lock, and `std::sync::Mutex` is not
     /// reentrant. Calling it from inside a guarded section is a hang, which is
-    /// why the deposit path does not call it: `deposit` asks `owner_total` on
+    /// why the deposit path does not call it: `deposit` asks `store_total` on
     /// the guard it already holds, because its check and the write it gates have
     /// to be one critical section. The two are the same sum.
-    ///
-    /// An id that does not parse as a session id contributes to no owner, so no
-    /// owner's question is answered by it; see `owner_of`.
-    pub(crate) fn owner_stored_bytes(&self, owner: &str) -> Option<u64> {
+    pub(crate) fn store_bytes(&self) -> Option<u64> {
         let mut state = self
             .write_lock
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         self.seed_locked(&mut state);
-        owner_total(&state, owner)
+        store_total(&state)
+    }
+
+    /// How many bytes one session holds, or `None` when that cannot be counted.
+    ///
+    /// The per-session half of the budget, for a caller that has to attribute
+    /// bytes to something smaller than the store — the peer gate reserving
+    /// against a device, which is the only party that knows which sessions
+    /// belong to it. This store cannot answer that question and does not pretend
+    /// to: a session id's middle segment is a connection token and not an
+    /// identity (see the module header), and a folder is otherwise just a name.
+    ///
+    /// `None` is not zero, and it is the same two silences the total has: the
+    /// session is one the walk could not read, or the root itself could not be
+    /// listed. An id with no folder behind it is `Some(0)` — it holds nothing —
+    /// and an id the store will not turn into a folder at all (`.` or `..`) is
+    /// `None`, because there is no session to report on rather than an empty
+    /// one.
+    ///
+    /// Same lock and the same warning as [`AttachmentStore::store_bytes`]: a
+    /// `std::sync::Mutex` is not reentrant, and this takes the guard.
+    pub(crate) fn session_bytes(&self, session_id: &str) -> Option<u64> {
+        let Some(session) = self.session(session_id) else {
+            return None;
+        };
+        let mut state = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.seed_locked(&mut state);
+        held_bytes(&state, &session.session_id)
     }
 
     /// Build [`StoreState::sessions`] from the tree, once a complete walk has
@@ -508,8 +597,7 @@ impl AttachmentStore {
                 for entry in entries {
                     // An entry that cannot be read makes the walk partial, and a
                     // partial walk is a picture of nothing: the folder it hides
-                    // is a folder whose bytes would be missing from its owner's
-                    // total.
+                    // is a folder whose bytes would be missing from the total.
                     let Ok(entry) = entry else {
                         complete = false;
                         continue;
@@ -523,10 +611,10 @@ impl AttachmentStore {
                     }
                     // A folder whose name is not a string cannot be keyed, and
                     // no session id is one. What such a folder holds is not
-                    // guessed at either: it is charged to no owner rather than
-                    // to a name nothing could look up, and that is why it does
-                    // not make the walk partial — there is no owner total it
-                    // could be wrong about.
+                    // guessed at either: it is left out of the total rather than
+                    // counted under a name nothing could look up, and that is
+                    // why it does not make the walk partial — there is no total
+                    // it could be wrong about.
                     let Ok(session_id) = entry.file_name().into_string() else {
                         continue;
                     };
@@ -542,8 +630,8 @@ impl AttachmentStore {
             }
             // Nothing to list is a store with nothing in it: a real zero, and
             // the normal state of a fresh install. A root that is *there* and
-            // unlistable is the other case, and it is not zero — it is every
-            // owner's total going unknowable at once.
+            // unlistable is the other case, and it is not zero — it is the whole
+            // total going unknowable at once.
             Err(_) if !self.root.exists() => {}
             Err(_) => {
                 state.root_unreadable = true;
@@ -655,10 +743,10 @@ impl SessionAttachments {
             .write_lock
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        // The write charges the session's budget as well. A file stored here is
-        // in the folder the walk counts, and a cache that skipped this path
-        // would under-count its owner by every inline attachment this daemon
-        // ever stored through it.
+        // The write charges the store's total as well. A file stored here is in
+        // the folder the walk counts, and a cache that skipped this path would
+        // under-count by every inline attachment this daemon ever stored through
+        // it — which is the inline path's own unmetered bytes.
         write_locked(&mut guard, &self.session_id, &path, &stored)?;
         Ok(path)
     }
@@ -717,8 +805,8 @@ fn prepare(attachment: &PromptAttachment) -> Result<(&'static str, Vec<u8>), Wir
 /// return. Depositing the same bytes twice into one session is one file and one
 /// increment; a deposit that created no file holds no bytes and is not a budget
 /// question at all. Charging at the top instead would double-count exactly the
-/// replay the content-addressed name exists to make free, until the owner was
-/// refused a file they already own.
+/// replay the content-addressed name exists to make free, until the store was
+/// refusing itself a file it already held.
 ///
 /// Every write into a session folder comes through here — `deposit` and
 /// `materialize` both — so a file written for the inline path is counted like
@@ -789,46 +877,22 @@ fn decode(data: &str) -> Result<Vec<u8>, WireError> {
         .map_err(|_| WireError::new(ErrorCode::InvalidRequest, invalid_base64_message()))
 }
 
-/// The refusal for a deposit whose session id carries no owner to charge.
+/// The refusal for a deposit whose budget cannot be counted.
 ///
-/// A deposit is the unbounded write: the inline path carries one prompt's worth
-/// of base64 and the wire refuses more long before it arrives, while this path
-/// has no ceiling of its own except the owner's budget. An id with nothing to
-/// charge therefore leaves the deposit with no limit at all, and the store
-/// refuses it rather than writing it unmetered — on the id it was handed, with
-/// no caller's help, because a guard whose only enforcement lives in a caller
-/// that has not been written is not a guard.
+/// A session folder could not be listed (`folder_bytes`), so the store's total
+/// is unknown and there is no number to compare against the limit. The refusal
+/// is store-wide because the budget is: one unreadable folder is enough that any
+/// number the check used would sit below the truth, so refusing every deposit is
+/// the honest answer to not knowing. What lifts it is the next walk, not a guess
+/// in the meantime (`seed_locked`).
 ///
-/// The ids this reaches are the M2 form (`session-<pid>-<n>`) and hand-written
-/// test ids. No existing client deposits, so refusing them costs nothing that
-/// exists today; the inline path, which is where those ids come from, keeps
-/// working for them (see `owner_of`).
-///
-/// The cause is the id, so the sentence names the id and not the store: nothing
-/// failed here, and a client can act on it.
-fn no_owner_segment() -> WireError {
-    WireError::new(
-        ErrorCode::InvalidRequest,
-        "This session id carries no owner, so the bytes a deposit would add cannot be charged to a budget.",
-    )
-}
-
-/// The refusal for a deposit whose owner's stored bytes cannot be counted.
-///
-/// One of the owner's session folders could not be listed (`folder_bytes`), so
-/// their total is unknown and there is no number to compare against the limit.
-/// The refusal is scoped to that owner: every other owner's folders said nothing
-/// about theirs, so every other owner keeps depositing. Refusing every deposit
-/// over one unreadable folder would be the other wrong answer — it is why the
-/// walk is retried rather than the store closed (`seed_locked`).
-///
-/// `Io` rather than `InvalidRequest`: the request is well formed and is the same
-/// request the client will make again once the folder can be read. What failed
-/// is the store reading its own tree.
+/// `Io` rather than `InvalidRequest`: the request is well formed, and it is the
+/// same request the client will make again once the folder can be read. What
+/// failed is the store reading its own tree.
 fn budget_unknown() -> WireError {
     WireError::new(
         ErrorCode::Io,
-        "Could not count this owner's stored attachments: a session folder could not be read.",
+        "Could not count this store's attachments: a session folder could not be read.",
     )
 }
 
@@ -858,19 +922,23 @@ fn no_stored_file() -> WireError {
     )
 }
 
-/// The refusal for a deposit that would put an owner past
+/// The refusal for a deposit that would put the store past
 /// [`MAX_ATTACHMENT_OWNER_BYTES`].
 ///
-/// The number that travels is the total the owner would hold afterwards, not
+/// The number that travels is the total the store would hold afterwards, not
 /// what this deposit weighs: the caller's next move is to send fewer bytes, and
 /// how many to cut follows from where the total would have landed. The sentence
 /// is the shape the wire uses for the declared sum it can refuse on its own, so
 /// a client shows both budget refusals alike.
+///
+/// It says "this store" rather than "you": the budget is not per client, and no
+/// client is its owner — there is no spender to name, which is the whole reason
+/// the key was deleted (see the module header).
 fn over_budget(after: u64) -> WireError {
     WireError::new(
         ErrorCode::InvalidRequest,
         format!(
-            "This deposit would take this owner's stored attachments to {after} bytes; the limit is {MAX_ATTACHMENT_OWNER_BYTES}."
+            "This deposit would take the stored attachments in this store to {after} bytes; the limit is {MAX_ATTACHMENT_OWNER_BYTES}."
         ),
     )
 }
@@ -1012,72 +1080,30 @@ fn stored_size(path: &Path) -> Result<u64, WireError> {
     }
 }
 
-/// The owner a session id carries, or `None` for an id that names no owner.
-///
-/// An id is composed as `s.<owner>.<unique>`, so the owner is the middle
-/// segment. This parse deliberately mirrors `owner_from_session_id` in
-/// `session.rs` — the same split in three, the same demand that all three parts
-/// be present — because two parsers that disagreed would let one owner spend
-/// another's budget while the other file read a real owner off the same string.
-///
-/// An id that does not parse names no owner, and what a caller does with that is
-/// the caller's decision rather than a fact about the parse:
-///
-/// - `deposit` refuses it ([`no_owner_segment`]). A deposit is the unbounded
-///   write, so an id nothing can be charged to is an id with no limit, and both
-///   answers that are not a refusal are worse: bucketing these ids under one
-///   made-up owner makes unrelated sessions refuse each other's deposits at a
-///   shared limit, and counting them against nothing is the hole this closes.
-/// - The inline path (`materialize` → `write_locked`) keeps writing for them. It
-///   is capped by the wire before it arrives — one prompt's worth of base64 —
-///   and their bytes are charged to no owner rather than to a guessed one.
-///
-/// The ids that reach either path are the M2 form (`session-<pid>-<n>`) and ids
-/// tests write by hand. Neither can be minted today: `compose_session_id` always
-/// produces the owner-carrying form, so refusing them on the deposit path costs
-/// nothing that exists, and the ones that do exist keep working where they
-/// always did.
-fn owner_of(session_id: &str) -> Option<&str> {
-    let mut parts = session_id.splitn(3, '.');
-    if parts.next() != Some("s") {
-        return None;
-    }
-    let owner = parts.next()?;
-    // The third segment has to be there: `s.<owner>` is a prefix of an id.
-    parts.next()?;
-    if owner.is_empty() {
-        return None;
-    }
-    Some(owner)
-}
-
-/// The bytes one owner holds, summed over the sessions the cache knows, or
+/// Every byte the store holds, summed over the sessions the cache knows, or
 /// `None` when any of them cannot be counted.
 ///
-/// A sum over the map's entries rather than a per-owner integer, because the
-/// integer could not be decremented when a folder is deleted: nothing at that
-/// point remembers what was in it. See the note on `StoreState::sessions`.
+/// A sum over the map's entries rather than one running number, because every
+/// deletion path has to report what a folder held (`remove_session`,
+/// `sweep_older_than`) and a running number cannot. See the note on
+/// `StoreState::sessions`.
 ///
-/// One unknown folder makes the whole answer `None`. A total that skipped the
-/// folder it could not read is a number below the truth, and a budget check
-/// against a number below the truth admits bytes the limit exists to refuse.
-/// Unknown is contagious within one owner and stops there: another owner's
-/// folders are evidence about nothing but themselves, which is what lets one
-/// unreadable folder refuse one owner instead of the whole store.
+/// There is no key to filter by, and that is the point: the store is the unit
+/// the budget is about, so every entry counts. One unknown folder makes the
+/// whole answer `None` — a total that skipped the folder it could not read is a
+/// number below the truth, and a budget check against a number below the truth
+/// admits bytes the limit exists to refuse.
 ///
 /// Saturating, like the wire's own sum of references: this total is a guard, and
 /// a wrap would land it back under the limit it is meant to hold.
-fn owner_total(state: &StoreState, owner: &str) -> Option<u64> {
+fn store_total(state: &StoreState) -> Option<u64> {
     // The root could not be listed, so the map is missing sessions rather than
-    // reporting them: no owner's total is knowable in this state, for any owner.
+    // reporting them: no total is knowable in this state.
     if state.root_unreadable {
         return None;
     }
     let mut total: u64 = 0;
-    for (session_id, bytes) in &state.sessions {
-        if owner_of(session_id) != Some(owner) {
-            continue;
-        }
+    for bytes in state.sessions.values() {
         match bytes {
             SessionBytes::Known(bytes) => total = total.saturating_add(*bytes),
             SessionBytes::Unknown => return None,
@@ -1086,19 +1112,40 @@ fn owner_total(state: &StoreState, owner: &str) -> Option<u64> {
     Some(total)
 }
 
+/// The bytes the cache attributes to one session: a number, a known zero for a
+/// session with no folder, or `None` when the store cannot say.
+///
+/// `None` stands for two different silences that a caller acts on alike: the
+/// folder is there and could not be read ([`SessionBytes::Unknown`]), or the
+/// walk stopped short, so an absent entry is not evidence of absence. `Some(0)`
+/// is a session with no folder in a picture that is complete, and a folder that
+/// is there and holds nothing — the map does not tell those apart, and nothing
+/// that reads it needs it to.
+fn held_bytes(state: &StoreState, session_id: &str) -> Option<u64> {
+    match state.sessions.get(session_id) {
+        Some(SessionBytes::Known(bytes)) => Some(*bytes),
+        Some(SessionBytes::Unknown) => None,
+        // Not in the map. That is a known zero only when the map is the whole
+        // picture: `seeded` is set by a walk that read everything, and left
+        // false by one that did not.
+        None if state.seeded => Some(0),
+        None => None,
+    }
+}
+
 /// The bytes of the files directly inside one session folder, or `None` if it
 /// could not be listed.
 ///
 /// Directly inside is all of it: this store writes files into
 /// `<root>/<session id>/` and makes no subdirectory there, and a directory is
-/// not bytes an owner is holding. Whatever left a file there is counted, not
+/// not bytes this store is holding. Whatever left a file there is counted, not
 /// only what this process wrote — that is what lets the walk correct the cache
 /// rather than confirm it, and a file an interrupted replace left behind is
 /// bytes on the disk either way.
 ///
 /// `None` and not zero. Zero is a claim about a folder and a failed listing is
 /// the absence of one: the bytes that could not be read are exactly the bytes
-/// their owner would be handed as free budget, and nothing here bounds how many
+/// the store would be handed as free budget, and nothing here bounds how many
 /// there are. A folder that is *gone* is a different fact — there is nothing in
 /// it, and `Some(0)` says so — so a folder deleted between the listing of the
 /// root and this call is not reported as unknown, and neither is a file that
@@ -1479,7 +1526,11 @@ mod tests {
         let store = AttachmentStore::new(&temp.0);
         assert!(store.session("..").is_none());
         assert!(store.session(".").is_none());
-        store.remove_session("..");
+        assert_eq!(
+            store.remove_session(".."),
+            Some(0),
+            "an id with no folder dropped nothing"
+        );
         assert!(temp.0.exists(), "the store must not walk out of its root");
     }
 
@@ -1522,7 +1573,14 @@ mod tests {
             .expect("materialized");
 
         let later = SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(60);
-        assert_eq!(store.sweep_older_than(later, ATTACHMENT_RETENTION), 1);
+        let reclaimed = store.sweep_older_than(later, ATTACHMENT_RETENTION);
+        assert_eq!(reclaimed.len(), 1, "one folder was past the limit");
+        assert_eq!(reclaimed[0].0, "s.a.1", "the report names the session");
+        assert_eq!(
+            reclaimed[0].1,
+            Some(clean_png(0x06).len() as u64),
+            "and what its removal took out of the total"
+        );
         assert!(!path.exists(), "the file must go with its folder");
         assert!(!session.dir.exists());
     }
@@ -1541,7 +1599,9 @@ mod tests {
             .expect("materialized");
 
         let soon = SystemTime::now() + Duration::from_secs(60);
-        assert_eq!(store.sweep_older_than(soon, ATTACHMENT_RETENTION), 0);
+        assert!(store
+            .sweep_older_than(soon, ATTACHMENT_RETENTION)
+            .is_empty());
         assert!(path.exists());
     }
 
@@ -1564,10 +1624,9 @@ mod tests {
         file.set_modified(SystemTime::now() + Duration::from_secs(86_400))
             .expect("set mtime");
 
-        assert_eq!(
-            store.sweep_older_than(SystemTime::now(), ATTACHMENT_RETENTION),
-            0
-        );
+        assert!(store
+            .sweep_older_than(SystemTime::now(), ATTACHMENT_RETENTION)
+            .is_empty());
         assert!(path.exists());
     }
 
@@ -1575,10 +1634,9 @@ mod tests {
     fn sweeping_a_store_that_does_not_exist_yet_is_not_an_error() {
         let temp = TempDir::new();
         let store = AttachmentStore::new(&temp.0.join("absent"));
-        assert_eq!(
-            store.sweep_older_than(SystemTime::now(), ATTACHMENT_RETENTION),
-            0
-        );
+        assert!(store
+            .sweep_older_than(SystemTime::now(), ATTACHMENT_RETENTION)
+            .is_empty());
     }
 
     #[test]
@@ -1660,7 +1718,9 @@ mod tests {
         );
 
         assert!(
-            !store.remove_if_still_older_than(&session.dir, sweep_now, ATTACHMENT_RETENTION),
+            store
+                .remove_if_still_older_than(&session.dir, sweep_now, ATTACHMENT_RETENTION)
+                .is_none(),
             "a folder that is no longer old must not be removed under the lock"
         );
         assert!(path.exists(), "the write's folder must survive");
@@ -1680,7 +1740,9 @@ mod tests {
         let now = SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(120);
         assert_eq!(is_older_than(&stray, now, ATTACHMENT_RETENTION), None);
         assert!(
-            !store.remove_if_still_older_than(&stray, now, ATTACHMENT_RETENTION),
+            store
+                .remove_if_still_older_than(&stray, now, ATTACHMENT_RETENTION)
+                .is_none(),
             "a path whose age cannot be read must not be removed"
         );
         assert!(stray.exists(), "nothing may be deleted on a guess");
@@ -1775,7 +1837,7 @@ mod tests {
             std::thread::spawn(move || {
                 started_tx.send(()).expect("signal start");
                 let later = SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(60);
-                let removed = store.sweep_older_than(later, ATTACHMENT_RETENTION);
+                let removed = store.sweep_older_than(later, ATTACHMENT_RETENTION).len();
                 done_tx.send(removed).expect("signal done");
             })
         };
@@ -1827,7 +1889,7 @@ mod tests {
         assert_eq!(first.path, second.path);
         assert_eq!(first.stored_bytes, bytes.len() as u64);
         assert_eq!(
-            store.owner_stored_bytes("a"),
+            store.store_bytes(),
             Some(bytes.len() as u64),
             "one file, one increment"
         );
@@ -1842,12 +1904,12 @@ mod tests {
     }
 
     #[test]
-    fn the_same_bytes_in_two_sessions_of_one_owner_count_twice() {
+    fn the_same_bytes_in_two_sessions_count_twice() {
         // The case an auditor got wrong. Content addressing is scoped to one
         // session folder, so the second session's digest names a second file and
-        // a second contribution to the owner's budget. A cache keyed by digest
+        // a second contribution to the store's total. A cache keyed by digest
         // alone — or a lookup that searched outside the session's folder — would
-        // report one copy here, and the owner would be allowed twice the bytes
+        // report one copy here, and the store would be allowed twice the bytes
         // the limit is for.
         let temp = TempDir::new();
         let store = AttachmentStore::new(&temp.0);
@@ -1860,14 +1922,15 @@ mod tests {
         assert_eq!(first.digest, second.digest, "one image, one digest");
         assert_ne!(first.path, second.path, "two sessions, two files");
         assert!(second.path.exists());
-        assert_eq!(store.owner_stored_bytes("a"), Some(2 * bytes.len() as u64));
-        // The owner is the middle segment of the id and not the whole of it:
-        // another owner's budget question is not answered by these bytes.
-        assert_eq!(store.owner_stored_bytes("b"), Some(0));
+        assert_eq!(store.store_bytes(), Some(2 * bytes.len() as u64));
+        // Per session as well as in total, because the caller that reserves
+        // bytes against a device attributes them one session at a time.
+        assert_eq!(store.session_bytes("s.a.1"), Some(bytes.len() as u64));
+        assert_eq!(store.session_bytes("s.a.2"), Some(bytes.len() as u64));
     }
 
     #[test]
-    fn closing_a_session_drops_only_its_own_bytes_from_the_owner_total() {
+    fn closing_a_session_drops_only_its_own_bytes_from_the_store_total() {
         let temp = TempDir::new();
         let store = AttachmentStore::new(&temp.0);
         let kept = store
@@ -1883,14 +1946,18 @@ mod tests {
             )
             .expect("gone");
         assert_eq!(
-            store.owner_stored_bytes("a"),
+            store.store_bytes(),
             Some(kept.stored_bytes + gone.stored_bytes)
         );
 
-        store.remove_session("s.a.1");
+        assert_eq!(
+            store.remove_session("s.a.1"),
+            Some(gone.stored_bytes),
+            "the close reports what it dropped"
+        );
 
         assert_eq!(
-            store.owner_stored_bytes("a"),
+            store.store_bytes(),
             Some(kept.stored_bytes),
             "the close must drop exactly one session's bytes"
         );
@@ -1913,10 +1980,10 @@ mod tests {
             full.dir.join("photo.png"),
             vec![0u8; MAX_ATTACHMENT_OWNER_BYTES],
         )
-        .expect("fill the owner's budget");
+        .expect("fill the store's budget");
 
         assert_eq!(
-            store.owner_stored_bytes("a"),
+            store.store_bytes(),
             Some(MAX_ATTACHMENT_OWNER_BYTES as u64),
             "the walk must count a folder this process did not write"
         );
@@ -1941,12 +2008,16 @@ mod tests {
         // The refusal is the budget and not the shape of the request: once the
         // folder is gone the same bytes are accepted, which is the close
         // dropping exactly one session's contribution.
-        store.remove_session("s.a.1");
-        assert_eq!(store.owner_stored_bytes("a"), Some(0));
+        assert_eq!(
+            store.remove_session("s.a.1"),
+            Some(MAX_ATTACHMENT_OWNER_BYTES as u64),
+            "the close reports the bytes the filled folder held"
+        );
+        assert_eq!(store.store_bytes(), Some(0));
         let accepted = store.deposit("s.a.2", &item).expect("accepted");
         assert!(accepted.path.exists());
         assert_eq!(accepted.stored_bytes, bytes.len() as u64);
-        assert_eq!(store.owner_stored_bytes("a"), Some(bytes.len() as u64));
+        assert_eq!(store.store_bytes(), Some(bytes.len() as u64));
     }
 
     #[test]
@@ -2076,57 +2147,30 @@ mod tests {
     }
 
     #[test]
-    fn a_deposit_with_no_owner_segment_is_refused() {
-        // The deposit is the unbounded write, so an id with no owner to charge
-        // has no limit at all. The store refuses it itself: the dispatch arm that
-        // will call this has not been written, and a guard that waits for it is
-        // not a guard. The M2 form and hand-written ids are what this reaches,
-        // and no existing client deposits.
-        let temp = TempDir::new();
-        let store = AttachmentStore::new(&temp.0);
-        let item = attachment("photo.png", "image/png", &encoded(&clean_png(0x34)));
-
-        for session_id in ["session-123-1", "s.a", "s..1"] {
-            let error = store.deposit(session_id, &item).expect_err("refused");
-            assert_eq!(error.code, ErrorCode::InvalidRequest, "{session_id}");
-            assert!(
-                error.message.contains("no owner"),
-                "the refusal must name the cause: {}",
-                error.message
-            );
-            assert!(
-                !store.session(session_id).expect("session").dir.exists(),
-                "nothing may be created on a refusal: {session_id}"
-            );
-        }
-        assert!(
-            !temp.0.join(ATTACHMENTS_DIR).exists(),
-            "a refusal may not create the store root either"
-        );
-    }
-
-    #[test]
-    fn the_inline_path_still_writes_for_an_id_with_no_owner() {
-        // That refusal belongs to the deposit and not to the store. The legacy
-        // path keeps working for the same id, because the wire caps it before it
-        // arrives and its bytes are charged to no owner rather than to a guessed
-        // one — the boundary the byte budget does not cross.
+    fn the_inline_path_writes_for_a_legacy_id_and_counts_the_bytes() {
+        // The M2 form has no middle segment to read, and nothing reads one any
+        // more. The inline path keeps writing for it, and its bytes are counted
+        // like any other file's: the write goes through `write_locked`, which
+        // charges the folder it landed in. Before that, an inline attachment was
+        // bytes the store held that no number anywhere knew about.
         let temp = TempDir::new();
         let store = AttachmentStore::new(&temp.0);
         let session = store.session("session-123-1").expect("session");
+        let bytes = clean_png(0x35);
         let path = session
-            .materialize(&attachment(
-                "photo.png",
-                "image/png",
-                &encoded(&clean_png(0x35)),
-            ))
+            .materialize(&attachment("photo.png", "image/png", &encoded(&bytes)))
             .expect("materialized");
 
         assert!(path.exists(), "the inline path must still store the file");
         assert_eq!(
-            store.owner_stored_bytes("a"),
-            Some(0),
-            "bytes no id can charge belong to no owner's total"
+            store.session_bytes("session-123-1"),
+            Some(bytes.len() as u64),
+            "the file the inline path wrote is counted"
+        );
+        assert_eq!(
+            store.store_bytes(),
+            Some(bytes.len() as u64),
+            "and it is part of the store's total"
         );
     }
 
@@ -2157,9 +2201,9 @@ mod tests {
     fn a_root_that_cannot_be_listed_makes_every_total_unknown() {
         // The same failure as the folder above, one level up — and this one is
         // produced for real rather than injected: `attachments` exists and is not
-        // a folder, so the walk cannot learn which sessions exist and no owner's
-        // total is knowable. Every budget question answers unknown, which is the
-        // honest answer when a store cannot read its own root, and the deposit is
+        // a folder, so the walk cannot learn which sessions exist and no total is
+        // knowable. Every budget question answers unknown, which is the honest
+        // answer when a store cannot read its own root, and the deposit is
         // refused before it writes, so an unreadable root does not become the
         // hole instead.
         let temp = TempDir::new();
@@ -2168,7 +2212,7 @@ mod tests {
 
         let store = AttachmentStore::new(&temp.0);
         assert_eq!(
-            store.owner_stored_bytes("a"),
+            store.store_bytes(),
             None,
             "a root that cannot be listed is not an empty store"
         );
@@ -2204,7 +2248,7 @@ mod tests {
     /// entry stands — and asserts the consequence, which is the part the store is
     /// responsible for. What this does *not* pin is `seed_locked` declining to set
     /// `seeded`: that needs the real failure, and the comment above the assertion
-    /// in `an_unknown_folder_refuses_only_its_owner` says so.
+    /// in `an_unknown_folder_refuses_every_deposit` says so.
     fn make_unknown(store: &AttachmentStore, session_id: &str) {
         let mut state = store
             .write_lock
@@ -2216,14 +2260,31 @@ mod tests {
             .insert(session_id.to_string(), SessionBytes::Unknown);
     }
 
+    /// Clear `seeded`, which is the state a walk that could not read a folder
+    /// leaves behind (`seed_locked`): the next budget question walks again and
+    /// rebuilds the map from the tree.
+    ///
+    /// Same caveat as `make_unknown` — the real state comes from a failed
+    /// `read_dir`, which a test cannot produce portably — so the test sets the
+    /// flag the walk would have left and asserts what the store does with it.
+    fn make_unseeded(store: &AttachmentStore) {
+        let mut state = store
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.seeded = false;
+    }
+
     #[test]
-    fn an_unknown_folder_refuses_only_its_owner() {
-        // One folder the walk could not read makes one owner's total unknown, and
-        // an unknown total is a refusal rather than a number rounded down: the
-        // bytes in that folder are exactly the budget a zero would hand back. The
-        // refusal is also scoped — every other owner's total is still a number, so
-        // every other owner keeps depositing — which is why the store does not
-        // refuse every deposit over one unreadable folder.
+    fn an_unknown_folder_refuses_every_deposit() {
+        // One folder the walk could not read makes the total unknown, and an
+        // unknown total is a refusal rather than a number rounded down: the bytes
+        // in that folder are exactly the budget a zero would hand back. The
+        // refusal is store-wide because the budget is — every deposit is checked
+        // against the same number, so while that number is unknowable every
+        // deposit is refused, including deposits into sessions whose own folders
+        // read perfectly well. That is what one budget instead of one per
+        // connection costs, and the rebuilt picture is what lifts it.
         let temp = TempDir::new();
         let store = AttachmentStore::new(&temp.0);
         let balanced = store
@@ -2231,43 +2292,214 @@ mod tests {
                 "s.b.1",
                 &attachment("b.png", "image/png", &encoded(&clean_png(0x31))),
             )
-            .expect("the other owner's deposit");
+            .expect("an unrelated session's deposit");
 
         make_unknown(&store, "s.a.1");
 
         assert_eq!(
-            store.owner_stored_bytes("a"),
+            store.store_bytes(),
             None,
             "an unreadable folder is not a zero"
         );
-        let error = store
+        for session_id in ["s.a.1", "s.b.2"] {
+            let error = store
+                .deposit(
+                    session_id,
+                    &attachment("a.png", "image/png", &encoded(&clean_png(0x32))),
+                )
+                .expect_err("refused");
+            assert_eq!(error.code, ErrorCode::Io, "{session_id}");
+            assert!(
+                error.message.contains("could not be read"),
+                "the refusal must name the real cause: {}",
+                error.message
+            );
+            assert!(
+                !store.session(session_id).expect("session").dir.exists(),
+                "nothing may be created on a refusal: {session_id}"
+            );
+        }
+
+        // And it lifts the way the design says it does: a picture the walk has
+        // rebuilt has no unknown in it, and what was refused is accepted.
+        make_unseeded(&store);
+        assert_eq!(store.store_bytes(), Some(balanced.stored_bytes));
+        let accepted = store
             .deposit(
                 "s.a.1",
                 &attachment("a.png", "image/png", &encoded(&clean_png(0x32))),
             )
-            .expect_err("refused");
-        assert_eq!(error.code, ErrorCode::Io);
-        assert!(
-            error.message.contains("could not be read"),
-            "the refusal must name the real cause: {}",
-            error.message
+            .expect("accepted once the picture is rebuilt");
+        assert!(accepted.path.exists());
+    }
+
+    #[test]
+    fn two_sessions_with_unrelated_id_shapes_count_toward_one_total() {
+        // Why there is no key. One id carries a middle segment that looks like an
+        // owner and is a connection token; another is the M2 form, which has no
+        // middle segment at all. Both are folders in one store, and both count
+        // against one budget: a total keyed on that segment would have put these
+        // in different buckets, which is how one user's twenty megabytes became
+        // two budgets for two clients.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let bytes = clean_png(0x41);
+        let item = attachment("photo.png", "image/png", &encoded(&bytes));
+
+        let token = store
+            .deposit("s.a.1", &item)
+            .expect("a session with a token");
+        let other = store
+            .deposit("s.b.1", &item)
+            .expect("a session with a different token");
+        let legacy = store
+            .deposit("session-123-1", &item)
+            .expect("a session with no token at all");
+
+        assert_eq!(token.digest, other.digest, "one image, one digest");
+        assert_eq!(legacy.digest, token.digest);
+        assert_eq!(
+            store.store_bytes(),
+            Some(3 * bytes.len() as u64),
+            "three folders, three copies, one budget"
         );
-        assert!(
-            !store.session("s.a.1").expect("session").dir.exists(),
-            "nothing may be created on a refusal"
+        assert_eq!(
+            store.session_bytes("session-123-1"),
+            Some(bytes.len() as u64)
+        );
+        assert!(legacy.path.exists());
+    }
+
+    #[test]
+    fn session_bytes_answers_for_one_session_or_not_at_all() {
+        // The reader a caller attributes bytes with when it keeps a counter per
+        // device rather than one for the store.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let bytes = clean_png(0x42);
+        let deposited = store
+            .deposit(
+                "s.a.1",
+                &attachment("photo.png", "image/png", &encoded(&bytes)),
+            )
+            .expect("deposited");
+
+        assert_eq!(store.session_bytes("s.a.1"), Some(deposited.stored_bytes));
+        assert_eq!(
+            store.session_bytes("s.a.2"),
+            Some(0),
+            "a session with no folder holds nothing, which is a number"
+        );
+        assert_eq!(
+            store.session_bytes(".."),
+            None,
+            "an id the store will not turn into a folder is not an empty session"
         );
 
-        assert_eq!(store.owner_stored_bytes("b"), Some(balanced.stored_bytes));
-        let keeps_working = store
-            .deposit(
-                "s.b.2",
-                &attachment("b2.png", "image/png", &encoded(&clean_png(0x33))),
-            )
-            .expect("the other owner keeps depositing");
-        assert!(keeps_working.path.exists());
+        make_unknown(&store, "s.a.2");
         assert_eq!(
-            store.owner_stored_bytes("b"),
-            Some(balanced.stored_bytes + keeps_working.stored_bytes)
+            store.session_bytes("s.a.2"),
+            None,
+            "a folder that could not be read is unknown, not zero"
+        );
+        assert_eq!(
+            store.session_bytes("s.a.1"),
+            Some(deposited.stored_bytes),
+            "and one unknown folder does not taint a session that was read"
+        );
+    }
+
+    #[test]
+    fn closing_a_session_reports_what_it_dropped() {
+        // The number a caller subtracts from what it had reserved.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let first = store
+            .deposit(
+                "s.a.1",
+                &attachment("a.png", "image/png", &encoded(&clean_png(0x43))),
+            )
+            .expect("first");
+        let second = store
+            .deposit(
+                "s.a.2",
+                &attachment("b.png", "image/png", &encoded(&clean_png(0x44))),
+            )
+            .expect("second");
+
+        assert_eq!(
+            store.remove_session("s.a.1"),
+            Some(first.stored_bytes),
+            "the bytes the folder held"
+        );
+        assert_eq!(store.store_bytes(), Some(second.stored_bytes));
+        assert!(second.path.exists(), "the other session's folder stays");
+
+        // A second close, a session that never existed, and an id with no folder
+        // all dropped nothing, and they answer `Some(0)` rather than `None`:
+        // `None` means "do not release, the store cannot say", so a caller that
+        // read it here would hold a reservation it should have released.
+        assert_eq!(store.remove_session("s.a.1"), Some(0));
+        assert_eq!(store.remove_session("s.never.9"), Some(0));
+        assert_eq!(store.remove_session(".."), Some(0));
+
+        // Unknown is the one answer a caller must not act on.
+        make_unknown(&store, "s.a.3");
+        assert_eq!(
+            store.remove_session("s.a.3"),
+            None,
+            "a folder the store could not count reports no number"
+        );
+        assert_eq!(store.store_bytes(), Some(second.stored_bytes));
+    }
+
+    #[test]
+    fn a_sweep_reports_what_it_reclaimed() {
+        // The sweep takes bytes out of the store with no caller asking, and it is
+        // the path a per-device counter cannot see unless the store says what
+        // went: a folder deleted here is a reservation elsewhere that nothing
+        // released. So every removal travels with the session whose folder it was
+        // and the bytes it reclaimed.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let swept = store
+            .deposit(
+                "s.a.1",
+                &attachment("a.png", "image/png", &encoded(&clean_png(0x45))),
+            )
+            .expect("swept");
+        let kept = store
+            .deposit(
+                "s.a.2",
+                &attachment("b.png", "image/png", &encoded(&clean_png(0x46))),
+            )
+            .expect("kept");
+
+        // The sweep's clock is `later`, so the kept folder has to be newer than
+        // the limit as measured against it: touching the file it holds puts it
+        // there, the same trick successive retention tests use.
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&kept.path)
+            .expect("open");
+        file.set_modified(SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(30))
+            .expect("set mtime");
+
+        let later = SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(60);
+        let reclaimed = store.sweep_older_than(later, ATTACHMENT_RETENTION);
+
+        assert_eq!(reclaimed.len(), 1, "one folder was past the limit");
+        assert_eq!(reclaimed[0].0, "s.a.1", "the report names the session");
+        assert_eq!(
+            reclaimed[0].1,
+            Some(swept.stored_bytes),
+            "and the bytes it reclaimed"
+        );
+        assert!(kept.path.exists(), "the fresh folder stays");
+        assert_eq!(
+            store.store_bytes(),
+            Some(kept.stored_bytes),
+            "what the sweep reclaimed has left the total"
         );
     }
 }
