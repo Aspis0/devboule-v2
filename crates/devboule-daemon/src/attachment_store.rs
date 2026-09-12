@@ -157,6 +157,15 @@ enum SessionBytes {
 #[derive(Clone)]
 pub(crate) struct AttachmentStore {
     root: PathBuf,
+    /// Whether this store's root is a folder of its own.
+    ///
+    /// False when the root's name is a link or a junction: everything under it
+    /// is somebody else's tree, and every path this store builds starts at the
+    /// root. It is one field rather than a check per call because it is a
+    /// property of the root as this store found it, and the open is the one
+    /// moment nothing else is writing into it — the same moment the scratch
+    /// sweep runs in. What it closes, path by path, is on [`AttachmentStore::new`].
+    available: bool,
     /// Serializes writes across sessions. One process owns the runtime dir
     /// (single-instance lock), so this is enough to keep two client threads
     /// materializing the same image from racing over the same temp file. It is
@@ -212,6 +221,19 @@ const RESERVED_DEVICE_NAMES: [&str; 22] = [
 ///   created, so `s.a.1.` and `s.a.1` would be one folder under two cache keys:
 ///   the cache would charge it twice while the walk, which reads the name the
 ///   filesystem kept, counts it once.
+/// - A name carrying an ASCII upper-case byte, which is the same collision one
+///   step further out. Windows resolves folder names case-insensitively while
+///   the cache is keyed by the id as written, so `s.a.1` and `S.A.1` are one
+///   folder on the disk and two keys in the map: the budget would charge that
+///   folder twice, and closing either session would delete the other's files.
+///   Every id the daemon mints is lower-case — `compose_session_id` fills the
+///   middle segment from a `process-<pid>`/`app-<pid>`/`client`/`daemon` token
+///   and the last from `format!("{:08x}", counter)` — so this refuses nothing
+///   the daemon composes, which is asserted rather than assumed in
+///   `every_id_the_daemon_composes_is_a_folder_name`. Folding the name to lower
+///   case instead would be the same mistake from the other side: it merges two
+///   distinct sessions into one folder on a case-sensitive filesystem, and the
+///   id is a name this store does not get to reinterpret.
 ///
 /// What the alphabet buys, and why it has to be the protocol's answer rather
 /// than a locally convenient one: no path separator, so a join can only append;
@@ -226,6 +248,9 @@ fn is_session_folder_name(session_id: &str) -> bool {
     if session_id == "." || session_id == ".." || session_id.ends_with('.') {
         return false;
     }
+    if session_id.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return false;
+    }
     let stem = session_id.split('.').next().unwrap_or(session_id);
     !RESERVED_DEVICE_NAMES
         .iter()
@@ -233,19 +258,52 @@ fn is_session_folder_name(session_id: &str) -> bool {
 }
 
 impl AttachmentStore {
+    /// Open the store over one runtime directory.
+    ///
+    /// # The root's own name is checked first
+    ///
+    /// The store's root is the one folder every other path here starts at, so a
+    /// link or junction at its name is not one hole among the redirects the rest
+    /// of this file refuses: it is the store being somebody else's tree, one
+    /// level above every path this file already guards. What is refused while
+    /// the root is one, and why refusing beats guarding each call:
+    ///
+    /// - The scratch sweep below runs here, before anything has been written,
+    ///   and it deletes `*.tmp`/`*.bak` files. Through a junction that sweep is
+    ///   a deletion in another tree, so the walk returns before its first
+    ///   entry (`harden_and_sweep_in_store`, which is also the walk that applies
+    ///   the DACL).
+    /// - [`AttachmentStore::session`] hands back no folder, which is what makes
+    ///   `deposit`, `resolve` and `remove_session` refusals rather than reads and
+    ///   writes into that tree — the shape the id rule already uses, and the
+    ///   reason there is no per-call check to forget.
+    /// - [`AttachmentStore::sweep_older_than`] finds no candidates, so retention
+    ///   cannot `remove_dir_all` in it.
+    /// - [`AttachmentStore::store_bytes`] and [`AttachmentStore::session_bytes`]
+    ///   answer `None`. Never a number: a walk of a junction reports the bytes
+    ///   of the tree it names, and a total that counts somebody else's files
+    ///   would be the budget this store's limit is enforced against.
+    ///
+    /// # The walk this open runs
+    ///
+    /// The store's open, and the one moment a walk of every folder is
+    /// certain not to race a write: this instance does not exist yet, and the
+    /// daemon holds the single-instance lock on the runtime directory
+    /// (`crate::lock`, and the struct comment above), so no other process is
+    /// writing into this root either. The walk does two things and is best
+    /// effort at both — the scratch a killed process left behind, which every
+    /// later walk would otherwise charge to the budget for the life of the
+    /// folder and which no `resolve` can ever name (see [`discard_scratch`]),
+    /// and the DACL of every folder it sees, because a folder that predates
+    /// this store is a folder no write has been through, and `resolve` reads
+    /// before the first write (`restrict_to_current_user`).
     pub(crate) fn new(runtime_dir: &Path) -> Self {
         let root = runtime_dir.join(ATTACHMENTS_DIR);
-        // The store's open, and the one moment a walk of every folder is
-        // certain not to race a write: this instance does not exist yet, and the
-        // daemon holds the single-instance lock on the runtime directory
-        // (`crate::lock`, and the struct comment above), so no other process is
-        // writing into this root either. What the walk is for is the scratch a
-        // killed process left behind — see [`discard_scratch`] — which every
-        // later walk would otherwise charge to the budget for the life of the
-        // folder, and which no `resolve` can ever name.
-        discard_scratch_in_store(&root);
+        let available = !is_redirect(&root);
+        harden_and_sweep_in_store(&root);
         Self {
             root,
+            available,
             write_lock: Arc::new(Mutex::new(StoreState::default())),
         }
     }
@@ -255,6 +313,13 @@ impl AttachmentStore {
     /// `None` for anything that is not a folder name this store will use, which
     /// is the whole of [`is_session_folder_name`] and is deliberately stricter
     /// than the wire's `validate_session_id`.
+    ///
+    /// `None` as well when the root itself is a link or a junction
+    /// ([`AttachmentStore::new`]): the folder this would hand back is a folder in
+    /// the tree the root names, and every caller here would then read it, write
+    /// it or delete it as if it were the store's. One door closed is what keeps
+    /// those three refusals instead of three holes, and an id that names nothing
+    /// is already a state all three handle.
     ///
     /// The comment this replaces said that refusing `.` and `..` "removes the
     /// only way a session id could name a directory outside the store". That was
@@ -268,6 +333,9 @@ impl AttachmentStore {
     /// loses that argument eventually, so the rule is an alphabet instead, and
     /// everything outside it is `None`.
     pub(crate) fn session(&self, session_id: &str) -> Option<SessionAttachments> {
+        if !self.available {
+            return None;
+        }
         if !is_session_folder_name(session_id) {
             return None;
         }
@@ -358,6 +426,22 @@ impl AttachmentStore {
     /// `now` is a parameter so the retention rule can be tested without moving
     /// real file timestamps around.
     ///
+    /// A store whose root is itself a link or a junction sweeps nothing and
+    /// reports nothing: a `remove_dir_all` reached through the root deletes in
+    /// the tree the root names, and no folder under it is this store's
+    /// ([`AttachmentStore::new`]).
+    ///
+    /// An entry that is a link is skipped for the same reason one level down.
+    /// Measured rather than assumed, because the obvious reading of the line
+    /// below is the wrong one: `DirEntry::metadata` does *not* follow the name —
+    /// on Windows it answers from the listing, and the listing describes the
+    /// reparse point, so a junction to a folder reports `is_dir == false` there
+    /// just as a symlink does (and `lstat` answers the same on POSIX). The
+    /// filter below therefore already passes a redirect over on today's
+    /// toolchain, and this check says so outright instead of resting a deletion
+    /// on a classification that `is_redirect` exists because it has changed
+    /// across versions.
+    ///
     /// # Why the shape is a list and not a total
     ///
     /// A caller keeping a counter per device has to subtract from the right one,
@@ -381,12 +465,20 @@ impl AttachmentStore {
         now: SystemTime,
         max_age: Duration,
     ) -> Vec<(String, Option<u64>)> {
+        if !self.available {
+            return Vec::new();
+        }
         let Ok(entries) = std::fs::read_dir(&self.root) else {
             // No store yet is the normal state of a fresh install.
             return Vec::new();
         };
         let mut reclaimed: Vec<(String, Option<u64>)> = Vec::new();
         for entry in entries.flatten() {
+            // Before the metadata read, because that read is the one that
+            // follows the name.
+            if is_redirect(&entry.path()) {
+                continue;
+            }
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
@@ -501,11 +593,11 @@ impl AttachmentStore {
     ///
     /// Depositing bytes this session already holds is accepted and adds
     /// nothing: that deposit creates no file, so it holds no bytes and asks no
-    /// budget question. The exists check is therefore the first thing the guard
-    /// does, and neither the limit nor an unknown total can refuse a file the
-    /// session already has. The one refusal that comes before it is the id's: an
-    /// id that names no folder is refused whether or not those bytes are already
-    /// stored.
+    /// budget question. The already-stored check is therefore the first thing the
+    /// guard does ([`already_stored`], and only a regular file answers yes), and
+    /// neither the limit nor an unknown total can refuse a file the session
+    /// already has. The one refusal that comes before it is the id's: an id that
+    /// names no folder is refused whether or not those bytes are already stored.
     pub(crate) fn deposit(
         &self,
         session_id: &str,
@@ -582,6 +674,12 @@ impl AttachmentStore {
         let Some(session) = self.session(session_id) else {
             return Err(no_such_session());
         };
+        // The folder before the file: `find_stored` refuses an entry that is a
+        // link, and a session folder that is one is the same refusal one level
+        // up — a listing through it hands a provider a path outside the store,
+        // and this call is the read side of the hole `refuse_redirect` guards
+        // ([`AttachmentStore::new`] refuses the root, this refuses the folder).
+        refuse_redirect(&session.dir, "the session folder")?;
         let Some(path) = find_stored(&session.dir, digest, extension_hint) else {
             return Err(no_stored_file());
         };
@@ -601,7 +699,11 @@ impl AttachmentStore {
     /// `None` is not zero and must not be rendered as one: it means a folder
     /// could not be listed, so the store's bytes cannot be counted at all. A
     /// caller with a budget to enforce refuses on `None` the way `deposit`
-    /// does; a caller showing a number has to say it does not know.
+    /// does; a caller showing a number has to say it does not know. A root that
+    /// is itself a link or a junction is `None` before the walk starts, for the
+    /// same reason: the folders a walk would find are in the tree the root names,
+    /// and what they hold is not this store's to count
+    /// ([`AttachmentStore::new`]).
     ///
     /// It takes the store's write lock, and `std::sync::Mutex` is not
     /// reentrant. Calling it from inside a guarded section is a hang, which is
@@ -609,6 +711,9 @@ impl AttachmentStore {
     /// the guard it already holds, because its check and the write it gates have
     /// to be one critical section. The two are the same sum.
     pub(crate) fn store_bytes(&self) -> Option<u64> {
+        if !self.available {
+            return None;
+        }
         let mut state = self
             .write_lock
             .lock()
@@ -626,12 +731,15 @@ impl AttachmentStore {
     /// to: a session id's middle segment is a connection token and not an
     /// identity (see the module header), and a folder is otherwise just a name.
     ///
-    /// `None` is not zero, and it is the same two silences the total has: the
+    /// `None` is not zero, and it is the same silences the total has: the
     /// session is one the walk could not read, or the root itself could not be
     /// listed. An id with no folder behind it is `Some(0)` — it holds nothing —
-    /// and an id the store will not turn into a folder at all (`.` or `..`) is
-    /// `None`, because there is no session to report on rather than an empty
-    /// one.
+    /// and an id the store will not turn into a folder at all (`.` or `..`, or an
+    /// id this store refuses as a name, or any id at all when the root is a link)
+    /// is `None`, because there is no session to report on rather than an empty
+    /// one. The last of those is the store's own refusal read back: `session`
+    /// answers `None` for a root that is not its own, and a session this store
+    /// cannot reach is not a session holding zero bytes.
     ///
     /// Same lock and the same warning as [`AttachmentStore::store_bytes`]: a
     /// `std::sync::Mutex` is not reentrant, and this takes the guard.
@@ -898,35 +1006,64 @@ fn discard_scratch(dir: &Path) -> u64 {
     reclaimed
 }
 
-/// [`discard_scratch`] over every session folder under a root.
+/// Give every folder under a root the current user's DACL, and delete the
+/// scratch this store's own writer leaves behind.
 ///
-/// Best effort and silent: a store whose root cannot be listed must still open,
-/// and scratch that survives here is charged again only until the next write
-/// into that folder, which removes it under the lock. Folders that are redirects
-/// are skipped — a junction in this root names somebody else's tree, and this
-/// store does not delete files in one.
-fn discard_scratch_in_store(root: &Path) {
+/// Two duties in one walk because both are about a folder this store did not
+/// write into yet, and both are cheap to do once at the open:
+///
+/// *The DACL.* [`restrict_to_current_user`] otherwise runs only in
+/// [`prepare_session_dir`], which is the first *write*, and `resolve` reads a
+/// folder before any write has been through it: a folder an earlier build left
+/// behind keeps whatever its parent granted — on a default Windows profile that
+/// includes accounts that are not this user. Applying it is idempotent, so a
+/// folder this store later writes into is narrowed twice and says the same
+/// thing.
+///
+/// *The scratch.* See [`discard_scratch`].
+///
+/// Best effort and silent at both: a store whose root cannot be listed must
+/// still open, and scratch that survives here is charged again only until the
+/// next write into that folder, which removes it under the lock. Folders that
+/// are redirects are skipped — a junction in this root names somebody else's
+/// tree, and this store does not delete files in one nor set a DACL on one — and
+/// so is a root that is itself a redirect, which is the case
+/// [`AttachmentStore::new`] has already answered for every other call.
+fn harden_and_sweep_in_store(root: &Path) {
+    if is_redirect(root) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
+    // A listing that succeeded is a root that is there and is a folder — a
+    // missing root and a file named like one both land in the `return` above —
+    // so the root's own DACL is applied exactly when the root exists.
+    let _ = restrict_to_current_user(root);
     for entry in entries.flatten() {
         let path = entry.path();
         if is_redirect(&path) {
             continue;
         }
         if entry.metadata().is_ok_and(|metadata| metadata.is_dir()) {
+            let _ = restrict_to_current_user(&path);
             discard_scratch(&path);
         }
     }
 }
 
-/// Refuse to touch a path when the name is a link rather than a folder or file.
+/// Refuse a path when the name is a link rather than a folder or file.
 ///
 /// Windows first, because that is where the damage is concrete: a junction at
 /// the session folder's name turns a deposit into a write into another tree and
 /// `remove_session` into a delete of one, and `fs::write` of the temp file
 /// follows a symlink planted at the temp's name. A POSIX symlink is the same
 /// hole with a different spelling, so the check is not `#[cfg]`-ed.
+///
+/// The read paths are the same hole with the arrow the other way, which is why
+/// the refusal is worded for both: a listing through a junction is how a
+/// `resolve` hands a provider a path outside the store, and a link at a digest's
+/// name is how it hands back a file the store never wrote.
 ///
 /// `symlink_metadata` and not `metadata`: the question is what the name is, not
 /// what it points at, and a dangling link is still a link. The refusal names the
@@ -939,7 +1076,7 @@ fn refuse_redirect(path: &Path, what: &str) -> Result<(), WireError> {
     Err(WireError::new(
         ErrorCode::Io,
         format!(
-            "Refusing to write an attachment through a link or junction: {what} at {} is a reparse point.",
+            "Refusing to reach an attachment through a link or junction: {what} at {} is a reparse point.",
             path.display()
         ),
     ))
@@ -978,6 +1115,19 @@ fn is_redirect(path: &Path) -> bool {
     false
 }
 
+/// Whether `path` names a regular file of this store's, which is a file and not
+/// a link to one.
+///
+/// [`Path::is_file`] is not this question: it follows the name, so a symlink
+/// planted at a digest's name answers for the file it points at — anywhere on
+/// the machine — and a listing that used it would hand a provider a path outside
+/// the store. The name has to be a stored file itself, so the answer is
+/// [`symlink_metadata`](std::fs::symlink_metadata) and not `metadata`, with
+/// [`is_redirect`] covering the reparse tag `FileType` does not name.
+fn is_regular_file(path: &Path) -> bool {
+    !is_redirect(path) && std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file())
+}
+
 /// Create the two folders a write needs, and make them private.
 ///
 /// The order is the point: the root first, then its DACL, then the session
@@ -991,8 +1141,9 @@ fn is_redirect(path: &Path) -> bool {
 ///
 /// The DACL is applied whether or not this call created the folder. It replaces
 /// the DACL rather than merging into it (see `security.rs`), so it is idempotent,
-/// and a folder that predates this rule is repaired by the next write into it
-/// instead of staying weak for the rest of its life.
+/// and a folder that predates this rule is repaired at the store's open
+/// (`harden_and_sweep_in_store`) and, for a folder that appears after the open,
+/// by the next write into it instead of staying weak for the rest of its life.
 ///
 /// Both folders are checked for a redirect *before* anything is created: a
 /// junction at the session folder's name is a store that would write into
@@ -1039,6 +1190,37 @@ fn restrict_to_current_user(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether the store already holds exactly this file.
+///
+/// A name that is a link, a junction or a directory is not "already stored": it
+/// is a refusal. `Path::exists` follows the name, so the check it replaces said
+/// *success* to a junction planted at a digest's name and to a folder sitting
+/// there — and `deposit` then reported a file somebody else wrote, sized by
+/// [`stored_size`], as this session's stored attachment, while `write_locked`
+/// charged nothing and wrote nothing. The two facts a stored file is have to
+/// stay the same fact: the bytes at that name are the digest's bytes, and they
+/// are the store's.
+///
+/// The redirect check is first, and `Ok(false)` is only ever reached for a name
+/// that is not there: an entry that is there and is not a regular file is a
+/// refusal rather than "nothing to do" — a deposit that treated it as stored
+/// would report what is not, and one that treated it as absent would write over
+/// a name something else owns.
+fn already_stored(path: &Path) -> Result<bool, WireError> {
+    refuse_redirect(path, "the file this write would create")?;
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(WireError::new(
+            ErrorCode::Io,
+            format!(
+                "Could not store an attached file: {} is not a stored file.",
+                path.display()
+            ),
+        )),
+        Err(_) => Ok(false),
+    }
+}
+
 /// The one sequence every write into this store runs, in the order it has to run
 /// in.
 ///
@@ -1054,9 +1236,11 @@ fn restrict_to_current_user(_path: &Path) -> std::io::Result<()> {
 /// 1. [`AttachmentStore::seed_locked`]: the total is a sum over the cache, and
 ///    the cache is built by one walk, so a budget question asked before the walk
 ///    is a question about nothing.
-/// 2. The exists check: bytes this session already holds are one file and one
-///    contribution, so they are not a budget question at all, and neither the
-///    limit nor an unknown total may refuse them. Before the check, not after.
+/// 2. The already-stored check ([`already_stored`]): bytes this session already
+///    holds are one file and one contribution, so they are not a budget question
+///    at all, and neither the limit nor an unknown total may refuse them. Before
+///    the check, not after. Only a regular file answers yes — a name taken by a
+///    folder or by a link is a refusal, not a store.
 /// 3. [`store_total`]: a total that could not be computed is not a total of
 ///    zero, and a check against a number below the truth admits exactly the
 ///    bytes the limit exists to refuse.
@@ -1075,7 +1259,7 @@ fn admit_locked(
     stored: &[u8],
 ) -> Result<(), WireError> {
     AttachmentStore::seed_locked(root, state);
-    if path.exists() {
+    if already_stored(path)? {
         // The bytes are already here: no file, no bytes, no budget question. A
         // store whose total cannot be computed still hands back a file the
         // session already holds.
@@ -1171,7 +1355,12 @@ fn write_locked(
     path: &Path,
     stored: &[u8],
 ) -> Result<(), WireError> {
-    if path.exists() {
+    // The same check the depositor ran, and it cannot be skipped on any path
+    // into this function: `materialize`'s inline path reaches here through
+    // `admit_locked`, but this is the only thing that creates a file, so the
+    // name is answered for here as well. A name that is a link or a folder is a
+    // refusal ([`already_stored`]) and not "nothing to do".
+    if already_stored(path)? {
         return Ok(());
     }
     let dir = path.parent().ok_or_else(|| {
@@ -1416,7 +1605,10 @@ fn hinted_extension(hint: &str) -> Option<&'static str> {
 fn find_stored(dir: &Path, digest: &str, hint: Option<&str>) -> Option<PathBuf> {
     if let Some(extension) = hint.and_then(hinted_extension) {
         let path = dir.join(format!("{digest}.{extension}"));
-        if path.is_file() {
+        // `is_regular_file` and not `is_file`: a link planted at the digest's
+        // name follows to a file anywhere on the machine, and this function's
+        // answer is a path a provider is asked to read ([`is_regular_file`]).
+        if is_regular_file(&path) {
             return Some(path);
         }
     }
@@ -1427,7 +1619,7 @@ fn find_stored(dir: &Path, digest: &str, hint: Option<&str>) -> Option<PathBuf> 
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| STORED_EXTENSIONS.contains(&extension));
-        if names_the_digest && names_a_stored_file && path.is_file() {
+        if names_the_digest && names_a_stored_file && is_regular_file(&path) {
             return Some(path);
         }
     }
@@ -3016,15 +3208,48 @@ mod tests {
         }
     }
 
-    /// Make `link` a junction (Windows) or a symlink (POSIX) onto `target`.
+    /// Make `link` a link onto `target`, with the strongest link this machine
+    /// will make.
     ///
-    /// A junction rather than a symlink on Windows: `mklink /J` needs no
-    /// privilege and `CreateSymbolicLink` needs SeCreateSymbolicLinkPrivilege or
-    /// developer mode (`acp_host.rs` makes the same choice, for the same
-    /// reason). Both are reparse points, which is the property these tests are
-    /// about. `false` when the platform refused to make one, so a caller can say
-    /// that instead of asserting on a platform detail.
+    /// A symlink first, because it is the spelling that covers both kinds of
+    /// target — a file and a folder — and it is what a hostile process would
+    /// plant when it can. `CreateSymbolicLink` needs SeCreateSymbolicLinkPrivilege
+    /// or developer mode, so the fallback is the junction `mklink /J` any
+    /// unprivileged user can create (`acp_host.rs` makes the same choice, for the
+    /// same reason); a junction only accepts a folder, so a file target on a
+    /// machine that refused the symlink has no link at all. Both are reparse
+    /// points and on POSIX both are a symlink, which is the property these tests
+    /// are about.
+    ///
+    /// `false` when no mechanism worked — and a caller must fail on it rather
+    /// than return: a test that skipped itself would report the property green
+    /// without having exercised it, which is worse than no test.
     fn link_onto(link: &Path, target: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::{symlink_dir, symlink_file};
+            let linked = if target.is_dir() {
+                symlink_dir(target, link).is_ok()
+            } else {
+                symlink_file(target, link).is_ok()
+            };
+            if linked {
+                return true;
+            }
+        }
+        junction_onto(link, target)
+    }
+
+    /// Make `link` a junction onto `target` on Windows, and the symlink POSIX
+    /// has instead of one.
+    ///
+    /// The unprivileged Windows spelling: `CreateSymbolicLink` wants a privilege
+    /// or developer mode, and `mklink /J` wants neither, so a junction is what a
+    /// hostile same-user process can plant on any machine. [`link_onto`] reaches
+    /// for this only as a fallback, because a junction takes a folder and not a
+    /// file; the tests that plant a folder redirect use it directly, so the
+    /// spelling that needs no privilege is the one they exercise.
+    fn junction_onto(link: &Path, target: &Path) -> bool {
         #[cfg(windows)]
         {
             std::process::Command::new("cmd")
@@ -3247,7 +3472,7 @@ mod tests {
         let session = store.session("s.a.1").expect("session");
         std::fs::create_dir_all(&store.root).expect("store root");
         assert!(
-            link_onto(&session.dir, &elsewhere.0),
+            junction_onto(&session.dir, &elsewhere.0),
             "could not create the junction this test is about"
         );
 
@@ -3379,5 +3604,345 @@ mod tests {
             Some(stored.stored_bytes + second.stored_bytes),
             "a reopened store counts the folder without the scratch"
         );
+    }
+
+    #[test]
+    fn a_folder_where_the_digest_names_a_file_refuses_the_deposit() {
+        // `exists` follows nothing and is true of a folder, so the check it
+        // replaced answered "already stored, success" for a directory sitting at
+        // a digest's name: `deposit` reported a stored attachment that is not a
+        // file and `stored_size` sized the directory. Success has to mean the
+        // store holds *this* file. No privilege is needed to plant a folder,
+        // which is why this is the regression that runs everywhere.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let image = attachment("photo.png", "image/png", &encoded(&clean_png(0x70)));
+        let stored = store.deposit("s.a.1", &image).expect("deposited");
+
+        std::fs::remove_file(&stored.path).expect("take the stored file away");
+        std::fs::create_dir_all(&stored.path).expect("a folder at the digest name");
+
+        let error = store
+            .deposit("s.a.1", &image)
+            .expect_err("a folder at the digest name was reported as a stored file");
+        assert_eq!(error.code, ErrorCode::Io);
+        assert!(
+            error.message.contains("is not a stored file"),
+            "the refusal must name what is there: {}",
+            error.message
+        );
+        assert!(stored.path.is_dir(), "the deposit wrote over the folder");
+        assert_eq!(
+            std::fs::read_dir(&stored.path).expect("the folder").count(),
+            0,
+            "the store put something in a folder it had just refused"
+        );
+    }
+
+    #[test]
+    fn a_link_at_the_digest_name_is_refused_rather_than_written_through() {
+        // The same hole with a link, and the sharper half of it: `exists`
+        // follows, so the deposit answered success, `stored_size` read the size
+        // of what the link names, and this session was reported as holding
+        // somebody else's file.
+        //
+        // A junction onto a folder and not a symlink onto a file, deliberately,
+        // and it is the stronger of the two rather than the weaker: `mklink /J`
+        // needs no privilege, so it is the spelling a hostile same-user process
+        // can actually plant on Windows, while `CreateSymbolicLink` is refused
+        // wherever developer mode is off — this repository's own
+        // `acp_host.rs` plants a junction for exactly that reason. A test that
+        // needed the privilege would go red on a machine setting rather than on
+        // the property it guards (`ci.yml` runs this suite on `windows-latest`),
+        // and a false red on a security fix is how the fix gets reverted.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let image = attachment("photo.png", "image/png", &encoded(&clean_png(0x71)));
+        let stored = store.deposit("s.a.1", &image).expect("deposited");
+        let elsewhere = TempDir::new();
+        std::fs::remove_file(&stored.path).expect("take the stored file away");
+        assert!(
+            junction_onto(&stored.path, &elsewhere.0),
+            "the platform refused to make the junction this test is about"
+        );
+
+        let error = store
+            .deposit("s.a.1", &image)
+            .expect_err("a link at the digest name was reported as a stored file");
+        assert_eq!(error.code, ErrorCode::Io);
+        assert!(
+            error.message.contains("reparse point"),
+            "the refusal must name the cause: {}",
+            error.message
+        );
+        // The tree the junction names is untouched, which is what "nothing was
+        // written through the name" means here — and it is the same fact the
+        // pre-fix behaviour gets wrong: the deposit created no file, so it had
+        // no bytes, and the folder is where that shows.
+        assert_eq!(
+            std::fs::read_dir(&elsewhere.0)
+                .expect("the folder the junction names")
+                .count(),
+            0,
+            "the deposit wrote through the junction"
+        );
+        assert!(
+            is_redirect(&stored.path),
+            "the name must still be the link the test planted"
+        );
+    }
+
+    #[test]
+    fn a_resolve_does_not_follow_a_link_at_the_digest_name() {
+        // `resolve` hands a provider a path to read, and `is_file` follows the
+        // name: a name that is a reparse point answered for what it pointed at,
+        // so the store could report a path outside itself as a stored
+        // attachment. Both places that asked are asserted — the hint, which
+        // builds the name and was the shortcut to the wrong answer, and the
+        // listing, which is what answers when there is no hint — and both must
+        // refuse a name that is a reparse point whatever it points at.
+        //
+        // A junction onto a folder for the same reason the deposit test above
+        // uses one: `mklink /J` needs no privilege, so it is what a hostile
+        // same-user process can plant on any Windows machine, and the suite has
+        // to hold on a runner where developer mode is off (`ci.yml` runs it on
+        // `windows-latest`).
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let image = attachment("photo.png", "image/png", &encoded(&clean_png(0x72)));
+        let stored = store.deposit("s.a.1", &image).expect("deposited");
+        let elsewhere = TempDir::new();
+        std::fs::remove_file(&stored.path).expect("take the stored file away");
+        assert!(
+            junction_onto(&stored.path, &elsewhere.0),
+            "the platform refused to make the junction this test is about"
+        );
+
+        let hinted = store
+            .resolve("s.a.1", &stored.digest, Some("png"))
+            .expect_err("resolve handed back a path through a link");
+        assert_eq!(hinted.code, ErrorCode::InvalidRequest);
+        assert!(
+            store.resolve("s.a.1", &stored.digest, None).is_err(),
+            "the listing handed back a path through a link"
+        );
+    }
+
+    #[test]
+    fn a_resolve_refuses_a_session_folder_that_is_a_link() {
+        // The entry check in `find_stored` does not cover this one: the folder
+        // itself is the redirect, so the path it hands back is a name inside the
+        // store that resolves outside it — through a link, to a file the store
+        // never wrote, sized by `stored_size` and reported as a stored
+        // attachment. The folder is refused before the listing runs, and both
+        // spellings of the lookup are asserted: the hint, and the listing.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let session = store.session("s.a.1").expect("session");
+        let elsewhere = TempDir::new();
+        let digest = sha256_hex(b"a file this store never wrote");
+        std::fs::write(elsewhere.0.join(format!("{digest}.png")), vec![0x5a; 64])
+            .expect("the file behind the link");
+        std::fs::create_dir_all(&store.root).expect("store root");
+        assert!(
+            junction_onto(&session.dir, &elsewhere.0),
+            "the platform refused to make the junction this test is about"
+        );
+
+        let hinted = store
+            .resolve("s.a.1", &digest, Some("png"))
+            .expect_err("resolve read a file through a session folder that is a link");
+        assert_eq!(hinted.code, ErrorCode::Io);
+        assert!(
+            hinted.message.contains("reparse point"),
+            "the refusal must name the cause: {}",
+            hinted.message
+        );
+        assert!(
+            store.resolve("s.a.1", &digest, None).is_err(),
+            "the listing read a file through a session folder that is a link"
+        );
+    }
+
+    #[test]
+    fn a_store_root_that_is_a_link_refuses_every_answer() {
+        // The root is the one folder every path in this store starts at, so a
+        // link at its name is not one redirect among many: it is the whole store
+        // being somebody else's tree. The open used to sweep the scratch out of
+        // it — `read_dir` through the junction, `*.tmp` deleted in another tree —
+        // the sweep dated and deleted folders in it, the walk counted its files
+        // as this store's budget, and deposits wrote into it. All four are
+        // asserted, plus the two deletions the tree on the other side must not
+        // suffer.
+        let temp = TempDir::new();
+        let elsewhere = TempDir::new();
+        let victim = elsewhere.0.join("victim.tmp");
+        std::fs::write(&victim, vec![0u8; 4096]).expect("scratch the open must not sweep");
+        let foreign = elsewhere.0.join("s.other.1");
+        std::fs::create_dir_all(&foreign).expect("a folder the sweep must not delete");
+        let root = temp.0.join(ATTACHMENTS_DIR);
+        assert!(
+            link_onto(&root, &elsewhere.0),
+            "the platform refused to make the link this test is about"
+        );
+
+        let store = AttachmentStore::new(&temp.0);
+
+        assert!(
+            store.session("s.a.1").is_none(),
+            "a store whose root is a link handed back a session folder"
+        );
+        assert_eq!(
+            store.store_bytes(),
+            None,
+            "the total counted the files of the tree the root names"
+        );
+        assert_eq!(
+            store.session_bytes("s.a.1"),
+            None,
+            "a session in a store with no root of its own is not a session of zero bytes"
+        );
+        assert_eq!(
+            store.remove_session("s.a.1"),
+            Some(0),
+            "a close reported dropping bytes it never held"
+        );
+        let later = SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(60);
+        assert!(
+            store
+                .sweep_older_than(later, ATTACHMENT_RETENTION)
+                .is_empty(),
+            "the sweep found candidates under a root that is a link"
+        );
+        let error = store
+            .deposit(
+                "s.a.1",
+                &attachment("photo.png", "image/png", &encoded(&clean_png(0x73))),
+            )
+            .expect_err("a deposit into a store whose root is a link");
+        assert_eq!(error.code, ErrorCode::SessionNotFound);
+
+        assert!(
+            victim.exists(),
+            "the open swept scratch out of the tree the root names"
+        );
+        assert!(
+            foreign.is_dir(),
+            "the sweep deleted a folder in the tree the root names"
+        );
+    }
+
+    #[test]
+    fn a_sweep_leaves_a_session_folder_that_is_a_link_alone() {
+        // A junction in the root, which is the spelling an unprivileged process
+        // can plant on Windows — and a pin rather than a regression test, said
+        // plainly because it was measured: the sweep's `is_dir` filter already
+        // passes a redirect over today (`DirEntry::metadata` answers for the
+        // reparse point, so a junction to a folder is not a directory either),
+        // and the explicit check above it is what keeps that true without
+        // resting a deletion on how the toolchain classifies a mount point. The
+        // store's own folder beside the junction is the control: the sweep still
+        // runs, it just does not run into a link.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let elsewhere = TempDir::new();
+        let kept = elsewhere.0.join("kept.png");
+        std::fs::write(&kept, vec![0x5a; 512]).expect("the file behind the link");
+        std::fs::create_dir_all(store.root.join("s.other.1")).expect("a real session folder");
+        let link = store.root.join("s.link.1");
+        assert!(
+            junction_onto(&link, &elsewhere.0),
+            "the platform refused to make the junction this test is about"
+        );
+
+        let later = SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(60);
+        let reclaimed = store.sweep_older_than(later, ATTACHMENT_RETENTION);
+
+        assert!(
+            reclaimed.iter().all(|(id, _)| id != "s.link.1"),
+            "the sweep dated and deleted a name that is a link: {reclaimed:?}"
+        );
+        assert!(is_redirect(&link), "the name the sweep removed was a link");
+        assert!(kept.exists(), "the sweep deleted through the link");
+    }
+
+    #[test]
+    fn two_ids_that_differ_only_in_case_are_not_one_folder() {
+        // Windows resolves folder names case-insensitively while the cache is
+        // keyed by the id as written, so `s.a.1` and `S.A.1` were one folder
+        // under two keys: the budget charged it twice, and closing either
+        // session deleted the other's files. The upper-case spelling is refused
+        // by name, which is the fix — folding it instead would merge two
+        // distinct sessions on a case-sensitive filesystem.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        assert!(
+            store.session("s.a.1").is_some(),
+            "the lower-case id is a name"
+        );
+        assert!(
+            store.session("S.A.1").is_none(),
+            "an id differing from a lower-case one only in case named the same folder"
+        );
+        let stored = store
+            .deposit(
+                "s.a.1",
+                &attachment("a.png", "image/png", &encoded(&clean_png(0x74))),
+            )
+            .expect("deposited");
+        assert_eq!(
+            store.session_bytes("S.A.1"),
+            None,
+            "the upper-case spelling answered as a session holding zero bytes"
+        );
+        assert_eq!(
+            store.remove_session("S.A.1"),
+            Some(0),
+            "a close by the upper-case spelling reported dropping bytes"
+        );
+        assert!(
+            stored.path.exists(),
+            "a close by the upper-case spelling deleted the lower-case session's file"
+        );
+        assert_eq!(
+            store.session_bytes("s.a.1"),
+            Some(stored.stored_bytes),
+            "the lower-case session is the one that still holds the bytes"
+        );
+    }
+
+    #[cfg(all(windows, feature = "server"))]
+    #[test]
+    fn a_session_folder_that_predates_the_store_is_private_at_open() {
+        // The DACL used to be applied only by `prepare_session_dir`, which is the
+        // first *write*, and `resolve` reads a folder before any write has been
+        // through it: a folder an earlier build left behind kept whatever its
+        // parent granted, which on a default profile includes other accounts on
+        // the machine. A folder created here has exactly that inherited DACL, and
+        // the assertion is on the state right after the open — no write, no
+        // resolve, nothing but `AttachmentStore::new` — so the fix is what
+        // narrows it and not a deposit that happens to run first.
+        let temp = TempDir::new();
+        let dir = temp.0.join(ATTACHMENTS_DIR).join("s.a.1");
+        std::fs::create_dir_all(&dir).expect("a session folder from an earlier build");
+        let sid = crate::security::current_user_sid().expect("sid");
+        assert!(
+            !crate::security::dacl_is_current_user_only(
+                &crate::security::dacl_sddl_for_path(&dir).expect("dacl"),
+                &sid
+            ),
+            "the folder has to start out inheriting a wider DACL for this test to mean anything"
+        );
+
+        let _store = AttachmentStore::new(&temp.0);
+
+        for folder in [temp.0.join(ATTACHMENTS_DIR), dir] {
+            let sddl = crate::security::dacl_sddl_for_path(&folder).expect("dacl");
+            assert!(
+                crate::security::dacl_is_current_user_only(&sddl, &sid),
+                "the open must narrow {} before anything writes into it: {sddl}",
+                folder.display()
+            );
+        }
     }
 }
