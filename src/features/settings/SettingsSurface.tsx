@@ -6,12 +6,21 @@ import {
   providersList,
   providersRefresh,
   reasonFromCause,
+  toolPolicyGet,
+  toolPolicySet,
   workspacesList,
 } from "../../lib/tauri";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
-import type { Project, ProviderCatalog, ProviderInfo, Workspace } from "../../types/ipc";
+import type {
+  Project,
+  ProviderCatalog,
+  ProviderInfo,
+  ToolPolicyEntry,
+  Workspace,
+} from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
+import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import "./settings.css";
@@ -230,6 +239,230 @@ function logTail(log: string): string {
   return log.length > 500 ? log.slice(-500) : log;
 }
 
+/** The tool the daemon never gates: disabling it would hide the agent roster. */
+export const ALWAYS_ON_TOOL = "devboule_list_agents";
+
+/** One-line reason shown next to the always-on tool's disabled switch. */
+export const ALWAYS_ON_REASON = "Always on: sessions need the agent roster.";
+
+/**
+ * The handshake capability that gates every tool-policy RPC. It is advertised
+ * beside `devices`, and it is deliberately spelled exactly like the daemon's
+ * own name for it. A daemon that does not advertise it cannot answer
+ * `tool_policy_get`, so the toggles are not drawn and no request is sent.
+ */
+export const TOOL_POLICY_CAPABILITY = "tool_policy";
+
+/**
+ * What one provider's toggles read from a stored row. `undefined` is the
+ * same as enabled: `ToolPolicyGet` returns stored rows only, so a provider
+ * with no row is enabled by default — never an error, never "unknown".
+ */
+export function toolPolicyFor(
+  providerId: string,
+  policies: readonly ToolPolicyEntry[] | null,
+): { enabled: boolean; disabledTools: readonly string[] } {
+  const row = policies?.find((entry) => entry.providerId === providerId);
+  if (row === undefined) return { enabled: true, disabledTools: [] };
+  return {
+    enabled: row.enabled !== false,
+    // A stored row that names the always-on tool is stale daemon data:
+    // the daemon never gates it, so the panel drops it on read and never
+    // sends it back (persist strips again as the wire choke point).
+    disabledTools: (row.disabledTools ?? []).filter((name) => name !== ALWAYS_ON_TOOL),
+  };
+}
+
+/**
+ * Per-provider tool toggles, under one provider card. Renders nothing when
+ * `provider.tools` is empty: the daemon sends the `tools` key only for the
+ * four native MCP-capable providers, and an empty list means there is
+ * nothing to toggle. It renders nothing either when the handshake did not
+ * negotiate [`TOOL_POLICY_CAPABILITY`], so a daemon that cannot answer
+ * `tool_policy_get` is never asked — the section is absent, not broken.
+ *
+ * The always-on tool stays checked and disabled with its one-line reason.
+ * Every other change applies optimistically and reverts on rejection; the
+ * daemon's own sentence is shown verbatim inside the card.
+ */
+function ProviderToolSettings({
+  provider,
+  toolPolicySupported,
+}: {
+  provider: ProviderInfo;
+  /** True only when the handshake advertised `tool_policy`. */
+  toolPolicySupported: boolean;
+}) {
+  const tools = provider.tools ?? [];
+  const [policies, setPolicies] = useState<readonly ToolPolicyEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Synchronous mirror of `policies`. It — never the render closure — is
+  // what a second rapid write reads and the base its revert applies to
+  // (audit findings 1, 8).
+  const policiesRef = useRef<readonly ToolPolicyEntry[] | null>(null);
+  // Monotonic write sequence: only the newest write owns the UI when it
+  // settles, so an older rejection can never clobber a newer row.
+  const seqRef = useRef(0);
+  useEffect(() => {
+    // No fetch when there is nothing to toggle: the daemon omits `tools`
+    // for wrappers and non-MCP providers, and the section stays hidden.
+    // Same rule for the handshake: a daemon that never advertised
+    // `tool_policy` would refuse this request, so it is never sent.
+    if (!toolPolicySupported || tools.length === 0) return;
+    let cancelled = false;
+    void toolPolicyGet()
+      .then((reply) => {
+        if (cancelled) return;
+        // A write that landed first is newer than this fetch: keep it.
+        if (seqRef.current !== 0) return;
+        policiesRef.current = reply.policies;
+        setPolicies(reply.policies);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(reasonFromCause(cause));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider.id, tools.length, toolPolicySupported]);
+  if (!toolPolicySupported || tools.length === 0) return null;
+  const { enabled, disabledTools } = toolPolicyFor(provider.id, policies);
+  const disabledSet = new Set(disabledTools);
+  // The stored rows are still in flight: until they land, `toolPolicyFor`
+  // reads the missing row as "everything on", which is a guess, so nothing
+  // in the card may be edited yet (finding 6 — the master switch was
+  // already locked here while the tool rows below stayed live).
+  const loading = policies === null;
+
+  /**
+   * The daemon never gates this tool, so it is never sent in a deny list
+   * and a stored row that names it (stale daemon data) is stripped here.
+   */
+  function stripAlwaysOn(names: readonly string[]): string[] {
+    return names.filter((name) => name !== ALWAYS_ON_TOOL);
+  }
+
+  async function persist(nextEnabled: boolean, nextDisabled: readonly string[]) {
+    const cleanDisabled = stripAlwaysOn(nextDisabled);
+    // This write's own revert base: the provider row as it stands right
+    // now, read through the ref and not through the render closure, so an
+    // earlier write's optimistic row is part of the base (findings 1, 8).
+    const previous = toolPolicyFor(provider.id, policiesRef.current);
+    // Sequence guard (findings 1, 8). Every write is sent immediately, in
+    // click order: a second toggle must still reach the daemon — dropping
+    // it on a stale `busy` loses the user's click. Overlap is resolved when
+    // a write settles instead: only the newest sequence owns the UI, so a
+    // rejection a newer write has superseded reverts nothing and reports
+    // nothing and the newer optimistic row stands.
+    const seq = ++seqRef.current;
+    setBusy(true);
+    setError(null);
+    // Optimistic row, appended to the ref mirror: it always holds the
+    // newest rows, including an earlier write's optimistic row when two
+    // writes overlap.
+    const row: ToolPolicyEntry = {
+      providerId: provider.id,
+      enabled: nextEnabled ? null : false,
+      disabledTools: cleanDisabled,
+    };
+    const optimistic: readonly ToolPolicyEntry[] = [
+      ...(policiesRef.current ?? []).filter((entry) => entry.providerId !== provider.id),
+      row,
+    ];
+    policiesRef.current = optimistic;
+    setPolicies(optimistic);
+    try {
+      await toolPolicySet(provider.id, nextEnabled ? null : false, cleanDisabled);
+      // Confirmed. An older write settling here must not clear a busy flag
+      // the newest write still needs.
+      if (seq === seqRef.current) setBusy(false);
+      return;
+    } catch (cause) {
+      // A newer write superseded this one: its optimistic row stands, this
+      // rejection reports nothing.
+      if (seq !== seqRef.current) return;
+      // No newer write exists, so the row in the ref is the one this write
+      // wrote: put back the row this write itself replaced, applied to the
+      // current rows (never a stale render snapshot).
+      const reverted: readonly ToolPolicyEntry[] = [
+        ...(policiesRef.current ?? []).filter((entry) => entry.providerId !== provider.id),
+        {
+          providerId: provider.id,
+          enabled: previous.enabled ? null : false,
+          disabledTools: [...previous.disabledTools],
+        },
+      ];
+      policiesRef.current = reverted;
+      setPolicies(reverted);
+      setError(reasonFromCause(cause));
+      setBusy(false);
+    }
+  }
+
+  function toggleProvider(next: boolean) {
+    void persist(next, toolPolicyFor(provider.id, policiesRef.current).disabledTools);
+  }
+
+  function toggleTool(name: string, next: boolean) {
+    if (name === ALWAYS_ON_TOOL) return;
+    // Live state, not this render's: two toggles in one tick must each flip
+    // the row the other just wrote rather than re-send a duplicate write.
+    const current = toolPolicyFor(provider.id, policiesRef.current);
+    const nextDisabled = next
+      ? current.disabledTools.filter((tool) => tool !== name)
+      : [...current.disabledTools, name];
+    void persist(current.enabled, nextDisabled);
+  }
+
+  return (
+    <div className="provider-card-block provider-tools">
+      <details>
+        <summary>Tool settings</summary>
+        <label className="provider-tool-row">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label={`Enable tools for ${provider.id}`}
+            checked={enabled}
+            disabled={busy || loading}
+            onChange={(event) => toggleProvider(event.target.checked)}
+          />
+          <span>Enable tools</span>
+        </label>
+        <div className="provider-tool-list">
+          {tools.map((tool) => {
+            const alwaysOn = tool.name === ALWAYS_ON_TOOL;
+            const checked = alwaysOn ? true : enabled && !disabledSet.has(tool.name);
+            const inputId = `tool-${provider.id}-${tool.name}`;
+            return (
+              <div className="provider-tool-row" key={tool.name}>
+                <input
+                  id={inputId}
+                  type="checkbox"
+                  checked={checked}
+                  disabled={busy || alwaysOn || !enabled || loading}
+                  onChange={(event) => toggleTool(tool.name, event.target.checked)}
+                />
+                <label htmlFor={inputId}>
+                  <span className="provider-tool-name">{tool.name}</span>
+                  <span className="provider-tool-description"> {tool.description}</span>
+                </label>
+                {alwaysOn ? <span className="provider-tool-note">{ALWAYS_ON_REASON}</span> : null}
+              </div>
+            );
+          })}
+        </div>
+        {error === null ? null : (
+          <p role="alert" className="device-error">
+            {error}
+          </p>
+        )}
+      </details>
+    </div>
+  );
+}
+
 function ProvidersPanel() {
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -250,6 +483,13 @@ function ProvidersPanel() {
   const consentInFlightRef = useRef(false);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
+
+  // The handshake's own capability list, through the same channel every other
+  // surface reads it (Workspace, Design): the supervisor's `daemon_status`.
+  // A daemon that never advertised `tool_policy` leaves the toggles off the
+  // screen, so no card asks it for a policy it cannot answer.
+  const daemon = useWorkspaceDaemon();
+  const toolPolicySupported = daemon.capabilities.includes(TOOL_POLICY_CAPABILITY);
 
   useEffect(() => {
     consentInFlightRef.current = false;
@@ -520,6 +760,11 @@ function ProvidersPanel() {
                       </button>
                     </div>
                   ) : null}
+                  <ProviderToolSettings
+                    key={provider.id}
+                    provider={provider}
+                    toolPolicySupported={toolPolicySupported}
+                  />
                 </div>
               );
             })}

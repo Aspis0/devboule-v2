@@ -608,6 +608,43 @@ export interface ProviderInfo {
   installed?: boolean;
   /** npm package the row maps to, when known; the update/install consent shows it verbatim. */
   npmPackage?: string | null;
+  /**
+   * MCP tools this provider's sessions can serve, present only for the four
+   * native MCP-capable providers (`claude`, `gemini`, `grok`, `qwen`).
+   * Omitted (absent key) when empty: wrappers and non-MCP providers carry
+   * no tools. The panel renders its Tool settings section only when this is
+   * non-empty.
+   */
+  tools?: ToolDescriptor[];
+}
+
+/**
+ * One MCP tool a provider's sessions can serve. Mirrors `ToolDescriptor` in
+ * the protocol crate (`rename_all = "camelCase"`).
+ */
+export interface ToolDescriptor {
+  name: string;
+  description: string;
+}
+
+/**
+ * One stored tool-policy row, as `ToolPolicyGet` answers it. Mirrors
+ * `ToolPolicyEntry` in the protocol crate (`rename_all = "camelCase"`).
+ *
+ * `enabled` is optional on the wire and absent means enabled: `None` or
+ * `Some(true)` = enabled, `Some(false)` = all tools disabled. The panel
+ * must treat a provider with NO row at all as enabled, never as an error
+ * or as "unknown".
+ */
+export interface ToolPolicyEntry {
+  providerId: string;
+  enabled?: boolean | null;
+  disabledTools: string[];
+}
+
+/** The `tool_policy_get` reply: the STORED rows only, sorted by provider id. */
+export interface ToolPolicyReply {
+  policies: ToolPolicyEntry[];
 }
 
 /** Result of `provider_update`: the daemon ran `npm install -g <package>@latest` to completion. */

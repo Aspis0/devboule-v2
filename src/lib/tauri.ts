@@ -29,6 +29,7 @@ import type {
   PromptAttachment,
   ResumeResult,
   Session,
+  ToolPolicyReply,
   Workspace,
   SessionEvent,
   SessionKind,
@@ -130,6 +131,8 @@ export type CommandArgs = {
   pairing_confirm: { deviceId: string; accept: boolean };
   peer_revoke: { deviceId: string };
   peer_set_caps: { deviceId: string; caps: readonly Cap[] };
+  tool_policy_get: undefined;
+  tool_policy_set: { providerId: string; enabled: boolean | null; disabledTools: string[] };
 };
 
 type CommandResults = {
@@ -198,6 +201,14 @@ type CommandResults = {
   pairing_confirm: PeerRow | null;
   peer_revoke: PeerRow;
   peer_set_caps: PeerRow;
+  /**
+   * The STORED policy rows only (`DaemonMessage::ToolPolicy` minus its
+   * request id). A provider with no row is enabled by default: the panel
+   * treats a missing entry as enabled, never as an error.
+   */
+  tool_policy_get: ToolPolicyReply;
+  /** The daemon answers `ToolPolicySetOk`; the set itself is the proof. */
+  tool_policy_set: void;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -275,6 +286,8 @@ export const COMMAND_ARG_KEYS = {
   pairing_confirm: ["deviceId", "accept"],
   peer_revoke: ["deviceId"],
   peer_set_caps: ["deviceId", "caps"],
+  tool_policy_get: [],
+  tool_policy_set: ["providerId", "enabled", "disabledTools"],
 } as const satisfies {
   [K in CommandName]: readonly (CommandArgs[K] extends undefined
     ? never
@@ -649,3 +662,22 @@ export const peerRevoke = (deviceId: string) => invokeTyped("peer_revoke", { dev
  */
 export const peerSetCaps = (deviceId: string, caps: readonly Cap[]) =>
   invokeTyped("peer_set_caps", { deviceId, caps: [...caps] });
+
+/**
+ * The STORED tool-policy rows (`DaemonMessage::ToolPolicy` minus its request
+ * id), which can be empty when nothing was ever disabled. Read-only: the
+ * daemon owns the `runtime_dir/tool-policies.json` file, this only asks for
+ * the current rows. A provider with no row is enabled by default.
+ */
+export const toolPolicyGet = () => invokeTyped("tool_policy_get");
+/**
+ * Replaces one provider's whole tool policy. `enabled` is `boolean | null`
+ * on the wire: `null` (or absent on the daemon side) means enabled,
+ * `false` disables every tool. The daemon stores the `disabledTools` array
+ * it receives, so callers pass the complete deny list, never a delta.
+ */
+export const toolPolicySet = (
+  providerId: string,
+  enabled: boolean | null,
+  disabledTools: string[],
+) => invokeTyped("tool_policy_set", { providerId, enabled, disabledTools });
