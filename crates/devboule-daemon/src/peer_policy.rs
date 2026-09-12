@@ -45,9 +45,20 @@ pub const CAP_CREATE_SESSIONS: &str = "create_sessions";
 /// One spelling, used by the refusal and by the audit row it writes.
 pub const PROMPT_SKIPPING_REFUSED: &str = "prompt_skipping_refused";
 
+/// The audit outcome for a request refused because it reached for an ACP
+/// session mode (`DESIGN-remote-agents.md` §8b A5, §8 R3): ACP mode ids are
+/// defined by the agent at run time, so there is no list to vet them against
+/// and a paired device may not choose one at all.
+pub const ACP_MODES_UNVETTED_REFUSED: &str = "acp_modes_unvetted_refused";
+
+/// What a peer is told when it names an ACP mode. One spelling: the gate
+/// (`server.rs`) and the sessions layer (`session.rs`) both refuse it.
+pub const ACP_MODES_UNVETTED_MESSAGE: &str =
+    "ACP session modes are defined by the agent, so a paired device cannot choose one.";
+
 /// Why a send from a paired device that carries attachments is refused, for
-/// now (`server.rs::session_send`). Temporary: it goes away when the deposit
-/// branch's counter lands and `budget_for` has a caller.
+/// now (`server.rs::peer_refusal_before_mode`). Temporary: it goes away when
+/// the deposit branch's counter lands and `budget_for` has a caller.
 pub const PEER_ATTACHMENTS_UNSUPPORTED: &str =
     "attachments from a paired device are not accepted yet";
 
@@ -96,10 +107,16 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // stays exhaustive and every decision stays visible in one place.
         ClientMessage::Hello(_) => PeerDecision::Allow,
         ClientMessage::Ping { .. } => PeerDecision::Allow,
-        ClientMessage::SessionsList { .. } => PeerDecision::Allow,
+        // The two list acts are reads, and every read on this surface is
+        // `view` (§8b A11): `SessionsList` and `DevicesList` are how a paired
+        // device sees anything at all, so a peer stripped of `view` — only a
+        // `Daemon` peer can be, since `validate_caps` will not remove it from a
+        // `Client` — reaches neither. Both were unconditional `Allow` before
+        // the slice-3 fix pass, which made "no capability" a capability.
+        ClientMessage::SessionsList { .. } => with_capability(caps, CAP_VIEW),
         // Role-projected at the dispatch site; a `Daemon` peer sees only
         // `{device_id, display_name, role, online}` (design §8b A13).
-        ClientMessage::DevicesList { .. } => PeerDecision::Allow,
+        ClientMessage::DevicesList { .. } => with_capability(caps, CAP_VIEW),
 
         // Slice 3: the five session variants a paired device may reach, each
         // under the capability that names the act. `view` is what makes a peer
@@ -209,6 +226,27 @@ pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
         SessionKind::Acp => false,
         SessionKind::Terminal => false,
     }
+}
+
+/// §8b A5/R3, the whole rule: why a paired device may not choose `mode_id` for
+/// a `kind` session, or `None` when it may.
+///
+/// For Claude, Codex, Pi and Terminal the answer is the concrete list above.
+/// For ACP it is *every* mode id, including the ones that look like `ask` or
+/// `default`: the agent defines its own modes at run time, this daemon has no
+/// list to vet them against, and an id that means "ask the user" to one agent
+/// can mean "run unattended" to the next. Refusing every id is the only
+/// fail-closed answer, and it is the conservative form of A5's ACP sentence
+/// ("created only in the mode the agent marks as its ask/default"): a remote
+/// ACP create carries no mode at all, so the agent's own default stands, and a
+/// remote `SessionSetMode` never lands.
+///
+/// The reasons are the two audit labels, so the trail says which rule fired.
+pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
+    if kind == SessionKind::Acp {
+        return Some(ACP_MODES_UNVETTED_REFUSED);
+    }
+    prompt_skipping_mode(kind, mode_id).then_some(PROMPT_SKIPPING_REFUSED)
 }
 
 /// What the transport resolved about a peer at connection time. Kept beside
@@ -332,6 +370,21 @@ mod tests {
                 ),
                 PeerDecision::Allow
             );
+            // §8b A11, H10: the two list acts are reads and `view` is what
+            // makes a peer a reader, so a peer holding nothing reaches
+            // neither. `Hello` and `Ping` stay unconditional: they are the
+            // handshake and the liveness probe the panel needs before any
+            // capability question exists.
+            let none: Vec<String> = Vec::new();
+            assert_eq!(
+                peer_allows(role, &none, &ClientMessage::SessionsList { id: 1 }),
+                PeerDecision::Deny(CAP_VIEW)
+            );
+            assert_eq!(
+                peer_allows(role, &none, &ClientMessage::DevicesList { id: 1 }),
+                PeerDecision::Deny(CAP_VIEW)
+            );
+            assert_eq!(peer_allows(role, &none, &ping()), PeerDecision::Allow);
         }
     }
 
@@ -595,6 +648,406 @@ mod tests {
         assert!(!prompt_skipping_mode(SessionKind::Pi, "default"));
         assert!(!prompt_skipping_mode(SessionKind::Acp, "any-agent-mode"));
         assert!(!prompt_skipping_mode(SessionKind::Terminal, "anything"));
+    }
+
+    /// §8b A5/R3, the ACP half: ACP mode ids belong to the agent, so a paired
+    /// device may not name one — for *any* id, including the ones that look
+    /// like `ask`. The other kinds keep the concrete list, and its reason.
+    #[test]
+    fn an_acp_mode_is_never_vettable_for_a_paired_device() {
+        for mode in ["ask", "default", "auto_accept", "yolo", ""] {
+            assert_eq!(
+                mode_refusal(SessionKind::Acp, mode),
+                Some(ACP_MODES_UNVETTED_REFUSED),
+                "ACP mode {mode:?} cannot be vetted against a list"
+            );
+        }
+        for mode in ["acceptEdits", "auto", "bypassPermissions"] {
+            assert_eq!(
+                mode_refusal(SessionKind::Claude, mode),
+                Some(PROMPT_SKIPPING_REFUSED)
+            );
+        }
+        assert_eq!(mode_refusal(SessionKind::Claude, "default"), None);
+        assert_eq!(mode_refusal(SessionKind::Codex, "auto"), None);
+        assert_eq!(
+            mode_refusal(SessionKind::Codex, "full-access"),
+            Some(PROMPT_SKIPPING_REFUSED)
+        );
+        assert_eq!(
+            mode_refusal(SessionKind::Pi, "bypass"),
+            Some(PROMPT_SKIPPING_REFUSED)
+        );
+        assert_eq!(mode_refusal(SessionKind::Pi, "default"), None);
+        assert_eq!(
+            mode_refusal(SessionKind::Terminal, "bypassPermissions"),
+            None
+        );
+    }
+
+    fn allow() -> PeerDecision {
+        PeerDecision::Allow
+    }
+
+    /// A row for an act no capability names: refused to every set, and the
+    /// refusal says why.
+    fn always(reason: &'static str) -> (PeerDecision, PeerDecision) {
+        (PeerDecision::Deny(reason), PeerDecision::Deny(reason))
+    }
+
+    /// A row for an act one capability opens: refused without it, allowed with
+    /// every capability held.
+    fn under(capability: &'static str) -> (PeerDecision, PeerDecision) {
+        (PeerDecision::Deny(capability), PeerDecision::Allow)
+    }
+
+    /// §8b A9/A11/A12 as a table: one row per `ClientMessage` variant, holding
+    /// the decision a peer with **no** capability gets and the decision a peer
+    /// with **all four** gets.
+    ///
+    /// Closed match with no `_` arm, exactly like `peer_allows` itself: a new
+    /// variant does not compile until it has a row here. `VARIANT_COUNT` and
+    /// `matrix_samples` below are the other half — they fail the test until the
+    /// new variant also has a frame to assert the row on.
+    fn matrix_row(request: &ClientMessage) -> (PeerDecision, PeerDecision) {
+        match request {
+            ClientMessage::Hello(_) | ClientMessage::Ping { .. } => (allow(), allow()),
+            ClientMessage::SessionsList { .. } | ClientMessage::DevicesList { .. } => {
+                under(CAP_VIEW)
+            }
+            ClientMessage::SessionAttach { .. } => under(CAP_VIEW),
+            ClientMessage::SessionCreate { .. } => under(CAP_CREATE_SESSIONS),
+            ClientMessage::SessionSend { .. } | ClientMessage::SessionSetMode { .. } => {
+                under(CAP_SEND)
+            }
+            ClientMessage::SessionPermissionRespond { .. } => under(CAP_ANSWER_PERMISSIONS),
+            ClientMessage::Status { .. } => always("status"),
+            ClientMessage::DaemonDiagnostics { .. } => always("diagnostics"),
+            ClientMessage::Shutdown { .. } => always("shutdown"),
+            ClientMessage::SessionDetach { .. } => always("session.detach"),
+            ClientMessage::SessionClaim { .. } => always("session.claim"),
+            ClientMessage::SessionClose { .. } => always("session.close"),
+            ClientMessage::SessionStop { .. } => always("session.stop"),
+            ClientMessage::SessionResize { .. } => always("session.resize"),
+            ClientMessage::SessionInterrupt { .. } => always("session.interrupt"),
+            ClientMessage::SessionSetModel { .. } => always("session.set_model"),
+            ClientMessage::SessionReportAgent { .. } => always("session.report_agent"),
+            ClientMessage::SessionsWatch { .. } => always("sessions.watch"),
+            ClientMessage::SessionsUnwatch { .. } => always("sessions.unwatch"),
+            ClientMessage::SessionsPresence { .. } => always("sessions.presence"),
+            ClientMessage::SessionResume { .. } => always("session.resume"),
+            ClientMessage::SessionDelete { .. } => always("session.delete"),
+            ClientMessage::JournalUsage { .. } => always("journal.usage"),
+            ClientMessage::JournalRetentionGet { .. } => always("journal.retention.get"),
+            ClientMessage::JournalRetentionSet { .. } => always("journal.retention.set"),
+            ClientMessage::ProjectsList { .. } => always("projects.list"),
+            ClientMessage::ProjectAdd { .. } => always("project.add"),
+            ClientMessage::WorkspacesList { .. } => always("workspaces.list"),
+            ClientMessage::WorkspaceCreate { .. } => always("workspace.create"),
+            ClientMessage::WorkspaceDelete { .. } => always("workspace.delete"),
+            ClientMessage::ProvidersList { .. } => always("providers.list"),
+            ClientMessage::ProvidersRefresh { .. } => always("providers.refresh"),
+            ClientMessage::ProviderUpdate { .. } => always("provider.update"),
+            ClientMessage::Invoke { .. } => always("invoke"),
+            ClientMessage::PairingStart { .. } => always("pairing.start"),
+            ClientMessage::PairingComplete { .. } => always("pairing.complete"),
+            ClientMessage::PairingConfirm { .. } => always("pairing.confirm"),
+            ClientMessage::PeerRevoke { .. } => always("peer.revoke"),
+            ClientMessage::PeerSetCaps { .. } => always("peer.set_caps"),
+            ClientMessage::ToolPolicyGet { .. } => always("tool.policy.get"),
+            ClientMessage::ToolPolicySet { .. } => always("tool.policy.set"),
+        }
+    }
+
+    /// The number of `ClientMessage` variants at this commit. The closed match
+    /// in `every_variant_is_listed` breaks the build when a variant is added;
+    /// this number is what then fails
+    /// `the_capability_matrix_covers_every_client_frame` until the new variant
+    /// also has a sample to assert its row on. Both halves are needed: the
+    /// match proves the *decisions* are complete, the count proves the
+    /// *frames* are.
+    const VARIANT_COUNT: usize = 44;
+
+    /// The wire name of every variant, as a closed match with no `_` arm: the
+    /// compile-time half of the matrix. The test compares each arm against
+    /// `ClientMessage::name()`, so a mistyped arm is a red test rather than a
+    /// silent hole.
+    fn every_variant_is_listed(request: &ClientMessage) -> &'static str {
+        match request {
+            ClientMessage::Hello(_) => "Hello",
+            ClientMessage::Ping { .. } => "Ping",
+            ClientMessage::Status { .. } => "Status",
+            ClientMessage::DaemonDiagnostics { .. } => "DaemonDiagnostics",
+            ClientMessage::Shutdown { .. } => "Shutdown",
+            ClientMessage::SessionCreate { .. } => "SessionCreate",
+            ClientMessage::SessionAttach { .. } => "SessionAttach",
+            ClientMessage::SessionDetach { .. } => "SessionDetach",
+            ClientMessage::SessionClaim { .. } => "SessionClaim",
+            ClientMessage::SessionClose { .. } => "SessionClose",
+            ClientMessage::SessionStop { .. } => "SessionStop",
+            ClientMessage::SessionSend { .. } => "SessionSend",
+            ClientMessage::SessionResize { .. } => "SessionResize",
+            ClientMessage::SessionInterrupt { .. } => "SessionInterrupt",
+            ClientMessage::SessionSetModel { .. } => "SessionSetModel",
+            ClientMessage::SessionSetMode { .. } => "SessionSetMode",
+            ClientMessage::SessionPermissionRespond { .. } => "SessionPermissionRespond",
+            ClientMessage::SessionReportAgent { .. } => "SessionReportAgent",
+            ClientMessage::SessionsList { .. } => "SessionsList",
+            ClientMessage::SessionsWatch { .. } => "SessionsWatch",
+            ClientMessage::SessionsUnwatch { .. } => "SessionsUnwatch",
+            ClientMessage::SessionsPresence { .. } => "SessionsPresence",
+            ClientMessage::SessionResume { .. } => "SessionResume",
+            ClientMessage::JournalUsage { .. } => "JournalUsage",
+            ClientMessage::JournalRetentionGet { .. } => "JournalRetentionGet",
+            ClientMessage::JournalRetentionSet { .. } => "JournalRetentionSet",
+            ClientMessage::SessionDelete { .. } => "SessionDelete",
+            ClientMessage::ProjectsList { .. } => "ProjectsList",
+            ClientMessage::ProjectAdd { .. } => "ProjectAdd",
+            ClientMessage::WorkspacesList { .. } => "WorkspacesList",
+            ClientMessage::WorkspaceCreate { .. } => "WorkspaceCreate",
+            ClientMessage::WorkspaceDelete { .. } => "WorkspaceDelete",
+            ClientMessage::ProvidersList { .. } => "ProvidersList",
+            ClientMessage::ProvidersRefresh { .. } => "ProvidersRefresh",
+            ClientMessage::ProviderUpdate { .. } => "ProviderUpdate",
+            ClientMessage::Invoke { .. } => "Invoke",
+            ClientMessage::DevicesList { .. } => "DevicesList",
+            ClientMessage::PairingStart { .. } => "PairingStart",
+            ClientMessage::PairingComplete { .. } => "PairingComplete",
+            ClientMessage::PairingConfirm { .. } => "PairingConfirm",
+            ClientMessage::PeerRevoke { .. } => "PeerRevoke",
+            ClientMessage::PeerSetCaps { .. } => "PeerSetCaps",
+            ClientMessage::ToolPolicyGet { .. } => "ToolPolicyGet",
+            ClientMessage::ToolPolicySet { .. } => "ToolPolicySet",
+        }
+    }
+
+    /// One frame per variant, in `name()` order.
+    fn matrix_samples() -> Vec<ClientMessage> {
+        let owner = OwnerId::new("S-1-5-21-1", "client").expect("owner");
+        vec![
+            ClientMessage::Hello(devboule_protocol::ClientHello::m3a(owner, "devboule-test")),
+            ClientMessage::Ping { id: 1 },
+            ClientMessage::Status { id: 1 },
+            ClientMessage::DaemonDiagnostics { id: 1 },
+            ClientMessage::Shutdown { id: 1 },
+            ClientMessage::SessionCreate {
+                id: 1,
+                workspace_id: None,
+                kind: SessionKind::Claude,
+                provider: None,
+                mode: None,
+                idempotency_key: None,
+            },
+            ClientMessage::SessionAttach {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                from_cursor: None,
+            },
+            ClientMessage::SessionDetach {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::SessionClaim {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::SessionClose {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                idempotency_key: None,
+            },
+            ClientMessage::SessionStop {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::SessionSend {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                text: "hi".to_string(),
+                attachments: Vec::new(),
+                idempotency_key: None,
+            },
+            ClientMessage::SessionResize {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                cols: 80,
+                rows: 24,
+            },
+            ClientMessage::SessionInterrupt {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::SessionSetModel {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                model_id: None,
+                effort: None,
+            },
+            ClientMessage::SessionSetMode {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                mode_id: "acceptEdits".to_string(),
+            },
+            ClientMessage::SessionPermissionRespond {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                request_id: "tool-1".to_string(),
+                outcome: devboule_protocol::PermissionOutcome::AllowOnce,
+                option_id: None,
+                idempotency_key: None,
+            },
+            ClientMessage::SessionReportAgent {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                source: "devboule:claude".to_string(),
+                agent: "claude".to_string(),
+                state: devboule_protocol::AgentActivityState::Working,
+                message: None,
+                seq: None,
+                agent_session_id: None,
+                agent_session_path: None,
+                session_start_source: None,
+            },
+            ClientMessage::SessionsList { id: 1 },
+            ClientMessage::SessionsWatch { id: 1 },
+            ClientMessage::SessionsUnwatch { id: 1 },
+            ClientMessage::SessionsPresence {
+                id: 1,
+                focused_session_id: None,
+                app_visible: true,
+            },
+            ClientMessage::SessionResume {
+                id: 1,
+                persistence: devboule_protocol::Persistence {
+                    kind: devboule_protocol::PersistenceKind::None,
+                },
+                idempotency_key: None,
+            },
+            ClientMessage::JournalUsage { id: 1 },
+            ClientMessage::JournalRetentionGet { id: 1 },
+            ClientMessage::JournalRetentionSet {
+                id: 1,
+                max_age_ms: None,
+                max_bytes: None,
+                max_sessions: None,
+                session_max_bytes: None,
+                idempotency_key: None,
+            },
+            ClientMessage::SessionDelete {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                idempotency_key: None,
+            },
+            ClientMessage::ProjectsList { id: 1 },
+            ClientMessage::ProjectAdd {
+                id: 1,
+                path: "C:\\work".to_string(),
+            },
+            ClientMessage::WorkspacesList {
+                id: 1,
+                project_id: "p.1".to_string(),
+            },
+            ClientMessage::WorkspaceCreate {
+                id: 1,
+                project_id: "p.1".to_string(),
+                isolation: devboule_protocol::WorkspaceIsolation::Local,
+                branch: None,
+            },
+            ClientMessage::WorkspaceDelete {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                force: false,
+            },
+            ClientMessage::ProvidersList { id: 1 },
+            ClientMessage::ProvidersRefresh { id: 1 },
+            ClientMessage::ProviderUpdate {
+                id: 1,
+                provider_id: "claude".to_string(),
+            },
+            ClientMessage::Invoke {
+                id: 1,
+                method: "workspace.root".to_string(),
+                payload: None,
+            },
+            ClientMessage::DevicesList { id: 1 },
+            ClientMessage::PairingStart {
+                id: 1,
+                role: PeerRole::Client,
+            },
+            ClientMessage::PairingComplete {
+                id: 1,
+                address: "100.64.0.2:47831".to_string(),
+                code: devboule_protocol::PairingSecret::new("ABCDEFGH"),
+                role: PeerRole::Client,
+            },
+            ClientMessage::PairingConfirm {
+                id: 1,
+                device_id: "dev-1".to_string(),
+                accept: true,
+            },
+            ClientMessage::PeerRevoke {
+                id: 1,
+                device_id: "dev-1".to_string(),
+            },
+            ClientMessage::PeerSetCaps {
+                id: 1,
+                device_id: "dev-1".to_string(),
+                caps: vec!["view".to_string()],
+            },
+            ClientMessage::ToolPolicyGet { id: 1 },
+            ClientMessage::ToolPolicySet {
+                id: 1,
+                provider_id: "claude".to_string(),
+                enabled: Some(false),
+                disabled_tools: Vec::new(),
+            },
+        ]
+    }
+
+    /// §8b A9/A11/A12 end to end: every frame, both roles, no capability and
+    /// every capability, against the table above. The table is closed by the
+    /// compiler and the frame list is pinned by `VARIANT_COUNT`, so a new
+    /// variant cannot arrive without a decision *and* a frame to check it on.
+    #[test]
+    fn the_capability_matrix_covers_every_client_frame() {
+        let samples = matrix_samples();
+        assert_eq!(samples.len(), VARIANT_COUNT, "one sample per variant");
+        let mut names: Vec<&'static str> = samples.iter().map(every_variant_is_listed).collect();
+        names.sort_unstable();
+        let mut unique = names.clone();
+        unique.dedup();
+        assert_eq!(names, unique, "one sample per variant, no duplicates");
+        let none: Vec<String> = Vec::new();
+        for sample in &samples {
+            assert_eq!(
+                every_variant_is_listed(sample),
+                sample.name(),
+                "the matrix arm must spell the wire name"
+            );
+            let (without_caps, with_all) = matrix_row(sample);
+            for role in [PeerRole::Client, PeerRole::Daemon] {
+                assert_eq!(
+                    peer_allows(role, &none, sample),
+                    without_caps,
+                    "{role} with no capability on {}",
+                    sample.name()
+                );
+                assert_eq!(
+                    peer_allows(role, &all_caps(), sample),
+                    with_all,
+                    "{role} with every capability on {}",
+                    sample.name()
+                );
+            }
+        }
     }
 
     #[test]

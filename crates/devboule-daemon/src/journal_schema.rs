@@ -131,13 +131,18 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // The schema half is not enough: `origin` is required on the wire,
             // so a permission payload stored before the field existed would be
             // dropped by hydration and flagged by the live replay. The old data
-            // is made valid here, in this same transaction.
-            let (rewritten, unreadable) = backfill_permission_origins(&tx)?;
-            if rewritten > 0 || unreadable > 0 {
+            // is made valid here, in this same transaction. Every count is
+            // bounded: rows past the read bound, rows whose event does not
+            // deserialize, and rows that *are* rewritten all leave the loop
+            // one at a time.
+            let (rewritten, unreadable, oversized) = backfill_permission_origins(&tx)?;
+            if rewritten > 0 || unreadable > 0 || oversized > 0 {
                 // Counts only: no payload, no path, no prompt text.
                 eprintln!(
                     "journal v9 migration gave {rewritten} stored permission payloads a local \
-                     origin and left {unreadable} unreadable payloads alone"
+                     origin, left {unreadable} unreadable payloads alone, and skipped \
+                     {oversized} payloads past the {} byte read bound",
+                    crate::journal::MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES
                 );
             }
         }
@@ -193,8 +198,8 @@ fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalEr
 /// corruption. A row whose bytes are not JSON at all is left exactly as it is
 /// and counted: the replay paths already skip it, and inventing content for a
 /// damaged row would hide the damage.
-fn backfill_permission_origins(tx: &Connection) -> Result<(usize, usize), JournalError> {
-    let (candidates, unreadable) = {
+fn backfill_permission_origins(tx: &Connection) -> Result<(usize, usize, usize), JournalError> {
+    let (candidates, unreadable, oversized) = {
         let mut statement = tx.prepare(
             "SELECT session_id, generation, seq, payload FROM events WHERE kind = 'agent_report'",
         )?;
@@ -208,6 +213,7 @@ fn backfill_permission_origins(tx: &Connection) -> Result<(usize, usize), Journa
         })?;
         let mut candidates = Vec::new();
         let mut unreadable = 0usize;
+        let mut oversized = 0usize;
         for row in rows {
             let (session_id, generation, seq, payload) = row?;
             match super::payload_with_origin(&payload) {
@@ -217,9 +223,11 @@ fn backfill_permission_origins(tx: &Connection) -> Result<(usize, usize), Journa
                 // Already carries an origin, or is not a permission request.
                 super::OriginBackfill::Nothing => {}
                 super::OriginBackfill::Unreadable => unreadable += 1,
+                // Past the read bound: not parsed, not rewritten, not touched.
+                super::OriginBackfill::Oversized => oversized += 1,
             }
         }
-        (candidates, unreadable)
+        (candidates, unreadable, oversized)
     };
 
     let mut rewritten = 0usize;
@@ -232,7 +240,8 @@ fn backfill_permission_origins(tx: &Connection) -> Result<(usize, usize), Journa
         )?;
         let super::OriginBackfill::Rewritten(payload) = super::payload_with_origin(&payload) else {
             // A row that stopped being a pre-origin permission request between
-            // the two passes is left alone rather than written blind.
+            // the two passes — or that grew past the read bound — is left alone
+            // rather than written blind.
             continue;
         };
         let checksum = super::crc32(&payload) as i64;
@@ -243,7 +252,7 @@ fn backfill_permission_origins(tx: &Connection) -> Result<(usize, usize), Journa
         )?;
         rewritten += 1;
     }
-    Ok((rewritten, unreadable))
+    Ok((rewritten, unreadable, oversized))
 }
 
 fn workspace_has_column(conn: &Connection, column: &str) -> Result<bool, JournalError> {
@@ -782,6 +791,159 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
 
         drop(check);
         journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A v8 journal file: the base schema, the pre-v9 columns, the peers/audit
+    /// tables, one session, and exactly the event rows the caller names.
+    fn v8_journal_with_events(
+        rows: &[(i64, &str, Vec<u8>)],
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("v8 journal");
+        conn.execute_batch(SCHEMA_SQL).expect("base schema");
+        conn.execute_batch(V8_DDL).expect("v8 columns and tables");
+        conn.execute_batch(super::PEERS_AUDIT_SQL)
+            .expect("v8 peers and audit tables");
+        conn.execute(
+            "INSERT INTO sessions (
+                id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                generation, status, exit_code, closed, last_seq, degraded,
+                dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes,
+                unsnapshotted_bytes, reaped, peer_session_id, provider
+             ) VALUES ('s.before-origin', 'owner', NULL, 'terminal', 'Terminal', 1, 2,
+                       1, 'ended', 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, NULL, NULL)",
+            [],
+        )
+        .expect("v8 session row");
+        for (seq, kind, payload) in rows {
+            conn.execute(
+                "INSERT INTO events (session_id, generation, seq, kind, ts_ms, payload, checksum)
+                 VALUES ('s.before-origin', 1, ?1, ?2, 1, ?3, ?4)",
+                rusqlite::params![seq, kind, payload, crc32(payload) as i64],
+            )
+            .expect("v8 event row");
+        }
+        conn.pragma_update(None, "user_version", 8)
+            .expect("v8 version");
+        drop(conn);
+        (dir, path)
+    }
+
+    /// One `events` row as it sits on disk: `(payload, checksum)`.
+    fn stored_event(path: &std::path::Path, seq: i64) -> (Vec<u8>, i64) {
+        Connection::open(path)
+            .expect("open journal")
+            .query_row(
+                "SELECT payload, checksum FROM events
+                 WHERE session_id = 's.before-origin' AND generation = 1 AND seq = ?1",
+                [seq],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("stored event row")
+    }
+
+    /// A pre-origin permission request, exactly what a v8 daemon wrote.
+    fn legacy_permission_payload() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "type": "permission_request",
+            "toolCallId": "call-legacy",
+            "title": "Run command",
+            "options": []
+        }))
+        .expect("legacy payload")
+    }
+
+    /// H8: a second open at v9 runs no migration and moves nothing, and a
+    /// payload that is a permission request by *tag* but not a complete
+    /// `SessionEvent` is left byte-for-byte rather than handed an origin the
+    /// replay path would still drop.
+    #[test]
+    fn a_second_open_rewrites_nothing_and_incomplete_events_are_left_alone() {
+        let legacy = legacy_permission_payload();
+        // JSON, tagged `permission_request`, missing the tool call id its
+        // variant requires: this is the shape the shape-only check used to
+        // rewrite.
+        let incomplete = serde_json::to_vec(&serde_json::json!({
+            "type": "permission_request",
+            "title": 7,
+            "options": []
+        }))
+        .expect("incomplete payload");
+        let (dir, path) = v8_journal_with_events(&[
+            (2, "agent_report", legacy.clone()),
+            (3, "agent_report", incomplete.clone()),
+        ]);
+
+        {
+            let journal = Journal::open(&path).expect("first open migrates");
+            journal.shutdown();
+        }
+        let migrated = stored_event(&path, 2);
+        let left_alone = stored_event(&path, 3);
+        assert_ne!(migrated.0, legacy, "the pre-origin payload is made valid");
+        assert_eq!(
+            left_alone,
+            (incomplete.clone(), crc32(&incomplete) as i64),
+            "an incomplete event keeps its bytes and its checksum"
+        );
+
+        // Second open: `user_version` is already v9, so the migration body
+        // does not run at all.
+        {
+            let journal = Journal::open(&path).expect("second open");
+            journal.shutdown();
+        }
+        assert_eq!(
+            stored_event(&path, 2),
+            migrated,
+            "a second open rewrites nothing"
+        );
+        assert_eq!(stored_event(&path, 3), left_alone);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H8: a candidate past the read bound is not read, not rewritten and
+    /// counted. The row keeps its bytes and its checksum.
+    #[test]
+    fn a_payload_past_the_read_bound_is_skipped_untouched() {
+        let bound = crate::journal::MAX_ORIGIN_BACKFILL_PAYLOAD_BYTES;
+        // A pre-origin permission request padded past the bound by its own
+        // title: exactly the shape the backfill rewrites, and exactly the
+        // shape the bound is there for.
+        let oversized = serde_json::to_vec(&serde_json::json!({
+            "type": "permission_request",
+            "toolCallId": "call-huge",
+            "title": "x".repeat(bound + 1),
+            "options": []
+        }))
+        .expect("oversized payload");
+        assert!(
+            oversized.len() > bound,
+            "the fixture must be past the bound"
+        );
+        let (dir, path) = v8_journal_with_events(&[(2, "agent_report", oversized.clone())]);
+
+        {
+            let journal = Journal::open(&path).expect("migrate");
+            journal.shutdown();
+        }
+        assert_eq!(
+            stored_event(&path, 2),
+            (oversized.clone(), crc32(&oversized) as i64),
+            "a row past the read bound is untouched byte for byte"
+        );
+
+        // And the backfill counts it rather than silently skipping it: nothing
+        // to rewrite, nothing unreadable, one row past the bound.
+        let conn = Connection::open(&path).expect("open migrated journal");
+        let tx = conn.unchecked_transaction().expect("transaction");
+        assert_eq!(
+            super::backfill_permission_origins(&tx).expect("backfill"),
+            (0, 0, 1)
+        );
+        drop(tx);
+        drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

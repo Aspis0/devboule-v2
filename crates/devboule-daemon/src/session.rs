@@ -100,6 +100,10 @@ use devboule_protocol::TranscriptIntegrity;
 
 #[path = "permission_broker.rs"]
 mod permission_broker;
+/// The daemon-wide peer card allowance, re-exported for its disconnect call
+/// site: the boundary that drops a peer connection lives in `server.rs`, and
+/// the counters live beside the brokers that spend them (H2).
+pub(crate) use permission_broker::release_peer_cards;
 #[path = "session_runtime.rs"]
 mod session_runtime;
 pub(crate) use session_runtime::SessionRuntime;
@@ -2926,11 +2930,20 @@ impl SessionRegistry {
         result
     }
 
+    /// Switch a live agent session's mode.
+    ///
+    /// The connection is threaded through like `interrupt_with_subscription`
+    /// and `close`: `SessionSetMode` is under `CAP_SEND`, so it *is* reachable
+    /// from a paired device, and the identity of the caller is part of the
+    /// authorization the ownership check makes (§8b A3/A4/A5, H5). Without the
+    /// connection the call site could only answer with the owner comparison,
+    /// which is what let a mode change arrive with no origin attached.
     pub fn set_mode(
         &self,
         session_id: &str,
         owner: &OwnerId,
         mode_id: &str,
+        conn: &ConnHandle,
     ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -2946,7 +2959,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner, &None)?;
+            check_user_owner(entry, owner, &conn.conn_peer)?;
             let session = entry.as_live_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
@@ -3543,6 +3556,36 @@ impl SessionRegistry {
         let entry = map.get(session_id)?;
         let kind = entry.metadata().kind.clone();
         Some((kind, entry.runtime().current_mode_id()))
+    }
+
+    /// Whether `conn_peer` may reach `session_id` at all — asked *before* any
+    /// question about what that session is (`session_mode_guard`, H6).
+    ///
+    /// The two failures are one answer on purpose. A session owned by someone
+    /// else and a session this daemon does not know both give `unauthorized()`
+    /// here, so a peer that probes another device's session ids learns nothing
+    /// from comparing the replies: without this, `SessionSetMode` on a
+    /// reachable-looking id answered "that session exists and runs this
+    /// provider" through the mode policy gate, before the ownership check ever
+    /// ran (§8b A1/A3).
+    ///
+    /// It is deliberately not a substitute for the checks the session methods
+    /// make: this is the *ordering* the gate needs, and every operation still
+    /// authorizes itself again at the point it touches the session.
+    pub(crate) fn session_scope(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+    ) -> Result<(), WireError> {
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        match map.get(session_id) {
+            Some(entry) => check_user_owner(entry, owner, conn_peer),
+            None => Err(unauthorized()),
+        }
     }
 
     fn runtime(&self, session_id: &str) -> Result<Arc<SessionRuntime>, WireError> {
@@ -4652,7 +4695,7 @@ mod tests {
     use super::*;
     use crate::raster_metadata::clean_png;
     use devboule_protocol::{
-        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
+        ClientMessage, MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
     };
 
     /// A Write sink that records everything, standing in for the PTY input
@@ -9022,7 +9065,7 @@ mod tests {
 
         let before = runtime.session_manifest();
         let error = registry
-            .set_mode(session_id, &owner, "missing")
+            .set_mode(session_id, &owner, "missing", &ConnHandle::new(1))
             .expect_err("unknown mode must be rejected before the switcher");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert_eq!(runtime.session_manifest(), before);
@@ -9110,9 +9153,15 @@ mod tests {
     }
 
     /// The ownership paths whose call site passes no requestor identity
-    /// (`&None`, because the capability gate denies them to every peer), and
-    /// which therefore answer with the owner comparison alone.
-    const IDENTITY_FREE_PATHS: [&str; 3] = ["stop", "set_model", "set_mode"];
+    /// (`&None`), and which therefore answer with the owner comparison alone.
+    ///
+    /// It is not a hand-written claim: the test below derives it from
+    /// `peer_policy::peer_allows`, so a path may only be identity-free while
+    /// **no** role holding **any** capability set can reach the act it serves.
+    /// `set_mode` left this list in the slice-3 fix pass: `SessionSetMode` is
+    /// under `CAP_SEND`, so a paired device can reach it and the call site has
+    /// to carry the requestor's identity (§8b A3/A4/A5, H5).
+    const IDENTITY_FREE_PATHS: [&str; 2] = ["stop", "set_model"];
 
     /// A connection that speaks for a paired device, as `server.rs` builds one.
     fn remote_conn(role: PeerRole, paired_by_user: Option<&str>) -> Arc<ConnHandle> {
@@ -9166,9 +9215,11 @@ mod tests {
     /// Every ownership path this registry exposes, called for `id` by `owner`
     /// over `conn`.
     ///
-    /// `stop`, `set_model` and `set_mode` take no connection: their call sites
-    /// pass `&None` on purpose, because a peer is refused those three by policy,
-    /// so the effective owner is the whole answer there.
+    /// `stop` and `set_model` take no connection: `IDENTITY_FREE_PATHS` names
+    /// exactly those two, and the test below proves the capability gate denies
+    /// them to every role and capability set. Every other path is called with
+    /// the real connection, so the requestor's identity reaches
+    /// `check_user_owner` (§8b A3).
     fn ownership_paths(
         registry: &SessionRegistry,
         id: &str,
@@ -9197,7 +9248,10 @@ mod tests {
                 "set_model",
                 registry.set_model(id, owner, Some("model-x"), None),
             ),
-            ("set_mode", registry.set_mode(id, owner, "acceptEdits")),
+            (
+                "set_mode",
+                registry.set_mode(id, owner, "acceptEdits", conn),
+            ),
             (
                 "resize",
                 registry.resize_with_subscription(id, 1, 80, 24, owner, conn),
@@ -9336,12 +9390,12 @@ mod tests {
 
         for (path, result) in ownership_paths(&registry, &other_id, &owner, &conn) {
             if IDENTITY_FREE_PATHS.contains(&path) {
-                // `stop`, `set_model` and `set_mode` take no requestor identity,
-                // so the origin cannot answer for them; a peer never reaches
-                // them anyway (`peer_allows` denies all three to both roles,
-                // pinned by `each_capability_opens_exactly_the_act_it_names`).
-                // What they enforce is the owner comparison, which the Client
-                // test above exercises with two real users.
+                // `stop` and `set_model` take no requestor identity, so the
+                // origin cannot answer for them; a peer never reaches them
+                // anyway (`peer_allows` denies both to both roles, pinned by
+                // `every_identity_free_path_is_denied_to_a_peer`). What they
+                // enforce is the owner comparison, which the Client test above
+                // exercises with two real users.
                 continue;
             }
             assert_eq!(
@@ -9356,6 +9410,236 @@ mod tests {
                 Some(ErrorCode::Unauthorized),
                 "{path} must let the origin device reach its own session"
             );
+        }
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `ClientMessage` each ownership path serves, in the same order as
+    /// `ownership_paths`. The pairing is what lets the derivation test below
+    /// ask `peer_allows` the question the gate asks, for every path there is.
+    fn path_requests() -> Vec<(&'static str, ClientMessage)> {
+        let session_id = "s.a.1".to_string();
+        let stop = || ClientMessage::SessionStop {
+            id: 1,
+            session_id: session_id.clone(),
+            subscription_id: 1,
+        };
+        vec![
+            (
+                "send",
+                ClientMessage::SessionSend {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                    text: "hi".to_string(),
+                    attachments: Vec::new(),
+                    idempotency_key: None,
+                },
+            ),
+            ("stop", stop()),
+            ("stop_with_subscription", stop()),
+            (
+                "close",
+                ClientMessage::SessionClose {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    idempotency_key: None,
+                },
+            ),
+            (
+                "interrupt",
+                ClientMessage::SessionInterrupt {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                },
+            ),
+            (
+                "set_model",
+                ClientMessage::SessionSetModel {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    model_id: Some("model-x".to_string()),
+                    effort: None,
+                },
+            ),
+            (
+                "set_mode",
+                ClientMessage::SessionSetMode {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    mode_id: "acceptEdits".to_string(),
+                },
+            ),
+            (
+                "resize",
+                ClientMessage::SessionResize {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                    cols: 80,
+                    rows: 24,
+                },
+            ),
+            (
+                "attach",
+                ClientMessage::SessionAttach {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                    from_cursor: None,
+                },
+            ),
+            (
+                "claim",
+                ClientMessage::SessionClaim {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                },
+            ),
+            (
+                "permission_respond",
+                ClientMessage::SessionPermissionRespond {
+                    id: 1,
+                    session_id: session_id.clone(),
+                    subscription_id: 1,
+                    request_id: "req-1".to_string(),
+                    outcome: PermissionOutcome::Deny,
+                    option_id: None,
+                    idempotency_key: None,
+                },
+            ),
+        ]
+    }
+
+    /// §8b A3/A4/A5, H5: the identity-free list is *derived*, not asserted.
+    ///
+    /// For every ownership path, `peer_allows` answers whether a paired device
+    /// can reach the act at all — over both roles and the capability sets that
+    /// bracket the space (nothing, each single capability, all four). Two rules
+    /// follow from that pairing: a path a peer *can* reach must hand
+    /// `check_user_owner` the connection's identity (which `ownership_paths`
+    /// does for every path not listed as identity-free), and a path that
+    /// passes `&None` must be denied to every role holding anything. `set_mode`
+    /// sat on that list while `SessionSetMode` was under `CAP_SEND`, which is
+    /// exactly the drift this test refuses.
+    #[test]
+    fn every_identity_free_path_is_denied_to_a_peer() {
+        use crate::peer_policy::{
+            peer_allows, PeerDecision, CAP_ANSWER_PERMISSIONS, CAP_CREATE_SESSIONS, CAP_SEND,
+            CAP_VIEW,
+        };
+        let cap = |name: &str| vec![name.to_string()];
+        let capability_sets = [
+            Vec::new(),
+            cap(CAP_VIEW),
+            cap(CAP_SEND),
+            cap(CAP_ANSWER_PERMISSIONS),
+            cap(CAP_CREATE_SESSIONS),
+            vec![
+                CAP_VIEW.to_string(),
+                CAP_SEND.to_string(),
+                CAP_ANSWER_PERMISSIONS.to_string(),
+                CAP_CREATE_SESSIONS.to_string(),
+            ],
+        ];
+        let reachable_by_a_peer = |request: &ClientMessage| {
+            [PeerRole::Client, PeerRole::Daemon].iter().any(|role| {
+                capability_sets
+                    .iter()
+                    .any(|caps| peer_allows(*role, caps, request) == PeerDecision::Allow)
+            })
+        };
+        let mut reachable_variants: Vec<(&'static str, &'static str)> = Vec::new();
+        for (path, request) in path_requests() {
+            // Requirement one: an act a peer may perform is served by a path
+            // that threads the connection. `stop_with_subscription` serves
+            // `SessionStop`, which no capability opens — a path may take the
+            // connection for an act no peer can reach, and that is what the
+            // harness does. What must never happen is the opposite: an act a
+            // peer *can* reach answered by a call site that passes `&None`.
+            if reachable_by_a_peer(&request) {
+                reachable_variants.push((path, request.name()));
+                assert!(
+                    !IDENTITY_FREE_PATHS.contains(&path),
+                    "{path} serves {}, which a paired device can reach, and must pass \
+                     `conn.conn_peer` into `check_user_owner`",
+                    request.name()
+                );
+            }
+            // Requirement two: every path on the skip list is denied to every
+            // role and every capability set, so `&None` is the whole truth
+            // there. `stop` and `set_model` are the two that qualify.
+            if IDENTITY_FREE_PATHS.contains(&path) {
+                assert!(
+                    !reachable_by_a_peer(&request),
+                    "{path} takes `&None`, but a paired device can reach {}: the call site \
+                     must carry the requestor's identity",
+                    request.name()
+                );
+            }
+        }
+        assert!(
+            reachable_variants.len() >= IDENTITY_FREE_PATHS.len(),
+            "the peer surface is larger than the skip list: {reachable_variants:?}"
+        );
+        // No path is missing from the table and none is on the skip list
+        // without serving a path the harness knows.
+        let names = ownership_paths_for_names();
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "one row per ownership path");
+        for skipped in IDENTITY_FREE_PATHS {
+            assert!(
+                names.contains(&skipped),
+                "{skipped} is on the skip list but no ownership path serves it"
+            );
+        }
+    }
+
+    /// The path names `ownership_paths` returns, without needing a registry:
+    /// read from the same table, so the two cannot drift apart.
+    fn ownership_paths_for_names() -> Vec<&'static str> {
+        path_requests().into_iter().map(|(path, _)| path).collect()
+    }
+
+    /// §8 R2, item 7: an origin the journal could not read is `Unknown`, and a
+    /// `Daemon` peer is refused it exactly like a local session. The ownership
+    /// arm reads `kind == Peer` plus a device id, so "not known" names no
+    /// device and therefore grants nothing.
+    #[test]
+    fn a_daemon_peer_is_refused_an_unknown_origin_like_a_local_one() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("peer_dev-phone", "daemon");
+        let local_id = compose_session_id(&owner.session_token(), "unkn01").expect("id");
+        let unknown_id = compose_session_id(&owner.session_token(), "unkn02").expect("id");
+        insert_live(&registry, &local_id, owner.clone());
+        insert_live(&registry, &unknown_id, owner.clone());
+        set_entry_origin(&registry, &local_id, SessionOrigin::local());
+        set_entry_origin(
+            &registry,
+            &unknown_id,
+            SessionOrigin {
+                kind: SessionOriginKind::Unknown,
+                device_id: None,
+                role: None,
+            },
+        );
+        let conn = remote_conn(PeerRole::Daemon, None);
+        for id in [&local_id, &unknown_id] {
+            for (path, result) in ownership_paths(&registry, id, &owner, &conn) {
+                if IDENTITY_FREE_PATHS.contains(&path) {
+                    continue;
+                }
+                assert_eq!(
+                    result.err().map(|error| error.code),
+                    Some(ErrorCode::Unauthorized),
+                    "{path} must refuse session {id} to a daemon peer"
+                );
+            }
         }
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);

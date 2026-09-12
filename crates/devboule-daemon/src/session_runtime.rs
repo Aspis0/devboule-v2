@@ -1550,13 +1550,16 @@ impl SessionRuntime {
         let _ = self.origin.set(origin);
     }
 
-    /// The session's origin. `Local` before the registry has installed one, so
-    /// a test-built runtime is the person at this machine and never a device.
+    /// The session's origin. `Unknown` before the registry has installed one:
+    /// `local` is measured for a session this machine created, never assumed,
+    /// so a runtime nobody told — a test-built one, or a session whose create
+    /// never reached the registry — cannot have its cards or its session row
+    /// read as this machine's own.
     pub(crate) fn origin(&self) -> SessionOrigin {
         self.origin
             .get()
             .cloned()
-            .unwrap_or_else(SessionOrigin::local)
+            .unwrap_or_else(SessionOrigin::unknown)
     }
 
     pub(crate) fn agent_kind(&self) -> Option<SessionKind> {

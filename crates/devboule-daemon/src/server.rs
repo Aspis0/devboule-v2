@@ -1810,24 +1810,70 @@ pub(crate) fn handle_client(
     framed.cancel_read();
     conn.outbound.close();
     bounded_join(reader, JOIN_BUDGET);
-    refill_pending_events(&conn, &mut pending_events);
-    refill_pending_state_events(&conn, &mut pending_state_events);
-    if let Err(error) = drain_pending_events(&framed, &conn, &mut pending_events, &state.sessions) {
+    // A connection the user has just revoked (`PeerRevoke`, or a `PeerSetCaps`
+    // that dropped a capability) gets nothing more — not even an event that was
+    // already queued when the flag went up. Skipping the flush is what makes
+    // "revoked" hold at the last place a frame could still leave, and the
+    // detach below then runs with no write between it and the end of the
+    // connection (H3, §8b A4).
+    let revoked = close_requested
+        .as_ref()
+        .is_some_and(|close| close.load(Ordering::SeqCst));
+    flush_final_events(
+        &framed,
+        &conn,
+        &state.sessions,
+        &mut pending_events,
+        &mut pending_state_events,
+        revoked,
+    );
+    state.sessions.detach_conn(&conn);
+    state.unwatch_sessions(conn.id);
+    state.sessions.clear_presence(conn.id);
+    state.unregister_remote_conn(conn.id);
+    // The device is gone, so the permission cards it was holding can no longer
+    // be answered by it: whatever slots it still held go back to the
+    // daemon-wide allowance (H2).
+    if let Some(device_id) = conn.conn_peer.as_ref().and_then(ConnPeer::device_id) {
+        crate::session::release_peer_cards(device_id);
+    }
+    loop_result
+}
+
+/// Whatever is still queued for this connection, on its way out — unless the
+/// connection was revoked while it was queued.
+///
+/// `PeerRevoke` and a capability-dropping `PeerSetCaps` raise the close flag
+/// and the loop breaks at its next iteration boundary; this is the last place a
+/// frame could still leave afterwards. Refilling and draining here would hand a
+/// device the user has just disowned every event that was pending at the moment
+/// of revocation, so a revoked connection sends none of them: the queues die
+/// with the connection (H3, `DESIGN-remote-agents.md` §8b A4).
+fn flush_final_events(
+    framed: &Framed,
+    conn: &ConnHandle,
+    sessions: &SessionRegistry,
+    pending_events: &mut VecDeque<PendingEvent>,
+    pending_state_events: &mut VecDeque<SessionEventEnvelope>,
+    revoked: bool,
+) {
+    if revoked {
+        return;
+    }
+    refill_pending_events(conn, pending_events);
+    refill_pending_state_events(conn, pending_state_events);
+    if let Err(error) = drain_pending_events(framed, conn, pending_events, sessions) {
         eprintln!("daemon connection final event drain failed: {error}");
     }
-    if let Err(error) = drain_pending_state_events(&framed, &mut pending_state_events) {
+    if let Err(error) = drain_pending_state_events(framed, pending_state_events) {
         eprintln!("daemon connection final state event drain failed: {error}");
     }
     // This is the deliberate teardown-only pipe barrier: it makes every frame
     // accepted above client-readable before the server drops this connection.
     // FlushFileBuffers stays out of the per-frame event path because it waits
-    // for the client to consume the pipe.
+    // for the client to consume the pipe. A revoked connection skips it too:
+    // there is nothing to make readable.
     let _ = framed.flush_pipe();
-    state.sessions.detach_conn(&conn);
-    state.unwatch_sessions(conn.id);
-    state.sessions.clear_presence(conn.id);
-    state.unregister_remote_conn(conn.id);
-    loop_result
 }
 
 /// The owner whose sessions a connection may read.
@@ -2061,19 +2107,26 @@ fn dispatch(
                 return Some(capability_not_supported(request.request_id(), reason));
             }
             PeerDecision::Allow => {
-                // §8b A4/A5: an allowed request that would run a session
+                // The refusals that come before the mode policy, in the order
+                // they need: attachments first (they are refused before the
+                // idempotency fingerprint decodes anything, H4), then the
+                // ownership question for a request that names a session, so the
+                // policy lookups below never answer "that session exists, and
+                // it is this kind" to a peer that may not reach it (H6).
+                if let Some(reply) =
+                    peer_refusal_before_mode(state, owner, &request, &conn.conn_peer)
+                {
+                    audit_peer_request(state, &conn.conn_peer, &request, "denied");
+                    return Some(reply);
+                }
+                // §8b A4/A5/R3: an allowed request that would run a session
                 // without asking this machine's user is refused here, and
                 // recorded as such — a paired device asking for unattended
                 // execution is a different event in the trail from a device
                 // asking for something it may not have.
-                if peer_mode_refusal(state, &request) {
-                    audit_peer_request(
-                        state,
-                        &conn.conn_peer,
-                        &request,
-                        crate::peer_policy::PROMPT_SKIPPING_REFUSED,
-                    );
-                    return Some(prompt_skipping_refused(request.request_id()));
+                if let Some(reason) = peer_mode_refusal(state, &request) {
+                    audit_peer_request(state, &conn.conn_peer, &request, reason);
+                    return Some(mode_refused(request.request_id(), reason));
                 }
                 // Only state-changing requests audit on success. An allowed
                 // read must never write a row: a `Ping` loop would fill the
@@ -3035,26 +3088,90 @@ fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage 
     DaemonMessage::Error(error)
 }
 
-/// §8b A4/A5: would this request run a session without asking this machine's
-/// user?
+/// The refusals that come *before* the mode policy, in the one order the three
+/// of them need (H4, H6).
 ///
-/// Two shapes reach here. `SessionCreate` names its own kind and mode in the
-/// frame, so no lookup is needed. `SessionSetMode`, `SessionSend` and
-/// `SessionAttach` name a session, and the registry answers with that
-/// session's kind and the mode it is in now (`SessionRegistry::session_mode_guard`):
-/// a local session sitting in a prompt-skipping mode refuses a remote send, and
-/// a peer-origin session refuses a switch into one.
+/// 1. A send from a paired device may not carry attachments at all. It is
+///    refused here — before `session_send` builds the idempotency fingerprint,
+///    which hashes every attachment by base64-decoding it, and before anything
+///    looks at a session or a store. Refusing after the fingerprint meant a
+///    large base64 field still cost decoder time and memory on a request that
+///    could never succeed. A refusal is also not idempotent-cached: nothing is
+///    remembered for it, so no fingerprint is computed for it either.
+/// 2. A request that names a session has its ownership decided before the mode
+///    lookup (`SessionRegistry::session_scope`), so the policy gate can never
+///    answer "that session exists, and it runs this provider" to a peer that
+///    may not reach it. The denial for a foreign session and the denial for a
+///    session this daemon does not know are the same frame (§8b A1/A3).
+///
+/// Returns the frame to send, when there is one. `dispatch` records the audit
+/// row, so the label stays in one place.
+fn peer_refusal_before_mode(
+    state: &ServerState,
+    owner: &OwnerId,
+    request: &ClientMessage,
+    conn_peer: &Option<ConnPeer>,
+) -> Option<DaemonMessage> {
+    if let ClientMessage::SessionSend {
+        id, attachments, ..
+    } = request
+    {
+        if !attachments.is_empty() && !crate::session::session_origin_for(conn_peer).is_local() {
+            return Some(DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED,
+                )
+                .with_id(*id),
+            ));
+        }
+    }
+    let session_id = match request {
+        ClientMessage::SessionAttach { session_id, .. }
+        | ClientMessage::SessionSend { session_id, .. }
+        | ClientMessage::SessionSetMode { session_id, .. } => session_id,
+        // Every other shape: no session to authorize before the mode gate,
+        // which only reads a session for these three.
+        _ => return None,
+    };
+    let error = state
+        .sessions
+        .session_scope(session_id, owner, conn_peer)
+        .err()?;
+    Some(match request.request_id() {
+        Some(id) => DaemonMessage::Error(error.with_id(id)),
+        None => DaemonMessage::Error(error),
+    })
+}
+
+/// §8b A4/A5/R3: would this request run a session without asking this machine's
+/// user, or name a mode this daemon cannot vet?
+///
+/// `SessionCreate` names its own kind and mode in the frame, so no lookup is
+/// needed — and for ACP any named mode is refused, because ACP mode ids are the
+/// agent's own (`peer_policy::mode_refusal`). `SessionSetMode`, `SessionSend`
+/// and `SessionAttach` name a session, and the registry answers with that
+/// session's kind and the mode it is in now
+/// (`SessionRegistry::session_mode_guard`): a session sitting in a
+/// prompt-skipping mode refuses a remote send, and a peer refuses to switch any
+/// session into one.
+///
+/// The answer is the audit label the refusal is recorded under, so the trail
+/// says which rule fired: A5's prompt-skipping list, or R3's ACP modes.
 ///
 /// A session this daemon does not know is not a refusal here: the request still
-/// has to pass the ownership check, and the answer for an unknown id is
-/// `SessionNotFound` rather than a policy verdict.
-fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> bool {
+/// has to pass the ownership check, and the answer for an unknown id is the
+/// ownership denial rather than a policy verdict. The mode lookup runs *after*
+/// the ownership check for the session-naming arms: `dispatch` asks
+/// `SessionRegistry::session_scope` first, so this function never answers a
+/// question about a session the caller may not reach (§8b A1, H6).
+fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> Option<&'static str> {
     match request {
         ClientMessage::SessionCreate {
             kind,
             mode: Some(mode),
             ..
-        } => crate::peer_policy::prompt_skipping_mode(kind.clone(), mode),
+        } => crate::peer_policy::mode_refusal(kind.clone(), mode),
         ClientMessage::SessionSetMode {
             session_id,
             mode_id,
@@ -3062,7 +3179,7 @@ fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> bool {
         } => state
             .sessions
             .session_mode_guard(session_id)
-            .is_some_and(|(kind, _)| crate::peer_policy::prompt_skipping_mode(kind, mode_id)),
+            .and_then(|(kind, _)| crate::peer_policy::mode_refusal(kind, mode_id)),
         ClientMessage::SessionSend { session_id, .. }
         | ClientMessage::SessionAttach { session_id, .. } => state
             .sessions
@@ -3070,17 +3187,21 @@ fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> bool {
             .and_then(|(kind, mode)| {
                 mode.map(|mode| crate::peer_policy::prompt_skipping_mode(kind, &mode))
             })
-            .unwrap_or(false),
-        _ => false,
+            .and_then(|skipping| skipping.then_some(crate::peer_policy::PROMPT_SKIPPING_REFUSED)),
+        _ => None,
     }
 }
 
-/// The frame a peer gets when §8b A4/A5 refuses it.
-fn prompt_skipping_refused(id: Option<u64>) -> DaemonMessage {
-    let mut error = WireError::new(
-        ErrorCode::CapabilityNotSupported,
-        "Modes that skip the permission prompt are not available to a paired device.",
-    );
+/// The frame a peer gets when §8b A4/A5/R3 refuses its mode choice. The label
+/// picks the sentence, so what the peer reads and what the audit row says are
+/// the same decision.
+fn mode_refused(id: Option<u64>, reason: &'static str) -> DaemonMessage {
+    let message = if reason == crate::peer_policy::ACP_MODES_UNVETTED_REFUSED {
+        crate::peer_policy::ACP_MODES_UNVETTED_MESSAGE
+    } else {
+        "Modes that skip the permission prompt are not available to a paired device."
+    };
+    let mut error = WireError::new(ErrorCode::CapabilityNotSupported, message);
     if let Some(id) = id {
         error = error.with_id(id);
     }
@@ -3129,16 +3250,27 @@ fn audit_peer_request(
 /// §8b A5).
 fn peer_outcome(request: &ClientMessage, outcome: &str) -> &'static str {
     const REFUSED: &str = crate::peer_policy::PROMPT_SKIPPING_REFUSED;
+    const ACP_REFUSED: &str = crate::peer_policy::ACP_MODES_UNVETTED_REFUSED;
     match outcome {
         "ok" => "ok",
         // The refusal already names itself: one label, one vocabulary.
         REFUSED => REFUSED,
+        // Same for the ACP rule: R3's refusal is not a plain denial.
+        ACP_REFUSED => ACP_REFUSED,
         "denied" => match request {
             ClientMessage::SessionCreate {
                 kind,
                 mode: Some(mode),
                 ..
             } if crate::peer_policy::prompt_skipping_mode(kind.clone(), mode) => REFUSED,
+            // A caps-denied ACP create that named a mode is the same rule: the
+            // trail says why the mode was refused, not merely that the device
+            // lacked `create_sessions` (R3).
+            ClientMessage::SessionCreate {
+                kind: SessionKind::Acp,
+                mode: Some(_),
+                ..
+            } => ACP_REFUSED,
             _ => "denied",
         },
         // Any other word is not a decision this gate produces; the trail says
@@ -3568,7 +3700,7 @@ fn dispatch_session(
             id,
             state
                 .sessions
-                .set_mode(&session_id, owner, &mode_id)
+                .set_mode(&session_id, owner, &mode_id, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionPermissionRespond {
@@ -3694,24 +3826,10 @@ fn session_send(
     {
         return reply;
     }
-    // The attachment counter is the peer's deposit branch (S7's scope
-    // correction): `budget_for` in `peer_policy.rs` is where it will be read.
-    // Until it lands, a send that arrived over a peer connection may not carry
-    // attachments at all — refused here, at the point where the origin is
-    // known, before anything decodes the base64 or touches the store. A local
-    // send is unchanged.
-    if !attachments.is_empty() {
-        let origin = crate::session::session_origin_for(&conn.conn_peer);
-        if !origin.is_local() {
-            return DaemonMessage::Error(
-                WireError::new(
-                    ErrorCode::InvalidRequest,
-                    crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED,
-                )
-                .with_id(id),
-            );
-        }
-    }
+    // The remote-attachment refusal is not here: `dispatch` refuses an
+    // attachment-carrying send from a paired device before this function runs,
+    // which is what keeps the fingerprint above (and the base64 decode inside
+    // it) from ever seeing those bytes (H4). A local send is unchanged.
     // The public six-argument entry point is the one that builds the
     // `SendRequest`; it is called from here rather than the private
     // one-argument form, which would leave this wrapper dead in a non-test
@@ -5360,20 +5478,68 @@ mod tests {
             other => panic!("expected Sessions, got {other:?}"),
         };
 
+        let ids_error = |conn: &Arc<ConnHandle>| match dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionsList { id: 1 },
+            conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("the gate answers")
+        {
+            DaemonMessage::Error(error) => (error.code, error.message),
+            other => panic!("expected an error, got {other:?}"),
+        };
+
         assert_eq!(
-            ids(&remote_conn(PeerRole::Client, Some("S-user-a"))),
+            ids(&remote_conn_with_caps(
+                PeerRole::Client,
+                Some("S-user-a"),
+                &[crate::peer_policy::CAP_VIEW]
+            )),
             vec!["s.user-a.1".to_string()]
         );
         assert_eq!(
-            ids(&remote_conn(PeerRole::Client, Some("S-user-b"))),
+            ids(&remote_conn_with_caps(
+                PeerRole::Client,
+                Some("S-user-b"),
+                &[crate::peer_policy::CAP_VIEW]
+            )),
             vec!["s.user-b.1".to_string()]
         );
-        assert!(ids(&remote_conn(PeerRole::Client, None)).is_empty());
-        assert!(ids(&remote_conn(PeerRole::Daemon, Some("S-user-a"))).is_empty());
+        assert!(ids(&remote_conn_with_caps(
+            PeerRole::Client,
+            None,
+            &[crate::peer_policy::CAP_VIEW]
+        ))
+        .is_empty());
+        assert!(ids(&remote_conn_with_caps(
+            PeerRole::Daemon,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW]
+        ))
+        .is_empty());
+        // H10: without `view` the list is not an unconditional read any more.
+        // The refusal is the capability gate's, and it names `view`.
+        assert_eq!(
+            ids_error(&remote_conn(PeerRole::Client, Some("S-user-a"))),
+            (
+                ErrorCode::CapabilityNotSupported,
+                format!(
+                    "capability '{}' was not negotiated",
+                    crate::peer_policy::CAP_VIEW
+                )
+            )
+        );
 
-        // A read is a read: none of these wrote an audit row.
+        // A read is a read: the four allowed lists above wrote no audit row.
+        // The one denial did — the capability gate's trail, and the only row
+        // this test produces.
         drop(state);
-        assert!(audit_rows(&path).is_empty());
+        assert_eq!(audit_rows(&path), vec!["SessionsList:denied"]);
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -5812,9 +5978,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(path);
     }
 
-    /// The A4/A5 decision itself, keyed on the frame's own facts. The
+    /// The A4/A5/R3 decision itself, keyed on the frame's own facts. The
     /// session-backed half (send, set-mode) is the registry guard — tested in
-    /// `session.rs` — composed with this same list.
+    /// `session.rs` — composed with this same list. The answer is the audit
+    /// label, so the trail names the rule that fired.
     #[test]
     fn the_prompt_skipping_decision_reads_the_frame_and_refuses_unknown_sessions() {
         let (path, state) = temp_state("peer-prompt-skipping-table");
@@ -5827,54 +5994,74 @@ mod tests {
             idempotency_key: None,
         };
 
-        assert!(peer_mode_refusal(
-            &state,
-            &create(SessionKind::Claude, "bypassPermissions")
-        ));
-        assert!(peer_mode_refusal(
-            &state,
-            &create(SessionKind::Claude, "auto")
-        ));
-        assert!(peer_mode_refusal(
-            &state,
-            &create(SessionKind::Codex, "full-access")
-        ));
-        // Codex `auto-review` and Claude's `acceptEdits` are refusals too, and
-        // the ones that only prompt are not.
-        assert!(!peer_mode_refusal(
-            &state,
-            &create(SessionKind::Codex, "auto")
-        ));
-        assert!(!peer_mode_refusal(
-            &state,
-            &create(SessionKind::Claude, "default")
-        ));
-        assert!(!peer_mode_refusal(
-            &state,
-            &create(SessionKind::Terminal, "bypassPermissions")
-        ));
+        // The label is part of the answer: the trail and the peer's error name
+        // the same rule.
+        assert_eq!(
+            peer_mode_refusal(&state, &create(SessionKind::Claude, "bypassPermissions")),
+            Some(crate::peer_policy::PROMPT_SKIPPING_REFUSED)
+        );
+        assert_eq!(
+            peer_mode_refusal(&state, &create(SessionKind::Claude, "auto")),
+            Some(crate::peer_policy::PROMPT_SKIPPING_REFUSED)
+        );
+        assert_eq!(
+            peer_mode_refusal(&state, &create(SessionKind::Codex, "full-access")),
+            Some(crate::peer_policy::PROMPT_SKIPPING_REFUSED)
+        );
+        // Codex `auto` and Claude's `default` only prompt, so they are not
+        // refusals — and a Terminal has no prompt to skip at all.
+        assert_eq!(
+            peer_mode_refusal(&state, &create(SessionKind::Codex, "auto")),
+            None
+        );
+        assert_eq!(
+            peer_mode_refusal(&state, &create(SessionKind::Claude, "default")),
+            None
+        );
+        assert_eq!(
+            peer_mode_refusal(&state, &create(SessionKind::Terminal, "bypassPermissions")),
+            None
+        );
+        // §8b A5/R3, H1: an ACP create may not name *any* mode, because the
+        // agent owns the ids and this daemon has no list to vet them against.
+        for mode in ["auto_accept", "ask", "default"] {
+            assert_eq!(
+                peer_mode_refusal(&state, &create(SessionKind::Acp, mode)),
+                Some(crate::peer_policy::ACP_MODES_UNVETTED_REFUSED),
+                "ACP mode {mode:?}"
+            );
+        }
+        // ...and neither may an ACP *session* be switched into one.
+        assert_eq!(
+            peer_mode_refusal(
+                &state,
+                &ClientMessage::SessionSetMode {
+                    id: 4,
+                    session_id: "s.nobody.1".to_string(),
+                    mode_id: "ask".to_string(),
+                }
+            ),
+            None,
+            "unknown sessions are not a policy verdict here; `dispatch` refuses them first"
+        );
 
         // A session this daemon does not know is not a policy verdict: the
-        // answer for it is `SessionNotFound`, from the ownership path.
-        assert!(!peer_mode_refusal(
-            &state,
-            &ClientMessage::SessionSend {
-                id: 2,
-                session_id: "s.nobody.1".to_string(),
-                subscription_id: 1,
-                text: "hello".to_string(),
-                attachments: Vec::new(),
-                idempotency_key: None,
-            }
-        ));
-        assert!(!peer_mode_refusal(
-            &state,
-            &ClientMessage::SessionSetMode {
-                id: 3,
-                session_id: "s.nobody.1".to_string(),
-                mode_id: "bypassPermissions".to_string(),
-            }
-        ));
+        // answer for it is the ownership denial, which `dispatch` produces
+        // before this function is consulted (H6).
+        assert_eq!(
+            peer_mode_refusal(
+                &state,
+                &ClientMessage::SessionSend {
+                    id: 2,
+                    session_id: "s.nobody.1".to_string(),
+                    subscription_id: 1,
+                    text: "hello".to_string(),
+                    attachments: Vec::new(),
+                    idempotency_key: None,
+                }
+            ),
+            None
+        );
 
         drop(state);
         let _ = std::fs::remove_dir_all(path);
@@ -6050,6 +6237,386 @@ mod tests {
             ),
             other => panic!("a local send reaches the session layer: {other:?}"),
         }
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// §8b A5/R3, H1: a paired device may not name a mode for an ACP session —
+    /// at the create, or by switching a live one — while the person at this
+    /// machine keeps their own path.
+    #[test]
+    fn a_peer_may_not_name_an_acp_mode_while_the_local_pipe_may() {
+        let (path, state) = temp_state("peer-acp-modes");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let creator = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[
+                crate::peer_policy::CAP_VIEW,
+                crate::peer_policy::CAP_CREATE_SESSIONS,
+            ],
+        );
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionCreate {
+                id: 1,
+                workspace_id: None,
+                kind: SessionKind::Acp,
+                provider: Some("claude-acp".to_string()),
+                mode: Some("auto_accept".to_string()),
+                idempotency_key: None,
+            },
+            &creator,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("the gate answers");
+        match reply {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.code, ErrorCode::CapabilityNotSupported, "{error:?}");
+                assert_eq!(
+                    error.message,
+                    crate::peer_policy::ACP_MODES_UNVETTED_MESSAGE
+                );
+                assert_eq!(error.id, Some(1));
+            }
+            other => panic!("an ACP create naming a mode must be refused: {other:?}"),
+        }
+
+        // A live ACP session, and the same device asking to switch it: refused
+        // outright, whatever the id looks like — `ask` and `default` included,
+        // because the agent defines what they mean.
+        let member = OwnerId::new("S-user-a", "client").expect("owner");
+        crate::session::insert_test_live_agent(&state.sessions, "s.acp.1", member);
+        let switcher = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
+        );
+        for mode in ["ask", "auto_accept", "default"] {
+            let reply = dispatch(
+                &state,
+                &owner,
+                ClientMessage::SessionSetMode {
+                    id: 2,
+                    session_id: "s.acp.1".to_string(),
+                    mode_id: mode.to_string(),
+                },
+                &switcher,
+                true,
+                true,
+                true,
+                true,
+            )
+            .expect("the gate answers");
+            match reply {
+                DaemonMessage::Error(error) => {
+                    assert_eq!(error.code, ErrorCode::CapabilityNotSupported, "{error:?}");
+                    assert_eq!(
+                        error.message,
+                        crate::peer_policy::ACP_MODES_UNVETTED_MESSAGE,
+                        "ACP mode {mode}"
+                    );
+                }
+                other => panic!("a peer may not switch an ACP session: {other:?}"),
+            }
+        }
+
+        // The person at this machine is not under this rule: the same frame on
+        // the local pipe reaches the sessions layer, which answers about the
+        // session (this one has no mode manifest, so it says that) and never
+        // with the ACP sentence.
+        let local = ConnHandle::new(4);
+        let local_reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionSetMode {
+                id: 3,
+                session_id: "s.acp.1".to_string(),
+                mode_id: "auto_accept".to_string(),
+            },
+            &local,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("the gate answers");
+        match local_reply {
+            DaemonMessage::Error(error) => assert_ne!(
+                error.message,
+                crate::peer_policy::ACP_MODES_UNVETTED_MESSAGE,
+                "the local path keeps its mode changes"
+            ),
+            other => panic!("a local set-mode on a manifest-less session is an error: {other:?}"),
+        }
+
+        drop(state);
+        assert_eq!(
+            audit_rows(&path),
+            vec![
+                "SessionCreate:acp_modes_unvetted_refused",
+                "SessionSetMode:acp_modes_unvetted_refused",
+                "SessionSetMode:acp_modes_unvetted_refused",
+                "SessionSetMode:acp_modes_unvetted_refused",
+            ],
+            "one row per refusal, each naming the ACP rule"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// §8b A11, H10: `view` is what makes a paired device a reader, and the two
+    /// list acts are reads. A peer holding nothing reaches neither, and the
+    /// same two requests are served once it holds `view`.
+    #[test]
+    fn a_peer_with_no_capability_cannot_read_the_lists() {
+        let (path, state) = temp_state("peer-zero-caps");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let unpaired = remote_conn_with_caps(PeerRole::Daemon, None, &[]);
+        for request in [
+            ClientMessage::SessionsList { id: 1 },
+            ClientMessage::DevicesList { id: 2 },
+        ] {
+            let name = request.name();
+            match dispatch(&state, &owner, request, &unpaired, true, true, true, true)
+                .expect("the gate answers")
+            {
+                DaemonMessage::Error(error) => {
+                    assert_eq!(
+                        error.code,
+                        ErrorCode::CapabilityNotSupported,
+                        "{name}: {error:?}"
+                    );
+                    assert!(
+                        error.message.contains(crate::peer_policy::CAP_VIEW),
+                        "{name}: the refusal must name the capability: {}",
+                        error.message
+                    );
+                }
+                other => panic!("a peer with no capability may not read {name}: {other:?}"),
+            }
+        }
+
+        let reader = remote_conn_with_caps(PeerRole::Daemon, None, &[crate::peer_policy::CAP_VIEW]);
+        for request in [
+            ClientMessage::SessionsList { id: 3 },
+            ClientMessage::DevicesList { id: 4 },
+        ] {
+            let name = request.name();
+            if let DaemonMessage::Error(error) =
+                dispatch(&state, &owner, request, &reader, true, true, true, true)
+                    .expect("the gate answers")
+            {
+                panic!("a viewer must be served {name}: {error:?}");
+            }
+        }
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// H6: a peer probing a session it may not reach gets exactly what a
+    /// nonexistent one gets. The mode policy is consulted only after the
+    /// ownership question, so its answer cannot say "that session exists, and
+    /// it runs this provider" to a peer that may not reach it.
+    #[test]
+    fn a_peer_probing_a_foreign_session_gets_the_same_answer_as_a_nonexistent_one() {
+        let (path, state) = temp_state("peer-session-oracle");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let someone_else = OwnerId::new("S-user-b", "client").expect("owner");
+        crate::session::insert_test_live_agent(&state.sessions, "s.acp.foreign", someone_else);
+        let prober = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
+        );
+        let probes = |session_id: &str, id: u64| {
+            [
+                ClientMessage::SessionAttach {
+                    id,
+                    session_id: session_id.to_string(),
+                    subscription_id: 1,
+                    from_cursor: None,
+                },
+                ClientMessage::SessionSend {
+                    id,
+                    session_id: session_id.to_string(),
+                    subscription_id: 1,
+                    text: "hi".to_string(),
+                    attachments: Vec::new(),
+                    idempotency_key: None,
+                },
+                ClientMessage::SessionSetMode {
+                    id,
+                    session_id: session_id.to_string(),
+                    mode_id: "acceptEdits".to_string(),
+                },
+            ]
+        };
+        let answer = |request: ClientMessage| match dispatch(
+            &state, &owner, request, &prober, true, true, true, true,
+        )
+        .expect("the gate answers")
+        {
+            DaemonMessage::Error(error) => (error.code, error.message),
+            other => panic!("a probe must be answered with an error: {other:?}"),
+        };
+        for (foreign, missing) in probes("s.acp.foreign", 1)
+            .into_iter()
+            .zip(probes("s.acp.missing", 2))
+        {
+            let name = foreign.name();
+            let foreign_answer = answer(foreign);
+            let missing_answer = answer(missing);
+            assert_eq!(foreign_answer.0, ErrorCode::Unauthorized, "{name}");
+            assert_eq!(
+                foreign_answer, missing_answer,
+                "{name}: a foreign session and a nonexistent one must be one answer"
+            );
+            assert_ne!(
+                foreign_answer.1,
+                crate::peer_policy::ACP_MODES_UNVETTED_MESSAGE,
+                "{name}: no mode or kind may leak through the denial"
+            );
+        }
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// H4: the refusal is before the decode, not after it. An attachment whose
+    /// base64 is invalid *would* fail validation in the sessions layer; the
+    /// peer is refused with the attachment sentence instead, and nothing is
+    /// remembered for it, so the same idempotency key is a fresh request.
+    #[test]
+    fn a_peers_attachment_refusal_comes_before_any_decode() {
+        let (path, state) = temp_state("peer-attachment-decode");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let sender = remote_conn_with_caps(
+            PeerRole::Client,
+            Some("S-user-a"),
+            &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
+        );
+        let mut broken = wire_attachment("a.png", b"one");
+        broken.data = "!!! not base64 !!!".to_string();
+        let send =
+            |id: u64, attachments: Vec<PromptAttachment>, text: &str| ClientMessage::SessionSend {
+                id,
+                session_id: "s.test-client.decode1".to_string(),
+                subscription_id: 1,
+                text: text.to_string(),
+                attachments,
+                idempotency_key: Some("retry-me".to_string()),
+            };
+        let message = |request: ClientMessage, conn: &Arc<ConnHandle>| match dispatch(
+            &state, &owner, request, conn, true, true, true, true,
+        )
+        .expect("the gate answers")
+        {
+            DaemonMessage::Error(error) => error.message,
+            other => panic!("a send with no live session is an error: {other:?}"),
+        };
+
+        let peer = message(send(1, vec![broken.clone()], "hello"), &sender);
+        assert_eq!(
+            peer,
+            crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED,
+            "the peer's refusal is about attachments, never about the payload"
+        );
+        // The local pipe does decode, and says so: that is what makes the
+        // assertion above evidence that the peer's path never reached the
+        // decoder. (Not `!=` but the decoder's own sentence.)
+        let local = message(send(2, vec![broken], "hello"), &ConnHandle::new(4));
+        assert!(
+            local.contains(&devboule_protocol::invalid_base64_message()),
+            "the local answer must be the decoder's: {local}"
+        );
+        // A refusal is not idempotent-cached: the same key with a text-only
+        // send reaches the sessions layer instead of replaying the refusal.
+        let text_only = message(send(3, Vec::new(), "hello"), &sender);
+        assert_ne!(text_only, crate::peer_policy::PEER_ATTACHMENTS_UNSUPPORTED);
+        assert_eq!(
+            files_under(&path.join("attachments")).len(),
+            0,
+            "no decode, no store file"
+        );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// A stand-in for the pipe a connection writes to, so a test can read back
+    /// exactly the frames a teardown wrote. On Windows `Framed` writes with
+    /// `WriteFile` and an `OVERLAPPED`, which a disk handle must be opened for.
+    fn pipe_stand_in(path: &std::path::Path) -> std::fs::File {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
+            options.custom_flags(FILE_FLAG_OVERLAPPED);
+        }
+        options.open(path).expect("pipe stand-in")
+    }
+
+    /// H3: a revoked connection sends nothing more — not even an event that was
+    /// already queued when the close flag went up. The control run proves the
+    /// queue *would* have been written.
+    #[test]
+    fn a_revoked_connection_writes_no_queued_event() {
+        let (path, state) = temp_state("revoked-teardown");
+        let queued = || {
+            let mut queue: VecDeque<SessionEventEnvelope> = VecDeque::new();
+            queue.push_back(session_state_event(Vec::new()));
+            queue
+        };
+
+        let sent_path = path.join("sent.frames");
+        {
+            let framed = Framed::new(pipe_stand_in(&sent_path));
+            let conn = ConnHandle::new(1);
+            let (mut events, mut state_events) = (VecDeque::new(), queued());
+            flush_final_events(
+                &framed,
+                &conn,
+                &state.sessions,
+                &mut events,
+                &mut state_events,
+                false,
+            );
+        }
+        assert!(
+            !std::fs::read(&sent_path)
+                .expect("read control frames")
+                .is_empty(),
+            "an unrevoked teardown writes what was queued"
+        );
+
+        let revoked_path = path.join("revoked.frames");
+        {
+            let framed = Framed::new(pipe_stand_in(&revoked_path));
+            let conn = ConnHandle::new(2);
+            let (mut events, mut state_events) = (VecDeque::new(), queued());
+            flush_final_events(
+                &framed,
+                &conn,
+                &state.sessions,
+                &mut events,
+                &mut state_events,
+                true,
+            );
+        }
+        let written = std::fs::read(&revoked_path).expect("read revoked frames");
+        assert!(
+            written.is_empty(),
+            "a revoked connection must write no frame; it wrote {} bytes",
+            written.len()
+        );
 
         drop(state);
         let _ = std::fs::remove_dir_all(path);

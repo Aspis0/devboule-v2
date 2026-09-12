@@ -74,18 +74,45 @@ impl SessionOrigin {
         }
     }
 
+    /// The origin of a session nobody measured.
+    ///
+    /// Deliberately **not** `local`: `local` is a fact the registry installs
+    /// for a session this machine created, so it is only ever *measured*. This
+    /// is what a provider client writes as a placeholder before the daemon
+    /// stamps the session's stored origin on the way out, and what
+    /// `SessionRuntime::origin()` falls back to before the registry has
+    /// installed one — the two places that used to invent `local` and so made
+    /// "this machine's own" the answer to a question nobody had asked.
+    pub fn unknown() -> Self {
+        Self {
+            kind: SessionOriginKind::Unknown,
+            device_id: None,
+            role: None,
+        }
+    }
+
     pub fn is_local(&self) -> bool {
         self.kind == SessionOriginKind::Local
     }
 }
 
-/// `"local"` or `"peer"`, lowercase on the wire.
+/// `"local"`, `"peer"` or `"unknown"`, lowercase on the wire.
+///
+/// `Unknown` is what a *stored* row reads as when its origin columns say
+/// neither of the two facts the daemon writes — a `NULL` `origin_kind`, or a
+/// spelling some newer daemon invented (`journal.rs::origin_from_columns`).
+/// The session exists; where it came from does not. It is deliberately **not**
+/// `Local`: the `Daemon` ownership arm opens only a session whose origin names
+/// *that* device (`session.rs::check_user_owner`), so an unreadable origin
+/// refuses a paired peer rather than promoting it to the person at this
+/// machine (`DESIGN-remote-agents.md` §8 R2).
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionOriginKind {
     #[default]
     Local,
     Peer,
+    Unknown,
 }
 
 /// Activity the agent (or its hook) last reported. Wire names match herdr's
@@ -170,6 +197,15 @@ pub struct Session {
     /// Who asked for this session, set once at create. `#[serde(default)]`
     /// so a client that speaks an older dialect still parses a frame from a
     /// daemon that carries one.
+    ///
+    /// Two absences are not the same fact, and this field is the one place
+    /// they meet. A frame with **no** `origin` key at all (a peer journal row
+    /// written before v9, an older dialect) deserializes as `Local` — the
+    /// `Default`. A row whose *stored* `origin_kind` column is `NULL` or
+    /// unrecognised reads back as [`SessionOriginKind::Unknown`], which is not
+    /// local and grants a peer nothing. The asymmetry is deliberate: the wire
+    /// cannot express "absent" without breaking 1b clients, so absence stays
+    /// the historical `local`; the journal can, so it says what it means.
     #[serde(default)]
     pub origin: SessionOrigin,
 }

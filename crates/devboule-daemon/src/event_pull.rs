@@ -1080,10 +1080,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// §8b A14 at the egress: the `local` a provider client writes as a
-    /// placeholder is replaced with the session's stored origin before the card
-    /// reaches a subscriber, so a peer session's card cannot be shown as this
-    /// machine's own.
+    /// §8b A14 at the egress: the placeholder a provider client writes is
+    /// replaced with the session's stored origin before the card reaches a
+    /// subscriber, so a peer session's card cannot be shown as this machine's
+    /// own — and a session whose origin was never installed surfaces as
+    /// `unknown`, never as `local`: `local` is measured, never assumed.
     #[test]
     fn a_published_permission_request_carries_the_sessions_stored_origin() {
         let session_id = "s.live.agent.replay.card-origin";
@@ -1096,40 +1097,57 @@ mod tests {
             payload: b"ready".to_vec(),
         };
         let (dir, journal, runtime, conn) = live_agent_replay_fixture(session_id, record);
-        runtime.set_origin(devboule_protocol::SessionOrigin::peer(
-            "device-phone",
-            devboule_protocol::PeerRole::Client,
-        ));
         // Clear whatever the attach replayed: this asserts what a *publish*
         // hands the subscriber.
         let _ = drain(&conn);
 
-        // Exactly what a provider client builds: a placeholder origin, because
-        // the client has no idea which device asked for the session.
-        runtime.publish_agent_event(
-            SessionEvent::PermissionRequest {
-                tool_call_id: "call-origin".to_string(),
-                title: "Run command".to_string(),
-                description: None,
-                command: None,
-                args: None,
-                cwd: None,
-                env: None,
-                options: Vec::new(),
-                origin: devboule_protocol::SessionOrigin::local(),
-            },
-            None,
+        // Publish the card a provider client builds — placeholder origin and
+        // no idea which device asked for the session — and read it back.
+        let publish = |runtime: &SessionRuntime, tool_call_id: &str| {
+            runtime.publish_agent_event(
+                SessionEvent::PermissionRequest {
+                    tool_call_id: tool_call_id.to_string(),
+                    title: "Run command".to_string(),
+                    description: None,
+                    command: None,
+                    args: None,
+                    cwd: None,
+                    env: None,
+                    options: Vec::new(),
+                    origin: devboule_protocol::SessionOrigin::unknown(),
+                },
+                None,
+            );
+        };
+        let card_origin = |conn: &ConnHandle| {
+            drain(conn)
+                .into_iter()
+                .find_map(|event| match event {
+                    SessionEvent::PermissionRequest { origin, .. } => Some(origin),
+                    _ => None,
+                })
+                .expect("the subscriber receives the card")
+        };
+
+        // Phase one: no stored origin. The placeholder must not survive as
+        // `local` — nothing measured this session as this machine's own, so
+        // the card says `unknown`. `local` is only ever measured.
+        publish(&runtime, "call-unstored");
+        assert_eq!(
+            card_origin(&conn),
+            devboule_protocol::SessionOrigin::unknown(),
+            "a session whose origin was never installed reads as unknown, never as local"
         );
 
-        let origin = drain(&conn)
-            .into_iter()
-            .find_map(|event| match event {
-                SessionEvent::PermissionRequest { origin, .. } => Some(origin),
-                _ => None,
-            })
-            .expect("the subscriber receives the card");
+        // Phase two: the registry installs the session's stored origin — a
+        // paired device's — and the card says that, not the placeholder.
+        runtime.set_origin(devboule_protocol::SessionOrigin::peer(
+            "device-phone",
+            devboule_protocol::PeerRole::Client,
+        ));
+        publish(&runtime, "call-origin");
         assert_eq!(
-            origin,
+            card_origin(&conn),
             devboule_protocol::SessionOrigin::peer(
                 "device-phone",
                 devboule_protocol::PeerRole::Client

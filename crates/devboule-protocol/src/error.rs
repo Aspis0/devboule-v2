@@ -128,12 +128,24 @@ impl WireError {
     /// `<path>`, `<device>` and `<digest>` instead. The codes and the prose
     /// stay: the point is that a peer can still tell *what* failed, never
     /// *where* this machine keeps it (`DESIGN-remote-agents.md` §8 R7).
+    ///
+    /// `details` is **dropped whole** for a remote reader rather than
+    /// redacted field by field. Every variant of [`ErrorDetails`] carries a
+    /// path on this machine — `WorktreeDirty { path }`,
+    /// `WorktreeNotConfined { path, root }`, `WorktreeMismatch { path, .. }` —
+    /// and none of them is actionable from the far end: a peer cannot run git
+    /// here, cannot open that checkout, and has no field of its own to match
+    /// against. One rule instead of a per-variant redactor that the next
+    /// variant would have to remember to join (`DESIGN-remote-agents.md`
+    /// §8 R7). A message-only redactor plus a dropped struct is the whole
+    /// contract; the local pipe still sees every field.
     pub fn redacted_for(self, role: Option<&PeerRole>) -> Self {
         if role.is_none() {
             return self;
         }
         Self {
             message: redact_text(&self.message),
+            details: None,
             ..self
         }
     }
@@ -145,8 +157,18 @@ const REDACTED_DEVICE: &str = "<device>";
 const REDACTED_DIGEST: &str = "<digest>";
 
 /// Replace every local fact in `text`. Over-redaction is the safe direction: a
-/// path run swallows the text that follows it until sentence punctuation, so a
-/// path containing spaces cannot leak its tail.
+/// path run swallows the text that follows it until a delimiter, so a path
+/// containing spaces cannot leak its tail.
+///
+/// The delimiters that end a run are the **bracket** (`(`, `[`, `{`, `<` and
+/// their closers), the **quote** (`"` and `'`), the **comma**, and the
+/// **newline** (with `\r`, `\t`, `;` and `|` alongside them) — see
+/// [`path_run_len`]. A **full stop is not one**: it appears inside the absolute
+/// paths this machine actually writes (`C:\Users\gualt\app.v2\runtime`,
+/// `C:\Users\gualt\.cache`), so treating it as a terminator would leave half a
+/// path on the wire. The price is the greedy behaviour the tests below pin: an
+/// unquoted path run consumes prose up to the next delimiter, which is
+/// over-redaction rather than a leak.
 fn redact_text(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut redacted = String::with_capacity(text.len());
@@ -485,6 +507,95 @@ mod tests {
             "{}",
             redacted.message
         );
+    }
+
+    /// §8 R7 for the struct half: **no** `details` variant reaches a remote
+    /// reader, whatever it carries, and the local pipe keeps every field. The
+    /// next variant cannot forget to join a per-variant redactor, because
+    /// there is none: the whole struct is dropped.
+    #[test]
+    fn every_error_detail_variant_is_dropped_for_a_remote_role() {
+        let details = [
+            ErrorDetails::VersionMismatch {
+                client: 1,
+                client_min: 1,
+                daemon: 2,
+                daemon_min: 2,
+            },
+            ErrorDetails::GenerationMismatch {
+                current: 1,
+                requested: 2,
+            },
+            ErrorDetails::WorktreeDirty {
+                path: "C:\\Users\\gualt\\work\\checkout".to_string(),
+                force_required: true,
+            },
+            ErrorDetails::WorktreeGitState {
+                recorded: "clean".to_string(),
+                observed: "dirty".to_string(),
+            },
+            ErrorDetails::WorktreeMismatch {
+                path: "C:\\Users\\gualt\\work\\checkout".to_string(),
+                expected_branch: "main".to_string(),
+                observed_branch: Some("dev".to_string()),
+            },
+            ErrorDetails::WorktreeLocked {
+                path: "C:\\Users\\gualt\\work\\checkout".to_string(),
+            },
+            ErrorDetails::WorktreeNotConfined {
+                path: "C:\\Users\\gualt\\elsewhere".to_string(),
+                root: "C:\\Users\\gualt\\work".to_string(),
+            },
+            ErrorDetails::WorktreeProjectGone {
+                leftover_checkout: Some("C:\\Users\\gualt\\work\\checkout".to_string()),
+            },
+        ];
+        for detail in details {
+            let error = WireError::new(ErrorCode::WorkspaceUnavailable, "Worktree removal refused")
+                .with_details(detail.clone());
+            let local = error.clone().redacted_for(None);
+            assert_eq!(
+                local.details,
+                Some(detail.clone()),
+                "the pipe keeps the fields it wrote"
+            );
+            for role in [PeerRole::Client, PeerRole::Daemon] {
+                let remote = error.clone().redacted_for(Some(&role));
+                assert_eq!(remote.details, None, "{role} must not see {detail:?}");
+                assert_eq!(remote.message, "Worktree removal refused");
+                assert_eq!(remote.code, ErrorCode::WorkspaceUnavailable);
+                assert_eq!(remote.id, None);
+            }
+        }
+    }
+
+    /// The delimiters `redact_text` names: a bracket, a quote, a comma and a
+    /// newline end a path run. A full stop does not — it lives inside the
+    /// paths this machine writes — so the quoted case below would read
+    /// `"<path>v2\runtime\a.png"` if it did.
+    #[test]
+    fn a_path_run_ends_at_a_bracket_quote_comma_or_newline() {
+        let role = Some(&PeerRole::Daemon);
+        for (text, expected) in [
+            ("write (C:\\work\\a.png) now", "write (<path>) now"),
+            ("write \"C:\\work\\a.png\" now", "write \"<path>\" now"),
+            (
+                "write C:\\work\\a.png, then stop",
+                "write <path>, then stop",
+            ),
+            (
+                "write C:\\work\\a.png\nnext line",
+                "write <path>\nnext line",
+            ),
+            // A full stop inside the run is part of the run, not its end.
+            (
+                "write \"C:\\Users\\gualt\\app.v2\\runtime\\a.png\" now",
+                "write \"<path>\" now",
+            ),
+        ] {
+            let redacted = WireError::new(ErrorCode::Io, text).redacted_for(role);
+            assert_eq!(redacted.message, expected, "for {text:?}");
+        }
     }
 
     fn frontend_ipc_ts_path() -> PathBuf {

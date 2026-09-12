@@ -29,6 +29,22 @@ fn fingerprint_digest(fingerprint: &str) -> [u8; 32] {
 /// never sent a key would get.
 pub const IDEMPOTENCY_MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
+/// How much remembered reply this store may hold in total, in serialized
+/// bytes (H9).
+///
+/// The per-entry bound above bounds *one* reply; the count cap
+/// (`IDEMPOTENCY_MAX_ENTRIES`) bounds how many. Neither bounds the product: a
+/// caller that keeps the entries alive with replies just under the per-entry
+/// bound could pin `IDEMPOTENCY_MAX_ENTRIES * IDEMPOTENCY_MAX_RESPONSE_BYTES`
+/// of heap — tens of megabytes, all of it reachable from one connection's
+/// request rate. Four mebibytes is sixteen maximum-size replies, far more than
+/// a real retry window needs, and small enough to be a bound rather than a
+/// hope.
+///
+/// Eviction is oldest-first, like the count cap: the newest receipt is the one
+/// a retrying client is about to use.
+pub const IDEMPOTENCY_MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
+
 /// The serialized size of one reply frame. A frame that cannot be measured
 /// counts as over the bound: a store that cannot say how big a value is has no
 /// business keeping it.
@@ -51,6 +67,10 @@ struct Entry {
     key: String,
     fingerprint: [u8; 32],
     response: DaemonMessage,
+    /// The serialized size of `response`, measured once at insert: the byte
+    /// budget is maintained on this number rather than re-measuring every
+    /// frame on every eviction pass.
+    bytes: usize,
     inserted: Instant,
 }
 
@@ -58,6 +78,8 @@ pub struct IdempotencyStore {
     entries: VecDeque<Entry>,
     ttl: Duration,
     cap: usize,
+    /// Sum of `entries[*].bytes`, kept in step with every push and pop.
+    total_bytes: usize,
 }
 
 impl Default for IdempotencyStore {
@@ -66,6 +88,7 @@ impl Default for IdempotencyStore {
             entries: VecDeque::new(),
             ttl: Duration::from_secs(IDEMPOTENCY_TTL_SECS),
             cap: IDEMPOTENCY_MAX_ENTRIES,
+            total_bytes: 0,
         }
     }
 }
@@ -81,6 +104,7 @@ impl IdempotencyStore {
     ) -> IdempotencyOutcome {
         let fingerprint = fingerprint_digest(fingerprint);
         self.evict(now);
+        self.evict_bytes();
         match self
             .entries
             .iter()
@@ -107,31 +131,70 @@ impl IdempotencyStore {
         // the key with no reply would report a `Conflict` on retry (the same
         // key, a fingerprint the store never held), which is a lie about the
         // request; a plain miss lets the request run again.
-        if serialized_len(&response) > IDEMPOTENCY_MAX_RESPONSE_BYTES {
+        let bytes = serialized_len(&response);
+        if bytes > IDEMPOTENCY_MAX_RESPONSE_BYTES {
             return;
         }
-        self.entries
-            .retain(|entry| !(entry.owner == owner && entry.key == key));
+        let mut replaced = 0usize;
+        self.entries.retain(|entry| {
+            let same_receipt = entry.owner == owner && entry.key == key;
+            if same_receipt {
+                replaced += entry.bytes;
+            }
+            !same_receipt
+        });
+        self.total_bytes = self.total_bytes.saturating_sub(replaced);
         if self.entries.len() >= self.cap {
-            self.entries.pop_front();
+            if let Some(evicted) = self.entries.pop_front() {
+                self.total_bytes = self.total_bytes.saturating_sub(evicted.bytes);
+            }
         }
         self.entries.push_back(Entry {
             owner,
             key,
             fingerprint: fingerprint_digest(&fingerprint),
             response,
+            bytes,
             inserted: now,
         });
+        self.total_bytes += bytes;
+        // H9: the count cap is not a memory bound on its own.
+        self.evict_bytes();
     }
 
     fn evict(&mut self, now: Instant) {
         while let Some(front) = self.entries.front() {
             if now.saturating_duration_since(front.inserted) > self.ttl {
-                self.entries.pop_front();
+                let expired = self.entries.pop_front().expect("front was just read");
+                self.total_bytes = self.total_bytes.saturating_sub(expired.bytes);
             } else {
                 break;
             }
         }
+    }
+
+    /// Drop the oldest replies until the retained frames fit the byte budget
+    /// (H9). Oldest-first for the same reason the count cap is: the newest
+    /// receipt is the one a retrying caller is about to present.
+    fn evict_bytes(&mut self) {
+        while self.total_bytes > IDEMPOTENCY_MAX_TOTAL_BYTES {
+            let Some(evicted) = self.entries.pop_front() else {
+                // Nothing left to evict: `total_bytes` can only be stale if a
+                // pop forgot to subtract, which would be a bug rather than an
+                // empty store.
+                self.total_bytes = 0;
+                break;
+            };
+            self.total_bytes = self.total_bytes.saturating_sub(evicted.bytes);
+        }
+    }
+
+    /// The bytes this store is holding, as it counts them. Test-only: the
+    /// budget is the thing H9 is about, so a test that cannot read it can only
+    /// assert evictions.
+    #[cfg(test)]
+    fn retained_bytes(&self) -> usize {
+        self.total_bytes
     }
 }
 
@@ -290,5 +353,81 @@ mod tests {
             store.check("app-1", "small", "a", now),
             IdempotencyOutcome::Hit(_)
         ));
+    }
+
+    /// H9: the count cap alone is not a memory bound. Near-limit replies stay
+    /// under `IDEMPOTENCY_MAX_RESPONSE_BYTES` one at a time and would still add
+    /// up to the count cap times 256 KiB, so the store evicts by total bytes
+    /// too — oldest first, and it never holds more than the budget.
+    #[test]
+    fn the_store_evicts_by_total_bytes_not_only_by_count() {
+        let mut store = IdempotencyStore::default();
+        let now = Instant::now();
+        // Just under the *per-entry* bound, so every reply is legal on its own
+        // and only the byte budget can evict: sixteen of these fit in
+        // `IDEMPOTENCY_MAX_TOTAL_BYTES`, the seventeenth cannot.
+        let payload = IDEMPOTENCY_MAX_RESPONSE_BYTES - 1024;
+        let reply =
+            || DaemonMessage::Error(WireError::new(ErrorCode::Internal, "x".repeat(payload)));
+        assert!(
+            serialized_len(&reply()) < IDEMPOTENCY_MAX_RESPONSE_BYTES,
+            "each entry is inside the per-entry bound; the budget is what bounds the store"
+        );
+        let count_cap = store.cap;
+        assert!(
+            count_cap > 16,
+            "the count cap must not be what evicts here ({count_cap})"
+        );
+        let fits = IDEMPOTENCY_MAX_TOTAL_BYTES / serialized_len(&reply());
+        assert!(fits >= 16, "the budget fits {fits} replies");
+
+        for index in 0..=fits {
+            store.remember(
+                "app-1".into(),
+                format!("k{index}"),
+                format!("payload-{index}"),
+                reply(),
+                now,
+            );
+            assert!(
+                store.retained_bytes() <= IDEMPOTENCY_MAX_TOTAL_BYTES,
+                "after {index} replies the store holds {} bytes",
+                store.retained_bytes()
+            );
+        }
+        assert_eq!(
+            store.entries.len(),
+            fits,
+            "one reply past the budget evicted exactly the oldest"
+        );
+        // The oldest is gone and the newest still replays.
+        assert_eq!(
+            store.check("app-1", "k0", "payload-0", now),
+            IdempotencyOutcome::Miss
+        );
+        assert!(matches!(
+            store.check(
+                "app-1",
+                &format!("k{fits}"),
+                &format!("payload-{fits}"),
+                now
+            ),
+            IdempotencyOutcome::Hit(_)
+        ));
+        // Re-remembering the same key replaces rather than adds: the count
+        // stays put and the budget never creeps under a retry loop.
+        let before = store.retained_bytes();
+        store.remember(
+            "app-1".into(),
+            format!("k{fits}"),
+            format!("payload-{fits}"),
+            reply(),
+            now,
+        );
+        assert_eq!(
+            store.retained_bytes(),
+            before,
+            "a replayed key is not a second entry"
+        );
     }
 }
