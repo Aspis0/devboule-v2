@@ -77,11 +77,12 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 #[cfg(test)]
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
-    compose_session_id, cursor_replay_ok, validate_attachments, validate_session_id,
-    ActiveTurnBehavior, AttachmentReference, Cursor, ErrorCode, ErrorDetails, JournalRetention,
-    JournalStats, OwnerId, PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session,
-    SessionEvent, SessionKind, SessionModel, SessionOrigin, SessionOriginKind, SessionState,
-    SessionStateSnapshot, WireError, Workspace, WorkspaceIsolation, MAX_WRITE_BYTES,
+    compose_session_id, cursor_replay_ok, validate_attachment_references, validate_attachments,
+    validate_session_id, ActiveTurnBehavior, AttachmentReference, Cursor, ErrorCode, ErrorDetails,
+    JournalRetention, JournalStats, OwnerId, PermissionOutcome, Project, PromptAttachment,
+    RetentionPatch, Session, SessionEvent, SessionKind, SessionModel, SessionOrigin,
+    SessionOriginKind, SessionState, SessionStateSnapshot, WireError, Workspace,
+    WorkspaceIsolation, MAX_WRITE_BYTES,
 };
 #[cfg(test)]
 use std::sync::Barrier;
@@ -641,6 +642,17 @@ fn with_attachment_paths(
     }
     let mut prompt = String::from(text);
     prompt.push_str("\n\n");
+    push_path_lines(&mut prompt, &paths);
+    Ok(prompt)
+}
+
+/// One `[Image available at: <path>]` line per path, separated by newlines.
+///
+/// The one place that line is written, so the inline attachments and the
+/// resolved references cannot come out as two shapes: `with_attachment_paths`,
+/// `prompt_text_with_fallback_paths` and `push_reference_path_lines` all write
+/// their block through it, and each opens the block with its own separator.
+fn push_path_lines(prompt: &mut String, paths: &[PathBuf]) {
     for (index, path) in paths.iter().enumerate() {
         if index > 0 {
             prompt.push('\n');
@@ -649,7 +661,99 @@ fn with_attachment_paths(
         prompt.push_str(&path.to_string_lossy());
         prompt.push(']');
     }
-    Ok(prompt)
+}
+
+/// Appends one path line per resolved reference to `prompt`, after whatever
+/// path lines it already carries.
+///
+/// The references come last and in the order the client listed them: every
+/// caller appends this after the inline attachments' own lines, which are the
+/// paths this request's own bytes were written to. The block opens the way the
+/// inline one does (`\n\n`), so a prompt that carries both reads as the inline
+/// attachments first and the stored ones after them. An empty slice appends
+/// nothing, and a prompt with no references is byte for byte what it was
+/// before this existed.
+///
+/// # Why a reference is never an inline image block
+///
+/// Not an oversight, and not a missing case in the image-block routes: a
+/// reference is a line here even on a provider that negotiated `image`
+/// support. The whole reason a reference exists is that its bytes must not
+/// travel in the frame — a deck is forty pages, and the frame is what the
+/// deposit was made to keep them out of. Resolving one back into an image
+/// block at the send would undo the deposit, spend the frame cap the deposit
+/// saved, and hand the provider the same bytes by a longer road.
+///
+/// The path is the store's own absolute one. A reference carries a digest and
+/// a size and nothing else, so there is no client-supplied name here to quote
+/// and nothing untrusted to bound.
+fn push_reference_path_lines(prompt: &mut String, reference_paths: &[PathBuf]) {
+    if reference_paths.is_empty() {
+        return;
+    }
+    prompt.push_str("\n\n");
+    push_path_lines(prompt, reference_paths);
+}
+
+/// The paths of the stored attachments this request names, or the first reason
+/// one of them cannot be sent.
+///
+/// The order is the point, and it is the order `deposit` keeps. The wire's own
+/// rule for references runs before any of this
+/// (`validate_attachment_references`, called on the send path before this
+/// function), so a reference naming another session, a digest that is not a
+/// digest, and a list past the count or the total budget are refused without a
+/// lookup. Then, per reference, the store resolves the digest to a path inside
+/// this session's folder — its own read side, which refuses a session folder
+/// that is a link and a digest with no file behind it.
+///
+/// The size is compared, and a disagreement is a refusal rather than a
+/// warning. `resolve` answers with the size the file *has*; the reference's
+/// `stored_bytes` is advisory by the wire's own documentation and is never the
+/// number the daemon trusts. A request that names a size the file does not
+/// have is naming something it did not deposit, and handing a provider a path
+/// to a file whose identity is in question is the substitution this whole path
+/// exists to prevent.
+///
+/// Every reference is resolved before the caller builds a line of the prompt,
+/// for the reason [`with_attachment_paths`] gives about the inline ones: a
+/// request that fails on its third item must leave nothing half-built.
+fn resolve_attachment_references(
+    store: &AttachmentStore,
+    session_id: &str,
+    references: &[AttachmentReference],
+) -> Result<Vec<PathBuf>, WireError> {
+    let mut paths = Vec::with_capacity(references.len());
+    for reference in references {
+        // No extension hint: a reference carries a session, a digest and a
+        // size, and no MIME type, so this caller knows nothing that would name
+        // the file. The store's listing answers instead.
+        let (path, stored_bytes) = store.resolve(session_id, &reference.digest, None)?;
+        if stored_bytes != reference.stored_bytes {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                stored_size_mismatch_message(reference, stored_bytes),
+            ));
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+/// The refusal for a reference whose `stored_bytes` is not the size the file
+/// on disk has.
+///
+/// The digest is echoed and nothing else is: by the time this runs the digest
+/// is 64 lowercase hex characters — `validate_attachment_references` refused
+/// every other spelling before the store was asked, and `resolve` refuses a
+/// non-digest again without echoing it — so there is no unbounded string here
+/// to bound. Both numbers travel because together they are the whole
+/// disagreement: which file, and how far the request's claim is from it.
+fn stored_size_mismatch_message(reference: &AttachmentReference, stored_bytes: u64) -> String {
+    format!(
+        "The stored attachment '{}' is {stored_bytes} bytes; the request named {}.",
+        reference.digest, reference.stored_bytes
+    )
 }
 
 /// What the ACP handshake negotiated about sending images to the agent.
@@ -992,30 +1096,40 @@ pub(crate) trait PlannedStaticPrompt: Send + Sync {
     /// The text the frame carries — the same value the journal records.
     fn text(&self) -> &str;
 
+    /// Appends one path line per resolved reference to the text this plan
+    /// carries, after the path lines its own attachments left behind.
+    ///
+    /// A mutation rather than a parameter of
+    /// [`StaticImageSink::plan_prompt`] because the plan owns its text on
+    /// purpose: the frame this provider builds and the string the caller
+    /// journals are one value, so the references have to be added to that
+    /// value rather than to a copy beside it. The caller appends this before
+    /// either of them reads the plan, and the route's own composition of the
+    /// inline lines stays exactly where it is.
+    ///
+    /// A reference is a path line even for a provider on this list, which is
+    /// the route that carries bytes inline — see
+    /// [`push_reference_path_lines`] for why that is a decision.
+    fn append_reference_path_lines(&mut self, reference_paths: &[PathBuf]);
+
     /// Frames and sends this prompt.
     fn send(&self) -> Result<(), WireError>;
 }
 
 /// The text block for a structured prompt: the user's text, a blank line,
 /// then one path line per non-raster attachment. The same line shape
-/// `with_attachment_paths` writes, so the fallback reads identically whether
-/// it travels alone or beside image blocks. `plan_structured_prompt` is its
-/// only caller; it stays separate (rather than inlined) so the legacy write
-/// and the structured text block visibly share one line shape.
+/// `with_attachment_paths` writes — both go through [`push_path_lines`], which
+/// is where that line is written once — so the fallback reads identically
+/// whether it travels alone or beside image blocks. `plan_structured_prompt`
+/// is its only caller; it stays separate (rather than inlined) so the legacy
+/// write and the structured text block visibly share one line shape.
 fn prompt_text_with_fallback_paths(text: &str, fallback_paths: &[PathBuf]) -> String {
     if fallback_paths.is_empty() {
         return text.to_string();
     }
     let mut prompt = String::from(text);
     prompt.push_str("\n\n");
-    for (index, path) in fallback_paths.iter().enumerate() {
-        if index > 0 {
-            prompt.push('\n');
-        }
-        prompt.push_str("[Image available at: ");
-        prompt.push_str(&path.to_string_lossy());
-        prompt.push(']');
-    }
+    push_path_lines(&mut prompt, fallback_paths);
     prompt
 }
 
@@ -1363,6 +1477,15 @@ pub struct SendRequest<'a> {
     pub subscription_id: u64,
     pub text: &'a str,
     pub attachments: &'a [PromptAttachment],
+    /// The stored attachments this prompt refers to, beside the inline ones.
+    ///
+    /// Resolved against `session_id`, not against any session the references
+    /// themselves name: the protocol refuses a reference whose session is not
+    /// the request's before the store is asked anything, so the two can never
+    /// disagree about where a digest resolves. Both are empty in the common
+    /// case, which is what keeps a text-only prompt free of every check these
+    /// two fields bring.
+    pub attachment_references: &'a [AttachmentReference],
     pub owner: &'a OwnerId,
     pub conn: &'a ConnHandle,
     pub mcp_timeout: Duration,
@@ -3506,15 +3629,31 @@ impl SessionRegistry {
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
-        self.send_with_subscription(session_id, conn.id, text, &[], owner, conn)
+        self.send_with_subscription(session_id, conn.id, text, &[], &[], owner, conn)
     }
 
+    /// One prompt: the text, the inline attachments, and the references to
+    /// attachments already deposited under this session.
+    ///
+    /// The two halves are separate arguments rather than one list because they
+    /// travel differently — the inline bytes are in the frame the client built,
+    /// a reference is a digest the daemon resolves against the store — and the
+    /// send path keeps them apart from validation through to the prompt.
+    ///
+    /// The argument list is one past clippy's limit and stays a list: the
+    /// struct that would collapse it exists (`SendRequest`), and the layer
+    /// below already takes it — this is the thin entry point 20 call sites use,
+    /// and giving them a struct to build would move the argument count into
+    /// them rather than remove it. The crate makes this trade in nine other
+    /// places.
+    #[allow(clippy::too_many_arguments)]
     pub fn send_with_subscription(
         &self,
         session_id: &str,
         subscription_id: u64,
         text: &str,
         attachments: &[PromptAttachment],
+        attachment_references: &[AttachmentReference],
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
@@ -3523,6 +3662,7 @@ impl SessionRegistry {
             subscription_id,
             text,
             attachments,
+            attachment_references,
             owner,
             conn,
             None,
@@ -3536,6 +3676,7 @@ impl SessionRegistry {
         subscription_id: u64,
         text: &str,
         attachments: &[PromptAttachment],
+        attachment_references: &[AttachmentReference],
         owner: &OwnerId,
         conn: &ConnHandle,
         active_turn_behavior: Option<ActiveTurnBehavior>,
@@ -3545,6 +3686,7 @@ impl SessionRegistry {
             subscription_id,
             text,
             attachments,
+            attachment_references,
             owner,
             conn,
             mcp_timeout: crate::mcp_broker::ready_timeout(),
@@ -3659,6 +3801,10 @@ impl SessionRegistry {
             subscription_id: 0,
             text: &envelope,
             attachments: &[],
+            // `AgentMessageSend` has no field for either half: an agent
+            // message is the envelope's text, and nothing in this delivery
+            // could have named a stored attachment.
+            attachment_references: &[],
             owner: &target_owner,
             conn: &internal_conn,
             mcp_timeout: crate::mcp_broker::ready_timeout(),
@@ -3715,6 +3861,7 @@ impl SessionRegistry {
             subscription_id: conn.id,
             text,
             attachments: &[],
+            attachment_references: &[],
             owner,
             conn,
             mcp_timeout: timeout,
@@ -3731,6 +3878,7 @@ impl SessionRegistry {
             subscription_id,
             text,
             attachments,
+            attachment_references,
             owner,
             conn,
             mcp_timeout,
@@ -3752,7 +3900,22 @@ impl SessionRegistry {
         }
         validate_attachments(attachments)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let has_prompt = !text.is_empty() || !attachments.is_empty();
+        // The references are the half of an attachment send that does not
+        // travel in the frame, and the wire's rules for them are enforced here
+        // with the inline ones — before the store is asked anything, the same
+        // order `deposit` keeps: ownership and the wire's limits first, the
+        // disk after. `resolve_attachment_references` reads the store, so a
+        // reference the protocol refuses costs no digest lookup and no file
+        // read, and it is refused before the ownership check below rather than
+        // after it for the same reason `validate_attachments` is.
+        validate_attachment_references(session_id, attachment_references)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        // A prompt is whatever it carries: text, inline attachments, or the
+        // stored ones it refers to. A send with none of the three is not a
+        // prompt and skips the readiness gates below, which is the behaviour
+        // it had before references existed.
+        let has_prompt =
+            !text.is_empty() || !attachments.is_empty() || !attachment_references.is_empty();
         let (
             writer,
             image_sink,
@@ -3789,7 +3952,12 @@ impl SessionRegistry {
         // file behind for a session that can never consume it, and the pipe
         // accepts frames from any process that can open it, so the daemon does
         // not rely on the app never attaching to a terminal.
-        if !attachments.is_empty() && !is_agent {
+        //
+        // A reference is refused by the same check for the same reason: what a
+        // terminal would receive is the path line, and a path typed into a PTY
+        // is input, not a file anything can open. The two halves are one
+        // refusal here because neither reaches a terminal.
+        if (!attachments.is_empty() || !attachment_references.is_empty()) && !is_agent {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "This session does not accept attachments.",
@@ -3800,7 +3968,14 @@ impl SessionRegistry {
         // branch below writes the text into a turn that is already running, and
         // there is no path from an attachment to a provider frame on it. The
         // refusal names the way to send one.
-        if active_turn_behavior == Some(ActiveTurnBehavior::Steer) && !attachments.is_empty() {
+        //
+        // A reference is text-only in the same sense and is refused by the
+        // same check: the steer branch writes `text` and nothing else, so a
+        // steer that named a stored attachment would drop it without a word —
+        // the vanishing deck this whole path exists to prevent.
+        if active_turn_behavior == Some(ActiveTurnBehavior::Steer)
+            && (!attachments.is_empty() || !attachment_references.is_empty())
+        {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "a steer carries text only; send attachments as a new message",
@@ -3925,11 +4100,23 @@ impl SessionRegistry {
         // The user's text was checked against MAX_WRITE_BYTES above, before a
         // single line of ours is added, so the cap can never refuse a prompt
         // that was legal on arrival. The appended block is bounded by a fixed
-        // number of absolute paths the daemon composed itself
-        // (MAX_ATTACHMENT_COUNT of them), so re-checking the extended prompt
-        // could only refuse a prompt the daemon lengthened; the write is not
-        // re-checked against the cap.
+        // number of absolute paths the daemon composed itself: at most
+        // MAX_ATTACHMENT_COUNT of them for the inline attachments and at most
+        // MAX_ATTACHMENT_REFERENCES for the stored references, both enforced by
+        // the wire validation above. Re-checking the extended prompt could only
+        // refuse a prompt the daemon lengthened; the write is not re-checked
+        // against the cap.
         //
+        // The stored references are resolved before any of the prompt text is
+        // built, which is the rule `with_attachment_paths` states for the
+        // inline attachments: a request that fails on its third item must leave
+        // nothing half-built. Every reference is either resolved here or the
+        // call returns, so the string built below is never a prompt missing one
+        // of the files it named. The store read is the first disk work this
+        // request does, and the wire validation above is what keeps a malformed
+        // reference from reaching it.
+        let reference_paths =
+            resolve_attachment_references(&self.attachments, session_id, attachment_references)?;
         // The structured route: the sibling is present (an ACP session) AND
         // the live negotiated capability says images are supported. The plan
         // decides both halves — the blocks that travel and the exact string
@@ -3938,7 +4125,7 @@ impl SessionRegistry {
         // static route below), or the handshake said no or nothing — fall
         // through to exactly today's path-line write, byte for byte
         // unchanged.
-        let plan = match image_sink.as_ref() {
+        let mut plan = match image_sink.as_ref() {
             Some(sink) if sink.delivery() == ImageDelivery::NegotiatedImageBlock => {
                 plan_structured_prompt(&self.attachments, session_id, text, attachments)?
             }
@@ -3951,10 +4138,22 @@ impl SessionRegistry {
         // run under that hold. `None` means the route did not run (no
         // attachments, or a provider not authorised for inline bytes) and
         // nothing was materialized for it.
-        let static_plan = match static_image_sink.as_ref() {
+        let mut static_plan = match static_image_sink.as_ref() {
             Some(sink) => sink.plan_prompt(&self.attachments, session_id, text, attachments)?,
             None => None,
         };
+        // The references join the text of whichever route planned this prompt,
+        // as path lines, before anything reads that text — the frame the
+        // provider receives and the string the journal records are one value in
+        // both plans, so appending to it here is appending to both. A
+        // reference never becomes an image block, on any route: see
+        // [`push_reference_path_lines`] for why that is a decision.
+        if let Some(plan) = plan.as_mut() {
+            push_reference_path_lines(&mut plan.fallback_text, &reference_paths);
+        }
+        if let Some(plan) = static_plan.as_mut() {
+            plan.append_reference_path_lines(&reference_paths);
+        }
         // A session carries one route or the other, never both: `image_sink`
         // is the ACP one and `static_image_sink` the three static providers'.
         // `plan` is `Some` only when at least one raster became a block, so
@@ -3970,7 +4169,16 @@ impl SessionRegistry {
                 // reaching for `with_attachment_paths` here would do all of
                 // that a second time for each of them.
                 Some(plan) => plan.text().to_string(),
-                None => with_attachment_paths(&self.attachments, session_id, text, attachments)?,
+                // The only route that composes its text here rather than in a
+                // plan, so the references are appended here — with the same
+                // function and the same separator the two plans use, since a
+                // prompt's shape must not depend on which route wrote it.
+                None => {
+                    let mut prompt =
+                        with_attachment_paths(&self.attachments, session_id, text, attachments)?;
+                    push_reference_path_lines(&mut prompt, &reference_paths);
+                    prompt
+                }
             },
         };
         // Lock the writer FIRST, as today: the journaled transcript event is
@@ -8298,6 +8506,7 @@ mod tests {
                 41,
                 "describe this",
                 &[attachment("photo.png", "image/png", &image)],
+                &[],
                 &owner,
                 &conn,
             )
@@ -8353,6 +8562,7 @@ mod tests {
                     attachment("a.png", "image/png", &clean_png(0x0c)),
                     attachment("b.svg", "image/svg+xml", b"<svg/>"),
                 ],
+                &[],
                 &owner,
                 &conn,
             )
@@ -8395,6 +8605,7 @@ mod tests {
                 43,
                 "logo",
                 &[attachment("logo.svg", "image/svg+xml", source)],
+                &[],
                 &owner,
                 &conn,
             )
@@ -8424,7 +8635,7 @@ mod tests {
         let many = vec![attachment("a.png", "image/png", b"x"); MAX_ATTACHMENT_COUNT + 1];
 
         let error = registry
-            .send_with_subscription("attach-count", 44, "hello", &many, &owner, &conn)
+            .send_with_subscription("attach-count", 44, "hello", &many, &[], &owner, &conn)
             .expect_err("a fifth file is refused");
         assert!(
             attachment_message(&error).contains(&MAX_ATTACHMENT_COUNT.to_string()),
@@ -8452,6 +8663,7 @@ mod tests {
                 45,
                 "hello",
                 &[attachment("anim.gif", "image/gif", b"gif")],
+                &[],
                 &owner,
                 &conn,
             )
@@ -8479,6 +8691,7 @@ mod tests {
                 46,
                 "hello",
                 &[attachment("big.png", "image/png", huge.as_bytes())],
+                &[],
                 &owner,
                 &conn,
             )
@@ -8502,7 +8715,7 @@ mod tests {
         not_base64.data = "not base64!".to_string();
 
         let error = registry
-            .send_with_subscription("attach-b64", 47, "hello", &[not_base64], &owner, &conn)
+            .send_with_subscription("attach-b64", 47, "hello", &[not_base64], &[], &owner, &conn)
             .expect_err("invalid base64 is refused");
         assert_eq!(
             attachment_message(&error),
@@ -8534,7 +8747,7 @@ mod tests {
         let four = vec![one; MAX_ATTACHMENT_COUNT];
 
         let error = registry
-            .send_with_subscription("attach-total", 48, "hello", &four, &owner, &conn)
+            .send_with_subscription("attach-total", 48, "hello", &four, &[], &owner, &conn)
             .expect_err("a total over the cap is refused");
         assert!(
             attachment_message(&error).contains(&MAX_ATTACHMENTS_TOTAL_BYTES.to_string()),
@@ -8564,7 +8777,7 @@ mod tests {
         // cap governs the user's text, and the lines are not charged to it.
         let at_cap = "x".repeat(MAX_WRITE_BYTES);
         registry
-            .send_with_subscription("attach-cap", 49, &at_cap, &files, &owner, &conn)
+            .send_with_subscription("attach-cap", 49, &at_cap, &files, &[], &owner, &conn)
             .expect("a prompt at the cap is still sent");
         let written = received.lock().expect("writer").clone();
         assert!(written.len() > MAX_WRITE_BYTES, "the lines were appended");
@@ -8579,7 +8792,7 @@ mod tests {
         let unreached_bytes = clean_png(0x0e);
         let unreached = vec![attachment("b.png", "image/png", &unreached_bytes)];
         let error = registry
-            .send_with_subscription("attach-cap", 49, &over, &unreached, &owner, &conn)
+            .send_with_subscription("attach-cap", 49, &over, &unreached, &[], &owner, &conn)
             .expect_err("an oversized text is refused");
         assert_eq!(attachment_message(&error), "Session input is too large.");
         assert!(received.lock().expect("writer").is_empty());
@@ -8614,6 +8827,7 @@ mod tests {
                 50,
                 "look at this",
                 &[image],
+                &[],
                 &owner,
                 &conn,
             )
@@ -8660,7 +8874,7 @@ mod tests {
         let conn = attach_live_agent_for_test(&runtime, "attach-none", 51);
 
         registry
-            .send_with_subscription("attach-none", 51, "plain prompt", &[], &owner, &conn)
+            .send_with_subscription("attach-none", 51, "plain prompt", &[], &[], &owner, &conn)
             .expect("send");
 
         assert_eq!(received.lock().expect("writer").as_slice(), b"plain prompt");
@@ -8697,6 +8911,7 @@ mod tests {
                 52,
                 "hello",
                 &[attachment("photo.png", "image/png", &clean_png(0x10))],
+                &[],
                 &owner,
                 &conn,
             )
@@ -8819,6 +9034,7 @@ mod tests {
                 61,
                 "describe this",
                 &[attachment("photo.png", "image/png", &image)],
+                &[],
                 &owner,
                 &conn,
             )
@@ -8858,6 +9074,7 @@ mod tests {
                 62,
                 "describe this",
                 &[attachment("photo.png", "image/png", &clean_png(0x12))],
+                &[],
                 &owner,
                 &conn,
             )
@@ -8970,6 +9187,329 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    // --- stored references, on the send side -------------------------------
+    //
+    // A reference is the half of an attachment that does not travel in the
+    // frame: the client deposited the bytes earlier and now names the digest
+    // and the size it was answered with. These pin the resolution — the wire's
+    // rules first, the store after, the size compared — and the shape a
+    // resolved reference leaves in the prompt.
+
+    /// The path a reference's file must be at, computed from the digest the
+    /// deposit answered with. The store names a stored file `{digest}.{ext}`,
+    /// and the send resolves it to that path inside the session's folder.
+    fn stored_path(registry: &SessionRegistry, session_id: &str, digest: &str) -> PathBuf {
+        attachment_folder(registry, session_id).join(format!("{digest}.png"))
+    }
+
+    /// The prompt the plain-text writer received, as a string.
+    fn written_prompt(received: &Arc<Mutex<Vec<u8>>>) -> String {
+        String::from_utf8(received.lock().expect("writer").clone()).expect("utf8")
+    }
+
+    #[test]
+    fn a_deposited_reference_reaches_the_provider_as_a_path_line() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-ref-deposited", "process-ref-deposited");
+        let session_id = "ref-deposited";
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            session_id,
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, session_id, 61);
+        let deck = clean_png(0x31);
+        let request = attachment("deck.png", "image/png", &deck);
+
+        let reference = registry
+            .deposit(session_id, &owner, &conn, &request)
+            .expect("the owner may deposit into their own session");
+
+        registry
+            .send_with_subscription(
+                session_id,
+                61,
+                "read the deck",
+                &[],
+                std::slice::from_ref(&reference),
+                &owner,
+                &conn,
+            )
+            .expect("a send naming a reference that was really deposited");
+
+        let stored = files_under(&attachment_folder(&registry, session_id));
+        assert_eq!(stored.len(), 1, "the deposit wrote one file");
+        assert_eq!(
+            stored_path(&registry, session_id, &reference.digest),
+            stored[0],
+            "the reference resolves to the deposited file"
+        );
+        assert_eq!(
+            written_prompt(&received),
+            format!(
+                "read the deck\n\n[Image available at: {}]",
+                stored[0].display()
+            ),
+            "the provider is handed the stored file's path, not its bytes"
+        );
+        assert!(
+            !written_prompt(&received).contains(&request.data),
+            "a reference exists so the bytes do not travel in the frame"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_reference_whose_stored_bytes_disagree_with_the_file_is_refused() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-ref-size", "process-ref-size");
+        let session_id = "ref-size";
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            session_id,
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, session_id, 62);
+
+        let mut reference = registry
+            .deposit(
+                session_id,
+                &owner,
+                &conn,
+                &attachment("deck.png", "image/png", &clean_png(0x32)),
+            )
+            .expect("deposit");
+        let real_size = reference.stored_bytes;
+        // The client's copy of the size is off by one: it is naming a file it
+        // did not deposit, or a file that changed under it.
+        reference.stored_bytes = real_size + 1;
+
+        let error = registry
+            .send_with_subscription(
+                session_id,
+                62,
+                "read the deck",
+                &[],
+                std::slice::from_ref(&reference),
+                &owner,
+                &conn,
+            )
+            .expect_err("a size that disagrees with the file is a refusal, not a warning");
+
+        let message = attachment_message(&error);
+        assert!(message.contains(&reference.digest), "{message}");
+        assert!(message.contains(&real_size.to_string()), "{message}");
+        assert!(message.contains(&(real_size + 1).to_string()), "{message}");
+        assert!(
+            received.lock().expect("writer").is_empty(),
+            "a refused reference must not leave a prompt half-sent"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The wire's session rule comes before the store, which is the order the
+    /// whole path keeps. The discriminating half of the assertion is that the
+    /// store *could* have answered: the reference names a file that really is
+    /// on disk, in the other session's folder. If resolution ran first, this
+    /// request would be refused for a digest the store cannot find in the
+    /// request's session, and the session sentence would never be reached.
+    #[test]
+    fn a_reference_naming_another_session_is_refused_by_the_wires_own_rule() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-ref-foreign", "process-ref-foreign");
+        let session_id = "ref-foreign";
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            session_id,
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, session_id, 63);
+        let other_id = compose_session_id(&owner.session_token(), "ref02").expect("id");
+        insert_live_agent_with_writer(
+            &registry,
+            &other_id,
+            owner.clone(),
+            Box::new(std::io::sink()),
+        );
+        let other = registry
+            .deposit(
+                &other_id,
+                &owner,
+                // A connection of its own: this deposit is not the request's,
+                // and the request's session is the one that must stay empty.
+                &ConnHandle::new(640),
+                &attachment("deck.png", "image/png", &clean_png(0x33)),
+            )
+            .expect("the owner deposits into the other session too");
+        assert_eq!(
+            other.session_id, other_id,
+            "the reference names the other session"
+        );
+        assert!(
+            files_under(&attachment_folder(&registry, session_id)).is_empty(),
+            "only the other session was deposited into, so the store has nothing to resolve \
+             against the request's session"
+        );
+
+        let error = registry
+            .send_with_subscription(
+                session_id,
+                63,
+                "read the deck",
+                &[],
+                std::slice::from_ref(&other),
+                &owner,
+                &conn,
+            )
+            .expect_err("a reference to another session is refused");
+
+        let message = attachment_message(&error);
+        assert!(message.contains("belongs to session"), "{message}");
+        assert!(
+            message.contains(&other_id),
+            "the refusal says which session the reference belongs to: {message}"
+        );
+        assert!(
+            !message.contains("holds no attachment"),
+            "the store's sentence means the store was asked first: {message}"
+        );
+        assert!(received.lock().expect("writer").is_empty());
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The regression the deleted dispatch guard stood in for. Before the
+    /// resolution existed, a request naming references was refused whole; what
+    /// must not happen now is a send that answers `Ok` while the file it named
+    /// was quietly dropped out of the prompt, which is the vanishing deck the
+    /// whole feature exists to prevent.
+    #[test]
+    fn a_reference_whose_digest_was_never_deposited_is_refused_not_dropped() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-ref-phantom", "process-ref-phantom");
+        let session_id = "ref-phantom";
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            session_id,
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, session_id, 64);
+        let phantom = AttachmentReference {
+            session_id: session_id.to_string(),
+            digest: "a".repeat(64),
+            stored_bytes: 4096,
+        };
+
+        let error = registry
+            .send_with_subscription(
+                session_id,
+                64,
+                "read the deck",
+                &[],
+                std::slice::from_ref(&phantom),
+                &owner,
+                &conn,
+            )
+            .expect_err("a digest with no file behind it is refused");
+
+        let message = attachment_message(&error);
+        assert!(
+            message.contains("holds no attachment"),
+            "the store's own sentence is the one that must come back: {message}"
+        );
+        assert!(
+            received.lock().expect("writer").is_empty(),
+            "nothing was sent, so nothing was silently missing from it"
+        );
+        assert!(
+            files_under(&attachment_folder(&registry, session_id)).is_empty(),
+            "a refused send writes nothing either"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn inline_attachments_and_references_in_one_send_keep_the_order_the_client_gave() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-ref-order", "process-ref-order");
+        let session_id = "ref-order";
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            session_id,
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, session_id, 65);
+        let inline_bytes = clean_png(0x34);
+        // Two stored decks, deposited in the opposite order to the one the
+        // request names them in: the prompt must follow the request, not the
+        // store's write order.
+        let second = registry
+            .deposit(
+                session_id,
+                &owner,
+                &conn,
+                &attachment("second.png", "image/png", &clean_png(0x35)),
+            )
+            .expect("deposit the deck the request names second");
+        let first = registry
+            .deposit(
+                session_id,
+                &owner,
+                &conn,
+                &attachment("first.png", "image/png", &clean_png(0x36)),
+            )
+            .expect("deposit the deck the request names first");
+
+        registry
+            .send_with_subscription(
+                session_id,
+                65,
+                "two files",
+                &[attachment("inline.png", "image/png", &inline_bytes)],
+                &[first.clone(), second.clone()],
+                &owner,
+                &conn,
+            )
+            .expect("one inline attachment and two references in one send");
+
+        // `clean_png` carries no metadata the store strips, so the digest of
+        // the bytes the client sent is the name the daemon stored them under.
+        let inline_path = attachment_folder(&registry, session_id).join(format!(
+            "{}.png",
+            crate::attachment_store::sha256_hex(&inline_bytes)
+        ));
+        assert_eq!(
+            written_prompt(&received),
+            format!(
+                "two files\n\n[Image available at: {}]\n\n[Image available at: {}]\n[Image available at: {}]",
+                inline_path.display(),
+                stored_path(&registry, session_id, &first.digest).display(),
+                stored_path(&registry, session_id, &second.digest).display()
+            ),
+            "the inline attachment's line comes first and the references follow in the client's order"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     // --- the static route (Claude, Codex, Pi) -----------------------------
     //
     // These pin the send path's half of the three static providers: a session
@@ -9017,6 +9557,13 @@ mod tests {
     impl PlannedStaticPrompt for RecordingStaticPlan {
         fn text(&self) -> &str {
             &self.text
+        }
+
+        /// The same append the three real plans make, so a references test on
+        /// this route sees the text a provider would build rather than a
+        /// separate composition the double invented.
+        fn append_reference_path_lines(&mut self, reference_paths: &[PathBuf]) {
+            push_reference_path_lines(&mut self.text, reference_paths);
         }
 
         fn send(&self) -> Result<(), WireError> {
@@ -9067,6 +9614,7 @@ mod tests {
                 71,
                 "describe this",
                 &[attachment("photo.png", "image/png", &image)],
+                &[],
                 &owner,
                 &conn,
             )
@@ -9090,6 +9638,78 @@ mod tests {
             })
             .expect("the plan's text is what the journal records");
         assert_eq!(recorded, "the plan's own text");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The same append on a plan route: the references go into the plan's own
+    /// text, which is the string the provider's frame carries *and* the string
+    /// the journal records, so the two cannot disagree about which files the
+    /// prompt named.
+    #[test]
+    fn the_static_routes_plan_text_carries_the_reference_lines_too() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-ref-static", "process-ref-static");
+        let session_id = "ref-static";
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let (sink, calls, sent) = test_static_sink(Some("the plan's own text"));
+        let runtime = insert_live_agent_with_kind_writer_and_sink(
+            &registry,
+            session_id,
+            owner.clone(),
+            SessionKind::Claude,
+            Box::new(RecordingWriter(Arc::clone(&received))),
+            None,
+            Some(sink),
+        );
+        let conn = attach_live_agent_for_test(&runtime, session_id, 73);
+        let reference = registry
+            .deposit(
+                session_id,
+                &owner,
+                &conn,
+                &attachment("deck.png", "image/png", &clean_png(0x37)),
+            )
+            .expect("deposit");
+
+        registry
+            .send_with_subscription(
+                session_id,
+                73,
+                "read the deck",
+                &[],
+                std::slice::from_ref(&reference),
+                &owner,
+                &conn,
+            )
+            .expect("send");
+
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            1,
+            "the route is consulted once per send"
+        );
+        assert_eq!(sent.load(Ordering::Acquire), 1, "the plan was the one sent");
+        assert!(
+            received.lock().expect("writer").is_empty(),
+            "the route's frame went out, not a plain-text write"
+        );
+        let recorded = conn
+            .pull_events()
+            .into_iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::AgentUserMessage { text, .. } => Some(text),
+                _ => None,
+            })
+            .expect("the plan's text is what the journal records");
+        assert_eq!(
+            recorded,
+            format!(
+                "the plan's own text\n\n[Image available at: {}]",
+                stored_path(&registry, session_id, &reference.digest).display()
+            ),
+            "the reference line is part of the plan's text, not a block beside it"
+        );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -9121,6 +9741,7 @@ mod tests {
                 72,
                 "describe this",
                 &[attachment("photo.png", "image/png", &image)],
+                &[],
                 &owner,
                 &conn,
             )
@@ -9185,6 +9806,7 @@ mod tests {
                     101,
                     &first_text,
                     &[],
+                    &[],
                     &first_owner,
                     &first,
                 )
@@ -9202,6 +9824,7 @@ mod tests {
                     &second_session_id,
                     202,
                     &second_text,
+                    &[],
                     &[],
                     &second_owner,
                     &second,
@@ -10775,7 +11398,7 @@ mod tests {
         vec![
             (
                 "send",
-                registry.send_with_subscription(id, 1, "hi", &[], owner, conn),
+                registry.send_with_subscription(id, 1, "hi", &[], &[], owner, conn),
             ),
             ("stop", registry.stop(id, owner)),
             (
@@ -11764,6 +12387,7 @@ mod tests {
                 conn.id,
                 "turn left instead",
                 &[],
+                &[],
                 &owner,
                 &conn,
                 Some(ActiveTurnBehavior::Steer),
@@ -11955,6 +12579,7 @@ mod tests {
                 conn.id,
                 "turn left instead",
                 &[],
+                &[],
                 &owner,
                 &conn,
                 Some(ActiveTurnBehavior::Steer),
@@ -12045,6 +12670,7 @@ mod tests {
                 72,
                 "a fresh task",
                 &[],
+                &[],
                 &owner,
                 &conn,
                 Some(ActiveTurnBehavior::Steer),
@@ -12085,6 +12711,7 @@ mod tests {
                 73,
                 "replace the turn",
                 &[],
+                &[],
                 &owner,
                 &local,
                 Some(ActiveTurnBehavior::Steer),
@@ -12103,6 +12730,7 @@ mod tests {
                 "s.steer.fallback",
                 peer.id,
                 "peer steer",
+                &[],
                 &[],
                 &owner,
                 &peer,
@@ -12149,6 +12777,7 @@ mod tests {
                 74,
                 "turn left",
                 &[],
+                &[],
                 &owner,
                 &conn,
                 Some(ActiveTurnBehavior::Steer),
@@ -12192,6 +12821,7 @@ mod tests {
                 "s.steer.cards-ok",
                 75,
                 "turn left",
+                &[],
                 &[],
                 &owner,
                 &conn,
@@ -12258,6 +12888,7 @@ mod tests {
                 82,
                 "replace the turn",
                 &[],
+                &[],
                 &owner,
                 &conn,
                 Some(ActiveTurnBehavior::Steer),
@@ -12292,6 +12923,7 @@ mod tests {
                 "s.steer.cards-refused",
                 peer.id,
                 "peer steer",
+                &[],
                 &[],
                 &owner,
                 &peer,
@@ -12350,6 +12982,7 @@ mod tests {
                 "s.steer.echo",
                 76,
                 "turn left instead",
+                &[],
                 &[],
                 &owner,
                 &conn,
@@ -12420,6 +13053,7 @@ mod tests {
                 77,
                 "look at this",
                 &attachments,
+                &[],
                 &owner,
                 &conn,
                 Some(ActiveTurnBehavior::Steer),
@@ -12484,6 +13118,7 @@ mod tests {
                 "s.steer.degrade",
                 78,
                 "turn left",
+                &[],
                 &[],
                 &owner,
                 &conn,

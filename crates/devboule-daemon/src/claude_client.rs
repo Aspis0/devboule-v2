@@ -675,6 +675,14 @@ impl super::PlannedStaticPrompt for ClaudePlannedPrompt {
         &self.plan.fallback_text
     }
 
+    /// The references join this plan's text as path lines, after the SVG-style
+    /// fallback lines its own attachments left there. They are never image
+    /// blocks on this route either, even though Claude carries images inline:
+    /// see `session::push_reference_path_lines`.
+    fn append_reference_path_lines(&mut self, reference_paths: &[std::path::PathBuf]) {
+        super::push_reference_path_lines(&mut self.plan.fallback_text, reference_paths);
+    }
+
     fn send(&self) -> Result<(), WireError> {
         let bytes = frame_user_message_with_images(&self.plan.fallback_text, &self.plan.images)
             .map_err(send_failure)?;

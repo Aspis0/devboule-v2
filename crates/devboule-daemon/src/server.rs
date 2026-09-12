@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     caps, m3a_daemon_capabilities, negotiate, validate_idempotency_key, AgentMessageState,
-    ClientMessage, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
+    AttachmentReference, ClientMessage, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
     JournalLimits as WireJournalLimits, JournalSessionUsage as WireJournalSessionUsage,
     JournalUsage as WireJournalUsage, OwnerId, PersistenceKind, PromptAttachment, ResumeResult,
     RetentionPatch, SessionEvent, SessionEventEnvelope, SessionKind,
@@ -3755,24 +3755,14 @@ fn dispatch_session(
             attachment_references,
             idempotency_key,
         } => {
-            // The resolution path — reference to stored path, under the store
-            // budget — is not written yet. Until it is, a prompt that names
-            // references is REFUSED and not quietly stripped: a deck that
-            // vanishes on the way to the agent reads to the user as an agent
-            // that ignored the pages, which is the one failure this whole
-            // feature exists to prevent. Deleting this guard is part of writing
-            // the resolution path, not a cleanup to do before it.
-            if !attachment_references.is_empty() {
-                return DaemonMessage::Error(
-                    WireError::new(
-                        ErrorCode::InvalidRequest,
-                        "This daemon cannot resolve stored attachment references yet, so the \
-                         prompt was refused rather than sent without them."
-                            .to_string(),
-                    )
-                    .with_id(id),
-                );
-            }
+            // The refusal that stood here — a prompt naming stored references
+            // was rejected rather than sent without them — went away with the
+            // resolution path it was waiting for: `session_send` now resolves
+            // every reference against the store, refuses the whole request if
+            // one of them cannot be resolved, and puts the rest in the prompt
+            // as paths. The guard existed so a deck could not vanish between
+            // the deposit and the agent; what replaces it is the resolution,
+            // not a quieter version of the same omission.
             let reply = session_send(
                 state,
                 owner,
@@ -3782,6 +3772,7 @@ fn dispatch_session(
                 subscription_id,
                 text,
                 attachments,
+                attachment_references,
                 active_turn_behavior,
                 idempotency_key,
             );
@@ -4101,10 +4092,17 @@ fn session_send(
     subscription_id: u64,
     text: String,
     attachments: Vec<PromptAttachment>,
+    attachment_references: Vec<AttachmentReference>,
     active_turn_behavior: Option<devboule_protocol::ActiveTurnBehavior>,
     idempotency_key: Option<String>,
 ) -> DaemonMessage {
-    let fingerprint = send_fingerprint(&session_id, &text, &attachments, active_turn_behavior);
+    let fingerprint = send_fingerprint(
+        &session_id,
+        &text,
+        &attachments,
+        &attachment_references,
+        active_turn_behavior,
+    );
     if let Some(reply) = idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
     {
         return reply;
@@ -4113,15 +4111,15 @@ fn session_send(
     // attachment-carrying send from a paired device before this function runs,
     // which is what keeps the fingerprint above (and the base64 decode inside
     // it) from ever seeing those bytes (H4). A local send is unchanged.
-    // The public six-argument entry point is the one that builds the
-    // `SendRequest`; it is called from here rather than the private
-    // one-argument form, which would leave this wrapper dead in a non-test
-    // build.
+    // The public entry point is the one that builds the `SendRequest`; it is
+    // called from here rather than the private one-argument form, which would
+    // leave this wrapper dead in a non-test build.
     match state.sessions.send_with_subscription_behavior(
         &session_id,
         subscription_id,
         &text,
         &attachments,
+        &attachment_references,
         owner,
         conn,
         active_turn_behavior,
@@ -4150,13 +4148,22 @@ fn session_send(
 /// previous answer. The count fixes how many digests follow so the text cannot
 /// be mistaken for one of them.
 ///
+/// The references' digests belong in it for the same reason and against the
+/// same failure: a client that reuses one key while pointing at a different
+/// stored deck would otherwise be answered from the first send's receipt and
+/// the second deck would never reach the agent. Each half carries its own
+/// count, so neither list can be read as the other and the text cannot be read
+/// as either.
+///
 /// The digests are sha256 hex, not the encoded bytes. This string is stored
 /// beside every key the daemon has seen and must not weigh as much as the
-/// images it identifies.
+/// images it identifies — and a reference's digest is already the stored
+/// spelling, so it is appended as it arrived rather than re-hashed.
 fn send_fingerprint(
     session_id: &str,
     text: &str,
     attachments: &[PromptAttachment],
+    attachment_references: &[AttachmentReference],
     active_turn_behavior: Option<devboule_protocol::ActiveTurnBehavior>,
 ) -> String {
     let mut fingerprint = format!(
@@ -4166,6 +4173,12 @@ fn send_fingerprint(
     for attachment in attachments {
         fingerprint.push(':');
         fingerprint.push_str(&crate::attachment_store::attachment_digest(attachment));
+    }
+    fingerprint.push(':');
+    fingerprint.push_str(&attachment_references.len().to_string());
+    for reference in attachment_references {
+        fingerprint.push(':');
+        fingerprint.push_str(&reference.digest);
     }
     fingerprint.push(':');
     fingerprint.push_str(text);
@@ -4403,6 +4416,18 @@ mod tests {
         }
     }
 
+    /// One stored-attachment reference, shaped like the deposit reply's: a
+    /// session, a 64-character lowercase-hex digest and a size. The digest is
+    /// built from a seed rather than hashed, because these tests are about what
+    /// the fingerprint does with the string and not about where it came from.
+    fn stored_reference(session_id: &str, seed: char) -> AttachmentReference {
+        AttachmentReference {
+            session_id: session_id.to_string(),
+            digest: seed.to_string().repeat(64),
+            stored_bytes: 1024,
+        }
+    }
+
     #[test]
     fn one_text_with_two_images_is_two_fingerprints() {
         // The defect this closes: with the text alone in the fingerprint, the
@@ -4412,12 +4437,14 @@ mod tests {
             "s.a.1",
             "draw this",
             &[wire_attachment("a.png", b"one")],
+            &[],
             None,
         );
         let second = send_fingerprint(
             "s.a.1",
             "draw this",
             &[wire_attachment("a.png", b"two")],
+            &[],
             None,
         );
         assert_ne!(first, second);
@@ -4430,8 +4457,8 @@ mod tests {
             wire_attachment("b.png", b"two"),
         ];
         assert_eq!(
-            send_fingerprint("s.a.1", "draw this", &attachments, None),
-            send_fingerprint("s.a.1", "draw this", &attachments, None),
+            send_fingerprint("s.a.1", "draw this", &attachments, &[], None),
+            send_fingerprint("s.a.1", "draw this", &attachments, &[], None),
         );
     }
 
@@ -4440,8 +4467,73 @@ mod tests {
         let first = wire_attachment("a.png", b"one");
         let second = wire_attachment("b.png", b"two");
         assert_ne!(
-            send_fingerprint("s.a.1", "draw this", &[first.clone(), second.clone()], None),
-            send_fingerprint("s.a.1", "draw this", &[second, first], None),
+            send_fingerprint(
+                "s.a.1",
+                "draw this",
+                &[first.clone(), second.clone()],
+                &[],
+                None
+            ),
+            send_fingerprint("s.a.1", "draw this", &[second, first], &[], None),
+        );
+    }
+
+    /// The other half of the same defect (see
+    /// `one_text_with_two_images_is_two_fingerprints`): a client that keeps one
+    /// idempotency key while pointing at a different stored deck must not be
+    /// answered from the first send's receipt, because the second deck would
+    /// then never reach the agent. Two sends that differ only in which stored
+    /// file they name are two fingerprints, in both directions of the argument
+    /// (the digest list and its order).
+    #[test]
+    fn a_different_stored_reference_is_a_different_fingerprint() {
+        let first = stored_reference("s.a.1", 'a');
+        let second = stored_reference("s.a.1", 'b');
+        assert_ne!(
+            send_fingerprint(
+                "s.a.1",
+                "draw this",
+                &[],
+                std::slice::from_ref(&first),
+                None
+            ),
+            send_fingerprint(
+                "s.a.1",
+                "draw this",
+                &[],
+                std::slice::from_ref(&second),
+                None
+            ),
+        );
+        assert_ne!(
+            send_fingerprint(
+                "s.a.1",
+                "draw this",
+                &[],
+                &[first.clone(), second.clone()],
+                None
+            ),
+            send_fingerprint(
+                "s.a.1",
+                "draw this",
+                &[],
+                &[second.clone(), first.clone()],
+                None
+            ),
+            "the order the client listed the references in is part of the payload"
+        );
+        // And a reference is not a substitute spelling of an inline attachment:
+        // the two halves carry their own counts for exactly this reason, so the
+        // inline list and the reference list can never be read as one another.
+        assert_eq!(
+            send_fingerprint(
+                "s.a.1",
+                "draw this",
+                &[],
+                std::slice::from_ref(&first),
+                None
+            ),
+            send_fingerprint("s.a.1", "draw this", &[], &[first], None),
         );
     }
 
@@ -4452,8 +4544,30 @@ mod tests {
         let attachment = wire_attachment("a.png", b"one");
         let digest = crate::attachment_store::attachment_digest(&attachment);
         assert_ne!(
-            send_fingerprint("s.a.1", &format!(":{digest}"), &[], None),
-            send_fingerprint("s.a.1", "", &[attachment], None),
+            send_fingerprint("s.a.1", &format!(":{digest}"), &[], &[], None),
+            send_fingerprint("s.a.1", "", &[attachment], &[], None),
+        );
+    }
+
+    /// The two halves of an attachment payload are counted separately, so a
+    /// reference's digest cannot be read as an inline attachment's and the
+    /// text cannot be read as either. Without the second count, a send naming
+    /// one reference and no inline file would share a fingerprint with a send
+    /// naming one inline file and no reference whenever the two digest strings
+    /// matched the same text — the collision the counts exist to prevent.
+    #[test]
+    fn the_two_attachment_halves_are_counted_separately() {
+        let reference = stored_reference("s.a.1", 'a');
+        let fingerprint =
+            send_fingerprint("s.a.1", "", &[], std::slice::from_ref(&reference), None);
+        assert_ne!(
+            fingerprint,
+            send_fingerprint("s.a.1", "", &[], &[], None),
+            "naming a reference is not the same request as naming none"
+        );
+        assert!(
+            fingerprint.contains(&reference.digest),
+            "the reference's own digest travels in the fingerprint: {fingerprint}"
         );
     }
 
@@ -4464,6 +4578,7 @@ mod tests {
             "s.a.1",
             "draw this",
             std::slice::from_ref(&attachment),
+            &[],
             None,
         );
         assert!(!fingerprint.contains(&attachment.data));

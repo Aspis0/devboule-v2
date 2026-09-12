@@ -1165,6 +1165,12 @@ impl super::PlannedStaticPrompt for PiPlannedPrompt {
         &self.plan.fallback_text
     }
 
+    /// The references join this plan's text as path lines, never as `images[]`
+    /// entries: see `session::push_reference_path_lines`.
+    fn append_reference_path_lines(&mut self, reference_paths: &[PathBuf]) {
+        super::push_reference_path_lines(&mut self.plan.fallback_text, reference_paths);
+    }
+
     fn send(&self) -> Result<(), WireError> {
         let mut bytes = serde_json::to_vec(&self.frame()).map_err(|error| {
             WireError::new(
