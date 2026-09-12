@@ -1195,6 +1195,20 @@
   border-radius: 12px;
 }
 
+/* Every row below insets its own top edge only because the summary or the heading
+   sat above it, and the summary is absent on a settled run that reported nothing.
+   Give the inset to whichever row comes first — the two rows that already carry it
+   (.design-message-summary, .design-message-card-heading) state the same 10px, so
+   nothing moves when they do. One row moves: .design-message-actions states 9px,
+   because a row of controls under its own hairline wants a hair less air than a row
+   under text, so as the card's only child it reads the card's 10px instead of its own
+   9. That 1px is accepted, not overlooked — the card's top inset is one value
+   whatever the run reported, and a second value here would be one more number to keep
+   in step with it. */
+.design-message-card > :first-child {
+  padding-top: 10px;
+}
+
 .design-message-card-heading {
   display: flex;
   align-items: center;
@@ -1302,6 +1316,13 @@
 .design-message-actions {
   padding-top: 9px;
   border-top: 1px solid var(--border);
+}
+
+/* The hairline separates the controls from the rows above them. Alone in the card
+   there is nothing to separate, and the line would cut across the top of the card
+   just inside its own border. */
+.design-message-card > .design-message-actions:only-child {
+  border-top: 0;
 }
 
 .design-message-actions button {

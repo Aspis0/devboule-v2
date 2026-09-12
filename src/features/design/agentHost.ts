@@ -99,6 +99,8 @@ type ToolObservation = {
 
 const WRITE_TOOL_KINDS = new Set(["edit", "delete", "move"]);
 const COMPLETED_TOOL_STATUS = "completed";
+// The other settled tool status: the tool ran and exited non-zero.
+const FAILED_TOOL_STATUS = "failed";
 // Keep static previews large enough for a normal screen while bounding UI-thread work and memory.
 export const MAX_ARTIFACT_BYTES = 256 * 1024;
 export const ARTIFACT_TOO_LARGE_MESSAGE = "Artifact too large to display (maximum 256 KiB).";
@@ -620,38 +622,87 @@ function resultFor(
   toolObservations: Map<string, ToolObservation>,
 ): Omit<DesignGenerationResult, "sessionId" | "peerSessionId" | "createdAtMs"> {
   const observations = [...toolObservations.values()];
+  // A shell command is a reason to warn once it has settled, either way, so `completed` and
+  // `failed` both count. A failed command is the more dangerous of the two, not the less: a
+  // command that wrote half a file and then exited non-zero leaves the mess the agent never
+  // declared, and that is exactly the run this warning exists for. `declined` never ran, and
+  // an in-flight command has not settled, so neither of those warns. This widening is its own
+  // change and predates the branch below.
   const shellCommandsRan = observations.some(
-    (observation) => observation.kind === "execute" && observation.completed,
+    (observation) =>
+      observation.kind === "execute" &&
+      (observation.completed || observation.status?.toLowerCase() === FAILED_TOOL_STATUS),
   );
+  // The warning is a sentence of its own when nothing else is said, and a suffix when it
+  // rides on the Wrote summary; the leading space is only for the suffix case.
+  // The sentence is also the warning's own copy, and it must not name an outcome the trigger
+  // above does not require: "completed" was a lie for the failed command, the very run this
+  // warning exists for. A copy that misstates its own trigger is worse than none, because the
+  // reader rules out the case that happened.
   const shellWarning = shellCommandsRan
-    ? " Completed shell commands also ran and may also have changed additional files without reported locations."
+    ? "Shell commands also ran and may have changed additional files without reported locations."
     : "";
+  const shellSuffix = shellWarning === "" ? "" : ` ${shellWarning}`;
+  // Whether the summary speaks turns on whether a write tool RAN, not on whether the run has
+  // paths to show. `sources` holds the locations of completed write tools, and a write tool
+  // can complete without naming one: the pi provider emits `locations: None` on every tool
+  // event it produces, while its `write` maps to kind "edit", which is a write kind. So "no
+  // paths" and "no writes" are two different facts and the branch below keeps them apart.
+  const completedWrites = observations.filter(
+    (observation) =>
+      observation.completed &&
+      observation.kind !== undefined &&
+      WRITE_TOOL_KINDS.has(observation.kind),
+  );
   const sources = [
-    ...new Set(
-      observations.flatMap((observation) =>
-        observation.completed &&
-        observation.kind !== undefined &&
-        WRITE_TOOL_KINDS.has(observation.kind)
-          ? (observation.locations ?? [])
-          : [],
-      ),
-    ),
+    ...new Set(completedWrites.flatMap((observation) => observation.locations ?? [])),
   ];
+  if (completedWrites.length === 0) {
+    // No completed write tool ran, so there is nothing to say about written files. This is
+    // the ordinary Design generation: it is asked for HTML inside the reply, the artifact is
+    // scraped from that reply (extractFencedHtml), and the run tells the git history nothing.
+    // The card this branch used to emit said so on every successful run ("Agent did not
+    // report written files", or "Agent wrote no files" when some tool reported locations no
+    // write kind owned) and then advised reviewing the work with your own git. An alarm that
+    // fires on every run is not an alarm, so the empty title and description travel as
+    // silence and the surface renders no summary for them.
+    //
+    // Silence here is not "a Design run writes no files". The session runs against the
+    // selected workspace with no tool policy of ours, and this surface can authorise a file
+    // write: PermissionCard translates `write` as "Create or overwrite a file". When such a
+    // write does run, the branch below speaks — it is the case that must not be silent.
+    //
+    // The shell warning is the exception, and it is not a formality: a settled shell command
+    // may genuinely have changed files the agent never declared. Here it is the whole
+    // description, never a suffix on a card that no longer exists.
+    return { prompt, title: "", desc: shellWarning, sources, nodeIds: [] };
+  }
+
+  // A completed write tool that named no file is the case the old copy got right and this
+  // run must not swallow: the pi provider reports no locations on any tool event, so a real
+  // completed `write` lands here with nothing to show. The agent wrote and did not say where,
+  // and the run says exactly that. The sentence is the whole summary — no status line rides
+  // on it, because the sentence is the status.
+  const unreportedWrite = completedWrites.some(
+    (observation) => (observation.locations ?? []).length === 0,
+  );
   if (sources.length === 0) {
-    const locationsReported = observations.some(
-      (observation) => observation.locations !== undefined,
-    );
     return {
       prompt,
-      title: locationsReported ? "Agent wrote no files" : "Agent did not report written files",
-      desc: locationsReported
-        ? `No files were reported as written. Review what the agent wrote with your own git.${shellWarning}`
-        : `The agent did not report which files it touched. Review what the agent wrote with your own git.${shellWarning}`,
+      title: "",
+      desc: `The agent did not report which files it touched. Review what the agent wrote with your own git.${shellSuffix}`,
       sources,
       nodeIds: [],
     };
   }
 
+  // One run can write a located file and an unlocated one, so the paths below can be a partial
+  // list. "Wrote" still holds — a write did happen and the named path is worth showing — but
+  // the description says "every", not "which": the list must not read as complete while a
+  // write that could not name its file is missing from it.
+  const writeSummary = unreportedWrite
+    ? "Review what the agent wrote with your own git. The agent did not report every file it touched."
+    : "Review what the agent wrote with your own git.";
   return {
     prompt,
     // "Wrote" plus the source paths says the same thing as the old count
@@ -659,7 +710,7 @@ function resultFor(
     title: "Wrote",
     // The paths live in `sources` only; repeating them here was the third copy of
     // the same fact in the run summary.
-    desc: `Review what the agent wrote with your own git.${shellWarning}`,
+    desc: `${writeSummary}${shellSuffix}`,
     sources,
     nodeIds: [],
   };

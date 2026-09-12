@@ -1,15 +1,17 @@
 /*
- * The frame rules the canvas and the side panel's preview both render under.
+ * The rules the artifact render needs, wherever it is rendered: the frame the
+ * canvas and the side panel's preview both put the page in, the panel's own
+ * column, and the scaled box the panel shows the page through.
  *
- * Both sides hand the artifact to the same `artifactSrcDoc` (artifactCsp.ts), so
- * the rules that govern that frame belong beside that policy rather than inside
- * `design.css`: the canvas is the only module of the feature that imports that
- * 58 KB stylesheet, it is lazy-loaded with `DesignSurface`, and the side panel —
- * which sits in the Workspace chunk loaded on every start — needs the three
- * rules below and nothing else from it.
+ * The frame rules belong beside `artifactCsp.ts`'s `artifactSrcDoc` rather than
+ * inside `design.css`: the canvas is the only module of the feature that imports
+ * that 58 KB stylesheet, it is lazy-loaded with `DesignSurface`, and the side
+ * panel — which sits in the Workspace chunk loaded on every start — needs these
+ * rules and nothing else from it.
  *
- * Keep this file to the frame: the rules the artifact render needs on both
- * sides, and no rule only one of them uses.
+ * The two variables the preview carries are written by the panel from its own
+ * measured box (DesignPreviewPanel.tsx). The values declared here are what the
+ * first frame paints before that measurement lands.
  */
 
 .design-artifact-frame {
@@ -21,42 +23,113 @@
 }
 
 /*
- * The side panel shows the same page the canvas does, at a fixed reduction: the
- * panel is 180-460px wide (workspaceResize.ts) and the page is authored at 1280
- * (ARTIFACT_PAGE_WIDTH), so the page box keeps its intrinsic size and scale()
- * shrinks the painted result to 320 x 200 at the 366px default panel width.
+ * The panel's own column. It has to be the full height of the sidebar's scroll
+ * area for the preview inside it to have a height to take: a percentage against
+ * a flex item's used height is what makes that definite, and the alternative —
+ * letting the box fall back to its content — is what left the preview one page
+ * tall with the rest of the column empty.
+ */
+.design-preview-panel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/*
+ * The shell owns this card's frame (`.workspace-generation-card` in
+ * Workspace.css); this only turns it into a column so the preview can take what
+ * the panel has left after the header row, the generation notice and the card's
+ * own frame. Scoped to the class the panel adds to that one card: the reply card in
+ * the branch below is a `.workspace-generation-card` too, and the rule below is what
+ * keeps that one at its content height.
+ */
+.design-preview-card {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/*
+ * The reply card states text, and text does not shrink to fit: it is the sidebar's job
+ * to scroll (`.workspace-side-scroll`, `overflow-y: auto`). The card's frame states
+ * `overflow: hidden` in Workspace.css so that the preview card can be squeezed into the
+ * column, and that same property zeroes this card's automatic minimum size (Flexbox
+ * §4.5): without this rule the card compresses below its own content and clips its
+ * source chips, instead of pushing the overflow out to the sidebar. `flex: none` is
+ * `0 0 auto` — the card takes its content height and the column neither grows nor
+ * shrinks it.
  *
- * The 800px is the canonical page height — a desktop browser's content viewport
- * at that width (ARTIFACT_PAGE_MIN_HEIGHT, artifactViewport.ts) — and it is what
- * makes the box finite. An artifact taller than that shows its first screen and
- * no more: the rest of the page is not reachable from this panel, and no line of
- * UI says so, because nothing in the panel can tell a clipped artifact from a
- * complete one. Reading a height out of the frame is not available: the frame is
- * `sandbox=""`, and that confinement is the reason this preview is worth having
- * at all. The canvas does measure the page (its critic's off-screen pass lands in
- * artifactStructure.ts's cache), so sizing this box to a cached height is
- * possible — but the box would then grow and shrink with whether the canvas had
- * measured the same html, and a mirror that crops differently depending on cache
- * warmth is worse than one that always shows the top of the page.
+ * `:not(.design-preview-card)` is load-bearing, not a specificity trick: the preview
+ * card carries `.workspace-generation-card` as well, and this compound (0,3,0) outranks
+ * the preview card's own `flex: 1` (0,1,0) when it matches. The exclusion keeps the two
+ * selectors from meeting at all, so which rule is written first cannot decide the
+ * outcome.
  *
- * The viewport takes the scaled height back because a transform paints, it does
- * not lay out: the page box would still claim its full 800px in the column and
- * leave a hole four times the height of the preview. Overflow clips, so a panel
- * narrowed below 320px crops the miniature instead of overflowing.
+ * The `.workspace-design-note` branches and the generation banner above this card need
+ * no equivalent: neither states an `overflow`, so their automatic minimum size is
+ * already content-based and they refuse to shrink on their own.
+ */
+.design-preview-panel > .workspace-generation-card:not(.design-preview-card) {
+  flex: none;
+}
+
+/*
+ * The preview: the same page the canvas renders, scaled from the 1280px the page
+ * was authored at (ARTIFACT_PAGE_WIDTH) down to the width the sidebar actually
+ * has. That width is measured, never assumed — the panel is resizable between
+ * 180 and 460px (workspaceResize.ts), and a constant scale either leaves a
+ * margin or overflows at every width but one.
+ *
+ * The box does not pick a height either: it takes what the column gives it. The
+ * page box inside is then asked for `container height / scale` of document
+ * pixels, which the transform brings back down to the container's height. Both
+ * numbers come from the panel's ResizeObserver, and neither of them is a height
+ * of the document — that one is not measurable from outside a `sandbox=""`
+ * frame, and nothing here tries to infer it.
+ *
+ * What that costs: a document shorter than the box leaves its remaining height
+ * as the preview's own white. That is the less surprising of the two available
+ * behaviours, because the other one — pinning the box to a constant — silently
+ * drops everything below the first screen, which is the defect this replaces.
+ * The panel cannot tell a short page from a tall one without measuring the
+ * document, so it must not pretend to: a page that ends in whitespace and a page
+ * that ends at the bottom of the box look the same, and both look like a page.
+ *
+ * One divergence from the canvas, deliberate and worth naming before anyone hunts it.
+ * This box asks the document for `column height / scale` of viewport, which is the whole
+ * column in document pixels: ~2500px for a 670px column at the default panel width, and
+ * ~2.2x that at the sidebar's narrowest, where the same column divides by a smaller
+ * scale. The canvas frames the same page at [ARTIFACT_PAGE_MIN_HEIGHT,
+ * ARTIFACT_PAGE_MAX_HEIGHT] = [800, 2000] (artifactViewport.ts) and the render critic
+ * measures it in a fixed 1280x800 frame (artifactRenderCritic.ts). A page that sizes on
+ * its own viewport — `vh`, `position: fixed`, `@media (max-height)` — therefore lays out
+ * differently in the two places: taller here, page-height-bound there. That is the trade,
+ * not an oversight: matching the canvas would either crop the page in the panel or leave
+ * the column empty, which are the two defects this panel exists to avoid.
+ *
+ * Overflow clips because the transform rounds: the scaled page can leave a
+ * sub-pixel overhang, and the sidebar is not the surface that should grow a
+ * scrollbar for it. The frame itself carries `scrolling="no"` (see the panel),
+ * so the document inside cannot grow a second scrollbar — one that would both
+ * paint a control into the thumbnail and take ~15px off the 1280px layout width
+ * the page was authored against.
  */
 .design-artifact-preview {
   --design-artifact-preview-scale: 0.25;
+  --design-artifact-preview-page-height: 800px;
+  flex: 1;
+  min-height: 0;
   width: 100%;
-  height: calc(800px * var(--design-artifact-preview-scale));
   overflow: hidden;
   background: var(--white);
-  border-top: 1px solid var(--border);
   pointer-events: none;
 }
 
 .design-artifact-preview-page {
   width: 1280px;
-  height: 800px;
+  height: var(--design-artifact-preview-page-height);
   transform: scale(var(--design-artifact-preview-scale));
   transform-origin: top left;
   pointer-events: none;

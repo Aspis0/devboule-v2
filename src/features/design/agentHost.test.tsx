@@ -199,6 +199,12 @@ const READY_STATUS = {
 const EXPECTED_PRIORITY_HEAD = ["anti-ai-slop", "typography", "color", "accessibility"] as const;
 const EXPECTED_PRIORITY_HEAD_SET = new Set<string>(EXPECTED_PRIORITY_HEAD);
 
+// A settled run that reported no written files and ran no shell command now settles with
+// no summary at all: `resultFor` returns an empty title and an empty description (see
+// agentHost.ts). Tests that only need the turn to be over wait on this shape instead of on
+// a sentence the host no longer composes.
+const QUIET_RESULT = { title: "", desc: "", sources: [] as string[] };
+
 function expectPriorityHead(prompt: string): void {
   const index = builtInSkillIndex();
   for (const slug of EXPECTED_PRIORITY_HEAD) {
@@ -436,7 +442,7 @@ describe("ACP design host", () => {
 
     expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
     channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
-    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
   });
 
   it("creates native Codex through the app-server session kind mapping", async () => {
@@ -454,7 +460,7 @@ describe("ACP design host", () => {
 
     expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "codex");
     channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
-    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
   });
 
   it("opens and attaches a session immediately after provider selection", async () => {
@@ -678,7 +684,7 @@ describe("ACP design host", () => {
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(1));
     expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-a");
     finishRun();
-    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
   });
 
   it("routes model and effort changes through the existing session controller", async () => {
@@ -691,7 +697,7 @@ describe("ACP design host", () => {
 
     expect(mocks.sessionSetModel).toHaveBeenCalledWith("session-1", "grok-4", "high");
     channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
-    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
   });
 
   it("preflights automatic craft selection and uses the returned sections", async () => {
@@ -1410,7 +1416,11 @@ describe("ACP design host", () => {
 
     const result = await run;
     expect(result.sources).toEqual([]);
-    expect(result.desc).toContain("No files were reported as written");
+    // Neither observation produced a written file, and a run that reports none now reports
+    // nothing at all (see `resultFor` in agentHost.ts): the summary this used to compose is
+    // gone rather than reworded.
+    expect(result.title).toBe("");
+    expect(result.desc).toBe("");
 
     await disposeAgentHost(host);
   });
@@ -1424,7 +1434,11 @@ describe("ACP design host", () => {
 
     const result = await run;
     expect(result.sources).toEqual([]);
-    expect(result.desc).toContain("No files were reported as written");
+    // Neither observation produced a written file, and a run that reports none now reports
+    // nothing at all (see `resultFor` in agentHost.ts): the summary this used to compose is
+    // gone rather than reworded.
+    expect(result.title).toBe("");
+    expect(result.desc).toBe("");
 
     await disposeAgentHost(host);
   });
@@ -1443,7 +1457,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("warns that completed shell commands may hide additional changes", async () => {
+  it("warns that a settled shell command may hide additional changes", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);
 
@@ -1451,8 +1465,15 @@ describe("ACP design host", () => {
     finishRun();
 
     const result = await run;
-    expect(result.desc).toContain("shell commands");
-    expect(result.desc).toContain("may also have changed");
+    // Sentence-initial capital: the warning is no longer prefixed by "Completed", so "Shell"
+    // opens the sentence when it stands alone.
+    expect(result.desc).toContain("Shell commands");
+    // "may have changed", not "may also have changed": the sentence names no outcome, because
+    // the trigger counts a failed command too.
+    expect(result.desc).toContain("may have changed");
+    // The warning is the whole summary here, and it carries no status line with it: the
+    // no-files card is gone (see `resultFor`), and the shell case must not resurrect it.
+    expect(result.title).toBe("");
 
     await disposeAgentHost(host);
   });
@@ -1465,19 +1486,172 @@ describe("ACP design host", () => {
 
     const result = await run;
     expect(result.sources).not.toContain("src/failed.ts");
-    expect(result.title).toBe("Agent wrote no files");
+    // The failed location is not a written file, and a run that wrote none states nothing
+    // rather than reporting the absence as a status.
+    expect(result.title).toBe("");
 
     await disposeAgentHost(host);
   });
 
-  it("says when the agent does not report locations", async () => {
+  it("says nothing when no tool ran at all", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);
     finishRun();
 
     const result = await run;
     expect(result.sources).toEqual([]);
-    expect(result.desc).toContain("did not report which files it touched");
+    // A run with no tool events has no completed write tool behind it, so there is nothing to
+    // report and nothing is said. The sentence this branch used to compose ("The agent did not
+    // report which files it touched") still exists, but only for a write that ran without
+    // naming a file — see the two tests below — and the shell warning is the other case.
+    expect(result.title).toBe("");
+    expect(result.desc).toBe("");
+
+    await disposeAgentHost(host);
+  });
+
+  it("speaks when a completed write reports no locations at all", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    // The pi provider omits `locations` on every tool event it emits, so a real completed
+    // `write` (kind "edit") reaches the host with no locations key at all. Silence here would
+    // hide a file the run really wrote.
+    emitToolCall("write-1", "completed", "edit");
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual([]);
+    expect(result.title).toBe("");
+    expect(result.desc).toBe(
+      "The agent did not report which files it touched. Review what the agent wrote with your own git.",
+    );
+
+    await disposeAgentHost(host);
+  });
+
+  it("speaks when a completed write reports an empty location list", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    // An empty array is a different shape from an absent key, and it names no file either:
+    // both mean the write happened and its file was not reported.
+    emitToolCall("write-1", "completed", "edit", []);
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual([]);
+    expect(result.title).toBe("");
+    expect(result.desc).toBe(
+      "The agent did not report which files it touched. Review what the agent wrote with your own git.",
+    );
+
+    await disposeAgentHost(host);
+  });
+
+  it("stays silent when no write tool ran at all", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    // Locations reported by a non-write kind do not resurrect a summary: what decides is
+    // whether a write tool ran, and none did.
+    emitToolCall("read-1", "completed", "read");
+    emitToolCall("search-1", "completed", "search", ["src/app/Shell.tsx"]);
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual([]);
+    expect(result.title).toBe("");
+    expect(result.desc).toBe("");
+
+    await disposeAgentHost(host);
+  });
+
+  it("names the unlocated write when a run also wrote a file it did report", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    emitToolCall("write-1", "completed", "edit", ["src/located.ts"]);
+    emitToolCall("write-2", "completed", "edit");
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual(["src/located.ts"]);
+    expect(result.title).toBe("Wrote");
+    // The path list is partial, and the description says "every" rather than "which": a list
+    // that read as complete would contradict the second write, which was never located.
+    expect(result.desc).toBe(
+      "Review what the agent wrote with your own git. The agent did not report every file it touched.",
+    );
+    expect(result.desc).not.toContain("src/located.ts");
+
+    await disposeAgentHost(host);
+  });
+
+  it("warns that a failed shell command may have changed files too", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    // A command that exits non-zero is the one most likely to have left a half-written file
+    // behind, so the warning must not stop at the commands that completed cleanly.
+    emitToolCall("shell-1", "failed", "execute");
+    finishRun();
+
+    const result = await run;
+    expect(result.desc).toBe(
+      "Shell commands also ran and may have changed additional files without reported locations.",
+    );
+    expect(result.title).toBe("");
+
+    await disposeAgentHost(host);
+  });
+
+  it("does not call a failed shell command completed in the warning", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    // The trigger counts a failed command, so the sentence must name no outcome: "Completed"
+    // here would describe the run this warning exists for as the run that did not happen, and a
+    // reader who trusts it rules out the case that occurred. This is the one test that holds the
+    // trigger and the words together, so widening the trigger has to revisit the copy.
+    emitToolCall("shell-1", "failed", "execute");
+    finishRun();
+
+    const result = await run;
+    expect(result.desc).not.toBe("");
+    expect(result.desc).not.toContain("Completed");
+
+    await disposeAgentHost(host);
+  });
+
+  it("does not warn about a shell command that was declined", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    // A declined command never ran, so it cannot have changed a file.
+    emitToolCall("shell-1", "declined", "execute");
+    finishRun();
+
+    const result = await run;
+    expect(result.desc).toBe("");
+    expect(result.title).toBe("");
+
+    await disposeAgentHost(host);
+  });
+
+  it("carries the shell warning as a suffix on the unlocated write sentence", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    emitToolCall("write-1", "completed", "edit");
+    emitToolCall("shell-1", "completed", "execute");
+    finishRun();
+
+    const result = await run;
+    expect(result.title).toBe("");
+    expect(result.desc).toBe(
+      "The agent did not report which files it touched. Review what the agent wrote with your own git. Shell commands also ran and may have changed additional files without reported locations.",
+    );
 
     await disposeAgentHost(host);
   });
@@ -1609,7 +1783,7 @@ describe("ACP design host", () => {
     expect(mocks.sessionInterrupt).not.toHaveBeenCalled();
 
     finishRun();
-    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
 
     await disposeAgentHost(host);
   });
@@ -1754,7 +1928,7 @@ describe("ACP design host", () => {
     );
 
     finishRun();
-    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
     await disposeAgentHost(host);
   });
 
@@ -1951,7 +2125,7 @@ describe("ACP design host", () => {
     response.resolve(undefined);
     await answer;
     finishRun();
-    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
     await disposeAgentHost(host);
   });
 
@@ -2005,7 +2179,7 @@ describe("ACP design host", () => {
     expect(settled).toBe(false);
 
     await host.respondPermission?.("allow_once");
-    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
     await disposeAgentHost(host);
   });
 
@@ -3362,7 +3536,7 @@ describe("design transcript", () => {
     await act(async () => root.unmount());
   });
 
-  it("still reports that no files were written, beside the conversation", async () => {
+  it("states nothing when a settled run reported no files, beside the conversation", async () => {
     const host = createAgentHost();
     const { container, root } = await renderDesignAndSend(host, "Review the design");
     await act(async () => {
@@ -3374,8 +3548,19 @@ describe("design transcript", () => {
       emitToolCall("read-1", "completed", "read", ["src/Header.tsx"]);
       finishRun();
     });
-    await vi.waitFor(() => expect(container.textContent).toContain("Agent wrote no files"));
+    // The run is over once the card offers its settled action instead of Stop: the summary
+    // line this used to wait on no longer exists, so the wait moved to a state the card
+    // still shows.
+    await vi.waitFor(() => expect(container.textContent).toContain("Regenerate"));
 
+    // A read is not a written file, and a run that wrote none states nothing (see
+    // `resultFor` in agentHost.ts). Neither row is rendered at all, so no sentence — the one
+    // this test used to wait for or any replacement — can be read off the card.
+    expect(container.querySelector(".design-message-summary-status")).toBeNull();
+    expect(container.querySelector(".design-message-description")).toBeNull();
+    expect(container.textContent).not.toContain("Agent wrote no files");
+    expect(container.textContent).not.toContain("did not report written files");
+    // The conversation beside the now-silent card is what must survive it.
     expect(transcriptText(container)).toContain("Nothing needed changing.");
     await act(async () => root.unmount());
   });

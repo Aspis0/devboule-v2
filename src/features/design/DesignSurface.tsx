@@ -2454,14 +2454,21 @@ const DesignMessageCard = memo(function DesignMessageCard({
           // A settled run states one fact once: its status and the paths it
           // reported. The count heading, the tick, and a second copy of the
           // paths in the description were ceremony, not information.
-          <div className="design-message-summary">
-            <span className="design-message-summary-status">{message.title}</span>
-            {message.sources.map((source) => (
-              <span className="design-message-source" key={source}>
-                {source}
-              </span>
-            ))}
-          </div>
+          //
+          // A run that reported nothing states nothing — an empty status row would paint
+          // the padding of a sentence nobody wrote. See `resultFor` in agentHost.ts: a
+          // Design run reports no files because it writes none. The card itself stays
+          // either way, because the actions row below is the run's controls.
+          message.title !== "" || message.sources.length > 0 ? (
+            <div className="design-message-summary">
+              <span className="design-message-summary-status">{message.title}</span>
+              {message.sources.map((source) => (
+                <span className="design-message-source" key={source}>
+                  {source}
+                </span>
+              ))}
+            </div>
+          ) : null
         ) : (
           <div className="design-message-card-heading">
             <span
@@ -2473,7 +2480,9 @@ const DesignMessageCard = memo(function DesignMessageCard({
             <span className="design-message-title">{message.title}</span>
           </div>
         )}
-        <div className="design-message-description">{message.desc}</div>
+        {message.desc !== "" ? (
+          <div className="design-message-description">{message.desc}</div>
+        ) : null}
         {message.groundingNotice ? (
           <div className="design-grounding-notice" role="status">
             {message.groundingNotice}
