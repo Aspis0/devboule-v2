@@ -272,6 +272,15 @@ struct PtySession {
     /// the writer hold, in the same order the pre-existing `AcpWriter` path
     /// already used, so no new ordering is introduced.
     image_sink: Option<Arc<AcpPromptSink>>,
+    /// Structured prompt route for a provider whose protocol carries images
+    /// but whose handshake says nothing the daemon reads (Claude, Codex,
+    /// Pi). `Some` only for those three sessions: the ACP route has the
+    /// sibling above, and a terminal session leaves this `None`. The route
+    /// owns the decision, the text and the frame for one prompt (see
+    /// [`StaticImageSink`] and [`PlannedStaticPrompt`]): the send path plans
+    /// it outside the writer lock and sends it under that hold, the shape the
+    /// ACP sibling above already uses.
+    static_image_sink: Option<Arc<dyn StaticImageSink>>,
     reader_handle: Option<JoinHandle<()>>,
     coalesce_handle: Option<JoinHandle<()>>,
     runtime: Arc<SessionRuntime>,
@@ -293,6 +302,11 @@ struct SpawnedSession {
     /// three providers and for terminal sessions. Carried through spawn so
     /// `start_spawned_session` can install it next to `writer`.
     image_sink: Option<Arc<AcpPromptSink>>,
+    /// Structured prompt route for the three providers the daemon statically
+    /// knows carry images (Claude, Codex, Pi); `None` for an ACP session and
+    /// for a terminal. Carried through spawn so `start_spawned_session` can
+    /// install it next to `image_sink`.
+    static_image_sink: Option<Arc<dyn StaticImageSink>>,
     reader: Box<dyn Read + Send>,
     /// ACP supplies a structured decoder. Terminal sessions use the shared
     /// byte coalescer, which is constructed by `start_spawned_session`.
@@ -559,9 +573,8 @@ pub(crate) enum ImageDelivery {
     /// this session. The only yes.
     NegotiatedImageBlock,
     /// A provider whose protocol carries images but whose handshake says
-    /// nothing the daemon reads. Reserved for the follow-up that wires the
-    /// other three providers; no session sets it yet.
-    #[allow(dead_code)]
+    /// nothing the daemon reads: Claude, Codex and Pi each answer with it, and
+    /// their plans read it through this variant rather than against a literal.
     StaticImageBlock,
 }
 
@@ -665,8 +678,7 @@ impl StructuredPromptPlan {
     /// `pub(crate)` for the acp_client wire-shape test, which pins the
     /// exact JSON the read side already expects.
     pub(crate) fn content_blocks(&self) -> Vec<serde_json::Value> {
-        let mut prompt =
-            vec![serde_json::json!({ "type": "text", "text": self.fallback_text })];
+        let mut prompt = vec![serde_json::json!({ "type": "text", "text": self.fallback_text })];
         prompt.extend(self.images.iter().map(AcpImageBlock::to_content_block));
         prompt
     }
@@ -731,14 +743,12 @@ fn plan_structured_prompt(
         let path = session.materialize(attachment)?;
         if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type).is_some() {
             images.push(
-                AcpImageBlock::from_stored_file(&path, &attachment.mime_type).map_err(
-                    |error| {
-                        WireError::new(
-                            ErrorCode::Io,
-                            format!("Could not read a stored attachment: {error}"),
-                        )
-                    },
-                )?,
+                AcpImageBlock::from_stored_file(&path, &attachment.mime_type).map_err(|error| {
+                    WireError::new(
+                        ErrorCode::Io,
+                        format!("Could not read a stored attachment: {error}"),
+                    )
+                })?,
             );
         } else {
             fallback_paths.push(path);
@@ -837,6 +847,53 @@ impl AcpPromptSink {
             })?;
         Ok(())
     }
+}
+
+/// The static counterpart of [`AcpPromptSink`]: the structured prompt route
+/// for a provider whose protocol carries images but whose handshake says
+/// nothing the daemon reads — Claude, Codex and Pi, the three that answer
+/// [`ImageDelivery::StaticImageBlock`].
+///
+/// Planning and sending are two steps here for the same reason they are two
+/// on the ACP route: the base64 decode, the container sniff and the strip
+/// walk run before the writer is locked, and the frame goes out under that
+/// hold, so the journal entry that follows keeps the order the child sees.
+pub(crate) trait StaticImageSink: Send + Sync {
+    /// Decides one prompt: materializes every attachment exactly once and
+    /// answers with the plan — or `None` when this route does not run for the
+    /// request, which is no attachments at all or a provider that is not
+    /// authorised for inline bytes right now (a Pi model that declared no
+    /// `image`, an unknown model, no current model). A `None` means nothing
+    /// was materialized either, so the caller's legacy path-line write is the
+    /// only walk of this request.
+    ///
+    /// The text travels inside the plan rather than beside it, so the string
+    /// the frame carries and the string the journal records cannot be two
+    /// different values, and so the caller never has to walk the attachments
+    /// a second time through [`with_attachment_paths`].
+    fn plan_prompt(
+        &self,
+        store: &AttachmentStore,
+        session_id: &str,
+        text: &str,
+        attachments: &[PromptAttachment],
+    ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError>;
+}
+
+/// One static provider's planned prompt: the text it carries and whatever that
+/// provider's own protocol sends beside it — Claude's `content[]` blocks,
+/// Codex's `localImage` paths, Pi's `images[]` entries.
+///
+/// The blocks may be empty. A prompt whose attachments all take a path line
+/// (an SVG, a gif whose container no walk follows) still travels as a plan,
+/// and the frame it sends is the text-only frame byte for byte — which is what
+/// keeps one send at one materialization per attachment, on every send.
+pub(crate) trait PlannedStaticPrompt: Send + Sync {
+    /// The text the frame carries — the same value the journal records.
+    fn text(&self) -> &str;
+
+    /// Frames and sends this prompt.
+    fn send(&self) -> Result<(), WireError>;
 }
 
 /// The text block for a structured prompt: the user's text, a blank line,
@@ -2965,7 +3022,7 @@ impl SessionRegistry {
         validate_attachments(attachments)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let has_prompt = !text.is_empty() || !attachments.is_empty();
-        let (writer, image_sink, runtime, is_agent, mcp_required) = {
+        let (writer, image_sink, static_image_sink, runtime, is_agent, mcp_required) = {
             let map = self
                 .inner
                 .lock()
@@ -2976,6 +3033,7 @@ impl SessionRegistry {
             (
                 Arc::clone(&session.writer),
                 session.image_sink.clone(),
+                session.static_image_sink.clone(),
                 Arc::clone(&session.runtime),
                 session.metadata.kind.is_agent(),
                 matches!(
@@ -3017,21 +3075,44 @@ impl SessionRegistry {
         // the live negotiated capability says images are supported. The plan
         // decides both halves — the blocks that travel and the exact string
         // the journal records — so they cannot drift apart. Otherwise —
-        // sibling absent (other providers, terminals), or the handshake said
-        // no or nothing — fall through to exactly today's path-line write,
-        // byte for byte unchanged.
+        // sibling absent (terminals, and the three providers that take the
+        // static route below), or the handshake said no or nothing — fall
+        // through to exactly today's path-line write, byte for byte
+        // unchanged.
         let plan = match image_sink.as_ref() {
             Some(sink) if sink.delivery() == ImageDelivery::NegotiatedImageBlock => {
                 plan_structured_prompt(&self.attachments, session_id, text, attachments)?
             }
             _ => None,
         };
+        // The static route: the sibling is present only for the three
+        // providers the daemon statically knows carry images (Claude, Codex,
+        // Pi). Its plan is built here, before the writer is locked, for the
+        // same reason the ACP plan is: the decode and the strip walk must not
+        // run under that hold. `None` means the route did not run (no
+        // attachments, or a provider not authorised for inline bytes) and
+        // nothing was materialized for it.
+        let static_plan = match static_image_sink.as_ref() {
+            Some(sink) => sink.plan_prompt(&self.attachments, session_id, text, attachments)?,
+            None => None,
+        };
+        // A session carries one route or the other, never both: `image_sink`
+        // is the ACP one and `static_image_sink` the three static providers'.
         // `plan` is `Some` only when at least one raster became a block, so
         // an SVG-only prompt on a capable session takes this arm too: the
-        // legacy write, materialized once, never twice.
+        // legacy write, materialized once, never twice — and on the static
+        // route the same holds for a prompt whose every block became a path
+        // line, because the plan answers with its own text either way.
         let prompt = match plan.as_ref() {
             Some(plan) => plan.fallback_text.clone(),
-            None => with_attachment_paths(&self.attachments, session_id, text, attachments)?,
+            None => match static_plan.as_ref() {
+                // The plan decoded, sniffed and stripped every attachment
+                // already and built the text from the paths it holds, so
+                // reaching for `with_attachment_paths` here would do all of
+                // that a second time for each of them.
+                Some(plan) => plan.text().to_string(),
+                None => with_attachment_paths(&self.attachments, session_id, text, attachments)?,
+            },
         };
         // Lock the writer FIRST, as today: the journaled transcript event is
         // published under this same hold further down, so the journal keeps
@@ -3062,14 +3143,20 @@ impl SessionRegistry {
                 let sink = image_sink.as_ref().expect("plan implies a capable sibling");
                 sink.send_structured_prompt(plan)
             }
-            // Today's path, unchanged: the prompt (with path lines) is typed
-            // into the plain-text writer.
-            None => writer.write_all(prompt.as_bytes()).map_err(|error| {
-                WireError::new(
-                    ErrorCode::Io,
-                    format!("Could not send input to the terminal: {error}"),
-                )
-            }),
+            // The static route's frame goes out here, under the same hold and
+            // for the same reason: the text on the wire and the text journaled
+            // below come from the one plan.
+            None => match static_plan {
+                Some(plan) => plan.send(),
+                // Today's path, unchanged: the prompt (with path lines) is
+                // typed into the plain-text writer.
+                None => writer.write_all(prompt.as_bytes()).map_err(|error| {
+                    WireError::new(
+                        ErrorCode::Io,
+                        format!("Could not send input to the terminal: {error}"),
+                    )
+                }),
+            },
         } {
             drop(writer);
             if let Some(runtime) = agent_runtime.as_ref() {
@@ -3619,6 +3706,7 @@ pub fn spawn_session(
         // A terminal's writer is a PTY: nothing there can open a path, so no
         // structured prompt route.
         image_sink: None,
+        static_image_sink: None,
         reader,
         reader_dispatch: None,
         stderr: None,
@@ -3685,6 +3773,7 @@ fn start_spawned_session(
         child,
         writer,
         image_sink,
+        static_image_sink,
         reader,
         reader_dispatch,
         stderr,
@@ -3798,6 +3887,7 @@ fn start_spawned_session(
         child_wait,
         writer,
         image_sink,
+        static_image_sink,
         reader_handle: None,
         coalesce_handle: None,
         stderr_handle: None,
@@ -4070,6 +4160,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
         master,
         writer,
         image_sink: _,
+        static_image_sink: _,
         killer,
         runtime: session_runtime,
         mcp_session,
@@ -4147,6 +4238,7 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
         child_wait,
         writer,
         image_sink: _,
+        static_image_sink: _,
         reader_handle,
         coalesce_handle,
         stderr_handle,
@@ -6279,12 +6371,14 @@ mod tests {
         kind: SessionKind,
         writer: Box<dyn Write + Send>,
     ) -> Arc<SessionRuntime> {
-        insert_live_agent_with_kind_writer_and_sink(registry, id, owner, kind, writer, None)
+        insert_live_agent_with_kind_writer_and_sink(registry, id, owner, kind, writer, None, None)
     }
 
     /// The insert behind the two helpers above, with the optional structured
-    /// prompt sibling. `None` is the fallback world: no structured route
-    /// unless a test installs a sink double.
+    /// prompt routes: `image_sink` is the ACP sibling, `static_image_sink`
+    /// the route the three static providers carry. `None` for either is the
+    /// fallback world: no structured route unless a test installs one, so the
+    /// path-line assertions below pin the honest fallback.
     fn insert_live_agent_with_kind_writer_and_sink(
         registry: &SessionRegistry,
         id: &str,
@@ -6292,6 +6386,7 @@ mod tests {
         kind: SessionKind,
         writer: Box<dyn Write + Send>,
         image_sink: Option<Arc<AcpPromptSink>>,
+        static_image_sink: Option<Arc<dyn StaticImageSink>>,
     ) -> Arc<SessionRuntime> {
         let metadata = Session {
             id: id.to_string(),
@@ -6322,6 +6417,7 @@ mod tests {
             // route unless the test installs one, so the path-line
             // assertions below pin the honest fallback.
             image_sink,
+            static_image_sink,
             reader_handle: None,
             coalesce_handle: None,
             runtime: Arc::clone(&runtime),
@@ -7075,7 +7171,11 @@ mod tests {
             "{}",
             plan.fallback_text
         );
-        assert!(plan.fallback_text.ends_with(".svg]"), "{}", plan.fallback_text);
+        assert!(
+            plan.fallback_text.ends_with(".svg]"),
+            "{}",
+            plan.fallback_text
+        );
         assert!(
             !plan.fallback_text.contains(".png]"),
             "the raster left no path line: {}",
@@ -7137,6 +7237,180 @@ mod tests {
                 "stripped JPEG bytes, JPEG label"
             );
         }
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // --- the static route (Claude, Codex, Pi) -----------------------------
+    //
+    // These pin the send path's half of the three static providers: a session
+    // that carries a `static_image_sink` takes the plan's text and never the
+    // legacy walk, and a session whose route declines (or which carries no
+    // route at all) writes exactly the bytes it always wrote. A double stands
+    // in for the provider's own frame owner so neither test needs a child.
+
+    /// A route double: records that it was consulted and that its plan was the
+    /// one sent, and answers with a plan carrying the text the caller must
+    /// journal — or declines, which is what a provider not authorised for
+    /// inline bytes answers.
+    struct RecordingStaticSink {
+        calls: Arc<AtomicU64>,
+        sent: Arc<AtomicU64>,
+        answer: Option<&'static str>,
+    }
+
+    impl StaticImageSink for RecordingStaticSink {
+        fn plan_prompt(
+            &self,
+            _store: &AttachmentStore,
+            _session_id: &str,
+            _text: &str,
+            _attachments: &[PromptAttachment],
+        ) -> Result<Option<Box<dyn PlannedStaticPrompt>>, WireError> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            Ok(self.answer.map(|text| {
+                Box::new(RecordingStaticPlan {
+                    text: text.to_string(),
+                    sent: Arc::clone(&self.sent),
+                }) as Box<dyn PlannedStaticPrompt>
+            }))
+        }
+    }
+
+    /// The plan half of the double: the text it carries, and the record that it
+    /// was the one sent. Modelled rather than framed, so neither test below
+    /// needs a child.
+    struct RecordingStaticPlan {
+        text: String,
+        sent: Arc<AtomicU64>,
+    }
+
+    impl PlannedStaticPrompt for RecordingStaticPlan {
+        fn text(&self) -> &str {
+            &self.text
+        }
+
+        fn send(&self) -> Result<(), WireError> {
+            self.sent.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }
+    }
+
+    fn test_static_sink(
+        answer: Option<&'static str>,
+    ) -> (Arc<RecordingStaticSink>, Arc<AtomicU64>, Arc<AtomicU64>) {
+        let calls = Arc::new(AtomicU64::new(0));
+        let sent = Arc::new(AtomicU64::new(0));
+        let sink = Arc::new(RecordingStaticSink {
+            calls: Arc::clone(&calls),
+            sent: Arc::clone(&sent),
+            answer,
+        });
+        (sink, calls, sent)
+    }
+
+    #[test]
+    fn the_static_route_sends_its_own_frame_and_leaves_the_writer_alone() {
+        // The route owns the send: on this branch the plain-text writer is not
+        // typed into at all, and the text the journal records is the plan's.
+        // That is also what holds a send to one materialization per attachment
+        // — `with_attachment_paths`, the legacy walk, is reached only when the
+        // route answered nothing.
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-static-route", "process-static-route");
+        let session_id = "static-route";
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let (sink, calls, sent) = test_static_sink(Some("the plan's own text"));
+        let runtime = insert_live_agent_with_kind_writer_and_sink(
+            &registry,
+            session_id,
+            owner.clone(),
+            SessionKind::Claude,
+            Box::new(RecordingWriter(Arc::clone(&received))),
+            None,
+            Some(sink),
+        );
+        let conn = attach_live_agent_for_test(&runtime, session_id, 71);
+        let image = clean_png(0x21);
+        registry
+            .send_with_subscription(
+                session_id,
+                71,
+                "describe this",
+                &[attachment("photo.png", "image/png", &image)],
+                &owner,
+                &conn,
+            )
+            .expect("send");
+        assert!(
+            received.lock().expect("writer").is_empty(),
+            "the route's frame went out, not a plain-text write"
+        );
+        assert_eq!(sent.load(Ordering::Acquire), 1, "the plan was sent once");
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            1,
+            "the route is consulted once per send"
+        );
+        let recorded = conn
+            .pull_events()
+            .into_iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::AgentUserMessage { text, .. } => Some(text),
+                _ => None,
+            })
+            .expect("the plan's text is what the journal records");
+        assert_eq!(recorded, "the plan's own text");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_static_route_that_declines_keeps_the_legacy_write_byte_for_byte() {
+        // `None` is the provider saying nothing travels inline — a Pi model
+        // that declared no image, or no attachments at all. The send must then
+        // write exactly the text it has always written.
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-static-declined", "process-static-declined");
+        let session_id = "static-declined";
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let (sink, calls, sent) = test_static_sink(None);
+        let runtime = insert_live_agent_with_kind_writer_and_sink(
+            &registry,
+            session_id,
+            owner.clone(),
+            SessionKind::Pi,
+            Box::new(RecordingWriter(Arc::clone(&received))),
+            None,
+            Some(sink),
+        );
+        let conn = attach_live_agent_for_test(&runtime, session_id, 72);
+        let image = clean_png(0x22);
+        registry
+            .send_with_subscription(
+                session_id,
+                72,
+                "describe this",
+                &[attachment("photo.png", "image/png", &image)],
+                &owner,
+                &conn,
+            )
+            .expect("send");
+        let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
+        let legacy = with_attachment_paths(
+            &registry.attachments,
+            session_id,
+            "describe this",
+            &[attachment("photo.png", "image/png", &image)],
+        )
+        .expect("legacy text");
+        assert_eq!(written, legacy, "the declined route changes no byte");
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            sent.load(Ordering::Acquire),
+            0,
+            "a declined route sends nothing"
+        );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -7302,6 +7576,7 @@ mod tests {
             writer: Arc::new(Mutex::new(writer)),
             // A terminal has no structured prompt route.
             image_sink: None,
+            static_image_sink: None,
             reader_handle: None,
             coalesce_handle: None,
             runtime,
@@ -8474,6 +8749,7 @@ mod tests {
             writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
             // Not an ACP session under test: no structured prompt route.
             image_sink: None,
+            static_image_sink: None,
             reader_handle: None,
             coalesce_handle: None,
             runtime: Arc::clone(&runtime),
@@ -8585,6 +8861,7 @@ mod tests {
             // Fallback world: no structured route, so the mode rejection below
             // exercises the plain-text session, not the sink.
             image_sink: None,
+            static_image_sink: None,
             reader_handle: None,
             coalesce_handle: None,
             runtime: Arc::clone(&runtime),

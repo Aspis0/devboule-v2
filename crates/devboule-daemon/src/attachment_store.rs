@@ -947,7 +947,9 @@ mod tests {
         assert!(path.exists(), "the folder was removed under the lock");
 
         drop(guard);
-        done_rx.recv().expect("the close finished once the lock was free");
+        done_rx
+            .recv()
+            .expect("the close finished once the lock was free");
         closer.join().expect("thread");
         assert!(!path.exists(), "the close must still remove the folder");
     }
@@ -994,7 +996,9 @@ mod tests {
 
         drop(guard);
         assert_eq!(
-            done_rx.recv().expect("the sweep finished once the lock was free"),
+            done_rx
+                .recv()
+                .expect("the sweep finished once the lock was free"),
             1,
             "the sweep still reports the folder it removed"
         );

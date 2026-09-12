@@ -599,6 +599,9 @@ fn spawn_process_with_load(
         // An agent that never declared `promptCapabilities.image` keeps the
         // sibling present but unused, falling back to the path line.
         image_sink: Some(Arc::new(super::AcpPromptSink::new(&transport))),
+        // The negotiated route above is the ACP one; the static route the
+        // three other providers carry is not installed for this session.
+        static_image_sink: None,
         reader: Box::new(reader),
         reader_dispatch: Some(Box::new(reader_dispatch)),
         stderr: Some(Box::new(stderr_source)),

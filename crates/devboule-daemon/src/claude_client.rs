@@ -24,9 +24,6 @@ use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
     SpawnedSession, StderrSource, StdioWaitableChild,
 };
-// Reached only by the image-plan builders below, which are still test-only
-// until the send path is wired to them.
-#[cfg(test)]
 use crate::attachment_store::AttachmentStore;
 use crate::claude_view::ClaudeView;
 use crate::mcp_broker::McpLaunchConfig;
@@ -312,6 +309,13 @@ pub(super) fn spawn_process(
         pending: Vec::new(),
         mode_gate: Some(Arc::clone(&mode_gate)),
     };
+    // The static prompt route needs the same stdin and the same gate: an image
+    // frame must queue behind the initial mode response exactly as a text
+    // frame does.
+    let static_prompt = Arc::new(ClaudeStaticPrompt::new(
+        Arc::clone(&stdin),
+        Some(Arc::clone(&mode_gate)),
+    ));
     let killer = ClaudeKiller {
         process: Arc::clone(&process),
         stdin: Arc::clone(&stdin),
@@ -338,8 +342,10 @@ pub(super) fn spawn_process(
         })),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
-        // Not an ACP session: no structured prompt route.
+        // Not an ACP session: no negotiated structured route. The static one
+        // holds Claude's own frame and the mode gate it goes through.
         image_sink: None,
+        static_image_sink: Some(static_prompt),
         reader: Box::new(BufReader::new(stdout)),
         reader_dispatch: Some(Box::new(reader_dispatch)),
         stderr: Some(Box::new(stderr_source)),
@@ -438,17 +444,16 @@ fn frame_user_message(text: &str) -> io::Result<Vec<u8>> {
 /// `{"type": "image", ...}` for every carried raster, after the single text
 /// entry. Measured on Paseo's own Claude provider (`toSdkUserMessage`): a
 /// nested `source` with key `media_type`, not the ACP flat
-/// `{type, mimeType, data}`. `#[cfg(test)]` while the send-path follow-up is
-/// unsequenced: the writer still frames today's text-only `content` inline
-/// above, and this stays the pinned shape for the follow-up rather than a
-/// second production caller.
-#[cfg(test)]
+/// `{type, mimeType, data}`.
+///
+/// With no blocks this is [`frame_user_message`] byte for byte — the two
+/// differ only by the loop that runs zero times — which is what lets the
+/// static route frame every prompt through this one builder.
 fn frame_user_message_with_images(
     text: &str,
     images: &[super::AcpImageBlock],
 ) -> io::Result<Vec<u8>> {
-    let mut content =
-        Vec::with_capacity(images.len().saturating_add(1));
+    let mut content = Vec::with_capacity(images.len().saturating_add(1));
     content.push(serde_json::json!({"type": "text", "text": text}));
     for image in images {
         content.push(claude_image_block(&image.mime_type, &image.data_base64));
@@ -469,9 +474,7 @@ fn frame_user_message_with_images(
 /// One Claude image content entry: the nested `source` shape above. The
 /// label is trusted the way the shared plan trusts it: `materialize` refused
 /// any file whose bytes and label disagree, so the bytes on disk are this
-/// container. `#[cfg(test)]` while the send-path follow-up is unsequenced,
-/// like the frame builder above.
-#[cfg(test)]
+/// container.
 fn claude_image_block(mime_type: &str, data_base64: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "image",
@@ -487,7 +490,21 @@ fn claude_image_block(mime_type: &str, data_base64: &str) -> serde_json::Value {
 /// `isImageMimeType`: jpeg/png/gif/webp go in the block, anything else
 /// keeps its `[Image available at: ...]` path line — never the silent drop
 /// Paseo's Claude provider performs.
-#[cfg(test)]
+///
+/// At the call site this is ANDed with
+/// [`crate::raster_metadata::RasterMime::from_mime_type`], which knows only
+/// jpeg and png, so a gif and a webp — both in the set above, both of which
+/// Claude itself accepts — always take the path line instead.
+///
+/// That is deliberate and must stay: we send inline only what we can prove we
+/// stripped. The strip walk recognises two containers on purpose
+/// (`raster_metadata.rs` explains that guessing a container from an unknown
+/// byte would be inventing a rule rather than applying one), so widening this
+/// gate without widening the walk first would ship un-stripped metadata to a
+/// provider. The gap is unreachable from the UI today — the Design composer
+/// accepts png, jpeg and svg only (`designAttachments.ts`) — and that is
+/// context, not a licence to relax it: attachments will arrive from paired
+/// devices later, where nothing narrows the set.
 fn claude_accepts_inline(mime_type: &str) -> bool {
     matches!(
         mime_type,
@@ -502,31 +519,37 @@ fn claude_accepts_inline(mime_type: &str) -> bool {
 /// carries are the stripped bytes read back from the file `materialize`
 /// wrote, never the base64 that arrived on the wire.
 ///
-/// Not yet sent: the `session.rs` send path still takes the legacy path-line
-/// write for Claude, so this plan has no production caller until that
-/// follow-up lands.
-#[cfg(test)]
+/// `plan_claude_prompt` builds it and `ClaudeStaticPrompt` carries it to the
+/// frame builder and the mode gate. It travels whole (never `text` and
+/// `images` separately) so the text block the child receives and the string
+/// the journal records are the same value by construction.
 struct ClaudePromptPlan {
     fallback_text: String,
     images: Vec<super::AcpImageBlock>,
 }
 
 /// The delivery Claude is authorised for: a fact about the protocol, not a
-/// fact the peer agreed to — there is no handshake to negotiate with. Uses
-/// the variant the sibling seam in `session.rs` reserved for this follow-up.
-/// `#[cfg(test)]` with the plan: the only reader is the gate above until the
-/// send-path follow-up lands.
-#[cfg(test)]
+/// fact the peer agreed to — there is no handshake to negotiate with. Read
+/// through the shared enum, not compared against a literal, so a later change
+/// to what "statically known" authorises cannot silently re-route this
+/// sender.
 fn claude_delivery() -> super::ImageDelivery {
     super::ImageDelivery::StaticImageBlock
 }
 
 /// Splits one request's attachments into inline image blocks and path-line
-/// fallbacks. Every attachment is materialized first — exactly the call the
-/// shared `with_attachment_paths` makes — so a request that fails on its
-/// third attachment leaves nothing half-built. `#[cfg(test)]` with the plan:
-/// the only caller is the tests below until the send-path follow-up lands.
-#[cfg(test)]
+/// fallbacks, materializing each attachment exactly once — the call the shared
+/// `with_attachment_paths` makes — so a request that fails on its third
+/// attachment leaves nothing half-built.
+///
+/// `None` means the route did not run at all: no attachments, or a delivery
+/// this sender is not authorised for. When it does run it answers with the
+/// text as well, even if no raster became a block — an SVG, or a gif whose
+/// container no walk follows. That is what keeps the caller from walking the
+/// attachments a second time, and it costs no wire change: with no block the
+/// frame the route sends is the text-only frame, byte for byte. (The ACP plan
+/// next door answers `None` in that case instead, because `Some` there would
+/// swap the plain-text write for a structured content array.)
 fn plan_claude_prompt(
     store: &AttachmentStore,
     session_id: &str,
@@ -557,8 +580,7 @@ fn plan_claude_prompt(
         // second — no walk exists, so the bytes on disk are unstripped and
         // the honest answer is the path line, never an inline block.
         if claude_accepts_inline(&attachment.mime_type)
-            && crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type)
-                .is_some()
+            && crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type).is_some()
         {
             images.push(
                 super::AcpImageBlock::from_stored_file(&path, &attachment.mime_type).map_err(
@@ -573,9 +595,6 @@ fn plan_claude_prompt(
         } else {
             fallback_paths.push(path);
         }
-    }
-    if images.is_empty() {
-        return Ok(None);
     }
     Ok(Some(ClaudePromptPlan {
         fallback_text: super::prompt_text_with_fallback_paths(text, &fallback_paths),
@@ -597,16 +616,69 @@ fn carried_mime_types(plan: Option<&ClaudePromptPlan>) -> Vec<&str> {
     .unwrap_or_default()
 }
 
-/// Frame builder the plan pins for the send-path follow-up: `images` is
-/// always the carried blocks. (The writer still builds today's text-only
-/// frame inline above; this alias keeps the shared name pinned for the
-/// follow-up without giving the writer a second production caller.)
-#[cfg(test)]
-fn frame_user_message_with_plan(
-    text: &str,
-    images: &[super::AcpImageBlock],
-) -> io::Result<Vec<u8>> {
-    frame_user_message_with_images(text, images)
+/// The static prompt route for Claude: it plans, frames and writes through
+/// the same mode gate the plain-text writer uses. The frame is Claude's own,
+/// and it is built on this side of the seam because the gate that orders
+/// prompt frames lives here.
+pub(crate) struct ClaudeStaticPrompt {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    mode_gate: Option<ClaudeModeGateRef>,
+}
+
+impl ClaudeStaticPrompt {
+    fn new(stdin: Arc<Mutex<Option<ChildStdin>>>, mode_gate: Option<ClaudeModeGateRef>) -> Self {
+        Self { stdin, mode_gate }
+    }
+}
+
+impl super::StaticImageSink for ClaudeStaticPrompt {
+    fn plan_prompt(
+        &self,
+        store: &AttachmentStore,
+        session_id: &str,
+        text: &str,
+        attachments: &[devboule_protocol::PromptAttachment],
+    ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
+        let Some(plan) = plan_claude_prompt(store, session_id, text, attachments)? else {
+            return Ok(None);
+        };
+        Ok(Some(Box::new(ClaudePlannedPrompt {
+            stdin: Arc::clone(&self.stdin),
+            mode_gate: self.mode_gate.clone(),
+            plan,
+        })))
+    }
+}
+
+/// One planned Claude prompt, ready to frame. It carries the plan whole, so
+/// the text on the wire and the text the caller journals cannot be two
+/// different strings.
+struct ClaudePlannedPrompt {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    mode_gate: Option<ClaudeModeGateRef>,
+    plan: ClaudePromptPlan,
+}
+
+impl super::PlannedStaticPrompt for ClaudePlannedPrompt {
+    fn text(&self) -> &str {
+        &self.plan.fallback_text
+    }
+
+    fn send(&self) -> Result<(), WireError> {
+        let bytes = frame_user_message_with_images(&self.plan.fallback_text, &self.plan.images)
+            .map_err(send_failure)?;
+        write_gated_frame(&self.stdin, self.mode_gate.as_ref(), bytes).map_err(send_failure)
+    }
+}
+
+/// The refusal the plain-text write path already produces for a send that did
+/// not reach the child, so a failed structured send reads the same wherever it
+/// came from.
+fn send_failure(error: io::Error) -> WireError {
+    WireError::new(
+        ErrorCode::Io,
+        format!("Could not send input to the terminal: {error}"),
+    )
 }
 
 struct ClaudeWriter {
@@ -627,29 +699,43 @@ impl Write for ClaudeWriter {
         }
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
-        // Unchanged text-only frame: image blocks stay a plan-side shape
-        // until the send-path follow-up sequences the Claude wiring.
-        // `frame_user_message_with_images` pins the `content[]` shape for
-        // that follow-up; the writer keeps today's literal so the two cannot
-        // drift under a shared name before the plan has a production caller.
+        // The text-only frame, unchanged. The static route frames its prompts
+        // through `frame_user_message_with_images`, which is these same bytes
+        // when it carries no block; both then go through `write_gated_frame`.
         let bytes = frame_user_message(&text)?;
-        if let Some(mode_gate) = &self.mode_gate {
-            let mut gate = mode_gate
-                .lock()
-                .map_err(|_| io::Error::other("Claude mode gate lock poisoned"))?;
-            match &gate.state {
-                ClaudeModeGateState::Ready => {}
-                ClaudeModeGateState::Failed(message) => {
-                    return Err(io::Error::other(message.clone()));
-                }
-                ClaudeModeGateState::AwaitingResponse { .. } => {
-                    gate.pending_frames.push(bytes);
-                    return Ok(());
-                }
+        write_gated_frame(&self.stdin, self.mode_gate.as_ref(), bytes)
+    }
+}
+
+/// Writes one already-framed prompt through the mode gate: a released gate
+/// writes straight to the child, and a frame that arrives while the initial
+/// mode response is still outstanding is queued on the gate instead, in
+/// arrival order, for the mode handler to release.
+///
+/// Both the plain-text writer and the static prompt route send through here,
+/// so an image frame cannot jump a text frame typed before it, and so the gate
+/// has exactly one implementation.
+fn write_gated_frame(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    mode_gate: Option<&ClaudeModeGateRef>,
+    bytes: Vec<u8>,
+) -> io::Result<()> {
+    if let Some(mode_gate) = mode_gate {
+        let mut gate = mode_gate
+            .lock()
+            .map_err(|_| io::Error::other("Claude mode gate lock poisoned"))?;
+        match &gate.state {
+            ClaudeModeGateState::Ready => {}
+            ClaudeModeGateState::Failed(message) => {
+                return Err(io::Error::other(message.clone()));
+            }
+            ClaudeModeGateState::AwaitingResponse { .. } => {
+                gate.pending_frames.push(bytes);
+                return Ok(());
             }
         }
-        write_child_stdin(&self.stdin, &bytes, "Claude")
     }
+    write_child_stdin(stdin, &bytes, "Claude")
 }
 
 struct ClaudeKiller {
@@ -1597,7 +1683,7 @@ impl StderrSource for ClaudeStderr {
 mod tests {
     use super::*;
     use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
-    use crate::session::{ConnHandle, PendingEvent};
+    use crate::session::{ConnHandle, PendingEvent, StaticImageSink};
     use devboule_protocol::PermissionOutcome;
     use devboule_protocol::PromptAttachment;
     use std::path::PathBuf;
@@ -2898,7 +2984,7 @@ mod tests {
         }
     }
 
-    // --- image delivery (plan-side; the send-path follow-up is unsequenced)
+    // --- image delivery (the static route) --------------------------------
     //
     // The routing decision lives in `plan_claude_prompt`, tested here
     // against the attachment store directly, without spawning a child — the
@@ -2910,8 +2996,7 @@ mod tests {
 
     impl PlanTempDir {
         fn new(tag: &str) -> Self {
-            static COUNTER: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(1);
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
             let dir = std::env::temp_dir().join(format!(
                 "devboule-claude-plan-{}-{}-{}",
                 std::process::id(),
@@ -2939,10 +3024,9 @@ mod tests {
     }
 
     #[test]
-    fn claude_delivery_is_the_reserved_static_variant() {
+    fn claude_delivery_is_the_static_variant() {
         // No handshake to negotiate with: the format accepts images, so the
-        // delivery is the static one the sibling seam reserved for this
-        // follow-up.
+        // delivery is the static one the route reads.
         assert_eq!(
             claude_delivery(),
             super::super::ImageDelivery::StaticImageBlock
@@ -2983,19 +3067,21 @@ mod tests {
                 "the block carries the stripped bytes"
             );
         }
-        let bytes = frame_user_message_with_plan(&plan.fallback_text, &plan.images)
-            .expect("frame");
+        let bytes =
+            frame_user_message_with_images(&plan.fallback_text, &plan.images).expect("frame");
         let line = std::str::from_utf8(&bytes).expect("utf8");
         assert!(line.ends_with('\n'));
-        let value: Value =
-            serde_json::from_str(line.trim_end()).expect("json");
+        let value: Value = serde_json::from_str(line.trim_end()).expect("json");
         assert_eq!(value["type"], "user");
         assert_eq!(value["message"]["role"], "user");
         let content = value["message"]["content"]
             .as_array()
             .expect("content array");
         assert_eq!(content.len(), 2);
-        assert_eq!(content[0], serde_json::json!({"type": "text", "text": "describe this"}));
+        assert_eq!(
+            content[0],
+            serde_json::json!({"type": "text", "text": "describe this"})
+        );
         // The exact nested shape, pinned literally: `source` with
         // `media_type`, not the flat ACP `{type, mimeType, data}` no other
         // provider uses.
@@ -3011,21 +3097,37 @@ mod tests {
     }
 
     #[test]
-    fn an_svg_only_claude_prompt_plans_no_block_and_keeps_the_path_line() {
-        // SVG never becomes a block — no provider accepts it inline. An
-        // SVG-only prompt plans nothing, so the caller takes the legacy
-        // path-line write, byte for byte unchanged.
+    fn an_svg_only_claude_prompt_plans_no_block_and_still_builds_the_legacy_text() {
+        // SVG never becomes a block — no provider accepts it inline. The plan
+        // still answers with the text, and that text is exactly what the
+        // legacy write would have produced, which is why a block-less prompt
+        // can take the route without moving a byte on the wire. (This test
+        // used to assert `plan.is_none()`: the route answers with the text
+        // now, so that the send path never walks the attachments twice.)
         let temp = PlanTempDir::new("svg-only");
         let store = AttachmentStore::new(&temp.0);
+        let session_id = "claude-plan-svg-only";
         let source = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let attachment = plan_attachment("drawing.svg", "image/svg+xml", source);
         let plan = plan_claude_prompt(
             &store,
-            "claude-plan-svg-only",
+            session_id,
             "logo",
-            &[plan_attachment("drawing.svg", "image/svg+xml", source)],
+            std::slice::from_ref(&attachment),
         )
-        .expect("materialized");
-        assert!(plan.is_none(), "an SVG plans no block");
+        .expect("materialized")
+        .expect("an SVG plans no block, but the plan still carries the text");
+        assert!(plan.images.is_empty(), "an SVG plans no block");
+        let stored = store
+            .session(session_id)
+            .expect("session")
+            .materialize(&attachment)
+            .expect("stored");
+        assert_eq!(
+            plan.fallback_text,
+            format!("logo\n\n[Image available at: {}]", stored.to_string_lossy()),
+            "the plan's text is the legacy path line, byte for byte"
+        );
     }
 
     #[test]
@@ -3054,20 +3156,27 @@ mod tests {
             "{}",
             plan.fallback_text
         );
-        assert!(plan.fallback_text.ends_with(".svg]"), "{}", plan.fallback_text);
+        assert!(
+            plan.fallback_text.ends_with(".svg]"),
+            "{}",
+            plan.fallback_text
+        );
         assert!(
             !plan.fallback_text.contains(".png]"),
             "the raster left no path line: {}",
             plan.fallback_text
         );
-        let bytes = frame_user_message_with_plan(&plan.fallback_text, &plan.images)
-            .expect("frame");
+        let bytes =
+            frame_user_message_with_images(&plan.fallback_text, &plan.images).expect("frame");
         let value: Value =
             serde_json::from_str(std::str::from_utf8(&bytes).expect("utf8").trim_end())
                 .expect("json");
         let content = value["message"]["content"].as_array().expect("array");
         assert_eq!(content.len(), 2);
-        assert!(content[0]["text"].as_str().expect("text").ends_with(".svg]"));
+        assert!(content[0]["text"]
+            .as_str()
+            .expect("text")
+            .ends_with(".svg]"));
         assert_eq!(content[1]["type"], "image");
     }
 
@@ -3100,5 +3209,88 @@ mod tests {
                 "stripped JPEG bytes, JPEG label"
             );
         }
+    }
+
+    #[test]
+    fn a_frame_without_blocks_is_the_text_only_frame() {
+        // The static route frames every prompt it plans through the images
+        // builder, including one whose blocks are all path lines (an SVG).
+        // That has to be the frame the writer has always sent, or a
+        // block-less prompt would move bytes the moment the route took it.
+        assert_eq!(
+            frame_user_message_with_images("logo", &[]).expect("frame"),
+            frame_user_message("logo").expect("frame"),
+        );
+    }
+
+    #[test]
+    fn the_static_route_frames_the_blocks_it_planned_through_the_mode_gate() {
+        // The route owns the frame, and the gate still orders it: with the
+        // initial mode response outstanding the frame is queued rather than
+        // written, so a test can read back exactly what would have reached
+        // the child. No child and no stdin are involved.
+        let temp = PlanTempDir::new("route");
+        let store = AttachmentStore::new(&temp.0);
+        let session_id = "claude-route";
+        let sent = png_with_text_chunk();
+        // Cutting the removed `tEXt` chunk out of `sent` is exactly this
+        // container (`raster_metadata::png_with_text_chunk` says so), so the
+        // frame below must carry these bytes and not the ones that arrived.
+        let kept = clean_png(0x01);
+        assert_ne!(
+            sent, kept,
+            "the fixture must actually carry something that leaves"
+        );
+        let gate: ClaudeModeGateRef = Arc::new(Mutex::new(ClaudeModeGate {
+            state: ClaudeModeGateState::AwaitingResponse {
+                request_id: "initial-permission-mode-0".to_string(),
+                requested_mode: "default".to_string(),
+            },
+            pending_frames: Vec::new(),
+        }));
+        let route = ClaudeStaticPrompt::new(Arc::new(Mutex::new(None)), Some(Arc::clone(&gate)));
+        let plan = route
+            .plan_prompt(
+                &store,
+                session_id,
+                "describe this",
+                &[plan_attachment("photo.png", "image/png", &sent)],
+            )
+            .expect("planned")
+            .expect("a raster plans a frame");
+        assert_eq!(plan.text(), "describe this", "no path line");
+        plan.send().expect("send");
+        let frames = gate.lock().expect("gate").pending_frames.clone();
+        assert_eq!(frames.len(), 1, "the frame queued behind the mode response");
+        let value: Value = serde_json::from_slice(&frames[0]).expect("json");
+        assert_eq!(value["type"], "user");
+        let content = value["message"]["content"].as_array().expect("array");
+        assert_eq!(content.len(), 2);
+        assert_eq!(
+            content[0],
+            serde_json::json!({"type": "text", "text": "describe this"})
+        );
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&kept);
+        assert_eq!(
+            content[1]["source"]["data"].as_str(),
+            Some(encoded.as_str()),
+            "the frame carries the stripped bytes"
+        );
+    }
+
+    #[test]
+    fn the_static_route_declines_a_prompt_with_no_attachments() {
+        // A plain text prompt has nothing to plan: the route answers `None`
+        // and the send path writes it through the writer, exactly as before.
+        let temp = PlanTempDir::new("route-none");
+        let store = AttachmentStore::new(&temp.0);
+        let route = ClaudeStaticPrompt::new(Arc::new(Mutex::new(None)), None);
+        assert!(route
+            .plan_prompt(&store, "claude-route-none", "describe this", &[])
+            .expect("planned")
+            .is_none());
     }
 }

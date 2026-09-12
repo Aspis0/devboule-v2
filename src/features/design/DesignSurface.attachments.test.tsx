@@ -7,6 +7,12 @@ import { useAppStore } from "../../store/appStore";
 import { ATTACHMENT_INPUT_ACCEPT, formatAttachmentSize } from "./designAttachments";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationOptions } from "./designHost";
+import {
+  countPdfPages,
+  renderPdfPages,
+  type PdfRenderOutcome,
+  type PdfRenderedPage,
+} from "./pdfPageRenderer";
 
 const settingsMocks = vi.hoisted(() => ({
   load: vi.fn(),
@@ -70,6 +76,17 @@ vi.mock("../../lib/tauri", () => ({
   sessionsWatch: vi.fn(),
 }));
 
+/**
+ * The renderer is mocked for this file's PDF cases only: happy-dom has no 2d
+ * canvas, so a real render reports "could not be drawn" for every page. Every
+ * other export stays the real one — the sniff, the ceilings, the sentences — so
+ * a PDF dropped below goes through the importer's own path.
+ */
+vi.mock("./pdfPageRenderer", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./pdfPageRenderer")>();
+  return { ...actual, countPdfPages: vi.fn(), renderPdfPages: vi.fn() };
+});
+
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -132,6 +149,55 @@ const CLEAN_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" heigh
 
 function imageFile(name: string, bytes: Uint8Array<ArrayBuffer>, type: string): File {
   return new File([bytes], name, { type });
+}
+
+/** A `%PDF-` header: as much of a document as the importer reads for itself. */
+const PDF_BYTES = Uint8Array.from([...asciiBytes("%PDF-1.7"), 0x0a]);
+
+function pdfPage(pageNumber: number, bytes: number): PdfRenderedPage {
+  return {
+    pageNumber,
+    width: 1,
+    height: 1,
+    scale: 1,
+    mimeType: "image/jpeg",
+    bytes: new Uint8Array(bytes),
+  };
+}
+
+function pdfOutcome(input: {
+  readonly name: string;
+  readonly pageCount: number;
+  readonly pages?: readonly PdfRenderedPage[];
+}): PdfRenderOutcome {
+  return {
+    name: input.name,
+    pageCount: input.pageCount,
+    pages: input.pages ?? [],
+    omittedPages: [],
+    downscaledPages: [],
+    stoppedEarly: null,
+  };
+}
+
+/**
+ * The renderer as the importer uses it: the count first — its own export, which
+ * opens the document and draws nothing — then the render, which streams the
+ * pages in range and reports the document's own page count. The budget decides
+ * how many of them are asked for, so a five-page document arrives as the two the
+ * composer can hold.
+ */
+function servePdf(pageCount: number, pageBytes: number): void {
+  vi.mocked(countPdfPages).mockResolvedValue({ ok: true, pageCount });
+  vi.mocked(renderPdfPages).mockImplementation(async (_bytes, name, sink, options) => {
+    const last = Math.min(pageCount, options?.pageRange?.to ?? pageCount);
+    const rendered: PdfRenderedPage[] = [];
+    for (let pageNumber = 1; pageNumber <= last; pageNumber += 1) {
+      rendered.push(pdfPage(pageNumber, pageBytes));
+    }
+    for (const page of rendered) sink.onPage(page);
+    return { ok: true, outcome: pdfOutcome({ name, pageCount, pages: rendered }) };
+  });
 }
 
 function createHost(overrides: Partial<DesignHost> = {}): DesignHost {
@@ -247,7 +313,7 @@ describe("the picker is a keyboard-reachable control", () => {
     );
   });
 
-  it("hides the input it triggers and accepts exactly the three types", async () => {
+  it("hides the input it triggers and accepts the types this composer reads", async () => {
     await renderDesign(createHost());
 
     const input = document.querySelector<HTMLInputElement>(".design-attachment-input");
@@ -394,9 +460,14 @@ describe("a file that is not attached", () => {
       ],
     });
 
+    // Four bytes of `%PDF` and no `-`: this fixture was a stand-in for "any
+    // PDF" back when the composer refused the type outright, and it is now
+    // what it always literally was — a file that claims to be a PDF and does
+    // not carry the header. The refusal still names the file and the reason,
+    // which is what this test is about.
     expect(pillNames(container)).toEqual([]);
     expect(feedback(container)).toEqual([
-      "brief.pdf is a PDF, which this composer does not accept. Export the page as a PNG, or the artwork as an SVG.",
+      "brief.pdf is not a readable PDF: it does not begin with the %PDF- header, and its bytes are not an image or an SVG document either.",
     ]);
     expect(container.querySelector(".design-attachment-error")).not.toBeNull();
   });
@@ -682,5 +753,255 @@ describe("an attached file reaches the host and then leaves the composer", () =>
     await act(async () => remove.click());
 
     expect(pillNames(container)).toEqual(["detail.png"]);
+  });
+});
+
+describe("a document the user picked once is one pill", () => {
+  beforeEach(() => {
+    // An implementation left behind by one of these tests would decide the next
+    // one: the file's own afterEach clears calls, not implementations.
+    vi.mocked(renderPdfPages).mockReset();
+    vi.mocked(countPdfPages).mockReset();
+  });
+
+  it("shows one pill for a document that arrived as several pictures", async () => {
+    servePdf(2, 512);
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [new File([PDF_BYTES], "deck.pdf", { type: "application/pdf" })],
+    });
+
+    // One pill for the file the user chose, whatever the transport did with it.
+    expect(pillNames(container)).toEqual(["deck.pdf"]);
+    expect(container.querySelectorAll(".design-attachment-pill")).toHaveLength(1);
+    const pill = container.querySelector(".design-attachment-pill");
+    expect(pill?.querySelector(".design-attachment-kind")?.textContent).toBe("2 pages");
+    // Two pages of 512 bytes: the pill prices the document, not one page of it.
+    expect(pill?.querySelector(".design-attachment-size")?.textContent).toBe(
+      formatAttachmentSize(1024),
+    );
+    // Its cover is the preview, and the sentence under the row still says what
+    // travelled: the pill and the notice agree.
+    const preview = pill?.querySelector<HTMLImageElement>("img")?.getAttribute("src");
+    expect(preview?.startsWith("data:image/jpeg;base64,")).toBe(true);
+    expect(feedback(container)).toEqual([
+      "deck.pdf was attached in full: all 2 of its pages travel as pictures.",
+    ]);
+  });
+
+  it("takes every page of the document away in one press", async () => {
+    servePdf(5, 512);
+    const generateMock = vi.fn(
+      async (_prompt: string, _signal: AbortSignal, _options?: DesignGenerationOptions) => ({
+        ...GENERATION_BASE,
+      }),
+    );
+    const { container } = await renderDesign(createHost({ generate: generateMock }));
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [new File([PDF_BYTES], "deck.pdf", { type: "application/pdf" })],
+    });
+    // Five pages in the document, two in the composer: the pill says which pages
+    // travelled, and one control stands for all of them.
+    expect(pillNames(container)).toEqual(["deck.pdf"]);
+    const pill = container.querySelector(".design-attachment-pill");
+    expect(pill?.querySelector(".design-attachment-kind")?.textContent).toBe("2 of 5 pages");
+    const remove = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove deck.pdf"]',
+    );
+    if (remove === null) throw new Error("remove control missing");
+
+    await act(async () => remove.click());
+
+    // Every page is gone. A page left behind would still render, as a pill of its
+    // own, which is the hole this grouping exists to close.
+    expect(pillNames(container)).toEqual([]);
+    expect(container.querySelectorAll(".design-attachment-pill")).toHaveLength(0);
+
+    // And the wire agrees: the run that follows carries no page of it.
+    await fillDraft(container, "Build the landing page around this.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => {
+      send.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(generateMock.mock.calls[0]?.[2]?.attachments).toEqual([]);
+  });
+
+  it("leaves a file that is not a document as its own pill", async () => {
+    servePdf(2, 512);
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [
+        imageFile("hero.png", PNG_BYTES, "image/png"),
+        new File([PDF_BYTES], "deck.pdf", { type: "application/pdf" }),
+        imageFile("detail.png", PNG_BYTES, "image/png"),
+      ],
+    });
+
+    // Three files, three pills: only the document's pages collapsed into one,
+    // and the pictures kept their names and their own type labels.
+    expect(pillNames(container)).toEqual(["hero.png", "deck.pdf", "detail.png"]);
+    const kinds = Array.from(container.querySelectorAll(".design-attachment-kind")).map(
+      (element) => element.textContent,
+    );
+    expect(kinds).toEqual(["PNG", "2 pages", "PNG"]);
+
+    const remove = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove hero.png"]',
+    );
+    if (remove === null) throw new Error("remove control missing");
+    await act(async () => remove.click());
+
+    // Removing a picture removes the picture, and the document beside it is
+    // untouched: its own control is what takes all of that.
+    expect(pillNames(container)).toEqual(["deck.pdf", "detail.png"]);
+  });
+});
+
+describe("an import that throws", () => {
+  it("tells the user, and leaves the next attach working", async () => {
+    const { container } = await renderDesign(createHost());
+    const broken = imageFile("moved.png", PNG_BYTES, "image/png");
+    // The file read is where an import can reject — a file moved between the
+    // picker and the read, or a lazy chunk that fails to load.
+    Object.defineProperty(broken, "arrayBuffer", {
+      value: async () => {
+        throw new Error("the file moved");
+      },
+    });
+
+    await dispatchTransferEvent(composer(container), "drop", { files: [broken] });
+
+    expect(pillNames(container)).toEqual([]);
+    expect(feedback(container)).toEqual([
+      "moved.png could not be read, so nothing was attached: the file moved. Try attaching it again.",
+    ]);
+
+    // The part that matters. `attachQueueRef.current` IS the promise chain, so a
+    // rejected import used to make every later `.then` skip its callback: the
+    // drop zone kept lighting up and nothing ever happened again, for the rest of
+    // the session. This second, ordinary attach is what fails if the guard is
+    // removed, and an assertion on the message above would not have caught it.
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [imageFile("hero.png", PNG_BYTES, "image/png")],
+    });
+
+    expect(pillNames(container)).toEqual(["hero.png"]);
+    expect(feedback(container)).toEqual([]);
+  });
+});
+
+describe("a document shows what it is doing", () => {
+  beforeEach(() => {
+    vi.mocked(renderPdfPages).mockReset();
+    vi.mocked(countPdfPages).mockReset();
+  });
+
+  it("counts the pages out loud while it imports, and stops when it is done", async () => {
+    let releaseRead: (() => void) | null = null;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    vi.mocked(countPdfPages).mockResolvedValue({ ok: true, pageCount: 2 });
+    vi.mocked(renderPdfPages).mockImplementation(async (_bytes, name, sink) => {
+      sink.onPage(pdfPage(1, 512));
+      // Held open after the first page: the line a user is looking at mid-import
+      // is the one that has to exist, and the renderer's own per-page callback is
+      // where it comes from.
+      await readGate;
+      sink.onPage(pdfPage(2, 512));
+      return {
+        ok: true,
+        outcome: pdfOutcome({
+          name,
+          pageCount: 2,
+          pages: [pdfPage(1, 512), pdfPage(2, 512)],
+        }),
+      };
+    });
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [new File([PDF_BYTES], "deck.pdf", { type: "application/pdf" })],
+    });
+    // The import is mid-flight: let it reach the first page, then read the row.
+    for (let turn = 0; turn < 20 && feedback(container).length === 0; turn += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+
+    // A page count and never a spinner: "page 1 of 2" says it is running and how
+    // much is left, which is the only honest shape for work that is countable.
+    expect(feedback(container)).toEqual(["deck.pdf: page 1 of 2."]);
+    expect(pillNames(container)).toEqual([]);
+
+    await act(async () => {
+      releaseRead?.();
+      await readGate;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // And it leaves with the work: what is left is the pill and the sentence
+    // about what travelled, not a line about a page that is long since rendered.
+    expect(pillNames(container)).toEqual(["deck.pdf"]);
+    expect(feedback(container)).toEqual([
+      "deck.pdf was attached in full: all 2 of its pages travel as pictures.",
+    ]);
+  });
+
+  it("stops a render that a run has made pointless", async () => {
+    let releaseRead: (() => void) | null = null;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    vi.mocked(countPdfPages).mockResolvedValue({ ok: true, pageCount: 2 });
+    const signals: AbortSignal[] = [];
+    vi.mocked(renderPdfPages).mockImplementation(async (_bytes, name, sink, options) => {
+      if (options?.signal !== undefined) signals.push(options.signal);
+      sink.onPage(pdfPage(1, 512));
+      await readGate;
+      sink.onPage(pdfPage(2, 512));
+      return {
+        ok: true,
+        outcome: pdfOutcome({
+          name,
+          pageCount: 2,
+          pages: [pdfPage(1, 512), pdfPage(2, 512)],
+        }),
+      };
+    });
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [new File([PDF_BYTES], "deck.pdf", { type: "application/pdf" })],
+    });
+
+    // The render is in flight when the run starts — the run takes the composer,
+    // so the pages being drawn are for a composer that no longer exists.
+    await fillDraft(container, "Build the landing page around this.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => {
+      send.click();
+      await Promise.resolve();
+    });
+
+    // So it is stopped rather than finished: the signal the renderer checks
+    // between pages comes from a real event in the app, which is the whole
+    // difference between a cancellable renderer and a cancelled one.
+    expect(signals[0]?.aborted).toBe(true);
+
+    await act(async () => {
+      releaseRead?.();
+      await readGate;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(pillNames(container)).toEqual([]);
   });
 });

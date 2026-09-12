@@ -53,8 +53,11 @@
  * chooses is the default ceiling, and that number is measured rather than
  * picked: twelve photographic A4 plates encode to ~24 KiB each at scale 0.5
  * and ~79 KiB each at scale 1.0 (JPEG quality 0.82), so a 96 KiB ceiling holds
- * a readable page at the starting scale on both flat vector decks (~31 KiB at
- * scale 1.0) and scanned plates, and only the heaviest plates step down. The
+ * a readable page at the starting scale on flat vector decks (~31 KiB at
+ * scale 1.0) and on four of the five scanned shapes measured (~17, ~40, ~71
+ * and ~90 KiB at scale 1.0), while dense 300 dpi greyscale text breaches it on
+ * every page measured (119–123 KiB) and takes the 0.75 rung instead: the
+ * population is bimodal and the ceiling sits between the modes. The
  * ladder itself is fixed at 1.0, 0.75 and 0.5 — three render passes at most per
  * page, each smaller than the last, because re-rendering is the expensive step
  * and an unbounded halving loop on a hostile page is a denial of service with
@@ -103,36 +106,88 @@ export const PDF_START_SCALE = 1;
 export const PDF_FALLBACK_SCALES = [0.75, 0.5] as const;
 
 /**
- * A page rendered below this scale is reported as downscaled past readability.
- * At 0.5 an A4 page is 297 x 421 px and body text is ~5 px tall — legible for
- * layout and headings, marginal for small print, and anything smaller stops
- * being a picture of the page. The notice names the pages; the pictures still
- * travel, because a small picture of the right page beats silence about it.
+ * The smallest scale at which this module still calls a page readable (0.75):
+ * a page that lands below it is rendered anyway and reported as downscaled
+ * past readability, because a small picture of the right page beats silence
+ * about it.
+ *
+ * It sits above the ladder's last rung on purpose, and that is the whole
+ * reason it is not 0.5. The floor used to be 0.5, which is also
+ * `PDF_FALLBACK_SCALES`'s last entry: `chosen.scale < PDF_READABILITY_FLOOR`
+ * could then never be true, `downscaledPages` was always empty, and the
+ * sentence the composer passes through for a marginal page was unreachable
+ * code with a test asserting the equality that made it so. A page at 0.75 is
+ * readable — dense 300 dpi text lands there at 78-80 KiB with SSIM 0.97-0.99 —
+ * while 0.5 is the rung this module's own measurement calls "marginal for
+ * small print", which is exactly the page a user should be told about.
+ *
+ * The relationship is asserted in `pdfPageRenderer.test.ts`, and so is the
+ * behaviour it exists for: a page that settles on the last rung is named in
+ * `downscaledPages`.
  */
-export const PDF_READABILITY_FLOOR = 0.5;
+export const PDF_READABILITY_FLOOR = 0.75;
 
 /**
  * Largest encoded page this module produces by default, in bytes (96 KiB).
  *
- * Measured, not picked: twelve photographic A4 plates average ~79 KiB at scale
- * 1.0 and ~24 KiB at scale 0.5 (JPEG quality 0.82), and twelve flat vector
- * pages average ~31 KiB at scale 1.0 — so the ceiling holds a readable page at
- * the starting scale on both populations, and only the heaviest plates step
- * down to 0.75. A forty-page mixed deck streams to ~1.8 MiB total at this
- * ceiling, which is why the ceiling is a default the caller re-decides rather
- * than a constant the transport can assume: see `PdfRenderOptions.maxBytes`.
+ * Measured, not picked, and the population it sits in is bimodal — this
+ * ceiling is between the modes. Under it: twelve photographic A4 plates
+ * average ~79 KiB at scale 1.0 and ~24 KiB at scale 0.5 (JPEG quality 0.82),
+ * twelve flat vector pages average ~31 KiB at scale 1.0, and four of the five
+ * scanned shapes measured clear at the starting scale (~17, ~40, ~71 and
+ * ~90 KiB a page — the 200 dpi colour shape by 591 bytes on its noisy twin).
+ * Over it: dense 300 dpi greyscale text, the ordinary office-scanner output,
+ * at 119–123 KiB a page, 8 of 8 pages measured across a clean and a noisy
+ * twin, so every page of that shape takes the 0.75 rung and lands at 78–80 KiB.
+ *
+ * What that second pass costs and buys is measured too. It costs two full
+ * render passes per page instead of one, and the render is decode-bound, so
+ * the wall roughly doubles for that shape; it buys text-crop PSNR 32.9–38.1 dB
+ * and SSIM 0.97–0.99, flat across rungs and above the 0.95 artefact line.
+ *
+ * The number does not move, because it is load-bearing outside this file: the
+ * session budget is derived from it. 200 pages × 96 KiB is 19,660,800 bytes on
+ * disk, and one frame's worth of inline attachments adds at most the stored
+ * equivalent of `MAX_ATTACHMENTS_TOTAL_BYTES` in `devboule-protocol` — that
+ * constant is 384 KiB of *base64*, so ~288 KiB once decoded — for 19,955,712,
+ * which is where the 20 MiB per-owner budget comes from. The two halves are
+ * quoted in stored bytes on purpose: the frame limit counts encoded bytes and
+ * the disk budget counts decoded ones, and adding them as if they were the
+ * same unit is an error this project has already caught once in a peer's
+ * spec. Changing the ceiling here changes that protocol constant. It stays a
+ * default the caller
+ * re-decides rather than a constant the transport can assume: see
+ * `PdfRenderOptions.maxBytes`.
  */
 export const PDF_DEFAULT_MAX_BYTES_PER_PAGE = 96 * 1024;
 
 /**
- * Largest PDF accepted for parsing, in bytes (32 MiB). A forty-page mixed deck
- * with photographic plates is ~1.7 MiB; a scanned forty-page deck at 300 dpi
- * JPEG is single-digit MiB. 32 MiB is an order of magnitude above either,
- * while still bounding the bytes one `getDocument` call takes ownership of —
- * pdf.js transfers the buffer to the worker, so the file lives in memory at
- * least twice over during the parse.
+ * Largest PDF accepted for parsing, in bytes (64 MiB).
+ *
+ * Measured against the shape the old 32 MiB turned away at the door. A dense
+ * 300 dpi greyscale scan carries ~1.47 MB of embedded JPEG per page clean
+ * (5,891,099 bytes for 4 pages) and ~2.5 MB a page on its noisy twin
+ * (10,044,450 bytes for 4 pages), so forty such pages are ~59 MB clean and
+ * ~100 MB noisy. 64 MiB covers the clean shape with a little room. It does not
+ * cover the noisy twin, and that line is drawn deliberately: the twin is
+ * synthetic sigma=6 sensor noise laid over an already-dense scan, which the
+ * measurement's own author flagged as an upper bound — real scanners denoise,
+ * and many use true greyscale, MRC segmentation or JBIG2 text, all of which
+ * compress better than the imitation's desaturated RGB at q0.85.
+ *
+ * What bounds this number is memory, not the wire. pdf.js takes ownership of
+ * the buffer it is handed, so peak occupancy is roughly the file's own bytes
+ * plus one decoded page bitmap at a time (~2 MB for an A4 at scale 1): at
+ * 64 MiB that is a peak around 66 MiB inside the WebView, which is acceptable
+ * on a desktop and is the real thing that would break if someone later raised
+ * this to 512 MiB.
+ *
+ * It caps what will be parsed, not what travels. A 59 MB source yields forty
+ * pages at ~79 KiB each — about 3.1 MiB on the wire, comfortably inside the
+ * session budget — so input size and output cost are only loosely related.
+ * That is why this ceiling is generous while the per-page one is strict.
  */
-export const PDF_MAX_FILE_BYTES = 32 * 1024 * 1024;
+export const PDF_MAX_FILE_BYTES = 64 * 1024 * 1024;
 
 /**
  * Most pages one render call walks (200). Forty-page decks exist and must be
@@ -185,6 +240,13 @@ export interface PdfRenderOptions {
   readonly timeoutMs?: number;
   /** Longest one page waits, in milliseconds. Defaults to `PDF_PAGE_TIMEOUT_MS`. */
   readonly pageTimeoutMs?: number;
+  /**
+   * Open the document, report its page count, and draw nothing (false, the
+   * default). The one caller that wants this is `countPdfPages`: the check the
+   * composer refuses a document on happens before a page is spent, and the
+   * count rides the same open path, error mapping and timeout as a render.
+   */
+  readonly countOnly?: boolean;
   /**
    * Stops the render when the caller no longer wants it — the composer Run
    * button becoming a Stop button, a batch moving on without this file. The
@@ -318,6 +380,7 @@ export function resolvePdfRenderOptions(options?: PdfRenderOptions): {
   readonly maxPages: number;
   readonly timeoutMs: number;
   readonly pageTimeoutMs: number;
+  readonly countOnly: boolean;
 } {
   return {
     from: Math.max(1, Math.floor(options?.pageRange?.from ?? 1)),
@@ -327,6 +390,7 @@ export function resolvePdfRenderOptions(options?: PdfRenderOptions): {
     maxPages: Math.floor(positiveOr(options?.maxPages, PDF_DEFAULT_MAX_PAGES)),
     timeoutMs: Math.floor(positiveOr(options?.timeoutMs, PDF_RENDER_TIMEOUT_MS)),
     pageTimeoutMs: Math.floor(positiveOr(options?.pageTimeoutMs, PDF_PAGE_TIMEOUT_MS)),
+    countOnly: options?.countOnly === true,
   };
 }
 
@@ -676,7 +740,24 @@ export async function renderPdfPages(
     };
   }
 
-  const pdfjs = await import("pdfjs-dist");
+  // The lazy import sits inside the same contract as everything below it: this
+  // module answers with `{ ok: false, failure }` rather than throwing, because
+  // a chunk that fails to load is not a defect in the user's file, and a
+  // caller forced to wrap every call in try/catch is a caller that forgets
+  // once. The surface still guards its own call — a file read can reject
+  // before this point — but that guard is a backstop, not this path.
+  let pdfjs: typeof import("pdfjs-dist");
+  try {
+    pdfjs = await import("pdfjs-dist");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      failure: {
+        reason: `${name} could not be read: the PDF engine failed to load (${detail}), so nothing was attached. Try attaching it again.`,
+      },
+    };
+  }
   configurePdfWorker((source) => {
     pdfjs.GlobalWorkerOptions.workerSrc = source;
   });
@@ -722,6 +803,22 @@ export async function renderPdfPages(
     }
 
     const pageCount = pdfDocument.numPages;
+    if (resolved.countOnly) {
+      // Nothing is drawn and no range is resolved: the caller wanted the count
+      // the open produced. The `finally` below destroys the document the same
+      // way it does after a render.
+      return {
+        ok: true,
+        outcome: {
+          name,
+          pageCount,
+          pages: [],
+          omittedPages: [],
+          downscaledPages: [],
+          stoppedEarly: null,
+        },
+      };
+    }
     if (to !== null && to < from) {
       return { ok: false, failure: { reason: pdfBackwardsRangeMessage(name, from, to) } };
     }
@@ -888,4 +985,36 @@ export async function renderPdfPages(
       // above already names it, so there is nothing left to report.
     }
   }
+}
+
+/**
+ * How many pages a document has, without drawing one of them.
+ *
+ * The composer decides what to refuse before it spends a render, so it needs
+ * this number first. It rides the same open path as `renderPdfPages` — same
+ * worker configuration, same timeout, same error sentences, `countOnly` — and
+ * the only cost is the parse, which the render that follows pays again.
+ *
+ * A failure is advisory: the caller may pass the sentence on, or ignore it and
+ * render on its own budget.
+ */
+export async function countPdfPages(
+  bytes: Uint8Array,
+  name: string,
+  signal?: AbortSignal,
+): Promise<{ ok: true; pageCount: number } | { ok: false; reason: string }> {
+  const counted = await renderPdfPages(
+    bytes,
+    name,
+    { onPage: () => undefined },
+    { countOnly: true, signal },
+  );
+  if (!counted.ok) return { ok: false, reason: counted.failure.reason };
+  if (counted.outcome.stoppedEarly === "cancelled") {
+    // Not a count of zero: the document was never opened. Saying "0 pages"
+    // would be a fact about the caller's cancellation dressed up as a fact
+    // about the file.
+    return { ok: false, reason: `${name} was not counted: the read was cancelled.` };
+  }
+  return { ok: true, pageCount: counted.outcome.pageCount };
 }
