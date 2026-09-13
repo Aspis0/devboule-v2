@@ -146,8 +146,13 @@ export function sessionAttentionLabel(reason: AttentionReason): string {
 }
 
 /**
- * The name a session is shown under, everywhere: the tab strip's label, the
- * selected session's panel title, the roster rows.
+ * The name a session is shown under, at the four places that name one: the tab
+ * strip's label and the selected session's panel title (`Workspace.tsx`), a
+ * History row (`HistoryPanel.tsx`), and the History search, which matches what
+ * a row shows (`historyGrouping.ts`). No other surface calls it. A name derived
+ * anywhere else is a second name for one session, and a session with two names
+ * is exactly the bug this function exists to close: History said `worker` while
+ * the tab strip said `worker one`.
  *
  * A session's own name — `Session.displayName`, set once by whoever created it
  * (a human naming a session, an agent naming the child it commissioned) —

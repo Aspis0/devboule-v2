@@ -150,6 +150,59 @@ describe("HistoryPanel", () => {
     expect(container.textContent).not.toContain("Yesterday");
   });
 
+  it("shows the display name a history row carries, not only its title", async () => {
+    const usage = baseUsage();
+    usage.perSession = [
+      { ...usage.perSession[0], id: "session-child", title: "child", displayName: "worker one" },
+    ];
+    await renderPanel(usage);
+
+    // The name the tab strip already shows; the title is not painted beside it.
+    expect(container.textContent).toContain("worker one");
+    expect(container.textContent).not.toContain("child");
+  });
+
+  it("filters on the name the row shows, and still on the title it hides", async () => {
+    const usage = baseUsage();
+    usage.perSession = [
+      { ...usage.perSession[0], id: "session-child", title: "child", displayName: "worker one" },
+    ];
+    await renderPanel(usage);
+
+    // What the user just read finds the row...
+    await act(async () => root.render(<HistoryPanel now={now} search="worker one" />));
+    expect(container.textContent).toContain("worker one");
+    // ...and the title it is shown under instead of still finds it.
+    await act(async () => root.render(<HistoryPanel now={now} search="child" />));
+    expect(container.textContent).toContain("worker one");
+    // A query that matches neither name nor metadata filters it out.
+    await act(async () => root.render(<HistoryPanel now={now} search="nobody" />));
+    expect(container.textContent).not.toContain("worker one");
+  });
+
+  it("falls back to the title, then to the kind-derived name, when no display name is set", async () => {
+    const usage = baseUsage();
+    usage.perSession = [
+      { ...usage.perSession[0], id: "session-plain", title: "Build history" },
+      { ...usage.perSession[1], id: "session-blank", title: "Review history", displayName: "   " },
+      {
+        ...usage.perSession[1],
+        id: "s.4242.7",
+        title: "   ",
+        kind: "acp",
+        displayName: " ",
+      },
+    ];
+    await renderPanel(usage);
+
+    // No display name at all: the title, exactly as before the field existed.
+    expect(container.textContent).toContain("Build history");
+    // A display name that is only whitespace is no name: the title again.
+    expect(container.textContent).toContain("Review history");
+    // Neither name: the kind-derived fallback, never an empty label.
+    expect(container.textContent).toContain("Agent s.4242.7");
+  });
+
   it("shows total saved bytes and the saved session count", async () => {
     await renderPanel();
     expect(container.textContent).toContain("12 345");

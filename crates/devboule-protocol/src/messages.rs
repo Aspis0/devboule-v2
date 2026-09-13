@@ -1190,6 +1190,15 @@ pub struct JournalLimits {
 pub struct JournalSessionUsage {
     pub id: String,
     pub title: String,
+    /// The name a created agent is shown under (protocol `Session.displayName`,
+    /// read back from the journal's own `display_name` column), so History can
+    /// name a row the way the tab strip already names it. `Option` with a serde
+    /// default, exactly like `Session.display_name`: a client that speaks an
+    /// older dialect still parses a frame carrying it, and a row written before
+    /// the column existed reads back as `None` — which the app renders as its
+    /// fallback name, never as an empty one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub kind: SessionKind,
     pub bytes: u64,
     pub updated_at_ms: u64,
@@ -2733,6 +2742,7 @@ mod tests {
                 per_session: vec![JournalSessionUsage {
                     id: "s.1".to_string(),
                     title: "Terminal".to_string(),
+                    display_name: Some("worker one".to_string()),
                     kind: SessionKind::Terminal,
                     bytes: 6,
                     updated_at_ms: 7,
@@ -2746,10 +2756,50 @@ mod tests {
         assert!(encoded.contains("\"bytesOver\":3"));
         assert!(encoded.contains("\"sessionsOver\":4"));
         assert!(encoded.contains("\"agedOut\":5"));
+        assert!(encoded.contains("\"displayName\":\"worker one\""));
         assert_eq!(
             serde_json::from_str::<DaemonMessage>(&encoded).expect("round trip"),
             usage
         );
+    }
+
+    /// The name History shows travels in the same dialect as the rest of the
+    /// frame: camel case, and absent rather than null when the row has no name
+    /// of its own — the app's rule is "absent means the fallback name", and a
+    /// null would be a third state it does not render. A frame from a client
+    /// that predates the field still decodes, as an unnamed row.
+    #[test]
+    fn a_journal_usage_row_carries_the_display_name_in_camel_case() {
+        let named = JournalSessionUsage {
+            id: "s.1".to_string(),
+            title: "worker".to_string(),
+            display_name: Some("worker one".to_string()),
+            kind: SessionKind::Terminal,
+            bytes: 6,
+            updated_at_ms: 7,
+        };
+        let value = serde_json::to_value(&named).expect("json");
+        assert_eq!(
+            value.get("displayName").and_then(|name| name.as_str()),
+            Some("worker one")
+        );
+
+        let unnamed = JournalSessionUsage {
+            display_name: None,
+            ..named.clone()
+        };
+        let value = serde_json::to_value(&unnamed).expect("json");
+        assert!(value.get("displayName").is_none(), "{value}");
+
+        let older: JournalSessionUsage = serde_json::from_value(serde_json::json!({
+            "id": "s.1",
+            "title": "worker",
+            "kind": "terminal",
+            "bytes": 6,
+            "updatedAtMs": 7
+        }))
+        .expect("a frame without the field is still a row");
+        assert_eq!(older.display_name, None);
     }
 
     #[test]

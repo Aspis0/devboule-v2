@@ -3644,6 +3644,7 @@ fn wire_journal_usage(usage: crate::journal::JournalUsage) -> WireJournalUsage {
             .map(|session| WireJournalSessionUsage {
                 id: session.id,
                 title: session.title,
+                display_name: session.display_name,
                 kind: session.kind,
                 bytes: session.bytes,
                 updated_at_ms: session.updated_at_ms,

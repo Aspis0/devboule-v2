@@ -48,8 +48,35 @@ describe("history grouping helpers", () => {
     expect(historyRowMatches({ title: "Fix the Build", workspace: "rust-core" }, "unrelated")).toBe(
       false,
     );
-    const nonSearchableMetadata = { title: "", kind: "acp", host: "this machine" };
+    const nonSearchableMetadata = { title: "", kind: "acp" as const, host: "this machine" };
     expect(historyRowMatches(nonSearchableMetadata, "acp")).toBe(false);
+  });
+
+  it("matches the display name a row shows, and still matches the title it hides", () => {
+    const child = {
+      id: "s.child.1",
+      title: "worker",
+      kind: "terminal" as const,
+      displayName: "worker one",
+      project: "devboule",
+    };
+    // The name the row is painted with: typing what the user just read finds it.
+    expect(historyRowMatches(child, "worker one")).toBe(true);
+    expect(historyRowMatches(child, "WORKER ONE")).toBe(true);
+    // And the title the name covers still finds it, as it did before.
+    expect(historyRowMatches(child, "worker")).toBe(true);
+    expect(historyRowMatches(child, "devboule")).toBe(true);
+    expect(historyRowMatches(child, "nobody")).toBe(false);
+  });
+
+  it("searches the name a row with neither name of its own is shown under", () => {
+    // No display name and an empty title: the row shows the kind-derived
+    // fallback, and that is the only name it has. The search has to reach it
+    // through the fallback, not through a title that is not there.
+    const unnamed = { id: "s.4242.7", title: "", kind: "acp" as const, displayName: " " };
+    expect(historyRowMatches(unnamed, "s.4242.7")).toBe(true);
+    expect(historyRowMatches(unnamed, "agent")).toBe(true);
+    expect(historyRowMatches(unnamed, "nothing here")).toBe(false);
   });
 
   it("matches a row via the host column", () => {

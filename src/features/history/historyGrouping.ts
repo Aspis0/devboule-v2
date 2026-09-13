@@ -1,3 +1,6 @@
+import type { SessionKind } from "../../types/ipc";
+import { sessionTitle } from "../workspace/workspaceSessions";
+
 export interface HistoryDayGroup<T> {
   key: string;
   label: string;
@@ -5,7 +8,11 @@ export interface HistoryDayGroup<T> {
 }
 
 export interface HistorySearchFields {
+  /** Identity, read by `sessionTitle` so the search matches the shown name. */
+  id?: string | null;
   title?: string | null;
+  kind?: SessionKind | null;
+  displayName?: string | null;
   workspace?: string | null;
   branch?: string | null;
   project?: string | null;
@@ -81,7 +88,19 @@ export function historyRowMatches(
   if (!normalizedQuery) return true;
   if (!row) return false;
 
-  return [row.title, row.workspace, row.branch, row.project, row.host].some(
+  // The name the row shows, from the one function that decides it — the search
+  // may not be narrower than what the user has just read. The title stays in
+  // the haystack beside it: a row whose display name covers the title is still
+  // the same session, and dropping the title would take away a word that used
+  // to find it.
+  const shownName = sessionTitle({
+    id: row.id ?? "",
+    title: row.title ?? "",
+    kind: row.kind ?? "terminal",
+    displayName: row.displayName ?? undefined,
+  });
+
+  return [shownName, row.title, row.workspace, row.branch, row.project, row.host].some(
     (value) => typeof value === "string" && value.toLowerCase().includes(normalizedQuery),
   );
 }

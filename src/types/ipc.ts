@@ -255,6 +255,14 @@ export interface JournalLimits {
 export interface JournalSessionUsage {
   id: Id;
   title: string;
+  /**
+   * The name a created agent is shown under, when the row has one (protocol
+   * `JournalSessionUsage.displayName`, which is the journal's own
+   * `display_name` column). Absent means the session has no name of its own:
+   * History renders the fallback name, exactly as the tab strip does — never an
+   * empty label.
+   */
+  displayName?: string;
   kind: SessionKind;
   bytes: number;
   updatedAtMs: number;

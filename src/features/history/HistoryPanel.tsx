@@ -9,6 +9,7 @@ import {
 import type { JournalSessionUsage, JournalUsage, Session } from "../../types/ipc";
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
+import { sessionTitle } from "../workspace/workspaceSessions";
 import { groupByDay, historyRowMatches, relativeTime } from "./historyGrouping";
 import "./history.css";
 
@@ -304,7 +305,7 @@ const HistoryRowView = memo(function HistoryRowView({
   return (
     <div className="history-row">
       <div className="history-row-copy">
-        <div className="workspace-row-title">{row.title}</div>
+        <div className="workspace-row-title">{sessionTitle(row)}</div>
         <div className="workspace-row-meta history-row-meta">
           {row.workspace} · {row.branch} · {row.host} · {relativeTime(row.updatedAtMs, now)} ·{" "}
           {formatCount(row.bytes)} bytes

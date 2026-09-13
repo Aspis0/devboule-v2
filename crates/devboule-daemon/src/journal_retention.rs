@@ -469,7 +469,7 @@ pub(super) fn journal_usage(
     let mut aged_out = 0usize;
     let mut per_session = Vec::new();
     let mut session_stmt = conn.prepare(
-        "SELECT id, title, kind, payload_bytes, updated_at_ms, status
+        "SELECT id, title, kind, payload_bytes, updated_at_ms, status, display_name
          FROM sessions ORDER BY updated_at_ms DESC, id",
     )?;
     let mut session_rows = session_stmt.query([])?;
@@ -480,6 +480,7 @@ pub(super) fn journal_usage(
         let bytes = row.get::<_, i64>(3)?.max(0) as u64;
         let updated_at_ms = row.get::<_, i64>(4)?.max(0) as u64;
         let status: String = row.get(5)?;
+        let display_name: Option<String> = row.get(6)?;
         let reclaimable = status != "live" && !pins.contains(&id);
 
         session_count += 1;
@@ -506,6 +507,7 @@ pub(super) fn journal_usage(
         per_session.push(JournalSessionUsage {
             id,
             title,
+            display_name,
             kind,
             bytes,
             updated_at_ms,
@@ -1612,6 +1614,55 @@ mod tests {
         assert_eq!(usage.total_bytes, 24);
         assert_eq!(usage.per_session.len(), 1);
         assert_eq!(usage.per_session[0].id, "s.known");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The history row a real journal produces carries the display name, not
+    /// only the title. A child created with `title = "worker"` and
+    /// `display_name = "worker one"` reaches the app as `worker` before this:
+    /// the tab strip said `worker one` and History said `worker`, and searching
+    /// for the name the user had just read found nothing.
+    ///
+    /// The last assertion is the other half of the rule: the query reports what
+    /// the row says, and a row with no name of its own stays `None` rather than
+    /// being filled in — the fallback name is the app's to choose, not the
+    /// query's to invent.
+    #[test]
+    fn journal_usage_reports_the_display_name_a_row_was_created_with() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let mut child = sample_session("s.child");
+        child.title = "worker".to_string();
+        child.display_name = Some("worker one".to_string());
+        journal.upsert_blocking(child).expect("child row");
+        journal
+            .upsert_blocking(sample_session("s.human"))
+            .expect("human row");
+        journal.shutdown();
+
+        let conn = Connection::open(&path).expect("inspect");
+        let usage =
+            super::journal_usage(&conn, &HashSet::new(), JournalLimits::default()).expect("usage");
+        let child = usage
+            .per_session
+            .iter()
+            .find(|row| row.id == "s.child")
+            .expect("the child row is listed");
+        assert_eq!(child.title, "worker");
+        assert_eq!(
+            child.display_name.as_deref(),
+            Some("worker one"),
+            "the history row must carry the name the tab strip shows"
+        );
+        let human = usage
+            .per_session
+            .iter()
+            .find(|row| row.id == "s.human")
+            .expect("the human row is listed");
+        assert_eq!(
+            human.display_name, None,
+            "a session with no name of its own must stay unnamed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

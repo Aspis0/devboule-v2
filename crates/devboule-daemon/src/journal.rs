@@ -527,6 +527,10 @@ pub struct JournalStatsSnapshot {
 pub struct JournalSessionUsage {
     pub id: String,
     pub title: String,
+    /// The journal's own `display_name` column, verbatim: `None` for a row that
+    /// has no name of its own. Usage reports what the row says; the fallback a
+    /// nameless row is shown under is the app's business, not the query's.
+    pub display_name: Option<String>,
     pub kind: SessionKind,
     pub bytes: u64,
     pub updated_at_ms: u64,
