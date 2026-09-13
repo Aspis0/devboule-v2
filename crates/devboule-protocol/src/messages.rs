@@ -2276,6 +2276,10 @@ mod tests {
                     origin: crate::SessionOrigin::peer("device-phone", PeerRole::Client),
                     display_name: None,
                     created_by: None,
+                    profile_id: None,
+                    context_id: None,
+                    unattended: false,
+                    labels: Default::default(),
                 }],
             },
         });

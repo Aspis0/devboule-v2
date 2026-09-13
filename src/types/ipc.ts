@@ -140,7 +140,13 @@ export interface CreateAgentCaps {
 export interface CreateAgentCard {
   creatorSessionId: Id;
   provider: string;
-  preset: string;
+  /**
+   * The **name** of the profile the child would be created from: the word the
+   * human ticked. What it resolves to (model, mode, features) is on the card's
+   * description; the child's session row records the profile's stable id
+   * (`Session.profileId`), never this name.
+   */
+  profile: string;
   /** The display name the child would be created with. */
   title: string;
   caps: CreateAgentCaps;
@@ -398,6 +404,34 @@ export interface Session {
    * the session, or the row predates the field.
    */
   createdBy?: string;
+  /**
+   * The profile this session was created from, by its **stable id** (protocol
+   * `Session.profileId`). A rename of that profile later leaves this alone, so a
+   * running child never misreports what it was started from; resolve the id
+   * against the stored document for a name to show. Absent for a session a human
+   * started from the provider picker, and for older rows.
+   */
+  profileId?: string;
+  /**
+   * The context this session belongs to: its own id, unless another session
+   * created it, in which case it is that creator's context (protocol
+   * `Session.contextId`). One value for a creator and everything it commissions,
+   * at any depth.
+   */
+  contextId?: Id;
+  /**
+   * True when this session was born from a profile that approves permission
+   * prompts in place of the human (protocol `Session.unattended`). A fact of the
+   * birth: un-ticking or editing that profile afterwards does not change it.
+   * Absent means not unattended.
+   */
+  unattended?: boolean;
+  /**
+   * The session's labels: the caller's own map plus the four `devboule.` keys
+   * the daemon stamps. For display, and for nothing else — no code decides
+   * anything from a label.
+   */
+  labels?: Record<string, string>;
 }
 
 export type ResumeResult =
@@ -521,6 +555,21 @@ export interface SessionStateSnapshot {
    * shows no created-by badge rather than guessing one.
    */
   createdBy?: Id;
+  /**
+   * The profile this session was created from, by its stable id. Carried on
+   * every push for the same reason as `displayName`: a child created while the
+   * app is open arrives as a push-only row.
+   */
+  profileId?: string;
+  /**
+   * The context this session belongs to (its own id, or its creator's). Carried
+   * on every push, like the name and the creator.
+   */
+  contextId?: Id;
+  /** Whether this session was born from an auto-accepting profile. */
+  unattended?: boolean;
+  /** The session's labels, stamped by the daemon. */
+  labels?: Record<string, string>;
 }
 
 export type CursorShape = "block" | "underline" | "bar";
@@ -615,7 +664,13 @@ export type SessionEvent =
       childSessionId: Id;
       displayName: string;
       provider: string;
-      preset: string;
+      /**
+       * The **name** of the profile the child was created from, as it was called
+       * at that moment. The child's session row carries the profile's stable id
+       * (`Session.profileId`), because a rename must not make a running child
+       * misreport what it was started from; this is the sentence to show.
+       */
+      profile: string;
     }
   /**
    * A created child finished (protocol `SessionEvent::ChildFinished`). The

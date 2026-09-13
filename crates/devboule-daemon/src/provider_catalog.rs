@@ -202,12 +202,16 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         "Lists live Devboule agent sessions known by the daemon, with their display name, the session that created them, their lifecycle state and their creation depth.",
     ),
     (
+        MCP_LIST_PROFILES_TOOL,
+        "Lists the agent profiles the human enabled for agents, in the human's own order, with the note that says when to use each one. Call this before devboule_create_agent.",
+    ),
+    (
         MCP_SEND_MESSAGE_TOOL,
         "Sends a message to one live Devboule agent session.",
     ),
     (
         MCP_CREATE_AGENT_TOOL,
-        "Creates a new Devboule agent session from a preset and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id and display name.",
+        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name.",
     ),
 ];
 
@@ -224,6 +228,16 @@ pub const MCP_SEND_MESSAGE_TOOL: &str = "devboule_send_message";
 /// stored policy may turn agent creation off for a provider, and turning it off
 /// is the safe direction.
 pub const MCP_CREATE_AGENT_TOOL: &str = "devboule_create_agent";
+/// The read-only profile-list tool (`create-from-profile`).
+///
+/// Served to every MCP-capable provider, and **always on**, like the roster
+/// tool: the creation tool names a profile and nothing else, so a caller that
+/// cannot list the profiles cannot create anything at all. That is the same
+/// reasoning the always-on roster tool gets — the tool that is the only way to
+/// say who to talk to is the tool a stored policy must not be able to take
+/// away — and it is why [`crate::tool_policy::is_tool_enabled`] answers for
+/// this name before it reads a policy.
+pub const MCP_LIST_PROFILES_TOOL: &str = "devboule_list_profiles";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`] (`S5` §2).
 ///
@@ -232,24 +246,28 @@ pub const MCP_CREATE_AGENT_TOOL: &str = "devboule_create_agent";
 /// broker's own list of known parameters is read *out of this document* — so a
 /// parameter can never be described here and unchecked there.
 ///
-/// There is deliberately **no `mode`**: a preset chooses the mode, a caller
-/// cannot. `notifyOnFinish` defaults to true.
+/// There is deliberately no `provider`, `model`, `mode`, `settings`, `features`
+/// or `preset`: a profile the human wrote and ticked is the only way to say what
+/// to run, and what an agent cannot express is what no check can get wrong.
+/// `labels` is a free map of strings with the `devboule.` prefix reserved for
+/// the daemon's own facts. `notifyOnFinish` defaults to true.
 #[cfg(feature = "server")]
 pub(crate) fn agent_create_input_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
+            "profile": {
+                "type": "string",
+                "description": "Name of a profile the human enabled for agents; see devboule_list_profiles."
+            },
             "title": {
                 "type": "string",
                 "description": "The child's display name, 1 to 60 characters."
             },
-            "provider": {
-                "type": "string",
-                "description": "Catalog provider id: claude, codex, pi, grok, qwen or gemini."
-            },
-            "preset": {
-                "type": "string",
-                "description": "worker or design."
+            "labels": {
+                "type": "object",
+                "description": "Optional labels for the child: string to string. The devboule. prefix is reserved.",
+                "additionalProperties": {"type": "string"}
             },
             "workspaceId": {
                 "type": "string",
@@ -268,7 +286,7 @@ pub(crate) fn agent_create_input_schema() -> serde_json::Value {
                 "description": "Whether this session is told when the child finishes. Default true."
             }
         },
-        "required": ["title", "provider", "preset", "initialPrompt"],
+        "required": ["profile", "title", "initialPrompt"],
         "additionalProperties": false
     })
 }
@@ -341,24 +359,36 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 ///
 /// Codex's `auto` is deliberately **not** on the list: it is `on-request` plus
 /// `workspaceWrite`, which is exactly the mode decision 2 allows.
-/// Whether a session nobody is watching could reach this mode (`S5` decision
-/// 2). Test-only by construction: the *table* is the production artefact and the
-/// property test is what proves no cell resolves to one of these names.
+/// Whether a session in this mode auto-answers permission requests, for this
+/// provider (`S5` decision 2; `create-from-profile`).
 ///
-/// The names are the decision's own: the modes the daemon auto-answers a
-/// permission request in (`PermissionBroker::auto_answer`), Codex's
-/// `full-access` and `auto-review`, and the two Claude modes that approve in
-/// place of the human (`acceptEdits` approves edits without prompting, `auto`
-/// hands approvals to a model reviewer).
+/// Written as a refusal list rather than an allow list, and the reason is the
+/// decision's own: the modes a session nobody is watching may not be in have
+/// names, and a new mode a provider adds is judged by them rather than by
+/// whether someone remembered to add it to a table.
 ///
-/// Codex's `auto` is **not** in the list and must not be added: it is an
-/// approval policy of `on-request` with a `workspaceWrite` sandbox and no
-/// network, which still asks the human. The two are one word apart and mean
-/// opposite things, which is why the exclusion is written per family.
+/// Three sources, all named:
+///
+/// - the modes the daemon itself auto-answers a permission request in
+///   (`PermissionBroker::auto_answer`) — `bypass`, `auto_accept`,
+///   `bypassPermissions` — because a session in one of them never asks a human;
+/// - Codex's own unattended pair: `full-access` is `approvalPolicy: never`, and
+///   `auto-review` hands approvals to a model reviewer;
+/// - Claude's `acceptEdits`, which approves every edit tool without prompting,
+///   and its `auto`, which is a model-reviewed approvals mode — the same act
+///   Codex spells `auto-review`.
+///
+/// Codex's `auto` is deliberately **not** on the list: it is `on-request` plus
+/// `workspaceWrite`, which is exactly the mode decision 2 allows.
+///
+/// Two callers, one list: the preset table's property test asks whether a cell
+/// could ever resolve to one of these names, and
+/// [`profile_is_unattended`] asks the same question of a profile the human
+/// wrote — which is the point. The mode that decides a permission prompt at
+/// run time is `PermissionBroker::auto_answer`'s, and this is the same answer.
 ///
 /// Aliases resolve first, so an alias cannot reach a mode its provider's own
 /// spelling would refuse.
-#[cfg(test)]
 pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
     const AUTO_ANSWERED: &[&str] = &["bypass", "auto_accept", "bypassPermissions"];
     const CODEX_UNATTENDED: &[&str] = &["full-access", "auto-review"];
@@ -371,6 +401,40 @@ pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
         Some("claude") => CLAUDE_UNATTENDED.contains(&mode_id),
         _ => false,
     }
+}
+
+/// The one feature key that means "approve my permission prompts"
+/// (`create-from-profile`).
+///
+/// Paseo spells the toggle `Auto Accept`, and this is the only spelling read:
+/// the features map is otherwise free-form and nothing consults it, so a second
+/// accepted spelling would be a second vocabulary for one meaning.
+pub(crate) const AUTO_ACCEPT_FEATURE: &str = "autoAccept";
+
+/// Whether a child created from this profile approves permission prompts in
+/// place of the human.
+///
+/// Two halves, both the profile's own fields, and the answer is the disjunction
+/// because the two say the same thing in two vocabularies:
+///
+/// - the **mode**, which is what actually decides a prompt: `bypass`,
+///   `auto_accept` and `bypassPermissions` are the modes
+///   `PermissionBroker::auto_answer` answers in, and codex's `full-access` /
+///   `auto-review` and claude's `acceptEdits` / `auto` are the same act in
+///   those providers' own words ([`mode_is_unattended`]);
+/// - the **feature** [`AUTO_ACCEPT_FEATURE`], set to `true`: the human's own
+///   statement that this profile's children approve prompts. It is read here
+///   and nowhere else, and it grants nothing — the daemon grants nothing from a
+///   feature, and a provider client that does not implement the toggle asks for
+///   a permission the human answers. What it buys is that the children created
+///   from such a profile are *described* as unattended, which is the fact the
+///   human ticked for.
+pub(crate) fn profile_is_unattended(profile: &devboule_protocol::AgentProfile) -> bool {
+    mode_is_unattended(&profile.provider, &profile.mode_id)
+        || matches!(
+            profile.features.get(AUTO_ACCEPT_FEATURE),
+            Some(serde_json::Value::Bool(true))
+        )
 }
 
 /// The exact id the catalog publishes for `agent_id`, when it publishes tools
@@ -400,10 +464,29 @@ pub fn mcp_catalog_id(agent_id: &str) -> Option<&'static str> {
 /// authority beside the stored `ToolPolicyEntry` the human edits; the overlay
 /// is the preset's own deny list, and the effective answer for one tool is
 /// "the stored policy allows it AND the overlay allows it".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(feature = "server")]
 pub(crate) struct ToolOverlay {
-    pub(crate) disabled: &'static [&'static str],
+    /// The tool names this overlay removes, from whichever source made it.
+    disabled: OverlayNames,
+}
+
+/// Where an overlay's deny list comes from.
+///
+/// Two sources, one type, because both have to be consulted at the same two
+/// places (`tools/list` and `tools/call`): a preset's own table, which the
+/// catalog's constants hold and which must stay `const` for the preset table to
+/// be one, and a profile the human wrote — read from the store at the moment of
+/// the creation and therefore owned by the value that resolved it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "server")]
+enum OverlayNames {
+    /// A preset's list, borrowed from the catalog's own table.
+    Preset(&'static [&'static str]),
+    /// A profile's list, exactly as the store holds it. `agent_profiles.rs`
+    /// has already refused any name outside the broker's own table, so a name
+    /// here can only ever match a tool the broker serves.
+    Profile(Vec<String>),
 }
 
 #[cfg(feature = "server")]
@@ -417,17 +500,42 @@ impl Default for ToolOverlay {
 impl ToolOverlay {
     /// The empty overlay: the session is served exactly what its provider's
     /// stored policy allows.
-    pub(crate) const NONE: Self = Self { disabled: &[] };
+    pub(crate) const NONE: Self = Self {
+        disabled: OverlayNames::Preset(&[]),
+    };
     /// A design child: no `devboule_send_message` and no
     /// `devboule_create_agent`. It keeps the roster, which is its own bearer's
     /// read-only view. Depth alone would not stop it (a depth-1 child may
     /// create), so the deny list is the rule.
     pub(crate) const DESIGN: Self = Self {
-        disabled: &[MCP_SEND_MESSAGE_TOOL, MCP_CREATE_AGENT_TOOL],
+        disabled: OverlayNames::Preset(&[MCP_SEND_MESSAGE_TOOL, MCP_CREATE_AGENT_TOOL]),
     };
 
-    pub(crate) fn allows(self, name: &str) -> bool {
-        !self.disabled.contains(&name)
+    /// A profile's overlay: the tools the human's profile denies, by name.
+    pub(crate) fn from_profile_names(names: &[String]) -> Self {
+        Self {
+            disabled: OverlayNames::Profile(names.to_vec()),
+        }
+    }
+
+    /// The names this overlay denies, for the tests that must see them.
+    ///
+    /// A view, not a field: the two sources hold their names differently, and a
+    /// test that walked `disabled` directly would be testing the representation
+    /// rather than the rule.
+    #[cfg(test)]
+    pub(crate) fn denied(&self) -> Vec<&str> {
+        match &self.disabled {
+            OverlayNames::Preset(names) => names.to_vec(),
+            OverlayNames::Profile(names) => names.iter().map(String::as_str).collect(),
+        }
+    }
+
+    pub(crate) fn allows(&self, name: &str) -> bool {
+        match &self.disabled {
+            OverlayNames::Preset(names) => !names.contains(&name),
+            OverlayNames::Profile(names) => !names.iter().any(|denied| denied == name),
+        }
     }
 }
 
@@ -444,7 +552,7 @@ impl ToolOverlay {
 /// inert today, and deleting the cells would silently make those presets
 /// unavailable to a caller that asks for them. When the broker grows a
 /// non-ACP transport, the cell already says what the child must be denied.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(feature = "server")]
 pub(crate) struct AgentPresetCell {
     /// Catalog id, exactly as [`KNOWN_AGENTS`] spells it.
@@ -463,6 +571,12 @@ pub(crate) struct AgentPreset {
     pub(crate) cells: &'static [AgentPresetCell],
 }
 
+// Kept as data, not as a path (`BRIEF-slice-5.md` §2 rev 9): a profile is now the
+// only thing a creation resolves, and these rows survive as the **seed values**
+// the Settings → Agents form offers and as the two overlays it starts from. No
+// production caller resolves one, which is what `#[allow(dead_code)]` says; the
+// slice that publishes the seeds to the app is what removes this block.
+#[allow(dead_code)]
 #[cfg(feature = "server")]
 pub(crate) const AGENT_PRESET_WORKER: &str = "worker";
 #[cfg(feature = "server")]
@@ -488,6 +602,7 @@ pub(crate) const AGENT_PREAMBLE: &str =
 /// debug-only health probe that implements no `session/set_mode`, so a
 /// creation naming it is refused with `no non-bypass mode for provider`.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 const PRESET_WORKER_CELLS: &[AgentPresetCell] = &[
     AgentPresetCell {
         provider: "pi",
@@ -528,6 +643,7 @@ const PRESET_WORKER_CELLS: &[AgentPresetCell] = &[
 /// `initialPrompt`. A frozen copy in the catalog would be a second source of
 /// truth for a prompt the app still owns.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 const PRESET_DESIGN_CELLS: &[AgentPresetCell] = &[
     AgentPresetCell {
         provider: "pi",
@@ -564,6 +680,7 @@ const PRESET_DESIGN_CELLS: &[AgentPresetCell] = &[
 /// The closed preset table (`S5` §2). A preset not in this list is an unknown
 /// preset and is refused by name rather than resolved by default.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 pub(crate) const AGENT_PRESETS: &[AgentPreset] = &[
     AgentPreset {
         id: AGENT_PRESET_WORKER,
@@ -620,6 +737,7 @@ pub(crate) fn catalog_provider_id(agent_id: &str) -> Option<&'static str> {
 /// The preset with this id, or `None`. Case-sensitive: a preset id is our own
 /// closed vocabulary, not a user's spelling.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 pub(crate) fn agent_preset(preset_id: &str) -> Option<&'static AgentPreset> {
     AGENT_PRESETS.iter().find(|preset| preset.id == preset_id)
 }
@@ -633,6 +751,7 @@ pub(crate) fn agent_preset(preset_id: &str) -> Option<&'static AgentPreset> {
 /// different sentence from an unknown provider — the first is a limit of this
 /// version, the second is a typo.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 pub(crate) fn resolve_agent_preset(
     preset_id: &str,
     provider_id: &str,
@@ -647,7 +766,7 @@ pub(crate) fn resolve_agent_preset(
         .cells
         .iter()
         .find(|cell| cell.provider == provider)
-        .copied()
+        .cloned()
     {
         return Ok((preset, cell));
     }
@@ -676,6 +795,7 @@ pub(crate) fn resolve_agent_preset(
 /// `test_only_cell` at all, and a release daemon therefore refuses both with
 /// `unknown provider`.
 #[cfg(all(feature = "server", debug_assertions))]
+#[allow(dead_code)]
 fn test_only_cell(preset_id: &str, provider: &str) -> Option<AgentPresetCell> {
     let cell = |provider: &'static str, overlay: ToolOverlay| {
         Some(AgentPresetCell {
@@ -704,7 +824,7 @@ fn test_only_cell(preset_id: &str, provider: &str) -> Option<AgentPresetCell> {
 pub(crate) fn overlay_names() -> Vec<ToolOverlay> {
     AGENT_PRESETS
         .iter()
-        .flat_map(|preset| preset.cells.iter().map(|cell| cell.overlay))
+        .flat_map(|preset| preset.cells.iter().map(|cell| cell.overlay.clone()))
         .collect()
 }
 
@@ -2929,7 +3049,7 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             for cell in preset.cells {
                 let design = preset.id == super::AGENT_PRESET_DESIGN;
                 assert_eq!(
-                    cell.overlay.disabled.is_empty(),
+                    cell.overlay.denied().is_empty(),
                     !design,
                     "only the design preset may carry an overlay"
                 );
@@ -2946,8 +3066,8 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         assert!(!design.allows(super::MCP_SEND_MESSAGE_TOOL));
         assert!(design.allows(super::MCP_ROSTER_TOOL));
         assert_eq!(
-            design.disabled,
-            &[super::MCP_SEND_MESSAGE_TOOL, super::MCP_CREATE_AGENT_TOOL]
+            design.denied(),
+            vec![super::MCP_SEND_MESSAGE_TOOL, super::MCP_CREATE_AGENT_TOOL]
         );
         let worker = super::ToolOverlay::NONE;
         for tool in [
@@ -2964,8 +3084,8 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             .map(|(name, _)| *name)
             .collect();
         for overlay in super::overlay_names() {
-            for disabled in overlay.disabled {
-                assert!(published.contains(disabled), "{disabled} is not a tool");
+            for disabled in overlay.denied() {
+                assert!(published.contains(&disabled), "{disabled} is not a tool");
             }
         }
     }
@@ -3040,5 +3160,111 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
                 preset.id
             );
         }
+    }
+    /// The two halves of the `unattended` marker, each on its own, and nothing
+    /// else read: the mode that decides a permission prompt at run time, and the
+    /// human's own `autoAccept` toggle.
+    #[test]
+    fn a_profile_is_unattended_by_its_mode_or_by_its_auto_accept_feature() {
+        let profile = |provider: &str, mode: &str, features: serde_json::Value| {
+            devboule_protocol::AgentProfile {
+                id: "profile-1".to_string(),
+                name: "one".to_string(),
+                icon: None,
+                note: String::new(),
+                provider: provider.to_string(),
+                model: "a-model".to_string(),
+                mode_id: mode.to_string(),
+                thinking_option_id: None,
+                features: features.as_object().cloned().unwrap_or_default(),
+                tool_overlay: Vec::new(),
+                enabled_for_agents: true,
+            }
+        };
+        // The modes the daemon itself auto-answers a permission request in.
+        for mode in ["bypass", "auto_accept", "bypassPermissions"] {
+            assert!(
+                super::profile_is_unattended(&profile("grok", mode, serde_json::json!({}))),
+                "{mode}"
+            );
+        }
+        // Codex's and Claude's own spellings of the same act.
+        for (provider, mode) in [
+            ("codex", "full-access"),
+            ("codex", "auto-review"),
+            ("claude", "acceptEdits"),
+            ("claude", "auto"),
+        ] {
+            assert!(
+                super::profile_is_unattended(&profile(provider, mode, serde_json::json!({}))),
+                "{provider} {mode}"
+            );
+        }
+        // The human's own toggle, on a mode that would otherwise ask.
+        assert!(super::profile_is_unattended(&profile(
+            "grok",
+            "ask",
+            serde_json::json!({"autoAccept": true})
+        )));
+        // And nothing else: a mode that still asks the human, a feature whose
+        // name is not this one, and a value that is not `true`.
+        assert!(!super::profile_is_unattended(&profile(
+            "grok",
+            "ask",
+            serde_json::json!({})
+        )));
+        assert!(
+            !super::profile_is_unattended(&profile("codex", "auto", serde_json::json!({}))),
+            "decision 2's exclusion: codex `auto` is on-request plus workspaceWrite"
+        );
+        assert!(!super::profile_is_unattended(&profile(
+            "grok",
+            "ask",
+            serde_json::json!({"autoAccept": "yes"})
+        )));
+        assert!(!super::profile_is_unattended(&profile(
+            "grok",
+            "ask",
+            serde_json::json!({"auto_accept": true})
+        )));
+    }
+
+    /// The published schema of `devboule_create_agent` cannot express a provider,
+    /// a preset, a model, a mode or a feature: what an agent cannot say is what no
+    /// check of ours can get wrong (`S5` §2 rev 9).
+    #[test]
+    fn the_create_agent_schema_cannot_express_a_provider_or_a_preset() {
+        let schema = super::agent_create_input_schema();
+        let properties = schema["properties"].as_object().expect("properties");
+        let mut names: Vec<&str> = properties.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "cwd",
+                "initialPrompt",
+                "labels",
+                "notifyOnFinish",
+                "profile",
+                "title",
+                "workspaceId",
+            ]
+        );
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .map(|name| name.as_str().expect("a name"))
+            .collect();
+        assert_eq!(required, ["profile", "title", "initialPrompt"]);
+        for forbidden in [
+            "provider", "preset", "model", "mode", "features", "settings",
+        ] {
+            assert!(
+                !properties.contains_key(forbidden),
+                "{forbidden} must not be expressible at all"
+            );
+        }
+        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
     }
 }

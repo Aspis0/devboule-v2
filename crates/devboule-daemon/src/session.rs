@@ -435,6 +435,8 @@ fn session_metadata_for_resume(
     peer_session_id: String,
     generation: u64,
 ) -> Session {
+    // Read before the record is consumed field by field below.
+    let context_id = record.context();
     Session {
         id: session_id.to_string(),
         workspace_id: record.workspace_id,
@@ -456,6 +458,15 @@ fn session_metadata_for_resume(
         // and with the parent it was created by.
         display_name: record.display_name,
         created_by: record.created_by,
+        // And so are the creation-from-profile facts (v11): the profile it was
+        // started from, the context it belongs to, the marker it was born with
+        // and its labels. A resume is not a creation, so none of them is
+        // re-derived here — a child that was unattended comes back unattended
+        // even if its profile has been un-ticked or edited in the meantime.
+        profile_id: record.profile_id,
+        context_id: Some(context_id),
+        unattended: record.unattended,
+        labels: record.labels,
     }
 }
 
@@ -1257,6 +1268,16 @@ pub struct SessionRegistry {
     agent_message_after_admission_hook: Arc<Mutex<Option<AgentMessageAfterAdmissionHook>>>,
     #[cfg(test)]
     deposit_after_ownership_hook: Arc<Mutex<Option<DepositAfterOwnershipHook>>>,
+    /// The agent-profile store, attached by `ServerState` once both exist
+    /// (`create-from-profile`).
+    ///
+    /// `SessionRegistry::new` cannot take it: the registry is a field of the
+    /// state that holds the store, so the two are built in one expression and
+    /// the store is attached immediately afterwards. A registry without one —
+    /// every unit test that builds its own — has no standing instructions, which
+    /// is the honest reading of "no store, no rules": nothing is cached, and the
+    /// store is asked again on the next session's first prompt.
+    agent_profiles: std::sync::OnceLock<Arc<crate::agent_profiles::AgentProfilesStore>>,
 }
 
 pub(crate) struct MessageBrake {
@@ -1841,6 +1862,23 @@ pub(crate) struct SessionCreateMeta {
     pub(crate) origin: Option<SessionOrigin>,
     /// An already-confined working directory for the child.
     pub(crate) cwd: Option<PathBuf>,
+    /// The profile this creation resolved, by its stable id
+    /// (`create-from-profile`). `None` for every create that resolved no
+    /// profile, which is the human's provider picker and every terminal.
+    pub(crate) profile_id: Option<String>,
+    /// Whether the profile that made this session approves permission prompts
+    /// in place of the human. Decided once, by the creation, and written onto
+    /// the row: un-ticking the profile afterwards does not change it, because
+    /// the child did run that way.
+    pub(crate) unattended: bool,
+    /// The labels the creation stamped — the caller's own map plus the daemon's
+    /// four `devboule.` keys. Empty for a create that is not an agent's.
+    pub(crate) labels: std::collections::BTreeMap<String, String>,
+    /// The context this session inherits. `None` means "its own id", which is
+    /// every create that is not another session's child; a created child passes
+    /// its creator's context, so a creator and everything it commissions share
+    /// one at any depth.
+    pub(crate) context_id: Option<String>,
 }
 
 impl SessionCreateMeta {
@@ -1873,6 +1911,16 @@ impl SessionCreateMeta {
             overlay,
             origin: Some(origin.clone()),
             cwd,
+            // The four creation-from-profile facts are written by the creation
+            // that resolved a profile, beside the reservation above: this
+            // function is the part of a child's birth that does not depend on
+            // which profile made it. `context_id: None` here would be "this
+            // child is its own context", which is the truth only until the
+            // caller puts the creator's context in.
+            profile_id: None,
+            unattended: false,
+            labels: std::collections::BTreeMap::new(),
+            context_id: None,
         }
     }
 }
@@ -1885,6 +1933,11 @@ pub(crate) struct AgentCreator {
     pub(crate) workspace_id: Option<String>,
     pub(crate) display_name: Option<String>,
     pub(crate) title: String,
+    /// The context this creator belongs to: its own id, or the context of the
+    /// session that created *it*. A child inherits this — that inheritance is
+    /// the whole rule, and it is what makes a human's session and every
+    /// generation under it one context (`create-from-profile`).
+    pub(crate) context_id: String,
 }
 
 impl AgentCreator {
@@ -1930,9 +1983,27 @@ pub(crate) struct AgentCreation {
     pub(crate) creator_runtime: Option<Arc<SessionRuntime>>,
     pub(crate) display_name: String,
     pub(crate) provider: String,
-    pub(crate) preset: String,
+    /// The profile the creation resolved, by its **stable id**: this is what the
+    /// session records, so a rename later cannot make a running child misreport
+    /// what it was started from.
+    pub(crate) profile_id: String,
+    /// The profile's name at the moment of the call, which is what the creator's
+    /// transcript shows (`SessionEvent::AgentCreated`). A record of a birth: a
+    /// rename afterwards does not rewrite it.
+    pub(crate) profile_name: String,
+    /// The mode the profile saved, applied through the provider's own mode
+    /// switch and never substituted for one the daemon prefers.
     pub(crate) mode: String,
     pub(crate) overlay: crate::provider_catalog::ToolOverlay,
+    /// Whether the profile approves permission prompts in place of the human.
+    /// A fact of the birth: it is written onto the child once and never
+    /// re-derived, so un-ticking the profile later changes nothing.
+    pub(crate) unattended: bool,
+    /// The labels the child carries: the caller's own plus the four the daemon
+    /// stamped.
+    pub(crate) labels: std::collections::BTreeMap<String, String>,
+    /// The context the child inherits: its creator's.
+    pub(crate) context_id: Option<String>,
     pub(crate) depth: u32,
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) initial_prompt: String,
@@ -1995,6 +2066,17 @@ pub struct SendRequest<'a> {
     /// steer then starts a turn of its own, and that turn is the boundary the slot
     /// has to end on.
     pub message_slot: Option<&'a MessageSlotRef<'a>>,
+    /// The preset preamble this prompt carries in front of its own text, when the
+    /// caller is a creation that has one.
+    ///
+    /// `None` for every other caller — a human's message, the app's own first
+    /// prompt for a Design run, an agent message — and `Some(AGENT_PREAMBLE)` for
+    /// the prompt an agent's creation sends to its child. It is a field of the
+    /// request rather than something the send path looks up, so the ordering rule
+    /// (standing instructions, then this, then the prompt) is composed in exactly
+    /// one place and no session has to be searched for its preamble
+    /// (`create-from-profile`).
+    pub preset_preamble: Option<&'a str>,
 }
 
 /// What one delivery needs to re-key its brake slot (S4-10): the table, the
@@ -2007,6 +2089,35 @@ pub(crate) struct MessageSlotRef<'a> {
     /// compares it with the turn that is running when it writes, so a message whose
     /// admitted turn has been replaced is re-keyed onto the turn it actually enters.
     pub(crate) admitted_turn_id: u64,
+}
+
+/// A session's first prompt, composed in the one place (`create-from-profile`).
+///
+/// The order is fixed, and pinned by
+/// `standing_instructions_come_before_the_preset_preamble`: the human's
+/// **standing instructions**, then the **preset preamble** where the caller has
+/// one, then the prompt itself.
+///
+/// One glue point, on the shared send path every provider's writer sits behind.
+/// That is the measured decision, not a preference: the daemon sends no system
+/// prompt on any provider, and the preamble reaches the model today as the first
+/// *user* message (`reports/remote-agents/recon-system-prompt-seams.md` §2 — the
+/// glue at this same site, four writers, and ACP v1's `session/new` and
+/// `session/prompt` carry no field for one). Composing here is what makes every
+/// provider get the same text the same way, so none of them can be the silent
+/// exception.
+///
+/// Everything empty means the prompt itself, **byte for byte**: a human who has
+/// written no standing instructions and a caller with no preamble get exactly
+/// today's prompt, with no separator and no trailing newline to show for a
+/// feature they are not using.
+pub(crate) fn compose_first_prompt(standing: &str, preamble: Option<&str>, prompt: &str) -> String {
+    match (standing.is_empty(), preamble) {
+        (true, None) => prompt.to_string(),
+        (true, Some(preamble)) => format!("{preamble}\n\n{prompt}"),
+        (false, None) => format!("{standing}\n\n{prompt}"),
+        (false, Some(preamble)) => format!("{standing}\n\n{preamble}\n\n{prompt}"),
+    }
 }
 
 impl SessionRegistry {
@@ -2067,10 +2178,37 @@ impl SessionRegistry {
             agent_message_after_admission_hook: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             deposit_after_ownership_hook: Arc::new(Mutex::new(None)),
+            agent_profiles: std::sync::OnceLock::new(),
         };
         spawn_os_liveness_sweeper(&registry);
         registry.reconcile_worktree_journal();
         registry
+    }
+
+    /// Hand the registry the agent-profile store (`create-from-profile`).
+    ///
+    /// Called once, by `ServerState`, right after both exist. The registry reads
+    /// the store at exactly one moment — a session's first prompt — and never
+    /// keeps a copy of its document, so an edit to the profiles takes effect on
+    /// the next session's first prompt rather than at the next restart.
+    pub(crate) fn attach_agent_profiles(
+        &self,
+        store: Arc<crate::agent_profiles::AgentProfilesStore>,
+    ) {
+        let _ = self.agent_profiles.set(store);
+    }
+
+    /// The human's standing instructions, read **now**, or nothing when this
+    /// registry has no store.
+    ///
+    /// A copy of the string, not a borrowed handle: the caller puts it in front of
+    /// a prompt that is about to be written, and the store may be replaced while
+    /// that prompt is being composed.
+    pub(crate) fn standing_instructions(&self) -> String {
+        self.agent_profiles
+            .get()
+            .map(|store| store.document().standing_instructions)
+            .unwrap_or_default()
     }
 
     fn reconcile_worktree_journal(&self) {
@@ -2382,9 +2520,18 @@ impl SessionRegistry {
                 origin: session.origin,
                 // The two fields a push-only row needs (S5-09, S5-04): the row
                 // this client is sent must name the child and its creator, not
-                // only the row the next list would build.
+                // only the row the next list would build. The
+                // creation-from-profile facts travel with them for the same
+                // reason: a child created while the app is open arrives as a
+                // push-only row, and a row without its profile, its context, its
+                // marker and its labels would stay that way until the next full
+                // list.
                 display_name: session.display_name,
                 created_by: session.created_by,
+                profile_id: session.profile_id,
+                context_id: session.context_id,
+                unattended: session.unattended,
+                labels: session.labels,
             })
             .collect()
     }
@@ -2406,6 +2553,10 @@ impl SessionRegistry {
                         origin: session.origin,
                         display_name: session.display_name,
                         created_by: session.created_by,
+                        profile_id: session.profile_id,
+                        context_id: session.context_id,
+                        unattended: session.unattended,
+                        labels: session.labels,
                     }
                 })
         });
@@ -3185,6 +3336,23 @@ impl SessionRegistry {
         // would be a different session than the one that was created.
         record.display_name = meta.display_name.clone();
         record.created_by = meta.created_by.clone();
+        // The creation-from-profile facts, written once, here, and never
+        // re-derived from the store afterwards (v11). A create that resolved no
+        // profile — the human's provider picker, a terminal — leaves all four at
+        // their defaults, and a create that did leaves the daemon's own record
+        // of it: the profile's **stable id** (a rename later cannot make this
+        // child misreport what it was started from), the marker the profile's
+        // auto-accepting mode earned at birth, the labels the creation stamped,
+        // and the context this session belongs to.
+        record.profile_id = meta.profile_id.clone();
+        record.unattended = meta.unattended;
+        record.labels = meta.labels.clone();
+        // Its own id, unless its creator's context came in with the creation:
+        // that inheritance is the whole rule, and it is applied once, here, so
+        // every reader — the roster, the journal, the A2A answer — sees one
+        // value.
+        let context_id = meta.context_id.clone().unwrap_or_else(|| id.clone());
+        record.context_id = Some(context_id.clone());
         record.status = PersistStatus::Live;
         // The origin is a property of the create, not of the spawn: it is
         // recorded before the row is journaled, so a create that dies during
@@ -3207,6 +3375,10 @@ impl SessionRegistry {
             origin,
             display_name: meta.display_name.clone(),
             created_by: meta.created_by.clone(),
+            profile_id: meta.profile_id.clone(),
+            context_id: Some(context_id),
+            unattended: meta.unattended,
+            labels: meta.labels.clone(),
         };
         crate::agent_env::inject_session_env(
             &mut command,
@@ -3222,7 +3394,7 @@ impl SessionRegistry {
                 session_provider.as_deref(),
                 crate::mcp_broker::AgentLineage {
                     depth: meta.depth,
-                    overlay: meta.overlay,
+                    overlay: meta.overlay.clone(),
                 },
             )?
         } else {
@@ -4358,6 +4530,8 @@ impl SessionRegistry {
             // may have a refused steer fall back to an interrupt (S4-01).
             interrupt_on_steer_refusal: session_origin_for(&conn.conn_peer).is_local(),
             message_slot: None,
+            // No preset preamble: a client's prompt is not a creation's.
+            preset_preamble: None,
         })
         .map(|_| ())
     }
@@ -4485,6 +4659,8 @@ impl SessionRegistry {
             // message must not replace a running turn it may not stop.
             interrupt_on_steer_refusal: caller_origin.is_local(),
             message_slot: Some(&slot_ref),
+            // No preset preamble: an agent message is not a creation's prompt.
+            preset_preamble: None,
         });
         if result.is_ok() {
             // The sender sees the raw peer message in its own transcript; the
@@ -4535,6 +4711,7 @@ impl SessionRegistry {
             require_attachment: true,
             interrupt_on_steer_refusal: true,
             message_slot: None,
+            preset_preamble: None,
         })
         .map(|_| ())
     }
@@ -4556,6 +4733,7 @@ impl SessionRegistry {
             require_attachment,
             interrupt_on_steer_refusal,
             message_slot,
+            preset_preamble,
         } = *request;
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -4761,6 +4939,36 @@ impl SessionRegistry {
                 None => {}
             }
         }
+        // ---- the session's first prompt carries the standing instructions ----
+        //
+        // The human's standing instructions ride the first prompt of every session
+        // the daemon starts, and this is the one place a prompt is composed: a
+        // session a human opens, a child an agent creates (which passes its preset
+        // preamble in `preset_preamble`) and the Design host all reach this line,
+        // and every provider's writer sits behind it (`session.rs:4899`-style
+        // writes in `acp_client.rs`, `claude_client.rs`, `codex_client.rs`,
+        // `pi_client.rs`). The order — standing instructions, then the preamble,
+        // then the prompt — is fixed in `compose_first_prompt` and pinned by
+        // `standing_instructions_come_before_the_preset_preamble`.
+        //
+        // Three deliberate narrowings:
+        //
+        // - **Agent sessions only.** A terminal's writer is a PTY: prefixing a
+        //   human's first shell line with their standing instructions would type
+        //   prose into a shell.
+        // - **The first prompt that has text.** A prompt made only of attachments
+        //   has nothing to prefix, so the flag stays owed and the session's first
+        //   *text* prompt carries them.
+        // - **The flag is taken, once.** `take_first_prompt` swaps it, so a second
+        //   prompt racing the first cannot compose a second copy, and a prompt
+        //   that arrives after a failed write does not get one either.
+        //
+        // The store is read *now*, at the moment of the first prompt, and never
+        // cached on the session: an edit to the standing instructions takes effect
+        // on the next session the daemon starts, not at the next restart.
+        let first_prompt = (is_agent && !text.is_empty() && runtime.take_first_prompt())
+            .then(|| compose_first_prompt(&self.standing_instructions(), preset_preamble, text));
+        let text = first_prompt.as_deref().unwrap_or(text);
         // (S4-10, S4-14) The last thing before the write: the slot's boundary must
         // be the turn this text actually enters. The admission registered it
         // against the turn that was running then, and that turn can have ended —
@@ -5162,6 +5370,17 @@ impl SessionRegistry {
             workspace_id: live.metadata.workspace_id.clone(),
             display_name: live.metadata.display_name.clone(),
             title: live.metadata.title.clone(),
+            // The context this creator belongs to, which is what its child
+            // inherits (`create-from-profile`): one context for a creator and
+            // everything it commissions, at any depth. Read from the creator's
+            // own metadata, with the fallback the field states for a session
+            // that is its own context — a live session created before v11 has
+            // no context column to have read.
+            context_id: live
+                .metadata
+                .context_id
+                .clone()
+                .unwrap_or_else(|| live.metadata.id.clone()),
         })
     }
 
@@ -5538,6 +5757,15 @@ impl SessionRegistry {
         // so the reservation's own release clears it as surely as the commit and
         // the abandon do: no path can leave a marker behind its creation.
         meta.reservation = Some(ticket.reservation());
+        // The creation-from-profile facts, on the same meta the reservation
+        // travels on: one place describes a child's birth. The mode and the
+        // overlay already went through `for_agent_child` above; these four are
+        // what the profile added to the creation, and none of them is re-derived
+        // later — the row keeps what the birth measured.
+        meta.profile_id = Some(creation.profile_id.clone());
+        meta.unattended = creation.unattended;
+        meta.labels = creation.labels.clone();
+        meta.context_id = creation.context_id.clone();
         // The id the reservation already registered a link for (audit S5B-04):
         // the spawn must use it, so an exit on the instant finds the row that
         // releases the slot and reports the end.
@@ -5599,14 +5827,15 @@ impl SessionRegistry {
             &child.id,
             &creation.display_name,
             &creation.provider,
-            &creation.preset,
+            &creation.profile_name,
             deferred,
         );
-        let prompt = format!(
-            "{}\n\n{}",
-            crate::provider_catalog::AGENT_PREAMBLE,
-            creation.initial_prompt
-        );
+        // The child's first prompt. The preset preamble is no longer glued here:
+        // it travels as `preset_preamble` and is composed by the send path, in one
+        // place with the human's standing instructions in front of it
+        // (`compose_first_prompt`), so every provider receives one string built by
+        // one rule.
+        let prompt = creation.initial_prompt.clone();
         let owner = creation.creator.owner.clone();
         let internal_conn = ConnHandle::with_peer(0, None);
         let sent = self.send_with_subscription_timeout(&SendRequest {
@@ -5614,9 +5843,9 @@ impl SessionRegistry {
             subscription_id: 0,
             text: &prompt,
             attachments: &[],
-            // Empty by construction: the preamble and the caller's text are the
-            // whole prompt, and `devboule_create_agent` has no parameter that
-            // names a stored attachment.
+            // Empty by construction: the standing instructions, the preamble and
+            // the caller's text are the whole prompt, and `devboule_create_agent`
+            // has no parameter that names a stored attachment.
             attachment_references: &[],
             owner: &owner,
             conn: &internal_conn,
@@ -5625,6 +5854,7 @@ impl SessionRegistry {
             require_attachment: false,
             interrupt_on_steer_refusal: true,
             message_slot: None,
+            preset_preamble: Some(crate::provider_catalog::AGENT_PREAMBLE),
         });
         if let Err(error) = sent {
             let _ = self.close(&child.id, &owner, &None);
@@ -6172,6 +6402,9 @@ impl SessionRegistry {
             require_attachment: false,
             interrupt_on_steer_refusal: steer,
             message_slot: None,
+            // No preset preamble: the daemon's own report is not a creation's
+            // prompt, and a child that was created already had its first one.
+            preset_preamble: None,
         })
     }
 
@@ -10870,6 +11103,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let runtime = SessionRuntime::from_replay(
             id.to_string(),
@@ -11037,6 +11274,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let (broker, _) = permission_broker::test_broker();
         let runtime = SessionRuntime::for_acp(id.to_string(), registry.journal.clone(), broker);
@@ -12839,6 +13080,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let runtime = Arc::new(SessionRuntime::with_journal(
             id.to_string(),
@@ -14082,6 +14327,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let session = PtySession {
             metadata,
@@ -14197,6 +14446,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let session = PtySession {
             metadata,
@@ -14361,6 +14614,10 @@ mod tests {
             origin,
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         RegistryEntry::Transcript(Box::new(TranscriptSession {
             metadata,
@@ -17857,5 +18114,45 @@ mod tests {
         }
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
+    }
+    /// The order `create-from-profile` fixes: the human's standing instructions,
+    /// then the preset preamble where the caller has one, then the prompt.
+    #[test]
+    fn standing_instructions_come_before_the_preset_preamble() {
+        assert_eq!(
+            super::compose_first_prompt("standing", Some("preamble"), "prompt"),
+            "standing\n\npreamble\n\nprompt"
+        );
+        assert_eq!(
+            super::compose_first_prompt("standing", None, "prompt"),
+            "standing\n\nprompt"
+        );
+        assert_eq!(
+            super::compose_first_prompt("", Some("preamble"), "prompt"),
+            "preamble\n\nprompt"
+        );
+        // The position that decides the property: the instructions are in front
+        // of the preamble, and the preamble in front of the prompt.
+        let composed = super::compose_first_prompt("standing", Some("preamble"), "prompt");
+        let standing = composed.find("standing").expect("the instructions");
+        let preamble = composed.find("preamble").expect("the preamble");
+        let prompt = composed.find("prompt").expect("the prompt");
+        assert!(standing < preamble && preamble < prompt, "{composed}");
+    }
+
+    /// An empty standing-instructions text leaves the prompt **byte for byte**
+    /// what it was: no separator, no trailing newline, nothing to see.
+    #[test]
+    fn empty_standing_instructions_change_no_prompt_at_all() {
+        assert_eq!(
+            super::compose_first_prompt("", None, "the prompt"),
+            "the prompt"
+        );
+        let today = format!("{}\n\n{}", "the preamble", "the prompt");
+        assert_eq!(
+            super::compose_first_prompt("", Some("the preamble"), "the prompt"),
+            today,
+            "an empty text adds nothing to the glue the preamble already had"
+        );
     }
 }

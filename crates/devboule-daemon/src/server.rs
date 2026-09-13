@@ -263,6 +263,12 @@ impl ServerState {
         // empty and `secret_store()` selects lazily, a test build pins it to the
         // file store under this runtime dir. See `initial_secret_store`.
         let secret_store = Self::initial_secret_store(&paths_for_state.dir);
+        let sessions = SessionRegistry::new(paths, journal);
+        // The registry reads the profile store at one moment — a session's first
+        // prompt — so it holds the handle, not a copy of the document
+        // (`create-from-profile`). It is built here rather than inline in the
+        // struct literal below because the store has to be attached to it.
+        sessions.attach_agent_profiles(Arc::clone(&agent_profiles));
         let state = Arc::new(Self {
             instance_id,
             started: Instant::now(),
@@ -275,7 +281,7 @@ impl ServerState {
             mcp,
             tool_policy,
             agent_profiles,
-            sessions: SessionRegistry::new(paths, journal),
+            sessions,
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
             session_watchers: Mutex::new(HashMap::new()),
@@ -4549,6 +4555,9 @@ mod tests {
             workspace_id: None,
             display_name: None,
             title: "Agent".to_string(),
+            // The context a child of this creator would inherit (its own id,
+            // since this fixture is a root session).
+            context_id: "s.parent".to_string(),
         };
         // This machine's own person: the daemon is their daemon.
         assert!(creator(devboule_protocol::SessionOrigin::local()).may_create_sessions(&state));

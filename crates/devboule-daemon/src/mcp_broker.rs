@@ -108,7 +108,7 @@ struct RegisteredSession {
 ///
 /// [`AgentLineage::root`] is the human's: a session someone started at this
 /// machine is depth 0 with every tool its provider offers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AgentLineage {
     pub(crate) depth: u32,
     pub(crate) overlay: crate::provider_catalog::ToolOverlay,
@@ -733,7 +733,7 @@ fn handle_rpc(
                 "result": {"tools": enabled_tool_list(
                     crate::provider_catalog::MCP_BROKER_TOOLS,
                     policy.as_ref(),
-                    registration.overlay,
+                    registration.overlay.clone(),
                 )},
             })))
         }
@@ -745,7 +745,7 @@ fn handle_rpc(
             let policy = state.tool_policy.get(registration.provider_id.as_deref());
             if let Some(tool_name) = tool_name {
                 if let Some(reason) =
-                    tool_call_refusal(policy.as_ref(), registration.overlay, tool_name)
+                    tool_call_refusal(policy.as_ref(), &registration.overlay, tool_name)
                 {
                     return Ok(Some(rpc_error(id, -32601, reason)));
                 }
@@ -805,6 +805,11 @@ fn handle_rpc(
                         },
                     }))),
                 }
+            } else if tool_name == Some(crate::provider_catalog::MCP_LIST_PROFILES_TOOL) {
+                // Deliberately do not read params.arguments, like the roster
+                // tool: the list is the human's, and the bearer is the only
+                // identity this call needs.
+                Ok(Some(list_profiles(&state.agent_profiles, &id)))
             } else if tool_name == Some(crate::provider_catalog::MCP_CREATE_AGENT_TOOL) {
                 let arguments = message
                     .pointer("/params/arguments")
@@ -859,12 +864,25 @@ fn handle_rpc(
 }
 
 /// The result of one creation, whether it just happened or is being re-answered
-/// (`S5` §2: `{sessionId, displayName, state: "submitted"}`).
+/// (`S5` §2; `create-from-profile`):
+/// `{sessionId, taskId, contextId, displayName, state: "submitted"}`.
+///
+/// `taskId` is the session id: a Devboule child *is* the task, and a caller that
+/// had to keep a map of task to session would be keeping a private copy of a
+/// fact the daemon already has. `contextId` is the child's context, which is the
+/// creator's context — so a creator and everything it commissions, at any depth,
+/// name one family without any bookkeeping of their own. The fallback is the rule
+/// `Session::context_id` states (a session with no creator is its own context),
+/// applied for a client that reads a frame from a daemon older than this field.
 fn created_result(id: &Value, session: &devboule_protocol::Session) -> Value {
     let display_name = session
         .display_name
         .clone()
         .unwrap_or_else(|| session.title.clone());
+    let context_id = session
+        .context_id
+        .clone()
+        .unwrap_or_else(|| session.id.clone());
     json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -872,6 +890,8 @@ fn created_result(id: &Value, session: &devboule_protocol::Session) -> Value {
             "content": [{"type": "text", "text": format!("submitted {}", session.id)}],
             "structuredContent": {
                 "sessionId": session.id,
+                "taskId": session.id,
+                "contextId": context_id,
                 "displayName": display_name,
                 "state": devboule_protocol::AgentTaskState::Submitted.as_str(),
             },
@@ -962,23 +982,45 @@ fn agent_value(
     })
 }
 
-/// One validated `devboule_create_agent` call (`S5` §2).
+/// One validated `devboule_create_agent` call (`S5` §2, `create-from-profile`).
 ///
 /// The parameters arrive as an MCP `arguments` object; the schema the broker
 /// publishes is closed, and this is the enforcement half of it. Every sentence
 /// this produces is one of §2's, and the check that a parameter is *known* is
 /// read out of the published schema rather than repeated here, so the document
 /// an agent sees and the check it hits cannot disagree.
+///
+/// `profile` is a **name**, and it is the only way this request says what to
+/// run: the provider, the model, the mode, the thinking option, the features
+/// and the tool overlay all come from the stored profile that name resolves to
+/// at the moment of the call. There is no field here that could disagree with
+/// it.
 #[derive(Debug)]
 struct AgentCreateRequest {
+    profile: String,
     title: String,
-    provider: String,
-    preset: String,
+    /// The caller's own labels. The daemon's `devboule.` keys are stamped into
+    /// the same map at the creation and are refused here.
+    labels: std::collections::BTreeMap<String, String>,
     workspace_id: Option<String>,
     cwd: Option<String>,
     initial_prompt: String,
     notify: bool,
 }
+
+/// The prefix the daemon reserves for its own label facts.
+const RESERVED_LABEL_PREFIX: &str = "devboule.";
+
+/// The most labels one creation may carry.
+///
+/// Bounded because the map is written into the session row and travels on every
+/// roster push: an unbounded map is a payload every attached client pays for on
+/// every push, for an annotation nothing decides anything from.
+const MAX_AGENT_LABELS: usize = 32;
+
+/// The longest label key and value, in bytes.
+const MAX_LABEL_KEY_BYTES: usize = 64;
+const MAX_LABEL_VALUE_BYTES: usize = 256;
 
 impl AgentCreateRequest {
     /// The fields one creation's identity is made of (`S5-08`).
@@ -989,17 +1031,25 @@ impl AgentCreateRequest {
         creator_id: &'a str,
         request: &'a Self,
         notify_field: &'a str,
+        labels: &'a str,
     ) -> Vec<&'a str> {
         vec![
             creator_id,
             &request.title,
-            &request.provider,
-            &request.preset,
+            &request.profile,
             &request.initial_prompt,
             request.workspace_id.as_deref().unwrap_or(""),
             request.cwd.as_deref().unwrap_or(""),
             notify_field,
+            labels,
         ]
+    }
+
+    /// The labels as one fingerprint field: their JSON encoding, which is
+    /// deterministic for a `BTreeMap`, so two different label sets cannot spell
+    /// the same string and the same set always spells the same one.
+    fn labels_fingerprint(&self) -> String {
+        serde_json::to_string(&self.labels).unwrap_or_default()
     }
 
     fn parse(arguments: &Value) -> Result<Self, String> {
@@ -1018,8 +1068,9 @@ impl AgentCreateRequest {
             .unwrap_or_default();
         for key in object.keys() {
             if !known.iter().any(|known| known == key) {
-                // `mode` lands here on purpose: it is not a parameter this tool
-                // has, because a preset chooses the mode (`S5` decision 2).
+                // `provider`, `preset` and `mode` land here on purpose: this
+                // tool has none of them, because a profile chooses what to run
+                // (`create-from-profile`).
                 return Err(format!("unknown parameter '{key}'"));
             }
         }
@@ -1031,8 +1082,13 @@ impl AgentCreateRequest {
                 .ok_or_else(|| format!("{key} is required"))
         };
         let title = devboule_protocol::validate_display_name(&required("title")?)?;
-        let provider = required("provider")?;
-        let preset = required("preset")?;
+        // The profile name is compared against the store's own names, which
+        // `agent_profiles.rs` trims on the way in, so a caller that padded its
+        // name is naming the same profile rather than a profile that cannot
+        // exist. It is deliberately **not** bounded here: a name that matches
+        // nothing is refused with the store's sentence, and a name that is
+        // longer than the store admits can never match one.
+        let profile = required("profile")?;
         let initial_prompt = required("initialPrompt")?;
         // A prompt of spaces is a prompt nobody can act on, and the same rule
         // the display name gets: whitespace is not content.
@@ -1052,15 +1108,72 @@ impl AgentCreateRequest {
             Some(_) => return Err("notifyOnFinish must be a boolean".to_string()),
         };
         Ok(Self {
+            profile,
             title,
-            provider,
-            preset,
+            labels: parse_labels(object)?,
             workspace_id: optional_text("workspaceId", object)?,
             cwd: optional_text("cwd", object)?,
             initial_prompt,
             notify,
         })
     }
+}
+
+/// The caller's labels, checked (`create-from-profile`).
+///
+/// A free map of string to string, with one reserved prefix: the daemon stamps
+/// `devboule.created-by`, `devboule.depth`, `devboule.origin` and
+/// `devboule.profile` itself, so a caller that sets or overwrites any of them is
+/// refused rather than silently overridden. A caller cannot even arrive at one
+/// by accident, because a label nothing can be decided from still has to be
+/// honest about who wrote it.
+fn parse_labels(
+    object: &serde_json::Map<String, Value>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let Some(value) = object.get("labels") else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let Value::Object(entries) = value else {
+        return Err("labels must be an object of strings".to_string());
+    };
+    if entries.len() > MAX_AGENT_LABELS {
+        return Err(format!(
+            "labels carries {} entries; the limit is {MAX_AGENT_LABELS}.",
+            entries.len()
+        ));
+    }
+    let mut labels = std::collections::BTreeMap::new();
+    for (key, value) in entries {
+        if key.starts_with(RESERVED_LABEL_PREFIX) {
+            return Err("reserved label prefix".to_string());
+        }
+        if key.trim().is_empty() {
+            return Err("a label has an empty key".to_string());
+        }
+        if key.len() > MAX_LABEL_KEY_BYTES {
+            return Err(format!(
+                "the label key '{key}' is {} bytes; the limit is {MAX_LABEL_KEY_BYTES}.",
+                key.len()
+            ));
+        }
+        let Value::String(value) = value else {
+            return Err(format!("the label '{key}' must be a string"));
+        };
+        if value.len() > MAX_LABEL_VALUE_BYTES {
+            return Err(format!(
+                "the label '{key}' is {} bytes; the limit is {MAX_LABEL_VALUE_BYTES}.",
+                value.len()
+            ));
+        }
+        labels.insert(key.clone(), value.clone());
+    }
+    Ok(labels)
+}
+
+/// The name a profile's labels and the creation record are keyed on: the
+/// catalog's own spelling of the name, trimmed exactly as the store trims it.
+fn profile_name_key(name: &str) -> &str {
+    name.trim()
 }
 
 /// One optional string parameter, with its type enforced (audit S5-09).
@@ -1103,17 +1216,188 @@ fn creation_fingerprint(fields: &[&str]) -> String {
 /// a child's first turn, and a prompt nobody could read is not a prompt.
 const MAX_AGENT_PROMPT_BYTES: usize = 32 * 1024;
 
-/// The `devboule_create_agent` tool (`S5` §2 and §3).
+/// The labels the daemon stamps into every child it creates.
+///
+/// The four keys are the daemon's own facts about the child, and they are
+/// stamped here, where all four are known, rather than by the session path: the
+/// creation is what measured them. `devboule.profile` is the profile's **stable
+/// id**, like the session's own field, so the label and the row cannot disagree
+/// about which profile made this child, and both survive a rename.
+fn stamped_labels(
+    caller: &std::collections::BTreeMap<String, String>,
+    creator_session_id: &str,
+    profile: &ResolvedProfile,
+    depth: u32,
+    origin: &devboule_protocol::SessionOrigin,
+) -> std::collections::BTreeMap<String, String> {
+    let mut labels = caller.clone();
+    labels.insert(
+        "devboule.created-by".to_string(),
+        creator_session_id.to_string(),
+    );
+    labels.insert("devboule.depth".to_string(), depth.to_string());
+    labels.insert("devboule.origin".to_string(), origin_label(origin));
+    labels.insert("devboule.profile".to_string(), profile.id.clone());
+    labels
+}
+
+/// `devboule.origin`'s value: the same word the wire uses for the kind, plus the
+/// device for a peer's child.
+///
+/// A label is text a human reads, so a peer's device id is spelled into it
+/// rather than left to a second lookup the label has no way to make.
+fn origin_label(origin: &devboule_protocol::SessionOrigin) -> String {
+    use devboule_protocol::SessionOriginKind;
+    match origin.kind {
+        SessionOriginKind::Peer => match origin.device_id.as_deref() {
+            Some(device) => format!("peer:{device}"),
+            None => "peer".to_string(),
+        },
+        SessionOriginKind::Local => "local".to_string(),
+        SessionOriginKind::Unknown => "unknown".to_string(),
+    }
+}
+
+/// One profile, resolved for one creation: what the store said at the moment of
+/// the call and nothing that was cached.
+#[derive(Debug)]
+struct ResolvedProfile {
+    /// The profile's identity, which is what the session records.
+    id: String,
+    /// The name the human ticked, which is what the card and the creator's
+    /// transcript show.
+    name: String,
+    provider: String,
+    /// The provider's own model id, exactly as saved. Carried because the card
+    /// states what the human is being asked to approve, and because nothing may
+    /// substitute it.
+    model: String,
+    mode: String,
+    /// The provider's thinking option, exactly as saved.
+    thinking_option_id: Option<String>,
+    /// The provider's feature values, exactly as saved.
+    features: serde_json::Map<String, Value>,
+    overlay: crate::provider_catalog::ToolOverlay,
+    unattended: bool,
+}
+
+/// Resolve the profile a creation named, out of the profiles the human ticked.
+///
+/// Every refusal here is one of §2's sentences, and they are in the order that
+/// keeps the answers honest:
+///
+/// 1. **The list is read now.** `AgentProfilesStore::document` is asked on every
+///    call and nothing is cached per session, so a profile the human enabled or
+///    un-ticked while an agent was reading `devboule_list_profiles` is answered
+///    by the list as it stands when the creation is attempted.
+/// 2. **No ticked profile at all** is refused before the requested name is even
+///    looked at, and the sentence names **no** profile. That is not politeness:
+///    a refusal that said "the profile *X* exists but is not enabled" would tell
+///    a caller what it is not allowed to see, and the list an agent reads is the
+///    enabled set and nothing else.
+/// 3. **A name that is unknown or unticked** gets the sentence that sends the
+///    caller to the list, which is where the answer is.
+/// 4. **A name two ticked profiles share** is refused rather than resolved.
+///    `agent_profiles.rs` allows two profiles to share a name (the id is the
+///    identity), so "the first one" would be picking a provider the human did
+///    not name.
+fn resolve_profile(
+    store: &crate::agent_profiles::AgentProfilesStore,
+    requested: &str,
+) -> Result<ResolvedProfile, String> {
+    let document = store.document();
+    let enabled: Vec<&devboule_protocol::AgentProfile> = document
+        .profiles
+        .iter()
+        .filter(|profile| profile.enabled_for_agents)
+        .collect();
+    if enabled.is_empty() {
+        return Err("no profile is enabled for agents".to_string());
+    }
+    let wanted = profile_name_key(requested);
+    let matching: Vec<&devboule_protocol::AgentProfile> = enabled
+        .into_iter()
+        .filter(|profile| profile.name == wanted)
+        .collect();
+    let profile = match matching.as_slice() {
+        [] => return Err("unknown profile; call devboule_list_profiles".to_string()),
+        [one] => *one,
+        many => return Err(format!("more than one profile is called {}", many[0].name)),
+    };
+    Ok(ResolvedProfile {
+        id: profile.id.clone(),
+        name: profile.name.clone(),
+        provider: profile.provider.clone(),
+        model: profile.model.clone(),
+        mode: profile.mode_id.clone(),
+        thinking_option_id: profile.thinking_option_id.clone(),
+        features: profile.features.clone(),
+        // The profile's own deny list, applied on top of the provider's stored
+        // policy — the same two places a preset's overlay was applied. The store
+        // has already refused a name outside the broker's table, so this can
+        // only ever remove a tool the broker serves.
+        overlay: crate::provider_catalog::ToolOverlay::from_profile_names(&profile.tool_overlay),
+        // Derived from the profile's own fields, once, at the moment of the
+        // call: `provider_catalog::profile_is_unattended`.
+        unattended: crate::provider_catalog::profile_is_unattended(profile),
+    })
+}
+
+/// One `devboule_list_profiles` call (`create-from-profile`).
+///
+/// The ticked profiles, in the human's stored order and never sorted, as
+/// `{name, note, provider, model, mode, unattended}`. Nothing else is served:
+/// not the id (a caller names a profile by its name, and the id is the daemon's
+/// key for the session it records), not a profile the human did not tick, and
+/// not the standing instructions — those are not a profile's business to read.
+///
+/// `note` is verbatim and never truncated. It is the only thing a model has to
+/// route work with, so a truncated note is a different instruction, not a
+/// shorter display of the same one.
+fn list_profiles(store: &crate::agent_profiles::AgentProfilesStore, id: &Value) -> Value {
+    let document = store.document();
+    let profiles: Vec<Value> = document
+        .profiles
+        .iter()
+        .filter(|profile| profile.enabled_for_agents)
+        .map(|profile| {
+            json!({
+                "name": profile.name,
+                "note": profile.note,
+                "provider": profile.provider,
+                "model": profile.model,
+                "mode": profile.mode_id,
+                "unattended": crate::provider_catalog::profile_is_unattended(profile),
+            })
+        })
+        .collect();
+    let document = json!({ "profiles": profiles });
+    let text = serde_json::to_string(&document)
+        .unwrap_or_else(|error| format!("Could not encode the profile list: {error}"));
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": document,
+            "isError": false,
+        },
+    })
+}
+
+/// The `devboule_create_agent` tool (`S5` §2 and §3; `create-from-profile`).
 ///
 /// The caller is the session whose Bearer authenticated the connection: the
 /// `registration` is the only identity this function uses, and there is no
 /// `from_session` parameter to lie about.
 ///
-/// The order is the checklist's: resolve the preset from the closed table (the
-/// mode and the overlay come from there and never from the caller), reserve the
-/// budget, raise the creation card once per creator session, create through the
-/// `SessionCreate` path with the creator's own origin and owner, and answer
-/// `{sessionId, displayName, state: "submitted"}`.
+/// The order is the checklist's: resolve the profile the caller named from the
+/// profiles the human **ticked, read now** (the provider, the model, the mode,
+/// the features and the tool overlay come from there and never from the
+/// caller), reserve the budget, raise the creation card once per creator
+/// session, create through the `SessionCreate` path with the creator's own
+/// origin and owner, and answer
+/// `{sessionId, taskId, contextId, displayName, state: "submitted"}`.
 fn create_agent(
     state: &Arc<ServerState>,
     _broker: &McpBroker,
@@ -1121,11 +1405,10 @@ fn create_agent(
     id: &Value,
     request: AgentCreateRequest,
 ) -> Value {
-    let (preset, cell) =
-        match crate::provider_catalog::resolve_agent_preset(&request.preset, &request.provider) {
-            Ok(pair) => pair,
-            Err(message) => return tool_error(id, &message),
-        };
+    let profile = match resolve_profile(&state.agent_profiles, &request.profile) {
+        Ok(profile) => profile,
+        Err(message) => return tool_error(id, &message),
+    };
     let creator_id = registration.session_id.clone();
     let creator = match state
         .sessions
@@ -1156,10 +1439,12 @@ fn create_agent(
         None => None,
     };
     let notify_field = if request.notify { "notify" } else { "quiet" };
+    let labels_field = request.labels_fingerprint();
     let fingerprint = creation_fingerprint(&AgentCreateRequest::creation_fingerprint_fields(
         &creator_id,
         &request,
         notify_field,
+        &labels_field,
     ));
     if let Some(key) = retry_key.as_deref() {
         if let Some(existing) = crate::server::idempotent_creation_session(
@@ -1208,10 +1493,25 @@ fn create_agent(
         return tool_error(id, "not allowed for this peer");
     }
     // A provider this daemon cannot launch is refused before a session id, a
-    // card or a slot is spent on it (`S5` §2).
-    if crate::provider_catalog::find_available(cell.provider).is_none() {
+    // card or a slot is spent on it (`S5` §2). The provider is the profile's:
+    // a creation cannot name one, so this is the only provider that can be
+    // missing, and the sentence says what it is about.
+    if crate::provider_catalog::find_available(&profile.provider).is_none() {
         return tool_error(id, "provider not installed");
     }
+    // The child's labels, stamped here where all four facts are known. Stamped
+    // into the same map the caller wrote, so a human reads one list; refused if
+    // the caller tried to write one of them (`parse_labels`), so the daemon's
+    // facts are the daemon's.
+    let labels = stamped_labels(
+        &request.labels,
+        &creator_id,
+        &profile,
+        depth,
+        &creator.origin,
+    );
+    // Read before `creator` moves into the creation below.
+    let context_id = creator.context_id.clone();
     let ticket = match state.sessions.reserve_agent_creation(&creator_id, depth) {
         Ok(ticket) => ticket,
         Err(error) => return tool_error(id, &error.message),
@@ -1233,8 +1533,8 @@ fn create_agent(
             &creator_id,
             creator.name(),
             &request,
-            preset,
-            &cell,
+            &profile,
+            &labels,
             &ticket,
         );
         let authorized = state
@@ -1253,10 +1553,18 @@ fn create_agent(
         creator_runtime,
         display_name: request.title.clone(),
         creator,
-        provider: cell.provider.to_string(),
-        preset: preset.id.to_string(),
-        mode: cell.mode.to_string(),
-        overlay: cell.overlay,
+        provider: profile.provider.clone(),
+        // The session records the profile's **id** and its **name** is what the
+        // creator's transcript shows: a rename later changes nothing about a
+        // child that is already running (`Session.profile_id`), while the
+        // sentence a human reads names the profile the way they ticked it.
+        profile_id: profile.id.clone(),
+        profile_name: profile.name.clone(),
+        mode: profile.mode.clone(),
+        overlay: profile.overlay.clone(),
+        unattended: profile.unattended,
+        labels,
+        context_id: Some(context_id),
         depth,
         cwd,
         initial_prompt: request.initial_prompt,
@@ -1304,30 +1612,60 @@ fn tool_error(id: &Value, message: &str) -> Value {
     })
 }
 
-/// The creation card (`S5` decisions 4 and 5).
+/// The creation card (`S5` decisions 4 and 5; `create-from-profile`).
 ///
 /// An ordinary [`SessionEvent::PermissionRequest`] with the `create_agent`
 /// payload filled in: the same pending entry, the same allow/deny decision
 /// frame, the same origin stamp and per-device budget as any other card. The
 /// caps are in the text *and* in the payload — the text is what a person reads,
 /// the payload is what a surface renders, and both come from one reservation.
+///
+/// The text states what the human is being asked to **approve**, which is the
+/// profile and what it resolves to: the provider, the model, the mode, every
+/// feature with its value, whether the child will approve prompts in their place,
+/// and the caller's labels. A card that named only the profile would ask for a
+/// decision against a word, and the word is the one thing the human cannot check
+/// without opening Settings.
 fn creation_card(
     creator_session_id: &str,
     creator_name: &str,
     request: &AgentCreateRequest,
-    preset: &crate::provider_catalog::AgentPreset,
-    cell: &crate::provider_catalog::AgentPresetCell,
+    profile: &ResolvedProfile,
+    labels: &std::collections::BTreeMap<String, String>,
     ticket: &crate::session::AgentCreationTicket<'_>,
 ) -> SessionEvent {
     let caps = ticket.caps().clone();
+    // `Auto accept: Yes` is the one phrase that has to be readable at a glance:
+    // it is the difference between a child that will ask this human and one that
+    // will not.
+    let features = if profile.features.is_empty() {
+        "none".to_string()
+    } else {
+        profile
+            .features
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let thinking = profile.thinking_option_id.as_deref().unwrap_or("none");
+    // The caller's own labels, and only those: the daemon's four `devboule.`
+    // keys are stamped at the creation and would tell the human nothing they are
+    // not already reading on this card.
+    let labels = if labels.is_empty() {
+        "none".to_string()
+    } else {
+        labels
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     SessionEvent::PermissionRequest {
         tool_call_id: creation_permission_id(),
-        title: format!("Create an agent: {} ({})", request.title, request.preset),
+        title: format!("Create an agent: {} ({})", request.title, profile.name),
         description: Some(format!(
-            "Asked for by '{creator_name}'. Provider {}, preset {}, mode {}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.",
-            cell.provider,
-            preset.id,
-            cell.mode,
+            "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}. Labels: {labels}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.",
             caps.live_children,
             caps.max_live_children,
             caps.creations_this_hour,
@@ -1336,6 +1674,12 @@ fn creation_card(
             caps.max_depth,
             caps.live_agent_sessions,
             caps.max_live_agent_sessions,
+            name = profile.name,
+            id = profile.id,
+            provider = profile.provider,
+            model = profile.model,
+            mode = profile.mode,
+            auto = if profile.unattended { "Yes" } else { "No" },
         )),
         command: None,
         args: None,
@@ -1358,8 +1702,8 @@ fn creation_card(
         origin: SessionOrigin::unknown(),
         create_agent: Some(CreateAgentCard {
             creator_session_id: creator_session_id.to_string(),
-            provider: cell.provider.to_string(),
-            preset: preset.id.to_string(),
+            provider: profile.provider.clone(),
+            profile: profile.name.clone(),
             title: request.title.clone(),
             caps,
         }),
@@ -1390,7 +1734,7 @@ fn creation_permission_id() -> String {
 /// exactly like one a policy disabled, and cannot probe past the list.
 fn tool_call_refusal(
     policy: Option<&ToolPolicyEntry>,
-    overlay: ToolOverlay,
+    overlay: &ToolOverlay,
     name: &str,
 ) -> Option<&'static str> {
     if !crate::tool_policy::is_tool_enabled(policy, name) || !overlay.allows(name) {
@@ -1995,10 +2339,13 @@ mod tests {
         let server = state.mcp.start(&state).expect("MCP server");
 
         // The closed table the bearer is served from names nothing that could
-        // read or write the profile store.
+        // *write* the profile store, and nothing of the store's own vocabulary.
+        // `devboule_list_profiles` is the one profile fact an agent may have —
+        // the ticked list, read-only, through the tool layer — and the names
+        // below are the store's own RPCs, which no bearer can ever call.
         for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
             assert!(
-                !name.contains("profile"),
+                !name.contains("agent_profiles") && !name.contains("set_profile"),
                 "the broker's closed table must not reach the profile store: {name}"
             );
         }
@@ -2163,9 +2510,9 @@ mod tests {
         );
 
         // And `tools/list` for the same session still reports every tool the
-        // session is served: the roster, the sender slice 4 added, and the
-        // creation tool slice 5 adds. Disabling one does not shrink the other
-        // rows, which is the point of this test.
+        // session is served: the roster, the profile list this pass adds, the
+        // sender slice 4 added, and the creation tool slice 5 adds. Disabling
+        // one does not shrink the other rows, which is the point of this test.
         let listed = http_request(
             &state.mcp.url,
             Some(&format!("Bearer {token}")),
@@ -2176,7 +2523,7 @@ mod tests {
                 .pointer("/result/tools")
                 .and_then(Value::as_array)
                 .map(|tools| tools.len()),
-            Some(3)
+            Some(4)
         );
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);
@@ -2221,8 +2568,16 @@ mod tests {
             .pointer("/result/tools")
             .and_then(Value::as_array)
             .expect("tool list");
-        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools.len(),
+            2,
+            "the always-on pair: the roster and the profile list"
+        );
         assert_eq!(tools[0]["name"], crate::provider_catalog::MCP_ROSTER_TOOL);
+        assert_eq!(
+            tools[1]["name"],
+            crate::provider_catalog::MCP_LIST_PROFILES_TOOL
+        );
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);
         drop(guard);
@@ -2469,13 +2824,14 @@ mod tests {
     }
 
     /// The closed schema (`S5` §2) is the first bound: nothing beyond the seven
-    /// parameters the tool publishes, and no way to name a mode.
+    /// parameters the tool publishes, no way to name a mode, and no way to name a
+    /// provider or a preset (`create-from-profile`).
     #[test]
     fn the_creation_schema_refuses_unknown_parameters_and_has_no_mode() {
         let full = json!({
             "title": "  builder  ",
-            "provider": "claude",
-            "preset": "worker",
+            "profile": "worker",
+            "labels": {"ticket": "S5-42"},
             "workspaceId": "workspace-1",
             "cwd": "crates",
             "initialPrompt": "count the tests",
@@ -2485,10 +2841,14 @@ mod tests {
         assert_eq!(request.title, "builder", "the name is trimmed");
         assert!(!request.notify);
         assert_eq!(request.cwd.as_deref(), Some("crates"));
+        assert_eq!(
+            request.labels.get("ticket").map(String::as_str),
+            Some("S5-42"),
+            "the caller's own labels come through as written"
+        );
         let bare = json!({
             "title": "builder",
-            "provider": "claude",
-            "preset": "worker",
+            "profile": "worker",
             "initialPrompt": "count the tests",
         });
         assert!(
@@ -2498,31 +2858,31 @@ mod tests {
         );
         for (arguments, sentence) in [
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker", "initialPrompt": "x", "mode": "bypass"}),
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "mode": "bypass"}),
                 "unknown parameter 'mode'",
             ),
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker", "initialPrompt": "x", "depth": 1}),
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "depth": 1}),
                 "unknown parameter 'depth'",
             ),
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker", "initialPrompt": "x", "bypassMode": true}),
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "bypassMode": true}),
                 "unknown parameter 'bypassMode'",
             ),
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker"}),
+                json!({"title": "b", "profile": "worker"}),
                 "initialPrompt is required",
             ),
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker", "initialPrompt": "   "}),
+                json!({"title": "b", "profile": "worker", "initialPrompt": "   "}),
                 "initialPrompt is required",
             ),
             (
-                json!({"title": "b".repeat(61).as_str(), "provider": "claude", "preset": "worker", "initialPrompt": "x"}),
+                json!({"title": "b".repeat(61).as_str(), "profile": "worker", "initialPrompt": "x"}),
                 "display name is 61 characters",
             ),
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker", "initialPrompt": "x", "notifyOnFinish": "yes"}),
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "notifyOnFinish": "yes"}),
                 "notifyOnFinish must be a boolean",
             ),
             // Audit S5-09: a wrong type is an invalid-params error, never a
@@ -2530,20 +2890,30 @@ mod tests {
             // and got its word ignored would create a child somewhere it did
             // not ask for.
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker", "initialPrompt": "x", "workspaceId": 5}),
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "workspaceId": 5}),
                 "workspaceId must be a string",
             ),
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker", "initialPrompt": "x", "workspaceId": ["w"]}),
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "workspaceId": ["w"]}),
                 "workspaceId must be a string",
             ),
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker", "initialPrompt": "x", "cwd": {"path": "crates"}}),
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "cwd": {"path": "crates"}}),
                 "cwd must be a string",
             ),
             (
-                json!({"title": "b", "provider": "claude", "preset": "worker", "initialPrompt": "x", "cwd": true}),
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "cwd": true}),
                 "cwd must be a string",
+            ),
+            // The two parameters this slice removed are refused like any other
+            // name the schema does not publish (`S5` §2, rev 9).
+            (
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "provider": "claude"}),
+                "unknown parameter 'provider'",
+            ),
+            (
+                json!({"title": "b", "profile": "worker", "initialPrompt": "x", "preset": "worker"}),
+                "unknown parameter 'preset'",
             ),
             (
                 json!(["not", "an", "object"]),
@@ -2560,8 +2930,7 @@ mod tests {
         // field as null asked for nothing, and gets the creator's own values.
         let explicit_null = json!({
             "title": "b",
-            "provider": "claude",
-            "preset": "worker",
+            "profile": "worker",
             "initialPrompt": "x",
             "workspaceId": null,
             "cwd": null,
@@ -2584,27 +2953,30 @@ mod tests {
         let base = [
             "session-alex",
             "builder",
-            "claude",
-            "worker",
+            "builder",
             "count the tests",
             "workspace-1",
             "crates",
             "notify",
+            "{}",
         ];
         let request = AgentCreateRequest {
+            profile: "builder".to_string(),
             title: "builder".to_string(),
-            provider: "claude".to_string(),
-            preset: "worker".to_string(),
+            labels: std::collections::BTreeMap::new(),
             workspace_id: Some("workspace-1".to_string()),
             cwd: Some("crates".to_string()),
             initial_prompt: "count the tests".to_string(),
             notify: true,
         };
+        let labels = request.labels_fingerprint();
         let fingerprint = creation_fingerprint(&AgentCreateRequest::creation_fingerprint_fields(
             "session-alex",
             &request,
             "notify",
+            &labels,
         ));
+        let labels = request.labels_fingerprint();
         let elsewhere = creation_fingerprint(&AgentCreateRequest::creation_fingerprint_fields(
             "session-alex",
             &AgentCreateRequest {
@@ -2612,6 +2984,7 @@ mod tests {
                 ..request
             },
             "notify",
+            &labels,
         ));
         assert_ne!(
             fingerprint, elsewhere,
@@ -2622,12 +2995,12 @@ mod tests {
                 [
                     "session-alex",
                     "builder",
-                    "claude",
-                    "worker",
+                    "builder",
                     "count the tests",
                     "workspace-1",
                     "crates",
                     "quiet",
+                    "{}",
                 ],
                 "notifyOnFinish",
             ),
@@ -2635,12 +3008,12 @@ mod tests {
                 [
                     "session-alex",
                     "builder",
-                    "claude",
-                    "worker",
+                    "builder",
                     "count the tests",
                     "workspace-2",
                     "crates",
                     "notify",
+                    "{}",
                 ],
                 "workspaceId",
             ),
@@ -2648,12 +3021,12 @@ mod tests {
                 [
                     "session-alex",
                     "builder",
-                    "claude",
-                    "worker",
+                    "builder",
                     "count the tests",
                     "workspace-1",
                     "src",
                     "notify",
+                    "{}",
                 ],
                 "cwd",
             ),
@@ -2695,19 +3068,19 @@ mod tests {
         assert!(!listed.iter().any(|name| name == MCP_SEND_MESSAGE_TOOL));
         assert!(listed.iter().any(|name| name == MCP_ROSTER_TOOL));
         assert_eq!(
-            tool_call_refusal(None, ToolOverlay::DESIGN, MCP_CREATE_AGENT_TOOL),
+            tool_call_refusal(None, &ToolOverlay::DESIGN, MCP_CREATE_AGENT_TOOL),
             Some("Tool disabled by policy")
         );
         assert_eq!(
-            tool_call_refusal(None, ToolOverlay::DESIGN, MCP_SEND_MESSAGE_TOOL),
+            tool_call_refusal(None, &ToolOverlay::DESIGN, MCP_SEND_MESSAGE_TOOL),
             Some("Tool disabled by policy")
         );
         assert_eq!(
-            tool_call_refusal(None, ToolOverlay::DESIGN, MCP_ROSTER_TOOL),
+            tool_call_refusal(None, &ToolOverlay::DESIGN, MCP_ROSTER_TOOL),
             None
         );
         assert_eq!(
-            tool_call_refusal(None, ToolOverlay::NONE, MCP_CREATE_AGENT_TOOL),
+            tool_call_refusal(None, &ToolOverlay::NONE, MCP_CREATE_AGENT_TOOL),
             None
         );
         // A worker has all three: the overlay is what removes them, nothing else.
@@ -2719,6 +3092,493 @@ mod tests {
         assert_eq!(
             listed.len(),
             crate::provider_catalog::MCP_BROKER_TOOLS.len()
+        );
+    }
+    // -----------------------------------------------------------------------
+    // `create-from-profile`: resolving a profile, and the sentences a refusal
+    // uses (`BRIEF-slice-5.md` §2, rev 9).
+    // -----------------------------------------------------------------------
+
+    /// A profile store holding `document`, in a directory of its own.
+    ///
+    /// The real store, not a fake: the resolution rules are about what the human
+    /// has saved *at the moment of the call*, and a fake that answered from a map
+    /// would be a second implementation of the thing under test.
+    fn profile_store(document: serde_json::Value) -> crate::agent_profiles::AgentProfilesStore {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!(
+            "devboule broker profiles {}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let store = crate::agent_profiles::AgentProfilesStore::load(&dir);
+        store
+            .set(serde_json::from_value(document).expect("a profile document"))
+            .expect("the store admits this document");
+        store
+    }
+
+    /// One profile, with every field a test wants to choose.
+    fn profile(
+        name: &str,
+        id: &str,
+        provider: &str,
+        mode: &str,
+        features: serde_json::Value,
+        overlay: &[&str],
+        enabled: bool,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "note": "when to use this one",
+            "provider": provider,
+            "model": "the model the human saved",
+            "modeId": mode,
+            "thinkingOptionId": "high",
+            "features": features,
+            "toolOverlay": overlay,
+            "enabledForAgents": enabled,
+        })
+    }
+
+    fn document(profiles: Vec<serde_json::Value>, standing: &str) -> serde_json::Value {
+        serde_json::json!({ "profiles": profiles, "standingInstructions": standing })
+    }
+
+    /// No profile enabled at all: every creation is refused, and the refusal
+    /// names **no** profile — an agent must not learn what exists but is
+    /// forbidden.
+    #[test]
+    fn no_enabled_profile_refuses_and_names_none() {
+        let store = profile_store(document(
+            vec![profile(
+                "design",
+                "profile-design",
+                "claude",
+                "default",
+                serde_json::json!({}),
+                &[],
+                false,
+            )],
+            "",
+        ));
+        let refusal = resolve_profile(&store, "design").expect_err("nothing is enabled");
+        assert_eq!(refusal, "no profile is enabled for agents");
+        assert!(
+            !refusal.contains("design") && !refusal.contains("profile-design"),
+            "the refusal names no profile: {refusal}"
+        );
+    }
+
+    /// An unknown name and an un-ticked one are refused the same way, and neither
+    /// refusal tells the caller what it is not allowed to name.
+    #[test]
+    fn an_unknown_or_unticked_profile_is_refused_with_the_list_sentence() {
+        let store = profile_store(document(
+            vec![
+                profile(
+                    "worker",
+                    "profile-worker",
+                    "claude",
+                    "default",
+                    serde_json::json!({}),
+                    &[],
+                    true,
+                ),
+                profile(
+                    "design",
+                    "profile-design",
+                    "claude",
+                    "default",
+                    serde_json::json!({}),
+                    &[],
+                    false,
+                ),
+            ],
+            "",
+        ));
+        assert!(resolve_profile(&store, "worker").is_ok());
+        for name in ["nobody", "design"] {
+            let refusal = resolve_profile(&store, name).expect_err("refused");
+            assert_eq!(refusal, "unknown profile; call devboule_list_profiles");
+            assert!(
+                !refusal.contains(name),
+                "the sentence does not echo what was asked for: {refusal}"
+            );
+        }
+    }
+
+    /// Two ticked profiles may share a name (the id is the identity), so a name
+    /// that resolves to both is refused rather than answered with the first: the
+    /// first would be a provider the human did not name.
+    #[test]
+    fn one_name_on_two_enabled_profiles_is_refused() {
+        let twin = |id: &str, provider: &str, enabled: bool| {
+            profile(
+                "worker",
+                id,
+                provider,
+                "default",
+                serde_json::json!({}),
+                &[],
+                enabled,
+            )
+        };
+        let two = profile_store(document(
+            vec![
+                twin("profile-a", "claude", true),
+                twin("profile-b", "grok", true),
+            ],
+            "",
+        ));
+        assert_eq!(
+            resolve_profile(&two, "worker").expect_err("two of them"),
+            "more than one profile is called worker"
+        );
+
+        // One ticked and one not is one profile: the un-ticked twin is not a
+        // candidate at all, so the name resolves to the ticked one.
+        let one = profile_store(document(
+            vec![
+                twin("profile-a", "claude", true),
+                twin("profile-b", "grok", false),
+            ],
+            "",
+        ));
+        let resolved = resolve_profile(&one, "worker").expect("one ticked twin");
+        assert_eq!(resolved.id, "profile-a");
+    }
+
+    /// The ticked list is read **at the moment of the call**, never cached: a
+    /// profile un-ticked between a `devboule_list_profiles` and the creation is
+    /// not enabled when the creation happens, and one ticked in between is.
+    #[test]
+    fn the_ticked_list_is_read_at_the_moment_of_the_call() {
+        // Two profiles, so that un-ticking the one a creation names is answered
+        // by the *name* rule and not by the empty-list rule below.
+        let naming = |worker: bool, design: bool| {
+            document(
+                vec![
+                    profile(
+                        "worker",
+                        "profile-worker",
+                        "claude",
+                        "default",
+                        serde_json::json!({}),
+                        &[],
+                        worker,
+                    ),
+                    profile(
+                        "design",
+                        "profile-design",
+                        "claude",
+                        "default",
+                        serde_json::json!({}),
+                        &[],
+                        design,
+                    ),
+                ],
+                "",
+            )
+        };
+        let store = profile_store(naming(true, true));
+        // What an agent would have read a moment ago.
+        let listed = list_profiles(&store, &json!(1));
+        let listed = listed["result"]["structuredContent"]["profiles"].clone();
+        assert_eq!(listed[0]["name"], "worker");
+
+        // The human un-ticks the one this creation names.
+        store
+            .set(serde_json::from_value(naming(false, true)).expect("document"))
+            .expect("store");
+        assert_eq!(
+            resolve_profile(&store, "worker").expect_err("un-ticked"),
+            "unknown profile; call devboule_list_profiles"
+        );
+        assert!(
+            resolve_profile(&store, "design").is_ok(),
+            "the profile it did not name is still creatable"
+        );
+
+        // Un-ticking everything instead refuses every creation, and the refusal
+        // names no profile at all.
+        store
+            .set(serde_json::from_value(naming(false, false)).expect("document"))
+            .expect("store");
+        assert_eq!(
+            resolve_profile(&store, "worker").expect_err("nothing ticked"),
+            "no profile is enabled for agents"
+        );
+
+        // And ticking it again is enough for the next call: nothing was cached
+        // from the list above, in either direction.
+        store
+            .set(serde_json::from_value(naming(true, true)).expect("document"))
+            .expect("store");
+        assert!(resolve_profile(&store, "worker").is_ok());
+    }
+
+    /// What the creation runs is exactly what the human saved, with no
+    /// substitution in either direction — including a mode no preset table would
+    /// ever have named.
+    #[test]
+    fn a_profile_resolves_to_exactly_what_was_saved() {
+        let store = profile_store(document(
+            vec![profile(
+                "runner",
+                "profile-runner",
+                "grok",
+                "bypass",
+                serde_json::json!({"autoAccept": true, "sandbox": "none"}),
+                &["devboule_send_message"],
+                true,
+            )],
+            "",
+        ));
+        let resolved = resolve_profile(&store, "runner").expect("ticked");
+        assert_eq!(resolved.id, "profile-runner");
+        assert_eq!(resolved.name, "runner");
+        assert_eq!(resolved.provider, "grok");
+        assert_eq!(resolved.model, "the model the human saved");
+        assert_eq!(resolved.mode, "bypass");
+        assert_eq!(resolved.thinking_option_id.as_deref(), Some("high"));
+        assert_eq!(
+            resolved.features.get("sandbox"),
+            Some(&serde_json::json!("none"))
+        );
+        assert!(!resolved.overlay.allows("devboule_send_message"));
+        assert!(resolved.overlay.allows("devboule_list_agents"));
+        assert!(
+            resolved.unattended,
+            "the mode auto-answers permission prompts"
+        );
+    }
+
+    /// The labels a caller may write, and the ones it may not.
+    #[test]
+    fn a_caller_cannot_write_a_reserved_label_and_may_write_its_own() {
+        let parsed = parse_labels(
+            &json!({"labels": {"ticket": "S5", "note": "a sentence"}})
+                .as_object()
+                .expect("object")
+                .clone(),
+        )
+        .expect("free labels");
+        assert_eq!(parsed.get("ticket").map(String::as_str), Some("S5"));
+        assert_eq!(parsed.get("note").map(String::as_str), Some("a sentence"));
+
+        for key in [
+            "devboule.created-by",
+            "devboule.depth",
+            "devboule.origin",
+            "devboule.profile",
+            "devboule.",
+        ] {
+            let refusal = parse_labels(
+                &json!({"labels": {key: "mine"}})
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            )
+            .expect_err("reserved");
+            assert_eq!(refusal, "reserved label prefix", "{key}");
+        }
+
+        // Absent is empty, and a value that is not a string is refused by name.
+        assert!(
+            parse_labels(&json!({}).as_object().expect("object").clone())
+                .expect("no labels")
+                .is_empty()
+        );
+        assert_eq!(
+            parse_labels(
+                &json!({"labels": {"ticket": 5}})
+                    .as_object()
+                    .expect("object")
+                    .clone()
+            )
+            .expect_err("not a string"),
+            "the label 'ticket' must be a string"
+        );
+    }
+
+    /// The four facts the daemon stamps into every child, from its own bookkeeping
+    /// and never from the request.
+    #[test]
+    fn the_daemon_stamps_its_four_labels_into_the_callers_map() {
+        let store = profile_store(document(
+            vec![profile(
+                "runner",
+                "profile-runner",
+                "grok",
+                "default",
+                serde_json::json!({}),
+                &[],
+                true,
+            )],
+            "",
+        ));
+        let profile = resolve_profile(&store, "runner").expect("ticked");
+        let mut caller = std::collections::BTreeMap::new();
+        caller.insert("ticket".to_string(), "S5".to_string());
+        let labels = stamped_labels(
+            &caller,
+            "s.parent.1",
+            &profile,
+            2,
+            &devboule_protocol::SessionOrigin::peer(
+                "device-phone",
+                devboule_protocol::PeerRole::Client,
+            ),
+        );
+        assert_eq!(labels.get("ticket").map(String::as_str), Some("S5"));
+        assert_eq!(
+            labels.get("devboule.created-by").map(String::as_str),
+            Some("s.parent.1")
+        );
+        assert_eq!(labels.get("devboule.depth").map(String::as_str), Some("2"));
+        assert_eq!(
+            labels.get("devboule.origin").map(String::as_str),
+            Some("peer:device-phone")
+        );
+        assert_eq!(
+            labels.get("devboule.profile").map(String::as_str),
+            Some("profile-runner"),
+            "the stamp is the profile's stable id, like the session's own field"
+        );
+    }
+
+    /// The A2A result names the task and the context (`S5` §2, decision 8b), with
+    /// no bookkeeping of the caller's own.
+    #[test]
+    fn a_creation_result_carries_the_task_id_and_the_context() {
+        let session = devboule_protocol::Session {
+            id: "s.parent.2".to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: devboule_protocol::SessionKind::Acp,
+            title: "Agent".to_string(),
+            provider: Some("grok".to_string()),
+            peer_session_id: None,
+            state: devboule_protocol::SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+            created_at_ms: 1,
+            origin: devboule_protocol::SessionOrigin::local(),
+            display_name: Some("builder".to_string()),
+            created_by: Some("s.parent.1".to_string()),
+            profile_id: Some("profile-worker".to_string()),
+            context_id: Some("s.parent.1".to_string()),
+            unattended: false,
+            labels: Default::default(),
+        };
+        let result = created_result(&json!(7), &session);
+        let content = &result["result"]["structuredContent"];
+        assert_eq!(content["sessionId"], "s.parent.2");
+        assert_eq!(
+            content["taskId"], content["sessionId"],
+            "a child is the task; there is no second id to keep"
+        );
+        assert_eq!(
+            content["contextId"], "s.parent.1",
+            "the context is the creator's, not a fresh one"
+        );
+        assert_eq!(content["displayName"], "builder");
+        assert_eq!(content["state"], "submitted");
+    }
+
+    /// `devboule_list_profiles` serves the ticked profiles, in the human's order,
+    /// with the note verbatim — and nothing else.
+    #[test]
+    fn the_profile_list_is_the_humans_order_with_verbatim_notes() {
+        let long_note = "a".repeat(2000);
+        let store = profile_store(document(
+            vec![
+                profile(
+                    "second",
+                    "profile-2",
+                    "claude",
+                    "default",
+                    serde_json::json!({}),
+                    &[],
+                    true,
+                ),
+                profile(
+                    "first",
+                    "profile-1",
+                    "grok",
+                    "bypass",
+                    serde_json::json!({"autoAccept": true}),
+                    &[],
+                    true,
+                ),
+                profile(
+                    "hidden",
+                    "profile-3",
+                    "codex",
+                    "default",
+                    serde_json::json!({}),
+                    &[],
+                    false,
+                ),
+            ],
+            "the standing instructions are not a profile's business to read",
+        ));
+        let mut listed = list_profiles(&store, &json!(1));
+        let profiles = listed["result"]["structuredContent"]["profiles"]
+            .as_array_mut()
+            .expect("an array of profiles")
+            .clone();
+        assert_eq!(profiles.len(), 2, "only the ticked ones");
+        assert_eq!(profiles[0]["name"], "second");
+        assert_eq!(
+            profiles[1]["name"], "first",
+            "the human's order, never sorted"
+        );
+        assert_eq!(profiles[0]["note"], "when to use this one");
+        assert_eq!(profiles[0]["provider"], "claude");
+        assert_eq!(profiles[0]["model"], "the model the human saved");
+        assert_eq!(profiles[0]["mode"], "default");
+        assert_eq!(profiles[0]["unattended"], false);
+        assert_eq!(
+            profiles[1]["unattended"], true,
+            "the mode and the feature that approve prompts in place of the human"
+        );
+        assert!(
+            !listed["result"]["structuredContent"]
+                .to_string()
+                .contains("standing"),
+            "the standing instructions are not served to a caller"
+        );
+        assert!(
+            !listed["result"]["structuredContent"]
+                .to_string()
+                .contains("profile-1"),
+            "the id is the daemon's key for the session it records, not the caller's to name"
+        );
+
+        // A note is never truncated: the only thing a model routes work with.
+        let store = profile_store(document(
+            vec![profile(
+                "long",
+                "profile-long",
+                "claude",
+                "default",
+                serde_json::json!({}),
+                &[],
+                true,
+            )],
+            "",
+        ));
+        let mut document = store.document();
+        document.profiles[0].note = long_note.clone();
+        store.set(document).expect("store");
+        let listed = list_profiles(&store, &json!(1));
+        assert_eq!(
+            listed["result"]["structuredContent"]["profiles"][0]["note"],
+            serde_json::json!(long_note),
+            "the note arrives as the human wrote it, whole"
         );
     }
 }

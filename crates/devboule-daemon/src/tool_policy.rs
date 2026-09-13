@@ -88,7 +88,14 @@ impl std::fmt::Display for PolicyError {
 /// - `Some(false)` disables everything else; otherwise the per-tool deny list
 ///   decides.
 pub(crate) fn is_tool_enabled(policy: Option<&ToolPolicyEntry>, name: &str) -> bool {
-    if name == crate::provider_catalog::MCP_ROSTER_TOOL {
+    // Two always-on names, for the same reason: the roster is the only way a
+    // session can see who it may talk to, and the profile list is the only way
+    // it can say what to run (`devboule_create_agent` names a profile and
+    // nothing else). A policy that took either away would leave an agent that
+    // cannot do its job and cannot say why.
+    if name == crate::provider_catalog::MCP_ROSTER_TOOL
+        || name == crate::provider_catalog::MCP_LIST_PROFILES_TOOL
+    {
         return true;
     }
     let Some(policy) = policy else {

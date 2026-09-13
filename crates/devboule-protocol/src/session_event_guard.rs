@@ -107,7 +107,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
             child_session_id: "s.1.2".to_string(),
             display_name: "worker".to_string(),
             provider: "claude".to_string(),
-            preset: "worker".to_string(),
+            profile: "worker".to_string(),
         },
         ChildFinished => SessionEvent::ChildFinished {
             message_id: Some("child-finished-1".to_string()),
@@ -168,7 +168,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
             create_agent: Some(crate::CreateAgentCard {
                 creator_session_id: "s.1.1".to_string(),
                 provider: "claude".to_string(),
-                preset: "worker".to_string(),
+                profile: "worker".to_string(),
                 title: "worker".to_string(),
                 caps: crate::CreateAgentCaps {
                     live_children: 0,

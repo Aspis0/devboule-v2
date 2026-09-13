@@ -113,7 +113,7 @@ pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, Jou
                 generation, status, exit_code, closed, last_seq, degraded,
                 dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                 peer_session_id, provider, origin_kind, origin_device, origin_role,
-                display_name, created_by
+                display_name, created_by, profile_id, context_id, unattended, labels
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
@@ -154,7 +154,23 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         origin: origin_from_columns(row.get(20)?, row.get(21)?, row.get(22)?),
         display_name: row.get(23)?,
         created_by: row.get(24)?,
+        profile_id: row.get(25)?,
+        context_id: row.get(26)?,
+        unattended: row.get::<_, i64>(27)? != 0,
+        labels: deserialize_labels(row.get(28)?),
     })
+}
+
+/// The session's labels, as the JSON object the daemon wrote.
+///
+/// A column that cannot be parsed is an **empty** map rather than a failure: the
+/// labels are display-only, and refusing to list a session because a
+/// human-facing annotation is corrupt would take the whole roster down with it.
+/// Nothing decides anything from a label, so there is nothing to fail closed
+/// about.
+fn deserialize_labels(raw: Option<String>) -> std::collections::BTreeMap<String, String> {
+    raw.and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 pub(super) fn replay_session(
@@ -168,7 +184,7 @@ pub(super) fn replay_session(
                     generation, status, exit_code, closed, last_seq, degraded,
                     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                     peer_session_id, provider, origin_kind, origin_device, origin_role,
-                    display_name, created_by
+                    display_name, created_by, profile_id, context_id, unattended, labels
              FROM sessions WHERE id = ?1",
             [session_id],
             row_to_session,

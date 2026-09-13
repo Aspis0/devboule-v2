@@ -51,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 10;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 11;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -243,6 +243,24 @@ pub struct SessionRecord {
     /// NULL for a session a human asked for, and for every row that predates
     /// v10.
     pub created_by: Option<String>,
+    /// The profile this session was created from, by its stable **id** — the
+    /// one value a rename cannot change. NULL for a session a human started
+    /// from the provider picker and for every row that predates v11.
+    pub profile_id: Option<String>,
+    /// The context this session belongs to: its own id, or the context of the
+    /// session that created it. NULL only for rows that predate v11, which
+    /// [`SessionRecord::to_session`] reads back as the session's own id.
+    pub context_id: Option<String>,
+    /// Whether this session was born from a profile that approves permission
+    /// prompts in place of the human. Written once, by the creation, and never
+    /// re-derived: un-ticking the profile afterwards does not change the row.
+    /// `0` for every row that predates v11 — the only honest reading, since no
+    /// profile existed to have approved anything.
+    pub unattended: bool,
+    /// The session's labels, as the JSON object the daemon stamped. Empty for a
+    /// session with none (a human's own sessions carry none), and for every row
+    /// that predates v11.
+    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -436,7 +454,23 @@ impl SessionRecord {
             // parent it was created by.
             display_name: self.display_name.clone(),
             created_by: self.created_by.clone(),
+            profile_id: self.profile_id.clone(),
+            context_id: Some(self.context()),
+            unattended: self.unattended,
+            labels: self.labels.clone(),
         }
+    }
+
+    /// The context this session belongs to: the row's own value when it has one,
+    /// and its own id otherwise.
+    ///
+    /// The second half is the rule [`Session::context_id`] states for a session
+    /// no other session created, and it is applied here rather than written into
+    /// the v11 migration because a row that predates the column has no creator
+    /// to inherit from in the daemon's own words — deriving it keeps one place
+    /// that answers "what context is this session in".
+    pub fn context(&self) -> String {
+        self.context_id.clone().unwrap_or_else(|| self.id.clone())
     }
 }
 
@@ -2134,14 +2168,15 @@ fn on_write_error(error: &JournalError) {
 }
 
 fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), JournalError> {
+    let labels = labels_json(&record.labels);
     conn.execute(
         "INSERT INTO sessions (
             id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
             generation, status, exit_code, closed, last_seq, degraded,
             dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
             reaped, peer_session_id, provider, origin_kind, origin_device, origin_role,
-            display_name, created_by
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+            display_name, created_by, profile_id, context_id, unattended, labels
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -2161,7 +2196,18 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             origin_device = COALESCE(excluded.origin_device, sessions.origin_device),
             origin_role = COALESCE(excluded.origin_role, sessions.origin_role),
             display_name = COALESCE(excluded.display_name, sessions.display_name),
-            created_by = COALESCE(excluded.created_by, sessions.created_by)",
+            created_by = COALESCE(excluded.created_by, sessions.created_by),
+            profile_id = COALESCE(excluded.profile_id, sessions.profile_id),
+            context_id = COALESCE(excluded.context_id, sessions.context_id),
+            -- Unattended is a fact of the birth and only ever goes one way: a
+            -- later write that says `0` (a resume rebuilt from a row that
+            -- predates the marker, an ordinary end) must not erase what the
+            -- creation recorded.
+            unattended = MAX(sessions.unattended, excluded.unattended),
+            -- Same rule: labels are written once, at the creation. A later
+            -- upsert with an empty map (the common one, every end marker)
+            -- must not erase them.
+            labels = COALESCE(NULLIF(excluded.labels, '{}'), sessions.labels)",
         params![
             record.id,
             record.owner,
@@ -2188,9 +2234,23 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             record.origin.role.map(|role| role.as_str().to_string()),
             record.display_name,
             record.created_by,
+            record.profile_id,
+            record.context_id,
+            if record.unattended { 1 } else { 0 },
+            labels,
         ],
     )?;
     Ok(())
+}
+
+/// The labels column: one JSON object, and `{}` for a session that carries none
+/// (which is every session a human started).
+///
+/// A map whose encoding fails is written as `{}` rather than as a half-object:
+/// nothing reads a label to decide anything, so the worst case is a display that
+/// shows no labels — never a session that cannot be listed.
+fn labels_json(labels: &std::collections::BTreeMap<String, String>) -> String {
+    serde_json::to_string(labels).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn append_event(
@@ -2673,6 +2733,14 @@ pub fn new_session_record(
         // honest default for a session a human asked for.
         display_name: None,
         created_by: None,
+        // Same rule for the creation-from-profile facts: a human's own session
+        // resolves no profile, carries no labels and approves nothing, and its
+        // context is itself — which `to_session` derives from the row's own id
+        // rather than storing, so there is one place that answers that question.
+        profile_id: None,
+        context_id: None,
+        unattended: false,
+        labels: std::collections::BTreeMap::new(),
     }
 }
 

@@ -159,6 +159,33 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                 tx.execute("ALTER TABLE sessions ADD COLUMN created_by TEXT", [])?;
             }
         }
+        if version < 11 {
+            // What a creation from a profile leaves on its child
+            // (`create-from-profile`). `unattended` is the one column with a
+            // default, and the reason is the same one the v10 pair gives in
+            // reverse: a row that predates this migration was created from no
+            // profile, so `0` is an observed fact about it rather than a guess,
+            // and a row later written by something that omits the column reads
+            // the same way. `profile_id` and `context_id` are nullable, and NULL
+            // means what it says — no profile made this session — while a NULL
+            // `context_id` reads back as the session's own id, which is the rule
+            // the field states.
+            if !session_has_column(&tx, "profile_id")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN profile_id TEXT", [])?;
+            }
+            if !session_has_column(&tx, "context_id")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN context_id TEXT", [])?;
+            }
+            if !session_has_column(&tx, "unattended")? {
+                tx.execute(
+                    "ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+            if !session_has_column(&tx, "labels")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN labels TEXT", [])?;
+            }
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -166,6 +193,9 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     // The two slice-5 columns are checked by shape rather than by presence
     // (audit S5B-07) — see [`validate_agent_columns`].
     validate_agent_columns(&conn)?;
+    // The same rule for the four the v11 migration adds — see
+    // [`validate_profile_columns`].
+    validate_profile_columns(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -209,19 +239,7 @@ fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalEr
 /// v9 shape checks use) rather than being used.
 fn validate_agent_columns(conn: &Connection) -> Result<(), JournalError> {
     for column in ["display_name", "created_by"] {
-        let mut statement = conn.prepare(
-            "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('sessions') \
-             WHERE name = ?1",
-        )?;
-        let shape = statement
-            .query_row([column], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i32>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })
-            .optional()?;
+        let shape = column_shape(conn, column)?;
         let ours = matches!(
             shape,
             Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")
@@ -233,6 +251,63 @@ fn validate_agent_columns(conn: &Connection) -> Result<(), JournalError> {
         }
     }
     Ok(())
+}
+
+/// The four columns the v11 migration adds, by shape for the same reason.
+///
+/// `profile_id`, `context_id` and `labels` are `TEXT`, nullable, no default —
+/// the exact shape the daemon writes. `unattended` is the odd one and is checked
+/// as `INTEGER NOT NULL DEFAULT 0`: it is a three-state column only if one lies,
+/// and this daemon writes `0`/`1` into a column that can never be NULL, so a
+/// hand-made `unattended TEXT` (or a nullable one) is a schema this daemon
+/// cannot read honestly and takes the corrupt-journal path.
+fn validate_profile_columns(conn: &Connection) -> Result<(), JournalError> {
+    for column in ["profile_id", "context_id", "labels"] {
+        let shape = column_shape(conn, column)?;
+        let ours = matches!(
+            shape,
+            Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")
+        );
+        if !ours {
+            return Err(JournalError::Corrupt(format!(
+                "journal schema has an unexpected sessions.{column} column"
+            )));
+        }
+    }
+    let shape = column_shape(conn, "unattended")?;
+    let ours = matches!(
+        shape,
+        Some((ref kind, 1, Some(ref default)))
+            if kind.eq_ignore_ascii_case("integer") && default == "0"
+    );
+    if !ours {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected sessions.unattended column".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// One column's `(type, notnull, default)` as SQLite reports it, or `None` when
+/// the table has no such column.
+fn column_shape(
+    conn: &Connection,
+    column: &str,
+) -> Result<Option<(String, i32, Option<String>)>, JournalError> {
+    let mut statement = conn.prepare(
+        "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('sessions') \
+         WHERE name = ?1",
+    )?;
+    let shape = statement
+        .query_row([column], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i32>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .optional()?;
+    Ok(shape)
 }
 
 /// Give every stored permission payload written before v9 the `local` origin it

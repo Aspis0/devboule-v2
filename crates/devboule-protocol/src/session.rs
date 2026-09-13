@@ -233,6 +233,49 @@ pub struct Session {
     /// before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+    /// The profile this session was created from, by its **stable id** and
+    /// never by its name.
+    ///
+    /// A profile can be renamed (the id is what survives) and two profiles may
+    /// share a name, so the name a creation was asked for is not a fact about
+    /// the session that came out of it; the id is. `None` for a session a human
+    /// started from the provider picker — that path resolves no profile — and
+    /// for every row written before the column existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    /// The context this session belongs to: **its own id**, unless another
+    /// session created it, in which case it is that creator's `context_id`.
+    ///
+    /// One value for a creator and everything it commissions, at any depth, so
+    /// a caller can name its whole family without keeping a map of its own
+    /// (A2A's `contextId`). Written once at create from a fact the daemon
+    /// already had; a client that reads a frame without it derives the same
+    /// value from the session's own id, which is the rule the field states.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    /// True when this session was created from a profile that approves
+    /// permission prompts in place of the human.
+    ///
+    /// A fact of the session's **birth**: written once by the creation and
+    /// never re-derived, so a human who later un-ticks that profile, or edits
+    /// its mode, does not change what this child already is — it did run
+    /// unattended. `#[serde(default)]` for the same reason `created_by` has it:
+    /// a client that speaks an older dialect still parses a frame carrying it,
+    /// and a row written before the flag existed reads back as `false`, which
+    /// is the only honest reading (no profile existed to have approved
+    /// anything).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unattended: bool,
+    /// The labels this session carries: the caller's own free-form map with the
+    /// four `devboule.` keys (`created-by`, `depth`, `origin`, `profile`) the
+    /// daemon stamped into it.
+    ///
+    /// For humans and for display, and for nothing else: no code in the daemon
+    /// reads a label to decide anything. The `devboule.` prefix is reserved —
+    /// the daemon's own facts are the ones it writes, and a caller cannot set
+    /// or overwrite one.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 /// The connection-scoped roster update. It carries the fields the tab strip
@@ -267,6 +310,34 @@ pub struct SessionStateSnapshot {
     /// started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+    /// The profile id this session was created from, when a profile made it.
+    /// Carried on every push for the same reason as the name: a child created
+    /// while the app is open arrives as a push-only row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    /// The context this session belongs to (its own id, or its creator's). On
+    /// every push, like the name and the creator, because a push-only row has
+    /// only what the push carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    /// Whether this session was born from an auto-accepting profile. Carried on
+    /// every push: the marker is a fact of the row, and a row that arrives
+    /// without it is a row that was not unattended.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unattended: bool,
+    /// The session's labels, stamped by the daemon and readable by a human.
+    /// Carried on every push for the same reason as the name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, String>,
+}
+
+/// `skip_serializing_if` for a flag whose absence means `false`.
+///
+/// The counterpart of `Option::is_none` for a `bool`: a frame that predates the
+/// flag deserializes to `false` through `#[serde(default)]`, so serializing an
+/// explicit `false` would add a key that carries nothing.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// What the journal can honestly say about a finished transcript.
@@ -452,7 +523,11 @@ pub struct CreateAgentCard {
     /// so this is a restatement on the wire rather than a lookup for the app.
     pub creator_session_id: String,
     pub provider: String,
-    pub preset: String,
+    /// The **name** of the profile the child would be created from: the card is
+    /// the human's sentence, and the name is the word the human ticked. What the
+    /// profile resolves to is on the card's description; the child's session row
+    /// records the profile's stable id, not this.
+    pub profile: String,
     /// The display name the child would be created with.
     pub title: String,
     pub caps: CreateAgentCaps,
@@ -634,8 +709,13 @@ pub enum SessionEvent {
         display_name: String,
         /// The catalog provider id the child was created with.
         provider: String,
-        /// The preset the child was created under (`worker`, `design`).
-        preset: String,
+        /// The **name** of the profile the child was created from, as it was
+        /// called at that moment. A record of a birth: the child's session row
+        /// carries the profile's stable id (`Session.profile_id`), because a
+        /// rename must not make a running child misreport what it was started
+        /// from, while this event is the sentence the creator's transcript
+        /// shows.
+        profile: String,
     },
     /// A created child finished, in structured form, published on the creator
     /// beside the `<devboule-system>` text message that carries the same facts
@@ -1187,6 +1267,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let encoded = serde_json::to_value(snapshot).expect("snapshot json");
         assert_eq!(encoded["workspaceId"], "ws-1");
@@ -1216,6 +1300,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: Some("worker".to_string()),
             created_by: Some("s.parent.1".to_string()),
+            profile_id: Some("profile-1".to_string()),
+            context_id: Some("s.root.1".to_string()),
+            unattended: true,
+            labels: Default::default(),
         };
         let encoded = serde_json::to_value(&snapshot).expect("snapshot json");
         assert_eq!(encoded["displayName"], "worker");
@@ -1229,6 +1317,10 @@ mod tests {
         let plain = SessionStateSnapshot {
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
             ..snapshot
         };
         let encoded = serde_json::to_value(&plain).expect("snapshot json");
@@ -1252,6 +1344,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["workspaceId"], "ws-1");
@@ -1280,6 +1376,10 @@ mod tests {
             origin: SessionOrigin::peer("device-phone", PeerRole::Client),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["origin"]["kind"], "peer");
@@ -1318,6 +1418,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let mut value = serde_json::to_value(&session).expect("json");
         value
@@ -1349,6 +1453,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let encoded = serde_json::to_value(&session).expect("session json");
         assert_eq!(encoded["state"]["type"], "silent");
@@ -1385,6 +1493,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["provider"], "grok");
@@ -1831,6 +1943,10 @@ mod tests {
                 origin: SessionOrigin::local(),
                 display_name: None,
                 created_by: None,
+                profile_id: None,
+                context_id: None,
+                unattended: false,
+                labels: Default::default(),
             }),
         };
         let value = serde_json::to_value(&resumed).expect("json");
@@ -2000,6 +2116,10 @@ mod tests {
             origin: SessionOrigin::local(),
             display_name: Some("worker".to_string()),
             created_by: Some("s.parent.1".to_string()),
+            profile_id: Some("profile-1".to_string()),
+            context_id: Some("s.root.1".to_string()),
+            unattended: true,
+            labels: Default::default(),
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["displayName"], "worker");
@@ -2013,6 +2133,10 @@ mod tests {
         let unnamed = Session {
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: false,
+            labels: Default::default(),
             ..session
         };
         let value = serde_json::to_value(&unnamed).expect("json");
@@ -2039,7 +2163,7 @@ mod tests {
             child_session_id: "s.parent.2".to_string(),
             display_name: "worker".to_string(),
             provider: "claude".to_string(),
-            preset: "worker".to_string(),
+            profile: "worker".to_string(),
         };
         let value = serde_json::to_value(&created).expect("json");
         assert_eq!(value["type"], "agent_created");
@@ -2047,7 +2171,7 @@ mod tests {
         assert_eq!(value["childSessionId"], "s.parent.2");
         assert_eq!(value["displayName"], "worker");
         assert_eq!(value["provider"], "claude");
-        assert_eq!(value["preset"], "worker");
+        assert_eq!(value["profile"], "worker");
         assert_eq!(
             serde_json::from_value::<SessionEvent>(value).expect("round trip"),
             created
