@@ -1,4 +1,6 @@
-import type { DesignAttachment } from "./designHost";
+import { reasonFromCause, type AttachmentReference } from "../../lib/tauri";
+import type { PromptAttachment } from "../../types/ipc";
+import type { DesignAttachment, DesignAttachmentFeedback } from "./designHost";
 import {
   countPdfPages,
   PDF_DEFAULT_MAX_BYTES_PER_PAGE,
@@ -43,6 +45,15 @@ import { rasterMetadataNotice, stripRasterMetadata } from "./rasterMetadata";
  * pages cannot fit is refused before one of them is rendered, and a document
  * that travels in part says which pages stayed behind and whether the budget or
  * the render lost them.
+ *
+ * The fourth: a page never rides in the prompt frame. The wire stores an
+ * attachment with a frame of its own and lets the prompt *name* it by the
+ * reference the deposit answered with, so a document is no longer bounded by the
+ * 256 KiB the composer can carry inline — `DESIGN_PDF_MAX_PAGES` is its ceiling
+ * instead, and `transportDesignAttachments` is the only place that decides which
+ * attachments are deposited and which ride in the frame. A deposit that fails is
+ * not rolled back (the protocol has no undeposit) and is not silent: the pages
+ * that were stored still travel, and the ones that were not are named.
  */
 
 /** The three types an attachment travels under, declared as the wire's own names. */
@@ -70,11 +81,16 @@ export const ATTACHMENT_INPUT_ACCEPT = [...ACCEPTED_ATTACHMENT_MIME_TYPES, "appl
 export const MAX_ATTACHMENT_BYTES = 128 * 1024;
 
 /**
- * 256 KiB across the composer, counted in file bytes — one artifact's worth of raw
- * input. It bounds what the composer holds and what a run carries; the base64 form
- * of a raster is a third larger again, which is already priced in above, where the
- * per-file ceiling is derived from the artifact budget. Past this the user is
- * attaching a document, not a starting point.
+ * 256 KiB across the composer's inline attachments, counted in file bytes: the
+ * wire's own budget for the files that ride base64 inside the frame that carries
+ * the prompt. The base64 form of a raster is a third larger again, which is
+ * already priced in above, where the per-file ceiling is derived from the
+ * artifact budget. Past this the user is attaching a document, not a starting
+ * point.
+ *
+ * A page of a document is not counted here, because it does not ride in that
+ * frame: it is deposited and named by reference, and what bounds a document is
+ * `DESIGN_PDF_MAX_PAGES` and the store's budget (`DESIGN_DEPOSIT_BUDGET_BYTES`).
  */
 export const MAX_ATTACHMENT_TOTAL_BYTES = 256 * 1024;
 
@@ -84,6 +100,33 @@ export const MAX_ATTACHMENT_TOTAL_BYTES = 256 * 1024;
  * A starting point is a handful of files, not a gallery.
  */
 export const MAX_ATTACHMENT_COUNT = 4;
+
+/**
+ * Forty pages. How many pages one attached document may contribute.
+ *
+ * Not derived from the inline budget any more, and not a copy of a wire
+ * constant: a page is deposited, so the composer's 256 KiB of inline bytes no
+ * longer bounds a document. The two bounds that do are far above this one — the
+ * protocol allows 200 references per prompt (`MAX_ATTACHMENT_REFERENCES`) and the
+ * store holds 20 MiB per owner (`DESIGN_DEPOSIT_BUDGET_BYTES`) — and forty
+ * worst-case pages of `PDF_DEFAULT_MAX_BYTES_PER_PAGE` (96 KiB) are 3.8 MiB.
+ * Forty is the product's number: a working presentation, not a book.
+ */
+export const DESIGN_PDF_MAX_PAGES = 40;
+
+/**
+ * 20 MiB: everything one owner may hold in the attachment store, across their
+ * sessions. The daemon's own per-owner budget (`MAX_ATTACHMENT_OWNER_BYTES` in
+ * the protocol crate), restated here because the composer has to refuse against
+ * it before it spends a frame per page on a plan the store would reject.
+ *
+ * Advisory in one direction only, and the direction matters: the daemon walks
+ * the owner's folders under the store's write lock and is the enforcement, while
+ * this side counts what it deposited and cannot see files left by an earlier
+ * run. So the composer may refuse something the daemon would have taken (its
+ * count is the truth), never the reverse.
+ */
+export const DESIGN_DEPOSIT_BUDGET_BYTES = 20 * 1024 * 1024;
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
@@ -610,6 +653,22 @@ function totalBytes(attachments: readonly DesignAttachment[]): number {
 }
 
 /**
+ * The same sum over the attachments that ride in the prompt frame: everything
+ * except the pages of a document, which are deposited.
+ *
+ * Two counters rather than one, because the two limits are two limits. The
+ * 256 KiB is the frame's; counting a deck's pages against it would refuse a
+ * dropped image for bytes that are not in the frame at all, and would hide the
+ * page ceiling behind a byte ceiling the user cannot see.
+ */
+function inlineBytes(attachments: readonly DesignAttachment[]): number {
+  return attachments.reduce(
+    (sum, attachment) => sum + (isDocumentPage(attachment) ? 0 : attachment.bytes),
+    0,
+  );
+}
+
+/**
  * Reads `aborted` through a call, so the compiler cannot narrow it away.
  *
  * `AbortSignal.aborted` is declared `readonly boolean`, so after one
@@ -666,39 +725,41 @@ function pillCount(attachments: readonly DesignAttachment[]): number {
 
 /**
  * What the composer can carry of one PDF, in pages — the one place the number is
- * computed — and which of its two limits blocked it when the answer is none.
+ * computed — and which of its limits blocked it when the answer is none.
  *
  * A PDF is one pill whose pages travel as pictures, so the pills bound how many
- * *documents* the composer holds and the bytes bound how many pictures one of
- * them contributes. Three numbers decide the answer, each stated where it
- * belongs: `MAX_ATTACHMENT_COUNT` (4) and `MAX_ATTACHMENT_TOTAL_BYTES` (256 KiB)
- * are what the composer holds today — small on purpose, because an attachment
- * rides base64 inside the frame that carries the prompt, under a structural
- * ceiling that is not moving, so 256 KiB of raw bytes is already ~341 KiB
- * encoded — and `PDF_DEFAULT_MAX_BYTES_PER_PAGE` (96 KiB) is the largest page
- * the renderer produces by default, measured rather than picked: flat vector
- * decks encode to ~31 KiB a page at scale 1.0, photographic plates to ~79 KiB.
+ * *documents* the composer holds and one ceiling bounds how many pictures one of
+ * them contributes: `DESIGN_PDF_MAX_PAGES` (40). `PDF_DEFAULT_MAX_BYTES_PER_PAGE`
+ * (96 KiB) is the largest page the renderer produces by default, measured rather
+ * than picked: flat vector decks encode to ~31 KiB a page at scale 1.0,
+ * photographic plates to ~79 KiB.
  *
- * The budget holds the worst page the renderer will produce, not the average,
- * which is why an empty composer floors at two pages even though the measured
- * average on a mixed deck (~46.7 KiB) would fit five. So two pages is the honest
- * capacity today, and a forty-page deck is attached in part with the pages
- * named. When the attachment deposit lands — one page per frame, references
- * instead of inline bytes — both terms below are replaced at once, and this
- * function is the only place that has to know.
+ * The two terms that used to bound this — `MAX_ATTACHMENT_TOTAL_BYTES` (256 KiB)
+ * and the per-page reading of `MAX_ATTACHMENT_COUNT` — are gone from the
+ * arithmetic, and deliberately not replaced by a smaller one. A page does not
+ * ride in the frame that carries the prompt any more: it is deposited, one frame
+ * each, and the prompt names it by reference. The store's budget is read here
+ * anyway, because a composer that somehow holds the owner's whole 20 MiB must
+ * refuse a document before rendering it rather than discover it at the first
+ * deposit — but it is not the term that binds in practice: four pills of forty
+ * worst-case pages are 15 MiB, so `DESIGN_PDF_MAX_PAGES` is what the composer
+ * spends and the store's budget is what the daemon enforces against the tree.
  */
 export interface PdfPageBudget {
   /** Pages one document may contribute. */
   readonly pages: number;
   /** Which limit blocked it, when no page fits. Null when at least one does. */
-  readonly blockedBy: "slots" | "bytes" | null;
+  readonly blockedBy: "slots" | "store" | null;
 }
 
 export function pdfPageBudget(existing: readonly DesignAttachment[]): PdfPageBudget {
   if (pillCount(existing) >= MAX_ATTACHMENT_COUNT) return { pages: 0, blockedBy: "slots" };
-  const free = MAX_ATTACHMENT_TOTAL_BYTES - totalBytes(existing);
-  const pages = Math.floor(free / PDF_DEFAULT_MAX_BYTES_PER_PAGE);
-  return { pages: Math.max(0, pages), blockedBy: pages > 0 ? null : "bytes" };
+  // The worst page is what a page costs: the budget has to hold the deck the
+  // renderer will produce, not the deck it usually produces.
+  const free = DESIGN_DEPOSIT_BUDGET_BYTES - totalBytes(existing);
+  const byStore = Math.floor(free / PDF_DEFAULT_MAX_BYTES_PER_PAGE);
+  const pages = Math.min(DESIGN_PDF_MAX_PAGES, Math.max(0, byStore));
+  return { pages, blockedBy: pages > 0 ? null : "store" };
 }
 
 /** `page 4`, `pages 4-9`, `pages 4, 7 and 9`: the pages a sentence has to name. */
@@ -710,11 +771,11 @@ function pageList(pages: readonly number[]): string {
   return `pages ${listWithAnd(pages.map((page) => page.toString()))}`;
 }
 
-/** Why pages did not travel: the composer's budget, its per-file ceiling, or a render that gave up. */
+/** Why pages did not travel: the price of a page, its per-file ceiling, or a render that gave up. */
 export type PdfPageLossCause = "budget" | "size" | "render";
 
 /** Why nothing was attached at all, in the terms the sentence has to name. */
-export type PdfRefusalCause = "slots" | "budget" | "size" | "render";
+export type PdfRefusalCause = "slots" | "store" | "size" | "render";
 
 export interface PdfRefusalNoticeInput {
   readonly name: string;
@@ -722,8 +783,14 @@ export interface PdfRefusalNoticeInput {
   readonly pageCount: number;
   /** Which limit or failure refused the document. */
   readonly cause: PdfRefusalCause;
-  /** Raw bytes the composer can still carry. Read for the `budget` cause only. */
+  /** Bytes the attachment store can still take. Read for the `store` cause only. */
   readonly freeBytes: number;
+  /**
+   * What to do about it, when the caller wants to say something other than the
+   * import's advice. The deposit path passes its own: by then the file is
+   * already in the composer and re-attaching it is not what frees bytes.
+   */
+  readonly retry?: string;
   /**
    * What the document's first page measured, when a render produced one. Absent
    * when the refusal happened before anything was rendered, in which case the
@@ -742,14 +809,14 @@ export interface PdfRefusalNoticeInput {
  * two pages attached and thirty-eight gone — is worse than an error, because an
  * agent handed half a deck answers confidently and wrongly. So the document is
  * refused before it is rendered, and the refusal states the constraint that
- * actually bound: the slots the composer has left, the bytes it can carry, the
- * size one attachment may reach, or a render that ran out of time.
+ * actually bound: the slots the composer has left, the bytes the store can still
+ * take, the size one attachment may reach, or a render that ran out of time.
  */
 export function pdfRefusalNotice(input: PdfRefusalNoticeInput): string {
   const pages = `${input.pageCount.toString()} ${input.pageCount === 1 ? "page" : "pages"}`;
   const them = input.pageCount === 1 ? "it" : "them";
   const head = `${input.name} has ${pages}, and none of ${them} `;
-  const retry = "Remove an attached file and attach the PDF again.";
+  const retry = input.retry ?? "Remove an attached file and attach the PDF again.";
   if (input.cause === "slots") {
     return `${head}fits: the composer can hold ${MAX_ATTACHMENT_COUNT.toString()} attachments and it is holding them, and a document is one of them. ${retry}`;
   }
@@ -767,7 +834,7 @@ export function pdfRefusalNotice(input: PdfRefusalNoticeInput): string {
     input.firstPageBytes === undefined
       ? `one rendered page needs up to ${formatAttachmentSize(PDF_DEFAULT_MAX_BYTES_PER_PAGE)}`
       : `its first page renders to ${formatAttachmentSize(input.firstPageBytes)}`;
-  return `${head}fits: ${needs} and the composer has ${formatAttachmentSize(input.freeBytes)} of its attachment budget free, so nothing was attached. ${retry}`;
+  return `${head}fits: ${needs} and the attachment store has ${formatAttachmentSize(input.freeBytes)} free, so nothing was attached. ${retry}`;
 }
 
 export interface PdfDocumentNoticeInput {
@@ -791,12 +858,13 @@ export interface PdfDocumentNoticeInput {
  * Attached in full is said out loud rather than left to the absence of bad news:
  * "the document is here, whole" is the answer to the question a user attaches a
  * deck to ask. Attached in part names the pages that stayed behind and which
- * cause lost them — the composer's budget, or a render that ran out of time —
- * because half a deck that looks whole is the failure this feature exists to
+ * cause lost them — the composer's page ceiling, or a render that ran out of time
+ * — because half a deck that looks whole is the failure this feature exists to
  * prevent. Pages lost to the budget are the pages it never asked for (the ones
- * past the last that fit) plus any page whose measured bytes did not fit; the
- * clause says where the money ran out rather than quoting the budget, which is
- * the same fact in the form a user can check against the pages they see. Pages
+ * past the last that fits) plus any page whose measured bytes did not fit; the
+ * clause states the count it settled on under the ceiling it settled under,
+ * which is the same fact in the form a user can check against the pages they
+ * see. Pages
  * lost to the render are the ones the clock abandoned mid-walk, and the
  * renderer's own notice is asked for the downscaled ones, which only it can word.
  */
@@ -808,9 +876,8 @@ export function pdfDocumentNotice(input: PdfDocumentNoticeInput): string {
   }
   const reasons: string[] = [];
   if (input.lostToBudget.length > 0) {
-    const last = input.attached[input.attached.length - 1];
     reasons.push(
-      `${pageList(input.lostToBudget)} ${input.lostToBudget.length === 1 ? "was" : "were"} left out because the composer's remaining attachment budget ran out after page ${last}`,
+      `${pageList(input.lostToBudget)} ${input.lostToBudget.length === 1 ? "was" : "were"} left out because a document may contribute at most ${DESIGN_PDF_MAX_PAGES.toString()} pages, and this one contributed ${input.attached.length.toString()}`,
     );
   }
   if (input.lostToSize.length > 0) {
@@ -853,8 +920,6 @@ interface PdfDocumentImport {
   readonly rejection: DesignAttachmentRejection | null;
   readonly notices: readonly string[];
   readonly attachments: readonly DesignAttachment[];
-  /** Carried bytes, for the running total the ceilings are checked against. */
-  readonly bytes: number;
   /** Duplicate-detection keys for the pages that travelled. */
   readonly keys: readonly string[];
 }
@@ -863,7 +928,6 @@ const NOTHING_IMPORTED: Omit<PdfDocumentImport, "stop"> = {
   rejection: null,
   notices: [],
   attachments: [],
-  bytes: 0,
   keys: [],
 };
 
@@ -876,24 +940,32 @@ const NOTHING_IMPORTED: Omit<PdfDocumentImport, "stop"> = {
  * discovered half-attached. The renderer is asked for exactly those pages
  * (`pageRange` and `maxPages` are the same number, and the pages beyond it are
  * never parsed for rendering), it streams each page through the sink as it goes,
- * and the running byte total is enforced there — against the bytes a page
- * actually carries, because a page that fits no rung of the renderer's scale
- * ladder is returned anyway and can be larger than the per-page ceiling this
- * budget assumed. So is the per-file ceiling every other attachment is held to:
- * a manufactured page is an attachment like any other, and the wire refuses one
- * over 144 KiB whatever produced it.
+ * and the per-page ceiling is enforced there: a page that fits no rung of the
+ * renderer's scale ladder is returned anyway and can be larger than the ceiling
+ * the budget assumed, and the wire refuses one over
+ * `MAX_ATTACHMENT_DATA_BYTES` whatever produced it.
+ *
+ * The page total is not enforced in the sink. Pages do not ride in the prompt
+ * frame any more — they are deposited at send time, and the store's budget is
+ * what bounds the whole plan (`transportDesignAttachments` refuses a plan that
+ * exceeds it before the first frame). Counting them against the composer's inline
+ * budget here would refuse a page for a frame it is not in.
  */
 async function importPdfDocument(input: {
   readonly name: string;
   readonly bytes: Uint8Array;
   /** `pdfPageBudget` for the composer as it stands, with the reason it is empty. */
   readonly budget: PdfPageBudget;
-  /** Raw bytes the composer already carries, this batch included. */
-  readonly carried: number;
+  /**
+   * Bytes the store would hold for this composer, this batch included: the pages
+   * of the documents it already carries plus the files that ride inline. Read for
+   * the store's free bytes in a refusal, never for the composer's own ceilings.
+   */
+  readonly held: number;
   readonly seen: ReadonlySet<string>;
   readonly options: DesignAttachmentImportOptions | undefined;
 }): Promise<PdfDocumentImport> {
-  const { name, bytes, budget, carried, seen, options } = input;
+  const { name, bytes, budget, held, seen, options } = input;
   const signal = options?.signal;
 
   const counted = await countPdfPages(bytes, name, signal);
@@ -914,8 +986,8 @@ async function importPdfDocument(input: {
           ? pdfRefusalNotice({
               name,
               pageCount: counted.pageCount,
-              cause: budget.blockedBy === "slots" ? "slots" : "budget",
-              freeBytes: MAX_ATTACHMENT_TOTAL_BYTES - carried,
+              cause: budget.blockedBy === "slots" ? "slots" : "store",
+              freeBytes: Math.max(0, DESIGN_DEPOSIT_BUDGET_BYTES - held),
             })
           : counted.reason,
       },
@@ -939,7 +1011,6 @@ async function importPdfDocument(input: {
   }
 
   const pages: PdfRenderedPage[] = [];
-  let measured = 0;
   let firstPageBytes: number | undefined;
   /** Pages this document rendered larger than one attachment may be. */
   const oversized: number[] = [];
@@ -964,16 +1035,7 @@ async function importPdfDocument(input: {
           oversized.push(page.pageNumber);
           return;
         }
-        if (carried + measured + page.bytes.length > MAX_ATTACHMENT_TOTAL_BYTES) {
-          // The ceiling binds on the bytes a page really carries: the renderer
-          // guarantees no such thing (see `renderOnePage`), so the walk stops
-          // here rather than carrying a page the composer cannot hold — and the
-          // page, and every page after it, is named in the sentence below.
-          controller.abort();
-          return;
-        }
         pages.push(page);
-        measured += page.bytes.length;
         options?.onProgress?.(pdfProgressNotice(name, pages.length, planned));
       },
     },
@@ -1019,7 +1081,7 @@ async function importPdfDocument(input: {
     // ceiling is a different sentence — and a different thing to do about it —
     // from one the composer had no room for.
     const cause: PdfRefusalCause =
-      lostToSize.length > 0 ? "size" : outcome.stoppedEarly === "timeout" ? "render" : "budget";
+      lostToSize.length > 0 ? "size" : outcome.stoppedEarly === "timeout" ? "render" : "store";
     return {
       ...NOTHING_IMPORTED,
       stop: false,
@@ -1029,7 +1091,7 @@ async function importPdfDocument(input: {
           name,
           pageCount: total,
           cause,
-          freeBytes: MAX_ATTACHMENT_TOTAL_BYTES - carried,
+          freeBytes: Math.max(0, DESIGN_DEPOSIT_BUDGET_BYTES - held),
           ...(firstPageBytes === undefined ? {} : { firstPageBytes }),
         }),
       },
@@ -1090,7 +1152,7 @@ async function importPdfDocument(input: {
   });
   if (downscaled !== "") notices.push(downscaled);
 
-  return { stop: false, rejection: null, notices, attachments, bytes: measured, keys };
+  return { stop: false, rejection: null, notices, attachments, keys };
 }
 
 /**
@@ -1117,7 +1179,9 @@ export async function importDesignAttachments(
   const rejections: DesignAttachmentRejection[] = [];
   const notices: string[] = [];
   const seen = new Set(existing.map((attachment) => `${attachment.name}:${attachment.bytes}`));
-  let carried = totalBytes(existing);
+  // The prompt frame's budget, and only that: a page of a document is deposited
+  // and is not counted here (see `inlineBytes`).
+  let carriedInline = inlineBytes(existing);
 
   for (const file of files) {
     // Counted in pills, because that is what the user sees and what the row can
@@ -1163,7 +1227,10 @@ export async function importDesignAttachments(
         name: file.name,
         bytes,
         budget: pdfPageBudget([...existing, ...attachments]),
-        carried,
+        // What the store would hold for this composer, this batch included — not
+        // just what rides in the frame: the refusal sentence quotes the store's
+        // free bytes, and the store is what holds the pages.
+        held: totalBytes([...existing, ...attachments]),
         seen,
         options,
       });
@@ -1173,8 +1240,9 @@ export async function importDesignAttachments(
       if (imported.rejection !== null) rejections.push(imported.rejection);
       notices.push(...imported.notices);
       if (imported.attachments.length > 0) {
+        // Deliberately not added to `carriedInline`: a page is deposited, so it
+        // does not compete with the files in the frame for those 256 KiB.
         attachments.push(...imported.attachments);
-        carried += imported.bytes;
         for (const key of imported.keys) seen.add(key);
       }
       continue;
@@ -1285,10 +1353,10 @@ export async function importDesignAttachments(
       };
     }
 
-    if (carried + carriedBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
+    if (carriedInline + carriedBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
       rejections.push({
         name: file.name,
-        reason: `${file.name} was not added: the attached files already add up to ${formatAttachmentSize(carried)}, and the total may be at most ${formatAttachmentSize(MAX_ATTACHMENT_TOTAL_BYTES)}.`,
+        reason: `${file.name} was not added: the files that travel in the prompt already add up to ${formatAttachmentSize(carriedInline)}, and a prompt may carry at most ${formatAttachmentSize(MAX_ATTACHMENT_TOTAL_BYTES)} of them.`,
       });
       continue;
     }
@@ -1298,9 +1366,293 @@ export async function importDesignAttachments(
     }
 
     attachments.push(attachment);
-    carried += carriedBytes;
+    carriedInline += carriedBytes;
     seen.add(`${file.name}:${carriedBytes}`);
   }
 
   return { attachments, rejections, notices };
+}
+
+/**
+ * Where an attachment goes when a prompt is sent: inside the frame, or into the
+ * store under a reference the prompt names.
+ *
+ * One rule decides it, and the rule is about what the attachment *is* rather
+ * than how large it happens to be: a page of a document is deposited, and a file
+ * the user dropped is carried inline. A size threshold would be two paths for
+ * one page count — a one-page PDF riding inline and a two-page one not — and two
+ * behaviours to keep in step for the sake of one round trip on the smallest
+ * document. So the pages of a PDF *always* travel as deposits, and the inline
+ * path stays exactly what it was for a picture the user dropped in.
+ */
+export interface DesignAttachmentTransport {
+  /** Rides in the send frame: a picture or an SVG the user dropped in. */
+  readonly inline: readonly DesignAttachment[];
+  /** Stored first, one frame per page, and named by the prompt. */
+  readonly deposits: readonly DesignAttachment[];
+}
+
+export function planAttachmentTransport(
+  attachments: readonly DesignAttachment[],
+): DesignAttachmentTransport {
+  const inline: DesignAttachment[] = [];
+  const deposits: DesignAttachment[] = [];
+  for (const attachment of attachments) {
+    if (isDocumentPage(attachment)) deposits.push(attachment);
+    else inline.push(attachment);
+  }
+  return { inline, deposits };
+}
+
+/** Whether this attachment is one page of a document the user attached. */
+function isDocumentPage(attachment: DesignAttachment): boolean {
+  return attachment.kind === "raster" && attachment.document !== undefined;
+}
+
+/**
+ * The wire form of one attachment, for `session_send` or `session_deposit`: the
+ * bytes as base64, and a name the daemon treats as display metadata only.
+ *
+ * A raster already carries base64 of its own bytes. An SVG carries sanitized
+ * source, so its bytes are the UTF-8 encoding of that source, base64'd here. The
+ * conversion happens at send time rather than at import time on purpose: the
+ * SVG's base64 exists for this one request, and keeping it out of the composer
+ * state keeps a second copy of the source from living as long as the pill does.
+ */
+export function wireAttachment(attachment: DesignAttachment): PromptAttachment {
+  return attachment.kind === "raster"
+    ? { name: attachment.name, mimeType: attachment.mimeType, data: attachment.base64 }
+    : {
+        name: attachment.name,
+        mimeType: "image/svg+xml" as const,
+        data: encodeSvgSourceBase64(attachment.source),
+      };
+}
+
+/** `wireAttachment` for a list, in the order given. */
+export function wireAttachments(
+  attachments: readonly DesignAttachment[],
+): readonly PromptAttachment[] {
+  return attachments.map((attachment) => wireAttachment(attachment));
+}
+
+/** One page of a document inside a transport plan, with its own page number. */
+interface DepositPage {
+  readonly attachment: DesignAttachment;
+  /** The document's own page, 1-based. */
+  readonly page: number;
+}
+
+/** One document's pages inside a transport plan, in composer order. */
+interface DepositGroup {
+  /** The document's id: two decks can share a file name and stay two documents. */
+  readonly id: string;
+  readonly name: string;
+  /** Pages the composer carries for it, which is what its sentence counts. */
+  readonly pageCount: number;
+  readonly pages: readonly DepositPage[];
+}
+
+/** Groups a plan's pages by the document they came from, in composer order. */
+function depositGroups(deposits: readonly DesignAttachment[]): readonly DepositGroup[] {
+  const groups: Array<{
+    id: string;
+    name: string;
+    pageCount: number;
+    pages: DepositPage[];
+  }> = [];
+  const at = new Map<string, number>();
+  for (const attachment of deposits) {
+    const document = attachment.kind === "raster" ? attachment.document : undefined;
+    if (document === undefined) continue;
+    let index = at.get(document.id);
+    if (index === undefined) {
+      index = groups.length;
+      at.set(document.id, index);
+      groups.push({
+        id: document.id,
+        name: document.name,
+        // `travelled`, not `pageCount`: a document the composer attached in part
+        // is here with the pages that travelled, and a sentence counting all five
+        // of a document carrying two would name pages the composer never had.
+        pageCount: document.travelled,
+        pages: [],
+      });
+    }
+    groups[index]?.pages.push({ attachment, page: document.page });
+  }
+  return groups;
+}
+
+export interface PdfDepositNoticeInput {
+  readonly name: string;
+  /** Pages of this document the composer carries, in document order. */
+  readonly pageCount: number;
+  /** 1-based pages the store took, in document order. */
+  readonly stored: readonly number[];
+  /** 1-based pages the store did not take, in document order. */
+  readonly lost: readonly number[];
+  /** Why they were not taken, in the words of whatever refused them. */
+  readonly reason: string;
+}
+
+/**
+ * What the composer says when the store took only part of a document: one
+ * sentence, the shape `pdfDocumentNotice` uses for a document attached in part,
+ * naming the pages that made it and why the rest did not.
+ *
+ * Said out loud because a prompt naming eleven pages of a forty-page deck reads
+ * to the agent exactly like a prompt that named an eleven-page deck, and it
+ * answers the question it was asked. What this sentence does not do is promise a
+ * rollback: the pages already stored stay stored (there is no undeposit), are
+ * charged to the store's budget, and go away when the session closes or the
+ * retention sweep reaches them. Its job is to say what the agent has.
+ */
+export function pdfDepositNotice(input: PdfDepositNoticeInput): string {
+  const pages = input.pageCount.toString();
+  const travels =
+    input.stored.length === 0
+      ? "none of its pages travel with this prompt"
+      : input.stored.length === 1
+        ? `1 of its ${pages} pages travels with this prompt`
+        : `${input.stored.length.toString()} of its ${pages} pages travel with this prompt`;
+  const lead =
+    input.stored.length === 0 ? `${input.name} was not stored` : `${input.name} was stored in part`;
+  const was = input.lost.length === 1 ? "was" : "were";
+  return `${lead}: ${pageList(input.lost)} ${was} left out because ${input.reason}, so ${travels}.`;
+}
+
+/** What one send's attachments became: the inline frame, the references, and what to say. */
+export interface DesignAttachmentSendTransport {
+  /** The attachments that ride in the send frame. */
+  readonly inline: readonly DesignAttachment[];
+  /** References for the pages that were stored, in composer order. */
+  readonly references: readonly AttachmentReference[];
+  /** The sentences the user must see. Empty when every page was stored. */
+  readonly notices: readonly string[];
+  /**
+   * True when nothing was deposited and the prompt must not be sent. Half a deck
+   * attached silently is the failure this whole path exists to prevent, so a plan
+   * the store cannot take refuses the send rather than shrinking it.
+   */
+  readonly refused: boolean;
+}
+
+export interface DesignAttachmentSendInput {
+  /** Everything the composer holds for this run, in the order it is shown. */
+  readonly attachments: readonly DesignAttachment[];
+  /**
+   * Bytes the store already holds for this owner, as far as this app knows: what
+   * it watched earlier runs deposit, counted from the references' `storedBytes`.
+   *
+   * Advisory and only ever an undercount — files an earlier app run left behind
+   * are invisible from here, and the daemon's walk is the enforcement (see
+   * `DESIGN_DEPOSIT_BUDGET_BYTES`). An undercount refuses less than the store
+   * would take, never more, which is the direction that keeps a user from being
+   * told no about a plan that would have worked.
+   */
+  readonly storedBytes: number;
+  /** One `session_deposit` call. Injected, because the sequence is this module's. */
+  readonly deposit: (attachment: PromptAttachment) => Promise<AttachmentReference>;
+  /** Progress, and the sentences below, as the composer shows them. */
+  readonly onFeedback?: (message: DesignAttachmentFeedback) => void;
+}
+
+/**
+ * Stores the pages of every attached document, one frame after another, and
+ * answers what the prompt must carry.
+ *
+ * Sequential on purpose. One deposit per frame is the protocol's shape, and a
+ * deck's pages sent as forty parallel frames would be a burst against a
+ * single-threaded daemon reader for no gain: the pages arrive in order, they are
+ * named in order, and the reference list is only ever as long as the pages that
+ * were really stored.
+ *
+ * The sequence stops at the first page the store refuses. Nothing is rolled back
+ * — there is no undeposit — so the pages that were stored still travel with the
+ * prompt, and the pages that were not are named by the sentence
+ * `pdfDepositNotice` builds.
+ */
+export async function transportDesignAttachments(
+  input: DesignAttachmentSendInput,
+): Promise<DesignAttachmentSendTransport> {
+  const { inline, deposits } = planAttachmentTransport(input.attachments);
+  const groups = depositGroups(deposits);
+  // Inline-only sends are never refused here: with nothing to deposit, the
+  // store's budget is not this send's business at all.
+  const overBudget = input.storedBytes + totalBytes(deposits) > DESIGN_DEPOSIT_BUDGET_BYTES;
+  if (deposits.length > 0 && overBudget) {
+    // Refused before the first frame, and before the composer has charged
+    // anything: the store's budget is the daemon's to enforce, but a plan it
+    // would reject page by page costs a round trip per page to discover, and the
+    // answer is already known here. The sentence is the import's own, with the
+    // store named as the bound and the action that frees it.
+    const freeBytes = Math.max(0, DESIGN_DEPOSIT_BUDGET_BYTES - input.storedBytes);
+    const notices = groups.map((group) =>
+      pdfRefusalNotice({
+        name: group.name,
+        pageCount: group.pageCount,
+        cause: "store",
+        freeBytes,
+        retry: "Remove an attached file and send again.",
+      }),
+    );
+    for (const notice of notices) input.onFeedback?.({ kind: "error", text: notice });
+    return { inline, references: [], notices, refused: true };
+  }
+
+  const references: AttachmentReference[] = [];
+  /** Pages stored, per document id, so a sentence can name the ones that were not. */
+  const kept = new Map<string, number[]>();
+  /** Where the sequence stopped, and why. Null when every page was stored. */
+  let failure: { group: DepositGroup; page: number; reason: string } | null = null;
+  for (const group of groups) {
+    for (const entry of group.pages) {
+      try {
+        references.push(await input.deposit(wireAttachment(entry.attachment)));
+      } catch (cause) {
+        // A FAILED DEPOSIT IS NOT ROLLED BACK, and it cannot be: the protocol has
+        // no undeposit, so a page the store already took stays stored, is charged
+        // to the store's budget, and goes away when the session closes or the
+        // retention sweep reaches it. Do not go looking for a rollback here —
+        // there is none to call. The pages that made it are still sent, and the
+        // sentence below names the ones that did not.
+        failure = { group, page: entry.page, reason: reasonFromCause(cause) };
+        break;
+      }
+      const pages = kept.get(group.id) ?? [];
+      pages.push(entry.page);
+      kept.set(group.id, pages);
+      input.onFeedback?.({
+        kind: "progress",
+        text: pdfProgressNotice(group.name, entry.page, group.pageCount),
+      });
+    }
+    if (failure !== null) break;
+  }
+  if (failure === null) return { inline, references, notices: [], refused: false };
+
+  // Every page after the failed one was never attempted, and each document's
+  // sentence says so: the document that failed carries the store's own reason,
+  // and one after it carries the fact that the sequence stopped where it did.
+  const notices: string[] = [];
+  for (const group of groups) {
+    const stored = kept.get(group.id) ?? [];
+    const lost = group.pages.map((entry) => entry.page).filter((page) => !stored.includes(page));
+    if (lost.length === 0) continue;
+    notices.push(
+      pdfDepositNotice({
+        name: group.name,
+        pageCount: group.pageCount,
+        stored,
+        lost,
+        reason:
+          group.id === failure.group.id
+            ? failure.reason
+            : `the deposit stopped at ${failure.group.name} page ${failure.page.toString()}`,
+      }),
+    );
+  }
+  for (const notice of notices) input.onFeedback?.({ kind: "error", text: notice });
+  return { inline, references, notices, refused: false };
 }

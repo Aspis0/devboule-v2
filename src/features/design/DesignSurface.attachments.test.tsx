@@ -791,7 +791,7 @@ describe("a document the user picked once is one pill", () => {
   });
 
   it("takes every page of the document away in one press", async () => {
-    servePdf(5, 512);
+    servePdf(45, 512);
     const generateMock = vi.fn(
       async (_prompt: string, _signal: AbortSignal, _options?: DesignGenerationOptions) => ({
         ...GENERATION_BASE,
@@ -802,11 +802,11 @@ describe("a document the user picked once is one pill", () => {
     await dispatchTransferEvent(composer(container), "drop", {
       files: [new File([PDF_BYTES], "deck.pdf", { type: "application/pdf" })],
     });
-    // Five pages in the document, two in the composer: the pill says which pages
-    // travelled, and one control stands for all of them.
+    // Forty-five pages in the document, forty in the composer: the pill says
+    // which pages travelled, and one control stands for all of them.
     expect(pillNames(container)).toEqual(["deck.pdf"]);
     const pill = container.querySelector(".design-attachment-pill");
-    expect(pill?.querySelector(".design-attachment-kind")?.textContent).toBe("2 of 5 pages");
+    expect(pill?.querySelector(".design-attachment-kind")?.textContent).toBe("40 of 45 pages");
     const remove = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Remove deck.pdf"]',
     );

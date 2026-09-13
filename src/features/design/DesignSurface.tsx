@@ -13,6 +13,7 @@ import type {
   DesignAssistantMessage,
   DesignAttachment,
   DesignAttachmentDocument,
+  DesignAttachmentFeedback,
   DesignDocument,
   DesignAgentSession,
   DesignHost,
@@ -4950,6 +4951,27 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     .find((workspace) => workspace.id === selectedWorkspaceId);
   const attachedFolderPath = agentSessionRecord?.cwd ?? attachedFolder?.path ?? null;
 
+  /**
+   * The composer's feedback about a run's attachments, from the host that
+   * stores them.
+   *
+   * The pages of an attached document are deposited after this surface has
+   * handed them over — the run clears the composer the moment it starts — so
+   * this callback is the only route a progress count, or the sentence naming the
+   * pages that did not make it, has back to the row they belong to. Progress
+   * replaces the one transient line the import also uses; a note or an error is
+   * kept, exactly as an import's own feedback is.
+   */
+  const handleAttachmentFeedback = useCallback((message: DesignAttachmentFeedback): void => {
+    const { kind, text } = message;
+    if (kind === "progress") {
+      setAttachmentProgress(text);
+      return;
+    }
+    setAttachmentProgress(null);
+    setAttachmentMessages((current) => [...current, { kind, text }]);
+  }, []);
+
   const startGeneration = useCallback(
     (prompt: string) => {
       if (
@@ -5015,7 +5037,14 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       const folderPath = attachedFolderPath ?? null;
       const generationOptions =
         skillSelection.mode === "auto"
-          ? { skillMode: "auto" as const, grounded, folderPath, outputMode, attachments }
+          ? {
+              skillMode: "auto" as const,
+              grounded,
+              folderPath,
+              outputMode,
+              attachments,
+              onAttachmentFeedback: handleAttachmentFeedback,
+            }
           : skillSelection.mode === "manual"
             ? {
                 skillMode: "manual" as const,
@@ -5024,8 +5053,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                 folderPath,
                 outputMode,
                 attachments,
+                onAttachmentFeedback: handleAttachmentFeedback,
               }
-            : { skillMode: "all" as const, grounded, folderPath, outputMode, attachments };
+            : {
+                skillMode: "all" as const,
+                grounded,
+                folderPath,
+                outputMode,
+                attachments,
+                onAttachmentFeedback: handleAttachmentFeedback,
+              };
       void generate(scopedPrompt, controller.signal, generationOptions)
         .then((result) => {
           const currentGeneration = useAppStore.getState().designSession.generation;
@@ -5119,6 +5156,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                 : `${modeCopy.name} craft: ${appliedSummary}.${omittedSummary}`,
             );
           }
+          // The run's deposits are over, so its progress line goes with it. The
+          // sentences about pages that did not make it stay in the composer:
+          // they are the user's record of what the agent was handed.
+          setAttachmentProgress(null);
           useAppStore.getState().setDesignGeneration(host, null);
           if (mountedRef.current) {
             setHistory((current) => (current.saved ? { ...current, saved: false } : current));
@@ -5148,6 +5189,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                 : message,
             ),
           );
+          setAttachmentProgress(null);
           useAppStore.getState().setDesignGeneration(host, null);
           if (mountedRef.current) {
             setHistory((current) => (current.saved ? { ...current, saved: false } : current));
@@ -5166,6 +5208,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       document.workingMessage,
       generate,
       grounded,
+      handleAttachmentFeedback,
       host,
       outputMode,
       reportPersistence,
@@ -5287,6 +5330,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         activeGeneration.controller.abort();
         generationInFlightRef.current = false;
         documentRevisionRef.current += 1;
+        setAttachmentProgress(null);
         useAppStore.getState().setDesignGeneration(host, null);
         setMessages((current) =>
           current.map((item) =>

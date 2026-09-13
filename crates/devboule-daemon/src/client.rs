@@ -8,11 +8,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    ActiveTurnBehavior, AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello,
-    DaemonMessage, DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId,
-    PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence, Project, PromptAttachment,
-    ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope,
-    SessionKind, SessionStateSnapshot, SubscriptionId, WireError, Workspace, WorkspaceIsolation,
+    ActiveTurnBehavior, AgentActivityState, AttachmentReference, ClientHello, ClientMessage,
+    Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode, JournalRetention,
+    JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
+    Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
+    SessionEventEnvelope, SessionKind, SessionStateSnapshot, SubscriptionId, WireError, Workspace,
+    WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -449,14 +450,23 @@ impl DaemonClient {
             self.control_subscription_id(session_id)?,
             text,
             &[],
+            &[],
             None,
         )
     }
 
-    /// Send one prompt with the files attached to it.
+    /// Send one prompt with the files attached to it and the pages already
+    /// deposited for it.
     ///
     /// `attachments` travels as bytes (base64 inside the message), never as a
     /// path: see [`PromptAttachment`] for why.
+    ///
+    /// `attachment_references` names bytes that travelled in earlier frames —
+    /// one entry per page the composer deposited, in the order the pages appear
+    /// in the composer. The daemon resolves each against this session's own
+    /// store and refuses a reference that names another session, so an empty
+    /// list is the honest value for a caller that holds no reference, and it is
+    /// what every send before the composer had a deposit path passed.
     ///
     /// [`PromptAttachment`]: devboule_protocol::PromptAttachment
     pub fn session_send_with_subscription(
@@ -465,6 +475,7 @@ impl DaemonClient {
         subscription_id: SubscriptionId,
         text: &str,
         attachments: &[PromptAttachment],
+        attachment_references: &[AttachmentReference],
         active_turn_behavior: Option<ActiveTurnBehavior>,
     ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
@@ -474,15 +485,48 @@ impl DaemonClient {
             subscription_id,
             text: text.to_string(),
             attachments: attachments.to_vec(),
-            // Empty is the honest value, not a placeholder: this entry point
-            // sends inline bytes only. The references parameter arrives with
-            // the app's deposit wiring, and until it does there is no caller
-            // that holds a reference to pass.
-            attachment_references: Vec::new(),
+            attachment_references: attachment_references.to_vec(),
             idempotency_key: None,
             active_turn_behavior,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Store one prompt attachment for a session and answer the reference the
+    /// send that follows names it by.
+    ///
+    /// One attachment per frame, and one frame per call: a page is stored by
+    /// itself, so a deck is a sequence of deposits rather than one frame the
+    /// frame cap would have to hold. The caller is what makes that sequence
+    /// sequential; nothing here batches.
+    ///
+    /// The reply is the store's own statement — the digest of the bytes **as
+    /// stored** (the metadata strip runs before the hash) and their size on
+    /// disk. Neither is something this side can compute, which is why a deposit
+    /// answers with them instead of the caller keeping its own idea of what was
+    /// written.
+    ///
+    /// Errors arrive as an `Error` frame on the correlation id, exactly as they
+    /// do for a send: an id this daemon does not know, a session the caller does
+    /// not own, an attachment over the wire's per-attachment ceiling, or a store
+    /// at its owner budget. The frame itself is never formatted into an error
+    /// string here, and it must not be: `unexpected` prints the *reply*, and the
+    /// request that carries a page's base64 is built by the caller.
+    pub fn session_deposit(
+        &self,
+        session_id: &str,
+        attachment: &PromptAttachment,
+    ) -> Result<AttachmentReference, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionDeposit {
+            id,
+            session_id: session_id.to_string(),
+            attachment: attachment.clone(),
+        })? {
+            DaemonMessage::SessionDeposited { reference, .. } => Ok(reference),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }

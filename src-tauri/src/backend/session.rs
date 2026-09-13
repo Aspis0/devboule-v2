@@ -11,8 +11,8 @@ use tauri::State;
 
 use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
 use devboule_protocol::{
-    ActiveTurnBehavior, ErrorCode, PermissionOutcome, Persistence, PersistenceKind,
-    PromptAttachment, ResumeResult, SubscriptionId, MAX_WRITE_BYTES,
+    ActiveTurnBehavior, AttachmentReference, ErrorCode, PermissionOutcome, Persistence,
+    PersistenceKind, PromptAttachment, ResumeResult, SubscriptionId, MAX_WRITE_BYTES,
 };
 
 use crate::client::DaemonBridge;
@@ -107,6 +107,12 @@ pub fn session_presence(
 /// key for a bare `Vec` is an `invalid args` rejection rather than an empty
 /// vector.
 ///
+/// `attachment_references` is the same kind of optional key, and it is the other
+/// half of the composer's deposits: a page stored by `session_deposit` is named
+/// here by the reference that call answered with, and the daemon resolves it
+/// against the session's store. Optional for the same reason as the inline list
+/// — a caller that predates deposits sends no key and gets the empty list.
+///
 /// `active_turn_behavior` is the same kind of optional key for the slice-4
 /// steering field: `"steer"` asks the daemon to deliver this text into a turn
 /// that is already running, `"queue"` asks it to hold the text for the next
@@ -126,11 +132,14 @@ pub fn session_send(
     text: String,
     attachments: Option<Vec<PromptAttachment>>,
     active_turn_behavior: Option<String>,
+    attachment_references: Option<Vec<AttachmentReference>>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     require_write_size(&text)?;
     let attachments = attachments.unwrap_or_default();
     require_attachment_limits(&attachments)?;
+    let attachment_references = attachment_references.unwrap_or_default();
+    require_attachment_reference_limits(&id, &attachment_references)?;
     let active_turn_behavior = parse_active_turn_behavior(active_turn_behavior.as_deref())?;
     bridge.ensure_subscription_attached(subscription_id)?;
     Ok(require_client(&bridge)?.session_send_with_subscription(
@@ -138,8 +147,35 @@ pub fn session_send(
         subscription_id,
         &text,
         &attachments,
+        &attachment_references,
         active_turn_behavior,
     )?)
+}
+
+/// Store one attachment for a session and answer the reference a later
+/// `session_send` names it by.
+///
+/// The forwarder is `session_send`'s, minus the subscription: `SessionDeposit`
+/// carries no subscription id, so there is no registration to check and no
+/// attach to ensure. Everything else is deliberately the same — the session id
+/// is validated here, the wire's own attachment limits are enforced here before
+/// the frame leaves (the same `validate_attachments` the daemon runs, so an
+/// oversized page is refused as a round trip it never makes), and the daemon's
+/// `Error` frame is mapped to a `CommandError` by the same `?`.
+///
+/// One attachment per call is the shape of the protocol, not a choice made
+/// here: the caller deposits the pages of a deck one after the other, and the
+/// reference this answers with is a value the caller cannot compute (the digest
+/// is of the bytes as *stored*).
+#[tauri::command]
+pub fn session_deposit(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    attachment: PromptAttachment,
+) -> Result<AttachmentReference, CommandError> {
+    require_session_id(&id)?;
+    require_attachment_limits(std::slice::from_ref(&attachment))?;
+    Ok(require_client(&bridge)?.session_deposit(&id, &attachment)?)
 }
 
 #[tauri::command]
@@ -298,6 +334,22 @@ fn require_write_size(text: &str) -> Result<(), CommandError> {
 /// chances for the two sides to disagree about what the wire allows.
 fn require_attachment_limits(attachments: &[PromptAttachment]) -> Result<(), CommandError> {
     devboule_protocol::validate_attachments(attachments)
+        .map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
+}
+
+/// The reference half of a send's attachment limits, refused here as well.
+///
+/// Same argument as [`require_attachment_limits`], and the same shared function
+/// the daemon runs: `validate_attachment_references` is what decides whether a
+/// reference names this session, whether it is a digest as the store writes
+/// one, and whether the stored bytes it points at would take the owner over the
+/// store's budget. A reference that fails any of those is refused on this side
+/// of the pipe instead of as a frame round trip.
+fn require_attachment_reference_limits(
+    session_id: &str,
+    references: &[AttachmentReference],
+) -> Result<(), CommandError> {
+    devboule_protocol::validate_attachment_references(session_id, references)
         .map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
 }
 
@@ -469,6 +521,45 @@ mod tests {
     fn session_presence_forwarder_has_the_frozen_tauri_signature() {
         let _: fn(State<'_, DaemonBridge>, Option<String>, bool) -> Result<(), CommandError> =
             session_presence;
+    }
+
+    /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ id,
+    /// attachment }` in, the stored reference out. Tauri derives the JS-side key
+    /// names from these parameters, so a rename here silently changes the
+    /// command's argument shape.
+    #[test]
+    fn session_deposit_forwarder_has_the_frozen_tauri_signature() {
+        let _: fn(
+            State<'_, DaemonBridge>,
+            String,
+            PromptAttachment,
+        ) -> Result<AttachmentReference, CommandError> = session_deposit;
+    }
+
+    fn reference(session_id: &str, digest: &str) -> AttachmentReference {
+        AttachmentReference {
+            session_id: session_id.to_string(),
+            digest: digest.to_string(),
+            stored_bytes: 1024,
+        }
+    }
+
+    #[test]
+    fn no_references_is_not_a_limit_violation() {
+        require_attachment_reference_limits("s.owner.1", &[]).expect("the common case");
+    }
+
+    /// A reference carries the session it was deposited to, so one that names
+    /// another session is refused here — before the frame, with the protocol's
+    /// own sentence, rather than by the daemon as a round trip.
+    #[test]
+    fn a_reference_to_another_session_is_invalid_request() {
+        let digest = "a".repeat(64);
+        let error =
+            require_attachment_reference_limits("s.owner.1", &[reference("s.owner.2", &digest)])
+                .expect_err("rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("s.owner.2"), "{}", error.message);
     }
 
     #[test]

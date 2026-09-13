@@ -292,6 +292,20 @@ export interface DesignAttachmentDocument {
 }
 
 /**
+ * One line of composer feedback about a run's attachments.
+ *
+ * The composer is where an attachment is shown, so it is where the outcome of
+ * storing one belongs. `progress` is the transient count while pages are on
+ * their way to the store — the same sentence shape the import uses
+ * (`deck.pdf: page 12 of 40.`) — and each one replaces the last; `note` and
+ * `error` are kept. An `error` is what names the pages that did not make it.
+ */
+export interface DesignAttachmentFeedback {
+  readonly kind: "progress" | "note" | "error";
+  readonly text: string;
+}
+
+/**
  * Call-time options, never persisted. The skill mode is declared on the wire
  * with the same ids the persisted selection uses (`all` | `manual` | `auto`):
  * the caller knows which mode is active and says so; the host never has to
@@ -333,6 +347,13 @@ export interface DesignAttachmentDocument {
  * is the same thing as an empty list to every consumer that has one. The types
  * are declared here so the boundary is stated where the request is built rather
  * than inferred later from a prompt that happens to contain base64.
+ *
+ * `onAttachmentFeedback` is the same kind of call-time field, and it exists
+ * because the composer is the only thing that can show it: a run's pages are
+ * stored *after* the composer hands its attachments over, so the progress and
+ * the sentence about pages that did not make it have no other way back to the
+ * user. A caller that predates it attaches without feedback, which is what the
+ * field being optional means.
  */
 export type DesignGenerationOptions = (
   | { skillMode: "auto" }
@@ -343,6 +364,7 @@ export type DesignGenerationOptions = (
   folderPath?: string | null;
   outputMode?: DesignOutputMode;
   attachments?: readonly DesignAttachment[];
+  onAttachmentFeedback?: (message: DesignAttachmentFeedback) => void;
 };
 
 export interface DesignInitialState {

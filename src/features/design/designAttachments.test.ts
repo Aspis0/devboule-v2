@@ -9,6 +9,8 @@ import {
   attachmentPillKey,
   base64Length,
   collectAttachmentFiles,
+  DESIGN_DEPOSIT_BUDGET_BYTES,
+  DESIGN_PDF_MAX_PAGES,
   encodeSvgSourceBase64,
   formatAttachmentSize,
   importDesignAttachments,
@@ -916,7 +918,7 @@ function countLegs(): number {
   return counterMock.mock.calls.length;
 }
 
-/** Two full rasters: the composer's whole attachment budget, already spent. */
+/** Two full rasters: the composer's whole inline attachment budget, already spent. */
 const FULL_COMPOSER: readonly DesignAttachment[] = ["a.png", "b.png"].map((name) => ({
   id: name,
   kind: "raster" as const,
@@ -925,6 +927,25 @@ const FULL_COMPOSER: readonly DesignAttachment[] = ["a.png", "b.png"].map((name)
   bytes: MAX_ATTACHMENT_BYTES,
   base64: "AA==",
 }));
+
+/**
+ * A composer holding the owner's whole attachment store: no page of anything can
+ * be deposited, so a document attached to it is refused on the count alone.
+ *
+ * This is the state a full composer reaches now that a page is deposited rather
+ * than carried in the prompt frame: `FULL_COMPOSER` above is half of one
+ * megabyte against a twenty-megabyte store, which is a healthy composer.
+ */
+const FULL_STORE: readonly DesignAttachment[] = [
+  {
+    id: "full-store",
+    kind: "raster" as const,
+    name: "full.png",
+    mimeType: "image/png" as const,
+    bytes: DESIGN_DEPOSIT_BUDGET_BYTES,
+    base64: "AA==",
+  },
+];
 
 describe("a PDF the composer carries as pictures of its pages", () => {
   beforeEach(() => {
@@ -1076,7 +1097,7 @@ describe("a PDF the composer carries as pictures of its pages", () => {
   it("refuses a document that does not fit, before rendering any of it", async () => {
     rendererServes({ pageCount: 12 });
 
-    const result = await importDesignAttachments([pdfFile("deck.pdf")], FULL_COMPOSER);
+    const result = await importDesignAttachments([pdfFile("deck.pdf")], FULL_STORE);
 
     expect(result.attachments).toEqual([]);
     // Nothing was rendered to reach this sentence: the only call was the count.
@@ -1084,11 +1105,11 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     expect(countLegs()).toBe(1);
     expect(result.rejections[0].name).toBe("deck.pdf");
     expect(result.rejections[0].reason).toBe(
-      "deck.pdf has 12 pages, and none of them fits: one rendered page needs up to 96.0 KB and the composer has 0 B of its attachment budget free, so nothing was attached. Remove an attached file and attach the PDF again.",
+      "deck.pdf has 12 pages, and none of them fits: one rendered page needs up to 96.0 KB and the attachment store has 0 B free, so nothing was attached. Remove an attached file and attach the PDF again.",
     );
   });
 
-  it("attaches what fits and names the pages the budget left out", async () => {
+  it("attaches what fits and names the pages the ceiling left out", async () => {
     rendererServes({
       pageCount: 5,
       pages: [
@@ -1105,11 +1126,12 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     ]);
     expect(result.rejections).toEqual([]);
     expect(result.notices).toEqual([
-      "deck.pdf was attached in part: pages 3-5 were left out because the composer's remaining attachment budget ran out after page 2, so 2 of its 5 pages travel as pictures.",
+      "deck.pdf was attached in part: pages 3-5 were left out because a document may contribute at most 40 pages, and this one contributed 2, so 2 of its 5 pages travel as pictures.",
     ]);
-    // Pages three onwards were never asked for, so they were never parsed for
-    // rendering: the budget is decided before the walk, not discovered by it.
-    expect(renderLeg()?.pageRange).toEqual({ from: 1, to: 2 });
+    // The walk asked for all five pages of the document — the ceiling is decided
+    // before it, not discovered by it — and this renderer produced two of them.
+    // The pages it left behind are named from the count that settled.
+    expect(renderLeg()?.pageRange).toEqual({ from: 1, to: 5 });
   });
 
   it("names the pages the clock lost, apart from the ones the budget did", async () => {
@@ -1123,7 +1145,7 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     const result = await importDesignAttachments([pdfFile("deck.pdf")], []);
 
     expect(result.notices).toEqual([
-      "deck.pdf was attached in part: page 3 was left out because the composer's remaining attachment budget ran out after page 1; page 2 was left out when the render ran out of time, so 1 of its 3 pages travels as a picture.",
+      "deck.pdf was attached in part: page 3 was left out because a document may contribute at most 40 pages, and this one contributed 1; page 2 was left out when the render ran out of time, so 1 of its 3 pages travels as a picture.",
     ]);
   });
 
@@ -1167,10 +1189,12 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     );
   });
 
-  it("stops the walk when the composer runs out of room mid-document", async () => {
-    // 150 KiB already attached leaves 106 KiB, which is room for one page by the
-    // budget and not enough for the page this render turns out to produce: the
-    // ceiling binds on measured bytes, not on the ceiling the budget assumed.
+  it("does not stop the walk for an inline byte budget a page is not carried in", async () => {
+    // 150 KiB of pictures already attached leaves 106 KiB of the composer's
+    // inline budget, which the 120 KiB page this render produces would not fit
+    // in. A page is deposited rather than carried in the prompt frame, so that
+    // ceiling is not this document's: both pages attach, and the store's budget
+    // is what forty of them have to fit.
     const existing: readonly DesignAttachment[] = [
       {
         id: "first",
@@ -1181,15 +1205,27 @@ describe("a PDF the composer carries as pictures of its pages", () => {
         base64: "AA==",
       },
     ];
-    rendererServes({ pageCount: 2, pages: [{ pageNumber: 1, bytes: 120 * 1024 }] });
+    rendererServes({
+      pageCount: 2,
+      pages: [
+        { pageNumber: 1, bytes: 120 * 1024 },
+        { pageNumber: 2, bytes: 512 },
+      ],
+    });
 
     const result = await importDesignAttachments([pdfFile("deck.pdf")], existing);
 
-    expect(result.attachments).toEqual([]);
-    expect(result.rejections[0].reason).toContain("its first page renders to 120.0 KB");
-    expect(result.rejections[0].reason).toContain("106.0 KB");
-    // The walk was stopped rather than left to draw pages nobody can carry.
-    expect(renderLeg()?.signal?.aborted).toBe(true);
+    expect(result.rejections).toEqual([]);
+    expect(result.attachments.map((attachment) => attachment.name)).toEqual([
+      "deck.pdf page 1 of 2",
+      "deck.pdf page 2 of 2",
+    ]);
+    expect(result.notices).toEqual([
+      "deck.pdf was attached in full: all 2 of its pages travel as pictures.",
+    ]);
+    // The walk was never cut short: nothing in it waits on bytes a frame would
+    // have had to carry.
+    expect(renderLeg()?.signal?.aborted).toBe(false);
   });
 
   it("counts a document as one attachment, not as its pages", async () => {
@@ -1338,13 +1374,13 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     const result = await importDesignAttachments([pdfFile("deck.pdf")], []);
 
     // A count that could not be taken is not a reason to refuse a document: the
-    // budget still bounds it, and the render's own outcome carries the count.
+    // page ceiling still bounds it, and the render's own outcome carries the count.
     expect(result.attachments.map((attachment) => attachment.name)).toEqual([
       "deck.pdf page 1 of 4",
       "deck.pdf page 2 of 4",
     ]);
     expect(result.notices).toEqual([
-      "deck.pdf was attached in part: pages 3-4 were left out because the composer's remaining attachment budget ran out after page 2, so 2 of its 4 pages travel as pictures.",
+      "deck.pdf was attached in part: pages 3-4 were left out because a document may contribute at most 40 pages, and this one contributed 2, so 2 of its 4 pages travel as pictures.",
     ]);
   });
 
@@ -1368,7 +1404,7 @@ describe("a PDF the composer carries as pictures of its pages", () => {
       reason: "deck.pdf is password-protected, so its pages could not be read.",
     });
 
-    const result = await importDesignAttachments([pdfFile("deck.pdf")], FULL_COMPOSER);
+    const result = await importDesignAttachments([pdfFile("deck.pdf")], FULL_STORE);
 
     expect(result.rejections[0].reason).toBe(
       "deck.pdf is password-protected, so its pages could not be read.",
@@ -1401,7 +1437,7 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     expect(pdfjsStub.state.getPageCalls).toBe(0);
   });
 
-  it("computes the page budget from the composer's own ceilings", () => {
+  it("computes the page budget from the store's budget and the page ceiling", () => {
     const raster = (bytes: number, name: string): DesignAttachment => ({
       id: name,
       kind: "raster",
@@ -1414,23 +1450,36 @@ describe("a PDF the composer carries as pictures of its pages", () => {
       raster(1, `small-${index}.png`),
     );
 
-    // 256 KiB of budget against a 96 KiB worst-case page is two pages: the bytes
-    // decide, and the slots only ever refuse the document its one pill.
-    expect(pdfPageBudget([])).toEqual({ pages: 2, blockedBy: null });
+    // Forty is the ceiling, and it is what decides here: forty worst-case pages
+    // are 3.8 MiB against a 20 MiB store. The two terms that used to decide it —
+    // 256 KiB of inline budget, which was two pages — no longer bound a document
+    // at all, because a page is deposited rather than framed.
+    expect(pdfPageBudget([])).toEqual({ pages: DESIGN_PDF_MAX_PAGES, blockedBy: null });
     expect(pdfPageBudget([raster(MAX_ATTACHMENT_BYTES, "a.png")])).toEqual({
-      pages: 1,
+      pages: DESIGN_PDF_MAX_PAGES,
       blockedBy: null,
     });
-    // Two full rasters leave no bytes and three pills of room: bytes ran out.
-    expect(pdfPageBudget(FULL_COMPOSER)).toEqual({ pages: 0, blockedBy: "bytes" });
-    // Three small files leave 255.9 KiB free and one pill of room, and a document
-    // is one pill whatever its page count: it fits, with a page to spend.
-    expect(pdfPageBudget(small)).toEqual({ pages: 2, blockedBy: null });
+    // Two full rasters are half a megabyte of the store's twenty: still the
+    // ceiling, not the bytes.
+    expect(pdfPageBudget(FULL_COMPOSER)).toEqual({
+      pages: DESIGN_PDF_MAX_PAGES,
+      blockedBy: null,
+    });
+    // Three small files leave a pill of room, and a document is one pill
+    // whatever its page count: it fits.
+    expect(pdfPageBudget(small)).toEqual({ pages: DESIGN_PDF_MAX_PAGES, blockedBy: null });
     // The fourth pill fills the row, so the next document has nowhere to go —
-    // and that is slots, not bytes, however much budget is free.
+    // and that is slots, not the store, however much room the store has.
     expect(pdfPageBudget([...small, raster(1, "last.png")])).toEqual({
       pages: 0,
       blockedBy: "slots",
+    });
+    // The store's budget is still read, so a composer somehow holding the
+    // owner's whole budget refuses before it renders a page rather than at the
+    // first deposit.
+    expect(pdfPageBudget([raster(DESIGN_DEPOSIT_BUDGET_BYTES, "huge.png")])).toEqual({
+      pages: 0,
+      blockedBy: "store",
     });
   });
 
@@ -1438,7 +1487,7 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     const refused = pdfRefusalNotice({
       name: "deck.pdf",
       pageCount: 40,
-      cause: "budget",
+      cause: "store",
       freeBytes: 0,
     });
     const whole = pdfDocumentNotice({
@@ -1459,11 +1508,11 @@ describe("a PDF the composer carries as pictures of its pages", () => {
     });
 
     expect(refused).toBe(
-      "deck.pdf has 40 pages, and none of them fits: one rendered page needs up to 96.0 KB and the composer has 0 B of its attachment budget free, so nothing was attached. Remove an attached file and attach the PDF again.",
+      "deck.pdf has 40 pages, and none of them fits: one rendered page needs up to 96.0 KB and the attachment store has 0 B free, so nothing was attached. Remove an attached file and attach the PDF again.",
     );
     expect(whole).toBe("deck.pdf was attached in full: all 2 of its pages travel as pictures.");
     expect(part).toBe(
-      "deck.pdf was attached in part: pages 3-5 were left out because the composer's remaining attachment budget ran out after page 2; page 6 was left out when the render ran out of time, so 2 of its 40 pages travel as pictures.",
+      "deck.pdf was attached in part: pages 3-5 were left out because a document may contribute at most 40 pages, and this one contributed 2; page 6 was left out when the render ran out of time, so 2 of its 40 pages travel as pictures.",
     );
     expect(new Set([refused, whole, part]).size).toBe(3);
     expect(pdfProgressNotice("deck.pdf", 2, 3)).toBe("deck.pdf: page 2 of 3.");

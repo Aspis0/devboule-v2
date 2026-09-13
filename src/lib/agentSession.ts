@@ -6,7 +6,7 @@ import type {
   SessionManifest,
   ToolLocation,
 } from "../types/ipc";
-import type { SessionChannel } from "./tauri";
+import type { AttachmentReference, SessionChannel } from "./tauri";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -216,11 +216,18 @@ export class AgentSession {
    * assistant stream that is still arriving — the sender must not render the
    * steer twice, and Paseo emits its timeline item when the stream echoes the
    * steer, not at dispatch.
+   *
+   * `attachmentReferences` names attachments that already travelled: one entry
+   * per deposited page, in the order the pages appear in the composer. The
+   * composer deposits a document's pages first (`transportDesignAttachments`) and
+   * sends the references it was answered with, so a prompt carries a deck by
+   * name rather than by bytes.
    */
   async send(
     text: string,
     attachments: readonly PromptAttachment[] = [],
     activeTurnBehavior?: ActiveTurnBehavior,
+    attachmentReferences: readonly AttachmentReference[] = [],
   ): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || this.disposed || !this.started || !this.attached) return false;
@@ -246,12 +253,41 @@ export class AgentSession {
         // default is interrupt-and-replace. Present only when the caller asked
         // for a send to join the turn that is already running.
         ...(activeTurnBehavior === undefined ? {} : { activeTurnBehavior }),
+        // Omitted, not empty, when the prompt names no stored attachment: a send
+        // with no deposit behind it produces exactly the payload it produced
+        // before deposits existed, and the daemon reads an absent field as an
+        // empty list.
+        ...(attachmentReferences.length === 0 ? {} : { attachmentReferences }),
       });
       return true;
     } catch (error) {
       this.fail(`Could not send the message: ${eventError(error)}`);
       return false;
     }
+  }
+
+  /**
+   * Stores one attachment for this session and answers the reference a later
+   * send names it by.
+   *
+   * The reference is opaque here: its digest is of the bytes **as stored** — the
+   * daemon strips metadata before it hashes — so it is a value only the daemon
+   * can state and the app only ever hands back.
+   *
+   * A rejection is thrown rather than swallowed, unlike `interrupt`. The caller
+   * is a sequence over a document's pages with a sentence to write about the
+   * pages that did not make it, and only the caller has the page number. The
+   * error is not wrapped either: `reasonFromCause` words it for that sentence,
+   * and a wrapper would replace the daemon's own reason with a paraphrase of it.
+   */
+  async depositAttachment(attachment: PromptAttachment): Promise<AttachmentReference> {
+    if (this.disposed || !this.started || !this.attached) {
+      throw new Error("The agent session is not attached.");
+    }
+    return this.deps.invoke<AttachmentReference>("session_deposit", {
+      id: this.deps.sessionId,
+      attachment,
+    });
   }
 
   /**

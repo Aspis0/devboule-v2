@@ -2074,6 +2074,7 @@ describe("DesignSurface host capabilities", () => {
       folderPath: null,
       outputMode: "page",
       attachments: [],
+      onAttachmentFeedback: expect.any(Function),
     });
     await act(async () => root.unmount());
   });
@@ -2555,7 +2556,14 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Make the header quieter.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
+      {
+        skillMode: "all",
+        grounded: true,
+        folderPath: null,
+        outputMode: "page",
+        attachments: [],
+        onAttachmentFeedback: expect.any(Function),
+      },
     );
     await act(async () => root.unmount());
   });
@@ -2577,6 +2585,7 @@ describe("DesignSurface host capabilities", () => {
       folderPath: null,
       outputMode: "page",
       attachments: [],
+      onAttachmentFeedback: expect.any(Function),
     });
     await act(async () => root.unmount());
   });
@@ -2605,7 +2614,14 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       expect.stringContaining("source file: src/components/Header.tsx"),
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
+      {
+        skillMode: "all",
+        grounded: true,
+        folderPath: null,
+        outputMode: "page",
+        attachments: [],
+        onAttachmentFeedback: expect.any(Function),
+      },
     );
     await act(async () => root.unmount());
   });
@@ -2787,7 +2803,14 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenLastCalledWith(
       "Refine this artifact.\n\nScope: Editing Generated artifact; the user is refining the artifact the agent just produced.",
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
+      {
+        skillMode: "all",
+        grounded: true,
+        folderPath: null,
+        outputMode: "page",
+        attachments: [],
+        onAttachmentFeedback: expect.any(Function),
+      },
     );
 
     await act(async () => {
@@ -3055,7 +3078,14 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
+      {
+        skillMode: "all",
+        grounded: true,
+        folderPath: null,
+        outputMode: "page",
+        attachments: [],
+        onAttachmentFeedback: expect.any(Function),
+      },
     );
     await act(async () => root.unmount());
   });
@@ -3088,7 +3118,14 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
+      {
+        skillMode: "all",
+        grounded: true,
+        folderPath: null,
+        outputMode: "page",
+        attachments: [],
+        onAttachmentFeedback: expect.any(Function),
+      },
     );
     await act(async () => root.unmount());
   });
@@ -3517,6 +3554,7 @@ describe("DesignSurface host capabilities", () => {
       folderPath: null,
       outputMode: "page",
       attachments: [],
+      onAttachmentFeedback: expect.any(Function),
     });
     await act(async () => root.unmount());
   });
@@ -3665,6 +3703,7 @@ describe("DesignSurface host capabilities", () => {
       folderPath: null,
       outputMode: "page",
       attachments: [],
+      onAttachmentFeedback: expect.any(Function),
     });
     await act(async () => root.unmount());
   });
@@ -3776,6 +3815,7 @@ describe("DesignSurface host capabilities", () => {
       folderPath: null,
       outputMode: "page",
       attachments: [],
+      onAttachmentFeedback: expect.any(Function),
     });
     await act(async () => root.unmount());
   });
@@ -3867,6 +3907,7 @@ describe("DesignSurface host capabilities", () => {
       folderPath: null,
       outputMode: "page",
       attachments: [],
+      onAttachmentFeedback: expect.any(Function),
     });
     await act(async () => Promise.resolve());
     expect(container.textContent).toContain(`Automatic craft: ${selected.slug}`);

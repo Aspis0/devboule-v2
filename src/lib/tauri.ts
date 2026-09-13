@@ -41,6 +41,28 @@ import type {
 export type SubscriptionId = number;
 
 /**
+ * One attachment a prompt names rather than carries: the reply of
+ * `session_deposit`, and the value `session_send` sends back as
+ * `attachmentReferences`.
+ *
+ * Declared in this module rather than in `types/ipc.ts`: it is one command's
+ * reply, and this is where that command is declared. On the wire it is the
+ * daemon's `AttachmentReference` with serde's camelCase, so the three field
+ * names are the daemon's. `digest` is the SHA-256 of the bytes **as stored** —
+ * the store's metadata strip runs before the hash, which is why the app cannot
+ * compute it and the deposit answers with it — and `storedBytes` is the size of
+ * the stored file, which only the daemon can state.
+ */
+export type AttachmentReference = {
+  /** The session the deposit was made to. A digest resolves only inside it. */
+  sessionId: Id;
+  /** SHA-256, lowercase hex (64 characters), of the stored bytes. */
+  digest: string;
+  /** The stored file's size, in bytes. */
+  storedBytes: number;
+};
+
+/**
  * The typed argument shape of every Tauri command. Exported (type-only) so
  * call sites outside this module — e.g. injected presence seams — can reference
  * a command's payload without re-writing its keys by hand.
@@ -82,7 +104,19 @@ export type CommandArgs = {
      * Present only when a turn is already running and the send must join it.
      */
     activeTurnBehavior?: ActiveTurnBehavior;
+    /**
+     * Omitted, not empty, when the send names no stored attachment: the daemon
+     * reads an absent field as an empty list, and a send whose attachments all
+     * rode inline stays byte-identical to what it was.
+     *
+     * One entry per deposit, in the order the pages appear in the composer. The
+     * value is the reference `session_deposit` answered with, verbatim: the
+     * digest is of the bytes as stored, so re-deriving it here is not possible
+     * and re-casing it would be a different string for the same file.
+     */
+    attachmentReferences?: readonly AttachmentReference[];
   };
+  session_deposit: { id: Id; attachment: PromptAttachment };
   session_interrupt: { id: Id; subscriptionId: SubscriptionId };
   session_claim: { subscriptionId: SubscriptionId };
   session_set_model: { id: Id; modelId?: string; effort?: string };
@@ -155,6 +189,8 @@ type CommandResults = {
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
   session_send: void;
+  /** The reference to the bytes the deposit stored, exactly as the daemon stated it. */
+  session_deposit: AttachmentReference;
   session_interrupt: void;
   session_claim: void;
   session_set_model: void;
@@ -243,7 +279,15 @@ export const COMMAND_ARG_KEYS = {
   session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
-  session_send: ["id", "subscriptionId", "text", "attachments", "activeTurnBehavior"],
+  session_send: [
+    "id",
+    "subscriptionId",
+    "text",
+    "attachments",
+    "activeTurnBehavior",
+    "attachmentReferences",
+  ],
+  session_deposit: ["id", "attachment"],
   session_interrupt: ["id", "subscriptionId"],
   session_claim: ["subscriptionId"],
   session_set_model: ["id", "modelId", "effort"],
@@ -437,6 +481,7 @@ export const sessionSend = (
   text: string,
   attachments?: readonly PromptAttachment[],
   activeTurnBehavior?: ActiveTurnBehavior,
+  attachmentReferences?: readonly AttachmentReference[],
 ) =>
   invokeTyped("session_send", {
     id,
@@ -447,7 +492,25 @@ export const sessionSend = (
     // interrupt-and-replace, and an explicit `undefined` would travel as a
     // key the old wire never carried.
     ...(activeTurnBehavior === undefined ? {} : { activeTurnBehavior }),
+    // Same rule for the references: absent, never empty. A send that names no
+    // stored attachment is every send that predates the deposit path, and its
+    // frame must not grow a key.
+    ...(attachmentReferences === undefined || attachmentReferences.length === 0
+      ? {}
+      : { attachmentReferences }),
   });
+/**
+ * Stores one attachment for a session and answers the reference a later
+ * `session_send` names it by.
+ *
+ * One call, one attachment: the pages of a document are deposited one after the
+ * other, and the caller owns that sequence (see `transportDesignAttachments` for
+ * the composer's). Nothing here retries and nothing batches — the daemon's
+ * per-attachment ceiling and the frame cap are both sized for one page, which is
+ * the whole reason a page leaves the prompt frame.
+ */
+export const sessionDeposit = (id: Id, attachment: PromptAttachment) =>
+  invokeTyped("session_deposit", { id, attachment });
 export const sessionInterrupt = (id: Id, subscriptionId: SubscriptionId) =>
   invokeTyped("session_interrupt", { id, subscriptionId });
 export const sessionClaim = (subscriptionId: SubscriptionId) =>

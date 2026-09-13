@@ -23,6 +23,7 @@ import {
   sessionClaim,
   sessionClose,
   sessionDetach,
+  sessionDeposit,
   sessionInterrupt,
   sessionPermissionRespond,
   sessionResize,
@@ -484,7 +485,56 @@ describe("create and attach command wrappers", () => {
       "text",
       "attachments",
       "activeTurnBehavior",
+      "attachmentReferences",
     ]);
+  });
+
+  it("names the stored attachments in the send only when it holds any", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+    const reference = { sessionId: "s.owner.1", digest: "a".repeat(64), storedBytes: 512 };
+
+    await sessionSend("s.owner.1", 41, "hello", undefined, undefined, []);
+
+    // Absent, not empty: a send with no deposit behind it is byte-identical to
+    // what every caller before the deposit path produced.
+    expect(invoke).toHaveBeenCalledWith("session_send", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+      text: "hello",
+    });
+
+    await sessionSend("s.owner.1", 41, "hello", undefined, undefined, [reference]);
+
+    expect(invoke).toHaveBeenLastCalledWith("session_send", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+      text: "hello",
+      attachmentReferences: [reference],
+    });
+  });
+
+  it("stores one attachment per call and answers the daemon's reference", async () => {
+    vi.mocked(invoke).mockClear();
+    const reference = { sessionId: "s.owner.1", digest: "a".repeat(64), storedBytes: 512 };
+    vi.mocked(invoke).mockResolvedValue(reference as never);
+
+    const answer = await sessionDeposit("s.owner.1", {
+      name: "deck.pdf page 1 of 40",
+      mimeType: "image/jpeg",
+      data: "AAAA",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("session_deposit", {
+      id: "s.owner.1",
+      attachment: { name: "deck.pdf page 1 of 40", mimeType: "image/jpeg", data: "AAAA" },
+    });
+    // The reference travels back verbatim: the digest is of the bytes as stored,
+    // which no caller can compute.
+    expect(answer).toEqual(reference);
+    // The manifest the structural parity test compares with the Rust parameter
+    // list, so a rename on either side has to fail here.
+    expect(COMMAND_ARG_KEYS.session_deposit).toEqual(["id", "attachment"]);
   });
 
   it("passes the subscription id when closing a session", async () => {

@@ -8,12 +8,14 @@ import {
   sessionAttach,
   sessionClose,
   sessionCreate,
+  sessionDeposit,
   sessionDetach,
   sessionInterrupt,
   sessionSend,
   sessionPermissionRespond,
   sessionSetMode,
   sessionSetModel,
+  type AttachmentReference,
   type SessionChannel,
 } from "../../lib/tauri";
 import type {
@@ -27,7 +29,6 @@ import type {
   Workspace,
 } from "../../types/ipc";
 import type {
-  DesignAttachment,
   DesignDocument,
   DesignGenerationOptions,
   DesignGenerationResult,
@@ -46,7 +47,12 @@ import {
 } from "./builtInSkills";
 export { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
 import { createDesignDocumentDefaults } from "./designDocumentDefaults";
-import { encodeSvgSourceBase64 } from "./designAttachments";
+import {
+  planAttachmentTransport,
+  transportDesignAttachments,
+  wireAttachments,
+  type DesignAttachmentSendTransport,
+} from "./designAttachments";
 import { buildSkillBlock, DOCTRINE_DESCRIPTION_CEILING_CHARS } from "./skillLoader";
 import { rankSkillsForQuery } from "./skillRanking";
 
@@ -760,29 +766,6 @@ function lastErrorText(state: AgentSessionState): string {
   return "The agent session did not answer.";
 }
 
-/**
- * The wire form of the files the composer attached to this run.
- *
- * A raster already carries base64 of its own bytes. An SVG carries sanitized
- * source, so its bytes are the UTF-8 encoding of that source, base64'd here:
- * the daemon writes both kinds to a file, and a file is made of bytes.
- *
- * The converter runs at send time rather than at import time on purpose. The
- * SVG's base64 exists only for this one request; keeping it out of the composer
- * state keeps a second copy of the source from living as long as the pill does.
- */
-function wireAttachments(attachments: readonly DesignAttachment[]): readonly PromptAttachment[] {
-  return attachments.map((attachment) =>
-    attachment.kind === "raster"
-      ? { name: attachment.name, mimeType: attachment.mimeType, data: attachment.base64 }
-      : {
-          name: attachment.name,
-          mimeType: "image/svg+xml" as const,
-          data: encodeSvgSourceBase64(attachment.source),
-        },
-  );
-}
-
 export function invokeAgentCommand<T>(
   command: string,
   args: Record<string, unknown> = {},
@@ -799,17 +782,36 @@ export function invokeAgentCommand<T>(
       // `undefined`: the arity of every send that carries no attachment stays
       // what it was, and the request is identical either way.
       const attachments = args.attachments as readonly PromptAttachment[] | undefined;
-      return (
-        attachments === undefined
-          ? sessionSend(args.id as string, args.subscriptionId as number, args.text as string)
-          : sessionSend(
-              args.id as string,
-              args.subscriptionId as number,
-              args.text as string,
-              attachments,
-            )
+      const references = args.attachmentReferences as readonly AttachmentReference[] | undefined;
+      if (references === undefined || references.length === 0) {
+        return (
+          attachments === undefined
+            ? sessionSend(args.id as string, args.subscriptionId as number, args.text as string)
+            : sessionSend(
+                args.id as string,
+                args.subscriptionId as number,
+                args.text as string,
+                attachments,
+              )
+        ) as Promise<T>;
+      }
+      // A send that names stored pages is the only one that passes the last two
+      // arguments, and it passes `undefined` for the behaviour it does not have:
+      // the wrapper drops undefined keys, so the frame is the same shape a
+      // steering send has, with the references added.
+      return sessionSend(
+        args.id as string,
+        args.subscriptionId as number,
+        args.text as string,
+        attachments,
+        undefined,
+        references,
       ) as Promise<T>;
     }
+    case "session_deposit":
+      // One frame, one attachment: the controller deposits a document's pages
+      // one at a time and never batches, which is the protocol's shape.
+      return sessionDeposit(args.id as string, args.attachment as PromptAttachment) as Promise<T>;
     case "session_set_model":
       return sessionSetModel(
         args.id as string,
@@ -857,6 +859,17 @@ export function createAgentHost(): DesignHost {
   let selectedProvider: ProviderInfo | undefined;
   let sessionOwner: SessionTarget | null = null;
   let providerSelectionGeneration = 0;
+  /**
+   * Bytes the store has taken for this owner as far as this host has watched:
+   * the sum of the `storedBytes` of every reference a deposit answered with.
+   *
+   * Advisory, and only ever an undercount — files left by an app run before this
+   * process are invisible from here, and the daemon walks the owner's folders to
+   * enforce the real budget. It is what lets a run refuse a plan the store would
+   * reject instead of spending one frame per page discovering it; see
+   * `DESIGN_DEPOSIT_BUDGET_BYTES`.
+   */
+  let depositedStoreBytes = 0;
   /**
    * The explicit selection is the SINGLE resolution that both generation and the per-project
    * doctrine settings read, so they cannot disagree about which project is current; two
@@ -1388,6 +1401,35 @@ export function createAgentHost(): DesignHost {
     throwIfAborted(signal);
     const skillSlugs = skillChoice.slugs;
 
+    // The composer's pages reach the store before the prompt that names them:
+    // one frame per page, in order, and the send carries the references it was
+    // answered with. This happens before the run exists, so a plan the store
+    // cannot take is a failed generation rather than a turn that stays open —
+    // and a prompt carrying half a deck is never sent.
+    const plan = planAttachmentTransport(options?.attachments ?? []);
+    const transport: DesignAttachmentSendTransport =
+      plan.deposits.length === 0
+        ? // Nothing to store: the files the user dropped ride in the frame
+          // exactly as they did before deposits existed, and no round trip is
+          // spent finding that out.
+          { inline: plan.inline, references: [], notices: [], refused: false }
+        : await transportDesignAttachments({
+            // The same list, back in composer order: the plan above decided
+            // which half is which, and this function is the one entry point that
+            // owns the sequence and the sentences.
+            attachments: plan.inline.concat(plan.deposits),
+            storedBytes: depositedStoreBytes,
+            deposit: (attachment) => handle.controller.depositAttachment(attachment),
+            onFeedback: options?.onAttachmentFeedback,
+          });
+    // Charged whether or not the run goes on to succeed: the store has these
+    // bytes, and a later run has to know it.
+    for (const reference of transport.references) depositedStoreBytes += reference.storedBytes;
+    if (transport.refused) {
+      throw new Error(transport.notices[0] ?? "The attachments could not be stored.");
+    }
+    throwIfAborted(signal);
+
     const run: ActiveRun = {
       session: handle,
       sessionId: handle.session.id,
@@ -1434,7 +1476,13 @@ export function createAgentHost(): DesignHost {
     const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
     const sendPromise = handle.controller.send(
       groundedPrompt(prompt, oracleResults, composedDoctrine, promptGrounded, outputMode),
-      wireAttachments(options?.attachments ?? []),
+      // Only the files that ride in the frame: a document's pages were deposited
+      // above and travel as the references below.
+      wireAttachments(transport.inline),
+      // A design run is always a fresh turn, so the behaviour stays the daemon's
+      // default; the references are the only thing this send adds.
+      undefined,
+      transport.references,
     );
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;
