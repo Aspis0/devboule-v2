@@ -421,7 +421,7 @@ fn main() -> io::Result<()> {
                     // EOF on a session whose creation has just been committed.
                     return Ok(());
                 }
-                call_mcp_tools_list_if_configured(&request)?;
+                probe_mcp_tools_on_own_thread(&request);
                 emit_mcp_ready_if_configured(&mut stdout, &request)?;
             }
             "session/load" => {
@@ -498,7 +498,7 @@ fn main() -> io::Result<()> {
                         }
                     }),
                 )?;
-                call_mcp_tools_list_if_configured(&request)?;
+                probe_mcp_tools_on_own_thread(&request);
                 emit_mcp_ready_if_configured(&mut stdout, &request)?;
             }
             "session/set_config_option" => {
@@ -925,6 +925,22 @@ fn emit_mcp_ready_if_configured(stdout: &mut impl Write, request: &Value) -> io:
     Ok(())
 }
 
+/// Run the MCP probe off the stub's message loop.
+///
+/// A real agent probes from its own connection work, not from inside the
+/// handshake it is still finishing; an inline probe would hold this loop while
+/// the daemon waits for answers to the handshake's later steps.
+fn probe_mcp_tools_on_own_thread(request: &Value) {
+    let request = request.clone();
+    let _ = std::thread::Builder::new()
+        .name("mcp-probe".into())
+        .spawn(move || {
+            if let Err(error) = call_mcp_tools_list_if_configured(&request) {
+                eprintln!("mcp probe failed: {error}");
+            }
+        });
+}
+
 fn call_mcp_tools_list_if_configured(request: &Value) -> io::Result<()> {
     let Some(server) = request
         .pointer("/params/mcpServers")
@@ -1001,7 +1017,18 @@ fn call_mcp_tools_list_if_configured(request: &Value) -> io::Result<()> {
                 .unwrap_or_else(|_| json!({}))}
         })
         .to_string();
-        let response = mcp_post(endpoint, &path, authorization, &call)?;
+        // The probe can land while this session's own startup is still being
+        // committed, and the answer is then "No session with that id." for a
+        // session that plainly exists a moment later. Retry briefly on that
+        // one sentence, so the probe measures the broker rather than the spawn
+        // race, and stop on any other answer.
+        let mut response = mcp_post(endpoint, &path, authorization, &call)?;
+        let mut retries = 0u32;
+        while mcp_body(&response).contains("No session with that id.") && retries < 40 {
+            retries += 1;
+            std::thread::sleep(Duration::from_millis(250));
+            response = mcp_post(endpoint, &path, authorization, &call)?;
+        }
         if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_MCP_CALL_FILE") {
             append_observation(&file, authorization, &mcp_body(&response));
         }

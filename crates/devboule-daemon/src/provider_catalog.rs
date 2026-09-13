@@ -341,26 +341,15 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 
 /// May a preset ever resolve to this mode, for this provider (`S5` decision 2)?
 ///
-/// Written as a refusal list rather than an allow list, and the reason is the
-/// decision's own: the modes a session nobody is watching may not be in have
-/// names, and a new mode a provider adds is judged by them rather than by
-/// whether someone remembered to add it to a table.
-///
-/// Three sources, all named:
-///
-/// - the modes the daemon itself auto-answers a permission request in
-///   (`PermissionBroker::auto_answer`) — `bypass`, `auto_accept`,
-///   `bypassPermissions` — because a session in one of them never asks a human;
-/// - Codex's own unattended pair: `full-access` is `approvalPolicy: never`, and
-///   `auto-review` hands approvals to a model reviewer;
-/// - Claude's `acceptEdits`, which approves every edit tool without prompting,
-///   and its `auto`, which is a model-reviewed approvals mode — the same act
-///   Codex spells `auto-review`.
-///
-/// Codex's `auto` is deliberately **not** on the list: it is `on-request` plus
-/// `workspaceWrite`, which is exactly the mode decision 2 allows.
-/// Whether a session in this mode auto-answers permission requests, for this
-/// provider (`S5` decision 2; `create-from-profile`).
+/// A description of today's providers, and a description only: the modes the
+/// two named providers document as unattended, spelled as they spell them. It
+/// serves the preset table's property tests and nothing else — it is **not**
+/// what decides a permission prompt at run time (that is
+/// `PermissionBroker::auto_answer`, which honours exactly the three
+/// provider-agnostic ids [`mode_is_auto_answered`] lists), and **nothing new
+/// may be derived from it** (rev 11: the provider axis is open, so no new
+/// table, `match` or constant may grow from a list of provider or mode names —
+/// the next providers are queued and some will be user-defined).
 ///
 /// Written as a refusal list rather than an allow list, and the reason is the
 /// decision's own: the modes a session nobody is watching may not be in have
@@ -369,9 +358,8 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 ///
 /// Three sources, all named:
 ///
-/// - the modes the daemon itself auto-answers a permission request in
-///   (`PermissionBroker::auto_answer`) — `bypass`, `auto_accept`,
-///   `bypassPermissions` — because a session in one of them never asks a human;
+/// - the three provider-agnostic ids the daemon itself answers a permission
+///   request in ([`mode_is_auto_answered`]);
 /// - Codex's own unattended pair: `full-access` is `approvalPolicy: never`, and
 ///   `auto-review` hands approvals to a model reviewer;
 /// - Claude's `acceptEdits`, which approves every edit tool without prompting,
@@ -379,21 +367,14 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 ///   Codex spells `auto-review`.
 ///
 /// Codex's `auto` is deliberately **not** on the list: it is `on-request` plus
-/// `workspaceWrite`, which is exactly the mode decision 2 allows.
-///
-/// Two callers, one list: the preset table's property test asks whether a cell
-/// could ever resolve to one of these names, and
-/// [`profile_is_unattended`] asks the same question of a profile the human
-/// wrote — which is the point. The mode that decides a permission prompt at
-/// run time is `PermissionBroker::auto_answer`'s, and this is the same answer.
-///
-/// Aliases resolve first, so an alias cannot reach a mode its provider's own
-/// spelling would refuse.
+/// `workspaceWrite`, which is exactly the mode decision 2 allows. Aliases
+/// resolve first, so an alias cannot reach a mode its provider's own spelling
+/// would refuse.
+#[cfg(test)]
 pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
-    const AUTO_ANSWERED: &[&str] = &["bypass", "auto_accept", "bypassPermissions"];
     const CODEX_UNATTENDED: &[&str] = &["full-access", "auto-review"];
     const CLAUDE_UNATTENDED: &[&str] = &["acceptEdits", "auto"];
-    if AUTO_ANSWERED.contains(&mode_id) {
+    if mode_is_auto_answered(mode_id) {
         return true;
     }
     match catalog_provider_id(provider) {
@@ -403,25 +384,45 @@ pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
     }
 }
 
+/// The mode ids the daemon itself answers a permission request in, and the one
+/// list of them.
+///
+/// Two callers, one list, so the two cannot drift: `PermissionBroker::
+/// auto_answer` grants from this predicate at run time — a session in one of
+/// these modes never asks a human — and [`profile_is_unattended`] reads it at
+/// a child's birth, so the marker a child carries names exactly a mode the
+/// broker would have honoured. The list is provider-agnostic by construction:
+/// these are the ids the daemon speaks itself, and no provider name is
+/// reachable from here.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn mode_is_auto_answered(mode_id: &str) -> bool {
+    const AUTO_ANSWERED: &[&str] = &["bypass", "auto_accept", "bypassPermissions"];
+    AUTO_ANSWERED.contains(&mode_id)
+}
+
 /// The one feature key that means "approve my permission prompts"
 /// (`create-from-profile`).
 ///
 /// Paseo spells the toggle `Auto Accept`, and this is the only spelling read:
 /// the features map is otherwise free-form and nothing consults it, so a second
 /// accepted spelling would be a second vocabulary for one meaning.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) const AUTO_ACCEPT_FEATURE: &str = "autoAccept";
 
 /// Whether a child created from this profile approves permission prompts in
 /// place of the human.
 ///
-/// Two halves, both the profile's own fields, and the answer is the disjunction
-/// because the two say the same thing in two vocabularies:
+/// Two halves, both **the profile's own fields**, and the answer is the
+/// disjunction because the two say the same thing in two vocabularies:
 ///
-/// - the **mode**, which is what actually decides a prompt: `bypass`,
-///   `auto_accept` and `bypassPermissions` are the modes
-///   `PermissionBroker::auto_answer` answers in, and codex's `full-access` /
-///   `auto-review` and claude's `acceptEdits` / `auto` are the same act in
-///   those providers' own words ([`mode_is_unattended`]);
+/// - the **mode**, when it is one of the three provider-agnostic ids the
+///   daemon itself answers a prompt in ([`mode_is_auto_answered`], the same
+///   predicate `PermissionBroker::auto_answer` grants from at run time). A
+///   provider's own unattended spellings are deliberately **not** read here:
+///   the provider dimension is open by construction, and a child from a
+///   provider the daemon has never heard of must work — a table of today's
+///   names answers nothing about tomorrow's ([`mode_is_unattended`] is that
+///   description, and nothing new may be derived from it);
 /// - the **feature** [`AUTO_ACCEPT_FEATURE`], set to `true`: the human's own
 ///   statement that this profile's children approve prompts. It is read here
 ///   and nowhere else, and it grants nothing — the daemon grants nothing from a
@@ -429,8 +430,14 @@ pub(crate) const AUTO_ACCEPT_FEATURE: &str = "autoAccept";
 ///   a permission the human answers. What it buys is that the children created
 ///   from such a profile are *described* as unattended, which is the fact the
 ///   human ticked for.
+///
+/// Where the marker cannot be justified from the profile's own data it is
+/// **false** and the child asks: a marker we cannot defend is worse than no
+/// marker. The marker describes, it never grants — the permission decision is
+/// the broker's, taken from the mode the session is actually in.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) fn profile_is_unattended(profile: &devboule_protocol::AgentProfile) -> bool {
-    mode_is_unattended(&profile.provider, &profile.mode_id)
+    mode_is_auto_answered(&profile.mode_id)
         || matches!(
             profile.features.get(AUTO_ACCEPT_FEATURE),
             Some(serde_json::Value::Bool(true))
@@ -3161,11 +3168,14 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             );
         }
     }
-    /// The two halves of the `unattended` marker, each on its own, and nothing
-    /// else read: the mode that decides a permission prompt at run time, and the
-    /// human's own `autoAccept` toggle.
+    /// The `unattended` marker comes from the profile's own fields and from
+    /// nothing else: one of the three provider-agnostic mode ids the broker
+    /// answers, or the human's own `autoAccept` toggle. A provider's own
+    /// unattended spellings are **not** read — the provider axis is open
+    /// (rev 11), so a child the daemon cannot justify the marker for asks
+    /// instead.
     #[test]
-    fn a_profile_is_unattended_by_its_mode_or_by_its_auto_accept_feature() {
+    fn a_profile_is_unattended_only_from_its_own_fields() {
         let profile = |provider: &str, mode: &str, features: serde_json::Value| {
             devboule_protocol::AgentProfile {
                 id: "profile-1".to_string(),
@@ -3181,14 +3191,33 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
                 enabled_for_agents: true,
             }
         };
-        // The modes the daemon itself auto-answers a permission request in.
-        for mode in ["bypass", "auto_accept", "bypassPermissions"] {
-            assert!(
-                super::profile_is_unattended(&profile("grok", mode, serde_json::json!({}))),
-                "{mode}"
-            );
+        // The three ids the daemon itself auto-answers a permission request
+        // in, whatever the provider is called — including a name the catalog
+        // has never heard of.
+        for provider in [
+            "grok",
+            "codex",
+            "claude",
+            "a-provider-that-does-not-exist-yet",
+        ] {
+            for mode in ["bypass", "auto_accept", "bypassPermissions"] {
+                assert!(
+                    super::profile_is_unattended(&profile(provider, mode, serde_json::json!({}))),
+                    "{provider} {mode}"
+                );
+            }
         }
-        // Codex's and Claude's own spellings of the same act.
+        // The human's own toggle, on a mode that would otherwise ask, on a
+        // provider the catalog does not know.
+        assert!(super::profile_is_unattended(&profile(
+            "a-provider-that-does-not-exist-yet",
+            "ask",
+            serde_json::json!({"autoAccept": true})
+        )));
+        // A provider's own unattended spelling is **not** the marker: where
+        // the profile's own data cannot justify it, it is false and the child
+        // asks. The names live on only in `mode_is_unattended`'s description
+        // of today's providers, and nothing is derived from them here.
         for (provider, mode) in [
             ("codex", "full-access"),
             ("codex", "auto-review"),
@@ -3196,16 +3225,10 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             ("claude", "auto"),
         ] {
             assert!(
-                super::profile_is_unattended(&profile(provider, mode, serde_json::json!({}))),
-                "{provider} {mode}"
+                !super::profile_is_unattended(&profile(provider, mode, serde_json::json!({}))),
+                "{provider} {mode} must not be marked unattended by name"
             );
         }
-        // The human's own toggle, on a mode that would otherwise ask.
-        assert!(super::profile_is_unattended(&profile(
-            "grok",
-            "ask",
-            serde_json::json!({"autoAccept": true})
-        )));
         // And nothing else: a mode that still asks the human, a feature whose
         // name is not this one, and a value that is not `true`.
         assert!(!super::profile_is_unattended(&profile(
@@ -3227,6 +3250,26 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             "ask",
             serde_json::json!({"auto_accept": true})
         )));
+    }
+
+    /// The one list the broker grants from and the birth marker reads: exactly
+    /// the three provider-agnostic ids, and no provider's own spelling.
+    #[test]
+    fn the_auto_answer_list_is_exactly_the_three_provider_agnostic_ids() {
+        for mode in ["bypass", "auto_accept", "bypassPermissions"] {
+            assert!(super::mode_is_auto_answered(mode), "{mode}");
+        }
+        for mode in [
+            "ask",
+            "default",
+            "full-access",
+            "auto-review",
+            "acceptEdits",
+            "auto",
+            "",
+        ] {
+            assert!(!super::mode_is_auto_answered(mode), "{mode}");
+        }
     }
 
     /// The published schema of `devboule_create_agent` cannot express a provider,

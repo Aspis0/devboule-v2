@@ -1487,7 +1487,7 @@ describe("ACP agent session", () => {
       childSessionId: "s.parent.2",
       displayName: "worker one",
       provider: "grok",
-      preset: "design",
+      profile: "design",
     });
 
     expect(harness.session.getState().items).toEqual([]);

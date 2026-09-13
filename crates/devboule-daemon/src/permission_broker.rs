@@ -366,8 +366,10 @@ impl PermissionBroker {
         )
     }
 
-    /// Auto-answer unattended modes only when the agent offers one allow
-    /// choice; chooser requests stay with the client. Paseo's chooser rule:
+    /// Auto-answer the modes `provider_catalog::mode_is_auto_answered` lists —
+    /// the one list, shared with the `unattended` marker a child's birth
+    /// writes — and only when the agent offers one allow choice; chooser
+    /// requests stay with the client. Paseo's chooser rule:
     /// the same allow kind twice (two `allow_once` with different names) is a
     /// question, the standard `allow_once`/`allow_always`/`reject_once` batch
     /// is not. Prefer allow_once, then allow_always; a request with no allow
@@ -381,10 +383,7 @@ impl PermissionBroker {
         let Some(mode_id) = runtime.current_mode_id() else {
             return Ok(false);
         };
-        if !matches!(
-            mode_id.as_str(),
-            "bypass" | "auto_accept" | "bypassPermissions"
-        ) {
+        if !crate::provider_catalog::mode_is_auto_answered(mode_id.as_str()) {
             return Ok(false);
         }
         let Some(AutoAnswer { pending, option }) = self.take_auto_answerable(tool_call_id)? else {

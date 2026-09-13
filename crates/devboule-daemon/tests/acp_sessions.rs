@@ -3010,6 +3010,7 @@ fn design_profile_document() -> serde_json::Value {
 fn absent_provider_profile_document() -> serde_json::Value {
     serde_json::json!({
         "profiles": [{
+            "id": "profile-nowhere",
             "name": "nowhere",
             "note": "names a provider that cannot be installed",
             "provider": "devboule-absent-probe",
@@ -3212,6 +3213,22 @@ impl Slice5Test {
             .session_attach(&session.id, None, handler)
             .expect("attach the creator");
         events
+    }
+
+    /// Attach to a created child once its own provider has reached the broker.
+    ///
+    /// The child's journal row lists it before the spawn has finished, so an
+    /// attach that lands in that window reads the journal once — a recovered
+    /// transcript — and is never told about the live session's events. The
+    /// child's own `tools/list` observation is the first fact its process
+    /// produces after the handshake completed and the session is live, so it is
+    /// what this waits for; from there the attach replays everything journaled
+    /// and receives the rest live.
+    fn attach_child(&self, child: &devboule_protocol::Session) -> Arc<Mutex<Vec<SessionEvent>>> {
+        let pids = self.wait_for_observations("stub pids.txt", 2);
+        let child_pid = pids[1].trim().to_string();
+        self.wait_for_lines_of("mcp tools.txt", &child_pid, 1);
+        self.attach(child)
     }
 
     /// The child the creator created, as the daemon's own list reports it.
@@ -3547,26 +3564,28 @@ fn the_childs_own_connection_sees_the_design_overlay() {
     let creator_tools = test.wait_for_lines_of("mcp tools.txt", &creator_pid, 1);
     let child_tools = test.wait_for_lines_of("mcp tools.txt", &child_pid, 1);
     let child_calls = test.wait_for_lines_of("mcp calls.txt", &child_pid, 1);
+    // The names are read out of the parsed `tools/list` body rather than
+    // substring-matched against the raw line: the profile list's description
+    // points its reader at `devboule_create_agent` by name, so a description
+    // mentioning a hidden tool is not the tool being served.
+    let creator_names = tool_names(&creator_tools[0]);
+    let child_names = tool_names(&child_tools[0]);
     assert!(
-        creator_tools[0].contains("devboule_create_agent")
-            && creator_tools[0].contains("devboule_send_message"),
-        "the creator keeps both tools: {}",
-        creator_tools[0]
+        creator_names.contains(&"devboule_create_agent".to_string())
+            && creator_names.contains(&"devboule_send_message".to_string()),
+        "the creator keeps both tools: {creator_names:?}"
     );
     assert!(
-        child_tools[0].contains("devboule_list_agents"),
-        "a design child keeps the roster: {}",
-        child_tools[0]
+        child_names.contains(&"devboule_list_agents".to_string()),
+        "a design child keeps the roster: {child_names:?}"
     );
     assert!(
-        !child_tools[0].contains("devboule_create_agent"),
-        "the design overlay hides create_agent from the child's list: {}",
-        child_tools[0]
+        !child_names.contains(&"devboule_create_agent".to_string()),
+        "the design overlay hides create_agent from the child's list: {child_names:?}"
     );
     assert!(
-        !child_tools[0].contains("devboule_send_message"),
-        "and send_message: {}",
-        child_tools[0]
+        !child_names.contains(&"devboule_send_message".to_string()),
+        "and send_message: {child_names:?}"
     );
     assert!(
         child_calls[0].contains("Tool disabled by policy"),
@@ -3995,6 +4014,11 @@ fn a_child_stopped_with_its_transcript_kept_is_reported_and_gives_its_slot_back(
 
     // The stop path: the daemon kills the provider and keeps the transcript.
     // The stop command rides the session's control subscription: attach first.
+    // The child must also be past its own handshake — its provider's probe is
+    // the readiness fact — so this exercises the stop of a live child rather
+    // than the never-started path a too-early kill would take.
+    let child_pids = test.wait_for_observations("stub pids.txt", 2);
+    test.wait_for_lines_of("mcp tools.txt", child_pids[1].trim(), 1);
     attach_control(&test, &child_id);
     test.client.session_stop(&child_id).expect("stop the child");
     let transcript = wait_for_finish(&events, "the stopped child", Duration::from_secs(45));
@@ -4162,15 +4186,27 @@ fn a_child_that_dies_on_its_first_prompt_is_reported_and_gives_its_slot_back() {
 
 /// The one prompt text a session's transcript shows as the user's own first
 /// message, which is what the daemon wrote to the provider.
-fn first_user_message(events: &Mutex<Vec<SessionEvent>>) -> String {
+fn first_user_message(events: &Mutex<Vec<SessionEvent>>) -> Option<String> {
     let events = events.lock().expect("events lock");
-    events
-        .iter()
-        .find_map(|event| match event {
-            SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no user message in the transcript"))
+    events.iter().find_map(|event| match event {
+        SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+        _ => None,
+    })
+}
+
+/// Wait for the transcript's first user message, the way every other assertion
+/// in this battery waits: the daemon writes the prompt after the provider
+/// handshake, so a reader that looks the moment the session row exists can be
+/// early, and early is not wrong.
+fn wait_for_user_message(events: &Mutex<Vec<SessionEvent>>, timeout: Duration) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(prompt) = first_user_message(events) {
+            return prompt;
+        }
+        assert!(Instant::now() < deadline, "the prompt never arrived");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// The preamble a created child's first prompt carries, spelled here because
@@ -4205,8 +4241,8 @@ fn the_standing_instructions_reach_a_child_an_agent_creates() {
 
     // The child's transcript carries the prompt the daemon wrote to its provider
     // (one value, two destinations: the writer and the journal).
-    let child_events = test.attach(&child);
-    let prompt = first_user_message(&child_events);
+    let child_events = test.attach_child(&child);
+    let prompt = wait_for_user_message(&child_events, Duration::from_secs(45));
     assert_eq!(
         prompt,
         format!(
@@ -4247,18 +4283,20 @@ fn the_standing_instructions_reach_a_session_a_human_opens() {
     );
 }
 
-/// Wait for the transcript's first user message, the way every other assertion
-/// in this battery waits: an empty string is not a message.
-fn wait_for_user_message(events: &Mutex<Vec<SessionEvent>>, timeout: Duration) -> String {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let prompt = first_user_message(events);
-        if !prompt.is_empty() {
-            return prompt;
-        }
-        assert!(Instant::now() < deadline, "the prompt never arrived");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+/// The tool names one `tools/list` observation carried. The line is
+/// `<pid> <bearer fingerprint> <json body>`, so the names come out of the
+/// parsed body: a description that mentions another tool's name (the profile
+/// list points its reader at the creation tool) must not read as that tool
+/// being served.
+fn tool_names(line: &str) -> Vec<String> {
+    let body = line.splitn(3, ' ').nth(2).unwrap_or(line);
+    let parsed: serde_json::Value = serde_json::from_str(body).expect("the tools/list body");
+    parsed["result"]["tools"]
+        .as_array()
+        .expect("the tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("a tool name").to_string())
+        .collect()
 }
 
 /// The Design host's route: the app composes one long grounded prompt and sends
@@ -4313,21 +4351,38 @@ fn empty_standing_instructions_leave_the_first_prompt_alone() {
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
     let child = test.child_of(&creator.id);
-    let child_events = test.attach(&child);
+    let child_events = test.attach_child(&child);
     assert_eq!(
-        first_user_message(&child_events),
+        wait_for_user_message(&child_events, Duration::from_secs(45)),
         format!("{PREAMBLE}\n\nreport your result"),
         "an empty standing-instructions text adds nothing to the child's prompt"
     );
 
     // And on a session a human opened, the first prompt is the message itself.
+    // The creator of this test has a child, and the child's finish report is
+    // itself an agent user message on the creator's transcript, so the message
+    // just sent is not the transcript's first — wait for its text.
     test.client
         .session_send(&creator.id, "what is the state of the repo?")
         .expect("send the human's first message");
-    assert_eq!(
-        wait_for_user_message(&events, Duration::from_secs(45)),
-        "what is the state of the repo?"
-    );
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let arrived = events.lock().expect("events lock").iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::AgentUserMessage { text, .. }
+                    if text == "what is the state of the repo?"
+            )
+        });
+        if arrived {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the human's message never arrived on the creator's transcript"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// The unattended marker is a fact of the child's **birth**: it is decided by
@@ -4451,12 +4506,26 @@ fn renaming_a_profile_does_not_change_what_a_running_child_was_started_from() {
     // name it used to have is refused as unknown.
     let second = test.creator_session();
     let _ = test.attach(&second);
-    let calls = test.wait_for_observations("mcp calls.txt", 2);
-    assert!(
-        calls[1].contains("unknown profile; call devboule_list_profiles"),
-        "the old name is unknown now: {}",
-        calls[1]
-    );
+    // Every stub process in this test appends to the one observation file, in
+    // the order its HTTP answer lands — not in the order the test creates
+    // sessions — so the file's line positions say nothing. The sentence is the
+    // fact under test: some creation named the old name after the rename, and
+    // the daemon refused it without naming what still exists.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let refused = test
+            .observations("mcp calls.txt")
+            .iter()
+            .any(|line| line.contains("unknown profile; call devboule_list_profiles"));
+        if refused {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no creation naming the old name was refused as unknown"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// A creator and everything it commissions share one context, at any depth: the
@@ -4478,7 +4547,7 @@ fn a_grandchild_shares_the_context_of_the_human_session_it_came_from() {
     // The child's own provider asks for a child of its own (every stub process
     // makes the call `DEVBOULE_ACP_STUB_MCP_CALL` names), so the card that
     // arrives on the *child's* session is the grandchild's.
-    let child_events = test.attach(&child);
+    let child_events = test.attach_child(&child);
     let grandchild_card = wait_for_creation_card(&child_events, Duration::from_secs(45));
     test.client
         .session_permission_respond(
