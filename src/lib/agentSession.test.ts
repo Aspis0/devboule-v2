@@ -1,5 +1,14 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { PermissionRequest, SessionEvent } from "../types/ipc";
+
+const historyMocks = vi.hoisted(() => ({ recordChildFinishedHistory: vi.fn(async () => true) }));
+
+// The Design history is a surface settings write, not a daemon call: the test
+// asserts the pipeline reaches it, and the writer's own test covers storage.
+vi.mock("../features/design/childFinishedHistory", () => ({
+  recordChildFinishedHistory: historyMocks.recordChildFinishedHistory,
+}));
+
 import {
   AgentSession,
   type AgentChannel,
@@ -1439,6 +1448,49 @@ describe("ACP agent session", () => {
     harness.emit({ type: "agent_finished", stopReason: "end_turn" });
 
     expect(second).toHaveBeenCalledTimes(1);
+    expect(harness.session.getState().status).toBe("idle");
+  });
+
+  it("records a created child's finish in the Design history", async () => {
+    // This is the whole subscription for `child_finished`: no surface mounts it,
+    // and this pipeline is what sees the event live on the creator's transcript
+    // and again when the creator is replayed from the journal.
+    historyMocks.recordChildFinishedHistory.mockClear();
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "child_finished",
+      messageId: "m2",
+      childSessionId: "s.parent.2",
+      displayName: "worker one",
+      state: "completed",
+      artifacts: [],
+    });
+
+    expect(historyMocks.recordChildFinishedHistory).toHaveBeenCalledTimes(1);
+    expect(historyMocks.recordChildFinishedHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ childSessionId: "s.parent.2", displayName: "worker one" }),
+    );
+    // Nothing about the finish becomes a transcript item of the creator's.
+    expect(harness.session.getState().items).toEqual([]);
+  });
+
+  it("ignores a creation record without turning it into a transcript line", async () => {
+    historyMocks.recordChildFinishedHistory.mockClear();
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_created",
+      messageId: "m1",
+      childSessionId: "s.parent.2",
+      displayName: "worker one",
+      provider: "grok",
+      preset: "design",
+    });
+
+    expect(harness.session.getState().items).toEqual([]);
     expect(harness.session.getState().status).toBe("idle");
   });
 });

@@ -272,6 +272,63 @@ describe("design history persistence", () => {
   });
 });
 
+describe("design history entry origin", () => {
+  it("round-trips a commissioned child's entry through the parser", async () => {
+    const childEntry: DesignHistoryEntry = {
+      sessionId: "s.parent.2",
+      peerSessionId: null,
+      createdAtMs: null,
+      title: "worker one",
+      savedAtMs: 4_242,
+      origin: "child",
+    };
+
+    await expect(recordDesignHistoryEntry(childEntry)).resolves.toBe(true);
+
+    const history = await loadDesignHistory();
+    expect(history).toEqual([childEntry]);
+    // The widened union is what the parser admits, not a new spelling: the two
+    // origins that existed before still survive the same read.
+    expect(history?.[0]?.origin).toBe("child");
+  });
+
+  it("still reads every entry an older build wrote", async () => {
+    // The older builds wrote `design` (the surface's own runs) and `workspace`
+    // (reserved, never written by that name yet). Both must parse unchanged, and
+    // so must a record with no `createdAtMs` at all.
+    const olderDesign = {
+      sessionId: "session-old",
+      peerSessionId: "peer-old",
+      title: "First pass",
+      savedAtMs: 10,
+      origin: "design",
+    };
+    const olderWorkspace = { ...olderDesign, sessionId: "session-ws", origin: "workspace" };
+    storedSettings = {
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      history: [olderDesign, olderWorkspace],
+    };
+
+    await expect(loadDesignHistory()).resolves.toEqual([
+      { ...olderDesign, createdAtMs: null },
+      { ...olderWorkspace, createdAtMs: null },
+    ]);
+  });
+
+  it("drops an entry whose origin no build ever wrote", async () => {
+    storedSettings = {
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      history: [{ ...BASE_ENTRY, origin: "kiosk" }],
+    };
+
+    await expect(loadDesignHistory()).resolves.toEqual([]);
+  });
+});
+
 describe("design history settings size", () => {
   it("trims pathological history by measured bytes and keeps the newest entry", async () => {
     const pathologicalString = (length: number): string =>

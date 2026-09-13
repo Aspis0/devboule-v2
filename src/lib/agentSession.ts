@@ -6,6 +6,7 @@ import type {
   SessionManifest,
   ToolLocation,
 } from "../types/ipc";
+import { recordChildFinishedHistory } from "../features/design/childFinishedHistory";
 import type { AttachmentReference, SessionChannel } from "./tauri";
 
 export type AgentChannel = SessionChannel;
@@ -105,6 +106,17 @@ function eventError(error: unknown): string {
     if (typeof message === "string" && message.trim()) return message;
   }
   return "The agent session did not answer.";
+}
+
+/**
+ * The `type` of an event this build has no case for, for the message the
+ * `never` guard below raises. Same helper the terminal session keeps: the point
+ * is one readable word in the transcript, not the whole payload.
+ */
+function eventTypeName(event: unknown): string {
+  if (typeof event !== "object" || event === null || !("type" in event)) return "unknown";
+  const type = event.type;
+  return typeof type === "string" && type.trim() ? type : "unknown";
 }
 
 function itemParentage(
@@ -523,6 +535,48 @@ export class AgentSession {
       // steer rendering in slice 4b.
       case "steered":
         return;
+      case "agent_created":
+        // A created child, recorded on its creator's transcript. Listed so it is
+        // not silently dropped, and ignored because no view renders it: the fact
+        // the app uses is the child's own row — its `displayName` (the tab's
+        // label) and its `createdBy` (the badge naming this session). The one
+        // event this pipeline acts on is the finish below.
+        return;
+      case "child_finished":
+        // One created child's finish, on the creator's transcript. The app's
+        // only use of it is a Design history entry pointing at the child: the
+        // journal is the artifact store and the history holds pointers, so
+        // nothing from `event.artifacts` is copied, resolved or fetched here.
+        //
+        // It is handled in the shared event pipeline on purpose. `child_finished`
+        // is published on the CREATOR's session, so it arrives live while a
+        // surface is attached to the creator and again from the journal when the
+        // creator is next attached — and **replay is the recovery path** for a
+        // finish that happened while the user was looking at another surface.
+        // There is no subscription that outlives navigation, and no app-level one
+        // may be invented to fake it. Seeing the same finish twice is harmless:
+        // the history keeps one entry per session id.
+        //
+        // Nothing on this path may call the daemon: `client.rs` runs its event
+        // handlers on the connection's only reader thread, so a synchronous
+        // roundtrip from inside an event callback deadlocks until the RPC times
+        // out (`attached-connection-loses-events.md`; the dispatcher-thread fix
+        // is not in). The history write is the app's own surface settings file
+        // through Tauri commands that never touch the daemon — keep it that way.
+        void recordChildFinishedHistory(event);
+        return;
+      default: {
+        // Every `SessionEvent` arm is a case above, so this branch is
+        // unreachable for the protocol as typed — the `never` assignment is what
+        // keeps it that way, and it is why `agent_created` and `child_finished`
+        // had to be listed instead of falling through. Both were added to the
+        // daemon while this switch named neither, and both were dropped in
+        // silence for exactly that reason; a newer daemon's event must not go
+        // the same way.
+        const unknownEvent: never = event;
+        this.fail(`The daemon sent an unknown session event type: ${eventTypeName(unknownEvent)}.`);
+        return;
+      }
     }
   }
 

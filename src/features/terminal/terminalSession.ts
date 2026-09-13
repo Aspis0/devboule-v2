@@ -434,9 +434,12 @@ export class TerminalSession {
         //
         // `agent_created` and `child_finished` (`S5`) are the two records a
         // creator's transcript gets when one of its agents is created and when
-        // it finishes: the terminal view renders neither, and the app's agent
-        // surfaces subscribe to them directly. Listed rather than defaulted so
-        // a new daemon event still lands in the `never` guard below.
+        // it finishes: the terminal view renders neither. They belong to the
+        // agent pipeline, not here — `child_finished` is where `AgentSession`
+        // writes its Design history entry, and `agent_created` is not a
+        // transcript line at all (the child's own `displayName` and `createdBy`
+        // are how the app reads that fact). Listed rather than defaulted so a
+        // new daemon event still lands in the `never` guard below.
         break;
       case "steered":
         // Journaled for audit and not emitted to observers; listed so a leak

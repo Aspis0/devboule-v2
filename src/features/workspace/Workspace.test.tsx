@@ -2360,6 +2360,68 @@ describe("Workspace sessions", () => {
     });
   });
 
+  it("names a created child's creator on the child's tab", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      { ...acpSession("creator-session", "design run"), displayName: "Design runner" },
+      {
+        ...acpSession("child-session", "worker"),
+        displayName: "worker one",
+        createdBy: "creator-session",
+      },
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    const tab = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>("#workspace-session-tab-child-session");
+      if (found === null) throw new Error("created child's tab did not render");
+      return found;
+    });
+
+    // The session's own name is the tab's label; the creator is its own pill
+    // beside it, never part of that text.
+    expect(tab.querySelector(".workspace-tab-label")?.textContent).toBe("worker one");
+    const pills = [...tab.querySelectorAll<HTMLElement>(".workspace-session-origin-badge")];
+    const creatorPill = pills.find((pill) => pill.textContent === "created by Design runner");
+    expect(creatorPill).not.toBeUndefined();
+    // Same pill as the peer device's: one class, no second badge style.
+    expect(creatorPill?.className).toBe("workspace-session-origin-badge");
+    // The full text survives the tab's truncation, which CSS does.
+    expect(creatorPill?.title).toBe("created by Design runner");
+    // And nothing here names the A2A task state: the roster never carries one.
+    expect(pills.map((pill) => pill.textContent)).not.toContain("input_required");
+  });
+
+  it("leaves a parked session's reason to the attention pill", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      {
+        ...acpSession("human-1", "my agent"),
+        attention: { reason: "permission", atMs: 1_760_000_000_000 },
+      },
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    const tab = await vi.waitFor(() => {
+      const found = container.querySelector<HTMLElement>("#workspace-session-tab-human-1");
+      if (found === null) throw new Error("human session's tab did not render");
+      return found;
+    });
+
+    const pills = [...tab.querySelectorAll<HTMLElement>(".workspace-session-origin-badge")].map(
+      (pill) => pill.textContent,
+    );
+    expect(pills.some((text) => text?.startsWith("created by"))).toBe(false);
+    expect(pills).not.toContain("input_required");
+    // The one roster-level fact behind a parked card is the attention the daemon
+    // raises, and this is the pill that names it — the words a person reads.
+    expect(tab.querySelector(".workspace-tab-attention")?.textContent).toBe("needs approval");
+  });
+
   it("names the peer device on the permission card's provenance line", async () => {
     const peerAgent: Session = {
       ...acpSession("peer-agent", "remote agent"),

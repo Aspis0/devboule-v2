@@ -17,8 +17,15 @@ export interface DesignHistoryEntry {
   /** The prompt that started the run, trimmed. */
   title: string;
   savedAtMs: number;
-  /** Where the run was started from. Only "design" can occur today. */
-  origin: "design" | "workspace";
+  /**
+   * Where the run behind this entry was started from.
+   *
+   * `design` is the Design surface's own run; `workspace` is reserved for a run
+   * the workspace started. `child` is a session an agent commissioned: the entry
+   * is written when the creator's session sees `child_finished`, and it points at
+   * that child so the same replay-and-re-extract route opens it.
+   */
+  origin: "design" | "workspace" | "child";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -51,7 +58,7 @@ function parseHistoryEntry(value: unknown): DesignHistoryEntry | null {
     typeof title !== "string" ||
     typeof savedAtMs !== "number" ||
     !Number.isFinite(savedAtMs) ||
-    (origin !== "design" && origin !== "workspace")
+    (origin !== "design" && origin !== "workspace" && origin !== "child")
   ) {
     return null;
   }

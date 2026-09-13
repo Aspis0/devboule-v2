@@ -14,9 +14,12 @@ import {
   peerDeviceNames,
   requiresConsent,
   sessionCreateFromProvider,
+  sessionCreatorBadge,
+  sessionDisplayNames,
   sessionOriginBadge,
   sessionOriginUnknown,
   sessionStateLabel,
+  sessionTitle,
 } from "./workspaceSessions";
 import { workspaceView } from "./workspaceProjects";
 
@@ -706,6 +709,110 @@ describe("session origin badge", () => {
     ]);
 
     expect(controller.getState().sessions[0]?.origin).toEqual(listed.origin);
+    release();
+  });
+});
+
+describe("session title", () => {
+  it("prefers the session's own display name", () => {
+    expect(sessionTitle({ ...liveSession("s.4242.7", "shell one"), displayName: "worker" })).toBe(
+      "worker",
+    );
+    // The tab's label is this one string, so the trimming that makes an empty
+    // name absent has to happen here rather than at every call site.
+    expect(sessionTitle({ ...liveSession("s.4242.7"), displayName: "  worker  " })).toBe("worker");
+    // A display name outranks a title, and the title still shows when the name
+    // is only whitespace — the presence test is the trimmed one.
+    expect(sessionTitle({ ...liveSession("s.4242.7", "shell one"), displayName: "   " })).toBe(
+      "shell one",
+    );
+  });
+
+  it("falls back exactly as before when the session has no display name", () => {
+    expect(sessionTitle(liveSession("s.4242.7", "shell one"))).toBe("shell one");
+    expect(sessionTitle(liveSession("s.4242.7", "  "))).toBe("Terminal s.4242.7");
+    expect(sessionTitle({ ...liveSession("s.4242.7", ""), kind: "acp" })).toBe("Agent s.4242.7");
+    // A recovered record comes back without a display name on older journals;
+    // the id-prefix fallback is what covers that gap, so it stays intact.
+    const recovered: Session = {
+      ...liveSession("s.4242.7", ""),
+      kind: "acp",
+      state: {
+        type: "recovered",
+        generation: 1,
+        integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+      },
+    };
+    expect(sessionTitle(recovered)).toBe("Agent s.4242.7");
+  });
+});
+
+describe("session identity badges", () => {
+  const child = (createdBy?: string): Session => ({
+    ...liveSession("s.4242.9", "worker"),
+    ...(createdBy === undefined ? {} : { createdBy }),
+  });
+
+  it("names the creator a created session's roster row knows", () => {
+    const names = sessionDisplayNames([
+      { ...liveSession("s.4242.1", "design run"), displayName: "Design runner" },
+      child("s.4242.1"),
+    ]);
+    expect(sessionCreatorBadge(child("s.4242.1"), names)).toBe("created by Design runner");
+    // The map carries only named rows, so the badge's fallback below is reached
+    // for a creator that has a title and no name.
+    expect(names.has("s.4242.2")).toBe(false);
+  });
+
+  it("falls back to the creator's short id prefix when the roster has not named it", () => {
+    expect(sessionCreatorBadge(child("s.4242.1"), new Map())).toBe("created by s.4242.1");
+  });
+
+  it("shows no creator badge on a session a person started", () => {
+    // Absent `createdBy` is a human-started session, and also every row written
+    // before the daemon kept the field.
+    expect(sessionCreatorBadge(child(), sessionDisplayNames([liveSession("a")]))).toBeNull();
+    expect(sessionCreatorBadge(child("   "), new Map())).toBeNull();
+  });
+
+  it("keeps a created session's display name and creator across a roster push", async () => {
+    // The push carries neither field, so the controller's carried-over row is
+    // the only thing standing between a live child and its own name and badge.
+    const listed: Session = {
+      ...liveSession("s.4242.9", "worker"),
+      displayName: "worker",
+      createdBy: "s.4242.1",
+    };
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [listed]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+
+    watched.listener?.([
+      {
+        id: "s.4242.9",
+        workspaceId: null,
+        kind: "terminal",
+        title: "worker",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 5,
+      },
+    ]);
+
+    const pushed = controller.getState().sessions[0];
+    expect(pushed?.displayName).toBe("worker");
+    expect(pushed?.createdBy).toBe("s.4242.1");
     release();
   });
 });

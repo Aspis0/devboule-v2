@@ -145,7 +145,22 @@ export function sessionAttentionLabel(reason: AttentionReason): string {
   return reason;
 }
 
-export function sessionTitle(session: Pick<Session, "id" | "title" | "kind">): string {
+/**
+ * The name a session is shown under, everywhere: the tab strip's label, the
+ * selected session's panel title, the roster rows.
+ *
+ * A session's own name — `Session.displayName`, set once by whoever created it
+ * (a human naming a session, an agent naming the child it commissioned) —
+ * outranks anything derived from the row. The fallback is unchanged and still
+ * the common path: a session a person started carries no display name, and a
+ * session recovered from an older journal comes back without one, which is
+ * exactly the gap `title` then the kind-derived name cover.
+ */
+export function sessionTitle(
+  session: Pick<Session, "id" | "title" | "kind" | "displayName">,
+): string {
+  const displayName = session.displayName?.trim();
+  if (displayName) return displayName;
   const title = session.title.trim();
   if (title) return title;
   return `${isAgentKind(session.kind) ? "Agent" : "Terminal"} ${session.id.slice(0, 8)}`;
@@ -159,6 +174,26 @@ export function sessionTitle(session: Pick<Session, "id" | "title" | "kind">): s
  */
 export function peerDeviceNames(peers: readonly PeerRow[]): Map<string, string> {
   return new Map(peers.map((peer) => [peer.deviceId, peer.displayName]));
+}
+
+/**
+ * The display name for each session the roster knows, keyed by session id. This
+ * is the session-side twin of `peerDeviceNames`, and it exists for the same
+ * reason: a `createdBy` is a session id and nothing more, so the badge that
+ * names a child's creator has to resolve it against rows the app already holds.
+ *
+ * A session with no display name is left out rather than mapped to its title:
+ * the map answers one question — has the roster named this session? — and a
+ * title is not a name the daemon wrote. An id missing from the map is a
+ * question the caller answers with the id itself, never with silence.
+ */
+export function sessionDisplayNames(sessions: readonly Session[]): Map<string, string> {
+  return new Map(
+    sessions.flatMap((session) => {
+      const name = session.displayName?.trim();
+      return name ? [[session.id, name] as const] : [];
+    }),
+  );
 }
 
 /** The badge for a session whose origin the daemon did not send at all. */
@@ -209,6 +244,48 @@ export function sessionOriginBadge(
   const device = name ?? (deviceId === undefined ? "unknown" : deviceId);
   return `from ${device}`;
 }
+
+/**
+ * The tab badge for a session an agent created, or null for one a person
+ * started (`createdBy` absent — which is also every row written before the
+ * daemon kept the field).
+ *
+ * The creator is a session id, so it is resolved against the roster's own
+ * display names: a child of a named session reads `created by <that name>`. An
+ * id no row has named yet — the creator is not in the roster at all, or it has
+ * no display name of its own — falls back to the same short id prefix the
+ * title fallback uses, because the child does have a creator and saying so is
+ * still true.
+ */
+export function sessionCreatorBadge(
+  session: Pick<Session, "createdBy">,
+  creatorNames: ReadonlyMap<string, string>,
+): string | null {
+  const createdBy = session.createdBy?.trim();
+  if (!createdBy) return null;
+  const name = creatorNames.get(createdBy);
+  return `created by ${name ?? createdBy.slice(0, 8)}`;
+}
+
+/**
+ * Where a roster badge for the A2A `input_required` state would go — measured
+ * and deliberately not written.
+ *
+ * `input_required` is not a roster fact. The daemon reports the task state of a
+ * created child to its **creator**, in the finish envelope's `state:` line and
+ * in the structured `child_finished` event that mirrors it
+ * (`crates/devboule-daemon/src/session.rs`, `agent_input_required_envelope`);
+ * the parked-child notice has no event of its own, and `SessionStateSnapshot`
+ * (`crates/devboule-protocol/src/session.rs`) carries no task state at all. The
+ * one roster-level fact behind "this child is parked on a card a person has to
+ * answer" is the attention the daemon raises for the child's own row
+ * (`SessionRuntime::raise_attention_for_event`, reason `permission`), which the
+ * tab already paints as `needs approval` beside the title.
+ *
+ * So a badge here said one thing twice in one strip, in a pill capped at 16ch.
+ * If the roster is ever to name the A2A state, the state has to arrive on the
+ * roster first — that is a wire change, not this function.
+ */
 
 export function createWorkspaceSessionController(
   source: WorkspaceSessionSource = DEFAULT_SOURCE,

@@ -20,6 +20,8 @@ import {
   requiresConsent,
   sessionAttentionLabel,
   sessionCreateFromProvider,
+  sessionCreatorBadge,
+  sessionDisplayNames,
   sessionDotTone,
   sessionOriginBadge,
   sessionOriginUnknown,
@@ -134,6 +136,11 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     sidePanelRegistry[0] ??
     SIDE_PANEL_REGISTRY[0];
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
+  // The names the roster carries, for the badge that resolves a child's
+  // `createdBy` back to the session that created it. Derived per render like
+  // `selectedSession` above: the roster is a handful of rows, and the map is a
+  // projection of the same array the tab strip is already mapping over.
+  const sessionNames = sessionDisplayNames(sessions);
   // The recovery decision is a small external store: it holds the episode, the
   // roster answer, and the attempt-failed note, which only change from pushed
   // updates. Both pushes happen in effects below — no ref is read during render.
@@ -708,6 +715,14 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
             // unknown one for a session it did not describe at all. The two are
             // told apart by their words and by the mark on the unknown pill.
             const originUnknown = sessionOriginUnknown(session);
+            // Identity badge: who created this session, in the same pill the
+            // peer device uses. Null for a session a person started.
+            // No `input_required` badge belongs here: the A2A task state is
+            // reported to the creator (finish envelope + `child_finished`), not
+            // to the roster, and the parked card a person must answer is what
+            // the attention pill below already names. See
+            // `workspaceSessions.ts` for the measurement before re-adding one.
+            const creatorBadge = sessionCreatorBadge(session, sessionNames);
             return (
               <button
                 type="button"
@@ -733,6 +748,11 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                     title={originBadge}
                   >
                     {originBadge}
+                  </span>
+                ) : null}
+                {creatorBadge !== null ? (
+                  <span className="workspace-session-origin-badge" title={creatorBadge}>
+                    {creatorBadge}
                   </span>
                 ) : null}
                 <span className="workspace-tab-meta">
