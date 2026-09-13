@@ -158,6 +158,16 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::ToolPolicyGet { .. } => PeerDecision::Deny("tool.policy.get"),
         ClientMessage::ToolPolicySet { .. } => PeerDecision::Deny("tool.policy.set"),
 
+        // The agent profiles are the same kind of object as the tool gates and
+        // are refused for the same reason, both halves: a profile carries the
+        // mode, the model and the tool overlay this machine's agents are created
+        // in, and the standing instructions are text that goes into every
+        // created agent's prompt. A paired device that could set them would be
+        // writing what this machine's agents do — and a device that could read
+        // them would be reading rules it was never given.
+        ClientMessage::AgentProfilesGet { .. } => PeerDecision::Deny("agent.profiles.get"),
+        ClientMessage::AgentProfilesSet { .. } => PeerDecision::Deny("agent.profiles.set"),
+
         // Local-only information: pid, instance id, live counts and the
         // secret-store selector, none of which a peer needs. Peers use `Ping`
         // and `DevicesList.self_info` (muse M7, §8b A13).
@@ -614,6 +624,13 @@ pub(crate) mod tests {
                 enabled: Some(false),
                 disabled_tools: Vec::new(),
             },
+            // The agent profiles, read and write: both are this device's own
+            // settings, and a peer holding every capability still gets neither.
+            ClientMessage::AgentProfilesGet { id: 1 },
+            ClientMessage::AgentProfilesSet {
+                id: 1,
+                document: devboule_protocol::AgentProfilesDocument::default(),
+            },
         ];
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for request in &denied {
@@ -776,6 +793,8 @@ pub(crate) mod tests {
             ClientMessage::PeerSetCaps { .. } => always("peer.set_caps"),
             ClientMessage::ToolPolicyGet { .. } => always("tool.policy.get"),
             ClientMessage::ToolPolicySet { .. } => always("tool.policy.set"),
+            ClientMessage::AgentProfilesGet { .. } => always("agent.profiles.get"),
+            ClientMessage::AgentProfilesSet { .. } => always("agent.profiles.set"),
         }
     }
 
@@ -786,7 +805,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 46;
+    pub(crate) const VARIANT_COUNT: usize = 48;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -840,6 +859,8 @@ pub(crate) mod tests {
             ClientMessage::PeerSetCaps { .. } => "PeerSetCaps",
             ClientMessage::ToolPolicyGet { .. } => "ToolPolicyGet",
             ClientMessage::ToolPolicySet { .. } => "ToolPolicySet",
+            ClientMessage::AgentProfilesGet { .. } => "AgentProfilesGet",
+            ClientMessage::AgentProfilesSet { .. } => "AgentProfilesSet",
         }
     }
 
@@ -1049,6 +1070,11 @@ pub(crate) mod tests {
                 provider_id: "claude".to_string(),
                 enabled: Some(false),
                 disabled_tools: Vec::new(),
+            },
+            ClientMessage::AgentProfilesGet { id: 1 },
+            ClientMessage::AgentProfilesSet {
+                id: 1,
+                document: devboule_protocol::AgentProfilesDocument::default(),
             },
         ]
     }

@@ -100,12 +100,12 @@ pub use ids::{
     OwnerId,
 };
 pub use messages::{
-    validate_display_name, AgentMessageState, AttachmentReference, ClientMessage, DaemonMessage,
-    DaemonStatusBody, JournalLimits, JournalRetention, JournalSessionUsage, JournalStats,
-    JournalUsage, PairingSecret, PeerRole, PeerRow, PendingPairing, PromptAttachment, ProviderInfo,
-    RemoteState, RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource, SelfInfo,
-    SessionEventEnvelope, ToolDescriptor, ToolPolicyEntry, Unreclaimable, PEER_CAPS,
-    PEER_DEFAULT_CAPS,
+    validate_display_name, AgentMessageState, AgentProfile, AgentProfilesDocument,
+    AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits,
+    JournalRetention, JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole,
+    PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind,
+    RetentionLimit, RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope,
+    ToolDescriptor, ToolPolicyEntry, Unreclaimable, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -197,6 +197,19 @@ pub mod caps {
     /// would get an unknown tool, which is the honest answer, and the app needs
     /// no refusal of its own to read `agent_created`/`child_finished`.
     pub const AGENT_CREATE: &str = "agent_create";
+
+    /// The agent-profile store (`AgentProfilesGet`/`AgentProfilesSet`), the
+    /// ordered list a creation resolves a profile by and the standing
+    /// instructions that travel with it.
+    ///
+    /// In both lists for the reason `tool_policy` is, and pairing the two
+    /// halves the same way: the handshake negotiates the intersection, so a
+    /// name only one side offers is never negotiated, and the client helpers
+    /// that refuse `agent_profiles_get`/`agent_profiles_set` without this name
+    /// would then refuse every call against every daemon. Whether a *connection*
+    /// may use it is `peer_allows`, not this list: a paired device is refused
+    /// both requests whichever capability it holds.
+    pub const AGENT_PROFILES: &str = "agent_profiles";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -532,6 +545,11 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // and the two events that come back from it. The daemon serves it, so the
     // app must offer it or the handshake would negotiate it away.
     capabilities.push(Capability::new(caps::AGENT_CREATE));
+    // Same pairing again, for the profiles the creation resolves: the app
+    // offers the name so the intersection keeps it, and reads it to know
+    // whether the daemon serves `AgentProfilesGet`/`AgentProfilesSet` rather
+    // than asking a daemon that would refuse.
+    capabilities.push(Capability::new(caps::AGENT_PROFILES));
     capabilities
 }
 
@@ -563,6 +581,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // intersection keeps it, and reads it to know whether the daemon serves
     // `devboule_create_agent` and its two events.
     capabilities.push(Capability::new(caps::AGENT_CREATE));
+    // Same pairing, for the profile store: the app offers it so the
+    // intersection keeps it, and reads it before asking a daemon that predates
+    // `AgentProfilesGet`/`AgentProfilesSet`.
+    capabilities.push(Capability::new(caps::AGENT_PROFILES));
     capabilities
 }
 
@@ -619,6 +641,28 @@ mod tests {
         assert!(m3a_client_capabilities()
             .iter()
             .any(|cap| cap.as_str() == caps::TOOL_POLICY));
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_agent_profiles_capability() {
+        // Both lists, for the reason the two tests above state: the handshake
+        // negotiates the intersection, so a name only one side offers is never
+        // negotiated, and the client helpers that refuse
+        // `agent_profiles_get`/`agent_profiles_set` without it would refuse
+        // every call.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::AGENT_PROFILES));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::AGENT_PROFILES));
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(
+            agreed
+                .iter()
+                .any(|cap| cap.as_str() == caps::AGENT_PROFILES),
+            "the negotiated set must keep agent_profiles: {agreed:?}"
+        );
     }
 
     #[test]

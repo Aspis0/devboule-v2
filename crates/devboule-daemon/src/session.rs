@@ -14794,6 +14794,8 @@ mod tests {
             ClientMessage::PeerSetCaps { .. } => None,
             ClientMessage::ToolPolicyGet { .. } => None,
             ClientMessage::ToolPolicySet { .. } => None,
+            ClientMessage::AgentProfilesGet { .. } => None,
+            ClientMessage::AgentProfilesSet { .. } => None,
         }
     }
 

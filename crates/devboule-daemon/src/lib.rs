@@ -8,6 +8,8 @@ mod acp_view;
 #[cfg(feature = "server")]
 mod agent_env;
 #[cfg(feature = "server")]
+mod agent_profiles;
+#[cfg(feature = "server")]
 mod agent_report;
 #[cfg(feature = "server")]
 mod atomic;

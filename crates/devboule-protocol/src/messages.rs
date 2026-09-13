@@ -525,6 +525,26 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         disabled_tools: Vec<String>,
     },
+    /// Read the whole agent-profile document: the ordered profile list and the
+    /// standing instructions. Local-only: profiles carry the modes and tool
+    /// overlays this machine's agents are created in, so a paired device may
+    /// neither read nor change them (`peer_policy.rs` denies both roles).
+    AgentProfilesGet {
+        id: u64,
+    },
+    /// Replace the whole agent-profile document — the list **and** the standing
+    /// instructions, never one half. The order is the human's and is kept as
+    /// sent; nothing sorts it.
+    ///
+    /// `id` on a profile is the caller's when it has one and absent when it is
+    /// new, in which case the daemon mints one. A request that names a provider
+    /// the catalog does not publish, an id already used twice, a name outside
+    /// 1..60 characters, a `note` over 2 KiB or `standingInstructions` over
+    /// 8 KiB is refused by name and nothing is written.
+    AgentProfilesSet {
+        id: u64,
+        document: AgentProfilesDocument,
+    },
 }
 
 /// Trim a requested display name and check it, or say why it cannot be used.
@@ -603,7 +623,9 @@ impl ClientMessage {
             | Self::PeerRevoke { id, .. }
             | Self::PeerSetCaps { id, .. }
             | Self::ToolPolicyGet { id }
-            | Self::ToolPolicySet { id, .. } => Some(*id),
+            | Self::ToolPolicySet { id, .. }
+            | Self::AgentProfilesGet { id }
+            | Self::AgentProfilesSet { id, .. } => Some(*id),
         }
     }
 
@@ -670,7 +692,9 @@ impl ClientMessage {
             | Self::PeerRevoke { .. }
             | Self::PeerSetCaps { .. }
             | Self::ToolPolicyGet { .. }
-            | Self::ToolPolicySet { .. } => None,
+            | Self::ToolPolicySet { .. }
+            | Self::AgentProfilesGet { .. }
+            | Self::AgentProfilesSet { .. } => None,
         }
     }
 
@@ -724,6 +748,8 @@ impl ClientMessage {
             Self::PeerSetCaps { .. } => "PeerSetCaps",
             Self::ToolPolicyGet { .. } => "ToolPolicyGet",
             Self::ToolPolicySet { .. } => "ToolPolicySet",
+            Self::AgentProfilesGet { .. } => "AgentProfilesGet",
+            Self::AgentProfilesSet { .. } => "AgentProfilesSet",
         }
     }
 
@@ -748,7 +774,8 @@ impl ClientMessage {
             | Self::WorkspacesList { .. }
             | Self::ProvidersList { .. }
             | Self::DevicesList { .. }
-            | Self::ToolPolicyGet { .. } => false,
+            | Self::ToolPolicyGet { .. }
+            | Self::AgentProfilesGet { .. } => false,
 
             Self::Shutdown { .. }
             | Self::SessionCreate { .. }
@@ -782,7 +809,8 @@ impl ClientMessage {
             | Self::PairingConfirm { .. }
             | Self::PeerRevoke { .. }
             | Self::PeerSetCaps { .. }
-            | Self::ToolPolicySet { .. } => true,
+            | Self::ToolPolicySet { .. }
+            | Self::AgentProfilesSet { .. } => true,
         }
     }
 }
@@ -973,6 +1001,22 @@ pub enum DaemonMessage {
     ToolPolicySetOk {
         id: u64,
     },
+    /// The reply to `AgentProfilesGet`: the whole stored document, the ordered
+    /// profile list and the standing instructions. An empty document is not an
+    /// error — it is a first run, or a file the store had to quarantine, and it
+    /// means the same thing in both cases: no profiles and no standing
+    /// instructions.
+    AgentProfiles {
+        id: u64,
+        document: AgentProfilesDocument,
+    },
+    /// The reply to `AgentProfilesSet` once the whole document is on disk. The
+    /// reply carries no document: the ids the daemon minted for new profiles
+    /// are read back with `AgentProfilesGet`, exactly as a tool policy toggle is
+    /// read back with `ToolPolicyGet`.
+    AgentProfilesSetOk {
+        id: u64,
+    },
 }
 
 /// This device's own advertised identity. `remote` deliberately carries only
@@ -1153,6 +1197,67 @@ pub struct ToolPolicyEntry {
     /// from here: `is_tool_enabled` answers for it first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_tools: Vec<String>,
+}
+
+/// One agent profile, as the Settings → Agents form saves it and as the
+/// ordered list in `agent-profiles.json` holds it.
+///
+/// `id` is the profile's identity and the only key anything downstream uses.
+/// The daemon mints one when a caller leaves it empty, a human renaming a
+/// profile changes `name` and never `id`, and a session records the `id` it was
+/// started from — so a rename cannot make a running child report a profile that
+/// no longer exists, and two profiles may share a `name` without one shadowing
+/// the other. Nothing looks a profile up by name in this type.
+///
+/// `model`, `mode_id` and `thinking_option_id` are the provider's own
+/// vocabulary, stored verbatim and bounded by length. The daemon's catalog
+/// answers which providers exist — and `agent_profiles.rs` uses exactly that
+/// predicate — but it publishes no per-provider list of models or modes at this
+/// commit (`peer_policy.rs` says so for modes in its own words: "ACP modes are
+/// defined by the agent at runtime"), so a membership test here would be a
+/// second list that could refuse a profile the provider really offers. The
+/// provider refuses an unknown mode or model itself when the creation path asks
+/// it to spawn (`claude_client.rs`, `codex_view.rs`, `pi_client.rs`,
+/// `session.rs`).
+///
+/// `tool_overlay` can only ever *remove* tools, for the reason `ToolOverlay`
+/// states in `provider_catalog.rs`: a profile that widened a session's tools
+/// would be a second policy authority beside the stored `ToolPolicyEntry`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentProfile {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub note: String,
+    pub provider: String,
+    pub model: String,
+    pub mode_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_option_id: Option<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub features: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_overlay: Vec<String>,
+    pub enabled_for_agents: bool,
+}
+
+/// The whole stored document: the **ordered** profile list, in the human's
+/// order, plus the standing instructions.
+///
+/// One document rather than two files, so a creation reads both halves at one
+/// moment and one write cannot leave them disagreeing. An empty document — the
+/// first run, or a file the store had to quarantine — means no profiles **and**
+/// no standing instructions, never "the last good ones".
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentProfilesDocument {
+    #[serde(default)]
+    pub profiles: Vec<AgentProfile>,
+    #[serde(default)]
+    pub standing_instructions: String,
 }
 
 fn default_provider_installed() -> bool {
@@ -2878,6 +2983,192 @@ mod tests {
         assert_eq!(
             serde_json::to_value(DaemonMessage::ToolPolicySetOk { id: 35 }).expect("json"),
             serde_json::json!({"type": "tool_policy_set_ok", "id": 35})
+        );
+    }
+
+    #[test]
+    fn agent_profiles_wire_contract_round_trips_with_its_exact_field_names() {
+        // The Settings → Agents form is built against this JSON, and a rename
+        // here is a silently dropped profile field there, so the names are
+        // asserted on the serialised form rather than on the Rust fields.
+        let get = serde_json::to_value(ClientMessage::AgentProfilesGet { id: 41 }).expect("json");
+        assert_eq!(
+            get,
+            serde_json::json!({"type": "agent_profiles_get", "id": 41})
+        );
+
+        let mut features = serde_json::Map::new();
+        features.insert("autoAccept".to_string(), serde_json::json!(true));
+        let document = AgentProfilesDocument {
+            profiles: vec![AgentProfile {
+                id: "p-1".to_string(),
+                name: "Reviewer".to_string(),
+                icon: Some("eye".to_string()),
+                note: "Use for a second opinion.".to_string(),
+                provider: "claude".to_string(),
+                model: "opus".to_string(),
+                mode_id: "default".to_string(),
+                thinking_option_id: Some("high".to_string()),
+                features,
+                tool_overlay: vec!["devboule_create_agent".to_string()],
+                enabled_for_agents: true,
+            }],
+            standing_instructions: "Report in your final message.".to_string(),
+        };
+        let set = ClientMessage::AgentProfilesSet {
+            id: 42,
+            document: document.clone(),
+        };
+        let set_json = serde_json::to_value(&set).expect("json");
+        assert_eq!(set_json["type"], "agent_profiles_set");
+        assert_eq!(set_json["document"]["profiles"][0]["id"], "p-1");
+        assert_eq!(set_json["document"]["profiles"][0]["modeId"], "default");
+        assert_eq!(
+            set_json["document"]["profiles"][0]["thinkingOptionId"],
+            "high"
+        );
+        assert_eq!(
+            set_json["document"]["profiles"][0]["enabledForAgents"],
+            true
+        );
+        assert_eq!(
+            set_json["document"]["profiles"][0]["toolOverlay"][0],
+            "devboule_create_agent"
+        );
+        assert_eq!(
+            set_json["document"]["profiles"][0]["features"]["autoAccept"],
+            true
+        );
+        assert_eq!(
+            set_json["document"]["standingInstructions"],
+            "Report in your final message."
+        );
+        assert_eq!(
+            serde_json::from_value::<ClientMessage>(set_json).expect("back"),
+            set
+        );
+
+        // A profile whose optional halves are absent round-trips as absent: an
+        // empty note and an empty feature map are omitted, never sent as `""`
+        // and `{}`, because the app renders presence and a fabricated empty
+        // value is a different profile.
+        let bare = serde_json::json!({
+            "type": "agent_profiles_set",
+            "id": 43,
+            "document": {
+                "profiles": [{
+                    "id": "",
+                    "name": "Bare",
+                    "provider": "pi",
+                    "model": "gpt-5",
+                    "modeId": "ask",
+                    "enabledForAgents": false
+                }],
+                "standingInstructions": ""
+            }
+        });
+        assert_eq!(
+            serde_json::from_value::<ClientMessage>(bare).expect("bare profile"),
+            ClientMessage::AgentProfilesSet {
+                id: 43,
+                document: AgentProfilesDocument {
+                    profiles: vec![AgentProfile {
+                        id: String::new(),
+                        name: "Bare".to_string(),
+                        icon: None,
+                        note: String::new(),
+                        provider: "pi".to_string(),
+                        model: "gpt-5".to_string(),
+                        mode_id: "ask".to_string(),
+                        thinking_option_id: None,
+                        features: serde_json::Map::new(),
+                        tool_overlay: Vec::new(),
+                        enabled_for_agents: false,
+                    }],
+                    standing_instructions: String::new(),
+                },
+            }
+        );
+
+        // An unknown field is refused rather than dropped, at both levels, and
+        // the refusal names it: a dropped field would be a profile the human
+        // saved and the daemon quietly did not keep.
+        for unknown in [
+            serde_json::json!({
+                "type": "agent_profiles_set",
+                "id": 44,
+                "document": {
+                    "profiles": [],
+                    "standingInstructions": "",
+                    "standing": "typo"
+                }
+            }),
+            serde_json::json!({
+                "type": "agent_profiles_set",
+                "id": 45,
+                "document": {
+                    "profiles": [{
+                        "id": "p-2",
+                        "name": "Bare",
+                        "provider": "pi",
+                        "model": "gpt-5",
+                        "modeId": "ask",
+                        "enabledForAgents": false,
+                        "mode": "ask"
+                    }],
+                    "standingInstructions": ""
+                }
+            }),
+        ] {
+            let refused = serde_json::from_value::<ClientMessage>(unknown.clone())
+                .expect_err("an unknown field must be refused");
+            let named = if unknown["document"].get("standing").is_some() {
+                "standing"
+            } else {
+                "mode"
+            };
+            assert!(
+                refused.to_string().contains(named),
+                "the refusal must name {named}: {refused}"
+            );
+        }
+
+        let reply = DaemonMessage::AgentProfiles {
+            id: 46,
+            document: document.clone(),
+        };
+        let reply_json = serde_json::to_value(&reply).expect("json");
+        assert_eq!(reply_json["type"], "agent_profiles");
+        assert_eq!(reply_json["document"]["profiles"][0]["name"], "Reviewer");
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(reply_json).expect("back"),
+            reply
+        );
+
+        assert_eq!(
+            serde_json::to_value(DaemonMessage::AgentProfilesSetOk { id: 47 }).expect("json"),
+            serde_json::json!({"type": "agent_profiles_set_ok", "id": 47})
+        );
+
+        // The audit and the rate-limit sides of the two variants: a read may
+        // not produce an audit row, a write must.
+        assert!(!ClientMessage::AgentProfilesGet { id: 1 }.is_state_changing());
+        assert!(ClientMessage::AgentProfilesSet {
+            id: 1,
+            document: AgentProfilesDocument::default(),
+        }
+        .is_state_changing());
+        assert_eq!(
+            ClientMessage::AgentProfilesGet { id: 1 }.name(),
+            "AgentProfilesGet"
+        );
+        assert_eq!(
+            ClientMessage::AgentProfilesSet {
+                id: 1,
+                document: AgentProfilesDocument::default(),
+            }
+            .name(),
+            "AgentProfilesSet"
         );
     }
 

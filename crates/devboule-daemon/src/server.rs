@@ -84,6 +84,12 @@ pub struct ServerState {
     /// instance per daemon: the file beside the journal is this daemon's,
     /// and a paired device's toggles are its own.
     pub(crate) tool_policy: Arc<crate::tool_policy::ToolPolicyStore>,
+    /// The agent-profile document: the ordered list a creation resolves and the
+    /// standing instructions that travel with it. Written by
+    /// `AgentProfilesSet`, read by the creation path at the moment it resolves a
+    /// profile — never cached per session, so an edit takes effect on the next
+    /// creation.
+    pub(crate) agent_profiles: Arc<crate::agent_profiles::AgentProfilesStore>,
     pub sessions: SessionRegistry,
     conn_ids: AtomicU64,
     journal_error: Mutex<Option<String>>,
@@ -243,6 +249,10 @@ impl ServerState {
         let mcp = Arc::new(crate::mcp_broker::McpBroker::new(&paths.dir)?);
         // Read before `paths` moves into the session registry below.
         let tool_policy = Arc::new(crate::tool_policy::ToolPolicyStore::load(&paths.dir));
+        // Read at startup like the tool policy, and read again at every
+        // creation: the store holds the document, the creation path asks it for
+        // one, and nothing in a session keeps a copy.
+        let agent_profiles = Arc::new(crate::agent_profiles::AgentProfilesStore::load(&paths.dir));
         let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
             Ok(journal) => (Some(Arc::new(journal)), None),
             Err(error) => (None, Some(error.to_string())),
@@ -264,6 +274,7 @@ impl ServerState {
             process_job,
             mcp,
             tool_policy,
+            agent_profiles,
             sessions: SessionRegistry::new(paths, journal),
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
@@ -2331,6 +2342,32 @@ fn dispatch_immediate(
                 )
             }
         },
+        ClientMessage::AgentProfilesGet { id } => DaemonMessage::AgentProfiles {
+            id,
+            document: state.agent_profiles.document(),
+        },
+        ClientMessage::AgentProfilesSet { id, document } => {
+            match state.agent_profiles.set(document) {
+                Ok(()) => DaemonMessage::AgentProfilesSetOk { id },
+                // A document over a cap, naming a provider the catalog does not
+                // publish, or repeating an id is the caller's mistake and is
+                // reported as one: retrying it would fail the same way. A write
+                // failure is the daemon's, and the store kept the document it
+                // already had.
+                Err(error) => {
+                    let code = match error {
+                        crate::agent_profiles::ProfilesError::InvalidRequest(_) => {
+                            ErrorCode::InvalidRequest
+                        }
+                        crate::agent_profiles::ProfilesError::Io(_) => ErrorCode::Io,
+                    };
+                    DaemonMessage::Error(
+                        WireError::new(code, format!("Could not save the agent profiles: {error}"))
+                            .with_id(id),
+                    )
+                }
+            }
+        }
         ClientMessage::DevicesList { .. }
         | ClientMessage::PairingStart { .. }
         | ClientMessage::PairingComplete { .. }
@@ -3213,6 +3250,11 @@ fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> Option<&'s
         // A create that names no mode has nothing to vet: one variant, two
         // arms, because `Some(mode)` is a mode question and `None` is not.
         ClientMessage::SessionCreate { mode: None, .. } => None,
+        // The profile frames are not session frames at all: they name no mode,
+        // no session and no create, so there is nothing here to vet. Their
+        // refusal for a peer is `peer_allows`', and their validation is the
+        // store's.
+        ClientMessage::AgentProfilesGet { .. } | ClientMessage::AgentProfilesSet { .. } => None,
         // A set-mode asks to *switch* a session into a mode, so the session's
         // kind decides whether this daemon lets a peer name that mode at all.
         ClientMessage::SessionSetMode {
@@ -3496,7 +3538,9 @@ fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::PeerRevoke { .. }
         | ClientMessage::PeerSetCaps { .. }
         | ClientMessage::ToolPolicyGet { .. }
-        | ClientMessage::ToolPolicySet { .. } => None,
+        | ClientMessage::ToolPolicySet { .. }
+        | ClientMessage::AgentProfilesGet { .. }
+        | ClientMessage::AgentProfilesSet { .. } => None,
     }
 }
 
@@ -4088,7 +4132,9 @@ fn dispatch_session(
         | ClientMessage::PeerRevoke { .. }
         | ClientMessage::PeerSetCaps { .. }
         | ClientMessage::ToolPolicyGet { .. }
-        | ClientMessage::ToolPolicySet { .. }) => unexpected_session_frame(&other),
+        | ClientMessage::ToolPolicySet { .. }
+        | ClientMessage::AgentProfilesGet { .. }
+        | ClientMessage::AgentProfilesSet { .. }) => unexpected_session_frame(&other),
     }
 }
 
@@ -5147,6 +5193,227 @@ mod tests {
             error.message.contains("does-not-exist"),
             "the sentence names what was refused: {}",
             error.message
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    #[test]
+    fn agent_profiles_set_then_get_round_trips_through_dispatch() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-agent-profiles-dispatch-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let state = ServerState::with_paths(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+        )
+        .expect("state");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(24);
+
+        let mut reviewer = devboule_protocol::AgentProfile {
+            id: "p-1".to_string(),
+            name: "Reviewer".to_string(),
+            icon: None,
+            note: "Use when the first answer has to be checked.".to_string(),
+            provider: "claude".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            mode_id: "default".to_string(),
+            thinking_option_id: Some("high".to_string()),
+            features: serde_json::Map::new(),
+            tool_overlay: vec!["devboule_create_agent".to_string()],
+            enabled_for_agents: true,
+        };
+        reviewer
+            .features
+            .insert("autoAccept".to_string(), serde_json::json!(false));
+        let mut document = devboule_protocol::AgentProfilesDocument {
+            profiles: vec![reviewer],
+            standing_instructions: "Report your result in your final message.".to_string(),
+        };
+        // A second profile, so the ordered list is a list and not one row.
+        let mut second = document.profiles[0].clone();
+        second.id = "p-2".to_string();
+        second.name = "Second opinion".to_string();
+        second.tool_overlay.clear();
+        second.enabled_for_agents = false;
+        document.profiles.push(second);
+
+        let sent = document.clone();
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::AgentProfilesSet { id: 21, document },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("set reply");
+        assert!(
+            matches!(reply, DaemonMessage::AgentProfilesSetOk { id: 21 }),
+            "got {reply:?}"
+        );
+
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::AgentProfilesGet { id: 22 },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("get reply");
+        let DaemonMessage::AgentProfiles { id, document } = reply else {
+            panic!("AgentProfilesGet must reply with AgentProfiles, got {reply:?}");
+        };
+        assert_eq!(id, 22);
+        assert_eq!(
+            document, sent,
+            "the whole document comes back, in the order it was sent"
+        );
+        assert_eq!(document.profiles[0].name, "Reviewer");
+        assert_eq!(document.profiles[1].name, "Second opinion");
+
+        // The file lives beside the journal, and a store loaded fresh from the
+        // same directory sees the write — which is what a restart does.
+        assert!(path.join("agent-profiles.json").is_file());
+        let reopened = crate::agent_profiles::AgentProfilesStore::load(&path);
+        assert_eq!(reopened.document(), sent);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn a_refused_agent_profiles_set_is_an_invalid_request_not_an_io_failure() {
+        let state = ServerState::new("agent-profiles-refused".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(25);
+
+        // A provider the catalog does not publish: the profile could never be
+        // created from, so the daemon refuses the document instead of storing
+        // one it could not honour. The code is what tells the app to fix the
+        // request rather than to retry a write that failed.
+        let document = devboule_protocol::AgentProfilesDocument {
+            profiles: vec![devboule_protocol::AgentProfile {
+                id: "p-1".to_string(),
+                name: "Ghost".to_string(),
+                icon: None,
+                note: String::new(),
+                provider: "does-not-exist".to_string(),
+                model: "m".to_string(),
+                mode_id: "default".to_string(),
+                thinking_option_id: None,
+                features: serde_json::Map::new(),
+                tool_overlay: Vec::new(),
+                enabled_for_agents: true,
+            }],
+            standing_instructions: String::new(),
+        };
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::AgentProfilesSet { id: 31, document },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("dispatch reply");
+        let DaemonMessage::Error(error) = reply else {
+            panic!("a refused document must be an error, got {reply:?}");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.id, Some(31));
+        assert!(
+            error.message.contains("does-not-exist"),
+            "the sentence names what was refused: {}",
+            error.message
+        );
+
+        // Nothing was stored, and the empty document is what a get now answers.
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::AgentProfilesGet { id: 32 },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("get reply");
+        let DaemonMessage::AgentProfiles { document, .. } = reply else {
+            panic!("got {reply:?}");
+        };
+        assert!(document.profiles.is_empty());
+        assert!(document.standing_instructions.is_empty());
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The brief's first of the two refusals, at the dispatch layer: a paired
+    /// device holding **every** capability still gets neither half, and the
+    /// refusal is the capability error the app already renders.
+    #[test]
+    fn both_agent_profile_frames_are_refused_for_a_peer_connection() {
+        let state = ServerState::new("agent-profiles-peer".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let all_caps = ["view", "send", "answer_permissions", "create_sessions"];
+        let conn = remote_conn_with_caps(PeerRole::Client, None, &all_caps);
+
+        for (label, request) in [
+            (
+                "agent.profiles.get",
+                ClientMessage::AgentProfilesGet { id: 41 },
+            ),
+            (
+                "agent.profiles.set",
+                ClientMessage::AgentProfilesSet {
+                    id: 42,
+                    document: devboule_protocol::AgentProfilesDocument::default(),
+                },
+            ),
+        ] {
+            let reply = dispatch(&state, &owner, request, &conn, true, true, true, true)
+                .expect("dispatch reply");
+            let DaemonMessage::Error(error) = reply else {
+                panic!("a peer's profile frame must be refused, got {reply:?}");
+            };
+            assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
+            assert_eq!(
+                error.message,
+                format!("capability '{label}' was not negotiated"),
+                "the refusal names the rule that fired"
+            );
+        }
+
+        // The refusal is the gate and not the connection: the same frame from
+        // the local pipe is served.
+        let local = ConnHandle::new(26);
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::AgentProfilesGet { id: 43 },
+            &local,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("local reply");
+        assert!(
+            matches!(reply, DaemonMessage::AgentProfiles { id: 43, .. }),
+            "got {reply:?}"
         );
 
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();

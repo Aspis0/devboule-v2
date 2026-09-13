@@ -859,6 +859,47 @@ export interface ToolPolicyReply {
   policies: ToolPolicyEntry[];
 }
 
+/**
+ * One agent profile, as Settings → Agents saves it. Mirrors `AgentProfile` in
+ * the protocol crate (`rename_all = "camelCase"`, unknown fields refused).
+ *
+ * `id` is the profile's identity and the only key anything uses: the daemon
+ * mints one when it is empty, renaming a profile leaves `id` alone, and a child
+ * session records the `id` it was started from — so two profiles may share a
+ * `name`. `model`, `modeId` and `thinkingOptionId` are the provider's own
+ * vocabulary, stored verbatim. `toolOverlay` can only ever remove tools.
+ */
+export interface AgentProfile {
+  id: string;
+  name: string;
+  icon?: string | null;
+  note: string;
+  provider: string;
+  model: string;
+  modeId: string;
+  thinkingOptionId?: string | null;
+  features: Record<string, unknown>;
+  toolOverlay?: string[];
+  enabledForAgents: boolean;
+}
+
+/**
+ * The whole stored document: the **ordered** profile list, in the human's
+ * order, plus the standing instructions. One document, so a creation reads both
+ * halves at one moment and one write cannot leave them disagreeing. An empty
+ * document means no profiles AND no standing instructions — never "the last
+ * good ones": that is what a corrupt file leaves behind.
+ */
+export interface AgentProfilesDocument {
+  profiles: AgentProfile[];
+  standingInstructions: string;
+}
+
+/** The `AgentProfilesGet` reply: the stored document, order preserved. */
+export interface AgentProfilesReply {
+  document: AgentProfilesDocument;
+}
+
 /** Result of `provider_update`: the daemon ran `npm install -g <package>@latest` to completion. */
 export interface ProviderUpdateOutcome {
   ok: boolean;

@@ -1975,6 +1975,59 @@ mod tests {
         drop(server);
     }
 
+    /// The brief's second refusal, measured rather than assumed.
+    ///
+    /// A connection owned by a session's Bearer is an MCP connection, and its
+    /// only channel into the daemon is a tool *name*: the broker runs in this
+    /// process and never carries a pipe frame, so there is no
+    /// `AgentProfilesGet`/`AgentProfilesSet` a bearer could send. What a bearer
+    /// can try is a tool named after the store, and this is what it gets.
+    #[test]
+    fn a_bearers_tool_name_cannot_reach_the_agent_profile_store() {
+        let state = ServerState::new("mcp-agent-profiles".to_string());
+        let owner = owner("mcp-profile-user", "mcp-profile-client");
+        let guard = state
+            .mcp
+            .register("session", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        // The closed table the bearer is served from names nothing that could
+        // read or write the profile store.
+        for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+            assert!(
+                !name.contains("profile"),
+                "the broker's closed table must not reach the profile store: {name}"
+            );
+        }
+
+        for (index, name) in [
+            "devboule_agent_profiles",
+            "devboule_set_profile",
+            "agent_profiles_set",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let response = http_request(
+                &state.mcp.url,
+                Some(&format!("Bearer {token}")),
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"{name}"}}}}"#,
+                    index + 1
+                ),
+            );
+            let body = response_json(&response);
+            assert_eq!(body["error"]["code"], -32601, "{name}: {body}");
+            assert_eq!(body["error"]["message"], "Unknown tool", "{name}: {body}");
+        }
+
+        drop(guard);
+        drop(server);
+    }
+
     #[test]
     fn broker_tools_list_is_the_readiness_authority() {
         let state = ServerState::new("mcp-readiness".to_string());

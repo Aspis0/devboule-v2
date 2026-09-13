@@ -891,6 +891,44 @@ impl DaemonClient {
         }
     }
 
+    /// The whole stored agent-profile document: the ordered profile list and the
+    /// standing instructions, straight from the daemon's frame.
+    ///
+    /// One read for both halves, so the list a creation resolves and the
+    /// instructions that travel with it cannot be read at two different
+    /// moments.
+    pub fn agent_profiles_get(&self) -> Result<DaemonMessage, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::AGENT_PROFILES)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::AgentProfilesGet { id })? {
+            reply @ DaemonMessage::AgentProfiles { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Replaces the whole agent-profile document — the ordered list **and** the
+    /// standing instructions, never one half, and never a delta.
+    ///
+    /// The reply is the daemon's frame rather than `()`: this call is the only
+    /// place the write is acknowledged, so it hands the acknowledgement on
+    /// instead of re-shaping it into a value the daemon did not send. The ids
+    /// the daemon minted for new profiles are read back with
+    /// [`DaemonClient::agent_profiles_get`], exactly as a tool policy toggle is
+    /// read back with `tool_policy_get`.
+    pub fn agent_profiles_set(
+        &self,
+        document: devboule_protocol::AgentProfilesDocument,
+    ) -> Result<DaemonMessage, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::AGENT_PROFILES)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::AgentProfilesSet { id, document })? {
+            reply @ DaemonMessage::AgentProfilesSetOk { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn journal_usage(&self) -> Result<JournalUsage, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalUsage { id })? {
@@ -1541,6 +1579,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::PairingDeclined { id, .. }
         | DaemonMessage::ToolPolicy { id, .. }
         | DaemonMessage::ToolPolicySetOk { id }
+        | DaemonMessage::AgentProfiles { id, .. }
+        | DaemonMessage::AgentProfilesSetOk { id }
         | DaemonMessage::Pong { id, .. }
         | DaemonMessage::Status { id, .. }
         | DaemonMessage::Diagnostics { id, .. }
@@ -2026,6 +2066,105 @@ mod tests {
                 devboule_protocol::ErrorCode::CapabilityNotSupported
             );
             assert_eq!(wire.message, "capability 'tool_policy' was not negotiated");
+        }
+
+        let _ = release_tx.send(());
+        drop(client);
+        server.join().expect("server joins");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same door as the tool policy's, for the profile store: a client
+    /// refuses both RPCs when the handshake did not negotiate
+    /// `agent_profiles`, so a daemon that predates them is never sent a frame
+    /// its reader cannot deserialize.
+    #[cfg(windows)]
+    #[test]
+    fn a_daemon_that_did_not_negotiate_agent_profiles_is_never_sent_a_profile_rpc() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-client-agent-profiles-cap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let paths = crate::paths::RuntimePaths::from_dir(&dir);
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let file = listener.accept().expect("accept");
+            let framed = Framed::new(file);
+            let hello = framed.recv::<ClientMessage>().expect("client hello");
+            assert!(matches!(hello, ClientMessage::Hello(_)));
+            // The plugin-backend set: the capabilities of a daemon from before
+            // the profile store existed.
+            framed
+                .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                    "agent-profiles-cap-test",
+                    std::process::id(),
+                )))
+                .expect("hello reply");
+
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            // Bounded, so a pipe left open by a bug cannot hang the suite: an
+            // `Ok` here is a profile RPC that should never have been sent, an
+            // `Err` is the closed pipe.
+            let next = framed.recv_timeout::<ClientMessage>(Duration::from_millis(500));
+            assert!(
+                next.is_err(),
+                "a client must not send a profile RPC to a daemon that did not \
+                 advertise the capability, got {next:?}"
+            );
+        });
+
+        let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let connection = loop {
+            match crate::transport::connect(&paths) {
+                Ok(connection) => break connection,
+                Err(_) if std::time::Instant::now() < connection_deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("connect: {error}"),
+            }
+        };
+        let client = super::handshake(
+            connection,
+            devboule_protocol::ClientHello::m3a(
+                super::test_owner("agent-profiles-cap-test").expect("owner"),
+                "agent-profiles-cap-test",
+            ),
+        )
+        .expect("handshake");
+        assert!(
+            !client
+                .hello()
+                .capabilities
+                .iter()
+                .any(|capability| capability.as_str() == devboule_protocol::caps::AGENT_PROFILES),
+            "the fake daemon must not have offered the capability"
+        );
+
+        for error in [
+            client
+                .agent_profiles_get()
+                .expect_err("get must be refused"),
+            client
+                .agent_profiles_set(devboule_protocol::AgentProfilesDocument::default())
+                .expect_err("set must be refused"),
+        ] {
+            let crate::DaemonError::Handshake(wire) = error else {
+                panic!("a capability refusal is a wire error, got {error:?}");
+            };
+            assert_eq!(
+                wire.code,
+                devboule_protocol::ErrorCode::CapabilityNotSupported
+            );
+            assert_eq!(
+                wire.message,
+                "capability 'agent_profiles' was not negotiated"
+            );
         }
 
         let _ = release_tx.send(());
