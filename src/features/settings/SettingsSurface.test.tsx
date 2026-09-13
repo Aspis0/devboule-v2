@@ -2417,6 +2417,68 @@ describe("Settings agents panel", () => {
     });
   });
 
+  it("keeps the editor's draft on screen under its error when a rename is refused", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile({ id: "x1" })],
+      standingInstructions: "",
+    });
+    // The store's read-back after the (only) confirmed save, at the retry.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [
+          makeProfile({ id: "x1", name: "Scout", note: "Maps the work before anyone builds." }),
+        ],
+        standingInstructions: "",
+      },
+    });
+    vi.mocked(agentProfilesSet).mockRejectedValueOnce({
+      code: "io",
+      message: "profile file unwritable",
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const editorNameField = container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    const editorNoteField = container.querySelector<HTMLTextAreaElement>(
+      ".agent-inline-editor textarea",
+    );
+    if (!editorNameField || !editorNoteField) throw new Error("editor fields did not render");
+    await typeText(editorNameField, "Scout");
+    await typeText(editorNoteField, "Maps the work before anyone builds.");
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The refusal is named, the editor still stands, and the draft is in
+    // its fields — the create form's rule, held here too.
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "profile file unwritable",
+    );
+    const editor = container.querySelector(".agent-inline-editor");
+    expect(editor).not.toBeNull();
+    expect(editor?.querySelector<HTMLInputElement>("input")?.value).toBe("Scout");
+    expect(editor?.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(
+      "Maps the work before anyone builds.",
+    );
+    // The row under it is exactly what the human was seeing before.
+    expect(rowByName("Explorer").querySelector(".settings-card-title")?.textContent).toBe(
+      "Explorer",
+    );
+
+    // The retry sends the same draft, and confirmation — never submission —
+    // closes the editor.
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(2);
+    const sent = vi.mocked(agentProfilesSet).mock.calls.at(-1)?.[0];
+    expect(sent?.profiles[0]?.name).toBe("Scout");
+    expect(sent?.profiles[0]?.note).toBe("Maps the work before anyone builds.");
+    expect(container.querySelector(".agent-inline-editor")).toBeNull();
+  });
+
   it("refuses a note over 2 KiB with the size named and truncates nothing", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
 
@@ -3583,6 +3645,32 @@ describe("Settings agents panel — new profile form", () => {
     expect(form().textContent).not.toContain("reply was malformed");
   });
 
+  it("renders a present list whose origin is undeclared, and says no author is declared", async () => {
+    // `origin` omitted entirely — the type allows it at runtime, the spec
+    // conditions it on `present`, and the daemon side will enforce it; this
+    // is the side where an undeclared list must not read as a declared one.
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({
+        models: { state: "present", items: [{ modelId: "opus", name: "Opus" }] },
+        modes: { state: "present", items: [{ id: "code", name: "Code" }] },
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The items themselves are usable: a select, not free text.
+    expect(modelControl().tagName).toBe("SELECT");
+    expect(selectValues(modelControl())).toContain("opus");
+    // The missing authorship is named on both axes. No sentence at all is
+    // what the eye reads as "the provider published this" — the stronger
+    // of the two authorships.
+    expect(form().textContent).toContain("no author declared");
+    expect(form().textContent).toContain("whether the provider published it");
+    expect(form().textContent).not.toContain("not something the provider published");
+  });
+
   it("gives every state its own sentence: no two rendered sentences are equal or substrings", async () => {
     // The property the state sentences exist for, held over the render
     // itself: enumerate the states, render each, and compare every rendered
@@ -3656,6 +3744,16 @@ describe("Settings agents panel — new profile form", () => {
     );
     await collectScenario("daemon origin");
 
+    // 5b. present with the origin left undeclared on both axes: the items
+    // are still offered, and the missing authorship is named.
+    await armAndOpen(
+      makeVocabulary({
+        models: { state: "present", items: [{ modelId: "opus", name: "Opus" }] },
+        modes: { state: "present", items: [{ id: "code", name: "Code" }] },
+      }),
+    );
+    await collectScenario("origin undeclared");
+
     // 6. Malformed: the reply arrived, neither axis did.
     await armAndOpen({ provider: "claude", source: "probe" } as unknown as ProviderVocabulary);
     await collectScenario("malformed");
@@ -3678,9 +3776,9 @@ describe("Settings agents panel — new profile form", () => {
     );
     await collectScenario("unknown state");
 
-    // Eight sentences per pair of axes, minus the daemon-origin sentence
-    // that is the same text on both axes: thirteen in all.
-    expect(sentences).toHaveLength(13);
+    // Nine sentences per pair of axes, minus the daemon-origin sentence
+    // that is the same text on both axes: fifteen in all.
+    expect(sentences).toHaveLength(15);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

@@ -552,6 +552,19 @@ const VOCABULARY_UNAVAILABLE_TEXT =
 const DAEMON_VOCABULARY_TEXT =
   "This list is the daemon's own vocabulary for this provider, not something the provider published.";
 
+/**
+ * `present` whose `origin` arrived undeclared (absent, null, or a value this
+ * app does not know): the reply names no author for the list. The items are
+ * usable and stay offered as they arrived — what is missing is WHO authored
+ * them, which is exactly what the honesty sentence exists to carry. No
+ * sentence at all is what the eye reads as "the provider published this",
+ * and that is the stronger of the two authorships: an undeclared list must
+ * not be rendered as a declared one.
+ */
+function undeclaredOriginVocabularyText(axisWord: "models" | "modes"): string {
+  return `This ${axisWord} list arrived with no author declared: the daemon did not say whether the provider published it or the daemon mapped it itself. Choose one from the list, or type your own instead.`;
+}
+
 /** `none`: the provider CAN answer and answered "I have none". The field stays required. */
 function noneVocabularyText(axisWord: "models" | "modes"): string {
   return `This provider reports no ${axisWord}: type the one to use; a name it does not serve fails at the provider when the session starts.`;
@@ -632,7 +645,12 @@ function vocabularyAxisView<T>(
     }
     return {
       freeText: false,
-      hint: axis.origin === "daemon" ? DAEMON_VOCABULARY_TEXT : undefined,
+      hint:
+        axis.origin === "daemon"
+          ? DAEMON_VOCABULARY_TEXT
+          : axis.origin === "provider"
+            ? undefined
+            : undeclaredOriginVocabularyText(axisWord),
       items: items.map(toItem),
     };
   }
@@ -1395,8 +1413,12 @@ function AgentProfilesPanel() {
     if (row === undefined) return;
     row.name = trimmed;
     row.note = note;
-    setEditingId(null);
-    void persist(updated);
+    // Close on CONFIRMATION, never on submission — the new-profile form's
+    // rule, and there is one rule: a refusal must leave the editor on screen
+    // with the human's draft in its fields, under the error, ready to retry.
+    void persist(updated).then((confirmed) => {
+      if (confirmed) setEditingId(null);
+    });
   }
 
   /**
