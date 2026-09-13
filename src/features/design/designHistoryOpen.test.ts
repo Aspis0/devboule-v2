@@ -1,4 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const settingsMocks = vi.hoisted(() => ({
+  surfaceSettingsGet: vi.fn(),
+  surfaceSettingsSet: vi.fn(),
+}));
+
+// The reopen controller's other side effect is a surface settings write, not a
+// daemon command: mock the two commands it would use and keep every other export
+// of the real module.
+vi.mock("../../lib/tauri", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/tauri")>("../../lib/tauri");
+  return {
+    ...actual,
+    surfaceSettingsGet: settingsMocks.surfaceSettingsGet,
+    surfaceSettingsSet: settingsMocks.surfaceSettingsSet,
+  };
+});
+
 import type { AgentChannel, AgentSessionDeps } from "../../lib/agentSession";
 import type { SessionEvent } from "../../types/ipc";
 import { ARTIFACT_TOO_LARGE_MESSAGE, MAX_ARTIFACT_BYTES } from "./agentHost";
@@ -44,6 +62,11 @@ function historyHarness(
   return { emit: (event: SessionEvent) => emit?.(event), handle, results };
 }
 
+beforeEach(() => {
+  settingsMocks.surfaceSettingsGet.mockReset();
+  settingsMocks.surfaceSettingsSet.mockReset();
+});
+
 describe("design history reopen", () => {
   it("rejects session_resume and session_close before the bridge can receive them", async () => {
     const bridge = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
@@ -56,6 +79,34 @@ describe("design history reopen", () => {
       "Unsupported design history command",
     );
     expect(bridge).not.toHaveBeenCalled();
+  });
+
+  it("writes no settings when a replayed transcript carries a finished child", async () => {
+    // The bug this closes: the controller is read-only towards the daemon, but the
+    // history write of a replayed `child_finished` went straight to the surface
+    // settings commands, which the injected bridge never sees. A reopen therefore
+    // re-dated the history rows it was reading from.
+    settingsMocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
+    settingsMocks.surfaceSettingsSet.mockResolvedValue(undefined);
+    const invoke = vi.fn(async (command: string) =>
+      command === "session_attach" ? 41 : undefined,
+    ) as unknown as AgentSessionDeps["invoke"];
+    const { emit, handle } = historyHarness(invoke);
+    await Promise.resolve();
+
+    emit({
+      type: "child_finished",
+      messageId: "m2",
+      childSessionId: "s.parent.2",
+      displayName: "worker one",
+      state: "completed",
+      artifacts: [],
+    });
+    for (let index = 0; index < 6; index += 1) await Promise.resolve();
+
+    expect(settingsMocks.surfaceSettingsGet).not.toHaveBeenCalled();
+    expect(settingsMocks.surfaceSettingsSet).not.toHaveBeenCalled();
+    handle.dispose();
   });
 
   it("detaches exactly once when disposed while attach is in flight", async () => {

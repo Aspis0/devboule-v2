@@ -204,17 +204,60 @@ function fitHistoryToSettingsBudget(
   return base;
 }
 
+/** The document `writeDesignSettings` would leave on disk for an already-stored setting. */
+function storedDocument(stored: StoredDesignSettings): Record<string, unknown> {
+  const base = documentWithoutHistory(
+    stored.selection,
+    stored.providerId,
+    stored.workspaceId,
+    stored.outputMode,
+  );
+  return stored.history === undefined || stored.history.length === 0
+    ? base
+    : { ...base, history: stored.history };
+}
+
+/**
+ * Whether two documents say the same thing. Compared as values, never as text:
+ * key order is not part of the document, and a document that re-serializes
+ * differently while stating the same settings is not a change worth a write.
+ */
+function sameDocument(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    return left.every((value, index) => sameDocument(value, right[index]));
+  }
+  if (!isRecord(left) || !isRecord(right)) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => key in right && sameDocument(left[key], right[key]));
+}
+
 async function writeDesignSettings(
   selection: DesignSkillSelection,
   providerId: string | null,
   workspaceId: string | null,
   history: readonly unknown[],
   outputMode: DesignOutputMode,
+  stored: StoredDesignSettings | null,
 ): Promise<void> {
-  await surfaceSettingsSet(
-    DOCTRINE_SETTINGS_SURFACE_ID,
-    fitHistoryToSettingsBudget(selection, providerId, workspaceId, history, outputMode),
+  const document = fitHistoryToSettingsBudget(
+    selection,
+    providerId,
+    workspaceId,
+    history,
+    outputMode,
   );
+  // Attaching to a session replays its journal from the beginning, and every
+  // replayed `child_finished` runs this whole read-modify-write. Most of those
+  // runs end on the document that is already stored, so the write is skipped
+  // here — in the one queue step that has just re-read the document — rather
+  // than by a second queue or a cache that outlives the session.
+  if (stored !== null && sameDocument(document, storedDocument(stored))) return;
+  await surfaceSettingsSet(DOCTRINE_SETTINGS_SURFACE_ID, document);
 }
 
 export async function loadDesignSkillSelection(
@@ -249,6 +292,7 @@ export async function saveDesignSkillSelection(selection: DesignSkillSelection):
         workspaceId,
         stored?.history ?? [],
         stored?.outputMode ?? "page",
+        stored,
       );
     });
     return true;
@@ -281,6 +325,7 @@ export async function saveDesignOutputMode(outputMode: DesignOutputMode): Promis
         workspaceId,
         stored?.history ?? [],
         outputMode,
+        stored,
       );
     });
     return true;
@@ -319,6 +364,7 @@ export async function saveDesignProviderId(providerId: string | null): Promise<b
         workspaceId,
         stored?.history ?? [],
         stored?.outputMode ?? "page",
+        stored,
       );
     });
     return true;
@@ -352,6 +398,7 @@ export async function saveDesignWorkspaceId(workspaceId: string | null): Promise
         workspaceId,
         stored?.history ?? [],
         stored?.outputMode ?? "page",
+        stored,
       );
     });
     return true;
@@ -399,6 +446,7 @@ export async function updateStoredDesignHistory(
       workspaceId,
       history,
       stored?.outputMode ?? "page",
+      stored,
     );
   });
 }

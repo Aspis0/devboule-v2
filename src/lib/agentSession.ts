@@ -8,6 +8,7 @@ import type {
 } from "../types/ipc";
 import { recordChildFinishedHistory } from "../features/design/childFinishedHistory";
 import type { AttachmentReference, SessionChannel } from "./tauri";
+import { eventTypeName } from "./eventTypeName";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -77,6 +78,14 @@ export interface AgentSessionDeps {
   sessionId: string;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   createChannel: (onEvent: (event: SessionEvent) => void) => AgentChannel;
+  /**
+   * Where a created child's finish is recorded. Absent means the Design history
+   * (`recordChildFinishedHistory`), which is what every host but the read-only
+   * history reopen wants. It is a dependency so that the one controller that
+   * must not write anything can say so here instead of having its write refused
+   * later: `designHistoryOpen` passes a recorder that records nothing.
+   */
+  onChildFinished?: (event: Extract<SessionEvent, { type: "child_finished" }>) => Promise<boolean>;
   onPermissionRequest?: (request: PermissionRequest, subscriptionId: number) => void;
   onPermissionResolved?: (toolCallId: string) => void;
 }
@@ -106,17 +115,6 @@ function eventError(error: unknown): string {
     if (typeof message === "string" && message.trim()) return message;
   }
   return "The agent session did not answer.";
-}
-
-/**
- * The `type` of an event this build has no case for, for the message the
- * `never` guard below raises. Same helper the terminal session keeps: the point
- * is one readable word in the transcript, not the whole payload.
- */
-function eventTypeName(event: unknown): string {
-  if (typeof event !== "object" || event === null || !("type" in event)) return "unknown";
-  const type = event.type;
-  return typeof type === "string" && type.trim() ? type : "unknown";
 }
 
 function itemParentage(
@@ -549,13 +547,15 @@ export class AgentSession {
         // nothing from `event.artifacts` is copied, resolved or fetched here.
         //
         // It is handled in the shared event pipeline on purpose. `child_finished`
-        // is published on the CREATOR's session, so it arrives live while a
-        // surface is attached to the creator and again from the journal when the
-        // creator is next attached — and **replay is the recovery path** for a
-        // finish that happened while the user was looking at another surface.
-        // There is no subscription that outlives navigation, and no app-level one
-        // may be invented to fake it. Seeing the same finish twice is harmless:
-        // the history keeps one entry per session id.
+        // is published on the CREATOR's session, and the creator's attachment
+        // outlives navigation: a Design host with work is deliberately retained,
+        // and a retained host keeps its session until the process ends or the
+        // user ends it (`designHasWork` in `src/app/App.tsx`, `hostDisposers` in
+        // `agentHost.ts`). The live event is therefore the normal arrival, and
+        // replay is the recovery path for a finish that had no listener: an app
+        // restart, or a host released on navigation because it held no work.
+        // Seeing the same finish twice is harmless — the second one writes the
+        // same entry over the same time and changes nothing.
         //
         // Nothing on this path may call the daemon: `client.rs` runs its event
         // handlers on the connection's only reader thread, so a synchronous
@@ -563,16 +563,24 @@ export class AgentSession {
         // out (`attached-connection-loses-events.md`; the dispatcher-thread fix
         // is not in). The history write is the app's own surface settings file
         // through Tauri commands that never touch the daemon — keep it that way.
-        void recordChildFinishedHistory(event);
+        void (this.deps.onChildFinished ?? recordChildFinishedHistory)(event);
         return;
       default: {
         // Every `SessionEvent` arm is a case above, so this branch is
-        // unreachable for the protocol as typed — the `never` assignment is what
-        // keeps it that way, and it is why `agent_created` and `child_finished`
-        // had to be listed instead of falling through. Both were added to the
-        // daemon while this switch named neither, and both were dropped in
-        // silence for exactly that reason; a newer daemon's event must not go
-        // the same way.
+        // unreachable for the protocol as typed: the `never` assignment is a
+        // compile-time exhaustiveness check, and it is why `agent_created` and
+        // `child_finished` had to be listed instead of falling through. Both
+        // were added to the daemon while this switch named neither, and both
+        // were dropped in silence for exactly that reason.
+        //
+        // It is NOT a defence against a newer daemon. `SessionEvent` carries no
+        // `#[serde(other)]` (`devboule-protocol/src/session.rs`), so an event
+        // this build has no arm for fails to deserialize in the daemon client,
+        // which treats any decode failure as fatal and emits a synthetic `Exit`
+        // to every subscription (`devboule-daemon/src/client.rs`,
+        // `fail_connection`). A newer daemon therefore shows dead sessions in
+        // this app, not the sentence below; that sentence is reachable only if
+        // something hands this method an object that is not a daemon event.
         const unknownEvent: never = event;
         this.fail(`The daemon sent an unknown session event type: ${eventTypeName(unknownEvent)}.`);
         return;

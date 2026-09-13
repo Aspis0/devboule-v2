@@ -2,7 +2,7 @@ import type { SessionEvent } from "../../types/ipc";
 import { recordDesignHistoryEntry, type DesignHistoryEntry } from "./designHistory";
 
 /** The `child_finished` arm of the session event union. */
-export type ChildFinishedEvent = Extract<SessionEvent, { type: "child_finished" }>;
+type ChildFinishedEvent = Extract<SessionEvent, { type: "child_finished" }>;
 
 /**
  * One child's finish, as a Design history entry.
@@ -28,7 +28,11 @@ export function childFinishedHistoryEntry(
   event: ChildFinishedEvent,
   savedAtMs: number,
 ): DesignHistoryEntry {
-  const displayName = event.displayName.trim();
+  const displayName =
+    // A frame without the field is a broken speaker, not an unnamed child, and
+    // `.trim()` off `undefined` is what raises here; read it as unnamed instead,
+    // so such a finish still gets the row it is owed.
+    typeof event.displayName === "string" ? event.displayName.trim() : "";
   return {
     sessionId: event.childSessionId,
     peerSessionId: null,
@@ -47,12 +51,18 @@ export function childFinishedHistoryEntry(
  *
  * Called from the shared session event pipeline (`AgentSession.handleEvent`),
  * which is the only place every surface and every replay passes through: a
- * child's finish is published on its **creator's** transcript, so it arrives
- * live while something is attached to the creator and again from the journal
- * when the creator is next attached. Replay is the recovery path for the
- * finishes that happened while the user was looking at another surface, and it
- * is safe because the history keeps one entry per session id — seeing the same
- * finish twice writes one entry.
+ * child's finish is published on its **creator's** transcript.
+ *
+ * The finish usually arrives live. A Design host with work is deliberately kept
+ * across surface navigation, and a retained host keeps its session's attachment
+ * until the process ends or an explicit teardown closes it (`src/app/App.tsx`
+ * `designHasWork`; `agentHost.ts` `hostDisposers`), so the creator's
+ * subscription is still open when its child finishes minutes later.
+ *
+ * Replay is the recovery path for the finishes that had no listener — the app
+ * was restarted, the host had no work and was released on navigation, or the
+ * finish predates this build — and it is safe because seeing the same finish
+ * twice writes one entry and changes nothing the second time.
  *
  * **This must never call the daemon.** `client.rs` runs its event handlers on
  * the connection's only reader thread, so a synchronous roundtrip from inside
@@ -71,9 +81,20 @@ export async function recordChildFinishedHistory(
   event: ChildFinishedEvent,
   savedAtMs: () => number = Date.now,
 ): Promise<boolean> {
+  const childSessionId = event.childSessionId;
   try {
-    return await recordDesignHistoryEntry(childFinishedHistoryEntry(event, savedAtMs()));
-  } catch {
+    const recorded = await recordDesignHistoryEntry(childFinishedHistoryEntry(event, savedAtMs()));
+    // A false is `recordDesignHistoryEntry`'s report that the entry never reached
+    // storage — a malformed entry, or a settings write that was refused — and the
+    // pipeline has no reader for the boolean, so the drop is said here as well: a
+    // missing row and a child that never finished otherwise look the same in the
+    // panel.
+    if (!recorded) console.warn(`Could not record the finish of child session ${childSessionId}.`);
+    return recorded;
+  } catch (error) {
+    // The same report for this module's own failure, swallowed so that a lost row
+    // never takes the event pipeline down with it.
+    console.warn(`Could not record the finish of child session ${childSessionId}.`, error);
     return false;
   }
 }

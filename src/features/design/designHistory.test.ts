@@ -12,6 +12,7 @@ vi.mock("../../lib/tauri", () => ({
 
 import { builtInSkillSlugs } from "./builtInSkills";
 import {
+  historyEntryInstruction,
   historyEntryStatus,
   loadDesignHistory,
   MAX_HISTORY_ENTRIES,
@@ -110,9 +111,25 @@ describe("design history persistence", () => {
       {
         ...BASE_ENTRY,
         title: "x".repeat(MAX_HISTORY_TITLE_CHARS),
-        savedAtMs: 200,
+        // The title is replaced and the time is not: an entry already present
+        // keeps the time it was first recorded at, so a replayed write cannot
+        // re-date a run and re-sort the list around it.
+        savedAtMs: 100,
       },
     ]);
+  });
+
+  it("keeps the first saved time of an entry a later record re-dates", async () => {
+    // The bug this closes: `savedAtMs` is the clock of whoever writes, and on the
+    // attach path that is the clock of the replay — so reopening a creator
+    // re-dated all of its finished children, re-sorted the list and pushed the
+    // user's own runs past the 32-entry cut.
+    await expect(recordDesignHistoryEntry(BASE_ENTRY)).resolves.toBe(true);
+    await expect(
+      recordDesignHistoryEntry({ ...BASE_ENTRY, savedAtMs: BASE_ENTRY.savedAtMs + 5_000 }),
+    ).resolves.toBe(true);
+
+    await expect(loadDesignHistory()).resolves.toEqual([BASE_ENTRY]);
   });
 
   it("keeps only the newest entries at the cap", async () => {
@@ -185,7 +202,11 @@ describe("design history persistence", () => {
     await expect(recordDesignHistoryEntry(BASE_ENTRY)).resolves.toBe(true);
 
     mocks.surfaceSettingsSet.mockRejectedValueOnce(new Error("settings unavailable"));
-    await expect(recordDesignHistoryEntry(BASE_ENTRY)).resolves.toBe(false);
+    // A second, different entry: re-recording BASE_ENTRY writes nothing at all now
+    // (an unchanged document is not written), so a rejection could not be seen.
+    await expect(
+      recordDesignHistoryEntry({ ...BASE_ENTRY, sessionId: "session-2", savedAtMs: 200 }),
+    ).resolves.toBe(false);
   });
 
   it("reports false without writing when reading the existing document fails", async () => {
@@ -326,6 +347,16 @@ describe("design history entry origin", () => {
     };
 
     await expect(loadDesignHistory()).resolves.toEqual([]);
+  });
+
+  it("offers a reopen the prompt of its own runs and no prompt for a child's pointer", () => {
+    // The bug this closes: a child entry's title is the commissioned agent's
+    // display name, and the reopen handed it over as an instruction — so the
+    // card's only action generated a design from the prompt "worker one".
+    expect(historyEntryInstruction(BASE_ENTRY)).toBe("First pass");
+    expect(
+      historyEntryInstruction({ ...BASE_ENTRY, origin: "child", title: "worker one" }),
+    ).toBeNull();
   });
 });
 

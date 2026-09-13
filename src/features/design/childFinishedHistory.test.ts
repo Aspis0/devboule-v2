@@ -92,13 +92,30 @@ describe("child_finished history entry", () => {
     expect(JSON.stringify(storedSettings)).not.toContain("devboule-artifact://");
   });
 
-  it("writes one entry when the same finish arrives twice, as a replay would", async () => {
+  it("keeps the first time it saw a finish when the same finish arrives twice", async () => {
+    // Replay: the second sighting is an attach re-reading the journal, and its
+    // clock must not re-date the entry the first seeing already placed.
     await recordChildFinishedHistory(CHILD_FINISHED, () => 10);
+    mocks.surfaceSettingsSet.mockClear();
     await recordChildFinishedHistory(CHILD_FINISHED, () => 20);
 
     const history = await loadDesignHistory();
     expect(history).toHaveLength(1);
-    expect(history?.[0]).toMatchObject({ sessionId: "s.parent.2", savedAtMs: 20 });
+    expect(history?.[0]).toMatchObject({ sessionId: "s.parent.2", savedAtMs: 10 });
+    // Nothing about the stored document changed, so nothing was written: this is
+    // the attach path, and it runs once per finish in the replayed journal.
+    expect(mocks.surfaceSettingsSet).not.toHaveBeenCalled();
+  });
+
+  it("writes a row for a finish frame with no display name instead of dropping it", async () => {
+    // `.trim()` off an absent field threw inside this module's own catch, where
+    // the only trace was a row the user never finds.
+    const malformed = { ...CHILD_FINISHED, displayName: undefined } as unknown as ChildFinished;
+
+    await expect(recordChildFinishedHistory(malformed, () => 7)).resolves.toBe(true);
+    await expect(loadDesignHistory()).resolves.toMatchObject([
+      { sessionId: "s.parent.2", title: "s.parent", savedAtMs: 7 },
+    ]);
   });
 
   it("keeps the whole history inside the settings byte budget", async () => {
@@ -116,9 +133,13 @@ describe("child_finished history entry", () => {
 
   it("reports a lost write instead of throwing into the event pipeline", async () => {
     mocks.surfaceSettingsSet.mockRejectedValue(new Error("surface settings are unwritable"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     // A history entry the settings file would not take must not take the event
-    // pipeline down with it: the boolean is the whole report.
+    // pipeline down with it: the boolean is the whole report — but a silent
+    // swallow is not a report, so the drop is named where a developer can see it.
     await expect(recordChildFinishedHistory(CHILD_FINISHED, () => 1)).resolves.toBe(false);
     await expect(loadDesignHistory()).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledWith("Could not record the finish of child session s.parent.2.");
+    warn.mockRestore();
   });
 });

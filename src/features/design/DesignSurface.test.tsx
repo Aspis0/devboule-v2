@@ -2485,6 +2485,55 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("starts no generation from a child's history entry, and offers no control that could", async () => {
+    // The bug this closes: a child entry's title is the commissioned agent's
+    // display name, the reopen stored it as the card's instruction, and the card's
+    // only action handed it to the generator — a design generated from the prompt
+    // "worker one". Both halves are asserted: what the row offers, and what a click
+    // on the row actually produces.
+    const generate = vi.fn(async () => GENERATION_RESULT);
+    historyOpenMocks.open.mockImplementation(
+      (_sessionId: string, deps: { onResult: (result: unknown) => void }) => {
+        deps.onResult({ status: "artifact", html: "<main>Child report</main>" });
+        return { dispose: vi.fn() };
+      },
+    );
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    const onOpen = historyListMocks.onOpen;
+    if (onOpen === null) throw new Error("History list did not receive an open handler");
+
+    await act(async () =>
+      onOpen({
+        sessionId: "s.parent.2",
+        peerSessionId: null,
+        createdAtMs: null,
+        title: "worker one",
+        savedAtMs: 4_242,
+        origin: "child",
+      }),
+    );
+
+    // The reopened row is appended, so it is the last card.
+    const cards = container.querySelectorAll<HTMLElement>(".design-message-card");
+    const card = cards[cards.length - 1];
+    if (card === undefined) throw new Error("Reopened card missing");
+    expect(card.textContent).toContain("worker one");
+    expect(card.textContent).toContain("Reopened from design history.");
+
+    // What a retry on this row actually produces comes first, so a row that
+    // re-offered the action would be caught by what it produced rather than by a
+    // list of labels. On the current code there is nothing to click.
+    const offered = [...card.querySelectorAll<HTMLButtonElement>(".design-message-actions button")];
+    for (const button of offered) {
+      await act(async () => button.click());
+    }
+    expect(generate).not.toHaveBeenCalled();
+
+    expect(offered.map((button) => button.textContent)).toEqual([]);
+    await act(async () => root.unmount());
+  });
+
   it("does not record a history row when generation has no artifact", async () => {
     const generate = vi.fn(async () => GENERATION_RESULT);
     const { container, root } = await renderDesign(createHost({ generate }));

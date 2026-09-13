@@ -676,6 +676,39 @@ describe("read-modify-write safety", () => {
     });
   });
 
+  it("does not write the document when the write would change nothing", async () => {
+    // An attach replays a creator's journal from its beginning, and the usual
+    // outcome of each replayed finish is the document that is already there. That
+    // used to cost one full read-modify-write of a 64 KB document per replayed
+    // event; the skip lives in the queue step that has just re-read it.
+    storedSettings = {
+      version: 1,
+      mode: "manual",
+      enabledSlugs: [KNOWN_SLUGS[0]],
+      providerId: "grok",
+      workspaceId: "workspace-current",
+      history: [historyEntry],
+    };
+
+    await updateStoredDesignHistory((history) => [...history]);
+
+    expect(mocks.surfaceSettingsSet).not.toHaveBeenCalled();
+  });
+
+  it("still writes when the mutation changes the document", async () => {
+    // The guard on the skip: an unchanged document is skipped, a changed one is
+    // not — and key order is not a change (the stored document is re-built by the
+    // same two helpers the candidate is).
+    storedSettings = { version: 1, mode: "all", enabledSlugs: [], history: [historyEntry] };
+
+    await updateStoredDesignHistory((history) => [
+      ...history,
+      { ...historyEntry, sessionId: "session-2" },
+    ]);
+
+    expect(mocks.surfaceSettingsSet).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the write queue usable after a failed read", async () => {
     mocks.surfaceSettingsGet.mockResolvedValueOnce({
       status: "unreadable",

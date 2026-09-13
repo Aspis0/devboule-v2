@@ -24,8 +24,25 @@ export interface DesignHistoryEntry {
    * the workspace started. `child` is a session an agent commissioned: the entry
    * is written when the creator's session sees `child_finished`, and it points at
    * that child so the same replay-and-re-extract route opens it.
+   *
+   * The reopen path reads this: a `child` entry's `title` is the child's display
+   * name, not a request anyone wrote, so `historyEntryInstruction` refuses to
+   * hand it back as a prompt.
    */
   origin: "design" | "workspace" | "child";
+}
+
+/**
+ * The prompt a reopened entry may be generated from, or null when it may not.
+ *
+ * A `design` entry's title is the prompt that produced the run, so a reopen can
+ * repeat it. A `child` entry is a **pointer**: its title is the commissioned
+ * agent's display name, and no generation can be made from "worker one". The
+ * entry still opens — the transcript is the artifact — it just cannot become a
+ * prompt.
+ */
+export function historyEntryInstruction(entry: DesignHistoryEntry): string | null {
+  return entry.origin === "child" ? null : entry.title;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -107,10 +124,19 @@ export async function recordDesignHistoryEntry(entry: DesignHistoryEntry): Promi
 
   try {
     await updateStoredDesignHistory((stored) => {
-      const entries = parseHistoryEntries(stored).filter(
-        (current) => current.sessionId !== normalized.sessionId,
-      );
-      entries.push(normalized);
+      const storedEntries = parseHistoryEntries(stored);
+      // A run's entry keeps the time it was first saved at. `savedAtMs` is the
+      // clock of whoever is writing — on the `child_finished` replay path that
+      // is the clock of the attach — so stamping it again would re-date every
+      // finished child on every reopen, re-sort the list and push the user's own
+      // runs past the 32-entry cut. The wire carries no finish time
+      // (`SessionEvent::ChildFinished` has no timestamp field), so the first
+      // value seen is the only one there is.
+      const seen = storedEntries.find((current) => current.sessionId === normalized.sessionId);
+      const settled =
+        seen === undefined ? normalized : { ...normalized, savedAtMs: seen.savedAtMs };
+      const entries = storedEntries.filter((current) => current.sessionId !== normalized.sessionId);
+      entries.push(settled);
       return newestFirst(entries).slice(0, MAX_HISTORY_ENTRIES);
     });
     return true;

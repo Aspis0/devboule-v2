@@ -1,4 +1,5 @@
 import { isCommandError, type SessionChannel } from "../../lib/tauri";
+import { eventTypeName } from "../../lib/eventTypeName";
 import type {
   Session,
   SessionEvent,
@@ -64,12 +65,6 @@ function errorMessage(error: unknown): string {
   if (typeof error === "string" && error.trim()) return error;
   if (error instanceof Error && error.message) return error.message;
   return "Unknown terminal error.";
-}
-
-function eventTypeName(event: unknown): string {
-  if (typeof event !== "object" || event === null || !("type" in event)) return "unknown";
-  const type = event.type;
-  return typeof type === "string" && type.trim() ? type : "unknown";
 }
 
 /** An output with seq <= asOfSeq is already represented by the snapshot and must never be applied again. */

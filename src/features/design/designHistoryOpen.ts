@@ -64,6 +64,11 @@ function timeoutMessage(timeoutMs: number): string {
 /**
  * Keep the reopen controller's command vocabulary narrower than the general agent host. This
  * rejects an accidental resume or close before either command can reach the injected bridge.
+ *
+ * This narrows what reaches the DAEMON. The controller's other side effect is
+ * not a daemon command at all: a replayed `child_finished` would write the
+ * Design history through the app's own surface settings commands, which this
+ * wrapper never sees. That one is switched off at `onChildFinished` below.
  */
 export function createReadOnlyHistoryInvoke(
   invoke: AgentSessionDeps["invoke"],
@@ -113,6 +118,13 @@ export function openDesignHistoryEntry(
     invoke: createReadOnlyHistoryInvoke(deps.invoke ?? tauriInvoke),
     // An absent channel factory means use the real Tauri event channel.
     createChannel: deps.createChannel ?? createSessionChannel,
+    // Read-only in both directions, not only towards the daemon. Reopening a
+    // history entry replays the creator's transcript, and a `child_finished` in
+    // that replay would otherwise record a history entry through the app's own
+    // settings commands — which never pass through the injected bridge above and
+    // so cannot be refused there. A reopen has nothing to add to the history it
+    // is reading from, so it records nothing.
+    onChildFinished: async () => false,
   });
 
   let disposed = false;

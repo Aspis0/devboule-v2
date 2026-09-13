@@ -621,8 +621,14 @@ export type SessionEvent =
    * A created child finished (protocol `SessionEvent::ChildFinished`). The
    * structured twin of the `<devboule-system>` text message the daemon sends the
    * creator: same facts, same `messageId`, and the app reads THIS one — it has
-   * no parser for the envelope and must not grow one. Copy `artifacts` on
-   * arrival; the daemon's copy dies with the creator session.
+   * no parser for the envelope and must not grow one.
+   *
+   * The app's only reader is the Design history entry that points at the child
+   * (`childFinishedHistory.ts`), and that entry carries a session id and no
+   * url. `artifacts` is read by nobody: with no read-by-reference door to open
+   * one through, nothing is copied on arrival, and the daemon's own copy is the
+   * only one — it dies with the creator session, as
+   * `SessionEvent::ChildFinished` says in `devboule-protocol/src/session.rs`.
    */
   | {
       type: "child_finished";

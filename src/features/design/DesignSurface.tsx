@@ -97,7 +97,11 @@ import {
   type TransferLike,
 } from "./designAttachments";
 import { DesignHistoryList } from "./DesignHistoryList";
-import { recordDesignHistoryEntry, type DesignHistoryEntry } from "./designHistory";
+import {
+  historyEntryInstruction,
+  recordDesignHistoryEntry,
+  type DesignHistoryEntry,
+} from "./designHistory";
 import {
   openDesignHistoryEntry,
   type DesignHistoryOpenHandle,
@@ -862,12 +866,24 @@ function terminalMessagesForSave(messages: readonly DesignMessage[]): DesignMess
   return cloneMessageList(messages).map((message) => normalizeIncompleteMessage(message, "saved"));
 }
 
-function messageActions(message: DesignMessage, canGenerate: boolean): readonly MessageAction[] {
+/**
+ * The actions a card may offer. `canRegenerate` is `promptForMessage`'s answer
+ * for this card — the same call the action itself makes — because an action with
+ * no prompt behind it is a button whose only possible result is nothing: a
+ * reopened history entry that points at a commissioned child carries no
+ * instruction (see `historyEntryInstruction`).
+ */
+function messageActions(
+  message: DesignMessage,
+  canGenerate: boolean,
+  canRegenerate: boolean,
+): readonly MessageAction[] {
   if (message.role === "user") return [];
   if (message.status === "working") return canGenerate ? ["stop"] : [];
-  if (message.status === "error") return canGenerate ? ["retry"] : [];
-  if (message.nodeIds.length === 0) return canGenerate ? ["regenerate"] : [];
-  return canGenerate ? ["select", "regenerate"] : ["select"];
+  const regenerate: readonly MessageAction[] = canGenerate && canRegenerate ? ["regenerate"] : [];
+  if (message.status === "error") return canGenerate && canRegenerate ? ["retry"] : [];
+  if (message.nodeIds.length === 0) return regenerate;
+  return canGenerate ? ["select", ...regenerate] : ["select"];
 }
 
 function cloneLayers(document: DesignDocument): DesignLayer[] {
@@ -2418,11 +2434,13 @@ const DesignTranscriptRow = memo(function DesignTranscriptRow({
 
 const DesignMessageCard = memo(function DesignMessageCard({
   canGenerate,
+  canRegenerate,
   liveTranscript,
   message,
   onAction,
 }: {
   canGenerate: boolean;
+  canRegenerate: boolean;
   liveTranscript: readonly DesignTranscriptItem[];
   message: DesignMessage;
   onAction: (action: MessageAction, message: DesignMessage) => void;
@@ -2491,7 +2509,7 @@ const DesignMessageCard = memo(function DesignMessageCard({
           </div>
         ) : null}
         <div className="design-message-actions">
-          {messageActions(message, canGenerate).map((action) => (
+          {messageActions(message, canGenerate, canRegenerate).map((action) => (
             <button type="button" key={action} onClick={() => onAction(action, message)}>
               {action === "stop"
                 ? "Stop"
@@ -3053,6 +3071,9 @@ const DesignAssistant = memo(function DesignAssistant({
           <DesignMessageCard
             key={message.id}
             canGenerate={canGenerate}
+            // The card offers an action only when the action has a prompt to send,
+            // asked of the same helper the action uses.
+            canRegenerate={promptForMessage(messages, message) !== null}
             liveTranscript={liveTranscript}
             message={message}
             onAction={onMessageAction}
@@ -4905,6 +4926,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           setHistoryOpenResult(isOversizedArtifact ? null : result);
           if (result.status === "artifact" || isOversizedArtifact) {
             const messageId = `${HISTORY_OPEN_MESSAGE_PREFIX}${++historyOpenMessageCounterRef.current}`;
+            // A pointer is not a prompt: a `child` entry's title is the commissioned
+            // agent's display name, so it is left off the card as an instruction and
+            // the card offers no action that would generate from it.
+            const instruction = historyEntryInstruction(entry);
             markDocumentDirty();
             setMessages((current) => [
               ...current,
@@ -4919,7 +4944,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                     : "The reopened artifact could not be displayed.",
                 sources: [],
                 nodeIds: [],
-                instruction: entry.title,
+                ...(instruction === null ? {} : { instruction }),
                 // No outputMode or fencedHtmlBlockCount: the history entry records
                 // neither the shape the run asked for nor how many blocks its reply
                 // carried, so a reopened artifact has no contract to read back and
