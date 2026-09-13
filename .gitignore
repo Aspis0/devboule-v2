@@ -24,6 +24,10 @@ src-tauri/gen/
 /*.md
 !/README.md
 !/THIRD_PARTY.md
+# Vouched for on 2026-09-13: a reading of the code as it is built, with a
+# file:line behind every structural claim, and no reference to any document
+# that does not ship here. The allowlist grows one vouched file at a time.
+!/ARCHITECTURE.md
 
 # The same documents, should they ever be written into a subdirectory.
 ARCHITETTURA.md

@@ -31,9 +31,17 @@ What works today:
   untouched. Output is journalled, so reattaching replays what was missed
   rather than showing a blank screen.
 
-  Sessions do not outlive the application yet: on exit, Devboule asks the
-  daemon to shut down. Surviving a full restart is the next step, and it is
-  what the daemon and the journal were built for.
+  On a clean quit Devboule asks the daemon to shut down, and the daemon flushes
+  the journal before it accepts. If the app instead goes away without asking — a
+  crash, a kill — the daemon keeps running for as long as a session is alive,
+  and the next start rejoins that daemon rather than starting a second one.
+  Either way the transcript survives: a session whose process is gone comes back
+  as `Recovered` and replays from the journal rather than pretending to be
+  alive. The process does not come back with it. Every provider lives inside a
+  Windows job object that kills it when the daemon exits, so resuming a
+  provider's own session is a separate, explicit act, and today it exists for
+  ACP providers only — a Claude, Codex or pi session can be replayed, not
+  resumed.
 - **Agent conversation** — real IPC sessions on the daemon. Claude, Codex
   (app-server) and pi run through native adapters; other agents speak ACP.
   Each provider declares its own permission modes (for Claude: plan, always
@@ -48,12 +56,58 @@ What works today:
   mode the shell fails to start inside Codex's own Windows sandbox, so no
   command runs; full access works. This is Codex-side (the same sandbox fails
   from the Codex CLI too), and the app does not work around it.
+- **Paired devices** — real. A laptop or phone pairs over a Tailscale tailnet
+  with an eight-character code shown on one side and typed on the other; the
+  code expires, wrong attempts are rate-limited, and the two sides then prove
+  they hold it through a PAKE before exchanging identities inside a Noise
+  session. Every later connection is authenticated by the key pinned
+  at pairing *and* by Tailscale agreeing that the address is the one the pairing
+  was made from. Each paired device holds a set of capabilities — `view`,
+  `send`, `answer_permissions`, `create_sessions` — shown as toggles on its row
+  and revocable at any time. Inside those capabilities it can list and attach to
+  sessions, send prompts and steer a turn already running, answer permission
+  cards (at most three undecided ones per device) and create sessions. Outside
+  them it can do nothing: daemon status, pairing itself, capability changes, the
+  journal and the agent tool bridge are refused to a peer whatever it holds.
+  Both ends need Tailscale; without it the daemon stays local and says so in
+  Settings rather than failing to start.
+- **Agents that talk to each other** — the daemon owns a loopback MCP endpoint
+  and offers each ACP and Claude session three tools: list the other live agent
+  sessions, send one of them a message, and create one. A per-provider tool
+  policy decides which of those a provider's sessions are actually served; it
+  is stored beside the journal as `tool-policies.json`, written atomically and
+  readable only by the current user, and the daemon re-reads it on every call,
+  so a toggle takes effect on the agent's next call rather than at its next
+  session. The roster tool cannot be turned off: an agent that cannot list its
+  siblings cannot be steered at all. The policy is per machine — paired devices
+  do not inherit one another's.
+- **Agents that create agents** — an agent can call `devboule_create_agent` to
+  create a child from one of two presets (`worker`, `design`) in a fixed,
+  non-bypass provider mode, and it must ask you first: once per creator session,
+  on a card that states the provider, the preset, the mode and every cap as
+  `n of m`. The caps are real and are checked before the card is drawn — three
+  live children per creator, ten creations an hour, eight live agent sessions
+  daemon-wide, two levels of nesting — and the child runs in the caller's
+  workspace or the call is refused. When the child finishes, its final message is
+  deposited as an artifact in the *creator's* folder and the creator is told.
+  The card is the ordinary permission card, so the caps are legible as the
+  sentence the daemon writes rather than as a separate panel.
+- **Attachments** — images, SVG and markdown are deposited into a store under
+  the daemon's runtime directory and never into the workspace, where an
+  attachment would look like your own edit and could be committed by accident.
+  A stored file is named by the SHA-256 of the bytes actually written, with
+  image identity metadata stripped first, and never by the file name you chose:
+  the same bytes are the same file, and a prompt or a finish artifact refers to
+  it by reference (`devboule-attachment:<session>/<digest>`) rather than by a
+  path. The store has a 20 MiB budget; a deposit that would exceed it is refused
+  rather than silently truncated.
 - **History** — the persisted session journal, with grouping, retention notices,
   deletion, and `Reopen` for resumable ACP sessions.
 - **Provider inventory** — the daemon discovers known agent CLIs from `PATH`;
   Settings can refresh the catalog and reports the last measured start outcome.
-- **Surface registry** — five surfaces are registered: `workspace`, `polis`,
-  `pubvia` (a placeholder), `design`, and `settings`.
+- **Surface registry** — six surfaces are registered: `workspace`, `polis`
+  (supplied by a plugin, so it is absent until that plugin is installed),
+  `pubvia` (still a placeholder), `design`, `settings`, and `marketplace`.
 - **Plugin host** — installed plugins run in a cross-origin frame and can use
   an out-of-process backend over the plugin RPC protocol.
 - **Projects and workspaces** — register a folder with the native picker and it
@@ -76,14 +130,16 @@ What works today:
   packaged app. See
   [`src/features/design/README.md`](src/features/design/README.md) for what else
   is not real yet.
-- **Settings** — provider inventory, Oracle administration and Projects are
-  wired; Devices remains a mock panel.
+- **Settings** — provider inventory, the per-provider tool policy, Oracle
+  administration, Projects and Devices are all wired.
 
-What is still mock: `worktree` isolation, which the daemon refuses until git
-worktrees are implemented, so every workspace is currently the project folder
-itself. The Workspace side panels — Changes, Files, the app preview and the
-Design panel — render hardcoded examples and say so; there is no git status or
-file tree on the wire yet.
+What is still mock: the Workspace side panels — Changes, Files, the interactive
+app preview and the pull request panel — render hardcoded examples and say so on
+screen; there is no git status or file tree on the wire yet. Worktree isolation
+now exists in the daemon, which can add a `git worktree` beside the project and
+refuses only when the project's live git state cannot host one, but nothing in
+the app asks for one yet, so every workspace is currently the project folder
+itself.
 
 Developed and tested on Windows. Tauri itself is cross-platform, but no other
 platform has been verified, so treat them as unsupported for now.
