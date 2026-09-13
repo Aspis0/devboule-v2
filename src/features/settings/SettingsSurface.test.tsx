@@ -39,6 +39,13 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
     providerUpdate: vi.fn(async () => ({ ok: true, exitCode: 0, log: "" })),
     toolPolicyGet: vi.fn(async () => ({ policies: [] })),
     toolPolicySet: vi.fn(async () => undefined),
+    agentProfilesGet: vi.fn(async () => ({
+      document: {
+        profiles: [],
+        standingInstructions: "",
+      } as AgentProfilesDocument,
+    })),
+    agentProfilesSet: vi.fn(async () => undefined),
     workspacesList: vi.fn(async () => []),
   };
 });
@@ -52,6 +59,8 @@ vi.mock("../oracle/OraclePanel", () => ({
 }));
 
 import {
+  agentProfilesGet,
+  agentProfilesSet,
   daemonStatus,
   journalRetentionGet,
   journalRetentionSet,
@@ -66,6 +75,9 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import type {
+  AgentProfile,
+  AgentProfilesDocument,
+  AgentProfilesReply,
   DaemonStatus,
   JournalRetention,
   Project,
@@ -1353,7 +1365,7 @@ describe("Settings removed placeholder rows", () => {
     vi.clearAllMocks();
   });
 
-  it("has six tabs and no Labs tab", async () => {
+  it("has seven tabs and no Labs tab", async () => {
     root = createRoot(container);
     await act(async () => root.render(<SettingsSurface />));
     await act(async () => undefined);
@@ -1366,6 +1378,7 @@ describe("Settings removed placeholder rows", () => {
       "Projects",
       "Oracle",
       "Providers & models",
+      "Agents",
       "Devices",
       "Diagnostics",
     ]);
@@ -1887,5 +1900,679 @@ describe("Settings provider tool toggles", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "daemon did not answer",
     );
+  });
+
+  it("applies a policy refetch after a write, so a reconnect cannot leave stale toggles", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(providersList).mockResolvedValueOnce({
+        providers: [mcpProviderWith()],
+        unreadableDirs: 0,
+      });
+      vi.mocked(toolPolicyGet).mockResolvedValueOnce({ policies: [] });
+      root = createRoot(container);
+      await act(async () => root!.render(<SettingsSurface />));
+      await act(async () => undefined);
+      const summary = container.querySelector<HTMLElement>(".provider-tools summary");
+      if (!summary) throw new Error("Tool settings disclosure did not render");
+      await act(async () => summary.click());
+      await act(async () => undefined);
+
+      // A write puts the write sequence past zero; a daemon restart then
+      // flips the handshake capability off and back on, which re-runs the
+      // fetch effect while the card stays mounted.
+      await act(async () => toolCheckbox("other_tool").click());
+      await act(async () => undefined);
+      expect(toolCheckbox("other_tool").checked).toBe(false);
+
+      vi.mocked(daemonStatus).mockResolvedValue(
+        daemonStatusWith(["ping", "status", "sessions", "journal", "typed_permissions", "devices"]),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+
+      // The daemon is back, and its stored row never carried the denial.
+      vi.mocked(toolPolicyGet).mockResolvedValueOnce({
+        policies: [{ providerId: "grok", enabled: true, disabledTools: [] }],
+      });
+      vi.mocked(daemonStatus).mockResolvedValue(
+        daemonStatusWith([
+          "ping",
+          "status",
+          "sessions",
+          "journal",
+          "typed_permissions",
+          "devices",
+          "tool_policy",
+        ]),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+
+      expect(toolPolicyGet).toHaveBeenCalledTimes(2);
+      // The section re-rendered with the reconnect, so open it again.
+      const summaryAgain = container.querySelector<HTMLElement>(".provider-tools summary");
+      if (!summaryAgain) throw new Error("Tool settings disclosure did not re-render");
+      await act(async () => summaryAgain.click());
+      await act(async () => undefined);
+      // The refetched row wins: the optimistic denial is gone.
+      expect(toolCheckbox("other_tool").checked).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("Settings agents panel", () => {
+  let container: HTMLDivElement;
+  let root: Root | undefined;
+
+  function makeProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {
+    return {
+      id: "profile-1",
+      name: "Explorer",
+      icon: null,
+      note: "Reads the code and reports back.",
+      provider: "grok",
+      model: "grok-4",
+      modeId: "ask",
+      thinkingOptionId: null,
+      features: {},
+      toolOverlay: [],
+      enabledForAgents: false,
+      ...overrides,
+    };
+  }
+
+  /** A connected supervisor status whose capability list is the handshake's. */
+  function daemonStatusWith(capabilities: string[]): DaemonStatus {
+    return {
+      state: "connected",
+      pid: 1,
+      instanceId: "settings-test",
+      protocolVersion: 4,
+      clients: 1,
+      capabilities,
+      message: null,
+    };
+  }
+
+  // Renders the surface, waits for the handshake, opens the Agents tab and
+  // answers the document fetch, so assertions see the settled list. The
+  // capability mock is `mockResolvedValue`, not `Once`: the hook polls per
+  // consumer, so ProvidersPanel (the default tab) consumes a one-shot answer
+  // before the Agents tab ever mounts.
+  async function renderAgentsPanel(doc: AgentProfilesDocument) {
+    vi.mocked(daemonStatus).mockResolvedValue(
+      daemonStatusWith([
+        "ping",
+        "status",
+        "sessions",
+        "journal",
+        "typed_permissions",
+        "devices",
+        "agent_profiles",
+      ]),
+    );
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({ document: doc });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const tab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-agents']",
+    );
+    if (!tab) throw new Error("Agents tab did not render");
+    await act(async () => tab.click());
+    await act(async () => undefined);
+  }
+
+  /** Same, but the document fetch never answers: the loading lock's state. */
+  async function renderAgentsPanelLoading() {
+    vi.mocked(daemonStatus).mockResolvedValue(
+      daemonStatusWith([
+        "ping",
+        "status",
+        "sessions",
+        "journal",
+        "typed_permissions",
+        "devices",
+        "agent_profiles",
+      ]),
+    );
+    vi.mocked(agentProfilesGet).mockImplementationOnce(
+      () => new Promise<AgentProfilesReply>(() => undefined),
+    );
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const tab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-agents']",
+    );
+    if (!tab) throw new Error("Agents tab did not render");
+    await act(async () => tab.click());
+    await act(async () => undefined);
+  }
+
+  /** Same, but the document fetch rejects: the failed load's state. */
+  async function renderAgentsPanelErrored() {
+    vi.mocked(daemonStatus).mockResolvedValue(
+      daemonStatusWith([
+        "ping",
+        "status",
+        "sessions",
+        "journal",
+        "typed_permissions",
+        "devices",
+        "agent_profiles",
+      ]),
+    );
+    vi.mocked(agentProfilesGet).mockRejectedValueOnce({ code: "io", message: "pipe is gone" });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const tab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-agents']",
+    );
+    if (!tab) throw new Error("Agents tab did not render");
+    await act(async () => tab.click());
+    await act(async () => undefined);
+  }
+
+  function profileRows(): HTMLElement[] {
+    return Array.from(container.querySelectorAll<HTMLElement>(".agent-profile-row"));
+  }
+
+  function rowByName(name: string): HTMLElement {
+    const row = profileRows().find((row) => row.textContent?.includes(name));
+    if (!row) throw new Error(`profile row ${name} did not render`);
+    return row;
+  }
+
+  /** The one checkbox in a profile row is its "agents may create this" tick. */
+  function tickBox(name: string): HTMLInputElement {
+    const box = rowByName(name).querySelector<HTMLInputElement>("input[type='checkbox']");
+    if (!box) throw new Error(`tick for ${name} did not render`);
+    return box;
+  }
+
+  function rowButton(name: string, text: string): HTMLButtonElement {
+    const button = Array.from(rowByName(name).querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent === text,
+    );
+    if (!button) throw new Error(`button ${text} on ${name} did not render`);
+    return button;
+  }
+
+  function sectionButton(text: string): HTMLButtonElement {
+    const button = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".agent-profiles button"),
+    ).find((candidate) => candidate.textContent === text);
+    if (!button) throw new Error(`button ${text} did not render`);
+    return button;
+  }
+
+  // Drives a controlled React field directly (the suite's raw createRoot/act
+  // style has no testing-library fireEvent): calls the rendered onChange with
+  // the value a paste would leave in the field.
+  async function typeText(field: HTMLTextAreaElement | HTMLInputElement, value: string) {
+    const reactKey = Object.keys(field).find((key) => key.startsWith("__reactProps"));
+    const props = (field as unknown as Record<string, unknown>)[reactKey ?? ""] as
+      | { onChange?: (event: { target: { value: string } }) => void }
+      | undefined;
+    if (!props?.onChange) throw new Error("field onChange did not render");
+    await act(async () => {
+      props.onChange?.({ target: { value } });
+    });
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(providersList).mockImplementation(async () => ({
+      providers: [],
+      unreadableDirs: 0,
+    }));
+  });
+
+  afterEach(async () => {
+    if (root !== undefined) await act(async () => root!.unmount());
+    container.remove();
+    vi.clearAllMocks();
+    // `clearAllMocks` keeps queued `mockImplementationOnce` entries, so a test
+    // that queued an unsettled write and failed before consuming it would
+    // leave the next test's click reading a hanging write. Reset back to the
+    // resolved default, exactly as the tool-toggles block does for its write.
+    vi.mocked(agentProfilesSet).mockReset();
+    vi.mocked(agentProfilesSet).mockImplementation(async () => undefined);
+  });
+
+  it("hides the section and never fetches when the daemon lacks agent_profiles", async () => {
+    // The module mock's default daemonStatus advertises tool_policy but not
+    // agent_profiles: an older daemon. The tab still navigates; the section
+    // is absent, not disabled and not an error.
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const tab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-agents']",
+    );
+    if (!tab) throw new Error("Agents tab did not render");
+    await act(async () => tab.click());
+    await act(async () => undefined);
+
+    expect(agentProfilesGet).not.toHaveBeenCalled();
+    expect(container.querySelector(".agent-profiles")).toBeNull();
+    expect(container.textContent).not.toContain("Agents may create this");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("locks every control while the document is in flight", async () => {
+    await renderAgentsPanelLoading();
+
+    expect(container.textContent).toContain("Loading agent profiles…");
+    const controls = container.querySelectorAll<HTMLInputElement | HTMLButtonElement>(
+      ".agent-profiles input, .agent-profiles textarea, .agent-profiles button",
+    );
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of controls) expect(control.disabled).toBe(true);
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+  });
+
+  it("renders the profiles in the order the daemon returned", async () => {
+    // Deliberately not alphabetical: the human's order is the feature.
+    await renderAgentsPanel({
+      profiles: [makeProfile({ id: "b", name: "Beta" }), makeProfile({ id: "a", name: "Alpha" })],
+      standingInstructions: "",
+    });
+
+    expect(
+      profileRows().map((row) => row.querySelector(".settings-card-title")?.textContent),
+    ).toEqual(["Beta", "Alpha"]);
+    expect(rowByName("Beta").querySelector<HTMLElement>(".agent-profile-meta")?.textContent).toBe(
+      "grok · grok-4 · mode ask",
+    );
+    // The edges are where a reorder bug would show: the first row cannot move
+    // up and the last cannot move down.
+    const firstUp = rowByName("Beta").querySelector<HTMLButtonElement>(
+      "button[aria-label='Move Beta up']",
+    );
+    const lastDown = rowByName("Alpha").querySelector<HTMLButtonElement>(
+      "button[aria-label='Move Alpha down']",
+    );
+    expect(firstUp?.disabled).toBe(true);
+    expect(lastDown?.disabled).toBe(true);
+  });
+
+  it("ticking agents-may-create writes exactly that flag and nothing else", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile()],
+      standingInstructions: "",
+    });
+
+    await act(async () => tickBox("Explorer").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    // Deep equality on the whole document: provider, model, mode, features,
+    // note, order and the standing instructions travel untouched — only the
+    // tick flipped.
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [{ ...makeProfile(), enabledForAgents: true }],
+      standingInstructions: "",
+    });
+    expect(tickBox("Explorer").checked).toBe(true);
+  });
+
+  it("reverts the tick and shows the daemon sentence verbatim on a failed write", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile()],
+      standingInstructions: "",
+    });
+    vi.mocked(agentProfilesSet).mockRejectedValueOnce({
+      code: "io",
+      message: "profile file unwritable",
+    });
+
+    await act(async () => tickBox("Explorer").click());
+    await act(async () => undefined);
+
+    expect(tickBox("Explorer").checked).toBe(false);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "profile file unwritable",
+    );
+  });
+
+  it("shows the off-switch sentence once the last ticked profile is untoggled", async () => {
+    await renderAgentsPanel({
+      profiles: [
+        makeProfile({ enabledForAgents: true }),
+        makeProfile({ id: "profile-2", name: "Coder" }),
+      ],
+      standingInstructions: "",
+    });
+
+    // One ticked: the door is open, the sentence must be absent.
+    expect(container.textContent).not.toContain("agents cannot start agents");
+
+    await act(async () => tickBox("Explorer").click());
+    await act(async () => undefined);
+
+    // The last tick is gone, so the section reads as the off switch it is.
+    expect(container.textContent).toContain("agents cannot start agents");
+    expect(tickBox("Explorer").checked).toBe(false);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("moving a profile up sends the reordered document and re-renders in that order", async () => {
+    const beta = makeProfile({ id: "b", name: "Beta" });
+    const alpha = makeProfile({ id: "a", name: "Alpha" });
+    await renderAgentsPanel({ profiles: [beta, alpha], standingInstructions: "" });
+
+    const up = rowByName("Alpha").querySelector<HTMLButtonElement>(
+      "button[aria-label='Move Alpha up']",
+    );
+    if (!up) throw new Error("move-up button did not render");
+    await act(async () => up.click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [alpha, beta],
+      standingInstructions: "",
+    });
+    expect(
+      profileRows().map((row) => row.querySelector(".settings-card-title")?.textContent),
+    ).toEqual(["Alpha", "Beta"]);
+  });
+
+  it("deletes only the armed profile, and only after the inline confirm", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
+      standingInstructions: "",
+    });
+
+    // The first click arms the row and sends nothing.
+    await act(async () => rowButton("Explorer", "Delete").click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Deletes this profile");
+
+    await act(async () => sectionButton("Delete now").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
+    expect(sent?.profiles.map((profile) => profile.name)).toEqual(["Coder"]);
+    expect(
+      profileRows().map((row) => row.querySelector(".settings-card-title")?.textContent),
+    ).toEqual(["Coder"]);
+  });
+
+  it("saves a rename and note while every other field travels untouched", async () => {
+    const explorer = makeProfile();
+    await renderAgentsPanel({ profiles: [explorer], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const editor = container.querySelector(".agent-inline-editor");
+    if (!editor) throw new Error("editor did not render");
+    const nameField = editor.querySelector<HTMLInputElement>("input");
+    const noteField = editor.querySelector<HTMLTextAreaElement>("textarea");
+    if (!nameField || !noteField) throw new Error("editor fields did not render");
+    await typeText(nameField, "Scout");
+    await typeText(noteField, "Maps the work before anyone builds.");
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [{ ...explorer, name: "Scout", note: "Maps the work before anyone builds." }],
+      standingInstructions: "",
+    });
+  });
+
+  it("refuses a note over 2 KiB with the size named and truncates nothing", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const noteField = container.querySelector<HTMLTextAreaElement>(".agent-inline-editor textarea");
+    if (!noteField) throw new Error("note field did not render");
+    // 1100 two-byte characters: 2200 UTF-8 bytes, 152 over the cap. The byte
+    // count is what the daemon enforces, so a char-counting UI would pass it.
+    const flood = "é".repeat(1100);
+    await typeText(noteField, flood);
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("2200 bytes");
+    expect(alert?.textContent).toContain("2048");
+    // The refusal changed nothing: the field still holds every byte.
+    expect(noteField.value).toBe(flood);
+  });
+
+  it("saves standing instructions into the document and leaves the profiles alone", async () => {
+    const explorer = makeProfile();
+    await renderAgentsPanel({ profiles: [explorer], standingInstructions: "" });
+
+    const field = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+    if (!field) throw new Error("standing instructions field did not render");
+    await typeText(field, "Report your result in your final message.");
+
+    await act(async () => sectionButton("Save standing instructions").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [explorer],
+      standingInstructions: "Report your result in your final message.",
+    });
+  });
+
+  it("refuses standing instructions over 8 KiB with the size named and truncates nothing", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    const field = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+    if (!field) throw new Error("standing instructions field did not render");
+    // 4200 two-byte characters: 8400 UTF-8 bytes, 208 over the cap.
+    const flood = "é".repeat(4200);
+    await typeText(field, flood);
+
+    await act(async () => sectionButton("Save standing instructions").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("8400 bytes");
+    expect(alert?.textContent).toContain("8192");
+    expect(field.value).toBe(flood);
+  });
+
+  it("releases the standing draft once any write is confirmed, so the box agrees with the store", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile()],
+      standingInstructions: "",
+    });
+
+    const field = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+    if (!field) throw new Error("standing instructions field did not render");
+    await typeText(field, "Always report your plan first.");
+
+    // An unrelated write — the tick. It sends the document as the store holds
+    // it (the draft is deliberately not smuggled into it), and once it is
+    // confirmed the box must agree with the store again: the typed text has
+    // to leave the box visibly, not sit there while the daemon never got it.
+    await act(async () => tickBox("Explorer").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [{ ...makeProfile(), enabledForAgents: true }],
+      standingInstructions: "",
+    });
+    const fieldAfter = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+    expect(fieldAfter?.value).toBe("");
+  });
+
+  it("accepts a name at the daemon's own count: 40 astral-plane characters are 40 characters", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const nameField = container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    if (!nameField) throw new Error("name field did not render");
+    // 40 emoji are 40 Unicode scalar values — what the daemon counts — but
+    // 80 UTF-16 code units. A length-counting panel would refuse a legal
+    // name; this one must send it.
+    const name = "🦄".repeat(40);
+    await typeText(nameField, name);
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [{ ...makeProfile(), name }],
+      standingInstructions: "",
+    });
+  });
+
+  it("refuses a name past the daemon's count with the daemon's number", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const nameField = container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    if (!nameField) throw new Error("name field did not render");
+    // 61 emoji are 61 scalar values — 61 for the daemon too — but 122 UTF-16
+    // code units. The refusal must name 61, the daemon's number, never 122.
+    const name = "🦄".repeat(61);
+    await typeText(nameField, name);
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("61 characters");
+    expect(alert?.textContent).toContain("60-character cap");
+    // The refusal truncates nothing and leaves the editor open.
+    expect(nameField.value).toBe(name);
+  });
+
+  it("ends a failed load in a retryable state instead of loading forever", async () => {
+    await renderAgentsPanelErrored();
+
+    // Terminal state: the daemon's sentence and a Retry, no loading line.
+    expect(container.textContent).not.toContain("Loading agent profiles…");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("pipe is gone");
+    const retry = sectionButton("Retry");
+
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [makeProfile()], standingInstructions: "" },
+    });
+    await act(async () => retry.click());
+    await act(async () => undefined);
+
+    expect(agentProfilesGet).toHaveBeenCalledTimes(2);
+    expect(profileRows()).toHaveLength(1);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("applies a refetch after a write, so a restarted daemon's store replaces the stale panel", async () => {
+    vi.useFakeTimers();
+    try {
+      await renderAgentsPanel({
+        profiles: [makeProfile()],
+        standingInstructions: "",
+      });
+
+      // A write puts the sequence past zero; a daemon restart then flips the
+      // handshake capability off and back on, re-running the load effect
+      // while the panel stays mounted.
+      await act(async () => tickBox("Explorer").click());
+      await act(async () => undefined);
+      expect(tickBox("Explorer").checked).toBe(true);
+
+      // A draft typed after the write, never saved: the fresh load must
+      // release it, so the box shows the restarted store's instructions.
+      const fieldBefore = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+      if (!fieldBefore) throw new Error("standing instructions field did not render");
+      await typeText(fieldBefore, "typed against the old daemon");
+
+      vi.mocked(daemonStatus).mockResolvedValue(
+        daemonStatusWith(["ping", "status", "sessions", "journal", "typed_permissions", "devices"]),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+
+      // The daemon came back with an emptied store — the quarantined-file
+      // direction — and the panel must take that truth, not keep the stale
+      // optimistic document from before the restart.
+      vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+        document: { profiles: [], standingInstructions: "fresh from the restarted store" },
+      });
+      vi.mocked(daemonStatus).mockResolvedValue(
+        daemonStatusWith([
+          "ping",
+          "status",
+          "sessions",
+          "journal",
+          "typed_permissions",
+          "devices",
+          "agent_profiles",
+        ]),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+
+      expect(agentProfilesGet).toHaveBeenCalledTimes(2);
+      expect(profileRows()).toHaveLength(0);
+      // A fresh load also releases any draft: the box reads the new store.
+      const field = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+      expect(field?.value).toBe("fresh from the restarted store");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds the inline editor under the busy lock so a second write cannot start", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
+      standingInstructions: "",
+    });
+
+    // The editor is opened BEFORE any write, so its Save button exists while
+    // another row's write is still in flight — the hole the lock closes.
+    await act(async () => rowButton("Coder", "Edit").click());
+    await act(async () => undefined);
+    const save = sectionButton("Save");
+
+    vi.mocked(agentProfilesSet).mockImplementationOnce(() => new Promise<void>(() => undefined));
+    await act(async () => tickBox("Explorer").click());
+    await act(async () => undefined);
+
+    expect(save.disabled).toBe(true);
+    // Even a dispatched click cannot start a second write while the first is
+    // in flight: React does not invoke onClick on a disabled button.
+    await act(async () => save.click());
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
   });
 });

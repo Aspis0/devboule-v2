@@ -1,3 +1,4 @@
+pub mod agent_profiles;
 pub mod devices;
 pub mod error;
 pub mod journal;

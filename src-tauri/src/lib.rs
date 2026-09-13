@@ -85,6 +85,8 @@ pub fn run() {
             backend::devices::peer_set_caps,
             backend::tool_policy::tool_policy_get,
             backend::tool_policy::tool_policy_set,
+            backend::agent_profiles::agent_profiles_get,
+            backend::agent_profiles::agent_profiles_set,
             backend::providers::providers_list,
             backend::providers::providers_refresh,
             backend::providers::provider_update,

@@ -1,6 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   ActiveTurnBehavior,
+  AgentProfilesDocument,
+  AgentProfilesReply,
   Cap,
   CommandError,
   DaemonDiagnostics,
@@ -174,6 +176,8 @@ export type CommandArgs = {
   peer_set_caps: { deviceId: string; caps: readonly Cap[] };
   tool_policy_get: undefined;
   tool_policy_set: { providerId: string; enabled: boolean | null; disabledTools: string[] };
+  agent_profiles_get: undefined;
+  agent_profiles_set: { document: AgentProfilesDocument };
 };
 
 type CommandResults = {
@@ -252,6 +256,15 @@ type CommandResults = {
   tool_policy_get: ToolPolicyReply;
   /** The daemon answers `ToolPolicySetOk`; the set itself is the proof. */
   tool_policy_set: void;
+  /**
+   * The whole stored document — the ordered profile list plus the standing
+   * instructions, in the human's order. An empty document is the honest
+   * first run AND the failure mode of a quarantined file: agents create
+   * nothing, never "the last good list".
+   */
+  agent_profiles_get: AgentProfilesReply;
+  /** The daemon answers `AgentProfilesSetOk` after validating and persisting. */
+  agent_profiles_set: void;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -339,6 +352,8 @@ export const COMMAND_ARG_KEYS = {
   peer_set_caps: ["deviceId", "caps"],
   tool_policy_get: [],
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
+  agent_profiles_get: [],
+  agent_profiles_set: ["document"],
 } as const satisfies {
   [K in CommandName]: readonly (CommandArgs[K] extends undefined
     ? never
@@ -756,3 +771,19 @@ export const toolPolicySet = (
   enabled: boolean | null,
   disabledTools: string[],
 ) => invokeTyped("tool_policy_set", { providerId, enabled, disabledTools });
+
+/**
+ * The whole stored agent-profile document — the ordered profile list plus the
+ * standing instructions — as the daemon holds it right now. The order is the
+ * human's and is exactly what `devboule_list_profiles` serves an agent.
+ */
+export const agentProfilesGet = () => invokeTyped("agent_profiles_get");
+/**
+ * Replaces the whole document: profiles (order included) and the standing
+ * instructions travel together, so one write cannot leave the two halves
+ * disagreeing. The daemon validates before it persists and refuses rather
+ * than truncates — a profile over a cap or instructions over 8 KiB reject
+ * the request with the size named, and nothing on either side is clipped.
+ */
+export const agentProfilesSet = (document: AgentProfilesDocument) =>
+  invokeTyped("agent_profiles_set", { document });
