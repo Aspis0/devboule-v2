@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import {
   agentProfilesGet,
   agentProfilesSet,
   projectsList,
   providerUpdate,
+  providerVocabularyGet,
   providersList,
   providersRefresh,
   reasonFromCause,
@@ -20,6 +21,7 @@ import type {
   Project,
   ProviderCatalog,
   ProviderInfo,
+  ProviderVocabulary,
   ToolPolicyEntry,
   Workspace,
 } from "../../types/ipc";
@@ -511,10 +513,53 @@ function ProviderToolSettings({
  */
 const AGENT_PROFILES_CAPABILITY = "agent_profiles";
 
+/**
+ * The handshake capability that gates the provider-vocabulary query, spelled
+ * exactly like the daemon's own name for it. A daemon that does not advertise
+ * it cannot answer `provider_vocabulary_get` — which is every daemon shipping
+ * today, the request is never sent to one. The new-profile form still works
+ * there: model and mode fall back to free text, and the form says THAT reason
+ * — this daemon is older than this app — in its own sentence. It must never
+ * show the provider's "did not publish" sentence instead: an old daemon and a
+ * silent provider are different absences and get different sentences.
+ */
+const PROVIDER_VOCABULARY_CAPABILITY = "provider_vocabulary";
+
 /** The profile store's caps, the daemon's own constants mirrored. */
 const MAX_PROFILE_NAME_CHARS = 60;
 const MAX_PROFILE_NOTE_BYTES = 2 * 1024;
 const MAX_STANDING_INSTRUCTIONS_BYTES = 8 * 1024;
+
+/**
+ * The sentence for the one absence the form can name without asking anyone:
+ * the daemon predates the vocabulary query, so no answer exists to show. It
+ * deliberately shares no wording with the provider sentences below.
+ */
+const VOCABULARY_UNAVAILABLE_TEXT =
+  "This daemon is older than this app: it does not advertise the provider_vocabulary capability, so it cannot say what this provider offers. Type the model and mode below; what you type is checked when the session starts.";
+
+/** `origin: "daemon"` — the honest sentence that travels with such a list. */
+const DAEMON_VOCABULARY_TEXT =
+  "This list is the daemon's own vocabulary for this provider, not something the provider published.";
+
+/** `none`: the provider CAN answer and answered "I have none". The field stays required. */
+function noneVocabularyText(axisWord: "models" | "modes"): string {
+  return `This provider reports no ${axisWord}: type the one to use; a name it does not serve fails at the provider when the session starts.`;
+}
+
+/** `absent`: no source could answer. The spec's own fallback sentence. */
+function absentVocabularyText(axisWord: "models" | "modes"): string {
+  return `This provider did not publish its ${axisWord}; what you type is checked when the session starts.`;
+}
+
+/**
+ * For an ACP provider whose modes are `absent`: the mode a session actually
+ * runs in when the agent declares none. Prefilled once, labelled a
+ * suggestion — never rendered as if the provider had said it.
+ */
+const ACP_MODE_SUGGESTION = "default";
+const ACP_MODE_SUGGESTION_TEXT =
+  'Suggested: "default" — the mode a session of this agent runs in when it declares none. A suggestion, not something the provider reported.';
 
 /** The daemon counts UTF-8 bytes (`String::len`), so the on-screen counter must too. */
 function utf8Bytes(text: string): number {
@@ -542,14 +587,414 @@ function cloneDocument(document: AgentProfilesDocument): AgentProfilesDocument {
 }
 
 /**
+ * The two text caps every profile write enforces — renaming an existing row
+ * and creating a new one. Returns the refusal sentence sized in the daemon's
+ * own units, or null when both texts fit. The name counts Unicode scalar
+ * values (the daemon's `chars().count()`), the note UTF-8 bytes
+ * (`String::len`); refusals name the size and nothing is ever truncated.
+ */
+function profileTextsError(trimmedName: string, note: string): string | null {
+  const trimmedChars = charCount(trimmedName);
+  if (trimmedChars === 0) {
+    return `A profile name is 1 to ${MAX_PROFILE_NAME_CHARS} characters.`;
+  }
+  if (trimmedChars > MAX_PROFILE_NAME_CHARS) {
+    return `This name is ${trimmedChars} characters, over the ${MAX_PROFILE_NAME_CHARS}-character cap. Nothing was saved and nothing was truncated.`;
+  }
+  const noteBytes = utf8Bytes(note);
+  if (noteBytes > MAX_PROFILE_NOTE_BYTES) {
+    return `This note is ${noteBytes} bytes, over the ${MAX_PROFILE_NOTE_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
+  }
+  return null;
+}
+
+/** What the new-profile form hands the panel on save. The panel validates and persists. */
+interface NewProfileDraft {
+  name: string;
+  note: string;
+  provider: string;
+  model: string;
+  modeId: string;
+  autoAccept: boolean;
+  enabledForAgents: boolean;
+}
+
+/**
+ * One vocabulary axis of the new-profile form: a select over the provider's
+ * published items, or a free-text field when the answer is `none` or
+ * `absent` or there is no answer at all. The `hint` names WHICH of those
+ * happened — the four sentences never share wording, because the four
+ * absences are different facts.
+ */
+function VocabularyField({
+  label,
+  value,
+  busy,
+  freeText,
+  hint,
+  suggestion,
+  items,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  busy: boolean;
+  /** True: a free-text input. False: a select over `items`. */
+  freeText: boolean;
+  /** The sentence under the field naming why it reads what it reads. */
+  hint?: ReactNode;
+  /** The ACP mode suggestion, only where it applies; labelled a suggestion. */
+  suggestion?: ReactNode;
+  items: readonly { value: string; label: string }[];
+  onChange: (next: string) => void;
+}) {
+  if (freeText) {
+    return (
+      <>
+        <label className="device-field">
+          {label}
+          <input
+            aria-label={label}
+            value={value}
+            disabled={busy}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        </label>
+        {hint === undefined ? null : <p className="device-field-hint">{hint}</p>}
+        {suggestion === undefined ? null : <p className="device-field-hint">{suggestion}</p>}
+      </>
+    );
+  }
+  return (
+    <label className="device-field">
+      {label}
+      <select
+        aria-label={label}
+        value={value}
+        disabled={busy}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">Choose a {label.toLowerCase()}…</option>
+        {items.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+      {hint === undefined ? null : <span className="device-field-hint">{hint}</span>}
+    </label>
+  );
+}
+
+/**
+ * The new-profile form, inline in the Agents panel — the panel's own shape
+ * (its editor and delete confirm are inline too; nothing here needs a modal).
+ * Its one hard rule: model and modeId are the provider's own vocabulary,
+ * stored verbatim, so the form never invents one. It asks — through the
+ * `provider_vocabulary` handshake gate — and renders the answer's three
+ * states distinctly; when the daemon predates the query it says so in its
+ * own words and falls back to free text, so a human can always finish.
+ *
+ * The vocabulary refetch on a provider change rides the same sequence-guard
+ * cadence as the panel's document load: only the newest fetch may apply, so
+ * a reply for the previously selected provider never lands in a form that
+ * now shows another one.
+ *
+ * There is no thinking-option field on purpose: the vocabulary reply carries
+ * no thinking axis (spec §4), and an empty control would invent one. A new
+ * profile saves `thinkingOptionId: null`.
+ */
+function NewAgentProfileForm({
+  providers,
+  catalogLoading,
+  catalogError,
+  vocabularySupported,
+  busy,
+  onCreate,
+  onCancel,
+}: {
+  /** Installed providers only, catalog order. */
+  providers: readonly ProviderInfo[];
+  catalogLoading: boolean;
+  catalogError: string | null;
+  /** True only when the handshake advertised `provider_vocabulary`. */
+  vocabularySupported: boolean;
+  /** True while a panel write is in flight: Save must not start another. */
+  busy: boolean;
+  onCreate: (draft: NewProfileDraft) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [note, setNote] = useState("");
+  const [providerId, setProviderId] = useState("");
+  const [model, setModel] = useState("");
+  const [mode, setMode] = useState("");
+  const [autoAccept, setAutoAccept] = useState(false);
+  const [enabledForAgents, setEnabledForAgents] = useState(false);
+  const [vocabulary, setVocabulary] = useState<ProviderVocabulary | null>(null);
+  const [vocabularyError, setVocabularyError] = useState<string | null>(null);
+  // Monotonic fetch sequence for the vocabulary query: a reply may apply
+  // only while it is still the newest fetch. This — never the provider id
+  // echoed back — is what keeps a slow answer for provider A out of a form
+  // now showing provider B, so the guard is the single mechanism the
+  // stale-reply test mutates.
+  const vocabularySeqRef = useRef(0);
+
+  // The catalog lands after the first paint; default the picker to the first
+  // installed provider once there is one, and let the vocabulary effect run.
+  useEffect(() => {
+    if (!catalogLoading && providerId === "" && providers.length > 0) {
+      setProviderId(providers[0].id);
+    }
+  }, [catalogLoading, providerId, providers]);
+
+  useEffect(() => {
+    // A daemon that never advertised `provider_vocabulary` would refuse this
+    // request: it is never sent. The form's free-text fallback and the
+    // older-daemon sentence are the whole UI for that case.
+    if (!vocabularySupported || providerId === "") return;
+    // No `cancelled` flag beside the sequence guard on purpose: every path
+    // that could make a reply stale (the provider changed, the form closed)
+    // bumps the sequence, so the guard below is the one mechanism — and the
+    // one thing the stale-reply test mutates. A `setState` after unmount is
+    // a safe no-op in React 18+.
+    const seq = ++vocabularySeqRef.current;
+    setVocabulary(null);
+    setVocabularyError(null);
+    void providerVocabularyGet(providerId, false)
+      .then((reply) => {
+        // A newer fetch (the provider changed again) owns the form: this
+        // reply is stale no matter which provider it names.
+        if (vocabularySeqRef.current !== seq) return;
+        setVocabulary(reply);
+        // The one prefill allowed: an ACP agent that declared no modes runs
+        // in "default". Typed text is never clobbered — the suggestion only
+        // fills an empty field, and it is labelled a suggestion.
+        if (reply.modes.state === "absent") {
+          const info = providers.find((provider) => provider.id === providerId);
+          if (info?.protocol === "acp") {
+            setMode((current) => (current === "" ? ACP_MODE_SUGGESTION : current));
+          }
+        }
+      })
+      .catch((cause: unknown) => {
+        if (vocabularySeqRef.current !== seq) return;
+        setVocabularyError(reasonFromCause(cause));
+      });
+  }, [providerId, vocabularySupported, providers]);
+
+  // The reply (or its failure) is what the fields read; before either, the
+  // form shows the ask in flight and renders no field to guess into.
+  const vocabularyKnown = vocabulary !== null || vocabularyError !== null;
+  const models = vocabulary?.models;
+  const modes = vocabulary?.modes;
+  const noteBytes = utf8Bytes(note);
+
+  function changeProvider(next: string) {
+    // Reset the fields that depend on the answer before the fetch starts:
+    // the old provider's selection must not survive into the new one.
+    setProviderId(next);
+    setModel("");
+    setMode("");
+  }
+
+  function submit() {
+    onCreate({
+      name,
+      note,
+      provider: providerId,
+      model,
+      modeId: mode,
+      autoAccept,
+      enabledForAgents,
+    });
+  }
+
+  return (
+    <div className="agent-inline-editor agent-profile-create">
+      <span className="settings-subheading">New profile</span>
+      <label className="device-field">
+        Name
+        <input
+          aria-label="Profile name"
+          value={name}
+          disabled={busy}
+          onChange={(event) => setName(event.target.value)}
+        />
+      </label>
+      <label className="device-field">
+        Note — what a creating agent reads to choose this profile. Write it for the agent.
+        <textarea
+          aria-label="Profile note"
+          value={note}
+          disabled={busy}
+          rows={3}
+          onChange={(event) => setNote(event.target.value)}
+        />
+        <span className="agent-byte-counter">
+          {noteBytes} / {MAX_PROFILE_NOTE_BYTES} bytes
+        </span>
+      </label>
+      <label className="device-field">
+        Provider
+        <select
+          aria-label="Provider"
+          value={providerId}
+          disabled={busy || catalogLoading || providers.length === 0}
+          onChange={(event) => changeProvider(event.target.value)}
+        >
+          {catalogLoading ? <option value="">Looking for installed providers…</option> : null}
+          {!catalogLoading && providers.length === 0 ? (
+            <option value="">No provider installed</option>
+          ) : null}
+          {providers.map((provider) => (
+            <option key={provider.id} value={provider.id}>
+              {provider.id}
+            </option>
+          ))}
+        </select>
+      </label>
+      {catalogError !== null ? (
+        <p className="device-field-hint" role="alert">
+          The provider catalog could not be read: {catalogError}
+        </p>
+      ) : null}
+      {!catalogLoading && providers.length === 0 ? (
+        <p className="device-field-hint">
+          No agent CLI is installed on this machine: install one and restart Devboule, then create
+          the profile.
+        </p>
+      ) : null}
+      {!vocabularySupported ? (
+        <p className="device-field-hint">{VOCABULARY_UNAVAILABLE_TEXT}</p>
+      ) : null}
+      {vocabularySupported && providerId !== "" && !vocabularyKnown ? (
+        <div role="status">Asking the daemon what {providerId} offers…</div>
+      ) : null}
+      {vocabularyError !== null ? (
+        <p className="device-field-hint">
+          The vocabulary query failed ({vocabularyError}); type the model and mode below; what you
+          type is checked when the session starts.
+        </p>
+      ) : null}
+      {(!vocabularySupported || vocabularyKnown) && providers.length > 0 ? (
+        <>
+          <VocabularyField
+            label="Model"
+            value={model}
+            busy={busy}
+            freeText={
+              vocabularyError !== null || models === undefined || models.state !== "present"
+            }
+            hint={
+              vocabularyError !== null || models === undefined
+                ? undefined
+                : models.state === "none"
+                  ? noneVocabularyText("models")
+                  : models.state === "absent"
+                    ? absentVocabularyText("models")
+                    : models.origin === "daemon"
+                      ? DAEMON_VOCABULARY_TEXT
+                      : undefined
+            }
+            items={(models?.items ?? []).map((item) => ({
+              value: item.modelId,
+              label:
+                item.name && item.name !== item.modelId
+                  ? `${item.name} (${item.modelId})`
+                  : item.modelId,
+            }))}
+            onChange={setModel}
+          />
+          <VocabularyField
+            label="Mode"
+            value={mode}
+            busy={busy}
+            freeText={vocabularyError !== null || modes === undefined || modes.state !== "present"}
+            hint={
+              vocabularyError !== null || modes === undefined
+                ? undefined
+                : modes.state === "none"
+                  ? noneVocabularyText("modes")
+                  : modes.state === "absent"
+                    ? absentVocabularyText("modes")
+                    : modes.origin === "daemon"
+                      ? DAEMON_VOCABULARY_TEXT
+                      : undefined
+            }
+            suggestion={
+              modes?.state === "absent" &&
+              providers.find((provider) => provider.id === providerId)?.protocol === "acp"
+                ? ACP_MODE_SUGGESTION_TEXT
+                : undefined
+            }
+            items={(modes?.items ?? []).map((item) => ({
+              value: item.id,
+              label: item.name && item.name !== item.id ? `${item.name} (${item.id})` : item.id,
+            }))}
+            onChange={setMode}
+          />
+        </>
+      ) : null}
+      <label className="agent-profile-tick">
+        <input
+          type="checkbox"
+          aria-label="Auto accept for children of this profile"
+          checked={autoAccept}
+          disabled={busy}
+          onChange={(event) => setAutoAccept(event.target.checked)}
+        />
+        <span>
+          <span>Auto accept</span>
+          <span className="agent-profile-tick-note">
+            Children created from this profile approve their own permission prompts instead of
+            asking you. This is the most consequential control on the form: leave it off unless you
+            mean it.
+          </span>
+        </span>
+      </label>
+      <label className="agent-profile-tick">
+        <input
+          type="checkbox"
+          aria-label="Available to agents"
+          checked={enabledForAgents}
+          disabled={busy}
+          onChange={(event) => setEnabledForAgents(event.target.checked)}
+        />
+        <span>
+          <span>Agents may create this</span>
+          <span className="agent-profile-tick-note">
+            Lets an agent start this kind of agent. If this profile answers its own permission
+            cards, its children run unattended.
+          </span>
+        </span>
+      </label>
+      <div className="device-actions">
+        <button
+          type="button"
+          className="settings-device-action"
+          disabled={busy || catalogLoading || providers.length === 0}
+          onClick={submit}
+        >
+          Create profile
+        </button>
+        <button type="button" className="settings-device-action" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * One row's name/note editor — the only fields editable here on purpose.
  * Provider, model, mode, thinking option and features are the provider's own
- * vocabulary, and the app has no source for that vocabulary at authoring time
- * (a session manifest only exists once a session of that provider is already
- * running), so the form refuses to invent one: these fields stay exactly as
- * the daemon holds them and the row displays them. The name is capped in
- * characters, the note in UTF-8 bytes — both refusals name the size, and
- * nothing is ever truncated.
+ * vocabulary, stored verbatim, so this editor leaves them exactly as the
+ * daemon holds them and the row displays them; the way to different values is
+ * a new profile ([`NewAgentProfileForm`], which asks the daemon for the
+ * vocabulary), not editing this one. The name is capped in characters, the
+ * note in UTF-8 bytes — both refusals name the size, and nothing is ever
+ * truncated.
  *
  * Save sits under the panel's `busy` lock like every other write trigger:
  * while a write is in flight the editor cannot start a second one, so a
@@ -584,8 +1029,8 @@ function AgentProfileEditor({
         </span>
       </label>
       <p className="device-field-hint">
-        Provider, model, mode and features are shown on the row and are not editable here: the app
-        has no live vocabulary to offer for them yet.
+        Provider, model, mode and features are shown on the row and are not editable here. To change
+        them, create a new profile with the values you want and delete this one.
       </p>
       <div className="device-actions">
         <button
@@ -620,14 +1065,20 @@ function AgentProfileEditor({
  *   refused over the cap — never truncated.
  * - An empty state that reads as the off switch: nothing ticked means agents
  *   create nothing at all.
+ * - The new-profile form ([`NewAgentProfileForm`]), which asks the daemon what
+ *   a provider offers instead of inventing vocabulary, and falls back to free
+ *   text — naming its own reason — when the daemon predates the query. It
+ *   saves through the same `persist` path as every other write here.
  *
- * There is deliberately no add-profile form and no provider/model/mode
- * editing: a form needs that vocabulary, and no live source for it exists in
- * the app yet, so none is invented here.
+ * The provider catalog for the form's picker comes through the same
+ * `providersList` path `ProvidersPanel` uses. The two panels never mount
+ * together (one tab at a time), so there is no shared catalog to reuse and
+ * this fetch is the only way the picker gets its rows.
  */
 function AgentProfilesPanel() {
   const daemon = useWorkspaceDaemon();
   const agentProfilesSupported = daemon.capabilities.includes(AGENT_PROFILES_CAPABILITY);
+  const providerVocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
   const [document, setDocument] = useState<AgentProfilesDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -639,6 +1090,12 @@ function AgentProfilesPanel() {
   // Which row's editor / delete confirm is open. One of each, panel-wide.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteArmedId, setDeleteArmedId] = useState<string | null>(null);
+  // The new-profile form is open. Rendered closed by default; each open is a
+  // fresh mount, so no stale draft survives a Cancel.
+  const [creating, setCreating] = useState(false);
+  // The provider catalog behind the form's picker, fetched once per mount.
+  const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   // The standing-instructions draft. Null means the textarea shows the
   // document; the first keystroke sets it, so the optimistic document swap
   // of an in-flight write cannot eat what the human is typing mid-write. It
@@ -689,6 +1146,34 @@ function AgentProfilesPanel() {
       cancelled = true;
     };
   }, [agentProfilesSupported, loadNonce]);
+
+  // The provider picker's rows. Fetched whether or not the form is open yet,
+  // so opening it needs no round trip; a failure is the form's problem to
+  // show, not the panel's.
+  useEffect(() => {
+    if (!agentProfilesSupported) return;
+    let cancelled = false;
+    void providersList()
+      .then((listed) => {
+        if (!cancelled) setCatalog(listed);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setCatalogError(reasonFromCause(cause));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentProfilesSupported]);
+
+  // The form offers only installed providers: an executable that is not on
+  // the machine cannot start the session the profile asks for. Memoised on
+  // the catalog: the form's vocabulary effect depends on this list, so a new
+  // array identity per render would re-run it — and re-ask the daemon — on
+  // every parent re-render. Above the early return, like every hook here.
+  const installedProviders = useMemo(
+    () => (catalog?.providers ?? []).filter((provider) => provider.installed !== false),
+    [catalog],
+  );
 
   if (!agentProfilesSupported) return null;
   // A null document is the fetch in flight, and nothing may be edited from a
@@ -771,27 +1256,12 @@ function AgentProfilesPanel() {
     const current = documentRef.current;
     if (current === null) return;
     const trimmed = name.trim();
-    // The cap counts Unicode scalar values — the daemon's `chars().count()` —
-    // not UTF-16 code units, which would double-count an astral-plane name
-    // and refuse names the daemon accepts. The refusal names that same count.
-    const trimmedChars = charCount(trimmed);
-    // Refuse and name the size; never clip. The editor stays open with the
-    // text intact, so the human can shorten it themselves.
-    if (trimmedChars === 0) {
-      setError(`A profile name is 1 to ${MAX_PROFILE_NAME_CHARS} characters.`);
-      return;
-    }
-    if (trimmedChars > MAX_PROFILE_NAME_CHARS) {
-      setError(
-        `This name is ${trimmedChars} characters, over the ${MAX_PROFILE_NAME_CHARS}-character cap. Nothing was saved and nothing was truncated.`,
-      );
-      return;
-    }
-    const noteBytes = utf8Bytes(note);
-    if (noteBytes > MAX_PROFILE_NOTE_BYTES) {
-      setError(
-        `This note is ${noteBytes} bytes, over the ${MAX_PROFILE_NOTE_BYTES}-byte cap. Nothing was saved and nothing was truncated.`,
-      );
+    // The caps are shared with the new-profile form: the name counts Unicode
+    // scalar values — the daemon's `chars().count()` — not UTF-16 code units;
+    // the note counts UTF-8 bytes. Refuse and name the size; never clip.
+    const refusal = profileTextsError(trimmed, note);
+    if (refusal !== null) {
+      setError(refusal);
       return;
     }
     const updated = cloneDocument(current);
@@ -800,6 +1270,61 @@ function AgentProfilesPanel() {
     row.name = trimmed;
     row.note = note;
     setEditingId(null);
+    void persist(updated);
+  }
+
+  /**
+   * The new-profile form's save: validate, then append exactly one profile to
+   * the document and send the whole thing through the panel's one `persist`
+   * path — the same optimistic write, sequence guard, revert and error
+   * surface as a rename or a tick. There is no second write path.
+   */
+  function createProfile(draft: NewProfileDraft) {
+    const current = documentRef.current;
+    if (current === null) return;
+    const trimmedName = draft.name.trim();
+    const refusal = profileTextsError(trimmedName, draft.note);
+    if (refusal !== null) {
+      setError(refusal);
+      return;
+    }
+    const model = draft.model.trim();
+    const modeId = draft.modeId.trim();
+    // `model` and `modeId` are required, non-optional strings on the daemon
+    // side; the form refuses with its own sentence rather than shipping a
+    // write the store will bounce.
+    if (model === "") {
+      setError("Choose or type a model for the profile.");
+      return;
+    }
+    if (modeId === "") {
+      setError("Choose or type a mode for the profile.");
+      return;
+    }
+    const profile: AgentProfile = {
+      // The daemon mints the id: an empty id means "new" (see the type's doc
+      // comment). Names may repeat; identity is the id.
+      id: "",
+      name: trimmedName,
+      icon: null,
+      note: draft.note,
+      provider: draft.provider,
+      model,
+      modeId,
+      // The vocabulary reply carries no thinking axis, so the form offers
+      // none; a new profile starts without one.
+      thinkingOptionId: null,
+      features: draft.autoAccept ? { autoAccept: true } : {},
+      toolOverlay: [],
+      // Default off, always: a profile that becomes agent-reachable the
+      // moment it is saved is a profile nobody deliberately ticked.
+      enabledForAgents: draft.enabledForAgents,
+    };
+    const updated = cloneDocument(current);
+    // Append at the end: the human's order is the order agents read, and the
+    // rows already there keep the positions the human gave them.
+    updated.profiles = [...updated.profiles, profile];
+    setCreating(false);
     void persist(updated);
   }
 
@@ -850,6 +1375,30 @@ function AgentProfilesPanel() {
             The note is what a creating agent reads to choose between profiles — write it for the
             agent, not for yourself.
           </p>
+        ) : null}
+        {document !== null ? (
+          <div className="agent-profile-create-row">
+            <button
+              type="button"
+              className="settings-device-action"
+              aria-expanded={creating}
+              disabled={busy || loading}
+              onClick={() => setCreating((open) => !open)}
+            >
+              {creating ? "Close the new-profile form" : "New profile"}
+            </button>
+          </div>
+        ) : null}
+        {creating && document !== null ? (
+          <NewAgentProfileForm
+            providers={installedProviders}
+            catalogLoading={catalog === null && catalogError === null}
+            catalogError={catalogError}
+            vocabularySupported={providerVocabularySupported}
+            busy={busy}
+            onCreate={createProfile}
+            onCancel={() => setCreating(false)}
+          />
         ) : null}
         <ol className="agent-profile-list">
           {profiles.map((profile, index) => {

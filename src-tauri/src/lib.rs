@@ -87,6 +87,7 @@ pub fn run() {
             backend::tool_policy::tool_policy_set,
             backend::agent_profiles::agent_profiles_get,
             backend::agent_profiles::agent_profiles_set,
+            backend::provider_vocabulary::provider_vocabulary_get,
             backend::providers::providers_list,
             backend::providers::providers_refresh,
             backend::providers::provider_update,

@@ -46,6 +46,10 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
       } as AgentProfilesDocument,
     })),
     agentProfilesSet: vi.fn(async () => undefined),
+    // No default answer: a vocabulary query only ever leaves the app when the
+    // handshake advertised `provider_vocabulary`, and the tests that arm it
+    // queue their own replies.
+    providerVocabularyGet: vi.fn(),
     workspacesList: vi.fn(async () => []),
   };
 });
@@ -68,6 +72,7 @@ import {
   projectAdd,
   projectsList,
   providerUpdate,
+  providerVocabularyGet,
   providersList,
   providersRefresh,
   toolPolicyGet,
@@ -84,6 +89,7 @@ import type {
   ProviderCatalog,
   ProviderInfo,
   ProviderUpdateOutcome,
+  ProviderVocabulary,
   ToolPolicyReply,
 } from "../../types/ipc";
 import { ALWAYS_ON_REASON, SettingsSurface, toolPolicyFor } from "./SettingsSurface";
@@ -2616,5 +2622,579 @@ describe("Settings agents panel", () => {
     // in flight: React does not invoke onClick on a disabled button.
     await act(async () => save.click());
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Settings agents panel — new profile form", () => {
+  let container: HTMLDivElement;
+  let root: Root | undefined;
+
+  /** The handshake of every daemon shipping today: no `provider_vocabulary`. */
+  const OLDER_DAEMON = [
+    "ping",
+    "status",
+    "sessions",
+    "journal",
+    "typed_permissions",
+    "devices",
+    "agent_profiles",
+  ];
+  const VOCABULARY_DAEMON = [...OLDER_DAEMON, "provider_vocabulary"];
+
+  function makeProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {
+    return {
+      id: "profile-1",
+      name: "Explorer",
+      icon: null,
+      note: "Reads the code and reports back.",
+      provider: "grok",
+      model: "grok-4",
+      modeId: "ask",
+      thinkingOptionId: null,
+      features: {},
+      toolOverlay: [],
+      enabledForAgents: false,
+      ...overrides,
+    };
+  }
+
+  function makeProvider(overrides: Partial<ProviderInfo> = {}): ProviderInfo {
+    return {
+      id: "claude",
+      executable: "C:\\cli\\claude.cmd",
+      acpAvailable: false,
+      authentication: "ok",
+      protocol: "stream-json",
+      origin: "user-binary",
+      installed: true,
+      ...overrides,
+    };
+  }
+
+  function makeVocabulary(overrides: Partial<ProviderVocabulary> = {}): ProviderVocabulary {
+    return {
+      provider: "claude",
+      models: { state: "absent", items: [] },
+      modes: { state: "absent", items: [] },
+      source: "probe",
+      probedAtMs: null,
+      ...overrides,
+    };
+  }
+
+  function daemonStatusWith(capabilities: string[]): DaemonStatus {
+    return {
+      state: "connected",
+      pid: 1,
+      instanceId: "settings-test",
+      protocolVersion: 4,
+      clients: 1,
+      capabilities,
+      message: null,
+    };
+  }
+
+  // Renders the surface, opens the Agents tab and answers the document
+  // fetch. `capabilities` decides which daemon generation the form meets:
+  // without `provider_vocabulary` (every daemon today) it must fall back to
+  // free text and say that reason out loud.
+  async function renderAgentsPanel(
+    doc: AgentProfilesDocument,
+    capabilities: string[] = OLDER_DAEMON,
+  ) {
+    vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWith(capabilities));
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({ document: doc });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const tab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-agents']",
+    );
+    if (!tab) throw new Error("Agents tab did not render");
+    await act(async () => tab.click());
+    await act(async () => undefined);
+  }
+
+  async function openForm() {
+    const button = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".agent-profile-create-row button"),
+    ).find((candidate) => candidate.textContent === "New profile");
+    if (!button) throw new Error("New profile button did not render");
+    await act(async () => button.click());
+    await act(async () => undefined);
+  }
+
+  function form(): HTMLElement {
+    const element = container.querySelector<HTMLElement>(".agent-profile-create");
+    if (!element) throw new Error("new-profile form did not render");
+    return element;
+  }
+
+  function field<T extends Element>(selector: string): T {
+    const element = form().querySelector<T>(selector);
+    if (!element) throw new Error(`field ${selector} did not render in the form`);
+    return element;
+  }
+
+  function nameField(): HTMLInputElement {
+    return field<HTMLInputElement>('input[aria-label="Profile name"]');
+  }
+
+  function noteField(): HTMLTextAreaElement {
+    return field<HTMLTextAreaElement>('textarea[aria-label="Profile note"]');
+  }
+
+  function providerField(): HTMLSelectElement {
+    return field<HTMLSelectElement>('select[aria-label="Provider"]');
+  }
+
+  /** The model control is a select when the provider published, input otherwise. */
+  function modelControl(): HTMLInputElement | HTMLSelectElement {
+    return field<HTMLInputElement | HTMLSelectElement>('[aria-label="Model"]');
+  }
+
+  function modeControl(): HTMLInputElement | HTMLSelectElement {
+    return field<HTMLInputElement | HTMLSelectElement>('[aria-label="Mode"]');
+  }
+
+  function createButton(): HTMLButtonElement {
+    const button = Array.from(form().querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent === "Create profile",
+    );
+    if (!button) throw new Error("Create profile button did not render");
+    return button;
+  }
+
+  /** Select options' values, in wire order. */
+  function selectValues(control: HTMLInputElement | HTMLSelectElement): string[] {
+    if (control.tagName !== "SELECT") throw new Error(`control is a ${control.tagName}`);
+    return Array.from((control as HTMLSelectElement).options).map((option) => option.value);
+  }
+
+  // Drives a controlled React field directly (the suite's raw createRoot/act
+  // style has no testing-library fireEvent). Inputs and textareas take the
+  // rendered onChange through their __reactProps key; a select carries no
+  // such key under React 19 (its onChange rides the native bubbling change
+  // event), so it is driven by setting the value and dispatching that event.
+  async function typeText(
+    fieldElement: HTMLTextAreaElement | HTMLInputElement | HTMLSelectElement,
+    value: string,
+  ) {
+    if ((fieldElement as HTMLSelectElement).tagName === "SELECT") {
+      await act(async () => {
+        fieldElement.value = value;
+        fieldElement.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await act(async () => undefined);
+      return;
+    }
+    const reactKey = Object.keys(fieldElement).find((key) => key.startsWith("__reactProps"));
+    const props = (fieldElement as unknown as Record<string, unknown>)[reactKey ?? ""] as
+      | { onChange?: (event: { target: { value: string } }) => void }
+      | undefined;
+    if (!props?.onChange) throw new Error("field onChange did not render");
+    await act(async () => {
+      props.onChange?.({ target: { value } });
+    });
+    await act(async () => undefined);
+  }
+
+  // A fresh form draft filled for an older daemon: enough to save.
+  async function fillDraft() {
+    await typeText(nameField(), "Gamma");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await typeText(modeControl(), "default");
+  }
+
+  // Drives a controlled checkbox through its rendered onChange — the same
+  // value a click would leave in the field. A raw `.click()` on a remounted
+  // form's checkbox loses the synthetic change to a happy-dom/React event
+  // quirk (the DOM ticks, the state does not), so the suite drives the
+  // handler the way the paste-and-type helper does for text fields.
+  async function tickCheckbox(box: HTMLInputElement, next: boolean) {
+    const reactKey = Object.keys(box).find((key) => key.startsWith("__reactProps"));
+    const props = (box as unknown as Record<string, unknown>)[reactKey ?? ""] as
+      | { onChange?: (event: { target: { checked: boolean } }) => void }
+      | undefined;
+    if (!props?.onChange) throw new Error("checkbox onChange did not render");
+    await act(async () => {
+      props.onChange?.({ target: { checked: next } });
+    });
+    await act(async () => undefined);
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(providersList).mockImplementation(async () => ({
+      providers: [makeProvider()],
+      unreadableDirs: 0,
+    }));
+  });
+
+  afterEach(async () => {
+    if (root !== undefined) await act(async () => root!.unmount());
+    container.remove();
+    vi.clearAllMocks();
+    // `clearAllMocks` keeps queued `mockImplementationOnce` entries, so a test
+    // that queued an unsettled write and failed before consuming it would
+    // leave the next test's click reading a hanging write. Reset back to the
+    // resolved default, exactly as the tool-toggles block does for its write.
+    vi.mocked(agentProfilesSet).mockReset();
+    vi.mocked(agentProfilesSet).mockImplementation(async () => undefined);
+    vi.mocked(providerVocabularyGet).mockReset();
+  });
+
+  it("saves a new profile with enabledForAgents false and an empty id at the end of the list", async () => {
+    const beta = makeProfile({ id: "b", name: "Beta" });
+    await renderAgentsPanel({ profiles: [beta], standingInstructions: "" });
+    await openForm();
+
+    await typeText(nameField(), "Gamma");
+    await typeText(noteField(), "Checks the build output.");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await typeText(modeControl(), "default");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    // The whole document travels: the old list first, in order, then exactly
+    // one new entry. `id` stays empty — the daemon mints it.
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [
+        beta,
+        {
+          id: "",
+          name: "Gamma",
+          icon: null,
+          note: "Checks the build output.",
+          provider: "claude",
+          model: "claude-sonnet-4-5",
+          modeId: "default",
+          thinkingOptionId: null,
+          features: {},
+          toolOverlay: [],
+          enabledForAgents: false,
+        },
+      ],
+      standingInstructions: "",
+    });
+  });
+
+  it("passes auto accept into features only when it is ticked, and says what it does", async () => {
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+
+    // The copy must say what the tick does — it is the most consequential
+    // control on the form.
+    expect(form().textContent).toContain("approve their own permission prompts");
+
+    await fillDraft();
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+
+    // Unticked: features carries nothing.
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const unticked = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
+    expect(unticked?.profiles[0]?.features).toEqual({});
+
+    // Again, with the tick: features.autoAccept is the one flag.
+    await openForm();
+    await fillDraft();
+    const autoAccept = field<HTMLInputElement>(
+      'input[aria-label="Auto accept for children of this profile"]',
+    );
+    await tickCheckbox(autoAccept, true);
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(2);
+    // The document now carries the first save too; the appended entry is the
+    // one this second save created.
+    const ticked = vi.mocked(agentProfilesSet).mock.calls[1]?.[0];
+    expect(ticked?.profiles.at(-1)?.features).toEqual({ autoAccept: true });
+  });
+
+  it("defaults the agents tick to off and saves it only when the human ticks it", async () => {
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+
+    const tick = field<HTMLInputElement>('input[aria-label="Available to agents"]');
+    expect(tick.checked).toBe(false);
+
+    await fillDraft();
+    await tickCheckbox(tick, true);
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
+    expect(sent?.profiles[0]?.enabledForAgents).toBe(true);
+  });
+
+  it("renders absent vocabulary as free text with the spec's sentence, never as a select", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(makeVocabulary());
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    expect(providerVocabularyGet).toHaveBeenCalledWith("claude", false);
+    // The spec's own sentence, once per axis.
+    expect(form().textContent).toContain(
+      "This provider did not publish its models; what you type is checked when the session starts.",
+    );
+    expect(form().textContent).toContain(
+      "This provider did not publish its modes; what you type is checked when the session starts.",
+    );
+    // Free text, not an empty select: the human can finish the form.
+    expect(modelControl().tagName).toBe("INPUT");
+    expect(modeControl().tagName).toBe("INPUT");
+  });
+
+  it("says none and absent differently: a provider that answers 'I have none' is not a silent one", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({ models: { state: "none", items: [] } }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // `none`: the provider CAN answer and answered "I have none".
+    expect(form().textContent).toContain("This provider reports no models");
+    expect(form().textContent).not.toContain("did not publish its models");
+    // The modes axis in the same reply is `absent`: the two sentences must
+    // not collapse into one.
+    expect(form().textContent).toContain("did not publish its modes");
+    expect(form().textContent).not.toContain("reports no modes");
+    // Both fields stay required and typeable either way.
+    expect(modelControl().tagName).toBe("INPUT");
+    expect(modeControl().tagName).toBe("INPUT");
+  });
+
+  it("keeps the form completable on an older daemon, names that reason, and sends no vocabulary query", async () => {
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+
+    // The older-daemon sentence — not the provider's "did not publish".
+    expect(form().textContent).toContain("older than this app");
+    expect(form().textContent).not.toContain("did not publish");
+    expect(providerVocabularyGet).not.toHaveBeenCalled();
+    // Free text on both axes: the human can complete and save.
+    expect(modelControl().tagName).toBe("INPUT");
+    expect(modeControl().tagName).toBe("INPUT");
+    await fillDraft();
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
+    expect(sent?.profiles[0]?.model).toBe("claude-sonnet-4-5");
+    expect(sent?.profiles[0]?.modeId).toBe("default");
+  });
+
+  it("shows the honest sentence for origin daemon exactly once, and not for origin provider", async () => {
+    // Models are the daemon's own mapping; modes are the provider's own
+    // answer. The honest sentence belongs to the first, only.
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({
+        models: {
+          state: "present",
+          origin: "daemon",
+          items: [{ modelId: "opus", name: "Opus" }],
+        },
+        modes: {
+          state: "present",
+          origin: "provider",
+          items: [{ id: "code", name: "Code" }],
+        },
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    expect(modelControl().tagName).toBe("SELECT");
+    expect(modeControl().tagName).toBe("SELECT");
+    const mentions = container.textContent?.match(/not something the provider published/g) ?? [];
+    expect(mentions).toHaveLength(1);
+    // The published items are offered as they arrived.
+    expect(selectValues(modelControl())).toContain("opus");
+    expect(selectValues(modeControl())).toContain("code");
+  });
+
+  it("never lets a vocabulary reply for the previously selected provider land in the form", async () => {
+    vi.mocked(providersList).mockImplementation(async () => ({
+      providers: [
+        makeProvider({ id: "a", executable: "C:\\cli\\a.cmd" }),
+        makeProvider({ id: "b", executable: "C:\\cli\\b.cmd" }),
+      ],
+      unreadableDirs: 0,
+    }));
+    const resolvers = new Map<string, (reply: ProviderVocabulary) => void>();
+    vi.mocked(providerVocabularyGet).mockImplementation((provider: string) => {
+      return new Promise<ProviderVocabulary>((resolve) => {
+        resolvers.set(provider, resolve);
+      });
+    });
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+
+    // The first provider's fetch is in flight when the human switches.
+    expect(resolvers.has("a")).toBe(true);
+    await typeText(providerField(), "b");
+    await act(async () => undefined);
+    expect(resolvers.has("b")).toBe(true);
+
+    // The new provider answers.
+    await act(async () => {
+      resolvers.get("b")?.(
+        makeVocabulary({
+          provider: "b",
+          models: {
+            state: "present",
+            origin: "provider",
+            items: [{ modelId: "b-model", name: "Model B" }],
+          },
+        }),
+      );
+    });
+    await act(async () => undefined);
+    expect(selectValues(modelControl())).toContain("b-model");
+
+    // Now the stale reply for the previous provider arrives.
+    await act(async () => {
+      resolvers.get("a")?.(
+        makeVocabulary({
+          provider: "a",
+          models: {
+            state: "present",
+            origin: "provider",
+            items: [{ modelId: "a-model", name: "Model A" }],
+          },
+        }),
+      );
+    });
+    await act(async () => undefined);
+
+    // The form shows provider b; the late answer for a must not have landed.
+    expect(selectValues(modelControl())).toContain("b-model");
+    expect(selectValues(modelControl())).not.toContain("a-model");
+    expect(providerVocabularyGet).toHaveBeenNthCalledWith(1, "a", false);
+    expect(providerVocabularyGet).toHaveBeenNthCalledWith(2, "b", false);
+  });
+
+  it("offers only installed providers in the picker", async () => {
+    vi.mocked(providersList).mockImplementation(async () => ({
+      providers: [
+        makeProvider({ id: "claude" }),
+        makeProvider({ id: "codex", installed: false, protocol: null }),
+      ],
+      unreadableDirs: 0,
+    }));
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+
+    expect(selectValues(providerField())).toEqual(["claude"]);
+  });
+
+  it("refuses to save without a model and mode, then saves once both are chosen", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({
+        models: {
+          state: "present",
+          origin: "provider",
+          items: [{ modelId: "opus", name: "Opus" }],
+        },
+        modes: {
+          state: "present",
+          origin: "provider",
+          items: [{ id: "code", name: "Code" }],
+        },
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // Name only; both selects still on their placeholder.
+    await typeText(nameField(), "Scout");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("model");
+
+    await typeText(modelControl(), "opus");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("mode");
+
+    await typeText(modeControl(), "code");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
+    expect(sent?.profiles[0]?.model).toBe("opus");
+    expect(sent?.profiles[0]?.modeId).toBe("code");
+  });
+
+  it("falls back to free text naming the failure when the vocabulary query rejects", async () => {
+    vi.mocked(providerVocabularyGet).mockRejectedValueOnce({
+      code: "io",
+      message: "pipe is gone",
+    });
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The failure names its own reason — not the provider's "did not
+    // publish", not the older-daemon sentence.
+    expect(form().textContent).toContain("The vocabulary query failed (pipe is gone)");
+    expect(form().textContent).not.toContain("did not publish");
+    expect(form().textContent).not.toContain("older than this app");
+    expect(modelControl().tagName).toBe("INPUT");
+    expect(modeControl().tagName).toBe("INPUT");
+
+    await typeText(nameField(), "Scout");
+    await typeText(modelControl(), "whatever-the-human-knows");
+    await typeText(modeControl(), "default");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("prefills the ACP mode suggestion labelled as a suggestion when the agent declares no modes", async () => {
+    vi.mocked(providersList).mockImplementation(async () => ({
+      providers: [makeProvider({ id: "zed", protocol: "acp", executable: "C:\\cli\\zed.cmd" })],
+      unreadableDirs: 0,
+    }));
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({
+        provider: "zed",
+        models: {
+          state: "present",
+          origin: "provider",
+          items: [{ modelId: "zed-model", name: "Zed model" }],
+        },
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // Prefilled, and labelled a suggestion — never as something the
+    // provider reported.
+    expect((modeControl() as HTMLInputElement).value).toBe("default");
+    expect(form().textContent).toContain("A suggestion, not something the provider reported");
+    // The models axis here is present, so its absent sentence must not show.
+    expect(form().textContent).not.toContain("did not publish its models");
   });
 });

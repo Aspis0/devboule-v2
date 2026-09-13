@@ -900,6 +900,58 @@ export interface AgentProfilesReply {
   document: AgentProfilesDocument;
 }
 
+/**
+ * The three-valued answer to "what does this provider offer". The three are
+ * distinct wire values on purpose and must never collapse: `present` — a
+ * source answered with a list; `none` — the source can answer and answered
+ * "I have none"; `absent` — no source could answer (the agent declared no
+ * model shape, the probe failed, the provider is not installed). "The
+ * provider published nothing" and "nobody could ask" are different facts.
+ */
+export type VocabularyState = "present" | "none" | "absent";
+
+/**
+ * Who authored a `present` vocabulary list: the provider's own answer on its
+ * wire, or the daemon's own mapping (Claude's, Codex's and pi's modes are the
+ * launcher's vocabulary — the provider cannot report them). Set only when
+ * `state` is `"present"`.
+ */
+export type VocabularyOrigin = "provider" | "daemon";
+
+/** The models axis of a `ProviderVocabulary` reply. Items are the live manifest's shape, reused. */
+export interface VocabularyModels {
+  state: VocabularyState;
+  origin?: VocabularyOrigin | null;
+  /** Empty unless `state` is `"present"`: a `present` with no items is a collapsed absence, never sent. */
+  items: SessionModel[];
+}
+
+/** The modes axis of a `ProviderVocabulary` reply. Same shape discipline as `VocabularyModels`. */
+export interface VocabularyModes {
+  state: VocabularyState;
+  origin?: VocabularyOrigin | null;
+  /** Empty unless `state` is `"present"`. */
+  items: SessionModeView[];
+}
+
+/**
+ * The `provider_vocabulary_get` reply: what one provider offers, so Settings →
+ * Agents can author a profile without inventing vocabulary. Mirrors
+ * `DaemonMessage::ProviderVocabulary` minus its request id. Wire shape and the
+ * three-state behaviour are specified by
+ * `reports/remote-agents/SPEC-provider-vocabulary-query.md` §4-§6.
+ */
+export interface ProviderVocabulary {
+  /** The canonical provider id the reply answers for. */
+  provider: string;
+  models: VocabularyModels;
+  modes: VocabularyModes;
+  /** How THIS reply was produced: a cached read (`"cache"`) or a fresh probe (`"probe"`). */
+  source: "cache" | "probe";
+  /** When the cache entry was filled; null for probe replies, which are fresh by definition. */
+  probedAtMs?: number | null;
+}
+
 /** Result of `provider_update`: the daemon ran `npm install -g <package>@latest` to completion. */
 export interface ProviderUpdateOutcome {
   ok: boolean;

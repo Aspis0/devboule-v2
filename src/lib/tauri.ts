@@ -29,6 +29,7 @@ import type {
   Project,
   ProviderCatalog,
   ProviderUpdateOutcome,
+  ProviderVocabulary,
   PromptAttachment,
   ResumeResult,
   Session,
@@ -178,6 +179,7 @@ export type CommandArgs = {
   tool_policy_set: { providerId: string; enabled: boolean | null; disabledTools: string[] };
   agent_profiles_get: undefined;
   agent_profiles_set: { document: AgentProfilesDocument };
+  provider_vocabulary_get: { provider: string; refresh: boolean };
 };
 
 type CommandResults = {
@@ -265,6 +267,13 @@ type CommandResults = {
   agent_profiles_get: AgentProfilesReply;
   /** The daemon answers `AgentProfilesSetOk` after validating and persisting. */
   agent_profiles_set: void;
+  /**
+   * What one provider offers — models and modes — as the profile form needs
+   * it. The three-valued `present`/`none`/`absent` states are the point:
+   * "the provider published nothing" and "nobody could ask" stay different
+   * answers all the way to the screen.
+   */
+  provider_vocabulary_get: ProviderVocabulary;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -354,6 +363,7 @@ export const COMMAND_ARG_KEYS = {
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
   agent_profiles_get: [],
   agent_profiles_set: ["document"],
+  provider_vocabulary_get: ["provider", "refresh"],
 } as const satisfies {
   [K in CommandName]: readonly (CommandArgs[K] extends undefined
     ? never
@@ -787,3 +797,19 @@ export const agentProfilesGet = () => invokeTyped("agent_profiles_get");
  */
 export const agentProfilesSet = (document: AgentProfilesDocument) =>
   invokeTyped("agent_profiles_set", { document });
+/**
+ * Asks what one provider offers — its models and modes — so Settings → Agents
+ * can author a profile from the provider's own vocabulary instead of free
+ * text. `refresh: false` is a cached read; `refresh: true` re-probes now,
+ * which briefly starts the provider's process (Claude costs a file scan
+ * instead). The reply's `present`/`none`/`absent` states are specified by
+ * `reports/remote-agents/SPEC-provider-vocabulary-query.md` §4-§6.
+ *
+ * THE DAEMON SIDE IS SPECIFIED BUT NOT YET IMPLEMENTED: the wire shape is
+ * frozen by that spec and another pass builds it against the same contract.
+ * Until it ships this request is refused by every daemon — which is why the
+ * caller gates on the handshake advertising `provider_vocabulary` and falls
+ * back to free text when it does not.
+ */
+export const providerVocabularyGet = (provider: string, refresh: boolean) =>
+  invokeTyped("provider_vocabulary_get", { provider, refresh });

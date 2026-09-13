@@ -2,6 +2,7 @@ pub mod agent_profiles;
 pub mod devices;
 pub mod error;
 pub mod journal;
+pub mod provider_vocabulary;
 pub mod providers;
 pub mod session;
 pub mod tool_policy;
