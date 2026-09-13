@@ -84,7 +84,15 @@ const DIGEST_HEX_LEN: usize = 64;
 /// The values of `extension_for`, named on their own for the two places that
 /// start from what is on disk rather than from a MIME type: a file named after
 /// a digest carries an extension, and nothing that names it carries a type.
-const STORED_EXTENSIONS: [&str; 3] = ["png", "jpg", "svg"];
+///
+/// It has to grow whenever `extension_for` grows, and forgetting it is silent
+/// in the direction that hurts: the write succeeds, the budget is charged, and
+/// `find_stored` — which reads *this* table — never returns the file again.
+/// `text/markdown` landed in `ATTACHMENT_MIME_TYPES` and `extension_for` and
+/// not here, which left every deposited artifact unresolvable through the
+/// listing. `a_deposited_markdown_artifact_resolves_by_digest` is the test that
+/// notices, because it deposits and then resolves instead of counting entries.
+const STORED_EXTENSIONS: [&str; 4] = ["png", "jpg", "svg", "md"];
 
 /// What the store's write lock carries besides the exclusion itself: the bytes
 /// each session folder holds, which is what the store's total is summed from.
@@ -2744,6 +2752,60 @@ mod tests {
         assert!(accepted.path.exists());
         assert_eq!(accepted.stored_bytes, bytes.len() as u64);
         assert_eq!(store.store_bytes(), Some(bytes.len() as u64));
+    }
+
+    #[test]
+    fn a_deposited_markdown_artifact_resolves_by_digest() {
+        // Three tables have to agree, and this proves it from outside the store:
+        // `ATTACHMENT_MIME_TYPES` admits the type, `extension_for` names the
+        // file, and `STORED_EXTENSIONS` is what `find_stored` reads when it
+        // starts from the disk. `text/markdown` was added to the first two and
+        // not the third, which left the finish report's artifact deposited,
+        // charged to the budget, and impossible to resolve — the store's own
+        // definition of waste (`discard_scratch`).
+        //
+        // Deposit and then resolve, never assert the table's length: a count
+        // would have been green with the bug in place.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let report = b"# What the child did\n\nOne paragraph, and a fenced block.\n";
+        let item = attachment("report.md", "text/markdown", &encoded(report));
+
+        let stored = store.deposit("s.a.1", &item).expect("markdown deposits");
+
+        // No hint is the path the send-side resolution takes — `session.rs`
+        // resolves a reference with `None`, because a reference carries a digest
+        // and a size and no MIME type — so it is the one that matters most.
+        let (path, bytes) = store
+            .resolve("s.a.1", &stored.digest, None)
+            .expect("the listing finds a stored markdown file");
+        assert_eq!(path, stored.path);
+        assert_eq!(bytes, stored.stored_bytes);
+
+        // Both spellings of a hint, because they fail separately: the MIME type
+        // resolved even with the bug (`extension_for` knew it), the bare
+        // extension did not (`STORED_EXTENSIONS` did not).
+        for hint in ["text/markdown", "md"] {
+            let (hinted, _) = store
+                .resolve("s.a.1", &stored.digest, Some(hint))
+                .unwrap_or_else(|error| panic!("hint {hint:?} did not resolve: {error:?}"));
+            assert_eq!(hinted, stored.path, "hint {hint:?}");
+        }
+
+        // And it is not scratch. A later write into the same folder runs
+        // `discard_scratch`, whose doc reasons about what "no `resolve` can ever
+        // name" — a stored `.md` was exactly that while the table disagreed, so
+        // the survivor is asserted rather than assumed.
+        store
+            .deposit(
+                "s.a.1",
+                &attachment("photo.png", "image/png", &encoded(&clean_png(0x33))),
+            )
+            .expect("a second deposit into the same folder");
+        assert!(
+            store.resolve("s.a.1", &stored.digest, None).is_ok(),
+            "the markdown artifact did not survive a later write into its folder"
+        );
     }
 
     #[test]
