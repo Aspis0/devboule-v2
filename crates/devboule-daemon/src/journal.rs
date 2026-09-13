@@ -3517,6 +3517,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The `preset` → `profile` rename (audit F2): a row journaled before v11
+    /// carries `preset`, and the replay reader parses the payload in one
+    /// tolerant `if let Ok` — an unparseable row is dropped with no counter.
+    /// The alias on `AgentCreated.profile` is what keeps this row hydrating.
+    ///
+    /// The bytes are what a pre-v11 daemon wrote, `preset` word and all, and
+    /// the replayed event keeps the preset value under `profile` untranslated:
+    /// the journal keeps saying what it said, and the transcript shows a
+    /// creation record rather than silence.
+    #[test]
+    fn a_preset_spelled_agent_created_row_hydrates_on_replay() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.a.1"))
+            .expect("upsert");
+        let legacy = serde_json::json!({
+            "type": "agent_created",
+            "messageId": "devboule-agent-created-1-2",
+            "childSessionId": "s.child.1",
+            "displayName": "Poster",
+            "provider": "claude",
+            "preset": "design",
+        });
+        let record = EventRecord {
+            session_id: "s.a.1".to_string(),
+            generation: 1,
+            seq: 1,
+            kind: EventKind::AgentReport,
+            ts_ms: now_ms(),
+            payload: serde_json::to_vec(&legacy).expect("legacy payload"),
+        };
+        journal.append_blocking(record).expect("append");
+        let replay = journal.replay("s.a.1", 0).expect("replay");
+        let created = replay
+            .events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::AgentCreated { profile, .. } => Some(profile.clone()),
+                _ => None,
+            })
+            .expect("the legacy agent_created row must hydrate, not vanish");
+        assert_eq!(
+            created, "design",
+            "the preset value survives under `profile`, untranslated"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn acp_envelopes_do_not_leave_unsnapshotted_bytes_stuck() {
         let (dir, path) = tmp_journal();

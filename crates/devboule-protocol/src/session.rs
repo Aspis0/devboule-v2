@@ -715,6 +715,15 @@ pub enum SessionEvent {
         /// rename must not make a running child misreport what it was started
         /// from, while this event is the sentence the creator's transcript
         /// shows.
+        ///
+        /// This field was written as `preset` before journal v11 and this
+        /// pass's rename, and rows with the old spelling are still on disk, so
+        /// the reader accepts both. A row read back through the alias keeps the
+        /// value it was written with, which is the **preset** the child was
+        /// created under (`worker`, `design`) — a name from the old built-in
+        /// vocabulary, not a profile a human saved. Nothing is rewritten: the
+        /// journal keeps saying what it actually said.
+        #[serde(alias = "preset")]
         profile: String,
     },
     /// A created child finished, in structured form, published on the creator
@@ -2227,6 +2236,63 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(state).expect("json"), word);
         }
+    }
+
+    /// An `agent_created` row written before journal v11 carries `preset`, not
+    /// `profile`, and the replay paths deserialize the payload in one tolerant
+    /// read — a row that fails to parse is dropped without a counter. The alias
+    /// is what keeps those rows hydrating instead of vanishing.
+    ///
+    /// The value under the old spelling is the **preset** the child was created
+    /// under (`worker`, `design`), so the assertion pins the preset word into
+    /// `profile` exactly as stored: nothing translates or rewrites it.
+    #[test]
+    fn a_preset_shaped_agent_created_row_still_hydrates() {
+        // The shape a pre-v11 daemon wrote, field for field.
+        let legacy = serde_json::json!({
+            "type": "agent_created",
+            "messageId": "devboule-agent-created-1-128",
+            "childSessionId": "s.process-30252.00000002",
+            "displayName": "Poster",
+            "provider": "claude",
+            "preset": "design",
+        });
+        match serde_json::from_value::<SessionEvent>(legacy).expect("legacy row hydrates") {
+            SessionEvent::AgentCreated {
+                message_id,
+                child_session_id,
+                display_name,
+                provider,
+                profile,
+            } => {
+                assert_eq!(message_id.as_deref(), Some("devboule-agent-created-1-128"));
+                assert_eq!(child_session_id, "s.process-30252.00000002");
+                assert_eq!(display_name, "Poster");
+                assert_eq!(provider, "claude");
+                assert_eq!(
+                    profile, "design",
+                    "the preset value is kept as it was written, not translated"
+                );
+            }
+            other => panic!("expected AgentCreated, got {other:?}"),
+        }
+
+        // The current spelling is unaffected: a new row serializes `profile`
+        // and round-trips without the alias being consulted.
+        let current = SessionEvent::AgentCreated {
+            message_id: Some("m1".to_string()),
+            child_session_id: "s.parent.2".to_string(),
+            display_name: "worker".to_string(),
+            provider: "claude".to_string(),
+            profile: "reviewer".to_string(),
+        };
+        let value = serde_json::to_value(&current).expect("json");
+        assert!(value.get("preset").is_none(), "new rows write `profile`");
+        assert_eq!(value["profile"], "reviewer");
+        assert_eq!(
+            serde_json::from_value::<SessionEvent>(value).expect("round trip"),
+            current
+        );
     }
 
     /// The session-state → A2A word mapping, including the two that are easy to

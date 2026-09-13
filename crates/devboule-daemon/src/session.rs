@@ -7693,6 +7693,13 @@ fn start_spawned_session(
     }
     if let Some(generation) = generation {
         runtime.set_generation(generation);
+        // `generation` is `Some` on exactly one road: a resume
+        // (`spawn_resumed_session`). A fresh spawn starts unnumbered and the
+        // journal numbers its first generation. The resumed generation is
+        // mid-conversation, so the session owes no first prompt — the comment
+        // on `first_prompt_owed` promises a resume never re-injects the
+        // standing instructions into the next prompt the human sends.
+        runtime.clear_first_prompt_owed();
     }
     if metadata.kind == SessionKind::Claude {
         let catalog = state.claude_models();

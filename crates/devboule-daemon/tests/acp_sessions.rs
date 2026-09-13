@@ -4283,6 +4283,100 @@ fn the_standing_instructions_reach_a_session_a_human_opens() {
     );
 }
 
+/// The resume road (`session_resume` → `spawn_resumed_session` →
+/// `start_spawned_session`): the session it builds is **mid-conversation**, so
+/// the standing instructions must not be prefixed onto the next prompt the
+/// human sends. A fresh runtime starts owing a first prompt; a resumed session
+/// is not a fresh session — its first prompt happened in the generation being
+/// resumed, and the human's rules arriving a second time, as the user's own
+/// words, is the defect this pins.
+#[test]
+fn a_resumed_session_does_not_re_inject_the_standing_instructions() {
+    let _lock = lock_tests();
+    let profiles = with_standing_instructions(
+        worker_profile_document(),
+        "Always answer in English and keep the diff small.",
+    );
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "unused",
+            "profile": "worker",
+            "initialPrompt": "Not used: this test's session is a human's own.",
+        }),
+        &profiles,
+        &[],
+    );
+    let session = test.creator_session();
+    let events = test.attach(&session);
+    test.client
+        .session_send(&session.id, "first prompt")
+        .expect("send the first prompt");
+    assert_eq!(
+        wait_for_user_message(&events, Duration::from_secs(45)),
+        "Always answer in English and keep the diff small.\n\nfirst prompt",
+        "control: the session's first prompt carries the standing instructions"
+    );
+
+    let pids = test.wait_for_observations("stub pids.txt", 1);
+    let pid: u32 = pids[0].trim().parse().expect("stub pid");
+    test.client
+        .session_stop(&session.id)
+        .expect("stop the session");
+    wait_until_gone(pid);
+
+    let resumed = test
+        .client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect("resume the session");
+    assert!(matches!(
+        resumed,
+        ResumeResult::Resumed { session: ref r } if r.id == session.id
+    ));
+    let after = test.attach(&session);
+    test.client
+        .session_send(&session.id, "second prompt")
+        .expect("send the prompt after the resume");
+
+    // The turn completing is the delivery signal: the provider answered, so
+    // the prompt the daemon wrote it has been journaled and pushed. (The fresh
+    // attach replays the resumed generation, not the pre-resume transcript, so
+    // the first prompt never appears here — the last user message on this
+    // stream is the post-resume one.)
+    wait_for(&after, Duration::from_secs(45), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let prompts: Vec<String> = {
+        let events = after.lock().expect("events lock");
+        events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let post_resume = prompts
+        .last()
+        .expect("the post-resume prompt reaches the transcript");
+    assert_eq!(
+        post_resume, "second prompt",
+        "the prompt a resumed session receives is the caller's own text: \
+         no standing instructions, no separator"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close the resumed session");
+}
+
 /// The tool names one `tools/list` observation carried. The line is
 /// `<pid> <bearer fingerprint> <json body>`, so the names come out of the
 /// parsed body: a description that mentions another tool's name (the profile

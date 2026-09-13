@@ -484,6 +484,15 @@ impl SessionRuntime {
         self.first_prompt_owed.swap(false, Ordering::AcqRel)
     }
 
+    /// A session being **resumed** owes no first prompt: the generation it
+    /// resumes is mid-conversation, its first prompt already happened there,
+    /// and the standing instructions were either on it or predate them. The
+    /// resume road (`spawn_resumed_session` → `start_spawned_session`) calls
+    /// this; a fresh session keeps the flag `with_journal` set.
+    pub(crate) fn clear_first_prompt_owed(&self) {
+        self.first_prompt_owed.store(false, Ordering::Release);
+    }
+
     pub(crate) fn require_mcp(&self) {
         if let Ok(mut readiness) = self.mcp_readiness.lock() {
             readiness.required = true;
@@ -656,7 +665,7 @@ impl SessionRuntime {
         // (`create-from-profile`): it already had one, and the standing
         // instructions were either on it or predate them. This is what makes the
         // injection a session-start rule rather than a resume rule.
-        runtime.first_prompt_owed.store(false, Ordering::Release);
+        runtime.clear_first_prompt_owed();
         let mut stream = runtime
             .stream
             .lock()

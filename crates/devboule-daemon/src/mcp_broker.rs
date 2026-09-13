@@ -1405,18 +1405,7 @@ fn create_agent(
     id: &Value,
     request: AgentCreateRequest,
 ) -> Value {
-    let profile = match resolve_profile(&state.agent_profiles, &request.profile) {
-        Ok(profile) => profile,
-        Err(message) => return tool_error(id, &message),
-    };
     let creator_id = registration.session_id.clone();
-    let creator = match state
-        .sessions
-        .agent_creator(&creator_id, &registration.owner)
-    {
-        Ok(creator) => creator,
-        Err(error) => return tool_error(id, &error.message),
-    };
     // The retry identity, and the payload it must match (`S5` block 7, audit
     // S5-03 and S5-08).
     //
@@ -1430,6 +1419,15 @@ fn create_agent(
     // while this one is still raising a card is in flight, not a retry, and is
     // refused without spending a slot. Every refusal below releases it through
     // the hold's own scope.
+    //
+    // The store is consulted **before the profile is resolved**: a retry
+    // arrives after the first attempt's answer was lost, and in that window the
+    // human may have renamed or un-ticked the profile the first attempt ran
+    // under — the child it created is alive either way. Refusing the retry at
+    // the profile check would tell the creator its creation failed, and a
+    // second call would spend a second slot on a child it already has. A
+    // *new* call — a different frame id — has no remembered answer and still
+    // meets the profile check below, with the store exactly as it stands now.
     let retry_key = crate::server::creation_retry_key(&creator_id, id);
     let mut hold = match retry_key.as_deref() {
         Some(key) => match state.sessions.hold_creation_key(key) {
@@ -1461,6 +1459,17 @@ fn create_agent(
             return created_result(id, &existing);
         }
     }
+    let profile = match resolve_profile(&state.agent_profiles, &request.profile) {
+        Ok(profile) => profile,
+        Err(message) => return tool_error(id, &message),
+    };
+    let creator = match state
+        .sessions
+        .agent_creator(&creator_id, &registration.owner)
+    {
+        Ok(creator) => creator,
+        Err(error) => return tool_error(id, &error.message),
+    };
     // Where the child runs, before anything is spent on it (audit S5-05): a
     // workspace is either the caller's own or the call is refused, and the
     // working directory must stay inside it. The card then states the directory
@@ -2338,15 +2347,23 @@ mod tests {
         let token = state.mcp.test_token("session").expect("token");
         let server = state.mcp.start(&state).expect("MCP server");
 
-        // The closed table the bearer is served from names nothing that could
-        // *write* the profile store, and nothing of the store's own vocabulary.
-        // `devboule_list_profiles` is the one profile fact an agent may have —
-        // the ticked list, read-only, through the tool layer — and the names
-        // below are the store's own RPCs, which no bearer can ever call.
+        // What is forbidden, exactly: any name in the bearer's closed table
+        // that carries the profile-store vocabulary, because a tool name is a
+        // bearer's only channel into the daemon — the store's own RPCs
+        // (`AgentProfilesGet`/`AgentProfilesSet`) travel a different surface
+        // and cannot be reached from here. The one exception is
+        // `devboule_list_profiles`, the read-only ticked list the design
+        // deliberately serves; every other `profile` spelling must fail this
+        // assertion, including one-letter neighbours of the allowed names such
+        // as `devboule_agent_profile_get`, which a substring deny on
+        // `agent_profiles`/`set_profile` used to wave through.
         for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
             assert!(
-                !name.contains("agent_profiles") && !name.contains("set_profile"),
-                "the broker's closed table must not reach the profile store: {name}"
+                name == &crate::provider_catalog::MCP_LIST_PROFILES_TOOL
+                    || !name.contains("profile"),
+                "the broker's closed table must not reach the profile store: \
+                 {name} carries the profile vocabulary and is not the one \
+                 allowed read-only list tool"
             );
         }
 
@@ -2354,6 +2371,7 @@ mod tests {
             "devboule_agent_profiles",
             "devboule_set_profile",
             "agent_profiles_set",
+            "devboule_agent_profile_get",
         ]
         .iter()
         .enumerate()
@@ -3353,6 +3371,114 @@ mod tests {
         assert!(
             resolved.unattended,
             "the mode auto-answers permission prompts"
+        );
+    }
+
+    /// A retry of a creation that **committed** is answered by the idempotency
+    /// store even when the profile it named is gone: the human renamed or
+    /// un-ticked it inside the retry window, and the child from the first
+    /// attempt is already alive. Refusing the retry would tell the creator its
+    /// creation failed, and the re-issue it would then spend a second live slot
+    /// on a child it already has — which is why the store is consulted before
+    /// the profile is resolved.
+    ///
+    /// The other half, unchanged by that ordering: a **new** call — a different
+    /// frame id, no remembered answer — naming the same stale name is still
+    /// refused, with the same sentence the store's state earns.
+    #[test]
+    fn a_retry_is_answered_even_when_its_profile_is_gone() {
+        let state = ServerState::new("mcp-retry-stale-profile".to_string());
+        let owner = owner("mcp-retry-user", "mcp-retry-client");
+        // The profile was ticked when the first attempt ran; it has since been
+        // un-ticked. (A rename reads the same way here: the name no longer
+        // resolves, and the refusal sentence is resolve_profile's to choose.)
+        state
+            .agent_profiles
+            .set(
+                serde_json::from_value(document(
+                    vec![profile(
+                        "worker",
+                        "profile-worker",
+                        "claude",
+                        "default",
+                        serde_json::json!({}),
+                        &[],
+                        false,
+                    )],
+                    "",
+                ))
+                .expect("the document"),
+            )
+            .expect("the store admits this document");
+
+        let registration = RegisteredSession {
+            session_id: "s.creator".to_string(),
+            owner: owner.clone(),
+            provider_id: None,
+            depth: 0,
+            overlay: crate::provider_catalog::ToolOverlay::NONE,
+            bearer: "the bearer".to_string(),
+            claude_config_path: None,
+            runtime: None,
+            broker_ready: Arc::new(AtomicBool::new(false)),
+        };
+        let arguments = json!({
+            "profile": "worker",
+            "title": "child",
+            "initialPrompt": "report your result",
+        });
+        let id = serde_json::json!(7);
+
+        // The first attempt's answer, remembered under this frame's key while
+        // the profile was still ticked: the same key and the same fingerprint
+        // the handler itself computes for the re-sent frame.
+        let creator_id = registration.session_id.clone();
+        let request = AgentCreateRequest::parse(&arguments).expect("the request parses");
+        let retry_key = crate::server::creation_retry_key(&creator_id, &id).expect("retry key");
+        let notify_field = if request.notify { "notify" } else { "quiet" };
+        let labels_field = request.labels_fingerprint();
+        let fingerprint = creation_fingerprint(&AgentCreateRequest::creation_fingerprint_fields(
+            &creator_id,
+            &request,
+            notify_field,
+            &labels_field,
+        ));
+        let first_child = crate::journal::new_session_record(
+            "s.child.1",
+            "mcp-retry-user",
+            None,
+            SessionKind::Acp,
+            "child",
+        )
+        .to_session();
+        crate::server::remember_creation_session(
+            &state,
+            &owner,
+            &retry_key,
+            &fingerprint,
+            &first_child,
+        );
+
+        // The re-sent frame: same id, same payload, stale profile. It is
+        // answered with the first child, and creates nothing.
+        let answer = create_agent(&state, &state.mcp, &registration, &id, request);
+        assert_eq!(
+            answer["result"]["structuredContent"]["sessionId"], "s.child.1",
+            "the retry answers the first call's session: {answer}"
+        );
+
+        // A genuinely new call naming the stale profile is still refused, with
+        // the sentence the empty ticked list earns.
+        let new_id = serde_json::json!(8);
+        let new_request = AgentCreateRequest::parse(&arguments).expect("the request parses");
+        let refusal = create_agent(&state, &state.mcp, &registration, &new_id, new_request);
+        assert_eq!(
+            refusal["result"]["content"][0]["text"], "no profile is enabled for agents",
+            "a new call still meets the profile check: {refusal}"
+        );
+        assert_eq!(
+            refusal["result"]["isError"], true,
+            "the refusal is an error result, not a session: {refusal}"
         );
     }
 
