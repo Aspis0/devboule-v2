@@ -529,11 +529,21 @@ const PROVIDER_VOCABULARY_CAPABILITY = "provider_vocabulary";
 const MAX_PROFILE_NAME_CHARS = 60;
 const MAX_PROFILE_NOTE_BYTES = 2 * 1024;
 const MAX_STANDING_INSTRUCTIONS_BYTES = 8 * 1024;
+/**
+ * `MAX_PROFILES` in `crates/devboule-daemon/src/agent_profiles.rs`. The 65th
+ * creation is refused by the store, so the panel mirrors the number and says
+ * so before the human fills the form — offering a create it knows cannot be
+ * kept, on a loop, is the failure this constant prevents.
+ */
+const MAX_PROFILES = 64;
 
 /**
  * The sentence for the one absence the form can name without asking anyone:
- * the daemon predates the vocabulary query, so no answer exists to show. It
- * deliberately shares no wording with the provider sentences below.
+ * the daemon predates the vocabulary query, so no answer exists to show. The
+ * state sentences are pairwise distinguishable — no two are equal, and no one
+ * is a substring of another, which the sentence-orthogonality test holds for
+ * every rendered sentence — but they deliberately share tail clauses: the
+ * discriminating words are each sentence's own reason, never the tail.
  */
 const VOCABULARY_UNAVAILABLE_TEXT =
   "This daemon is older than this app: it does not advertise the provider_vocabulary capability, so it cannot say what this provider offers. Type the model and mode below; what you type is checked when the session starts.";
@@ -550,6 +560,89 @@ function noneVocabularyText(axisWord: "models" | "modes"): string {
 /** `absent`: no source could answer. The spec's own fallback sentence. */
 function absentVocabularyText(axisWord: "models" | "modes"): string {
   return `This provider did not publish its ${axisWord}; what you type is checked when the session starts.`;
+}
+
+/**
+ * A reply that arrived without this axis at all: the daemon answered, and
+ * what it sent cannot be read as an answer for this axis. Malformed is its
+ * own state — not `absent` (which names a silent source) and not the query
+ * failing (which names the transport) — and the other axis of the same
+ * reply, when it arrived intact, is still shown: a malformed half must not
+ * throw away a usable half.
+ */
+function malformedVocabularyText(axisWord: "models" | "modes"): string {
+  return `The daemon's reply was malformed — it carried no ${axisWord} axis at all — so nothing is known about what this provider offers there. Type the one to use; what you type is checked when the session starts.`;
+}
+
+/**
+ * `present` with an empty `items` — the one reply the spec forbids a daemon
+ * to send (§5.1: a collapsed absence). "Published" and "listed none" cannot
+ * both hold, so the contradiction is named and the control stays free text,
+ * never a select with nothing to select.
+ */
+function emptyPresentVocabularyText(axisWord: "models" | "modes"): string {
+  return `The daemon answered that this provider publishes its ${axisWord} and then listed none — a contradiction on the wire. Type the one to use; what you type is checked when the session starts.`;
+}
+
+/**
+ * A `state` outside the `present`/`none`/`absent` union — a newer daemon's
+ * fourth value, or corrupt wire. The received value is shown, never guessed
+ * into one of the known states, and the field is never left without a
+ * sentence: silence is the one answer that is never honest here.
+ */
+function unknownStateVocabularyText(axisWord: "models" | "modes", state: unknown): string {
+  return `The daemon answered for the ${axisWord} axis with a value this app does not know (${
+    JSON.stringify(state) ?? "undefined"
+  }); it is none of present, none or absent. Type the one to use; what you type is checked when the session starts.`;
+}
+
+/**
+ * What one vocabulary axis renders, decided in one place so the two axes
+ * cannot drift: `freeText` picks the control, `hint` names WHICH state the
+ * axis is in, `items` feed the select. The axis is read as the untrusted
+ * wire value it is — every state it can reach, including the malformed and
+ * the unknown, is named here, and absent is a third state that never
+ * borrows another state's answer.
+ */
+function vocabularyAxisView<T>(
+  axis: { state: unknown; origin?: unknown; items?: readonly T[] } | undefined,
+  replyArrived: boolean,
+  queryFailed: boolean,
+  axisWord: "models" | "modes",
+  toItem: (item: T) => { value: string; label: string },
+): { freeText: boolean; hint?: ReactNode; items: { value: string; label: string }[] } {
+  // The query itself failed: the failure paragraph above the fields names
+  // the transport reason once, and the fields stay free text under it.
+  if (queryFailed) {
+    return { freeText: true, items: [] };
+  }
+  if (axis === undefined) {
+    // A reply that arrived without this axis is malformed, not absent.
+    if (replyArrived) {
+      return { freeText: true, hint: malformedVocabularyText(axisWord), items: [] };
+    }
+    // Still in flight: the fields are not rendered while the ask is out.
+    return { freeText: true, items: [] };
+  }
+  if (axis.state === "present") {
+    const items = axis.items ?? [];
+    // `present` with nothing listed is the contradiction the spec forbids.
+    if (items.length === 0) {
+      return { freeText: true, hint: emptyPresentVocabularyText(axisWord), items: [] };
+    }
+    return {
+      freeText: false,
+      hint: axis.origin === "daemon" ? DAEMON_VOCABULARY_TEXT : undefined,
+      items: items.map(toItem),
+    };
+  }
+  if (axis.state === "none") {
+    return { freeText: true, hint: noneVocabularyText(axisWord), items: [] };
+  }
+  if (axis.state === "absent") {
+    return { freeText: true, hint: absentVocabularyText(axisWord), items: [] };
+  }
+  return { freeText: true, hint: unknownStateVocabularyText(axisWord, axis.state), items: [] };
 }
 
 /**
@@ -623,8 +716,10 @@ interface NewProfileDraft {
  * One vocabulary axis of the new-profile form: a select over the provider's
  * published items, or a free-text field when the answer is `none` or
  * `absent` or there is no answer at all. The `hint` names WHICH of those
- * happened — the four sentences never share wording, because the four
- * absences are different facts.
+ * happened: each state's sentence carries its own reason clause, no two
+ * rendered sentences are equal or substrings of one another (the
+ * sentence-orthogonality test holds them pairwise), though the sentences
+ * deliberately share tail clauses.
  */
 function VocabularyField({
   label,
@@ -766,11 +861,16 @@ function NewAgentProfileForm({
         // A newer fetch (the provider changed again) owns the form: this
         // reply is stale no matter which provider it names.
         if (vocabularySeqRef.current !== seq) return;
+        // The reply is adopted as it arrived; the per-axis reader below
+        // treats it as the untrusted wire value it is. A reply missing an
+        // axis is malformed — its own state, named in the render — and must
+        // not throw: throwing here would report a successful query as
+        // failed and discard the axis that arrived intact.
         setVocabulary(reply);
         // The one prefill allowed: an ACP agent that declared no modes runs
         // in "default". Typed text is never clobbered — the suggestion only
         // fills an empty field, and it is labelled a suggestion.
-        if (reply.modes.state === "absent") {
+        if (reply.modes?.state === "absent") {
           const info = providers.find((provider) => provider.id === providerId);
           if (info?.protocol === "acp") {
             setMode((current) => (current === "" ? ACP_MODE_SUGGESTION : current));
@@ -786,8 +886,30 @@ function NewAgentProfileForm({
   // The reply (or its failure) is what the fields read; before either, the
   // form shows the ask in flight and renders no field to guess into.
   const vocabularyKnown = vocabulary !== null || vocabularyError !== null;
-  const models = vocabulary?.models;
-  const modes = vocabulary?.modes;
+  // One decision per axis, made by the shared reader: every state the wire
+  // can reach — present, none, absent, malformed, the contradiction, the
+  // unknown — is named there.
+  const modelsView = vocabularyAxisView(
+    vocabulary?.models,
+    vocabulary !== null,
+    vocabularyError !== null,
+    "models",
+    (item) => ({
+      value: item.modelId,
+      label:
+        item.name && item.name !== item.modelId ? `${item.name} (${item.modelId})` : item.modelId,
+    }),
+  );
+  const modesView = vocabularyAxisView(
+    vocabulary?.modes,
+    vocabulary !== null,
+    vocabularyError !== null,
+    "modes",
+    (item) => ({
+      value: item.id,
+      label: item.name && item.name !== item.id ? `${item.name} (${item.id})` : item.id,
+    }),
+  );
   const noteBytes = utf8Bytes(note);
 
   function changeProvider(next: string) {
@@ -844,7 +966,10 @@ function NewAgentProfileForm({
           onChange={(event) => changeProvider(event.target.value)}
         >
           {catalogLoading ? <option value="">Looking for installed providers…</option> : null}
-          {!catalogLoading && providers.length === 0 ? (
+          {!catalogLoading && catalogError !== null ? (
+            <option value="">The catalog could not be read</option>
+          ) : null}
+          {!catalogLoading && catalogError === null && providers.length === 0 ? (
             <option value="">No provider installed</option>
           ) : null}
           {providers.map((provider) => (
@@ -859,7 +984,10 @@ function NewAgentProfileForm({
           The provider catalog could not be read: {catalogError}
         </p>
       ) : null}
-      {!catalogLoading && providers.length === 0 ? (
+      {/* A completed read that found nothing is the only state allowed to
+          claim "no agent CLI": not-read is not empty, and a failed read is
+          its own fact — the paragraph above names it. */}
+      {!catalogLoading && catalogError === null && providers.length === 0 ? (
         <p className="device-field-hint">
           No agent CLI is installed on this machine: install one and restart Devboule, then create
           the profile.
@@ -883,55 +1011,24 @@ function NewAgentProfileForm({
             label="Model"
             value={model}
             busy={busy}
-            freeText={
-              vocabularyError !== null || models === undefined || models.state !== "present"
-            }
-            hint={
-              vocabularyError !== null || models === undefined
-                ? undefined
-                : models.state === "none"
-                  ? noneVocabularyText("models")
-                  : models.state === "absent"
-                    ? absentVocabularyText("models")
-                    : models.origin === "daemon"
-                      ? DAEMON_VOCABULARY_TEXT
-                      : undefined
-            }
-            items={(models?.items ?? []).map((item) => ({
-              value: item.modelId,
-              label:
-                item.name && item.name !== item.modelId
-                  ? `${item.name} (${item.modelId})`
-                  : item.modelId,
-            }))}
+            freeText={modelsView.freeText}
+            hint={modelsView.hint}
+            items={modelsView.items}
             onChange={setModel}
           />
           <VocabularyField
             label="Mode"
             value={mode}
             busy={busy}
-            freeText={vocabularyError !== null || modes === undefined || modes.state !== "present"}
-            hint={
-              vocabularyError !== null || modes === undefined
-                ? undefined
-                : modes.state === "none"
-                  ? noneVocabularyText("modes")
-                  : modes.state === "absent"
-                    ? absentVocabularyText("modes")
-                    : modes.origin === "daemon"
-                      ? DAEMON_VOCABULARY_TEXT
-                      : undefined
-            }
+            freeText={modesView.freeText}
+            hint={modesView.hint}
             suggestion={
-              modes?.state === "absent" &&
+              vocabulary?.modes?.state === "absent" &&
               providers.find((provider) => provider.id === providerId)?.protocol === "acp"
                 ? ACP_MODE_SUGGESTION_TEXT
                 : undefined
             }
-            items={(modes?.items ?? []).map((item) => ({
-              value: item.id,
-              label: item.name && item.name !== item.id ? `${item.name} (${item.id})` : item.id,
-            }))}
+            items={modesView.items}
             onChange={setMode}
           />
         </>
@@ -1187,9 +1284,17 @@ function AgentProfilesPanel() {
    * Sends one whole-document write, optimistically, under the sequence
    * guard. `previous` is the ref value this write started from, so a
    * rejection puts back exactly what the human was seeing, and a rejection a
-   * newer write superseded reverts nothing and reports nothing.
+   * newer write superseded reverts nothing and reports nothing. Resolves to
+   * true only when this write confirmed as the newest one.
+   *
+   * On a confirmation the panel re-reads the document and adopts it: the set
+   * reply names the request, not the stored rows, and a created profile
+   * travels with `id: ""` while the daemon mints the real identity — on
+   * every write that still receives an empty id. Without the read-back the
+   * panel would keep guessing at an identity the store owns, and every
+   * further save of such a row would mint it a new one.
    */
-  async function persist(next: AgentProfilesDocument) {
+  async function persist(next: AgentProfilesDocument): Promise<boolean> {
     const previous = documentRef.current;
     const seq = ++seqRef.current;
     setBusy(true);
@@ -1198,20 +1303,41 @@ function AgentProfilesPanel() {
     setDocument(next);
     try {
       await agentProfilesSet(next);
+      // The read-back rides this write's sequence: if a newer write has
+      // started, the read adopts nothing — that write re-reads for itself —
+      // so a late reply can never overwrite a newer optimistic state.
+      void agentProfilesGet()
+        .then((reply) => {
+          if (seqRef.current !== seq) return;
+          documentRef.current = reply.document;
+          setDocument(reply.document);
+        })
+        .catch((cause: unknown) => {
+          // The write itself is confirmed, so a failed read-back reverts
+          // nothing; it is named — the panel would otherwise sit on ids the
+          // daemon has already replaced — unless a newer write owns the UI.
+          if (seqRef.current !== seq) return;
+          setError(reasonFromCause(cause));
+        });
       // An older write settling here must not clear a busy flag the newest
       // write still needs.
-      if (seq === seqRef.current) {
+      const confirmed = seq === seqRef.current;
+      if (confirmed) {
         setBusy(false);
         // Confirmed: the store now holds what was sent, so the standing box
         // goes back to reading the document. A rejected save keeps the draft.
         setStandingDraft(null);
       }
+      return confirmed;
     } catch (cause) {
-      if (seq !== seqRef.current) return;
+      // A refusal adopts nothing: no read-back is issued on this path, and
+      // the document goes back to exactly what the human was seeing.
+      if (seq !== seqRef.current) return false;
       documentRef.current = previous;
       setDocument(previous);
       setError(reasonFromCause(cause));
       setBusy(false);
+      return false;
     }
   }
 
@@ -1282,6 +1408,17 @@ function AgentProfilesPanel() {
   function createProfile(draft: NewProfileDraft) {
     const current = documentRef.current;
     if (current === null) return;
+    // The store's cap, mirrored (MAX_PROFILES above): the daemon refuses a
+    // 65th profile, so the panel refuses it first, with the same number,
+    // instead of sending work it knows cannot be kept. The New-profile
+    // button is already disabled at the cap; this guard covers the document
+    // having changed under an open form.
+    if (current.profiles.length >= MAX_PROFILES) {
+      setError(
+        `The store already holds ${MAX_PROFILES} profiles, the maximum the daemon allows: delete one before creating another.`,
+      );
+      return;
+    }
     const trimmedName = draft.name.trim();
     const refusal = profileTextsError(trimmedName, draft.note);
     if (refusal !== null) {
@@ -1324,8 +1461,12 @@ function AgentProfilesPanel() {
     // Append at the end: the human's order is the order agents read, and the
     // rows already there keep the positions the human gave them.
     updated.profiles = [...updated.profiles, profile];
-    setCreating(false);
-    void persist(updated);
+    // Close on CONFIRMATION, never on submission: `persist` reverts and
+    // reports a refusal, and the form must still be on screen when it does —
+    // the draft stays in its fields under the error, ready to retry.
+    void persist(updated).then((confirmed) => {
+      if (confirmed) setCreating(false);
+    });
   }
 
   function saveStandingInstructions() {
@@ -1378,11 +1519,19 @@ function AgentProfilesPanel() {
         ) : null}
         {document !== null ? (
           <div className="agent-profile-create-row">
+            {/* The store's cap, mirrored: at the cap the form is not offered,
+                and the sentence says why before the human types anything. */}
+            {profiles.length >= MAX_PROFILES ? (
+              <p className="device-field-hint" role="status">
+                The store holds the maximum of {MAX_PROFILES} profiles the daemon allows: delete one
+                before creating another.
+              </p>
+            ) : null}
             <button
               type="button"
               className="settings-device-action"
               aria-expanded={creating}
-              disabled={busy || loading}
+              disabled={busy || loading || profiles.length >= MAX_PROFILES}
               onClick={() => setCreating((open) => !open)}
             >
               {creating ? "Close the new-profile form" : "New profile"}

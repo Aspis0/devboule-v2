@@ -272,8 +272,15 @@ type CommandResults = {
    * it. The three-valued `present`/`none`/`absent` states are the point:
    * "the provider published nothing" and "nobody could ask" stay different
    * answers all the way to the screen.
+   *
+   * Today's Rust stub, though, is `Result<(), CommandError>`
+   * (`backend/provider_vocabulary.rs`): until the daemon pass replaces its
+   * body it refuses every request, so the success channel carries nothing —
+   * never a `ProviderVocabulary`. The wrapper annotates the spec's reply
+   * shape for its callers across one boundary cast; when the daemon half
+   * lands, widen the Rust return and THIS entry together and the cast goes.
    */
-  provider_vocabulary_get: ProviderVocabulary;
+  provider_vocabulary_get: void;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -807,9 +814,15 @@ export const agentProfilesSet = (document: AgentProfilesDocument) =>
  *
  * THE DAEMON SIDE IS SPECIFIED BUT NOT YET IMPLEMENTED: the wire shape is
  * frozen by that spec and another pass builds it against the same contract.
- * Until it ships this request is refused by every daemon — which is why the
- * caller gates on the handshake advertising `provider_vocabulary` and falls
- * back to free text when it does not.
+ * Until it ships, the Rust stub (`Result<(), _>`) refuses every request —
+ * which is why the caller gates on the handshake advertising
+ * `provider_vocabulary` and falls back to free text when it does not. The
+ * promise below therefore resolves today only through the one boundary cast
+ * the CommandResults entry documents: the success type is the spec's
+ * contract, and the daemon pass makes it true.
  */
 export const providerVocabularyGet = (provider: string, refresh: boolean) =>
-  invokeTyped("provider_vocabulary_get", { provider, refresh });
+  invokeTyped("provider_vocabulary_get", {
+    provider,
+    refresh,
+  }) as unknown as Promise<ProviderVocabulary>;

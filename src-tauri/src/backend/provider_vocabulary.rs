@@ -19,8 +19,11 @@ use crate::backend::error::CommandError;
 
 #[tauri::command]
 pub fn provider_vocabulary_get(provider: String, refresh: bool) -> Result<(), CommandError> {
+    // `Unimplemented`, not `Internal`: the RPC exists and nothing is broken —
+    // this build simply does not serve it yet. The code is the wire-level
+    // sentence "not built", and it must not be logged as "we broke".
     Err(CommandError::new(
-        ErrorCode::Internal,
+        ErrorCode::Unimplemented,
         format!(
             "provider_vocabulary_get is specified but not implemented by the daemon yet \
              (provider: {provider}, refresh: {refresh}); \

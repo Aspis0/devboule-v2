@@ -2260,6 +2260,13 @@ describe("Settings agents panel", () => {
       profiles: [makeProfile()],
       standingInstructions: "",
     });
+    // The store's read-back after the confirmed write: the tick is stored.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [{ ...makeProfile(), enabledForAgents: true }],
+        standingInstructions: "",
+      },
+    });
 
     await act(async () => tickBox("Explorer").click());
     await act(async () => undefined);
@@ -2302,6 +2309,13 @@ describe("Settings agents panel", () => {
       ],
       standingInstructions: "",
     });
+    // The store's read-back after the confirmed write: both rows, untoggled.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
+        standingInstructions: "",
+      },
+    });
 
     // One ticked: the door is open, the sentence must be absent.
     expect(container.textContent).not.toContain("agents cannot start agents");
@@ -2319,6 +2333,10 @@ describe("Settings agents panel", () => {
     const beta = makeProfile({ id: "b", name: "Beta" });
     const alpha = makeProfile({ id: "a", name: "Alpha" });
     await renderAgentsPanel({ profiles: [beta, alpha], standingInstructions: "" });
+    // The store's read-back after the confirmed write: the new order.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [alpha, beta], standingInstructions: "" },
+    });
 
     const up = rowByName("Alpha").querySelector<HTMLButtonElement>(
       "button[aria-label='Move Alpha up']",
@@ -2342,6 +2360,13 @@ describe("Settings agents panel", () => {
       profiles: [makeProfile(), makeProfile({ id: "profile-2", name: "Coder" })],
       standingInstructions: "",
     });
+    // The store's read-back after the confirmed delete: one row left.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [makeProfile({ id: "profile-2", name: "Coder" })],
+        standingInstructions: "",
+      },
+    });
 
     // The first click arms the row and sends nothing.
     await act(async () => rowButton("Explorer", "Delete").click());
@@ -2363,6 +2388,13 @@ describe("Settings agents panel", () => {
   it("saves a rename and note while every other field travels untouched", async () => {
     const explorer = makeProfile();
     await renderAgentsPanel({ profiles: [explorer], standingInstructions: "" });
+    // The store's read-back after the confirmed save: the rename stored.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [{ ...explorer, name: "Scout", note: "Maps the work before anyone builds." }],
+        standingInstructions: "",
+      },
+    });
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
@@ -2412,6 +2444,13 @@ describe("Settings agents panel", () => {
   it("saves standing instructions into the document and leaves the profiles alone", async () => {
     const explorer = makeProfile();
     await renderAgentsPanel({ profiles: [explorer], standingInstructions: "" });
+    // The store's read-back after the confirmed save: the text is stored.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [explorer],
+        standingInstructions: "Report your result in your final message.",
+      },
+    });
 
     const field = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
     if (!field) throw new Error("standing instructions field did not render");
@@ -2451,6 +2490,13 @@ describe("Settings agents panel", () => {
       profiles: [makeProfile()],
       standingInstructions: "",
     });
+    // The store's read-back after the confirmed write: no draft in it.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [{ ...makeProfile(), enabledForAgents: true }],
+        standingInstructions: "",
+      },
+    });
 
     const field = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
     if (!field) throw new Error("standing instructions field did not render");
@@ -2485,6 +2531,11 @@ describe("Settings agents panel", () => {
     // name; this one must send it.
     const name = "🦄".repeat(40);
     await typeText(nameField, name);
+
+    // The store's read-back after the confirmed save: the name is stored.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [{ ...makeProfile(), name }], standingInstructions: "" },
+    });
 
     await act(async () => sectionButton("Save").click());
     await act(async () => undefined);
@@ -2548,6 +2599,15 @@ describe("Settings agents panel", () => {
         standingInstructions: "",
       });
 
+      // The write is confirmed with a read-back (the panel adopts the stored
+      // document, ids included): the store holds the tick.
+      vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+        document: {
+          profiles: [{ ...makeProfile(), enabledForAgents: true }],
+          standingInstructions: "",
+        },
+      });
+
       // A write puts the sequence past zero; a daemon restart then flips the
       // handshake capability off and back on, re-running the load effect
       // while the panel stays mounted.
@@ -2591,7 +2651,9 @@ describe("Settings agents panel", () => {
       });
       await act(async () => undefined);
 
-      expect(agentProfilesGet).toHaveBeenCalledTimes(2);
+      // Three reads in total: the load, the write's read-back, and the
+      // restarted store's refetch.
+      expect(agentProfilesGet).toHaveBeenCalledTimes(3);
       expect(profileRows()).toHaveLength(0);
       // A fresh load also releases any draft: the box reads the new store.
       const field = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
@@ -2682,6 +2744,27 @@ describe("Settings agents panel — new profile form", () => {
     };
   }
 
+  /**
+   * A stored row as the daemon reads it back after the form created one:
+   * the shape the form sends, under the id the daemon minted.
+   */
+  function storedProfile(id: string, overrides: Partial<AgentProfile> = {}): AgentProfile {
+    return {
+      id,
+      name: "Gamma",
+      icon: null,
+      note: "",
+      provider: "claude",
+      model: "claude-sonnet-4-5",
+      modeId: "default",
+      thinkingOptionId: null,
+      features: {},
+      toolOverlay: [],
+      enabledForAgents: false,
+      ...overrides,
+    };
+  }
+
   function daemonStatusWith(capabilities: string[]): DaemonStatus {
     return {
       state: "connected",
@@ -2763,6 +2846,23 @@ describe("Settings agents panel — new profile form", () => {
     );
     if (!button) throw new Error("Create profile button did not render");
     return button;
+  }
+
+  /** A profile row's one checkbox is its "agents may create this" tick. */
+  function rowTicks(): HTMLInputElement[] {
+    return Array.from(
+      container.querySelectorAll<HTMLInputElement>(
+        ".agent-profile-list .agent-profile-row input[type='checkbox']",
+      ),
+    );
+  }
+
+  function rowTick(name: string): HTMLInputElement {
+    const row = rowTicks().find((candidate) =>
+      candidate.closest(".agent-profile-row")?.textContent?.includes(name),
+    );
+    if (!row) throw new Error(`tick for ${name} did not render`);
+    return row;
   }
 
   /** Select options' values, in wire order. */
@@ -2847,7 +2947,25 @@ describe("Settings agents panel — new profile form", () => {
 
   it("saves a new profile with enabledForAgents false and an empty id at the end of the list", async () => {
     const beta = makeProfile({ id: "b", name: "Beta" });
+    const gamma: AgentProfile = {
+      id: "",
+      name: "Gamma",
+      icon: null,
+      note: "Checks the build output.",
+      provider: "claude",
+      model: "claude-sonnet-4-5",
+      modeId: "default",
+      thinkingOptionId: null,
+      features: {},
+      toolOverlay: [],
+      enabledForAgents: false,
+    };
     await renderAgentsPanel({ profiles: [beta], standingInstructions: "" });
+    // The store's read-back after the confirmed create: the daemon minted
+    // the id the form could not know.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [beta, { ...gamma, id: "minted-1" }], standingInstructions: "" },
+    });
     await openForm();
 
     await typeText(nameField(), "Gamma");
@@ -2856,33 +2974,34 @@ describe("Settings agents panel — new profile form", () => {
     await typeText(modeControl(), "default");
     await act(async () => createButton().click());
     await act(async () => undefined);
+    await act(async () => undefined);
 
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     // The whole document travels: the old list first, in order, then exactly
     // one new entry. `id` stays empty — the daemon mints it.
     expect(agentProfilesSet).toHaveBeenCalledWith({
-      profiles: [
-        beta,
-        {
-          id: "",
-          name: "Gamma",
-          icon: null,
-          note: "Checks the build output.",
-          provider: "claude",
-          model: "claude-sonnet-4-5",
-          modeId: "default",
-          thinkingOptionId: null,
-          features: {},
-          toolOverlay: [],
-          enabledForAgents: false,
-        },
-      ],
+      profiles: [beta, gamma],
       standingInstructions: "",
     });
   });
 
   it("passes auto accept into features only when it is ticked, and says what it does", async () => {
     await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    // The store's read-backs after each confirmed create: the store grows by
+    // one, under the ids the daemon minted.
+    vi.mocked(agentProfilesGet)
+      .mockResolvedValueOnce({
+        document: { profiles: [storedProfile("minted-1")], standingInstructions: "" },
+      })
+      .mockResolvedValueOnce({
+        document: {
+          profiles: [
+            storedProfile("minted-1"),
+            storedProfile("minted-2", { features: { autoAccept: true } }),
+          ],
+          standingInstructions: "",
+        },
+      });
     await openForm();
 
     // The copy must say what the tick does — it is the most consequential
@@ -2917,6 +3036,13 @@ describe("Settings agents panel — new profile form", () => {
 
   it("defaults the agents tick to off and saves it only when the human ticks it", async () => {
     await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    // The store's read-back after the confirmed create: the tick is stored.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [storedProfile("minted-1", { enabledForAgents: true })],
+        standingInstructions: "",
+      },
+    });
     await openForm();
 
     const tick = field<HTMLInputElement>('input[aria-label="Available to agents"]');
@@ -2975,6 +3101,10 @@ describe("Settings agents panel — new profile form", () => {
 
   it("keeps the form completable on an older daemon, names that reason, and sends no vocabulary query", async () => {
     await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    // The store's read-back after the confirmed create.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [storedProfile("minted-1")], standingInstructions: "" },
+    });
     await openForm();
 
     // The older-daemon sentence — not the provider's "did not publish".
@@ -3117,6 +3247,13 @@ describe("Settings agents panel — new profile form", () => {
       }),
     );
     await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    // The store's read-back after the (only) confirmed create, at the end.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [storedProfile("scout-1", { name: "Scout", model: "opus", modeId: "code" })],
+        standingInstructions: "",
+      },
+    });
     await openForm();
     await act(async () => undefined);
     await act(async () => undefined);
@@ -3150,6 +3287,10 @@ describe("Settings agents panel — new profile form", () => {
       message: "pipe is gone",
     });
     await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    // The store's read-back after the confirmed create, at the end.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [storedProfile("minted-1")], standingInstructions: "" },
+    });
     await openForm();
     await act(async () => undefined);
     await act(async () => undefined);
@@ -3196,5 +3337,441 @@ describe("Settings agents panel — new profile form", () => {
     expect(form().textContent).toContain("A suggestion, not something the provider reported");
     // The models axis here is present, so its absent sentence must not show.
     expect(form().textContent).not.toContain("did not publish its models");
+  });
+
+  it("ticks the row the human ticked once the daemon's minted ids are adopted", async () => {
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    // The store's read-back after each confirmed create carries the ids the
+    // daemon minted — the set reply names only the request.
+    vi.mocked(agentProfilesGet)
+      .mockResolvedValueOnce({
+        document: {
+          profiles: [storedProfile("minted-a", { name: "Alpha" })],
+          standingInstructions: "",
+        },
+      })
+      .mockResolvedValueOnce({
+        document: {
+          profiles: [
+            storedProfile("minted-a", { name: "Alpha" }),
+            storedProfile("minted-b", { name: "Beta" }),
+          ],
+          standingInstructions: "",
+        },
+      })
+      .mockResolvedValueOnce({
+        document: {
+          profiles: [
+            storedProfile("minted-a", { name: "Alpha" }),
+            storedProfile("minted-b", { name: "Beta", enabledForAgents: true }),
+          ],
+          standingInstructions: "",
+        },
+      });
+
+    // Create Alpha, then Beta, letting each read-back land between them.
+    await openForm();
+    await typeText(nameField(), "Alpha");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await typeText(modeControl(), "default");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    await openForm();
+    await typeText(nameField(), "Beta");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await typeText(modeControl(), "default");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    expect(rowTicks()).toHaveLength(2);
+
+    // The human ticks the second row (Beta).
+    await tickCheckbox(rowTicks()[1]!, true);
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The write flips exactly Beta, under the ids the daemon minted — never
+    // the first empty-id row the panel used to mistake for it.
+    const sent = vi.mocked(agentProfilesSet).mock.calls.at(-1)?.[0];
+    expect(sent?.profiles.map((profile) => [profile.id, profile.enabledForAgents])).toEqual([
+      ["minted-a", false],
+      ["minted-b", true],
+    ]);
+    expect(rowTicks()[0]?.checked).toBe(false);
+    expect(rowTicks()[1]?.checked).toBe(true);
+  });
+  it("adopts the minted ids after every confirmed write, so no empty id is ever re-sent", async () => {
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    vi.mocked(agentProfilesGet)
+      .mockResolvedValueOnce({
+        document: {
+          profiles: [storedProfile("minted-a", { name: "Alpha" })],
+          standingInstructions: "",
+        },
+      })
+      .mockResolvedValueOnce({
+        document: {
+          profiles: [
+            storedProfile("minted-a", { name: "Alpha" }),
+            storedProfile("minted-b", { name: "Beta" }),
+          ],
+          standingInstructions: "",
+        },
+      })
+      .mockResolvedValueOnce({
+        document: {
+          profiles: [
+            storedProfile("minted-a", { name: "Alpha", enabledForAgents: true }),
+            storedProfile("minted-b", { name: "Beta" }),
+          ],
+          standingInstructions: "",
+        },
+      });
+
+    await openForm();
+    await typeText(nameField(), "Alpha");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await typeText(modeControl(), "default");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    await openForm();
+    await typeText(nameField(), "Beta");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await typeText(modeControl(), "default");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The second create already travelled with the first profile's minted
+    // id: the read-back after write one was adopted.
+    const secondCreate = vi.mocked(agentProfilesSet).mock.calls[1]?.[0];
+    expect(secondCreate?.profiles.map((profile) => profile.id)).toEqual(["minted-a", ""]);
+
+    // Ticking Alpha re-sends the whole document: every id must be the
+    // daemon's — an empty id would make the store mint yet another identity
+    // for a row the human already created.
+    await tickCheckbox(rowTicks()[0]!, true);
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    const tickWrite = vi.mocked(agentProfilesSet).mock.calls.at(-1)?.[0];
+    expect(tickWrite?.profiles.map((profile) => profile.id)).toEqual(["minted-a", "minted-b"]);
+    expect(tickWrite?.profiles.every((profile) => profile.id !== "")).toBe(true);
+    expect(tickWrite?.profiles[0]?.enabledForAgents).toBe(true);
+  });
+
+  it("reverts exactly what the human was seeing when a write is refused, and adopts nothing", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile({ id: "x1" })],
+      standingInstructions: "",
+    });
+    // The one read-back armed after the load is a reply that disagrees with
+    // the revert — the error path must never touch it.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [
+          makeProfile({ id: "x1", enabledForAgents: true, note: "adopted from the store" }),
+        ],
+        standingInstructions: "",
+      },
+    });
+    vi.mocked(agentProfilesSet).mockRejectedValueOnce({
+      code: "io",
+      message: "profile file unwritable",
+    });
+
+    await act(async () => tickCheckbox(rowTick("Explorer"), true));
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The row is exactly what the human was seeing before the click, and
+    // the refusal is named.
+    expect(rowTick("Explorer").checked).toBe(false);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "profile file unwritable",
+    );
+    // A refused write re-reads nothing: a refusal adopts no reply.
+    expect(agentProfilesGet).toHaveBeenCalledTimes(1);
+
+    // The retry starts from the revert, not from any reply: it re-sends the
+    // human's tick (the row went back to unchecked) over the document as it
+    // stood — never the armed reply's note.
+    await act(async () => tickCheckbox(rowTick("Explorer"), true));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    const retry = vi.mocked(agentProfilesSet).mock.calls.at(-1)?.[0];
+    expect(retry?.profiles[0]?.enabledForAgents).toBe(true);
+    expect(retry?.profiles[0]?.note).toBe("Reads the code and reports back.");
+  });
+
+  it("names a malformed reply and keeps its usable models list instead of calling it a failed query", async () => {
+    // No `modes` axis at all — a malformed reply; models arrived intact.
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce({
+      provider: "claude",
+      models: {
+        state: "present",
+        origin: "provider",
+        items: [{ modelId: "opus", name: "Opus" }],
+      },
+      source: "probe",
+    } as unknown as ProviderVocabulary);
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The usable half is kept: a select over the models that arrived.
+    expect(modelControl().tagName).toBe("SELECT");
+    expect(selectValues(modelControl())).toContain("opus");
+    // The missing half is named as its own state — malformed, which is not
+    // a failed query and not `absent`.
+    expect(modeControl().tagName).toBe("INPUT");
+    expect(form().textContent).toContain("reply was malformed");
+    expect(form().textContent).toContain("carried no modes axis");
+    expect(form().textContent).not.toContain("The vocabulary query failed");
+    expect(form().textContent).not.toContain("did not publish its modes");
+    // And the malformed half did not take the models sentence with it.
+    expect(form().textContent).not.toContain("carried no models axis");
+  });
+
+  it("names the contradiction when present arrives with an empty list, instead of an empty select", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({
+        models: { state: "present", origin: "provider", items: [] },
+        modes: { state: "absent", items: [] },
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // `present` with no items is the reply the spec forbids: the form names
+    // the contradiction and stays typeable rather than rendering a select
+    // with nothing to select.
+    expect(modelControl().tagName).toBe("INPUT");
+    expect(form().textContent).toContain("listed none — a contradiction");
+    expect(form().textContent).not.toContain("reports no models");
+    expect(form().textContent).not.toContain("did not publish its models");
+    // The modes axis in the same reply is a real `absent`.
+    expect(modeControl().tagName).toBe("INPUT");
+    expect(form().textContent).toContain("did not publish its modes");
+  });
+
+  it("names a state value it does not know instead of rendering a silent free-text field", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({
+        models: { state: "expired", items: [] } as unknown as ProviderVocabulary["models"],
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    expect(modelControl().tagName).toBe("INPUT");
+    // The unknown value is shown as received, and none of the known states
+    // is claimed for it — an unexplained field is the one dishonest answer.
+    expect(form().textContent).toContain('a value this app does not know ("expired")');
+    expect(form().textContent).not.toContain("did not publish its models");
+    expect(form().textContent).not.toContain("reports no models");
+    expect(form().textContent).not.toContain("reply was malformed");
+  });
+
+  it("gives every state its own sentence: no two rendered sentences are equal or substrings", async () => {
+    // The property the state sentences exist for, held over the render
+    // itself: enumerate the states, render each, and compare every rendered
+    // sentence with every other — equal is a collapse, and a substring is a
+    // collapse waiting for its neighbouring words to change.
+    const scenarioNames: string[] = [];
+    const sentences: string[] = [];
+
+    async function collectScenario(name: string) {
+      const texts = Array.from(form().querySelectorAll<HTMLElement>(".device-field-hint")).map(
+        (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim(),
+      );
+      for (const text of new Set(texts)) {
+        scenarioNames.push(name);
+        sentences.push(text);
+      }
+      // A fresh mount for the next scenario.
+      if (root !== undefined) {
+        await act(async () => root!.unmount());
+        root = undefined;
+      }
+      container.innerHTML = "";
+    }
+
+    async function armAndOpen(reply: ProviderVocabulary | undefined) {
+      if (reply !== undefined) {
+        vi.mocked(providerVocabularyGet).mockResolvedValueOnce(reply);
+      }
+      await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+      await openForm();
+      await act(async () => undefined);
+      await act(async () => undefined);
+    }
+
+    // 1. Older daemon: no query is sent, the sentence is there at once.
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await collectScenario("older daemon");
+
+    // 2. The query itself fails.
+    vi.mocked(providerVocabularyGet).mockRejectedValueOnce({
+      code: "io",
+      message: "pipe is gone",
+    });
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await collectScenario("query failed");
+
+    // 3. `none` on both axes: the provider answered "I have none".
+    await armAndOpen(
+      makeVocabulary({ models: { state: "none", items: [] }, modes: { state: "none", items: [] } }),
+    );
+    await collectScenario("none");
+
+    // 4. `absent` on both axes: no source could answer.
+    await armAndOpen(makeVocabulary());
+    await collectScenario("absent");
+
+    // 5. present with origin daemon on both axes.
+    await armAndOpen(
+      makeVocabulary({
+        models: {
+          state: "present",
+          origin: "daemon",
+          items: [{ modelId: "opus", name: "Opus" }],
+        },
+        modes: { state: "present", origin: "daemon", items: [{ id: "code", name: "Code" }] },
+      }),
+    );
+    await collectScenario("daemon origin");
+
+    // 6. Malformed: the reply arrived, neither axis did.
+    await armAndOpen({ provider: "claude", source: "probe" } as unknown as ProviderVocabulary);
+    await collectScenario("malformed");
+
+    // 7. present with empty items on both axes: the forbidden contradiction.
+    await armAndOpen(
+      makeVocabulary({
+        models: { state: "present", origin: "provider", items: [] },
+        modes: { state: "present", origin: "provider", items: [] },
+      }),
+    );
+    await collectScenario("present empty");
+
+    // 8. A state value outside the union on both axes.
+    await armAndOpen(
+      makeVocabulary({
+        models: { state: "expired", items: [] } as unknown as ProviderVocabulary["models"],
+        modes: { state: "expired", items: [] } as unknown as ProviderVocabulary["modes"],
+      }),
+    );
+    await collectScenario("unknown state");
+
+    // Eight sentences per pair of axes, minus the daemon-origin sentence
+    // that is the same text on both axes: thirteen in all.
+    expect(sentences).toHaveLength(13);
+    for (let i = 0; i < sentences.length; i++) {
+      for (let j = i + 1; j < sentences.length; j++) {
+        const a = sentences[i]!;
+        const b = sentences[j]!;
+        expect(
+          a === b,
+          `${scenarioNames[i]} and ${scenarioNames[j]} render the same sentence`,
+        ).toBe(false);
+        expect(
+          a.includes(b),
+          `${scenarioNames[i]} sentence contains the ${scenarioNames[j]} sentence: "${b}" inside "${a}"`,
+        ).toBe(false);
+        expect(
+          b.includes(a),
+          `${scenarioNames[j]} sentence contains the ${scenarioNames[i]} sentence: "${a}" inside "${b}"`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("does not claim no agent CLI is installed when the catalog read failed", async () => {
+    // Every providers_list caller is refused: the catalog was never read.
+    vi.mocked(providersList).mockRejectedValue({ code: "io", message: "the scan failed" });
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+
+    // The failed read names itself; the empty-catalog claim is not made.
+    expect(form().textContent).toContain("could not be read: the scan failed");
+    expect(form().textContent).not.toContain("No agent CLI is installed");
+    // The picker does not pretend the (unread) catalog was read either: its
+    // one option names the failed read, not an empty result. (Placeholder
+    // options carry value="", so the option text is what is asserted.)
+    const options = Array.from(providerField().options).map((option) => option.textContent);
+    expect(options).toEqual(["The catalog could not be read"]);
+  });
+
+  it("keeps the draft on screen under its error when the create is refused", async () => {
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    vi.mocked(agentProfilesSet).mockRejectedValueOnce({
+      code: "io",
+      message: "the document holds 65 profiles, over the 64-profile cap",
+    });
+
+    await openForm();
+    await typeText(nameField(), "Gamma");
+    await typeText(noteField(), "Checks the build output.");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await typeText(modeControl(), "default");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The refusal is shown, the form still stands, and every field keeps
+    // what the human typed into it.
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "over the 64-profile cap",
+    );
+    expect(nameField().value).toBe("Gamma");
+    expect(noteField().value).toBe("Checks the build output.");
+    expect((modelControl() as HTMLInputElement).value).toBe("claude-sonnet-4-5");
+    expect((modeControl() as HTMLInputElement).value).toBe("default");
+
+    // The same draft is what the retry sends once the daemon takes it — and
+    // only confirmation closes the form.
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(2);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[1]?.[0];
+    expect(sent?.profiles.at(-1)?.name).toBe("Gamma");
+    expect(sent?.profiles.at(-1)?.note).toBe("Checks the build output.");
+    expect(container.querySelector(".agent-profile-create")).toBeNull();
+  });
+
+  it("mirrors the store's profile cap and does not offer the form at it", async () => {
+    const full = Array.from({ length: 64 }, (_, index) =>
+      makeProfile({ id: `p-${index}`, name: `Profile ${index}` }),
+    );
+    await renderAgentsPanel({ profiles: full, standingInstructions: "" });
+
+    // The cap is named before the human fills anything in...
+    expect(container.textContent).toContain("the maximum of 64 profiles");
+    // ...and the form cannot be opened: a 65th creation is refused by the
+    // store, so the panel does not offer the work.
+    const open = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".agent-profile-create-row button"),
+    ).find((candidate) => candidate.textContent === "New profile");
+    expect(open?.disabled).toBe(true);
+    await act(async () => open?.click());
+    await act(async () => undefined);
+    expect(container.querySelector(".agent-profile-create")).toBeNull();
   });
 });
