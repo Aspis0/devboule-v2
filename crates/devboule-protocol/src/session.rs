@@ -254,6 +254,19 @@ pub struct SessionStateSnapshot {
     /// omitted it would leave that badge to the next full list.
     #[serde(default)]
     pub origin: SessionOrigin,
+    /// The name a created agent is shown under (S5-09). Carried on every push,
+    /// because a child created while the app is open arrives as a push-only row
+    /// and one that omitted it would stay nameless until the next full list —
+    /// which is a list nothing may run again. Absent means "no name of its
+    /// own", which the app renders as its fallback, never as an empty name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// The session id of the agent that created this one (S5-04). Carried on
+    /// every push for the same reason as the name: the row is what the human
+    /// sees, and "created by" is part of it. `None` for every session a human
+    /// started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 /// What the journal can honestly say about a finished transcript.
@@ -1172,6 +1185,8 @@ mod tests {
             elapsed_ms: None,
             attention: None,
             origin: SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
         };
         let encoded = serde_json::to_value(snapshot).expect("snapshot json");
         assert_eq!(encoded["workspaceId"], "ws-1");
@@ -1182,6 +1197,43 @@ mod tests {
         // wire rather than travelling as `null`.
         assert!(encoded["origin"].get("deviceId").is_none());
         assert!(encoded["origin"].get("role").is_none());
+    }
+
+    /// The two fields a push-only row needs to be readable (S5-09, S5-04): the
+    /// name the child was created under and the session that created it. Both
+    /// spell camelCase on the wire and both stay off it when absent, so an
+    /// older dialect sees the frame it saw before.
+    #[test]
+    fn snapshot_carries_the_display_name_and_the_creator_in_camel_case() {
+        let snapshot = SessionStateSnapshot {
+            id: "s.client.1".to_string(),
+            workspace_id: Some("ws-1".to_string()),
+            kind: SessionKind::Acp,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(42),
+            attention: None,
+            origin: SessionOrigin::local(),
+            display_name: Some("worker".to_string()),
+            created_by: Some("s.parent.1".to_string()),
+        };
+        let encoded = serde_json::to_value(&snapshot).expect("snapshot json");
+        assert_eq!(encoded["displayName"], "worker");
+        assert_eq!(encoded["createdBy"], "s.parent.1");
+        let bytes = serde_json::to_string(&snapshot).expect("snapshot json");
+        let back: SessionStateSnapshot = serde_json::from_str(&bytes).expect("round trip");
+        assert_eq!(back, snapshot, "the spelling holds in both directions");
+
+        // A session with neither says so by leaving both keys out, rather than
+        // travelling as `null`.
+        let plain = SessionStateSnapshot {
+            display_name: None,
+            created_by: None,
+            ..snapshot
+        };
+        let encoded = serde_json::to_value(&plain).expect("snapshot json");
+        assert!(encoded.get("displayName").is_none());
+        assert!(encoded.get("createdBy").is_none());
     }
 
     #[test]

@@ -500,6 +500,19 @@ export interface SessionStateSnapshot {
    * row no list has described keeps none, which renders as unknown, never local.
    */
   origin?: SessionOrigin;
+  /**
+   * The name a created agent is shown under, when the daemon carries it on the
+   * push. A push that omits it leaves a row already described by `sessionsList`
+   * its known name; a row no list has described keeps none, which renders as the
+   * row's fallback name, never as an empty one.
+   */
+  displayName?: string;
+  /**
+   * The session that created this one, when the daemon carries it on the push.
+   * Same rule as `displayName`: absent means "no list has said yet", and the row
+   * shows no created-by badge rather than guessing one.
+   */
+  createdBy?: Id;
 }
 
 export type CursorShape = "block" | "underline" | "bar";

@@ -1821,6 +1821,8 @@ mod tests {
             elapsed_ms: None,
             attention: None,
             origin: devboule_protocol::SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
         }]);
         registry.reattach_all(&new_client);
 
@@ -1870,6 +1872,8 @@ mod tests {
             elapsed_ms: None,
             attention: None,
             origin: devboule_protocol::SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
         }]);
         registry.reattach_all(&new_client);
 
@@ -2102,6 +2106,8 @@ mod tests {
             elapsed_ms: Some(1),
             attention: None,
             origin: devboule_protocol::SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
         }
     }
 

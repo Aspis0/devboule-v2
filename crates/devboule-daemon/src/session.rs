@@ -2380,6 +2380,11 @@ impl SessionRegistry {
                 elapsed_ms: session.elapsed_ms,
                 attention,
                 origin: session.origin,
+                // The two fields a push-only row needs (S5-09, S5-04): the row
+                // this client is sent must name the child and its creator, not
+                // only the row the next list would build.
+                display_name: session.display_name,
+                created_by: session.created_by,
             })
             .collect()
     }
@@ -2399,6 +2404,8 @@ impl SessionRegistry {
                         elapsed_ms: session.elapsed_ms,
                         attention: entry.runtime().attention(),
                         origin: session.origin,
+                        display_name: session.display_name,
+                        created_by: session.created_by,
                     }
                 })
         });
@@ -13789,6 +13796,67 @@ mod tests {
 
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S5-09 and S5-04 on the path that matters to a running app: a child
+    /// created while the client is already attached arrives as a *push*-only
+    /// row, so the snapshot that push carries must name the child and say which
+    /// session created it. The row the next full roster build produces must say
+    /// the same thing, or the two paths disagree about the same session.
+    #[test]
+    fn a_push_only_row_carries_the_childs_name_and_creator() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-snapshot-names", "process-snapshot-names");
+        let creator = "s.snapshot-names.parent";
+        let child = "s.snapshot-names.child";
+        // The app is open and holds this roster already: the next state change
+        // is served from the cache, which is what makes it a push.
+        let _ = registry.state_snapshots(&owner);
+        insert_live_agent(&registry, child, owner.clone());
+        {
+            let mut map = registry.inner.lock().expect("map");
+            let live = map
+                .get_mut(child)
+                .and_then(RegistryEntry::as_live_mut)
+                .expect("the live child");
+            live.metadata.display_name = Some("worker".to_string());
+            live.metadata.created_by = Some(creator.to_string());
+        }
+
+        registry.notify_session_transition(&owner, child);
+        let pushed = registry.state_snapshots(&owner);
+        assert_eq!(
+            registry.full_roster_build_count(),
+            1,
+            "the row came from the push, not from a rebuild"
+        );
+        let row = pushed
+            .iter()
+            .find(|session| session.id == child)
+            .expect("the pushed row");
+        assert_eq!(
+            row.display_name.as_deref(),
+            Some("worker"),
+            "the push names the child"
+        );
+        assert_eq!(
+            row.created_by.as_deref(),
+            Some(creator),
+            "the push names the session that created it"
+        );
+
+        // The same session through a full build: the two paths agree.
+        registry.state_roster_cache.lock().expect("cache").clear();
+        let rebuilt = registry.state_snapshots(&owner);
+        assert_eq!(registry.full_roster_build_count(), 2, "the cache was gone");
+        let row = rebuilt
+            .iter()
+            .find(|session| session.id == child)
+            .expect("the rebuilt row");
+        assert_eq!(row.display_name.as_deref(), Some("worker"));
+        assert_eq!(row.created_by.as_deref(), Some(creator));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
