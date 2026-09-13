@@ -312,6 +312,11 @@ function ProviderToolSettings({
   // Monotonic write sequence: only the newest write owns the UI when it
   // settles, so an older rejection can never clobber a newer row.
   const seqRef = useRef(0);
+  // A failed load is terminal, not a loading state: nothing will ever arrive
+  // on its own, so the card shows the daemon's sentence and a Retry instead
+  // of the loading lock. `loadNonce` re-runs the load effect.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadNonce, setLoadNonce] = useState(0);
   useEffect(() => {
     // No fetch when there is nothing to toggle: the daemon omits `tools`
     // for wrappers and non-MCP providers, and the section stays hidden.
@@ -333,14 +338,23 @@ function ProviderToolSettings({
         if (seqRef.current !== seqAtFetch) return;
         policiesRef.current = reply.policies;
         setPolicies(reply.policies);
+        // The store has spoken: a stale load error and its terminal state go.
+        setError(null);
+        setLoadFailed(false);
       })
       .catch((cause: unknown) => {
-        if (!cancelled) setError(reasonFromCause(cause));
+        if (!cancelled) {
+          // Without stored rows there is nothing to show and nothing to
+          // edit: that is a terminal state — the daemon's sentence plus a
+          // Retry — not a loading state to sit under forever.
+          if (policiesRef.current === null) setLoadFailed(true);
+          setError(reasonFromCause(cause));
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [provider.id, tools.length, toolPolicySupported]);
+  }, [provider.id, tools.length, toolPolicySupported, loadNonce]);
   if (!toolPolicySupported || tools.length === 0) return null;
   const { enabled, disabledTools } = toolPolicyFor(provider.id, policies);
   const disabledSet = new Set(disabledTools);
@@ -430,6 +444,12 @@ function ProviderToolSettings({
     void persist(current.enabled, nextDisabled);
   }
 
+  function retryLoad() {
+    setError(null);
+    setLoadFailed(false);
+    setLoadNonce((nonce) => nonce + 1);
+  }
+
   return (
     <div className="provider-card-block provider-tools">
       <details>
@@ -473,6 +493,11 @@ function ProviderToolSettings({
             {error}
           </p>
         )}
+        {loadFailed ? (
+          <button type="button" className="settings-device-action" onClick={retryLoad}>
+            Retry
+          </button>
+        ) : null}
       </details>
     </div>
   );

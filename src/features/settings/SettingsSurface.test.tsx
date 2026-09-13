@@ -1677,6 +1677,48 @@ describe("Settings provider tool toggles", () => {
     expect(otherBox.checked).toBe(false);
   });
 
+  // Same terminal-state contract as the Agents panel's failed load: the card
+  // must not sit behind the loading lock forever with no way out.
+  it("ends a failed policy load in a retryable state instead of disabling forever", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [mcpProviderWith()],
+      unreadableDirs: 0,
+    });
+    vi.mocked(toolPolicyGet).mockRejectedValueOnce({ code: "io", message: "pipe is gone" });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const summary = container.querySelector<HTMLElement>(".provider-tools summary");
+    if (!summary) throw new Error("Tool settings disclosure did not render");
+    await act(async () => summary.click());
+    await act(async () => undefined);
+
+    // Terminal state: the daemon's sentence and a Retry. The toggles stay
+    // locked (nothing may be edited from a guess), but the human is not left
+    // with a dead card and reloading the app as the only remedy.
+    expect(container.querySelector('.provider-tools [role="alert"]')?.textContent).toContain(
+      "pipe is gone",
+    );
+    const retry = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".provider-tools button"),
+    ).find((candidate) => candidate.textContent === "Retry");
+    if (!retry) throw new Error("Retry did not render for a failed policy load");
+
+    // The retry re-runs the load, and a subsequent success renders the
+    // policies: the stored deny list, and the error gone.
+    vi.mocked(toolPolicyGet).mockResolvedValueOnce({
+      policies: [{ providerId: "grok", enabled: null, disabledTools: ["other_tool"] }],
+    });
+    await act(async () => retry.click());
+    await act(async () => undefined);
+
+    expect(toolPolicyGet).toHaveBeenCalledTimes(2);
+    expect(toolCheckbox("other_tool").checked).toBe(false);
+    expect(toolCheckbox("other_tool").disabled).toBe(false);
+    expect(toolCheckbox("devboule_list_agents").checked).toBe(true);
+    expect(container.querySelector('.provider-tools [role="alert"]')).toBeNull();
+  });
+
   it("never sends the always-on tool in disabledTools, even from a stale stored row", async () => {
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [mcpProviderWith()],
