@@ -8,8 +8,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
-    cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, NoticeSeverity, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin, TranscriptIntegrity, WireError,
+    cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, NoticeSeverity, Session,
+    SessionEvent, SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin,
+    TranscriptIntegrity, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -70,6 +71,39 @@ fn agent_queue_extent(queue: &VecDeque<PendingItem>) -> (usize, u64) {
         .filter(|item| !matches!(item, PendingItem::Snapshot { .. }))
         .count() as u64;
     (bytes, frames)
+}
+
+/// The A2A state word for one roster row (`S5` §1).
+///
+/// A pending card outranks "working": a session parked on an answer a human
+/// must give is the one fact a creator most needs to see, and it is the state
+/// [`crate::session::SessionRegistry::notify_child_input_required`] reports in
+/// words. A terminal row keeps its terminal word — a leftover card on a dead
+/// session is not `input_required`.
+pub(crate) fn roster_task_state(
+    session: &Session,
+    runtime: &SessionRuntime,
+) -> devboule_protocol::AgentTaskState {
+    if !session.state.is_live() {
+        return session.state.task_state(false);
+    }
+    let waiting = runtime
+        .permission_broker()
+        .is_some_and(|broker| broker.pending_len() > 0);
+    if waiting {
+        return devboule_protocol::AgentTaskState::InputRequired;
+    }
+    session.state.task_state(runtime.is_running_turn())
+}
+
+/// One `AgentMessage`, joined from the chunks that carried one message id.
+///
+/// A *record*, not runtime state: the finish hook reads it and nothing else
+/// touches it (`S5` decision 10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentMessageSnapshot {
+    pub(crate) message_id: Option<String>,
+    pub(crate) text: String,
 }
 
 /// Stream state is one mutex on purpose. Every step that must be atomic
@@ -135,6 +169,14 @@ pub(crate) struct SessionRuntime {
     /// runtime state, so an extremely short-lived child cannot publish an
     /// exit before the corresponding create snapshot.
     pub(crate) transition_ready: AtomicBool,
+    /// The child's last `AgentMessage`, accumulated across the chunks of one
+    /// message (`S5` decision 10). The finish hook reads it: the whole message
+    /// is what gets deposited as the artifact and its first 4000 characters are
+    /// the human-readable summary.
+    agent_message: Mutex<Option<AgentMessageSnapshot>>,
+    /// The last `AgentFinished` stop reason this session reported, which is
+    /// what decides `completed | failed | canceled` in the finish report.
+    agent_stop_reason: Mutex<Option<String>>,
     /// The wait thread and the post-create race check can observe the same
     /// exit. Only one of them may publish the exit transition.
     pub(crate) exit_transition_sent: AtomicBool,
@@ -162,6 +204,16 @@ pub(crate) struct SessionRuntime {
     /// Roster `sessions_watch` notify. ACP publish uses this so Silent→Live
     /// is not swallowed (the PTY coalescer already notifies the registry).
     pub(crate) roster_notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Called once after an `AgentFinished` is published (never for any other
+    /// event), which is the slice-5 finish report's trigger.
+    ///
+    /// It is deliberately not the attention hook: attention is a *priority*
+    /// state (`Error` 2 outranks `Finished` 1), so a child whose provider
+    /// emitted one malformed line or one error before finishing keeps the
+    /// higher reason and the later `Finished` raise is dropped — taking the
+    /// report with it. A turn that ended is a fact about the stream, not a
+    /// display state, and this hook is where the stream says so.
+    pub(crate) finish_notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Provider-side session id (ACP `sessionId`, Claude `system/init`
     /// `session_id`). Stored for resume; not the Devboule session id.
     pub(crate) peer_session_id: Mutex<Option<String>>,
@@ -385,6 +437,8 @@ impl SessionRuntime {
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
             session_manifest: Mutex::new(None),
+            agent_message: Mutex::new(None),
+            agent_stop_reason: Mutex::new(None),
             mcp_bearer: Mutex::new(None),
             mcp_url: Mutex::new(None),
             mcp_readiness: Mutex::new(McpReadiness {
@@ -403,6 +457,7 @@ impl SessionRuntime {
             on_os_death: Mutex::new(None),
             os_death_started: AtomicBool::new(false),
             roster_notify: Mutex::new(None),
+            finish_notify: Mutex::new(None),
             peer_session_id: Mutex::new(None),
         }
     }
@@ -657,7 +712,9 @@ impl SessionRuntime {
                 | SessionEvent::PermissionRequest { .. }
                 | SessionEvent::PermissionResolved { .. }
                 | SessionEvent::SessionNotice { .. }
-                | SessionEvent::SessionManifest { .. } => {
+                | SessionEvent::SessionManifest { .. }
+                | SessionEvent::AgentCreated { .. }
+                | SessionEvent::ChildFinished { .. } => {
                     let Some(seq) = journal_seq else {
                         continue;
                     };
@@ -1140,6 +1197,12 @@ impl SessionRuntime {
             self.notify_roster();
         }
         self.raise_attention_for_event(&event);
+        // A turn that ended is reported here rather than through attention:
+        // see [`Self::finish_notify`]. One call per `AgentFinished`, and the
+        // report path itself is gated on the child actually being one.
+        if matches!(&event, SessionEvent::AgentFinished { .. }) {
+            self.notify_finished();
+        }
         Some(event)
     }
 
@@ -1323,6 +1386,10 @@ impl SessionRuntime {
         journal_text: Option<&str>,
         event_seq: Option<u64>,
     ) -> bool {
+        // Every published agent event passes through here, which is the one
+        // place the finish hook's raw material can be remembered without a
+        // second matching pass over the stream (`S5` decisions 7 and 10).
+        self.record_agent_outcome(&event);
         // One place, every publisher: a provider client writes `local` as a
         // placeholder and never has to know which device asked for the session,
         // because the request is overwritten with the session's stored origin
@@ -1385,6 +1452,9 @@ impl SessionRuntime {
         self.raise_attention_for_event(&event);
         if matches!(&event, SessionEvent::AgentFinished { .. }) {
             self.finish_turn();
+            // The same "a turn ended" fact the finish report hangs off (`S5`
+            // §3): this publisher is the one an ACP provider's events take.
+            self.notify_finished();
         }
         was_silent
     }
@@ -1439,6 +1509,118 @@ impl SessionRuntime {
 
     pub(crate) fn permission_broker(&self) -> Option<Arc<PermissionBroker>> {
         self.permission_broker.as_ref().map(Arc::clone)
+    }
+
+    /// Whether a prompt turn is running right now. The attention hooks' own
+    /// question, asked without a turn id.
+    pub(crate) fn is_running_turn(&self) -> bool {
+        self.turn_active.load(Ordering::Acquire)
+    }
+
+    /// The last `AgentMessage` this provider published, chunks of one message
+    /// already joined.
+    pub(crate) fn agent_message_snapshot(&self) -> Option<AgentMessageSnapshot> {
+        self.agent_message.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// The last `AgentFinished` stop reason, or `None` when the provider never
+    /// reported one.
+    pub(crate) fn agent_stop_reason(&self) -> Option<String> {
+        self.agent_stop_reason
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
+    /// Remember what the finish hook needs from the event stream (`S5`
+    /// decisions 7 and 10).
+    ///
+    /// Chunks of one message carry one `message_id`, so a chunk whose id is this
+    /// session's remembered one *continues* the message and any other chunk
+    /// starts a new one. A provider that sends `null` ids therefore accumulates
+    /// one message until it says something else — the same shape the transcript
+    /// renders, which is the point: the summary and the artifact are the last
+    /// message a person can see.
+    fn record_agent_outcome(&self, event: &SessionEvent) {
+        match event {
+            SessionEvent::AgentMessage {
+                message_id, text, ..
+            } => {
+                let Ok(mut slot) = self.agent_message.lock() else {
+                    return;
+                };
+                match slot.as_mut() {
+                    Some(current) if current.message_id == *message_id => {
+                        current.text.push_str(text);
+                    }
+                    _ => {
+                        *slot = Some(AgentMessageSnapshot {
+                            message_id: message_id.clone(),
+                            text: text.clone(),
+                        });
+                    }
+                }
+            }
+            SessionEvent::AgentFinished { stop_reason, .. } => {
+                if let Ok(mut slot) = self.agent_stop_reason.lock() {
+                    *slot = Some(stop_reason.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Publish the creation record on the **creator's** transcript and journal
+    /// it as an agent report row (`S5` §1).
+    ///
+    /// The id is built by the publisher for the same reason
+    /// [`Self::publish_agent_user_message`]'s is: the event the caller sees and
+    /// the row that links to it name one message.
+    pub(crate) fn publish_child_created(
+        &self,
+        child_session_id: &str,
+        display_name: &str,
+        provider: &str,
+        preset: &str,
+    ) -> bool {
+        self.publish_journaled_agent_event(|generation, seq| SessionEvent::AgentCreated {
+            message_id: Some(format!("devboule-agent-created-{generation}-{seq}")),
+            child_session_id: child_session_id.to_string(),
+            display_name: display_name.to_string(),
+            provider: provider.to_string(),
+            preset: preset.to_string(),
+        })
+        .is_some()
+    }
+
+    /// Publish the structured finish record beside the text message, with the
+    /// **same** `message_id` (`S5` §3, rev 4).
+    ///
+    /// `Some(id)` is what the caller wants: the app correlates the two records
+    /// on it, which is why this one is not published through the id-building
+    /// sibling above — the id is the text message's, handed in.
+    pub(crate) fn publish_child_finished(
+        &self,
+        message_id: Option<String>,
+        child_session_id: &str,
+        display_name: &str,
+        state: devboule_protocol::AgentTaskState,
+        note: Option<String>,
+        artifacts: Vec<devboule_protocol::FinishArtifact>,
+    ) -> bool {
+        let event = SessionEvent::ChildFinished {
+            message_id,
+            child_session_id: child_session_id.to_string(),
+            display_name: display_name.to_string(),
+            state,
+            note,
+            artifacts,
+        };
+        // Journaled like the creation record (brief §1, audit finding): the
+        // creator's journal is what an unattached Workspace, or one that
+        // restarts, reads the finish out of, so the structured record cannot
+        // live on the stream alone.
+        self.publish_journaled_agent_event(|_, _| event).is_some()
     }
 
     pub(crate) fn can_publish_agent_user_message(&self) -> bool {
@@ -1662,6 +1844,20 @@ impl SessionRuntime {
     pub(crate) fn set_roster_notify(&self, callback: Arc<dyn Fn() + Send + Sync>) {
         if let Ok(mut slot) = self.roster_notify.lock() {
             *slot = Some(callback);
+        }
+    }
+
+    /// Set the hook that runs once per published `AgentFinished` (`S5` §3).
+    pub(crate) fn set_finish_notify(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.finish_notify.lock() {
+            *slot = Some(callback);
+        }
+    }
+
+    fn notify_finished(&self) {
+        let callback = self.finish_notify.lock().ok().and_then(|slot| slot.clone());
+        if let Some(callback) = callback {
+            callback();
         }
     }
 
@@ -1961,6 +2157,8 @@ impl SessionRuntime {
                 | SessionEvent::PermissionResolved { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::SessionManifest { .. }
+                | SessionEvent::AgentCreated { .. }
+                | SessionEvent::ChildFinished { .. }
                 | SessionEvent::AgentReported { .. } => None,
             })
             .collect()
@@ -2732,6 +2930,10 @@ mod tests {
                 reaped: false,
                 peer_session_id: None,
                 origin: devboule_protocol::SessionOrigin::local(),
+                // The row this test reattaches carries no name and no parent:
+                // neither is what the notice path is about.
+                display_name: None,
+                created_by: None,
             })
             .expect("session row");
         let runtime = Arc::new(SessionRuntime::with_journal(

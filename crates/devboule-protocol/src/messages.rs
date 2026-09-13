@@ -228,6 +228,18 @@ pub enum ClientMessage {
         provider: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
+        /// The name the session is shown under, when the caller wants to choose
+        /// one. Trimmed, then required to be 1..=[`crate::MAX_DISPLAY_NAME_CHARS`]
+        /// characters; an absent field asks for the daemon's fallback title
+        /// (recorded nowhere but the `Session.title` the session already had).
+        /// A caller may not rename an existing session through this field: there
+        /// is no rename frame and this is create-only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+        /// Deliberately absent: the creator of a session is the daemon's fact,
+        /// written from the authenticated MCP bearer or from the creating frame
+        /// itself, and never a field a client fills in. A claim to be a child of
+        /// some other session would otherwise be one string away.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
@@ -513,6 +525,34 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         disabled_tools: Vec<String>,
     },
+}
+
+/// Trim a requested display name and check it, or say why it cannot be used.
+///
+/// One function for the two halves because they are one rule: the length is
+/// judged on the trimmed value, and the trimmed value is what the caller stores;
+/// a daemon that validated one string and stored another would cap a name it did
+/// not keep. The rules are [`crate::MAX_DISPLAY_NAME_CHARS`] characters and at
+/// least one, and neither sentence echoes the name back — it is a string the
+/// caller sent with nothing bounding its length, and repeating it would move a
+/// flood out of the frame and into an error the app renders.
+///
+/// Refusing an empty name instead of treating it as absent is deliberate:
+/// `None` is how a caller says "no name", and a caller that sent `""` (or only
+/// whitespace) meant to name the session something it did not manage to say.
+pub fn validate_display_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("A session display name is required; it was empty.".to_string());
+    }
+    let length = trimmed.chars().count();
+    if length > crate::MAX_DISPLAY_NAME_CHARS {
+        return Err(format!(
+            "A session display name is {length} characters; the limit is {}.",
+            crate::MAX_DISPLAY_NAME_CHARS
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 impl ClientMessage {
@@ -2265,6 +2305,7 @@ mod tests {
             kind: SessionKind::Terminal,
             provider: None,
             mode: None,
+            display_name: None,
             idempotency_key: Some("k1".to_string()),
         };
         let send = ClientMessage::SessionSend {
@@ -2469,6 +2510,7 @@ mod tests {
             kind: SessionKind::Claude,
             provider: None,
             mode: Some("plan".to_string()),
+            display_name: None,
             idempotency_key: None,
         };
         let value = serde_json::to_value(&message).expect("json");
@@ -3126,5 +3168,83 @@ mod tests {
             serde_json::from_value::<ProviderInfo>(encoded).expect("synthetic round trip"),
             synthetic
         );
+    }
+
+    /// `display_name` is one field of `session_create`, camelCase on the wire and
+    /// optional: a frame that omits it is still a valid create (S5-09).
+    #[test]
+    fn session_create_display_name_is_camel_case_and_optional() {
+        let named = ClientMessage::SessionCreate {
+            id: 12,
+            workspace_id: None,
+            kind: SessionKind::Claude,
+            provider: None,
+            mode: None,
+            display_name: Some("worker".to_string()),
+            idempotency_key: None,
+        };
+        let value = serde_json::to_value(&named).expect("json");
+        assert_eq!(value["displayName"], "worker");
+        assert!(value.get("display_name").is_none());
+
+        let bare = serde_json::json!({
+            "type": "session_create",
+            "id": 13,
+            "workspaceId": null,
+            "kind": "claude",
+        });
+        let decoded: ClientMessage = serde_json::from_value(bare).expect("older frame");
+        assert!(matches!(
+            decoded,
+            ClientMessage::SessionCreate {
+                display_name: None,
+                ..
+            }
+        ));
+
+        // There is no `createdBy` on a create frame: the parent is the daemon's
+        // fact and a client that sends one is not describing itself as a child.
+        let claiming = serde_json::json!({
+            "type": "session_create",
+            "id": 14,
+            "workspaceId": null,
+            "kind": "claude",
+            "displayName": "worker",
+            "createdBy": "s.parent.1",
+        });
+        let decoded: ClientMessage = serde_json::from_value(claiming).expect("frame with a claim");
+        let ClientMessage::SessionCreate { display_name, .. } = decoded else {
+            panic!("expected a create frame");
+        };
+        assert_eq!(display_name.as_deref(), Some("worker"));
+    }
+
+    /// The bound, its trim, and the fact that no refusal echoes the name.
+    #[test]
+    fn a_display_name_is_trimmed_then_capped_at_sixty_characters() {
+        assert_eq!(
+            validate_display_name("  worker  "),
+            Ok("worker".to_string()),
+            "the value is trimmed before it is judged, and the trimmed one is kept"
+        );
+        assert!(validate_display_name("").is_err());
+        assert!(validate_display_name("   \t ").is_err());
+        let sixty = "worker".repeat(10);
+        assert_eq!(sixty.chars().count(), crate::MAX_DISPLAY_NAME_CHARS);
+        assert_eq!(validate_display_name(&sixty), Ok(sixty.clone()));
+        let sixty_one = format!("{sixty}!");
+        let error = validate_display_name(&sixty_one).expect_err("61 characters");
+        assert!(
+            error.contains("61") && error.contains("60"),
+            "the sentence states both numbers: {error}"
+        );
+        assert!(
+            !error.contains("worker"),
+            "the refusal must not echo the name back: {error}"
+        );
+        // Counted in characters, not bytes: sixty accented characters fit.
+        let accented = "è".repeat(crate::MAX_DISPLAY_NAME_CHARS);
+        assert!(accented.len() > crate::MAX_DISPLAY_NAME_CHARS);
+        assert_eq!(validate_display_name(&accented), Ok(accented));
     }
 }

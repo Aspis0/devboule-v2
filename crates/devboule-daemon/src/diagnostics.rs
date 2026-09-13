@@ -638,6 +638,8 @@ mod tests {
             // A diagnostics fixture is the person at this machine: the only
             // origin that carries no device id.
             origin: devboule_protocol::SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
         }
     }
 

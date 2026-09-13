@@ -1673,6 +1673,9 @@ fn extension_for(mime_type: &str) -> Option<&'static str> {
         "image/png" => Some("png"),
         "image/jpeg" => Some("jpg"),
         "image/svg+xml" => Some("svg"),
+        // The finish report's artifact (`S5` decision 10): a child's last
+        // message, deposited as one markdown file for the creator.
+        "text/markdown" => Some("md"),
         _ => None,
     }
 }

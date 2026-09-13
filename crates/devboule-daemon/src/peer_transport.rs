@@ -2396,7 +2396,12 @@ mod tests {
         }
 
         let started = Instant::now();
-        let deadline = started + Duration::from_secs(1);
+        // The bound is the peek budget rather than a wall clock of its own: the
+        // property is "the second connector is not behind the silent one", and a
+        // serial accept loop would handle it only *after* the silent client's
+        // peek expired. A fixed one-second deadline turned the same property
+        // into a machine-speed assertion and went red by 8 ms under load.
+        let deadline = started + PAIRING_PEEK_TIMEOUT;
         loop {
             if !pairing
                 .handled
@@ -2408,8 +2413,8 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "a second connector was not handled within 1 s while a silent one was parked; \
-                 the accept thread is blocked on the peek ({:?} elapsed)",
+                "a second connector was not handled within the peek budget while a silent one \
+                 was parked; the accept thread is blocked on the peek ({:?} elapsed)",
                 started.elapsed()
             );
             std::thread::sleep(Duration::from_millis(10));

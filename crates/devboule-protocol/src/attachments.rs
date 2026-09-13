@@ -28,7 +28,8 @@ use crate::{
 /// Everything else is refused rather than guessed at: a daemon that writes an
 /// attachment to disk and names a path in a prompt is making a promise about
 /// what is in that file, and it can only keep a promise about formats it knows.
-pub const ATTACHMENT_MIME_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/svg+xml"];
+pub const ATTACHMENT_MIME_TYPES: [&str; 4] =
+    ["image/png", "image/jpeg", "image/svg+xml", "text/markdown"];
 
 /// The number of hex characters a SHA-256 digest has (32 bytes).
 ///

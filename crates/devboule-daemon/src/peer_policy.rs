@@ -406,6 +406,7 @@ pub(crate) mod tests {
             kind: SessionKind::Claude,
             provider: None,
             mode: None,
+            display_name: None,
             idempotency_key: None,
         };
         let attach = || ClientMessage::SessionAttach {
@@ -857,6 +858,7 @@ pub(crate) mod tests {
                 kind: SessionKind::Claude,
                 provider: None,
                 mode: None,
+                display_name: None,
                 idempotency_key: None,
             },
             ClientMessage::SessionAttach {

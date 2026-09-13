@@ -100,23 +100,24 @@ pub use ids::{
     OwnerId,
 };
 pub use messages::{
-    AgentMessageState, AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody,
-    JournalLimits, JournalRetention, JournalSessionUsage, JournalStats, JournalUsage,
-    PairingSecret, PeerRole, PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState,
-    RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource, SelfInfo,
+    validate_display_name, AgentMessageState, AttachmentReference, ClientMessage, DaemonMessage,
+    DaemonStatusBody, JournalLimits, JournalRetention, JournalSessionUsage, JournalStats,
+    JournalUsage, PairingSecret, PeerRole, PeerRow, PendingPairing, PromptAttachment, ProviderInfo,
+    RemoteState, RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource, SelfInfo,
     SessionEventEnvelope, ToolDescriptor, ToolPolicyEntry, Unreclaimable, PEER_CAPS,
     PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
 pub use session::{
-    cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskStatus,
-    Attention, AttentionReason, AvailableCommandView, Cursor, CursorShape, NoticeSeverity,
-    PermissionEnvVar, PermissionOption, PermissionOutcome, Persistence, PersistenceKind,
-    ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView,
-    SessionModeView, SessionModel, SessionModelEffort, SessionOrigin, SessionOriginKind,
-    SessionState, SessionStateSnapshot, SubscriptionId, ToolLocation, TranscriptIntegrity,
-    TurnUsage,
+    cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskState,
+    AgentTaskStatus, Attention, AttentionReason, AvailableCommandView, CreateAgentCaps,
+    CreateAgentCard, Cursor, CursorShape, FinishArtifact, FinishArtifactPart,
+    FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar, PermissionOption,
+    PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor, Session,
+    SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
+    SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState, SessionStateSnapshot,
+    SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage,
 };
 
 /// Current protocol dialect spoken by this crate.
@@ -184,6 +185,18 @@ pub mod caps {
     /// the name exists so a client can tell a daemon that accepts deposits
     /// from one that does not.
     pub const ATTACHMENTS_DEPOSIT: &str = "attachments.deposit";
+
+    /// Agents create agents (`devboule_create_agent`) and the finish reports
+    /// that come back (`S5`).
+    ///
+    /// In both lists for the reason `tool_policy` is: the handshake negotiates
+    /// the intersection, so a name only one side offers is never negotiated, and
+    /// a client that gates a surface on it would refuse its own requests. The
+    /// name is advertised from the first release of this slice because the tool
+    /// itself is refused on a daemon that predates it — an agent that called it
+    /// would get an unknown tool, which is the honest answer, and the app needs
+    /// no refusal of its own to read `agent_created`/`child_finished`.
+    pub const AGENT_CREATE: &str = "agent_create";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -238,6 +251,21 @@ pub const MAX_ATTACHMENT_DATA_BYTES: usize = 192 * 1024;
 /// 255 bytes is what a single path component holds on NTFS, APFS and ext4
 /// alike, so a name that does not fit one is not a file name.
 pub const MAX_ATTACHMENT_NAME_BYTES: usize = 255;
+
+/// The longest display name a `SessionCreate` may carry (60 characters).
+///
+/// Counted in `char`s, not bytes, unlike [`MAX_ATTACHMENT_NAME_BYTES`]: this
+/// string is a label a person reads in a tab strip, it is never a file name, and
+/// a name of sixty accented characters is a name of sixty characters. The
+/// leading and trailing whitespace of the value is trimmed before the length is
+/// judged and before it is stored, so `"  builder "` is `builder` — eight
+/// characters, not ten — and a name that is nothing but whitespace is empty and
+/// refused.
+///
+/// The floor is one character for the same reason: `display_name` is a
+/// *request* to name a session, and an empty one is a caller that meant to send
+/// no name at all. Omitting the field is how a caller asks for the fallback.
+pub const MAX_DISPLAY_NAME_CHARS: usize = 60;
 
 /// Largest sum of every attachment's base64 `data` on one request (384 KiB).
 ///
@@ -500,6 +528,10 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // A deposit is a session RPC this daemon serves, so the daemon offers the
     // name; the app has to offer it too or the intersection drops it.
     capabilities.push(Capability::new(caps::ATTACHMENTS_DEPOSIT));
+    // Same pairing again: `agent_create` names the MCP tool an agent may call
+    // and the two events that come back from it. The daemon serves it, so the
+    // app must offer it or the handshake would negotiate it away.
+    capabilities.push(Capability::new(caps::AGENT_CREATE));
     capabilities
 }
 
@@ -527,6 +559,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // negotiated, and a client could not then tell a daemon that accepts
     // deposits from one that does not.
     capabilities.push(Capability::new(caps::ATTACHMENTS_DEPOSIT));
+    // Same pairing, for the creation surface: the app offers it so the
+    // intersection keeps it, and reads it to know whether the daemon serves
+    // `devboule_create_agent` and its two events.
+    capabilities.push(Capability::new(caps::AGENT_CREATE));
     capabilities
 }
 
@@ -583,6 +619,26 @@ mod tests {
         assert!(m3a_client_capabilities()
             .iter()
             .any(|cap| cap.as_str() == caps::TOOL_POLICY));
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_agent_create_capability() {
+        // Both lists, for the reason the two tests above state: the handshake
+        // negotiates the intersection, so a name only the daemon offers is never
+        // negotiated and the app could not tell a daemon that serves
+        // `devboule_create_agent` from one that does not.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::AGENT_CREATE));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::AGENT_CREATE));
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(
+            agreed.iter().any(|cap| cap.as_str() == caps::AGENT_CREATE),
+            "the negotiated set must keep agent_create: {:?}",
+            agreed.iter().map(Capability::as_str).collect::<Vec<_>>()
+        );
     }
 
     #[test]

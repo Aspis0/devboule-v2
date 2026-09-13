@@ -139,7 +139,15 @@ pub(super) struct Attachment {
 }
 
 /// One item queued for an observer, in wire order.
+///
+/// `SessionEvent` is held inline, and the creation card and the finish
+/// artifacts grew it: the largest variant is now a few hundred bytes. Boxing it
+/// is the right fix and a change of its own (every construction and every
+/// replay path touches it); the queue this sits in is bounded per observer, so
+/// the cost is fixed rather than open-ended. Recorded here so the next pass
+/// finds it rather than re-deriving it.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub(super) enum PendingItem {
     /// Screen state at `as_of_seq`. Always the first item of an attachment;
     /// also the replacement emitted when a slow viewer's queue exceeds the

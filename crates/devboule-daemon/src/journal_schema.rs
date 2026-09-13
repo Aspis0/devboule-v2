@@ -146,10 +146,26 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                 );
             }
         }
+        if version < 10 {
+            // The display name and the parent of an agent-created session
+            // (audit S5-12). NULL is the honest default for both: every row
+            // that predates the concept has no name a human chose and no
+            // creator, and a surface that finds NULL falls back to the title
+            // exactly as it did before these columns existed.
+            if !session_has_column(&tx, "display_name")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN display_name TEXT", [])?;
+            }
+            if !session_has_column(&tx, "created_by")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN created_by TEXT", [])?;
+            }
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
     validate_v6_schema(&conn)?;
+    // The two slice-5 columns are checked by shape rather than by presence
+    // (audit S5B-07) — see [`validate_agent_columns`].
+    validate_agent_columns(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -181,6 +197,42 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
 
 fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalError> {
     table_has_column(conn, "sessions", column)
+}
+
+/// The two columns the slice-5 migration adds must have the *shape* the daemon
+/// writes into them, not merely be present (audit S5B-07).
+///
+/// `TEXT`, nullable, no default. A v9 database that happens to carry a
+/// `display_name INTEGER NOT NULL DEFAULT 'x'` passes a presence check and then
+/// answers every read with a value this daemon never wrote; the mismatch takes
+/// the corrupt-journal path (`JournalError::Corrupt`, the same one the v6 and
+/// v9 shape checks use) rather than being used.
+fn validate_agent_columns(conn: &Connection) -> Result<(), JournalError> {
+    for column in ["display_name", "created_by"] {
+        let mut statement = conn.prepare(
+            "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('sessions') \
+             WHERE name = ?1",
+        )?;
+        let shape = statement
+            .query_row([column], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i32>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .optional()?;
+        let ours = matches!(
+            shape,
+            Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")
+        );
+        if !ours {
+            return Err(JournalError::Corrupt(format!(
+                "journal schema has an unexpected sessions.{column} column"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Give every stored permission payload written before v9 the `local` origin it
@@ -611,6 +663,8 @@ CREATE TABLE IF NOT EXISTS permissions (
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
+
+    use super::validate_agent_columns;
 
     use devboule_protocol::{
         PeerRole, SessionEvent, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity,
@@ -1342,6 +1396,86 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Audit S5-12: a journal written before the columns existed gets them as
+    /// NULL, and a row that predates the concept keeps the origin it had.
+    ///
+    /// The default is deliberately absent rather than invented: a session
+    /// created before the daemon could name one has no name a human chose, and
+    /// a recovery that guessed one would show a name nobody ever saw.
+    #[test]
+    fn a_v9_journal_migrates_to_v10_with_null_display_name_and_creator() {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("v9 journal");
+        conn.execute_batch(SCHEMA_SQL).expect("base schema");
+        conn.execute_batch(V8_DDL).expect("v8 columns and tables");
+        conn.execute_batch(super::PEERS_AUDIT_SQL)
+            .expect("v8 peers and audit tables");
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN origin_kind TEXT NOT NULL DEFAULT 'local';
+             ALTER TABLE sessions ADD COLUMN origin_device TEXT;
+             ALTER TABLE sessions ADD COLUMN origin_role TEXT;",
+        )
+        .expect("v9 origin columns");
+        conn.execute(
+            "INSERT INTO sessions (
+                id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                generation, status, exit_code, closed, last_seq, degraded,
+                dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes,
+                unsnapshotted_bytes, reaped, peer_session_id, provider,
+                origin_kind, origin_device, origin_role
+             ) VALUES ('s.before-name', 'owner', NULL, 'acp', 'Agent', 1, 2,
+                       1, 'ended', 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, NULL, 'claude',
+                       'peer', 'device-phone', 'client')",
+            [],
+        )
+        .expect("v9 session row");
+        conn.pragma_update(None, "user_version", 9)
+            .expect("v9 version");
+        drop(conn);
+
+        let journal = Journal::open(&path).expect("migrate");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.before-name")
+            .expect("the v9 row survived");
+        assert!(
+            row.display_name.is_none(),
+            "a session from before the column has no name, and NULL says so"
+        );
+        assert!(row.created_by.is_none(), "and no creator");
+        assert_eq!(
+            row.origin.kind,
+            SessionOriginKind::Peer,
+            "the migration must not disturb what v9 already recorded"
+        );
+        assert_eq!(
+            row.to_session().display_name,
+            None,
+            "a recovered transcript does not invent a name either"
+        );
+
+        let check = Connection::open(&path).expect("check migrated schema");
+        for column in ["display_name", "created_by"] {
+            let columns: i64 = check
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?1",
+                    [column],
+                    |row| row.get(0),
+                )
+                .expect("the migrated column");
+            assert_eq!(columns, 1, "missing migrated column {column}");
+        }
+        let version: i32 = check
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, JOURNAL_SCHEMA_VERSION);
+        drop(check);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn version_7_journal_migrates_to_v8_with_peers_audit_and_triggers() {
         let (dir, path) = tmp_journal();
@@ -1544,6 +1678,48 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
             "before update"
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit S5B-07: a database whose `sessions.display_name` exists with the
+    /// wrong type (or the wrong nullability) is refused up front. A presence
+    /// check alone would accept it and every read afterwards would answer with
+    /// a value this daemon never wrote.
+    #[test]
+    fn a_v9_sessions_table_with_a_wrongly_typed_display_name_is_refused() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 display_name INTEGER,
+                 created_by TEXT
+             );",
+        )
+        .expect("a v9-shaped table with the wrong column type");
+        let error = validate_agent_columns(&conn).expect_err("the wrong type is refused");
+        assert!(
+            matches!(error, JournalError::Corrupt(_)),
+            "the corrupt-journal path is the one that refuses it: {error}"
+        );
+        assert!(
+            error.to_string().contains("display_name"),
+            "the message names the column: {error}"
+        );
+    }
+
+    /// The other half of S5B-07: the shape this daemon writes (nullable TEXT,
+    /// no default) is accepted, so the check cannot pass by refusing everything.
+    #[test]
+    fn the_shape_this_daemon_writes_is_accepted() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 display_name TEXT,
+                 created_by TEXT
+             );",
+        )
+        .expect("the shape the daemon writes");
+        validate_agent_columns(&conn).expect("the daemon's own shape is valid");
     }
 
     fn stored_trigger(conn: &Connection, name: &str) -> String {

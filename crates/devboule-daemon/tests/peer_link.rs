@@ -477,12 +477,26 @@ fn two_daemons_pair_over_the_tailnet_and_a_peer_is_restricted() {
 
     // A learns about the request by polling `DevicesList`: slice 1a has no push
     // channel, so this is the only way the card can appear.
-    let parking = match a
-        .pipe
-        .expect(ClientMessage::DevicesList { id: a.pipe.id() })
-    {
-        DaemonMessage::Devices { pending, .. } => pending,
-        other => panic!("expected Devices, got {other:?}"),
+    // The park happens on A's side once B's request has crossed the link, so
+    // one poll is not enough: ask again until the daemon's own answer names the
+    // pairing, and fail if it never parks at all.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let parking = loop {
+        let pending = match a
+            .pipe
+            .expect(ClientMessage::DevicesList { id: a.pipe.id() })
+        {
+            DaemonMessage::Devices { pending, .. } => pending,
+            other => panic!("expected Devices, got {other:?}"),
+        };
+        if !pending.is_empty() {
+            break pending;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "A never parked the pairing it was asked to confirm"
+        );
+        std::thread::sleep(Duration::from_millis(50));
     };
     assert_eq!(parking.len(), 1, "exactly one pairing is parked at A");
     assert_eq!(

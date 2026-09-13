@@ -163,15 +163,31 @@ pub(crate) fn known_npm_package(id: &str) -> Option<&'static str> {
 // outcomes) is visible through ProvidersList in integration tests, mirroring
 // how real providers are surfaced.
 #[cfg(debug_assertions)]
-const TEST_ONLY_AGENTS: &[KnownAgent] = &[KnownAgent {
-    id: "devboule-acp-stub",
-    aliases: &["devboule-acp-stub"],
-    acp_args: None,
-    stream_json_args: None,
-    rpc_args: None,
-    app_server_args: None,
-    npm_package: None,
-}];
+const TEST_ONLY_AGENTS: &[KnownAgent] = &[
+    KnownAgent {
+        id: "devboule-acp-stub",
+        aliases: &["devboule-acp-stub"],
+        acp_args: None,
+        stream_json_args: None,
+        rpc_args: None,
+        app_server_args: None,
+        npm_package: None,
+    },
+    // A provider id whose binary cannot exist anywhere (`S5` e2e): it is what
+    // makes `provider not installed` reachable without depending on what the
+    // machine running the tests happens to have installed. Like the stub it is
+    // `#[cfg(debug_assertions)]` only, and its preset cell lives in
+    // [`test_only_cell`], so a release daemon knows neither.
+    KnownAgent {
+        id: "devboule-absent-probe",
+        aliases: &["devboule-absent-probe"],
+        acp_args: None,
+        stream_json_args: None,
+        rpc_args: None,
+        app_server_args: None,
+        npm_package: None,
+    },
+];
 #[cfg(not(debug_assertions))]
 const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
 
@@ -183,11 +199,15 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
 pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     (
         MCP_ROSTER_TOOL,
-        "Lists live Devboule agent sessions known by the daemon. Stable agent names are not available yet; name is null and title is display-only.",
+        "Lists live Devboule agent sessions known by the daemon, with their display name, the session that created them, their lifecycle state and their creation depth.",
     ),
     (
         MCP_SEND_MESSAGE_TOOL,
         "Sends a message to one live Devboule agent session.",
+    ),
+    (
+        MCP_CREATE_AGENT_TOOL,
+        "Creates a new Devboule agent session from a preset and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id and display name.",
     ),
 ];
 
@@ -196,6 +216,62 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
 /// and the tool reads only its own bearer's roster.
 pub const MCP_ROSTER_TOOL: &str = "devboule_list_agents";
 pub const MCP_SEND_MESSAGE_TOOL: &str = "devboule_send_message";
+/// The creation tool (`S5`).
+///
+/// Served to every MCP-capable provider, like the two above, but **not**
+/// deliberately set in the always-on list that protects the roster: §2 puts it
+/// "subject to the provider tool policy like `devboule_send_message`", so a
+/// stored policy may turn agent creation off for a provider, and turning it off
+/// is the safe direction.
+pub const MCP_CREATE_AGENT_TOOL: &str = "devboule_create_agent";
+
+/// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`] (`S5` §2).
+///
+/// Closed on purpose. `additionalProperties: false` is the schema's half of a
+/// two-part rule: the broker refuses an unknown parameter by name, and the
+/// broker's own list of known parameters is read *out of this document* — so a
+/// parameter can never be described here and unchecked there.
+///
+/// There is deliberately **no `mode`**: a preset chooses the mode, a caller
+/// cannot. `notifyOnFinish` defaults to true.
+#[cfg(feature = "server")]
+pub(crate) fn agent_create_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "The child's display name, 1 to 60 characters."
+            },
+            "provider": {
+                "type": "string",
+                "description": "Catalog provider id: claude, codex, pi, grok, qwen or gemini."
+            },
+            "preset": {
+                "type": "string",
+                "description": "worker or design."
+            },
+            "workspaceId": {
+                "type": "string",
+                "description": "A workspace of the same owner; defaults to the caller's."
+            },
+            "cwd": {
+                "type": "string",
+                "description": "A directory inside that workspace, relative to it."
+            },
+            "initialPrompt": {
+                "type": "string",
+                "description": "The child's first prompt, at most 32 KiB."
+            },
+            "notifyOnFinish": {
+                "type": "boolean",
+                "description": "Whether this session is told when the child finishes. Default true."
+            }
+        },
+        "required": ["title", "provider", "preset", "initialPrompt"],
+        "additionalProperties": false
+    })
+}
 
 /// Which providers can be served the broker's tools, keyed by catalog id.
 ///
@@ -228,6 +304,75 @@ pub fn mcp_tools_for(agent_id: &str) -> Vec<devboule_protocol::ToolDescriptor> {
         .unwrap_or_default()
 }
 
+/// The session kind a provider's sessions are created as.
+///
+/// One match, in the catalog, because the two must agree: `claude` is the
+/// stream-json kind, `codex` the app-server kind, `pi` the RPC kind, and every
+/// other provider a created session may name is ACP. `resolve_session_provider`
+/// reads the pair back and would refuse a `claude` sent as ACP.
+#[cfg(feature = "server")]
+pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind {
+    use devboule_protocol::SessionKind;
+    match provider {
+        "claude" => SessionKind::Claude,
+        "codex" => SessionKind::Codex,
+        "pi" => SessionKind::Pi,
+        _ => SessionKind::Acp,
+    }
+}
+
+/// May a preset ever resolve to this mode, for this provider (`S5` decision 2)?
+///
+/// Written as a refusal list rather than an allow list, and the reason is the
+/// decision's own: the modes a session nobody is watching may not be in have
+/// names, and a new mode a provider adds is judged by them rather than by
+/// whether someone remembered to add it to a table.
+///
+/// Three sources, all named:
+///
+/// - the modes the daemon itself auto-answers a permission request in
+///   (`PermissionBroker::auto_answer`) — `bypass`, `auto_accept`,
+///   `bypassPermissions` — because a session in one of them never asks a human;
+/// - Codex's own unattended pair: `full-access` is `approvalPolicy: never`, and
+///   `auto-review` hands approvals to a model reviewer;
+/// - Claude's `acceptEdits`, which approves every edit tool without prompting,
+///   and its `auto`, which is a model-reviewed approvals mode — the same act
+///   Codex spells `auto-review`.
+///
+/// Codex's `auto` is deliberately **not** on the list: it is `on-request` plus
+/// `workspaceWrite`, which is exactly the mode decision 2 allows.
+/// Whether a session nobody is watching could reach this mode (`S5` decision
+/// 2). Test-only by construction: the *table* is the production artefact and the
+/// property test is what proves no cell resolves to one of these names.
+///
+/// The names are the decision's own: the modes the daemon auto-answers a
+/// permission request in (`PermissionBroker::auto_answer`), Codex's
+/// `full-access` and `auto-review`, and the two Claude modes that approve in
+/// place of the human (`acceptEdits` approves edits without prompting, `auto`
+/// hands approvals to a model reviewer).
+///
+/// Codex's `auto` is **not** in the list and must not be added: it is an
+/// approval policy of `on-request` with a `workspaceWrite` sandbox and no
+/// network, which still asks the human. The two are one word apart and mean
+/// opposite things, which is why the exclusion is written per family.
+///
+/// Aliases resolve first, so an alias cannot reach a mode its provider's own
+/// spelling would refuse.
+#[cfg(test)]
+pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
+    const AUTO_ANSWERED: &[&str] = &["bypass", "auto_accept", "bypassPermissions"];
+    const CODEX_UNATTENDED: &[&str] = &["full-access", "auto-review"];
+    const CLAUDE_UNATTENDED: &[&str] = &["acceptEdits", "auto"];
+    if AUTO_ANSWERED.contains(&mode_id) {
+        return true;
+    }
+    match catalog_provider_id(provider) {
+        Some("codex") => CODEX_UNATTENDED.contains(&mode_id),
+        Some("claude") => CLAUDE_UNATTENDED.contains(&mode_id),
+        _ => false,
+    }
+}
+
 /// The exact id the catalog publishes for `agent_id`, when it publishes tools
 /// under any spelling of it.
 ///
@@ -245,6 +390,322 @@ pub fn mcp_catalog_id(agent_id: &str) -> Option<&'static str> {
         .iter()
         .find(|(id, _)| id.eq_ignore_ascii_case(agent_id))
         .map(|(id, _)| *id)
+}
+
+/// The tool-policy overlay a preset applies to the sessions it creates
+/// (`S5` §2).
+///
+/// An overlay can only ever *remove* tools. There is no field that grants one,
+/// because a preset that widened a session's tools would be a second policy
+/// authority beside the stored `ToolPolicyEntry` the human edits; the overlay
+/// is the preset's own deny list, and the effective answer for one tool is
+/// "the stored policy allows it AND the overlay allows it".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "server")]
+pub(crate) struct ToolOverlay {
+    pub(crate) disabled: &'static [&'static str],
+}
+
+#[cfg(feature = "server")]
+impl Default for ToolOverlay {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+#[cfg(feature = "server")]
+impl ToolOverlay {
+    /// The empty overlay: the session is served exactly what its provider's
+    /// stored policy allows.
+    pub(crate) const NONE: Self = Self { disabled: &[] };
+    /// A design child: no `devboule_send_message` and no
+    /// `devboule_create_agent`. It keeps the roster, which is its own bearer's
+    /// read-only view. Depth alone would not stop it (a depth-1 child may
+    /// create), so the deny list is the rule.
+    pub(crate) const DESIGN: Self = Self {
+        disabled: &[MCP_SEND_MESSAGE_TOOL, MCP_CREATE_AGENT_TOOL],
+    };
+
+    pub(crate) fn allows(self, name: &str) -> bool {
+        !self.disabled.contains(&name)
+    }
+}
+
+/// One provider's row in a preset: the mode the child is created in and the
+/// overlay applied to it (`S5` §2).
+///
+/// A cell is a *promise* about a provider, and the daemon keeps it only where
+/// it can: the mode is applied through the provider's own mode switch, and the
+/// overlay only reaches a provider whose sessions are given an MCP connection
+/// at all. `pi` and `codex` cells are kept deliberately even though the broker
+/// is registered for ACP and Claude sessions only (`session.rs` registers it on
+/// `SessionKind::Acp | SessionKind::Claude`, the same rule that predates this
+/// slice): a child on those providers gets no MCP tools, so its overlay is
+/// inert today, and deleting the cells would silently make those presets
+/// unavailable to a caller that asks for them. When the broker grows a
+/// non-ACP transport, the cell already says what the child must be denied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "server")]
+pub(crate) struct AgentPresetCell {
+    /// Catalog id, exactly as [`KNOWN_AGENTS`] spells it.
+    pub(crate) provider: &'static str,
+    pub(crate) mode: &'static str,
+    pub(crate) overlay: ToolOverlay,
+}
+
+/// One preset: its closed set of provider cells and the preamble every session
+/// it creates is given (`S5` §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "server")]
+pub(crate) struct AgentPreset {
+    pub(crate) id: &'static str,
+    pub(crate) preamble: &'static str,
+    pub(crate) cells: &'static [AgentPresetCell],
+}
+
+#[cfg(feature = "server")]
+pub(crate) const AGENT_PRESET_WORKER: &str = "worker";
+#[cfg(feature = "server")]
+pub(crate) const AGENT_PRESET_DESIGN: &str = "design";
+
+/// The one preamble both presets carry.
+///
+/// It asks for the result in the final message and says nothing about files:
+/// the finish hook deposits that message by itself (§3, decision 10), so a
+/// preamble that told the child to write files would be asking for the same
+/// artifact twice, in the one place a child can put it out of reach.
+/// `preambles_hold_no_instruction_to_write_files` pins the property.
+#[cfg(feature = "server")]
+pub(crate) const AGENT_PREAMBLE: &str =
+    "You were created by another agent; report your result in your final message.";
+
+/// The `worker` cells: the allowed mode of each catalog provider, no overlay.
+///
+/// The modes are the ones decision 2 measured as allowed — pi `ask` (the only
+/// non-`bypass` mode pi has), Codex `auto` (`on-request` + `workspaceWrite`,
+/// no network), Claude `default`, ACP `default` for the ACP providers the
+/// catalog publishes. `devboule-acp-stub` is deliberately absent: it is a
+/// debug-only health probe that implements no `session/set_mode`, so a
+/// creation naming it is refused with `no non-bypass mode for provider`.
+#[cfg(feature = "server")]
+const PRESET_WORKER_CELLS: &[AgentPresetCell] = &[
+    AgentPresetCell {
+        provider: "pi",
+        mode: "ask",
+        overlay: ToolOverlay::NONE,
+    },
+    AgentPresetCell {
+        provider: "codex",
+        mode: "auto",
+        overlay: ToolOverlay::NONE,
+    },
+    AgentPresetCell {
+        provider: "claude",
+        mode: "default",
+        overlay: ToolOverlay::NONE,
+    },
+    AgentPresetCell {
+        provider: "grok",
+        mode: "default",
+        overlay: ToolOverlay::NONE,
+    },
+    AgentPresetCell {
+        provider: "qwen",
+        mode: "default",
+        overlay: ToolOverlay::NONE,
+    },
+    AgentPresetCell {
+        provider: "gemini",
+        mode: "default",
+        overlay: ToolOverlay::NONE,
+    },
+];
+
+/// The `design` cells: the same modes, with the design overlay.
+///
+/// There is no Design preamble to copy and none is invented here: the Design
+/// instructions are composed per request by the app and travel in
+/// `initialPrompt`. A frozen copy in the catalog would be a second source of
+/// truth for a prompt the app still owns.
+#[cfg(feature = "server")]
+const PRESET_DESIGN_CELLS: &[AgentPresetCell] = &[
+    AgentPresetCell {
+        provider: "pi",
+        mode: "ask",
+        overlay: ToolOverlay::DESIGN,
+    },
+    AgentPresetCell {
+        provider: "codex",
+        mode: "auto",
+        overlay: ToolOverlay::DESIGN,
+    },
+    AgentPresetCell {
+        provider: "claude",
+        mode: "default",
+        overlay: ToolOverlay::DESIGN,
+    },
+    AgentPresetCell {
+        provider: "grok",
+        mode: "default",
+        overlay: ToolOverlay::DESIGN,
+    },
+    AgentPresetCell {
+        provider: "qwen",
+        mode: "default",
+        overlay: ToolOverlay::DESIGN,
+    },
+    AgentPresetCell {
+        provider: "gemini",
+        mode: "default",
+        overlay: ToolOverlay::DESIGN,
+    },
+];
+
+/// The closed preset table (`S5` §2). A preset not in this list is an unknown
+/// preset and is refused by name rather than resolved by default.
+#[cfg(feature = "server")]
+pub(crate) const AGENT_PRESETS: &[AgentPreset] = &[
+    AgentPreset {
+        id: AGENT_PRESET_WORKER,
+        preamble: AGENT_PREAMBLE,
+        cells: PRESET_WORKER_CELLS,
+    },
+    AgentPreset {
+        id: AGENT_PRESET_DESIGN,
+        preamble: AGENT_PREAMBLE,
+        cells: PRESET_DESIGN_CELLS,
+    },
+];
+
+/// The provider ids the catalog publishes, in catalog order, test-only rows
+/// included because a debug daemon serves them.
+#[cfg(test)]
+fn catalog_provider_ids() -> Vec<&'static str> {
+    KNOWN_AGENTS
+        .iter()
+        // The test-only rows are part of the catalog a debug build serves
+        // (audit S5B-08): they carry preset cells, so the property below has to
+        // walk them too. In a release build this list is empty.
+        .chain(TEST_ONLY_AGENTS.iter())
+        .map(|agent| agent.id)
+        .collect()
+}
+
+/// The catalog's own spelling of `agent_id`, when it publishes the id or an
+/// alias of it.
+///
+/// `mcp_catalog_id` answers only for the four MCP-capable providers, which is
+/// exactly the wrong set here: pi and codex host no MCP broker but are two of
+/// the three preset modes. This walks the whole catalog instead.
+#[cfg(any(feature = "server", test))]
+pub(crate) fn catalog_provider_id(agent_id: &str) -> Option<&'static str> {
+    KNOWN_AGENTS
+        .iter()
+        // The test-only rows are part of the catalog a *debug* daemon serves
+        // ([`TEST_ONLY_AGENTS`] is empty in a release build), and a preset cell
+        // for one of them resolves through the same door as any other provider
+        // id: without this, a debug daemon would publish a provider it then
+        // refused as unknown.
+        .chain(TEST_ONLY_AGENTS.iter())
+        .find(|agent| {
+            agent.id.eq_ignore_ascii_case(agent_id)
+                || agent
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(agent_id))
+        })
+        .map(|agent| agent.id)
+}
+
+/// The preset with this id, or `None`. Case-sensitive: a preset id is our own
+/// closed vocabulary, not a user's spelling.
+#[cfg(feature = "server")]
+pub(crate) fn agent_preset(preset_id: &str) -> Option<&'static AgentPreset> {
+    AGENT_PRESETS.iter().find(|preset| preset.id == preset_id)
+}
+
+/// Resolve one `(preset, provider)` cell, or the sentence that refuses it.
+///
+/// The refusals are decision 2's, in the order the caller can fix them: the
+/// preset is ours, the provider is the catalog's, and the mode is the one the
+/// catalog says that provider runs watched by a human. A provider the catalog
+/// publishes but the preset does not cover has no allowed mode, which is a
+/// different sentence from an unknown provider — the first is a limit of this
+/// version, the second is a typo.
+#[cfg(feature = "server")]
+pub(crate) fn resolve_agent_preset(
+    preset_id: &str,
+    provider_id: &str,
+) -> Result<(&'static AgentPreset, AgentPresetCell), String> {
+    let Some(preset) = agent_preset(preset_id) else {
+        return Err("unknown preset".to_string());
+    };
+    let Some(provider) = catalog_provider_id(provider_id) else {
+        return Err("unknown provider".to_string());
+    };
+    if let Some(cell) = preset
+        .cells
+        .iter()
+        .find(|cell| cell.provider == provider)
+        .copied()
+    {
+        return Ok((preset, cell));
+    }
+    // A debug build also accepts the test-only providers, and only there: the
+    // release table above never names them (`S5` e2e). The seam is one function
+    // so its surface is one thing to audit.
+    #[cfg(debug_assertions)]
+    if let Some(cell) = test_only_cell(preset.id, provider) {
+        return Ok((preset, cell));
+    }
+    Err("no non-bypass mode for provider".to_string())
+}
+
+/// The cells a **debug** build accepts for the test-only providers, and the
+/// whole of the seam they need (`S5` block 6).
+///
+/// `devboule-acp-stub` is the integration stub binary: it is the only provider
+/// in this tree that implements `session/set_mode`, so it is what makes a child
+/// creation measurable end to end, including the mode the preset cell names.
+/// `devboule-absent-probe` names a binary that cannot exist anywhere, and is
+/// how `provider not installed` is reached without depending on what happens to
+/// be installed on the machine running the tests.
+///
+/// Neither is in [`AGENT_PRESETS`]: the release table has six cells per preset
+/// (`the_release_table_never_names_a_test_provider`), the release build has no
+/// `test_only_cell` at all, and a release daemon therefore refuses both with
+/// `unknown provider`.
+#[cfg(all(feature = "server", debug_assertions))]
+fn test_only_cell(preset_id: &str, provider: &str) -> Option<AgentPresetCell> {
+    let cell = |provider: &'static str, overlay: ToolOverlay| {
+        Some(AgentPresetCell {
+            provider,
+            mode: "default",
+            overlay,
+        })
+    };
+    match (preset_id, provider) {
+        (AGENT_PRESET_WORKER, "devboule-acp-stub") => cell("devboule-acp-stub", ToolOverlay::NONE),
+        (AGENT_PRESET_DESIGN, "devboule-acp-stub") => {
+            cell("devboule-acp-stub", ToolOverlay::DESIGN)
+        }
+        (AGENT_PRESET_WORKER, "devboule-absent-probe") => {
+            cell("devboule-absent-probe", ToolOverlay::NONE)
+        }
+        (AGENT_PRESET_DESIGN, "devboule-absent-probe") => {
+            cell("devboule-absent-probe", ToolOverlay::DESIGN)
+        }
+        _ => None,
+    }
+}
+
+/// The overlays in play, for the tests that must see every one of them.
+#[cfg(test)]
+pub(crate) fn overlay_names() -> Vec<ToolOverlay> {
+    AGENT_PRESETS
+        .iter()
+        .flat_map(|preset| preset.cells.iter().map(|cell| cell.overlay))
+        .collect()
 }
 
 /// Registry wrappers that a better native chat-capable provider covers in the
@@ -2381,6 +2842,203 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         for unknown in ["claude-acp", "codex", "does-not-exist", ""] {
             assert_eq!(super::mcp_catalog_id(unknown), None, "{unknown}");
             assert!(super::mcp_tools_for(unknown).is_empty(), "{unknown}");
+        }
+    }
+
+    /// The property the audit attacks: no `(preset, provider)` cell resolves to
+    /// a mode a session nobody is watching could be run in.
+    ///
+    /// Written as a walk over the table rather than a list of expected modes, so
+    /// a cell added later is checked even if nobody remembers this test exists.
+    #[test]
+    fn no_preset_cell_resolves_to_an_unattended_mode() {
+        let mut checked = 0usize;
+        for preset in super::AGENT_PRESETS {
+            for cell in preset.cells {
+                checked += 1;
+                assert!(
+                    !super::mode_is_unattended(cell.provider, cell.mode),
+                    "preset {} provider {} resolves to unattended mode {}",
+                    preset.id,
+                    cell.provider,
+                    cell.mode
+                );
+            }
+        }
+        assert_eq!(
+            checked,
+            super::AGENT_PRESETS.len() * super::PRESET_WORKER_CELLS.len(),
+            "every cell of every preset must be walked"
+        );
+        assert!(
+            checked >= 6,
+            "the table must cover the catalog it claims to"
+        );
+    }
+
+    /// The named exclusions themselves, so a table that resolved to one is
+    /// caught even if the walk above were pointed at the wrong list.
+    #[test]
+    fn the_named_exclusions_are_unattended_and_the_allowed_modes_are_not() {
+        for (provider, mode) in [
+            ("pi", "bypass"),
+            ("codex", "full-access"),
+            ("codex", "auto-review"),
+            ("claude", "bypassPermissions"),
+            ("claude", "acceptEdits"),
+            ("claude", "auto"),
+            ("grok", "auto_accept"),
+        ] {
+            assert!(
+                super::mode_is_unattended(provider, mode),
+                "{provider} {mode} must be excluded"
+            );
+        }
+        // The allowed cells, one by one: Codex's `auto` is the mode most likely
+        // to be swept up by a careless list, and it is the allowed one.
+        for (provider, mode) in [
+            ("pi", "ask"),
+            ("codex", "auto"),
+            ("claude", "default"),
+            ("grok", "default"),
+        ] {
+            assert!(
+                !super::mode_is_unattended(provider, mode),
+                "{provider} {mode} is an allowed mode"
+            );
+        }
+    }
+
+    /// Every catalog provider has a cell in every preset, and the `design`
+    /// overlay is the only one that removes tools.
+    #[test]
+    fn every_catalog_provider_has_a_cell_and_only_design_has_an_overlay() {
+        let providers = super::catalog_provider_ids();
+        for preset in super::AGENT_PRESETS {
+            for provider in &providers {
+                // Every provider the catalog publishes has a cell in every
+                // preset, the debug-only rows included (audit S5B-08): those
+                // are the rows the slice-5 battery drives, so a preset that
+                // stopped naming one fails here rather than in the battery.
+                assert!(
+                    super::resolve_agent_preset(preset.id, provider).is_ok(),
+                    "preset {} provider {provider}",
+                    preset.id
+                );
+            }
+            for cell in preset.cells {
+                let design = preset.id == super::AGENT_PRESET_DESIGN;
+                assert_eq!(
+                    cell.overlay.disabled.is_empty(),
+                    !design,
+                    "only the design preset may carry an overlay"
+                );
+            }
+        }
+    }
+
+    /// The `design` overlay removes exactly the two tools, and both presets
+    /// keep the roster.
+    #[test]
+    fn the_design_overlay_hides_send_and_create_and_keeps_the_roster() {
+        let design = super::ToolOverlay::DESIGN;
+        assert!(!design.allows(super::MCP_CREATE_AGENT_TOOL));
+        assert!(!design.allows(super::MCP_SEND_MESSAGE_TOOL));
+        assert!(design.allows(super::MCP_ROSTER_TOOL));
+        assert_eq!(
+            design.disabled,
+            &[super::MCP_SEND_MESSAGE_TOOL, super::MCP_CREATE_AGENT_TOOL]
+        );
+        let worker = super::ToolOverlay::NONE;
+        for tool in [
+            super::MCP_CREATE_AGENT_TOOL,
+            super::MCP_SEND_MESSAGE_TOOL,
+            super::MCP_ROSTER_TOOL,
+        ] {
+            assert!(worker.allows(tool), "{tool}");
+        }
+        // No overlay anywhere in the table may name a tool the catalog does not
+        // publish: a typo would disable nothing and read as if it had.
+        let published: Vec<&str> = super::MCP_BROKER_TOOLS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        for overlay in super::overlay_names() {
+            for disabled in overlay.disabled {
+                assert!(published.contains(disabled), "{disabled} is not a tool");
+            }
+        }
+    }
+
+    /// The refusals are one sentence each, and an unknown preset does not read
+    /// as an unknown provider.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn the_release_table_never_names_a_test_provider() {
+        for preset in super::AGENT_PRESETS {
+            for cell in preset.cells {
+                assert!(
+                    !matches!(cell.provider, "devboule-acp-stub" | "devboule-absent-probe"),
+                    "{} names {} in the release table",
+                    preset.id,
+                    cell.provider
+                );
+            }
+        }
+        assert!(super::test_only_cell(super::AGENT_PRESET_WORKER, "devboule-acp-stub").is_some());
+        assert!(
+            super::test_only_cell(super::AGENT_PRESET_DESIGN, "devboule-absent-probe").is_some()
+        );
+        assert!(super::test_only_cell("nowhere", "devboule-acp-stub").is_none());
+    }
+
+    #[test]
+    fn preset_resolution_refuses_unknown_presets_providers_and_bare_providers() {
+        assert_eq!(
+            super::resolve_agent_preset("manager", "claude").unwrap_err(),
+            "unknown preset"
+        );
+        assert_eq!(
+            super::resolve_agent_preset("worker", "does-not-exist").unwrap_err(),
+            "unknown provider"
+        );
+        assert_eq!(
+            super::resolve_agent_preset("worker", "claude-code")
+                .unwrap()
+                .1
+                .mode,
+            "default",
+            "an alias resolves to the catalog's own row"
+        );
+    }
+
+    /// The preamble is one sentence and it asks for nothing but the result.
+    #[test]
+    fn preambles_hold_no_instruction_to_write_files() {
+        for preset in super::AGENT_PRESETS {
+            let lowered = preset.preamble.to_lowercase();
+            for word in [
+                "write",
+                "file",
+                "files",
+                "save",
+                "path",
+                "output to",
+                ".md",
+                "artifact",
+            ] {
+                assert!(
+                    !lowered.contains(word),
+                    "preset {} preamble mentions {word}: {}",
+                    preset.id,
+                    preset.preamble
+                );
+            }
+            assert!(
+                preset.preamble.contains("final message"),
+                "preset {} must ask for the result in the final message",
+                preset.id
+            );
         }
     }
 }

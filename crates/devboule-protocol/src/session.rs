@@ -217,6 +217,22 @@ pub struct Session {
     /// the historical `local`; the journal can, so it says what it means.
     #[serde(default)]
     pub origin: SessionOrigin,
+    /// The name a created agent is shown under (S5-09). Set once at creation
+    /// and never renamable in v1, so it travels with the session row and not
+    /// with the creation request that named it. `#[serde(default)]` for the
+    /// same reason `origin` has it: a client that speaks an older dialect must
+    /// still parse a frame carrying it, and a row written before the field
+    /// existed reads back as `None` — which the app renders as its fallback
+    /// name, never as an empty one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// The session id of the agent that created this one (S5-04). Written by
+    /// the daemon only: it is deliberately absent from
+    /// [`crate::ClientMessage::SessionCreate`], so no client can claim a
+    /// parent. `None` for every session a human started, and for rows written
+    /// before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 /// The connection-scoped roster update. It carries the fields the tab strip
@@ -321,6 +337,148 @@ impl SessionState {
     pub fn is_live(&self) -> bool {
         matches!(self, Self::Live { .. } | Self::Silent { .. })
     }
+
+    /// The A2A word for what this session is doing (`S5-08`). `turn_running` is
+    /// the live runtime's own answer and is only consulted for a live process: a
+    /// transcript has no turn to be in the middle of.
+    ///
+    /// `Live` with no turn is `submitted` and not `working` — the vocabulary
+    /// distinguishes "accepted, nothing happening yet" from "in progress", and a
+    /// live session with nothing running is the former. `Recovered` is
+    /// `canceled`: the daemon that owned it died, so the run ended without
+    /// reporting, and `completed` would be a claim nothing supports.
+    pub fn task_state(&self, turn_running: bool) -> AgentTaskState {
+        match self {
+            Self::Live { .. } | Self::Silent { .. } => {
+                if turn_running {
+                    AgentTaskState::Working
+                } else {
+                    AgentTaskState::Submitted
+                }
+            }
+            Self::Ended { code, .. } => match code {
+                Some(0) => AgentTaskState::Completed,
+                _ => AgentTaskState::Failed,
+            },
+            Self::Recovered { .. } => AgentTaskState::Canceled,
+        }
+    }
+}
+
+/// The vocabulary a created agent's lifecycle is reported in (`S5-08`).
+///
+/// These are A2A's `TaskState` words, reserved here so the daemon never grows a
+/// second name for one fact: `submitted` is accepted-and-not-yet-started,
+/// `working` is running, `input_required` is parked on a card only a human can
+/// answer, and the last three are terminal. The finish report uses the terminal
+/// three today; the roster uses the first three; `rejected` is reserved for a
+/// creation that was refused, which this slice reports as an error sentence and
+/// not as a session state.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTaskState {
+    Submitted,
+    Working,
+    Completed,
+    Failed,
+    Canceled,
+    InputRequired,
+    Rejected,
+}
+
+impl AgentTaskState {
+    /// The word this state is written as, on the wire and in the finish
+    /// envelope's `state:` line. One spelling, from the same list serde is
+    /// generated from: a second table is a second thing to keep in step.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Submitted => "submitted",
+            Self::Working => "working",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Canceled => "canceled",
+            Self::InputRequired => "input_required",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+/// The caps one creation is admitted under, as the creation card states them
+/// (`S5` decision 5).
+///
+/// Every number is what the daemon holds at the moment the card is composed, so
+/// the human decides against the budget that is actually about to be spent
+/// rather than against a configuration claim.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAgentCaps {
+    pub live_children: u32,
+    pub max_live_children: u32,
+    pub creations_this_hour: u32,
+    pub max_creations_per_hour: u32,
+    pub depth: u32,
+    pub max_depth: u32,
+    pub live_agent_sessions: u32,
+    pub max_live_agent_sessions: u32,
+}
+
+/// The `create_agent` payload a creation card carries on top of the ordinary
+/// permission card's fields (`S5` §1).
+///
+/// The card is a [`SessionEvent::PermissionRequest`] and not a variant of its
+/// own: it needs exactly what that variant already provides — a pending entry
+/// the permission broker can answer through `SessionPermissionRespond`, two
+/// options (allow once / deny), an origin stamp, the per-device card budget and
+/// a journaled decision — and it adds only the facts being decided about. A
+/// second variant would have to re-implement all of that, and the decision
+/// leaves the gate closed on a refusal, which is a property of that entry.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAgentCard {
+    /// The session that asked. It is also the session the card is published on,
+    /// so this is a restatement on the wire rather than a lookup for the app.
+    pub creator_session_id: String,
+    pub provider: String,
+    pub preset: String,
+    /// The display name the child would be created with.
+    pub title: String,
+    pub caps: CreateAgentCaps,
+}
+
+/// One part of a finish artifact (`S5` decision 10, A2A §3 `Part`).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishArtifactPart {
+    /// `devboule-attachment:<sessionId>/<digest>` and never a path: the app
+    /// resolves a reference through the daemon the same way it resolves a
+    /// prompt attachment.
+    pub url: String,
+    pub mime_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<FinishArtifactPartMetadata>,
+}
+
+/// What the daemon knows about a stored part without re-reading it.
+///
+/// A cheap refusal, never *the* size: a caller compares this against the size
+/// the store reports when it resolves the reference, and the store's number is
+/// the one that counts.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishArtifactPartMetadata {
+    pub stored_bytes: u64,
+}
+
+/// One artifact a child's finish delivered (`S5` decision 10): the child's whole
+/// last `AgentMessage`, deposited in the **creator's** folder.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishArtifact {
+    /// The reference's own spelling, so the app can key the two records that
+    /// describe one artifact (the text message and
+    /// [`SessionEvent::ChildFinished`]) on the same value.
+    pub artifact_id: String,
+    pub parts: Vec<FinishArtifactPart>,
 }
 
 /// Events sent over the Tauri Channel supplied to `session_attach`.
@@ -449,6 +607,48 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
     },
+    /// An agent asked for, and got, a child session (`S5` §1).
+    ///
+    /// Published and journaled on the **creator's** session, never on the
+    /// child: the child's transcript begins with its `initialPrompt`, and the
+    /// creator's record is the one that has to explain where the session came
+    /// from. `message_id` is an ordinary transcript id, optional for the same
+    /// reason [`Self::AgentMessage`]'s is.
+    AgentCreated {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        child_session_id: String,
+        display_name: String,
+        /// The catalog provider id the child was created with.
+        provider: String,
+        /// The preset the child was created under (`worker`, `design`).
+        preset: String,
+    },
+    /// A created child finished, in structured form, published on the creator
+    /// beside the `<devboule-system>` text message that carries the same facts
+    /// (`S5` decision 7 + 10, rev 4).
+    ///
+    /// Two records, one delivery: the text message is what an agent reads, and
+    /// this event is what a surface consumes — the app has no parser for the
+    /// envelope and must not grow one, so it copies the artifact into its own
+    /// store when this arrives (the daemon's copy dies with the creator session
+    /// and after [`crate::ATTACHMENT_RETENTION`] idle). `message_id` is the
+    /// **text message's** id, which is what lets a client tell the two records
+    /// apart from two separate finishes.
+    ChildFinished {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        child_session_id: String,
+        /// The child's display name at the moment it finished. Copied rather
+        /// than looked up: the row can be gone by the time a client reads this.
+        display_name: String,
+        state: AgentTaskState,
+        /// Why `artifacts` is empty, when it is (the deposit failed, or the
+        /// message was over the 32 KiB cap). Absent when there is an artifact.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        artifacts: Vec<FinishArtifact>,
+    },
     /// A Claude stream-json subagent birth. The absence of status and summary
     /// is intentional: Claude supplies those only in task_notification.
     AgentTaskStarted {
@@ -520,6 +720,13 @@ pub enum SessionEvent {
         /// its own element: the request's own text must never be able to
         /// imitate it.
         origin: SessionOrigin,
+        /// Present only on a creation card (`S5` §1): the ordinary card fields
+        /// say what is being asked, `options` says allow/deny, and this says
+        /// *what* is being created. Absent on every other permission request,
+        /// which is why it is an extension of this variant and not a variant of
+        /// its own (see [`CreateAgentCard`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        create_agent: Option<CreateAgentCard>,
     },
     /// The pending permission is no longer waiting (allow, deny, timeout, or
     /// cancel). `tool_call_id` matches the request the UI is displaying.
@@ -991,6 +1198,8 @@ mod tests {
             peer_session_id: None,
             created_at_ms: 1,
             origin: SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["workspaceId"], "ws-1");
@@ -1017,6 +1226,8 @@ mod tests {
             peer_session_id: None,
             created_at_ms: 1,
             origin: SessionOrigin::peer("device-phone", PeerRole::Client),
+            display_name: None,
+            created_by: None,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["origin"]["kind"], "peer");
@@ -1053,6 +1264,8 @@ mod tests {
             peer_session_id: None,
             created_at_ms: 1,
             origin: SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
         };
         let mut value = serde_json::to_value(&session).expect("json");
         value
@@ -1082,6 +1295,8 @@ mod tests {
             peer_session_id: None,
             created_at_ms: 1,
             origin: SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
         };
         let encoded = serde_json::to_value(&session).expect("session json");
         assert_eq!(encoded["state"]["type"], "silent");
@@ -1116,6 +1331,8 @@ mod tests {
             peer_session_id: Some("peer-session-1".to_string()),
             created_at_ms: 1,
             origin: SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["provider"], "grok");
@@ -1220,6 +1437,7 @@ mod tests {
                 kind: "allow_once".to_string(),
             }],
             origin: SessionOrigin::peer("device-phone", PeerRole::Client),
+            create_agent: None,
         };
         let encoded = serde_json::to_value(&event).expect("json");
         assert_eq!(encoded["type"], "permission_request");
@@ -1269,6 +1487,7 @@ mod tests {
             env: None,
             options: Vec::new(),
             origin: SessionOrigin::local(),
+            create_agent: None,
         };
         let encoded = serde_json::to_value(&request).expect("json");
         assert_eq!(encoded["origin"]["kind"], "local");
@@ -1558,6 +1777,8 @@ mod tests {
                 peer_session_id: Some("peer-1".to_string()),
                 created_at_ms: 1,
                 origin: SessionOrigin::local(),
+                display_name: None,
+                created_by: None,
             }),
         };
         let value = serde_json::to_value(&resumed).expect("json");
@@ -1707,5 +1928,184 @@ mod tests {
         assert_eq!(encoded["kind"], "edit");
         assert_eq!(encoded["locations"][0]["path"], "src/main.rs");
         assert!(encoded["locations"][0].get("line").is_none());
+    }
+
+    /// `Session.displayName` and `Session.createdBy` are camelCase on the wire
+    /// and absent when the daemon has nothing to say (S5-09).
+    #[test]
+    fn session_display_name_and_created_by_are_camel_case_and_optional() {
+        let session = Session {
+            id: "s.parent.2".to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: SessionKind::Acp,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: None,
+            provider: Some("claude".to_string()),
+            peer_session_id: None,
+            created_at_ms: 7,
+            origin: SessionOrigin::local(),
+            display_name: Some("worker".to_string()),
+            created_by: Some("s.parent.1".to_string()),
+        };
+        let value = serde_json::to_value(&session).expect("json");
+        assert_eq!(value["displayName"], "worker");
+        assert_eq!(value["createdBy"], "s.parent.1");
+        assert!(value.get("display_name").is_none());
+        let back: Session = serde_json::from_value(value).expect("round trip");
+        assert_eq!(back, session);
+
+        // A human-started session (and every row written before the fields
+        // existed) carries neither key rather than a null one.
+        let unnamed = Session {
+            display_name: None,
+            created_by: None,
+            ..session
+        };
+        let value = serde_json::to_value(&unnamed).expect("json");
+        assert!(value.get("displayName").is_none());
+        assert!(value.get("createdBy").is_none());
+        let legacy = serde_json::json!({
+            "id": "s.client.1",
+            "workspaceId": null,
+            "kind": "terminal",
+            "title": "Terminal",
+            "state": { "type": "live", "generation": 1 },
+            "createdAtMs": 1,
+        });
+        let decoded: Session = serde_json::from_value(legacy).expect("older row");
+        assert_eq!(decoded.display_name, None);
+        assert_eq!(decoded.created_by, None);
+    }
+
+    /// Both creation events, on the wire, with the fields the app reads.
+    #[test]
+    fn the_creation_events_carry_their_camel_case_facts() {
+        let created = SessionEvent::AgentCreated {
+            message_id: Some("m1".to_string()),
+            child_session_id: "s.parent.2".to_string(),
+            display_name: "worker".to_string(),
+            provider: "claude".to_string(),
+            preset: "worker".to_string(),
+        };
+        let value = serde_json::to_value(&created).expect("json");
+        assert_eq!(value["type"], "agent_created");
+        assert_eq!(value["messageId"], "m1");
+        assert_eq!(value["childSessionId"], "s.parent.2");
+        assert_eq!(value["displayName"], "worker");
+        assert_eq!(value["provider"], "claude");
+        assert_eq!(value["preset"], "worker");
+        assert_eq!(
+            serde_json::from_value::<SessionEvent>(value).expect("round trip"),
+            created
+        );
+
+        // `state` is one of A2A's words, not the session-state tag: an app that
+        // read `live` here would be reading a different vocabulary.
+        let finished = SessionEvent::ChildFinished {
+            message_id: Some("m2".to_string()),
+            child_session_id: "s.parent.2".to_string(),
+            display_name: "worker".to_string(),
+            state: AgentTaskState::Canceled,
+            note: None,
+            artifacts: vec![FinishArtifact {
+                artifact_id: "devboule-attachment:s.parent.2/abc".to_string(),
+                parts: vec![FinishArtifactPart {
+                    url: "devboule-attachment:s.parent.2/abc".to_string(),
+                    mime_type: "text/markdown".to_string(),
+                    metadata: Some(FinishArtifactPartMetadata { stored_bytes: 42 }),
+                }],
+            }],
+        };
+        let value = serde_json::to_value(&finished).expect("json");
+        assert_eq!(value["type"], "child_finished");
+        assert_eq!(value["state"], "canceled");
+        assert!(value.get("note").is_none(), "an absent note is absent");
+        assert_eq!(
+            value["artifacts"][0]["artifactId"],
+            "devboule-attachment:s.parent.2/abc"
+        );
+        assert_eq!(
+            value["artifacts"][0]["parts"][0]["mimeType"],
+            "text/markdown"
+        );
+        assert_eq!(
+            value["artifacts"][0]["parts"][0]["metadata"]["storedBytes"],
+            42
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionEvent>(value).expect("round trip"),
+            finished
+        );
+
+        // The whole vocabulary, spelled the way A2A spells it.
+        for (state, word) in [
+            (AgentTaskState::Submitted, "submitted"),
+            (AgentTaskState::Working, "working"),
+            (AgentTaskState::Completed, "completed"),
+            (AgentTaskState::Failed, "failed"),
+            (AgentTaskState::Canceled, "canceled"),
+            (AgentTaskState::InputRequired, "input_required"),
+            (AgentTaskState::Rejected, "rejected"),
+        ] {
+            assert_eq!(serde_json::to_value(state).expect("json"), word);
+        }
+    }
+
+    /// The session-state → A2A word mapping, including the two that are easy to
+    /// get wrong: `Recovered` is not `completed`, and a live session with no
+    /// turn is `submitted` and not `working`.
+    #[test]
+    fn session_state_maps_to_the_a2a_words() {
+        let live = SessionState::Live { generation: 1 };
+        assert_eq!(live.task_state(true), AgentTaskState::Working);
+        assert_eq!(live.task_state(false), AgentTaskState::Submitted);
+        assert_eq!(
+            SessionState::Silent { generation: 1 }.task_state(true),
+            AgentTaskState::Working
+        );
+        let integrity = TranscriptIntegrity::Complete;
+        assert_eq!(
+            SessionState::Ended {
+                generation: 1,
+                code: Some(0),
+                integrity,
+            }
+            .task_state(false),
+            AgentTaskState::Completed
+        );
+        assert_eq!(
+            SessionState::Ended {
+                generation: 1,
+                code: Some(2),
+                integrity,
+            }
+            .task_state(false),
+            AgentTaskState::Failed
+        );
+        // No status at all: the process is gone and nothing said it succeeded.
+        assert_eq!(
+            SessionState::Ended {
+                generation: 1,
+                code: None,
+                integrity,
+            }
+            .task_state(false),
+            AgentTaskState::Failed
+        );
+        assert_eq!(
+            SessionState::Recovered {
+                generation: 1,
+                integrity: TranscriptIntegrity::Unverifiable {
+                    dropped_frames: 0,
+                    dropped_bytes: 0,
+                    trimmed_bytes: 0,
+                },
+            }
+            .task_state(true),
+            AgentTaskState::Canceled,
+            "a transcript whose daemon died did not complete anything"
+        );
     }
 }

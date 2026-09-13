@@ -718,6 +718,7 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
             env,
             options,
             origin: _,
+            create_agent,
         } => SessionEvent::PermissionRequest {
             tool_call_id,
             title,
@@ -728,6 +729,7 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
             env,
             options,
             origin,
+            create_agent,
         },
         other => other,
     }
@@ -961,6 +963,7 @@ pub(super) fn permission_with_kinds(tool_call_id: &str, kinds: &[(&str, &str)]) 
         // overwrites it with the session's own origin before the request leaves
         // for a subscriber.
         origin: SessionOrigin::local(),
+        create_agent: None,
     }
 }
 

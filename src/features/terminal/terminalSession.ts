@@ -424,11 +424,19 @@ export class TerminalSession {
       case "agent_stderr":
       case "session_notice":
       case "agent_reported":
+      case "agent_created":
+      case "child_finished":
       case "agent_user_message":
       case "agent_thought":
       case "available_commands":
         // ACP sessions use these same daemon channels; the terminal view has
         // no agent transcript renderer yet, so it safely ignores them.
+        //
+        // `agent_created` and `child_finished` (`S5`) are the two records a
+        // creator's transcript gets when one of its agents is created and when
+        // it finishes: the terminal view renders neither, and the app's agent
+        // surfaces subscribe to them directly. Listed rather than defaulted so
+        // a new daemon event still lands in the `never` guard below.
         break;
       case "steered":
         // Journaled for audit and not emitted to observers; listed so a leak

@@ -137,6 +137,9 @@ pub use session::{
     SESSION_SILENCE_THRESHOLD,
 };
 pub use spawn::{daemon_file_name, resolve_daemon_binary, spawn_daemon};
+// Test support, not product (audit S5B-10): absent from a release build.
+#[cfg(any(test, feature = "test-support"))]
+pub use spawn::spawn_daemon_with_env;
 
 /// How long an otherwise idle daemon waits before beginning shutdown.
 ///

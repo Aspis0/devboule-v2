@@ -23,6 +23,38 @@ fn claude_076_result(session_id: &str) -> Value {
     value["result"].take()
 }
 
+/// The mode block this stub declares when `DEVBOULE_STUB_MODES` is set
+/// (`S5` block 2): the standard ACP shape `acp_view::has_standard_modes` reads.
+///
+/// The value is a comma-separated list of modes, the **first** being the one
+/// the session is already in. `ask,default` is what the slice-5 tests use: the
+/// preset cells name `default`, the session starts in `ask`, so the daemon has
+/// a real switch to send and the test can see the cell's mode arrive. A block
+/// that already said `default` would prove nothing — the daemon sends
+/// `session/set_mode` only when the current mode is not the requested one.
+fn modes_block(spec: &str) -> Value {
+    let ids: Vec<&str> = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect();
+    let current = ids.first().copied().unwrap_or("default");
+    let available: Vec<Value> = ids
+        .iter()
+        .map(|id| {
+            json!({
+                "id": id,
+                "name": id,
+                "description": "A mode the stub declares"
+            })
+        })
+        .collect();
+    json!({
+        "currentModeId": current,
+        "availableModes": available
+    })
+}
+
 fn vendor_models_result() -> Value {
     json!({
         "models": {
@@ -150,6 +182,15 @@ fn main() -> io::Result<()> {
     // shape must be None and a click must fail loudly.
     let load_modes_only = std::env::var_os("DEVBOULE_STUB_LOAD_MODES_ONLY").is_some();
     let load_models_push = std::env::args().any(|arg| arg == "--load-models-push");
+    // Slice-5 scenario: the agent declares the modes `DEVBOULE_STUB_MODES`
+    // lists (`ask,default` for the tests) and implements `session/set_mode`
+    // for them. A daemon only ever *sends* a mode switch to an agent that
+    // declared modes at `session/new` (`acp_view::has_standard_modes` gates
+    // `AcpSwitcher::set_mode`) *and* whose current mode differs from the one it
+    // wants, so both halves matter: without the first the daemon switches the
+    // child locally and no test could prove the preset cell's mode reached the
+    // provider, and without the second there would be nothing to send.
+    let stub_modes: Option<String> = std::env::var("DEVBOULE_STUB_MODES").ok();
     // Audit §6 scenario: a JSON-RPC success with no parseable catalog.
     let malformed_config_reply = std::env::var_os("DEVBOULE_STUB_CONFIG_MALFORMED_REPLY").is_some();
     let hybrid_vendor_mismatch = std::env::var_os("DEVBOULE_STUB_HYBRID_VENDOR_MISMATCH").is_some();
@@ -178,6 +219,13 @@ fn main() -> io::Result<()> {
     let mut stdout = stdout.lock();
     let mut last_prompt_id = None;
     let mut permission_request_id = None;
+    // A real agent says what it did with the permission it was granted; the
+    // stub's parked run needs that message on the child's transcript, because
+    // the finish report deposits the child's last message and there would
+    // otherwise be nothing to deposit. Off by default: the tests that only care
+    // about the card keep the transcript they had.
+    let message_after_permission =
+        std::env::var_os("DEVBOULE_STUB_MESSAGE_AFTER_PERMISSION").is_some();
     let mut line = String::new();
     loop {
         line.clear();
@@ -185,8 +233,38 @@ fn main() -> io::Result<()> {
             return Ok(());
         }
         let Ok(request) = serde_json::from_str::<Value>(&line) else {
+            // A line that is not a request: the stub ignores it (that is what a
+            // real agent does with chatter), but slice-5's tests need to *see*
+            // what arrived when something downstream reports malformed output,
+            // so the raw line is kept when a file is named.
+            if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_STDIN_FILE") {
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file)
+                    .and_then(|mut handle| {
+                        use std::io::Write;
+                        writeln!(handle, "NOT-JSON: {}", line.trim_end())
+                    });
+            }
             continue;
         };
+        if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_STDIN_FILE") {
+            // Every request, so a test can tell "the daemon never sent it" from
+            // "the stub never answered it".
+            let method = request
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or("<none>");
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+                .and_then(|mut handle| {
+                    use std::io::Write;
+                    writeln!(handle, "{}: {}", std::process::id(), method)
+                });
+        }
         let method = request
             .get("method")
             .and_then(Value::as_str)
@@ -199,6 +277,23 @@ fn main() -> io::Result<()> {
                 .and_then(|outcome| outcome.get("outcome"))
                 .and_then(Value::as_str)
                 != Some("selected");
+            if message_after_permission && !cancelled {
+                emit(
+                    &mut stdout,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": "stub-session",
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "messageId": "m1",
+                                "content": {"type": "text", "text": "stub reply"}
+                            }
+                        }
+                    }),
+                )?;
+            }
             respond(
                 &mut stdout,
                 last_prompt_id.map(Value::from),
@@ -256,58 +351,76 @@ fn main() -> io::Result<()> {
                         }
                     }),
                 )?;
-                respond(
-                    &mut stdout,
-                    request.get("id").cloned(),
-                    if config_mode {
-                        let mut result = config_state
-                            .clone()
-                            .unwrap_or_else(|| claude_076_result("stub-session"));
-                        if hybrid_config_options {
-                            let vendor = vendor_models_result();
-                            if hybrid_vendor_mismatch {
-                                result["models"]["availableModels"] =
-                                    json!([vendor["models"]["availableModels"][0].clone()]);
-                            } else {
-                                result["models"] = vendor["models"].clone();
-                            }
+                let mut new_session_result = if config_mode {
+                    let mut result = config_state
+                        .clone()
+                        .unwrap_or_else(|| claude_076_result("stub-session"));
+                    if hybrid_config_options {
+                        let vendor = vendor_models_result();
+                        if hybrid_vendor_mismatch {
+                            result["models"]["availableModels"] =
+                                json!([vendor["models"]["availableModels"][0].clone()]);
+                        } else {
+                            result["models"] = vendor["models"].clone();
                         }
-                        result
-                    } else {
-                        json!({
-                            "sessionId": "stub-session",
-                            "models": {
-                                "currentModelId": "stub-model",
-                                "availableModels": [{
-                                    "modelId": "stub-model",
-                                    "name": "Stub Model",
-                                    "_meta": {
+                    }
+                    result
+                } else {
+                    json!({
+                        "sessionId": "stub-session",
+                        "models": {
+                            "currentModelId": "stub-model",
+                            "availableModels": [{
+                                "modelId": "stub-model",
+                                "name": "Stub Model",
+                                "_meta": {
+                                    "supportsReasoningEffort": true,
+                                    "reasoningEffort": "high",
+                                    "reasoningEfforts": [
+                                        {"id": "high", "label": "High"},
+                                        {"id": "low", "label": "Low"}
+                                    ]
+                                }
+                            }, {
+                                "modelId": "stub-model-new",
+                                "name": "stub-model-new",
+                                "_meta": if std::env::args().any(|arg| arg == "--no-target-efforts") {
+                                    json!({"supportsReasoningEffort": false})
+                                } else {
+                                    json!({
                                         "supportsReasoningEffort": true,
-                                        "reasoningEffort": "high",
                                         "reasoningEfforts": [
-                                            {"id": "high", "label": "High"},
+                                            {"id": "high", "label": "High", "default": true},
                                             {"id": "low", "label": "Low"}
                                         ]
-                                    }
-                                }, {
-                                    "modelId": "stub-model-new",
-                                    "name": "stub-model-new",
-                                    "_meta": if std::env::args().any(|arg| arg == "--no-target-efforts") {
-                                        json!({"supportsReasoningEffort": false})
-                                    } else {
-                                        json!({
-                                            "supportsReasoningEffort": true,
-                                            "reasoningEfforts": [
-                                                {"id": "high", "label": "High", "default": true},
-                                                {"id": "low", "label": "Low"}
-                                            ]
-                                        })
-                                    }
-                                }]
-                            }
-                        })
-                    },
-                )?;
+                                    })
+                                }
+                            }]
+                        }
+                    })
+                };
+                if let Some(modes) = stub_modes.as_deref() {
+                    // The stub declares the modes the test asked for (`S5`
+                    // block 2's worker cell for this provider), so the daemon's
+                    // `has_standard_modes` is true and the child's creation
+                    // really sends `session/set_mode` instead of switching
+                    // locally. Without the knob the stub keeps the shape every
+                    // other stub test measured: no `modes`, no remote switch.
+                    let block = modes_block(modes);
+                    if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_MODES_FILE") {
+                        // What this process told the daemon, kept so a test can
+                        // see the setup its assertion depends on rather than
+                        // inferring it from an empty switch file.
+                        let _ = std::fs::write(file, block.to_string());
+                    }
+                    new_session_result["modes"] = block;
+                }
+                respond(&mut stdout, request.get("id").cloned(), new_session_result)?;
+                if stub_is_the_one_to_exit_now() {
+                    // The child is gone the instant it exists: the daemon sees
+                    // EOF on a session whose creation has just been committed.
+                    return Ok(());
+                }
                 call_mcp_tools_list_if_configured(&request)?;
                 emit_mcp_ready_if_configured(&mut stdout, &request)?;
             }
@@ -451,6 +564,40 @@ fn main() -> io::Result<()> {
                 }
                 respond(&mut stdout, request.get("id").cloned(), state.clone())?;
             }
+            "session/set_mode" => {
+                // The mode switch a slice-5 child's preset cell needs. The
+                // daemon only sends this at all when the provider declared
+                // modes at `session/new` (`has_standard_modes` => remote modes),
+                // which the `DEVBOULE_STUB_MODES_DEFAULT` knob below makes the
+                // stub do. `default` is accepted; anything else is refused the
+                // way a real agent refuses a mode it does not have, so a test
+                // can prove the *cell's* mode id is the one that arrived.
+                let mode_id = request
+                    .get("params")
+                    .and_then(|params| params.get("modeId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("<missing>");
+                if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_SET_MODE_FILE") {
+                    std::fs::write(path, mode_id).ok();
+                }
+                let declared = stub_modes
+                    .as_deref()
+                    .map(|modes| modes.split(',').map(str::trim).any(|mode| mode == mode_id))
+                    .unwrap_or(false);
+                if declared {
+                    respond(&mut stdout, request.get("id").cloned(), json!({}))?;
+                } else {
+                    respond_error(
+                        &mut stdout,
+                        request.get("id").cloned(),
+                        json!({
+                            "code": -32602,
+                            "message": "Mode not available: session/set_mode",
+                            "data": {"modeId": mode_id}
+                        }),
+                    )?;
+                }
+            }
             "session/set_model" => {
                 if config_mode && !hybrid_config_options && !hybrid_effort_only && !load_models_push
                 {
@@ -552,6 +699,12 @@ fn main() -> io::Result<()> {
                 )?;
             }
             "session/prompt" => {
+                if std::env::var_os("DEVBOULE_ACP_STUB_EXIT_ON_PROMPT").is_some() {
+                    // The child dies the instant its first prompt arrives
+                    // (audit-2 §1, case b): it lived long enough for the
+                    // creation to answer Ok, so this exit is a *child end*.
+                    return Ok(());
+                }
                 last_prompt_id = request.get("id").and_then(Value::as_u64);
                 let prompt_text = request
                     .get("params")
@@ -696,11 +849,51 @@ fn respond(stdout: &mut impl Write, id: Option<Value>, result: Value) -> io::Res
 }
 
 fn emit(stdout: &mut impl Write, value: Value) -> io::Result<()> {
-    serde_json::to_writer(&mut *stdout, &value).map_err(io::Error::other)?;
+    // Serialized to a string first so the same bytes can be kept for a test
+    // (`S5` e2e): when the daemon reports malformed output or a missing answer,
+    // the question is always *what did the provider actually write*, and this
+    // is the only place that knows.
+    let text = serde_json::to_string(&value).map_err(io::Error::other)?;
+    if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_STDOUT_FILE") {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .and_then(|mut handle| {
+                use std::io::Write;
+                writeln!(handle, "{}: {}", std::process::id(), text)
+            });
+    }
+    stdout.write_all(text.as_bytes())?;
     stdout.flush()?;
     std::thread::sleep(Duration::from_millis(1));
     stdout.write_all(b"\r\n")?;
     stdout.flush()
+}
+
+/// Whether *this* stub is the one the exit knob names.
+///
+/// The knob's value is the **1-based line of the pids file** whose stub exits
+/// the moment its handshake is answered (`...=2` is the first child a test's
+/// creator spawns). Naming the line rather than "every stub" is what keeps the
+/// creator — and the second creator a test needs to read the daemon-wide caps —
+/// alive while the child under measurement disappears at once.
+fn stub_is_the_one_to_exit_now() -> bool {
+    let Some(wanted) = std::env::var("DEVBOULE_ACP_STUB_EXIT_AFTER_SESSION_NEW").ok() else {
+        return false;
+    };
+    let Some(file) = std::env::var("DEVBOULE_ACP_STUB_PIDS_FILE").ok() else {
+        return false;
+    };
+    let Ok(contents) = std::fs::read_to_string(&file) else {
+        return false;
+    };
+    let mine = std::process::id().to_string();
+    let position = contents
+        .lines()
+        .position(|line| line.trim() == mine)
+        .map(|index| index + 1);
+    matches!((wanted.parse::<usize>(), position), (Ok(wanted), Some(mine)) if wanted == mine)
 }
 
 fn emit_mcp_ready_if_configured(stdout: &mut impl Write, request: &Value) -> io::Result<()> {
@@ -748,6 +941,18 @@ fn call_mcp_tools_list_if_configured(request: &Value) -> io::Result<()> {
         .get("url")
         .and_then(Value::as_str)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "MCP URL is missing"))?;
+    // A real agent connects to the broker *after* its handshake completes; the
+    // stub used to call in the middle of `session/new`, which is before the
+    // daemon has the session in its registry, so the call was refused and the
+    // session's readiness was never proved. The delay (0 by default, so every
+    // other stub test keeps its timing) lets a test reproduce the real order.
+    let mcp_delay_ms = std::env::var("DEVBOULE_ACP_STUB_MCP_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    if mcp_delay_ms > 0 {
+        std::thread::sleep(Duration::from_millis(mcp_delay_ms));
+    }
     let endpoint = url
         .strip_prefix("http://")
         .and_then(|url| url.split('/').next())
@@ -768,6 +973,45 @@ fn call_mcp_tools_list_if_configured(request: &Value) -> io::Result<()> {
         })
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "MCP Bearer is missing"))?;
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    let response = mcp_post(endpoint, &path, authorization, body)?;
+    if !response.starts_with(b"HTTP/1.1 200") {
+        return Err(io::Error::other("MCP tools/list was rejected"));
+    }
+    // What the daemon answered this session, appended for a test to read (`S5`
+    // block 6: the overlay is proved at the *child's own* `tools/list`).
+    //
+    // Appended, not overwritten: one test drives both a creator and the child
+    // it creates, and this file is how the two answers are told apart — the
+    // creator's entry first, the child's after it. Each line names the process
+    // and a fingerprint of the Bearer that asked, so two lines that differ are
+    // two connections and the token itself is never written anywhere.
+    if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_MCP_TOOLS_FILE") {
+        append_observation(&file, authorization, &mcp_body(&response));
+    }
+    // And one `tools/call`, when a test names a tool: the other half of the
+    // same rule, where a hidden tool is refused rather than omitted.
+    if let Ok(tool) = std::env::var("DEVBOULE_ACP_STUB_MCP_CALL") {
+        let arguments = std::env::var("DEVBOULE_ACP_STUB_MCP_CALL_ARGUMENTS")
+            .unwrap_or_else(|_| "{}".to_string());
+        let call = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": serde_json::from_str::<Value>(&arguments)
+                .unwrap_or_else(|_| json!({}))}
+        })
+        .to_string();
+        let response = mcp_post(endpoint, &path, authorization, &call)?;
+        if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_MCP_CALL_FILE") {
+            append_observation(&file, authorization, &mcp_body(&response));
+        }
+    }
+    Ok(())
+}
+
+/// One HTTP/1.1 POST to the daemon's MCP endpoint, answering the whole
+/// response as bytes (headers included).
+fn mcp_post(endpoint: &str, path: &str, authorization: &str, body: &str) -> io::Result<Vec<u8>> {
     let mut stream = TcpStream::connect(endpoint)?;
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nAuthorization: {authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -777,15 +1021,74 @@ fn call_mcp_tools_list_if_configured(request: &Value) -> io::Result<()> {
     stream.shutdown(Shutdown::Write)?;
     let mut response = Vec::new();
     stream.read_to_end(&mut response)?;
-    if !response.starts_with(b"HTTP/1.1 200") {
-        return Err(io::Error::other("MCP tools/list was rejected"));
+    Ok(response)
+}
+
+/// Append one MCP observation as `<pid> <bearer fingerprint> <body>`.
+///
+/// Appended rather than rewritten, and the Bearer is fingerprinted rather than
+/// stored: a test needs to tell two connections apart, not to read a credential
+/// it is not entitled to. Newlines inside the body become spaces so one
+/// observation is one line.
+fn append_observation(file: &str, authorization: &str, body: &str) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    authorization.hash(&mut hasher);
+    let line = format!(
+        "{} {:016x} {}\n",
+        std::process::id(),
+        hasher.finish(),
+        body.replace('\n', " ")
+    );
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+        .and_then(|mut handle| std::io::Write::write_all(&mut handle, line.as_bytes()));
+}
+
+/// The body of an HTTP response: everything after the blank line that ends the
+/// headers, as text.
+fn mcp_body(response: &[u8]) -> String {
+    let text = String::from_utf8_lossy(response).to_string();
+    match text.split_once("\r\n\r\n") {
+        Some((_, body)) => body.to_string(),
+        None => text,
     }
-    Ok(())
 }
 
 fn write_observation_files() {
+    // What this process was launched with, for a test that has to tell one
+    // launch from another (the args are the provider's, never a secret).
+    if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_ARGV_FILE") {
+        let args = std::env::args().collect::<Vec<_>>().join(" ");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut handle| {
+                use std::io::Write;
+                writeln!(handle, "{} {}", std::process::id(), args)
+            });
+    }
     if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_PID_FILE") {
         let _ = std::fs::write(path, std::process::id().to_string());
+    }
+    // Every stub process that starts, in order (`S5` e2e): one test spawns a
+    // creator *and* the child it creates, and killing the child is how the
+    // reader's EOF path is reached on purpose. The single-pid file above cannot
+    // say which of the two is which; this one can, because it keeps both.
+    if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_PIDS_FILE") {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut handle| {
+                std::io::Write::write_all(
+                    &mut handle,
+                    format!("{}\n", std::process::id()).as_bytes(),
+                )
+            });
     }
     if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_CONSOLE_FILE") {
         #[cfg(windows)]

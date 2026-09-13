@@ -15,6 +15,11 @@ default = ["server"]
 # Optional so a client-only build (the GUI process) does not link ConPTY.
 # rusqlite is the conversation journal (M3c). Optional for the same reason:
 # the GUI process never opens the database.
+# The ACP stub and the spawn helper the integration battery drives are test
+# support, not product (audit S5B-10): a plain `cargo build --release
+# -p devboule-daemon` builds no stub binary and exports no test API. The
+# daemon's own test run enables this feature.
+test-support = []
 server = ["dep:portable-pty", "dep:rusqlite", "dep:alacritty_terminal", "dep:reqwest", "dep:uuid", "dep:base64", "dep:sha2", "dep:snow", "dep:keyring", "dep:zeroize", "dep:spake2", "dep:getrandom", "dep:hkdf"]
 
 [lib]
@@ -29,7 +34,7 @@ required-features = ["server"]
 [[bin]]
 name = "devboule-acp-stub"
 path = "src/bin/devboule_acp_stub.rs"
-required-features = ["server"]
+required-features = ["server", "test-support"]
 
 [[bin]]
 name = "devboule-agent-stub"
@@ -122,3 +127,12 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_Console",
     "Wdk_System_SystemServices",
 ] }
+
+[dev-dependencies]
+# The daemon's own integration tests are ordinary test targets, and Cargo builds
+# them with exactly the crate's *dev* dependency features. Declaring the crate as
+# its own dev-dependency with `test-support` is what lets `cargo test --workspace`
+# and `cargo clippy --all-targets` (both without any `--features` flag, which is
+# how CI runs them) compile the ACP stub battery, while a normal or release build
+# keeps the feature off and ships no stub binary and no test API (audit S5B-10).
+devboule-daemon = { path = ".", features = ["test-support"] }

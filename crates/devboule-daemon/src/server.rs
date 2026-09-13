@@ -2007,6 +2007,8 @@ fn send_pending_event(
             SessionEvent::SessionManifest { .. } => " session_manifest".to_string(),
             SessionEvent::SessionNotice { .. } => " session_notice".to_string(),
             SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
+            SessionEvent::AgentCreated { .. } => " agent_created".to_string(),
+            SessionEvent::ChildFinished { .. } => " child_finished".to_string(),
         };
         eprintln!(
             "discarded stale pending event for session {} generation {}{}",
@@ -3436,9 +3438,11 @@ fn peer_outcome(request: &ClientMessage, outcome: &str) -> &'static str {
     }
 }
 
-/// The session id a request names, when it names one. Deliberately not a
-/// closed match: this is audit context, and the exhaustiveness that matters
-/// lives in `peer_allows` (`peer_policy.rs`).
+/// The session id a request names, when it names one.
+///
+/// A *closed* match (`S5`, block 6): every `ClientMessage` is named, so a new
+/// frame has to be classified here rather than falling silently into `None`.
+/// The variants that name no session are listed one by one for the same reason.
 fn request_session_id(request: &ClientMessage) -> Option<String> {
     match request {
         ClientMessage::SessionAttach { session_id, .. }
@@ -3459,7 +3463,40 @@ fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionPermissionRespond { session_id, .. }
         | ClientMessage::SessionReportAgent { session_id, .. }
         | ClientMessage::SessionDelete { session_id, .. } => Some(session_id.clone()),
-        _ => None,
+        // No session is named: a connection-level frame, a daemon-level one, a
+        // workspace or provider one, or a pairing one. Named individually on
+        // purpose — a new frame must be classified here, not inherit `None`.
+        ClientMessage::Hello(_)
+        | ClientMessage::Ping { .. }
+        | ClientMessage::Status { .. }
+        | ClientMessage::DaemonDiagnostics { .. }
+        | ClientMessage::Shutdown { .. }
+        | ClientMessage::SessionCreate { .. }
+        | ClientMessage::SessionsList { .. }
+        | ClientMessage::SessionsWatch { .. }
+        | ClientMessage::SessionsUnwatch { .. }
+        | ClientMessage::SessionsPresence { .. }
+        | ClientMessage::SessionResume { .. }
+        | ClientMessage::JournalUsage { .. }
+        | ClientMessage::JournalRetentionGet { .. }
+        | ClientMessage::JournalRetentionSet { .. }
+        | ClientMessage::ProjectsList { .. }
+        | ClientMessage::ProjectAdd { .. }
+        | ClientMessage::WorkspacesList { .. }
+        | ClientMessage::WorkspaceCreate { .. }
+        | ClientMessage::WorkspaceDelete { .. }
+        | ClientMessage::ProvidersList { .. }
+        | ClientMessage::ProvidersRefresh { .. }
+        | ClientMessage::ProviderUpdate { .. }
+        | ClientMessage::Invoke { .. }
+        | ClientMessage::DevicesList { .. }
+        | ClientMessage::PairingStart { .. }
+        | ClientMessage::PairingComplete { .. }
+        | ClientMessage::PairingConfirm { .. }
+        | ClientMessage::PeerRevoke { .. }
+        | ClientMessage::PeerSetCaps { .. }
+        | ClientMessage::ToolPolicyGet { .. }
+        | ClientMessage::ToolPolicySet { .. } => None,
     }
 }
 
@@ -3629,6 +3666,7 @@ fn dispatch_session(
             kind,
             provider,
             mode,
+            display_name,
             idempotency_key,
         } => session_create(
             state,
@@ -3639,6 +3677,7 @@ fn dispatch_session(
             kind,
             provider,
             mode,
+            display_name,
             idempotency_key,
         ),
         ClientMessage::SessionAttach {
@@ -4019,11 +4058,51 @@ fn dispatch_session(
             audit_peer_unauthorized(state, conn, "SessionDeposit", Some(session_id), &reply);
             reply
         }
-        other => DaemonMessage::Error(WireError::new(
-            ErrorCode::InvalidRequest,
-            format!("unexpected session frame {other:?}"),
-        )),
+        // Closed on purpose (`S5`, block 6): every frame that is not a
+        // session-level one is named, so a new frame has to be classified here
+        // rather than falling into a catch-all. The sentence is constant and
+        // carries no echo of the frame; only the request id comes back.
+        other @ (ClientMessage::Hello(_)
+        | ClientMessage::Ping { .. }
+        | ClientMessage::Status { .. }
+        | ClientMessage::DaemonDiagnostics { .. }
+        | ClientMessage::Shutdown { .. }
+        | ClientMessage::JournalUsage { .. }
+        | ClientMessage::JournalRetentionGet { .. }
+        | ClientMessage::JournalRetentionSet { .. }
+        | ClientMessage::SessionDelete { .. }
+        | ClientMessage::ProjectsList { .. }
+        | ClientMessage::ProjectAdd { .. }
+        | ClientMessage::WorkspacesList { .. }
+        | ClientMessage::WorkspaceCreate { .. }
+        | ClientMessage::WorkspaceDelete { .. }
+        | ClientMessage::ProvidersList { .. }
+        | ClientMessage::ProvidersRefresh { .. }
+        | ClientMessage::ProviderUpdate { .. }
+        | ClientMessage::Invoke { .. }
+        | ClientMessage::DevicesList { .. }
+        | ClientMessage::PairingStart { .. }
+        | ClientMessage::PairingComplete { .. }
+        | ClientMessage::PairingConfirm { .. }
+        | ClientMessage::PeerRevoke { .. }
+        | ClientMessage::PeerSetCaps { .. }
+        | ClientMessage::ToolPolicyGet { .. }
+        | ClientMessage::ToolPolicySet { .. }) => unexpected_session_frame(&other),
     }
+}
+
+/// The one sentence a frame that is not a session frame gets from the session
+/// dispatcher (`S5`, block 6). Constant, and deliberately free of the frame.
+const UNEXPECTED_SESSION_FRAME: &str = "unexpected session frame";
+
+/// The answer a frame that reached the session dispatcher without being one
+/// gets (`S5`, block 6): one constant sentence and the request id.
+fn unexpected_session_frame(request: &ClientMessage) -> DaemonMessage {
+    let error = WireError::new(ErrorCode::InvalidRequest, UNEXPECTED_SESSION_FRAME);
+    DaemonMessage::Error(match request.request_id() {
+        Some(id) => error.with_id(id),
+        None => error,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4036,10 +4115,26 @@ fn session_create(
     kind: SessionKind,
     provider: Option<String>,
     mode: Option<String>,
+    display_name: Option<String>,
     idempotency_key: Option<String>,
 ) -> DaemonMessage {
+    // The name is checked, and trimmed, before anything is touched: the value
+    // the daemon stores is the value it judged, and a name it refused is
+    // refused before the idempotency table sees the request (S5-09).
+    let display_name = match display_name
+        .as_deref()
+        .map(devboule_protocol::validate_display_name)
+    {
+        Some(Ok(name)) => Some(name),
+        Some(Err(message)) => {
+            return DaemonMessage::Error(
+                WireError::new(ErrorCode::InvalidRequest, message).with_id(id),
+            )
+        }
+        None => None,
+    };
     let fingerprint = format!(
-        "create:{}:{}:{}:{}",
+        "create:{}:{}:{}:{}:{}",
         match kind {
             SessionKind::Terminal => "terminal",
             SessionKind::Acp => "acp",
@@ -4049,7 +4144,10 @@ fn session_create(
         },
         provider.as_deref().unwrap_or(""),
         workspace_id.as_deref().unwrap_or(""),
-        mode.as_deref().unwrap_or("")
+        mode.as_deref().unwrap_or(""),
+        // The name is part of the payload, so a retry that changed it is a
+        // different request and not the same one answered twice.
+        display_name.as_deref().unwrap_or("")
     );
     if let Some(reply) = idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
     {
@@ -4060,10 +4158,16 @@ fn session_create(
             WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down").with_id(id),
         );
     }
-    match state
-        .sessions
-        .create(state, owner, workspace_id, kind, provider, mode, conn_peer)
-    {
+    match state.sessions.create(
+        state,
+        owner,
+        workspace_id,
+        kind,
+        provider,
+        mode,
+        display_name,
+        conn_peer,
+    ) {
         Ok(session) => {
             let reply = DaemonMessage::Session { id, session };
             remember(
@@ -4216,6 +4320,80 @@ fn idempotent_hit(
     }
 }
 
+/// The creation idempotency door (`S5` block 7).
+///
+/// Keyed on the caller's own JSON-RPC id, because §2's schema is closed and
+/// defines no idempotency parameter: the frame's id is the only retry identity
+/// an MCP `tools/call` has. The stored reply is the session the first call
+/// created.
+///
+/// `None` covers a miss and a conflict: a key reused with a different payload is
+/// not a retry, and answering it with the first session would be a lie about
+/// what was created.
+pub(crate) fn idempotent_creation_session(
+    state: &ServerState,
+    owner: &OwnerId,
+    key: &str,
+    fingerprint: &str,
+) -> Option<devboule_protocol::Session> {
+    let owner_key = format!("{}.{}", owner.user, owner.client);
+    let mut store = state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    match store.check(&owner_key, key, fingerprint, Instant::now()) {
+        IdempotencyOutcome::Hit(DaemonMessage::Session { session, .. }) => Some(session),
+        _ => None,
+    }
+}
+
+/// Remember the session a creation answered with, under the same key the retry
+/// will arrive on.
+pub(crate) fn remember_creation_session(
+    state: &ServerState,
+    owner: &OwnerId,
+    key: &str,
+    fingerprint: &str,
+    session: &devboule_protocol::Session,
+) {
+    let owner_key = format!("{}.{}", owner.user, owner.client);
+    let mut store = state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    store.remember(
+        owner_key,
+        key.to_string(),
+        fingerprint.to_string(),
+        DaemonMessage::Session {
+            id: 0,
+            session: session.clone(),
+        },
+        Instant::now(),
+    );
+}
+
+/// The retry identity of one `tools/call` (`S5` block 7).
+///
+/// `None` when there is nothing to key on: a notification (no id), or an id
+/// whose spelling cannot be an idempotency key. The caller then behaves exactly
+/// as it did before this door existed, which is honest — an MCP frame offers no
+/// other retry identity than its own id.
+pub(crate) fn creation_retry_key(
+    creator_session_id: &str,
+    id: &serde_json::Value,
+) -> Option<String> {
+    let text = match id {
+        serde_json::Value::Number(number) => number.to_string(),
+        serde_json::Value::String(text) => text.clone(),
+        _ => return None,
+    };
+    let key = format!("mcp-create-{creator_session_id}-{text}");
+    devboule_protocol::validate_idempotency_key(&key)
+        .ok()
+        .map(|()| key)
+}
+
 fn remember(
     state: &ServerState,
     owner: &OwnerId,
@@ -4310,6 +4488,70 @@ mod tests {
 
     fn state() -> Arc<ServerState> {
         ServerState::new("test-instance".to_string())
+    }
+
+    /// A peer's creation is a session on that peer's device, so the device's own
+    /// `create_sessions` grant has to still hold (`S5` §3 and the §5 checklist).
+    /// The fail-closed half is what this pins: no row, no grant.
+    #[test]
+    fn a_peer_creator_without_create_sessions_is_refused_before_anything_is_created() {
+        let (path, state) = temp_state("agent-create-peer-gate");
+        let creator = |origin: devboule_protocol::SessionOrigin| crate::session::AgentCreator {
+            owner: OwnerId::new("alex", "app").expect("owner"),
+            origin,
+            workspace_id: None,
+            display_name: None,
+            title: "Agent".to_string(),
+        };
+        // This machine's own person: the daemon is their daemon.
+        assert!(creator(devboule_protocol::SessionOrigin::local()).may_create_sessions(&state));
+        // A device with no row — unknown, unpaired or revoked — holds nothing.
+        assert!(!creator(devboule_protocol::SessionOrigin::peer(
+            "device-phone",
+            devboule_protocol::PeerRole::Client
+        ))
+        .may_create_sessions(&state));
+        // An origin the daemon cannot read is not a licence either.
+        assert!(!creator(devboule_protocol::SessionOrigin::unknown()).may_create_sessions(&state));
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn a_creation_retry_answers_the_first_session_and_a_changed_payload_is_a_conflict() {
+        let (path, state) = temp_state("agent-create-idempotency");
+        let owner = OwnerId::new("alex", "app").expect("owner");
+        let session = crate::journal::new_session_record(
+            "child-1",
+            "alex",
+            None,
+            SessionKind::Terminal,
+            "worker",
+        )
+        .to_session();
+        let key = creation_retry_key("session-parent", &serde_json::json!(7)).expect("key");
+        assert!(
+            idempotent_creation_session(&state, &owner, &key, "fp").is_none(),
+            "the first call is a miss"
+        );
+        remember_creation_session(&state, &owner, &key, "fp", &session);
+        assert_eq!(
+            idempotent_creation_session(&state, &owner, &key, "fp").map(|session| session.id),
+            Some(session.id.clone()),
+            "a retry gets the first session back"
+        );
+        // Same key, different payload: a conflict, not a retry. Answering it
+        // with the first session would be a lie about what was created.
+        assert!(idempotent_creation_session(&state, &owner, &key, "other").is_none());
+        // A different frame id is a different call.
+        let other = creation_retry_key("session-parent", &serde_json::json!(8)).expect("key");
+        assert!(idempotent_creation_session(&state, &owner, &other, "fp").is_none());
+        // An id that cannot be spelled as an idempotency key has no retry
+        // identity at all, and one notification (no id) has none either.
+        assert!(creation_retry_key("session-parent", &serde_json::json!("has space")).is_none());
+        assert!(
+            creation_retry_key("session-parent", &serde_json::json!({"nested": true})).is_none()
+        );
+        let _ = std::fs::remove_dir_all(&path);
     }
 
     /// A state with a runtime dir whose `journal.db` the test can also open
@@ -6517,6 +6759,7 @@ mod tests {
                 kind: SessionKind::Claude,
                 provider: Some("claude".to_string()),
                 mode: Some("bypassPermissions".to_string()),
+                display_name: None,
                 idempotency_key: None,
             },
             &creator,
@@ -6555,6 +6798,39 @@ mod tests {
     /// sample per variant, pinned by `VARIANT_COUNT`, so walking it here asks
     /// every frame the gate will ever see. A frame whose sample names no mode
     /// must answer `None` — the gate has no verdict for a mode it does not name
+    /// The two closed matches over `ClientMessage` (`S5`, block 6), walked over
+    /// the peer matrix samples: every sample either names a session (and the id
+    /// is the frame's own) or is refused with one constant sentence, the request
+    /// id back, and nothing of the frame echoed.
+    #[test]
+    fn the_closed_session_matches_classify_every_matrix_sample() {
+        let mut named: Vec<&'static str> = Vec::new();
+        let mut refused: Vec<&'static str> = Vec::new();
+        for frame in crate::peer_policy::tests::matrix_samples() {
+            let name = frame.name();
+            match request_session_id(&frame) {
+                Some(session_id) => {
+                    assert!(!session_id.is_empty(), "{name} named an empty session id");
+                    named.push(name);
+                }
+                None => {
+                    let reply = unexpected_session_frame(&frame);
+                    let DaemonMessage::Error(error) = reply else {
+                        panic!("{name} must be refused, got {reply:?}");
+                    };
+                    assert_eq!(error.code, ErrorCode::InvalidRequest, "{name}");
+                    assert_eq!(error.message, UNEXPECTED_SESSION_FRAME, "{name}");
+                    assert_eq!(error.id, frame.request_id(), "{name}");
+                    refused.push(name);
+                }
+            }
+        }
+        assert!(
+            !named.is_empty() && !refused.is_empty(),
+            "the samples must cover both halves of the classification"
+        );
+    }
+
     /// — and the samples that do name one are pinned as a list, so the two sides
     /// cannot swap silently.
     ///
@@ -6611,6 +6887,8 @@ mod tests {
             workspace_id: None,
             kind,
             provider: None,
+            // Built by the closure so one frame builder serves every case.
+            display_name: None,
             mode: Some(mode.to_string()),
             idempotency_key: None,
         };
@@ -6905,6 +7183,7 @@ mod tests {
                 kind: SessionKind::Acp,
                 provider: Some("claude-acp".to_string()),
                 mode: Some("auto_accept".to_string()),
+                display_name: None,
                 idempotency_key: None,
             },
             &creator,

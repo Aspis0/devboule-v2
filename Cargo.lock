@@ -2740,6 +2740,7 @@ dependencies = [
  "agent-client-protocol",
  "alacritty_terminal",
  "base64 0.23.1",
+ "devboule-daemon",
  "devboule-protocol",
  "getrandom 0.4.3",
  "hkdf 0.13.0",

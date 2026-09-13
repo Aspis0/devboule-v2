@@ -428,7 +428,9 @@ impl ConnHandle {
                 | SessionEvent::PermissionRequest { .. }
                 | SessionEvent::PermissionResolved { .. }
                 | SessionEvent::SessionManifest { .. }
-                | SessionEvent::SessionNotice { .. } => {
+                | SessionEvent::SessionNotice { .. }
+                | SessionEvent::AgentCreated { .. }
+                | SessionEvent::ChildFinished { .. } => {
                     if let (Some(cursor), Some(seq)) =
                         (pull.transcript_cursor.as_mut(), event.transcript_seq)
                     {
@@ -1116,6 +1118,7 @@ mod tests {
                     env: None,
                     options: Vec::new(),
                     origin: devboule_protocol::SessionOrigin::unknown(),
+                    create_agent: None,
                 },
                 None,
             );
@@ -2537,6 +2540,8 @@ mod tests {
                 SessionEvent::SessionManifest { .. } => "session_manifest",
                 SessionEvent::SessionNotice { .. } => "session_notice",
                 SessionEvent::AgentReported { .. } => "agent_reported",
+                SessionEvent::AgentCreated { .. } => "agent_created",
+                SessionEvent::ChildFinished { .. } => "child_finished",
             })
             .collect();
         assert_eq!(kinds, ["snapshot", "output", "exit"]);
@@ -2738,6 +2743,8 @@ mod tests {
                 SessionEvent::SessionManifest { .. } => "session_manifest",
                 SessionEvent::SessionNotice { .. } => "session_notice",
                 SessionEvent::AgentReported { .. } => "agent_reported",
+                SessionEvent::AgentCreated { .. } => "agent_created",
+                SessionEvent::ChildFinished { .. } => "child_finished",
             })
             .collect();
         assert_eq!(kinds, ["output", "recovered"]);

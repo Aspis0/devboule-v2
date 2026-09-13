@@ -13,18 +13,20 @@ use std::sync::{mpsc, Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
-    connect, current_user_sid, spawn_daemon, DaemonClient, EventHandler, RuntimePaths,
-    SessionStateHandler,
+    connect, current_user_sid, spawn_daemon, spawn_daemon_with_env, DaemonClient, EventHandler,
+    RuntimePaths, SessionStateHandler,
 };
 use devboule_protocol::{
-    AttentionReason, ClientHello, Cursor, ErrorCode, OwnerId, PermissionOutcome, Persistence,
-    PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionStateSnapshot,
+    AgentTaskState, AttentionReason, ClientHello, Cursor, ErrorCode, FinishArtifact, OwnerId,
+    PermissionOutcome, Persistence, PersistenceKind, ResumeResult, SessionEvent, SessionKind,
+    SessionStateSnapshot,
 };
 use rusqlite::Connection;
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -122,9 +124,19 @@ struct Harness {
 
 impl Harness {
     fn spawn() -> Self {
+        Self::spawn_with_env(&[])
+    }
+
+    /// A daemon that also gets `extra_env` (and passes it on to its providers).
+    ///
+    /// The slice-5 battery's knobs go through here rather than through
+    /// `std::env::set_var`: the process environment is shared with every other
+    /// test in this binary, and the battery must not depend on who holds the
+    /// file's test lock.
+    fn spawn_with_env(extra_env: &[(&str, &str)]) -> Self {
         let dir = unique_dir();
         let paths = RuntimePaths::from_dir(&dir);
-        let child = spawn_daemon(&daemon_bin(), &paths).expect("spawn daemon");
+        let child = spawn_daemon_with_env(&daemon_bin(), &paths, extra_env).expect("spawn daemon");
         let harness = Self {
             dir,
             paths,
@@ -2869,4 +2881,1123 @@ fn wait_until_gone(pid: u32) {
     let result = unsafe { WaitForSingleObject(handle, 5_000) };
     unsafe { CloseHandle(handle) };
     assert_eq!(result, WAIT_OBJECT_0, "ACP child remained after close");
+}
+
+// ---------------------------------------------------------------------------
+// Slice 5 end to end: an agent creates an agent, through the daemon's own MCP
+// broker, with the stub as the provider on both sides.
+//
+// Two stub capabilities make this possible, both behind knobs that no other
+// test sets: it declares one ACP mode and implements `session/set_mode`
+// (`DEVBOULE_STUB_MODES_DEFAULT`), and it calls the MCP endpoint with the
+// Bearer it was handed (`DEVBOULE_ACP_STUB_MCP_CALL`). The second is what turns
+// a *session* into the caller of `devboule_create_agent` — the caller identity
+// under test is the Bearer's session, not a client connection.
+//
+// Each test's daemon gets its own environment through `Harness::spawn_with_env`:
+// the knobs below are the daemon's own (and its providers'), never this
+// process's, so the battery cannot race a test that does not hold the lock.
+// ---------------------------------------------------------------------------
+
+struct Slice5Test {
+    dir: PathBuf,
+    harness: Harness,
+    client: DaemonClient,
+}
+
+/// One observation file's path, as the string the daemon's environment carries.
+fn file_name(dir: &Path, name: &str) -> String {
+    dir.join(name).to_string_lossy().into_owned()
+}
+
+impl Slice5Test {
+    /// A daemon whose provider is the stub, with `creation` as the arguments of
+    /// the `devboule_create_agent` call every stub process makes as soon as its
+    /// `session/new` handshake has been answered.
+    fn new(creation: &serde_json::Value) -> Self {
+        Self::new_with_env(creation, &[])
+    }
+
+    /// The same daemon, with `extra` added to its environment. The extra values
+    /// outlive the call: the harness copies them into the daemon's own
+    /// environment, which is where its stub processes read them from.
+    fn new_with_env(creation: &serde_json::Value, extra: &[(&str, &str)]) -> Self {
+        let dir = unique_dir();
+        let argv = serde_json::to_string(&vec![stub_bin().to_string_lossy().into_owned()])
+            .expect("stub argv");
+        // Owned strings first: the daemon gets these as its own environment,
+        // which is where its providers read them from.
+        let values = [
+            ("DEVBOULE_ACP_COMMAND", argv),
+            ("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub".to_string()),
+            ("DEVBOULE_TEST_NO_NETWORK", "1".to_string()),
+            ("DEVBOULE_STUB_MODES", "ask,default".to_string()),
+            ("DEVBOULE_STUB_MESSAGE_AFTER_PERMISSION", "1".to_string()),
+            ("DEVBOULE_ACP_STUB_MCP_DELAY_MS", "700".to_string()),
+            (
+                "DEVBOULE_ACP_STUB_SET_MODE_FILE",
+                file_name(&dir, "set mode.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_MODES_FILE",
+                file_name(&dir, "stub modes.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_STDIN_FILE",
+                file_name(&dir, "stub stdin.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_STDOUT_FILE",
+                file_name(&dir, "stub stdout.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_MCP_TOOLS_FILE",
+                file_name(&dir, "mcp tools.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_MCP_CALL",
+                "devboule_create_agent".to_string(),
+            ),
+            ("DEVBOULE_ACP_STUB_MCP_CALL_ARGUMENTS", creation.to_string()),
+            (
+                "DEVBOULE_ACP_STUB_MCP_CALL_FILE",
+                file_name(&dir, "mcp calls.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_PIDS_FILE",
+                file_name(&dir, "stub pids.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_ARGV_FILE",
+                file_name(&dir, "stub argv.txt"),
+            ),
+        ];
+        let env: Vec<(&str, &str)> = values
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .chain(extra.iter().copied())
+            .collect();
+        let harness = Harness::spawn_with_env(&env);
+        let client = harness.client();
+        Self {
+            dir,
+            harness,
+            client,
+        }
+    }
+
+    /// One observation file's lines, empty when the file is not there yet.
+    fn observations(&self, name: &str) -> Vec<String> {
+        std::fs::read_to_string(self.dir.join(name))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn wait_for_observations(&self, name: &str, count: usize) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            let lines = self.observations(name);
+            if lines.len() >= count {
+                return lines;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{name} held {} lines, wanted {count}: {lines:?}",
+                lines.len()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The observation lines one stub process wrote, by the pid every line
+    /// starts with.
+    ///
+    /// Order is not evidence here: the two stubs write to the same file and
+    /// which of them gets there first depends on how fast the daemon answers a
+    /// card, so every assertion names the process it is talking about.
+    fn lines_of(&self, name: &str, pid: &str) -> Vec<String> {
+        self.observations(name)
+            .into_iter()
+            .filter(|line| line.starts_with(&format!("{pid} ")))
+            .collect()
+    }
+
+    /// The same, waiting for at least `count` such lines.
+    fn wait_for_lines_of(&self, name: &str, pid: &str, count: usize) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            let lines = self.lines_of(name, pid);
+            if lines.len() >= count {
+                return lines;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{name} has {} lines for pid {pid}, wanted {count}",
+                lines.len()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The files the daemon's attachment store holds for one session.
+    fn stored_attachments(&self, session_id: &str) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> =
+            std::fs::read_dir(self.harness.dir.join("attachments").join(session_id))
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .collect()
+                })
+                .unwrap_or_default();
+        files.sort();
+        files
+    }
+
+    fn creator_session(&self) -> devboule_protocol::Session {
+        let session = self
+            .client
+            .session_create(None, SessionKind::Acp, None)
+            .expect("the creator's own session");
+        assert_eq!(session.kind, SessionKind::Acp);
+        assert_eq!(session.created_by, None, "a human's session has no parent");
+        session
+    }
+
+    fn attach(&self, session: &devboule_protocol::Session) -> Arc<Mutex<Vec<SessionEvent>>> {
+        let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+        let received = Arc::clone(&events);
+        let handler: EventHandler = Arc::new(move |envelope| {
+            // Poison-tolerant on purpose: a panic in another thread that held
+            // this lock must not silently stop the subscription, or a test
+            // would read "no event arrived" from a handler that died.
+            received
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(envelope.event);
+        });
+        self.client
+            .session_attach(&session.id, None, handler)
+            .expect("attach the creator");
+        events
+    }
+
+    /// The child the creator created, as the daemon's own list reports it.
+    fn child_of(&self, creator: &str) -> devboule_protocol::Session {
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            let child = self
+                .client
+                .sessions_list()
+                .expect("session list")
+                .into_iter()
+                .find(|session| session.created_by.as_deref() == Some(creator));
+            if let Some(child) = child {
+                return child;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the creator has no child in the daemon's list"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Answer the creation card that arrived on `session_id` with an allow, and
+    /// answer it once: a second card would mean the gate was not atomic.
+    fn allow_creation_card(
+        &self,
+        session_id: &str,
+        events: &Mutex<Vec<SessionEvent>>,
+    ) -> CreateAgentCardFacts {
+        let facts = wait_for_creation_card(events, Duration::from_secs(45));
+        self.client
+            .session_permission_respond(
+                session_id,
+                &facts.tool_call_id,
+                PermissionOutcome::AllowOnce,
+            )
+            .expect("allow the creation");
+        facts
+    }
+}
+
+/// What the creation card said, and the id a decision has to carry.
+struct CreateAgentCardFacts {
+    tool_call_id: String,
+    title: String,
+    provider: String,
+    preset: String,
+    caps: devboule_protocol::CreateAgentCaps,
+}
+
+fn wait_for_creation_card(
+    events: &Mutex<Vec<SessionEvent>>,
+    timeout: Duration,
+) -> CreateAgentCardFacts {
+    let deadline = Instant::now() + timeout;
+    loop {
+        {
+            let events = events.lock().expect("events lock");
+            if let Some(facts) = events.iter().find_map(|event| match event {
+                SessionEvent::PermissionRequest {
+                    tool_call_id,
+                    create_agent: Some(card),
+                    ..
+                } => Some(CreateAgentCardFacts {
+                    tool_call_id: tool_call_id.clone(),
+                    title: card.title.clone(),
+                    provider: card.provider.clone(),
+                    preset: card.preset.clone(),
+                    caps: card.caps.clone(),
+                }),
+                _ => None,
+            }) {
+                return facts;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no creation card arrived on the creator"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn slice5_events(events: &Mutex<Vec<SessionEvent>>) -> Vec<SessionEvent> {
+    events.lock().expect("events lock").clone()
+}
+
+/// The first index at which `predicate` holds, for order assertions that are
+/// about *when* two records were published rather than that both exist.
+fn slice5_index_of<F>(events: &[SessionEvent], predicate: F) -> Option<usize>
+where
+    F: Fn(&SessionEvent) -> bool,
+{
+    events.iter().position(predicate)
+}
+
+/// The `<devboule-system>` text message whose body contains `needle`, with the
+/// id the delivery gave it.
+fn slice5_system_message(events: &[SessionEvent], needle: &str) -> (String, Option<String>) {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            SessionEvent::AgentUserMessage { message_id, text }
+                if text.contains("<devboule-system>") && text.contains(needle) =>
+            {
+                Some((text.clone(), message_id.clone()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no <devboule-system> message mentioning {needle}"))
+}
+
+/// The event kinds in the order they were published, for a failure message that
+/// says *when* something arrived rather than only that it did.
+fn slice5_kinds(events: &[SessionEvent]) -> String {
+    events
+        .iter()
+        .map(|event| match event {
+            SessionEvent::AgentError { message } => {
+                format!("error({})", message.chars().take(160).collect::<String>())
+            }
+            other => slice5_kind(other).to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One event's name in that list.
+fn slice5_kind(event: &SessionEvent) -> &'static str {
+    match event {
+        SessionEvent::AgentCreated { .. } => "created",
+        SessionEvent::ChildFinished { .. } => "finished",
+        SessionEvent::AgentFinished { .. } => "turn_end",
+        SessionEvent::AgentError { .. } => "error",
+        SessionEvent::PermissionRequest { .. } => "card",
+        SessionEvent::PermissionResolved { .. } => "card_answered",
+        SessionEvent::AgentUserMessage { text, .. } if text.contains("agent_finished") => {
+            "text:finished"
+        }
+        SessionEvent::AgentUserMessage { text, .. } if text.contains("agent_input_required") => {
+            "text:notice"
+        }
+        SessionEvent::AgentUserMessage { .. } => "text",
+        _ => "other",
+    }
+}
+
+/// The child's end, as the structured record states it.
+fn slice5_finished(
+    events: &[SessionEvent],
+) -> (Option<String>, AgentTaskState, Vec<FinishArtifact>) {
+    events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::ChildFinished {
+                message_id,
+                state,
+                artifacts,
+                ..
+            } => Some((message_id.clone(), *state, artifacts.clone())),
+            _ => None,
+        })
+        .expect("no ChildFinished on the creator")
+}
+
+/// `S5` block 6, the whole creation: a session that is a *provider's* session
+/// asks the daemon for a child, the human allows it once, the child runs, and
+/// both finish records come back to the creator.
+#[test]
+fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new(&serde_json::json!({
+        "title": "builder",
+        "provider": "devboule-acp-stub",
+        "preset": "worker",
+        "initialPrompt": "report your result",
+    }));
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    let card = test.allow_creation_card(&creator.id, &events);
+    assert_eq!(card.title, "builder", "the card names the child");
+    assert_eq!(card.provider, "devboule-acp-stub");
+    assert_eq!(card.preset, "worker");
+    assert_eq!(card.caps.depth, 1, "a human's child is depth 1");
+    assert_eq!(
+        card.caps.live_children, 1,
+        "the slot is counted in the card"
+    );
+
+    // The child is a session of the daemon's own list, named and parented as
+    // the creation said (S5-12 read back through the wire, not the journal).
+    let child = test.child_of(&creator.id);
+    assert_eq!(child.display_name.as_deref(), Some("builder"));
+    assert_eq!(child.created_by.as_deref(), Some(creator.id.as_str()));
+    assert_eq!(child.kind, SessionKind::Acp);
+    assert_eq!(child.provider.as_deref(), Some("devboule-acp-stub"));
+    // The preset cell's mode reached the provider: the stub writes down every
+    // `session/set_mode` it is sent. The child's *row* exists before its
+    // provider is even spawned (the journal row is the durable boundary), so
+    // this waits for the switch rather than assuming it happened with the row.
+    let announced = test.wait_for_observations("stub modes.txt", 1);
+    assert!(
+        announced[0].contains("\"currentModeId\":\"ask\"") && announced[0].contains("default"),
+        "the stub declared a mode it was not already in, so a switch is owed: {}",
+        announced[0]
+    );
+    let switched = test.wait_for_observations("set mode.txt", 1);
+    assert_eq!(
+        switched[0].trim(),
+        "default",
+        "the worker cell's mode is what the child was switched to"
+    );
+
+    wait_for(&events, Duration::from_secs(60), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ChildFinished { .. }))
+    });
+    let transcript = slice5_events(&events);
+    let created_at = slice5_index_of(&transcript, |event| {
+        matches!(event, SessionEvent::AgentCreated { .. })
+    })
+    .expect("AgentCreated on the creator");
+    let finished_at = slice5_index_of(&transcript, |event| {
+        matches!(event, SessionEvent::ChildFinished { .. })
+    })
+    .expect("ChildFinished on the creator");
+    let (envelope, envelope_id) = slice5_system_message(&transcript, "kind: agent_finished");
+    assert!(
+        created_at < finished_at,
+        "the creation is recorded before the finish"
+    );
+    assert!(
+        envelope.contains("state: completed"),
+        "the stub stopped with end_turn, which is completed: {envelope}\n[{}]",
+        slice5_kinds(&transcript)
+    );
+    assert!(
+        envelope.contains(&format!("childSessionId: {}", child.id)),
+        "the envelope names the child: {envelope}"
+    );
+
+    // S5-04: the two records name one delivery, and that delivery is the
+    // `<devboule-system>` text the creator's transcript actually holds.
+    let (message_id, state, artifacts) = slice5_finished(&transcript);
+    assert_eq!(
+        message_id, envelope_id,
+        "ChildFinished.message_id is the id of the text message beside it"
+    );
+    assert_eq!(state, AgentTaskState::Completed);
+
+    // S5 decision 10: one artifact, deposited in the *creator's* folder, and it
+    // is the child's own message.
+    assert_eq!(artifacts.len(), 1, "one artifact: {artifacts:?}");
+    let artifact = &artifacts[0];
+    assert!(!artifact.artifact_id.is_empty());
+    assert_eq!(artifact.parts.len(), 1);
+    let part = &artifact.parts[0];
+    assert!(
+        part.url
+            .starts_with(&format!("devboule-attachment:{}/", creator.id)),
+        "the artifact is the creator's: {}",
+        part.url
+    );
+    assert_eq!(part.mime_type, "text/markdown");
+    let stored = test.stored_attachments(&creator.id);
+    assert_eq!(
+        stored.len(),
+        1,
+        "the deposit really exists in the creator's folder: {stored:?}"
+    );
+    let deposited = std::fs::read_to_string(&stored[0]).expect("the deposited artifact");
+    assert!(
+        deposited.contains("stub reply"),
+        "the artifact is the child's own message: {deposited}"
+    );
+    assert_eq!(
+        part.metadata.as_ref().map(|metadata| metadata.stored_bytes),
+        Some(deposited.len() as u64),
+        "the part's size is the store's size"
+    );
+}
+
+/// `S5` block 2's overlay, measured on the child's *own* broker connection:
+/// the design preset hides both tools from `tools/list` and refuses them at
+/// `tools/call`, while the creator keeps all three.
+///
+/// One daemon, two stub processes, two MCP connections: the first line of each
+/// observation file is the creator's, the second is the child's.
+#[test]
+fn the_childs_own_connection_sees_the_design_overlay() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new(&serde_json::json!({
+        "title": "designer",
+        "provider": "devboule-acp-stub",
+        "preset": "design",
+        "initialPrompt": "report your result",
+    }));
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    let card = test.allow_creation_card(&creator.id, &events);
+    assert_eq!(card.preset, "design");
+
+    let child = test.child_of(&creator.id);
+    let pids = test.wait_for_observations("stub pids.txt", 2);
+    let creator_pid = pids[0].trim().to_string();
+    let child_pid = pids[1].trim().to_string();
+    // Both processes asked for their own tool list, and the child's own call to
+    // a hidden tool was refused: the overlay is per connection, not per daemon.
+    let creator_tools = test.wait_for_lines_of("mcp tools.txt", &creator_pid, 1);
+    let child_tools = test.wait_for_lines_of("mcp tools.txt", &child_pid, 1);
+    let child_calls = test.wait_for_lines_of("mcp calls.txt", &child_pid, 1);
+    assert!(
+        creator_tools[0].contains("devboule_create_agent")
+            && creator_tools[0].contains("devboule_send_message"),
+        "the creator keeps both tools: {}",
+        creator_tools[0]
+    );
+    assert!(
+        child_tools[0].contains("devboule_list_agents"),
+        "a design child keeps the roster: {}",
+        child_tools[0]
+    );
+    assert!(
+        !child_tools[0].contains("devboule_create_agent"),
+        "the design overlay hides create_agent from the child's list: {}",
+        child_tools[0]
+    );
+    assert!(
+        !child_tools[0].contains("devboule_send_message"),
+        "and send_message: {}",
+        child_tools[0]
+    );
+    assert!(
+        child_calls[0].contains("Tool disabled by policy"),
+        "a hidden tool is refused at call time too: {}",
+        child_calls[0]
+    );
+    // The refusal is the whole effect: the child created nothing.
+    assert_eq!(
+        test.client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .filter(|session| session.created_by.as_deref() == Some(child.id.as_str()))
+            .count(),
+        0,
+        "a refused call creates no grandchild"
+    );
+}
+
+/// The child id the creator's creation record names, waiting for it.
+///
+/// One client request is made here, before the creation is in flight: a
+/// `sessions_list` issued *while* the creation runs competes with the events on
+/// the same connection and the transcript stops arriving.
+fn wait_for_agent_created(
+    events: &Mutex<Vec<SessionEvent>>,
+    what: &str,
+    timeout: Duration,
+) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let created = slice5_events(events).iter().find_map(|event| match event {
+            SessionEvent::AgentCreated {
+                child_session_id, ..
+            } => Some(child_session_id.clone()),
+            _ => None,
+        });
+        if let Some(child_session_id) = created {
+            return child_session_id;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no creation record for {what}: [{}]",
+            slice5_kinds(&slice5_events(events))
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The creator's whole transcript, waiting for the structured finish record.
+fn wait_for_finish(
+    events: &Mutex<Vec<SessionEvent>>,
+    what: &str,
+    timeout: Duration,
+) -> Vec<SessionEvent> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let transcript = slice5_events(events);
+        if transcript
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ChildFinished { .. }))
+        {
+            return transcript;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no finish report for {what}: [{}]",
+            slice5_kinds(&transcript)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Wait until the daemon's list reports `session_id` ended, and say whether its
+/// row is still there at all (a stop keeps the transcript, an exit need not).
+fn wait_for_session_ended(test: &Slice5Test, session_id: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let row = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .find(|session| session.id == session_id);
+        match row {
+            Some(row) => {
+                if matches!(row.state, devboule_protocol::SessionState::Ended { .. }) {
+                    return true;
+                }
+            }
+            None => return false,
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session {session_id} never reached an ended state"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Attach a session the test issues commands against but reads no events from:
+/// the stop command rides the session's control subscription.
+fn attach_control(test: &Slice5Test, session_id: &str) {
+    let handler: EventHandler = Arc::new(|_| {});
+    test.client
+        .session_attach(session_id, None, handler)
+        .expect("attach the session for control");
+}
+
+/// Wait until the daemon's list reports `session_id` live.
+fn wait_for_session_live(test: &Slice5Test, session_id: &str, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let live = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .find(|session| session.id == session_id)
+            .is_some_and(|session| {
+                matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        if live {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session {session_id} never became live"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The daemon-wide held-creation count, read where the daemon states it: a
+/// second creator's card carries it, and answering that card with an allow
+/// clears the gate so the extra session leaves nothing behind.
+fn daemon_wide_held_creations(test: &Slice5Test, why: &str) -> u32 {
+    let second = test.creator_session();
+    let second_events = test.attach(&second);
+    let card = wait_for_creation_card(&second_events, Duration::from_secs(45));
+    test.client
+        .session_permission_respond(&second.id, &card.tool_call_id, PermissionOutcome::AllowOnce)
+        .expect("allow the second creation");
+    let held = card.caps.live_agent_sessions;
+    println!("daemon-wide held creations {why}: {held}");
+    held
+}
+
+/// A creator whose provider is the stub, with one creation in flight: the
+/// returned test is attached and the card is answered, so the caller only has
+/// to read the records.
+fn slice5_creator_with_a_creation(
+    creation: &serde_json::Value,
+    extra: &[(&str, &str)],
+) -> (
+    Slice5Test,
+    devboule_protocol::Session,
+    Arc<Mutex<Vec<SessionEvent>>>,
+) {
+    let test = Slice5Test::new_with_env(creation, extra);
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    (test, creator, events)
+}
+
+/// Audit S5-01 end to end: a child whose process exits on its own — the reader
+/// reaching EOF — gives its slot back.
+///
+/// The slot is measured where the daemon states it: a second creator's card
+/// carries the daemon-wide count, which is one (its own reservation) when the
+/// first child was released and two when it was not.
+#[test]
+fn a_child_that_exits_by_eof_gives_its_slot_back() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new(&serde_json::json!({
+        "title": "builder",
+        "provider": "devboule-acp-stub",
+        "preset": "design",
+        "initialPrompt": "report your result",
+    }));
+    let first = test.creator_session();
+    let first_events = test.attach(&first);
+    test.allow_creation_card(&first.id, &first_events);
+    // The creation record arrives on the creator's subscription *before* the
+    // child produces anything (audit S5-10), and it carries the child's id: the
+    // whole test can run without another client request, so the subscription is
+    // never competing with one for the connection.
+    let child_id = {
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            let created = slice5_events(&first_events)
+                .iter()
+                .find_map(|event| match event {
+                    SessionEvent::AgentCreated {
+                        child_session_id, ..
+                    } => Some(child_session_id.clone()),
+                    _ => None,
+                });
+            if let Some(child_session_id) = created {
+                break child_session_id;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no AgentCreated before the child's output: [{}]",
+                slice5_kinds(&slice5_events(&first_events))
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let pids = test.wait_for_observations("stub pids.txt", 2);
+    assert_eq!(
+        pids.len(),
+        2,
+        "the creator and its child are the only stubs so far: {pids:?}"
+    );
+
+    // The child's provider exits on its own. Nothing closes the session: the
+    // daemon sees EOF, and that path has to account for the child like any
+    // other end.
+    let child_pid: u32 = pids[1].trim().parse().expect("the child's pid");
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, child_pid);
+        assert!(!handle.is_null(), "the child's process was found");
+        let _ = TerminateProcess(handle, 0);
+        CloseHandle(handle);
+    }
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        // The row stays (a transcript of an ended session is still a row); what
+        // the end has to change is its state, and — with it — the slot it held.
+        let ended = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .find(|session| session.id == child_id)
+            .is_none_or(|session| {
+                matches!(session.state, devboule_protocol::SessionState::Ended { .. })
+            });
+        if ended {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the child is still live after its process exited"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // Audit S5B-11: an end by EOF owes the creator the *report*, not only the
+    // slot. Both records, and the structured one carries the id the text
+    // message beside it really has.
+    let report_deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        if slice5_events(&first_events)
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ChildFinished { .. }))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < report_deadline,
+            "no finish report after the EOF: [{}]",
+            slice5_kinds(&slice5_events(&first_events))
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let transcript = slice5_events(&first_events);
+    let (envelope, envelope_id) = slice5_system_message(&transcript, "kind: agent_finished");
+    assert!(
+        envelope.contains(&format!("childSessionId: {child_id}")),
+        "the report after an EOF names the child: {envelope}"
+    );
+    let (message_id, _, _) = slice5_finished(&transcript);
+    assert_eq!(
+        message_id, envelope_id,
+        "the structured record carries the id of the text record beside it"
+    );
+
+    // A second creator's card states the daemon-wide count as the daemon sees
+    // it *after* that end: one held creation, this one.
+    let second = test.creator_session();
+    let second_events = test.attach(&second);
+    let card = wait_for_creation_card(&second_events, Duration::from_secs(45));
+    assert_eq!(
+        card.caps.live_agent_sessions, 1,
+        "the exited child's slot was given back, not leaked"
+    );
+    test.client
+        .session_permission_respond(&second.id, &card.tool_call_id, PermissionOutcome::AllowOnce)
+        .expect("allow the second creation");
+}
+
+/// `S5` §3 end to end: a child that parks on a permission card tells its creator
+/// once, and the finish report follows the human's answer.
+#[test]
+fn a_child_parked_on_a_card_tells_its_creator_once_and_finishes_after_the_answer() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new(&serde_json::json!({
+        "title": "parker",
+        "provider": "devboule-acp-stub",
+        "preset": "worker",
+        // The stub asks for permission when its prompt mentions permission.
+        "initialPrompt": "please request permission",
+    }));
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    let child = test.child_of(&creator.id);
+
+    // The notice: one, and one only, however many cards the child raises.
+    wait_for(&events, Duration::from_secs(60), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. }
+                if text.contains("kind: agent_input_required"))
+        })
+    });
+    let (notice, _) = slice5_system_message(&slice5_events(&events), "kind: agent_input_required");
+    assert!(
+        notice.contains(&format!("childSessionId: {}", child.id)),
+        "the notice names the parked child: {notice}"
+    );
+
+    // The human answers the *child's* card; the child then finishes and the
+    // report arrives with the artifact the same way it does without a park.
+    let _child_events = test.attach(&child);
+    test.client
+        .session_permission_respond(&child.id, "tool-perm", PermissionOutcome::AllowOnce)
+        .expect("answer the child's card");
+    wait_for(&events, Duration::from_secs(60), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ChildFinished { .. }))
+    });
+    let transcript = slice5_events(&events);
+    let notices = transcript
+        .iter()
+        .filter(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. }
+                if text.contains("kind: agent_input_required"))
+        })
+        .count();
+    assert_eq!(notices, 1, "one notice per child, not one per card");
+    let (envelope, envelope_id) = slice5_system_message(&transcript, "kind: agent_finished");
+    assert!(
+        envelope.contains("state: completed"),
+        "the answer un-parked the child, which then finished: {envelope}"
+    );
+    let (message_id, _, artifacts) = slice5_finished(&transcript);
+    assert_eq!(message_id, envelope_id);
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "the artifact followed the answer: {envelope}"
+    );
+    assert!(test.stored_attachments(&creator.id).len() == 1);
+}
+
+/// `S5` §2 end to end: a creation naming a provider this daemon cannot launch
+/// is refused before a card, a slot or a session.
+#[test]
+fn a_creation_naming_an_uninstalled_provider_is_refused() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new(&serde_json::json!({
+        "title": "nowhere",
+        "provider": "devboule-absent-probe",
+        "preset": "worker",
+        "initialPrompt": "report your result",
+    }));
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("provider not installed"),
+        "the refusal is the sentence §2 names: {}",
+        calls[0]
+    );
+    assert!(
+        test.client
+            .sessions_list()
+            .expect("session list")
+            .iter()
+            .all(|session| session.created_by.is_none()),
+        "nothing was created"
+    );
+    assert_eq!(
+        test.observations("stub pids.txt").len(),
+        1,
+        "and no provider was spawned for it"
+    );
+    assert!(
+        slice5_events(&events).iter().all(|event| !matches!(
+            event,
+            SessionEvent::PermissionRequest {
+                create_agent: Some(_),
+                ..
+            }
+        )),
+        "a refused provider raises no card"
+    );
+}
+
+/// Audit S5B-03: a child stopped *with its transcript kept* reaches EOF, and
+/// that end owes the creator the report and the slot while the row stays.
+#[test]
+fn a_child_stopped_with_its_transcript_kept_is_reported_and_gives_its_slot_back() {
+    let _lock = lock_tests();
+    let (test, _creator, events) = slice5_creator_with_a_creation(
+        &serde_json::json!({
+            "title": "stopper",
+            "provider": "devboule-acp-stub",
+            // The design overlay hides `create_agent` from the child, so the
+            // child's own handshake adds no grandchild to the count below.
+            "preset": "design",
+            "initialPrompt": "report your result",
+        }),
+        &[],
+    );
+    let child_id = wait_for_agent_created(&events, "the child", Duration::from_secs(45));
+    wait_for_session_live(&test, &child_id, Duration::from_secs(45));
+
+    // The stop path: the daemon kills the provider and keeps the transcript.
+    // The stop command rides the session's control subscription: attach first.
+    attach_control(&test, &child_id);
+    test.client.session_stop(&child_id).expect("stop the child");
+    let transcript = wait_for_finish(&events, "the stopped child", Duration::from_secs(45));
+    let (envelope, envelope_id) = slice5_system_message(&transcript, "kind: agent_finished");
+    assert!(
+        envelope.contains(&format!("childSessionId: {child_id}")),
+        "the report names the stopped child: {envelope}"
+    );
+    let (message_id, _, _) = slice5_finished(&transcript);
+    assert_eq!(
+        message_id, envelope_id,
+        "the stopped child's record carries the id of the text report"
+    );
+
+    // S5B-03: the transcript stays, so the row stays — and it is ended.
+    assert!(
+        wait_for_session_ended(&test, &child_id, Duration::from_secs(45)),
+        "a stopped child keeps its row"
+    );
+    assert_eq!(
+        daemon_wide_held_creations(&test, "after a child was stopped"),
+        1,
+        "the stopped child gave its slot back"
+    );
+}
+
+/// Audit-2 §1, case (a): the boundary is the return of the creation call. A
+/// provider that dies during its own startup — here it answers `session/new`
+/// and then goes — never became a session: the tool call answers an error, the
+/// reservation rolls back (slot, in-flight, gate), and the creator hears
+/// nothing about a child it never had.
+#[test]
+fn a_provider_that_dies_during_its_own_startup_is_a_failed_creation() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new_with_env(
+        &serde_json::json!({
+            "title": "stillborn",
+            "provider": "devboule-acp-stub",
+            "preset": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &[("DEVBOULE_ACP_STUB_EXIT_AFTER_SESSION_NEW", "2")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    // The tool call answers the boundary's error, and the stub recorded what
+    // the daemon sent back to the agent that called it.
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls
+            .iter()
+            .any(|line| line.contains("provider exited during startup")),
+        "the creation call must answer the startup error, got: {calls:?}"
+    );
+
+    // Nothing is published on the creator: no creation record, no report.
+    let transcript = slice5_events(&events);
+    assert!(
+        slice5_index_of(&transcript, |event| matches!(
+            event,
+            SessionEvent::AgentCreated { .. }
+        ))
+        .is_none(),
+        "a failed creation publishes no AgentCreated: [{}]",
+        slice5_kinds(&transcript)
+    );
+    assert!(
+        slice5_index_of(&transcript, |event| matches!(
+            event,
+            SessionEvent::ChildFinished { .. }
+        ))
+        .is_none(),
+        "a failed creation owes no report: [{}]",
+        slice5_kinds(&transcript)
+    );
+
+    // The reservation rolled back: the next creation is admitted, and the
+    // daemon-wide count that card states is its own reservation alone.
+    let second = test.creator_session();
+    let second_events = test.attach(&second);
+    let second_card = wait_for_creation_card(&second_events, Duration::from_secs(45));
+    assert_eq!(
+        second_card.caps.live_agent_sessions, 1,
+        "the failed creation's slot was given back, not leaked"
+    );
+    test.client
+        .session_permission_respond(
+            &second.id,
+            &second_card.tool_call_id,
+            PermissionOutcome::AllowOnce,
+        )
+        .expect("allow the creation after the failed one");
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        if slice5_index_of(&slice5_events(&second_events), |event| {
+            matches!(event, SessionEvent::AgentCreated { .. })
+        })
+        .is_some()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the creation after the failed one never happened: [{}]",
+            slice5_kinds(&slice5_events(&second_events))
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Audit-2 §1, case (b): a child that dies *after* its creation answered Ok is
+/// a child end, not a failed creation. This one goes the moment its first
+/// prompt arrives, so its creation record is already on the creator's
+/// transcript and the end still has to reach it — both records, one slot back.
+#[test]
+fn a_child_that_dies_on_its_first_prompt_is_reported_and_gives_its_slot_back() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new_with_env(
+        &serde_json::json!({
+            "title": "prompt-fatal",
+            "provider": "devboule-acp-stub",
+            "preset": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &[("DEVBOULE_ACP_STUB_EXIT_ON_PROMPT", "1")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let child_id = wait_for_agent_created(
+        &events,
+        "the child that dies on its prompt",
+        Duration::from_secs(45),
+    );
+    let transcript = wait_for_finish(
+        &events,
+        "the child that died on its first prompt",
+        Duration::from_secs(45),
+    );
+    let (envelope, envelope_id) = slice5_system_message(&transcript, "kind: agent_finished");
+    assert!(
+        envelope.contains(&format!("childSessionId: {child_id}")),
+        "the report names the child: {envelope}"
+    );
+    let (message_id, _, _) = slice5_finished(&transcript);
+    assert_eq!(
+        message_id, envelope_id,
+        "ChildFinished carries the id of the text report beside it"
+    );
+
+    // No dead link, and the slot came back.
+    wait_for_session_ended(&test, &child_id, Duration::from_secs(45));
+    assert_eq!(
+        daemon_wide_held_creations(&test, "the dead child's slot was given back"),
+        1,
+        "the dead child's slot was given back"
+    );
 }

@@ -102,6 +102,28 @@ fn session_event_samples() -> Vec<SessionEvent> {
             model_id: None,
             usage: None,
         },
+        AgentCreated => SessionEvent::AgentCreated {
+            message_id: Some("agent-created-1".to_string()),
+            child_session_id: "s.1.2".to_string(),
+            display_name: "worker".to_string(),
+            provider: "claude".to_string(),
+            preset: "worker".to_string(),
+        },
+        ChildFinished => SessionEvent::ChildFinished {
+            message_id: Some("child-finished-1".to_string()),
+            child_session_id: "s.1.2".to_string(),
+            display_name: "worker".to_string(),
+            state: crate::AgentTaskState::Completed,
+            note: Some("The message was over the 32 KiB cap and was not deposited.".to_string()),
+            artifacts: vec![crate::FinishArtifact {
+                artifact_id: "devboule-attachment:s.1.2/deadbeef".to_string(),
+                parts: vec![crate::FinishArtifactPart {
+                    url: "devboule-attachment:s.1.2/deadbeef".to_string(),
+                    mime_type: "text/markdown".to_string(),
+                    metadata: Some(crate::FinishArtifactPartMetadata { stored_bytes: 12 }),
+                }],
+            }],
+        },
         AgentTaskStarted => SessionEvent::AgentTaskStarted {
             task_id: "task-1".to_string(),
             title: Some("Find the relevant files".to_string()),
@@ -139,6 +161,26 @@ fn session_event_samples() -> Vec<SessionEvent> {
             env: Some(Vec::new()),
             options: Vec::new(),
             origin: crate::SessionOrigin::unknown(),
+            // The sample carries the creation payload rather than `None`: the
+            // ordinary card is the same variant with the field absent, and a
+            // sample that omitted it would leave the app's union member for a
+            // creation card unexercised by the committed snapshot.
+            create_agent: Some(crate::CreateAgentCard {
+                creator_session_id: "s.1.1".to_string(),
+                provider: "claude".to_string(),
+                preset: "worker".to_string(),
+                title: "worker".to_string(),
+                caps: crate::CreateAgentCaps {
+                    live_children: 0,
+                    max_live_children: 3,
+                    creations_this_hour: 0,
+                    max_creations_per_hour: 10,
+                    depth: 1,
+                    max_depth: 2,
+                    live_agent_sessions: 1,
+                    max_live_agent_sessions: 8,
+                },
+            }),
         },
         PermissionResolved => SessionEvent::PermissionResolved {
             tool_call_id: String::new(),

@@ -1571,6 +1571,7 @@ impl ClaudeReader {
             // A placeholder the daemon overwrites with the session's stored
             // origin before the request leaves for a subscriber.
             origin: devboule_protocol::SessionOrigin::unknown(),
+            create_agent: None,
         };
         let acp_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut controls) = self.controls.lock() {

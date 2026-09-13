@@ -51,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 9;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 10;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -234,6 +234,15 @@ pub struct SessionRecord {
     /// made the row; read by the peer gate and the permission card's
     /// provenance line. Every row that predates v9 is `local`.
     pub origin: SessionOrigin,
+    /// The name the human reads for this session (`S5` decision 9b, audit
+    /// S5-12). NULL for a session created without one and for every row that
+    /// predates v10: the surfaces fall back to the title, exactly as they did
+    /// before the column existed.
+    pub display_name: Option<String>,
+    /// The session that created this one, when an agent did (`S5` decision 9a).
+    /// NULL for a session a human asked for, and for every row that predates
+    /// v10.
+    pub created_by: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -422,6 +431,11 @@ impl SessionRecord {
             elapsed_ms: None,
             created_at_ms: self.created_at_ms,
             origin: self.origin.clone(),
+            // Both are the row's now (audit S5-12): a transcript recovered
+            // after a restart lists under the name the human saw and keeps the
+            // parent it was created by.
+            display_name: self.display_name.clone(),
+            created_by: self.created_by.clone(),
         }
     }
 }
@@ -2121,8 +2135,9 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
             generation, status, exit_code, closed, last_seq, degraded,
             dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
-            reaped, peer_session_id, provider, origin_kind, origin_device, origin_role
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23)
+            reaped, peer_session_id, provider, origin_kind, origin_device, origin_role,
+            display_name, created_by
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -2140,7 +2155,9 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             provider = COALESCE(excluded.provider, sessions.provider),
             origin_kind = COALESCE(excluded.origin_kind, sessions.origin_kind),
             origin_device = COALESCE(excluded.origin_device, sessions.origin_device),
-            origin_role = COALESCE(excluded.origin_role, sessions.origin_role)",
+            origin_role = COALESCE(excluded.origin_role, sessions.origin_role),
+            display_name = COALESCE(excluded.display_name, sessions.display_name),
+            created_by = COALESCE(excluded.created_by, sessions.created_by)",
         params![
             record.id,
             record.owner,
@@ -2165,6 +2182,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             origin_kind_str(&record.origin),
             record.origin.device_id,
             record.origin.role.map(|role| role.as_str().to_string()),
+            record.display_name,
+            record.created_by,
         ],
     )?;
     Ok(())
@@ -2645,6 +2664,11 @@ pub fn new_session_record(
         reaped: false,
         peer_session_id: None,
         origin: SessionOrigin::local(),
+        // A caller that wants either of these sets them on the record it gets
+        // back (`S5` decision 9); a row with no name and no parent is the
+        // honest default for a session a human asked for.
+        display_name: None,
+        created_by: None,
     }
 }
 
@@ -3107,6 +3131,75 @@ mod tests {
                 },
             }
         );
+    }
+
+    /// Audit S5-12: the name and the parent of an agent-created session are the
+    /// journal's, so a restart brings both back.
+    ///
+    /// A row with neither stays NULL — every session a human asked for — and
+    /// the surfaces fall back to the title exactly as they did before the
+    /// columns existed.
+    #[test]
+    fn a_display_name_and_a_creator_survive_a_restart_and_an_absent_one_stays_null() {
+        let (dir, path) = tmp_journal();
+        {
+            let journal = Journal::open(&path).expect("open");
+            let mut child = sample_session("s.child");
+            child.display_name = Some("builder".to_string());
+            child.created_by = Some("s.parent".to_string());
+            journal.upsert_blocking(child).expect("upsert the child");
+            journal
+                .upsert_blocking(sample_session("s.human"))
+                .expect("upsert a session nobody created");
+            journal.shutdown();
+        }
+
+        // A second open is the restart: the migration is where a database that
+        // predates the columns gets them, and this read is what proves the
+        // *values* came back rather than only the schema.
+        let journal = Journal::open(&path).expect("reopen");
+        let rows = journal.list().expect("list");
+        let child = rows
+            .iter()
+            .find(|row| row.id == "s.child")
+            .expect("the child's row survived the restart");
+        assert_eq!(child.display_name.as_deref(), Some("builder"));
+        assert_eq!(child.created_by.as_deref(), Some("s.parent"));
+        assert_eq!(
+            child.to_session().display_name.as_deref(),
+            Some("builder"),
+            "a recovered transcript lists under the name the human saw"
+        );
+        assert_eq!(child.to_session().created_by.as_deref(), Some("s.parent"));
+        let human = rows
+            .iter()
+            .find(|row| row.id == "s.human")
+            .expect("the human's row");
+        assert!(
+            human.display_name.is_none() && human.created_by.is_none(),
+            "a session a human asked for has neither, and NULL is how that is said"
+        );
+        // An upsert that carries neither must not erase what the create wrote:
+        // the row is the same session, and the finish of its first generation
+        // does not know its name.
+        let mut update = sample_session("s.child");
+        update.display_name = None;
+        update.created_by = None;
+        journal.upsert_blocking(update).expect("upsert again");
+        let again = journal
+            .list()
+            .expect("list again")
+            .into_iter()
+            .find(|row| row.id == "s.child")
+            .expect("still there");
+        assert_eq!(
+            again.display_name.as_deref(),
+            Some("builder"),
+            "a later upsert without a name keeps the one the create wrote"
+        );
+        assert_eq!(again.created_by.as_deref(), Some("s.parent"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

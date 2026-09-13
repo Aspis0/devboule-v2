@@ -554,7 +554,33 @@ fn spawn_process_with_load(
                 let _ = process.wait();
             }
             let stderr_lines = stderr_source.discard_and_join();
+            // A provider that died during its own startup — initialize,
+            // session/new, session/load, set_mode — never became a session
+            // (audit-2 §1): it is named as that, not as an I/O fault that
+            // reads like a protocol problem. `wait` above leaves the status
+            // cached, so `try_wait` answers without touching the process.
+            let exited = process
+                .lock()
+                .ok()
+                .and_then(|mut process| process.try_wait().ok().flatten())
+                .is_some();
             drop(process_job);
+            if exited {
+                // The boundary is *named* on top of the provider's own words:
+                // a caller reads "provider exited during startup" and the
+                // provider's last line stays in the message for the human.
+                return Err(redact_handshake_error(
+                    WireError::new(
+                        error.code,
+                        format!(
+                            "provider exited during startup: {}",
+                            bounded_excerpt(&error.message, MAX_HANDSHAKE_MESSAGE_BYTES)
+                        ),
+                    ),
+                    &stderr_lines,
+                    mcp.as_ref(),
+                ));
+            }
             return Err(redact_handshake_error(error, &stderr_lines, mcp.as_ref()));
         }
     };
@@ -1764,6 +1790,39 @@ fn redact_mcp_error(mut error: WireError, mcp: Option<&McpLaunchConfig>) -> Wire
     error
 }
 
+/// How much of a startup failure's own words, and of its joined stderr, reach
+/// the caller (audit-3 §4). A provider can answer a failed handshake with a
+/// megabyte of output; this is a chat banner, not a log.
+const MAX_HANDSHAKE_MESSAGE_BYTES: usize = 256;
+
+/// See [`MAX_HANDSHAKE_MESSAGE_BYTES`].
+const MAX_HANDSHAKE_STDERR_BYTES: usize = 1024;
+
+/// The whole banner, not only its halves (audit-3 §4): the tool caller forwards
+/// this string, and a provider that writes a hundred kilobytes to either half
+/// must not push a transcript through a chat banner.
+const MAX_HANDSHAKE_ERROR_BYTES: usize = 1024;
+
+/// At most `limit` bytes of `text` — the `…` included (audit-3 S5D-03) — cut on a
+/// character boundary when something was dropped.
+fn bounded_excerpt(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+    // The marker is part of the budget, not an extra on top of it: the caller
+    // asked for `limit` bytes, so it is reserved inside that and the body is cut
+    // at or below what is left.
+    let mark = '…';
+    if limit < mark.len_utf8() {
+        return String::new();
+    }
+    let mut end = limit - mark.len_utf8();
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &text[..end], mark)
+}
+
 fn redact_handshake_error(
     error: WireError,
     stderr_lines: &[String],
@@ -1772,15 +1831,20 @@ fn redact_handshake_error(
     if stderr_lines.is_empty() {
         return redact_mcp_error(error, mcp);
     }
+    // Both halves are the provider's to choose, and the tool caller forwards
+    // this string: an excerpt, not a transcript (audit-3 §4).
     let message = format!(
         "{} Agent stderr: {}",
         error.message,
-        stderr_lines.join(" | ")
+        bounded_excerpt(&stderr_lines.join(" | "), MAX_HANDSHAKE_STDERR_BYTES)
     );
     let message = mcp
         .map(|config| config.redact_text(&message))
         .unwrap_or(message);
-    WireError::new(error.code, message)
+    WireError::new(
+        error.code,
+        bounded_excerpt(&message, MAX_HANDSHAKE_ERROR_BYTES),
+    )
 }
 
 fn is_user_message_chunk(value: &serde_json::Value, session_id: &str) -> bool {
@@ -2952,6 +3016,7 @@ impl AcpReader {
                 // overwrites this with the session's stored origin at the
                 // single place a permission request leaves for a subscriber.
                 origin: devboule_protocol::SessionOrigin::unknown(),
+                create_agent: None,
             })
         })();
         let event = match parsed {
@@ -3143,6 +3208,7 @@ mod tests {
     use super::{
         acp_request_error_message, complete_lines, is_mcp_status, observe_mcp_status,
         redact_handshake_error, AcpReader, PendingSwitch, MAX_ACP_PERMISSION_LINE_BYTES,
+        MAX_HANDSHAKE_ERROR_BYTES,
     };
     use crate::journal::Journal;
     use crate::session::{ConnHandle, ReaderDispatch, SessionKiller, SessionRuntime};
@@ -4404,6 +4470,40 @@ mod tests {
         assert!(
             saw_thought,
             "reader stayed blocked on terminal/create and never dispatched the next update"
+        );
+    }
+
+    /// Audit S5C-04 (the test the last leg owed) and audit-3 S5D-03: a provider
+    /// that dies during startup after writing a hundred kilobytes to stderr
+    /// cannot push that through the tool caller. The banner fits the bound it
+    /// declares — the `…` that marks the cut is inside it, which the multibyte
+    /// halves are here to hold it to — and the boundary is still the first thing
+    /// a human reads.
+    #[test]
+    fn a_startup_death_banner_is_bounded() {
+        let huge_stderr = "é".repeat(50 * 1024);
+        let error = redact_handshake_error(
+            WireError::new(
+                ErrorCode::Io,
+                format!("provider exited during startup: {}", "é".repeat(50 * 1024)),
+            ),
+            &[huge_stderr],
+            None,
+        );
+        assert!(
+            error.message.starts_with("provider exited during startup:"),
+            "the boundary is named first: {}",
+            error.message.chars().take(80).collect::<String>()
+        );
+        assert!(
+            error.message.ends_with('…'),
+            "the cut is marked, so the excerpt really is truncated: {} bytes",
+            error.message.len()
+        );
+        assert!(
+            error.message.len() <= MAX_HANDSHAKE_ERROR_BYTES,
+            "the banner fits the bound it declares, got {} bytes",
+            error.message.len()
         );
     }
 }

@@ -39,6 +39,30 @@ pub fn resolve_daemon_binary() -> Result<PathBuf, DaemonError> {
 /// Spawn the daemon as a child of this process. No breakaway, no Service, no
 /// WMI: the daemon is allowed to die when Windows tears down this job.
 pub fn spawn_daemon(binary: &Path, paths: &RuntimePaths) -> Result<Child, DaemonError> {
+    spawn_with_env(binary, paths, &[])
+}
+
+/// [`spawn_daemon`] with extra environment for the daemon (and so for every
+/// provider it launches).
+///
+/// The slice-5 integration battery runs in the same test process as the rest of
+/// `acp_sessions.rs`, and the environment is process-global: passing those knobs
+/// here rather than through `std::env::set_var` keeps the battery out of a race
+/// with any test that does not hold the file's test lock.
+#[cfg(any(test, feature = "test-support"))]
+pub fn spawn_daemon_with_env(
+    binary: &Path,
+    paths: &RuntimePaths,
+    extra_env: &[(&str, &str)],
+) -> Result<Child, DaemonError> {
+    spawn_with_env(binary, paths, extra_env)
+}
+
+fn spawn_with_env(
+    binary: &Path,
+    paths: &RuntimePaths,
+    extra_env: &[(&str, &str)],
+) -> Result<Child, DaemonError> {
     paths.ensure_dir()?;
     let mut command = Command::new(binary);
     command
@@ -46,6 +70,9 @@ pub fn spawn_daemon(binary: &Path, paths: &RuntimePaths) -> Result<Child, Daemon
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

@@ -10,6 +10,14 @@
     "type": "agent_background_tasks_changed"
   },
   {
+    "childSessionId": "s.1.2",
+    "displayName": "worker",
+    "messageId": "agent-created-1",
+    "preset": "worker",
+    "provider": "claude",
+    "type": "agent_created"
+  },
+  {
     "message": "",
     "type": "agent_error"
   },
@@ -99,6 +107,28 @@
     "type": "available_commands"
   },
   {
+    "artifacts": [
+      {
+        "artifactId": "devboule-attachment:s.1.2/deadbeef",
+        "parts": [
+          {
+            "metadata": {
+              "storedBytes": 12
+            },
+            "mimeType": "text/markdown",
+            "url": "devboule-attachment:s.1.2/deadbeef"
+          }
+        ]
+      }
+    ],
+    "childSessionId": "s.1.2",
+    "displayName": "worker",
+    "messageId": "child-finished-1",
+    "note": "The message was over the 32 KiB cap and was not deposited.",
+    "state": "completed",
+    "type": "child_finished"
+  },
+  {
     "code": null,
     "type": "exit"
   },
@@ -114,6 +144,22 @@
   },
   {
     "args": [],
+    "createAgent": {
+      "caps": {
+        "creationsThisHour": 0,
+        "depth": 1,
+        "liveAgentSessions": 1,
+        "liveChildren": 0,
+        "maxCreationsPerHour": 10,
+        "maxDepth": 2,
+        "maxLiveAgentSessions": 8,
+        "maxLiveChildren": 3
+      },
+      "creatorSessionId": "s.1.1",
+      "preset": "worker",
+      "provider": "claude",
+      "title": "worker"
+    },
     "env": [],
     "options": [],
     "origin": {

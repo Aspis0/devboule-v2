@@ -193,6 +193,10 @@ impl DaemonClient {
             kind,
             provider,
             mode,
+            // A human-started session is named by the daemon's fallback in this
+            // slice: nothing in the app asks for a name yet, and inventing one
+            // here would put a second naming path beside the protocol field.
+            display_name: None,
             idempotency_key,
         })? {
             DaemonMessage::Session { session, .. } => Ok(session),

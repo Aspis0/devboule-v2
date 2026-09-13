@@ -113,6 +113,63 @@ export interface PermissionRequest {
    * not a local one.
    */
   origin?: SessionOrigin;
+  /**
+   * Present only on a **creation card** — the card an agent's
+   * `devboule_create_agent` call raises. The ordinary card fields say what is
+   * being asked and `options` carries allow-once/deny, exactly as for any other
+   * permission; this field says what would be created. The daemon publishes it
+   * through the same broker entry, so answering it is the same
+   * `sessionPermissionRespond` call and a refusal leaves the gate shut.
+   */
+  createAgent?: CreateAgentCard;
+}
+
+/** The caps one creation is admitted under, as its card states them. */
+export interface CreateAgentCaps {
+  liveChildren: number;
+  maxLiveChildren: number;
+  creationsThisHour: number;
+  maxCreationsPerHour: number;
+  depth: number;
+  maxDepth: number;
+  liveAgentSessions: number;
+  maxLiveAgentSessions: number;
+}
+
+/** What a creation card is asking the human to authorize. */
+export interface CreateAgentCard {
+  creatorSessionId: Id;
+  provider: string;
+  preset: string;
+  /** The display name the child would be created with. */
+  title: string;
+  caps: CreateAgentCaps;
+}
+
+/**
+ * The A2A `TaskState` vocabulary (`completed | failed | canceled` are the
+ * terminal three a finish report uses).
+ */
+export type AgentTaskState =
+  | "submitted"
+  | "working"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "input_required"
+  | "rejected";
+
+/** One part of a finish artifact. `url` is a reference, never a path. */
+export interface FinishArtifactPart {
+  url: string;
+  mimeType: string;
+  metadata?: { storedBytes: number };
+}
+
+/** One artifact a child's finish deposited: its whole last message. */
+export interface FinishArtifact {
+  artifactId: string;
+  parts: FinishArtifactPart[];
 }
 
 export interface PermissionResolved {
@@ -265,7 +322,12 @@ export type SessionState =
  */
 export interface PromptAttachment {
   name: string;
-  mimeType: "image/png" | "image/jpeg" | "image/svg+xml";
+  /**
+   * The types the daemon accepts. `text/markdown` is a *deposit* type only:
+   * the finish report stores a child's last message under it (`S5` decision
+   * 10). A composer sends the image types it can preview.
+   */
+  mimeType: "image/png" | "image/jpeg" | "image/svg+xml" | "text/markdown";
   data: string;
 }
 
@@ -313,6 +375,21 @@ export interface Session {
    * silent and looking like a local session.
    */
   origin?: SessionOrigin;
+  /**
+   * The name a created agent is shown under (protocol `Session.displayName`).
+   * Set once at creation and never renamable, so a row that has one always had
+   * it. Absent means the session has no name of its own: render the fallback,
+   * never an empty label. A human-started session may carry one too — the same
+   * field, chosen by whoever created it.
+   */
+  displayName?: string;
+  /**
+   * The session id of the agent that created this one (protocol
+   * `Session.createdBy`). Daemon-written only: the wire's create frame has no
+   * such field, so a peer cannot claim a parent. Absent means a human started
+   * the session, or the row predates the field.
+   */
+  createdBy?: string;
 }
 
 export type ResumeResult =
@@ -506,6 +583,36 @@ export type SessionEvent =
     }
   /** Echo of the user prompt, one ACP `user_message_chunk` at a time. */
   | { type: "agent_user_message"; messageId: string | null; text: string }
+  /**
+   * An agent created a child session (protocol `SessionEvent::AgentCreated`).
+   * Published on the **creator's** transcript, never on the child's, so the
+   * creator's record explains where the session came from.
+   */
+  | {
+      type: "agent_created";
+      messageId: string | null;
+      childSessionId: Id;
+      displayName: string;
+      provider: string;
+      preset: string;
+    }
+  /**
+   * A created child finished (protocol `SessionEvent::ChildFinished`). The
+   * structured twin of the `<devboule-system>` text message the daemon sends the
+   * creator: same facts, same `messageId`, and the app reads THIS one — it has
+   * no parser for the envelope and must not grow one. Copy `artifacts` on
+   * arrival; the daemon's copy dies with the creator session.
+   */
+  | {
+      type: "child_finished";
+      messageId: string | null;
+      childSessionId: Id;
+      displayName: string;
+      state: AgentTaskState;
+      /** Why `artifacts` is empty, when it is. Absent with an artifact. */
+      note?: string;
+      artifacts: FinishArtifact[];
+    }
   /**
    * The daemon accepted a prompt into a turn that was already running
    * (protocol `SessionEvent::Steered`). Journaled for audit and not emitted to
