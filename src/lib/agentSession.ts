@@ -1,6 +1,7 @@
 import type {
   ActiveTurnBehavior,
   PermissionRequest,
+  PermissionResolved,
   PromptAttachment,
   SessionEvent,
   SessionManifest,
@@ -9,6 +10,7 @@ import type {
 import { recordChildFinishedHistory } from "../features/design/childFinishedHistory";
 import type { AttachmentReference, SessionChannel } from "./tauri";
 import { eventTypeName } from "./eventTypeName";
+import { parseAgentPermissionRequest } from "./agentPermissionRequest";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -51,7 +53,24 @@ export type AgentChatItem =
       subagentType?: string;
     }
   | { id: string; role: "error"; text: string }
-  | { id: string; role: "system"; text: string; severity: "info" | "warning" };
+  | { id: string; role: "system"; text: string; severity: "info" | "warning" }
+  | {
+      /** One `agent_permission_request` envelope, parsed (see `agentPermissionRequest.ts`). */
+      id: string;
+      role: "permission_request";
+      cardId: string;
+      toolTitle: string;
+      childName: string;
+      /** The child's own words, verbatim. Never re-truncated, never un-escaped. */
+      excerpt: string;
+      /**
+       * Whether the excerpt's closing fence arrived: `"closed"`, or
+       * `"unterminated"` — the opener came but the closer never did, so the
+       * block ran to the envelope's end, which the chat surface renders as
+       * its own visible note. `"absent"` means there was no excerpt block.
+       */
+      excerptState: "closed" | "unterminated" | "absent";
+    };
 
 export interface AgentFinished {
   stopReason: string;
@@ -87,7 +106,15 @@ export interface AgentSessionDeps {
    */
   onChildFinished?: (event: Extract<SessionEvent, { type: "child_finished" }>) => Promise<boolean>;
   onPermissionRequest?: (request: PermissionRequest, subscriptionId: number) => void;
-  onPermissionResolved?: (toolCallId: string) => void;
+  /**
+   * One card resolved, with everything the wire said about it: who answered
+   * (`answeredBy` — a session id for delegated answering, null/absent for a
+   * person) and what was chosen. The field travels to a pixel through the
+   * host, never inside this controller: a callback that took only the
+   * `toolCallId` threw away exactly the fields the card's attribution needs,
+   * which is the half-a-wiring shape this signature exists to prevent.
+   */
+  onPermissionResolved?: (resolution: PermissionResolved) => void;
 }
 
 const INITIAL_STATE: AgentSessionState = {
@@ -388,11 +415,33 @@ export class AgentSession {
     if (this.disposed) return;
 
     switch (event.type) {
-      case "agent_user_message":
+      case "agent_user_message": {
+        // The daemon's own reports reach a creator's transcript through the
+        // send path, so a `<devboule-system>` envelope arrives here as the
+        // echoed user message — one event, whole. A permission-request
+        // envelope is reduced to its structured chat item: the daemon's
+        // fields in system styling, the child's excerpt quoted and labelled
+        // as its own. Everything else appends as it always did.
+        const permissionRequest = parseAgentPermissionRequest(event.text);
+        if (permissionRequest !== null) {
+          this.closeActiveBlocks();
+          this.update({
+            items: [
+              ...this.state.items,
+              {
+                id: `permission-request-${this.nextItemId++}`,
+                role: "permission_request",
+                ...permissionRequest,
+              },
+            ],
+          });
+          return;
+        }
         this.ensureTurn();
         this.closeActiveBlocks();
         this.appendText("user", event.messageId, event.text);
         return;
+      }
       case "agent_message":
         this.ensureTurn();
         this.appendText(
@@ -463,7 +512,7 @@ export class AgentSession {
         else this.deps.onPermissionRequest?.(event, this.subscriptionId);
         return;
       case "permission_resolved":
-        this.deps.onPermissionResolved?.(event.toolCallId);
+        this.deps.onPermissionResolved?.(event);
         return;
       case "session_manifest": {
         // The provider also pushes spontaneous manifest updates (grok's

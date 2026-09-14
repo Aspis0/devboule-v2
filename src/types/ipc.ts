@@ -178,6 +178,18 @@ export interface PermissionResolved {
   selectedOptionId?: string;
   selectedOptionKind?: string;
   selectedOptionName?: string;
+  /**
+   * Who answered the card, when the daemon says so: the session id of the
+   * agent that answered through delegated permission answering — the same
+   * string the daemon journals in `PermissionAnswered.answered_by`. `null` and
+   * absent mean the daemon DID NOT SAY who answered — they are not an
+   * attribution, and they never mean "a person answered": reading the wire's
+   * silence as a named human is exactly the collapse this field exists to
+   * prevent. The card renders an unnamed-answer state for them, and the
+   * outcome word (`selectedOptionKind`) is attributed separately from the
+   * answerer.
+   */
+  answeredBy?: Id | null;
 }
 
 export interface SessionModelEffort {
@@ -398,6 +410,33 @@ export interface Session {
    * the session, or the row predates the field.
    */
   createdBy?: string;
+  /**
+   * Whether this session can pass a permission moment with no person
+   * answering — a fact of its birth, from the profile that created it
+   * (`DESIGN-what-unattended-means.md`). The three values are distinct on
+   * purpose and never collapse: `yes` — the daemon knows the delivered mode
+   * asks nobody; `no` — it knows the mode asks; `unknown` — the mode's
+   * vocabulary is the agent's own prose, and deriving a permission fact from
+   * prose is a defect, so the daemon says so instead of guessing. It replaces
+   * the collapsed boolean the audit found (`bool` + `#[serde(default)]`
+   * reporting "asks" about a child that asks nobody): `unknown` must render
+   * as its own, present marker — never as `no`, never as nothing.
+   *
+   * Absent means the daemon has not said — a session a person started, or a
+   * row older than the field. Absent is not `no`, and the row renders nothing
+   * for it rather than guessing.
+   */
+  unattended?: UnattendedState;
+  /**
+   * Mirror of the roster snapshot's `delegation`; the frontend only renders
+   * it. The wire's `Session` (what `sessions_list` answers) never carries the
+   * field — it is written onto this record only by the roster push merge
+   * (`applySnapshot` in `workspaceSessions.ts`), so absent here means "no push
+   * has described this row yet" as well as "not an agent-created child", and
+   * the row renders nothing for it either way. It is never read as "delegation
+   * is off".
+   */
+  delegation?: DelegationState;
 }
 
 export type ResumeResult =
@@ -521,6 +560,77 @@ export interface SessionStateSnapshot {
    * shows no created-by badge rather than guessing one.
    */
   createdBy?: Id;
+  /**
+   * The unattended marker, in the same three values as `Session.unattended`,
+   * carried on every push for a child. Same absent rule: absent means the
+   * daemon has not said, never `no`.
+   */
+  unattended?: UnattendedState;
+  /**
+   * The delegation ledger for one agent-created child, carried on every push
+   * so the row's answered count never goes stale behind a cached one.
+   *
+   * **Absent means this session is not an agent-created child — never
+   * "delegation is off."** A badge rendered for an absent field is the
+   * absent-into-none collapse wearing a roster badge: a human-started session
+   * would read as a child nobody answers for. Present, `state` says who
+   * answers the child's permission cards: `"active"` — its creator does while
+   * the setting is on; `"off"` — nobody does; `"unattended"` — the child was
+   * created in an auto-accepting profile and asks nobody at all, which is a
+   * fact of its birth and outlives every later flip of the setting (the daemon
+   * reads it from its journal, never from the live setting). `answered` counts
+   * the child's cards answered by anyone, human answers included; attribution
+   * lives on the card, the count on the row.
+   *
+   * When a push violates that contract — it omits the ledger for a row the app
+   * already knows is a child — the app does not render the benign absence: the
+   * merge in `applySnapshot` carries the last described ledger, or mints
+   * `state: "unknown"` for a child never described. See `workspaceSessions.ts`.
+   */
+  delegation?: DelegationState;
+}
+
+/**
+ * Whether an agent-created child asks a person before it acts. Daemon-side it
+ * is the roster's `Option<DelegationState>`; the four render cases live in
+ * `sessionDelegationBadge` (`workspaceSessions.ts`).
+ */
+export interface DelegationState {
+  /** Cards of this child answered by anyone — human answers included. */
+  answered: number;
+  /**
+   * Closed on the daemon's three states plus one app-minted sentinel:
+   * `"unknown"` is never sent by the daemon — the app mints it when a child
+   * the roster already knows is left undescribed by a push, or when a push
+   * carries a state value this build cannot read. It renders as its own,
+   * present marker; it must never collapse into `"off"`, which is the benign
+   * case it most resembles. See `sessionDelegationBadges`.
+   */
+  state: "off" | "active" | "unattended" | "unknown";
+}
+
+/**
+ * The three answers to "can this session act without a person". Closed on the
+ * wire-enum dimension; the middle value is a real answer, not a hedge — see
+ * `Session.unattended`.
+ */
+export type UnattendedState = "yes" | "no" | "unknown";
+
+/**
+ * Where the delegation switch's stored answer came from, in the daemon's own
+ * words for the three cases. They are three different facts and the panel must
+ * keep them three sentences: `file` — a human wrote `delegation.json`, so the
+ * value is deliberate; `default` — no file exists yet, which reads "never
+ * configured", not "off"; `quarantined` — the file existed and was damaged, so
+ * the daemon quarantined it and reads off. A damaged file is neither
+ * never-configured nor deliberately off, and reporting either is a lie.
+ */
+export type DelegationSourceState = "file" | "default" | "quarantined";
+
+/** The `delegation_get` reply: the stored answer plus where it came from. */
+export interface DelegationReply {
+  enabled: boolean;
+  source: DelegationSourceState;
 }
 
 export type CursorShape = "block" | "underline" | "bar";

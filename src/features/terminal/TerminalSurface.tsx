@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { memo, useEffect, useRef, useState } from "react";
-import type { PermissionRequest } from "../../types/ipc";
+import type { PermissionRequest, PermissionResolved } from "../../types/ipc";
 import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
 import { terminalSessionRegistry } from "./terminalRegistry";
@@ -17,7 +17,7 @@ interface TerminalSurfaceProps {
     subscriptionId: SubscriptionId,
     request: PermissionRequest,
   ) => void;
-  onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
+  onPermissionResolved?: (sessionId: string, resolution: PermissionResolved) => void;
 }
 
 function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -129,8 +129,8 @@ export const TerminalSurface = memo(function TerminalSurface({
       onPermissionRequest: (request, subscriptionId) => {
         if (mounted) onPermissionRequest?.(sessionId, subscriptionId, request);
       },
-      onPermissionResolved: (toolCallId) => {
-        if (mounted) onPermissionResolved?.(sessionId, toolCallId);
+      onPermissionResolved: (resolution) => {
+        if (mounted) onPermissionResolved?.(sessionId, resolution);
       },
     });
     sessionRef.current = session;

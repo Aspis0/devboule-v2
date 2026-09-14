@@ -13,11 +13,18 @@ import {
   toolPolicySet,
   workspacesList,
 } from "../../lib/tauri";
+import {
+  DELEGATION_CAPABILITY,
+  delegationController,
+  useDelegationState,
+  type DelegationController,
+} from "../../lib/delegation";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
 import type {
   AgentProfile,
   AgentProfilesDocument,
+  DelegationReply,
   Project,
   ProviderCatalog,
   ProviderInfo,
@@ -1205,6 +1212,146 @@ function AgentProfileEditor({
 }
 
 /**
+ * The sentence for the one absence the delegation section can name without
+ * asking anyone: the daemon predates `permission_delegation`, so there is no
+ * store to ask and no request may be sent. It names WHICH absence this is —
+ * an old daemon, not a deliberate off — because a silent section reads exactly
+ * like a switch somebody removed.
+ */
+const DELEGATION_UNAVAILABLE_TEXT =
+  "This daemon is older than this app: it does not advertise the permission_delegation capability, so it cannot keep the switch this section is for. Nothing was sent to it.";
+
+/**
+ * The three sentences the stored answer's `source` renders as. They are
+ * pairwise distinct on purpose: `default` is "never configured" — a human
+ * said nothing yet; `quarantined` is neither that nor "off" — a human DID
+ * configure, and the file came back damaged; `file` is the deliberate case.
+ * Collapsing any two is the absent-into-none defect wearing a settings label
+ * (cross-check §2, the eighth catch).
+ */
+export const DELEGATION_SOURCE_LABELS: Record<DelegationReply["source"], string> = {
+  file: "Off",
+  default: "Never configured",
+  quarantined: "Settings file was damaged — delegation reads off",
+};
+
+/**
+ * The sentence a source value OUTSIDE the closed vocabulary renders as. It is
+ * its own visible line, never a blank status paragraph: a `Record` indexed
+ * with an unknown key yields `undefined`, and `undefined !== null` would
+ * render an empty `<p>` — a status line that says nothing, when unknown must
+ * be present. The daemon's vocabulary may grow before this build learns it;
+ * when it does, this sentence is what the human sees until the app catches up.
+ */
+const DELEGATION_SOURCE_UNKNOWN_LABEL =
+  "Delegation's stored answer came from a source this app cannot name";
+
+/**
+ * Walks the closed source vocabulary by its raw string, so a value from a
+ * newer daemon takes the visible unknown sentence instead of falling out of
+ * the record into a blank render. Absent (an incomplete reply) never reaches
+ * here: the controller refuses it at the wire boundary and the section shows
+ * the failure instead.
+ */
+function delegationSourceSentence(source: string): string {
+  return Object.hasOwn(DELEGATION_SOURCE_LABELS, source)
+    ? DELEGATION_SOURCE_LABELS[source as DelegationReply["source"]]
+    : DELEGATION_SOURCE_UNKNOWN_LABEL;
+}
+
+/**
+ * Settings → Agents, beside the profiles: the one consent surface for
+ * delegated answering. The switch's home is this tab and no other — a switch
+ * one tab from the profiles it governs rebuilds on screen the two-level
+ * setting the committente rejected in their own words.
+ *
+ * The discipline is `ProviderToolSettings`' corrected one (the write rule at
+ * the Agents panel's `persist`, the ref mirror + monotonic sequence + revert
+ * of the tool toggles), living once in `lib/delegation.ts`'s controller —
+ * the take-back on a roster row writes through the same path. Gating is the
+ * handshake's: without `permission_delegation` no request is ever sent, the
+ * toggle is not drawn, and the section says WHICH absence this is.
+ */
+export function DelegationSetting({
+  controller = delegationController,
+}: {
+  /** Injectable so tests get a fresh controller, like the tauri seams. */
+  controller?: DelegationController;
+}) {
+  const daemon = useWorkspaceDaemon();
+  const delegationSupported = daemon.capabilities.includes(DELEGATION_CAPABILITY);
+  const delegation = useDelegationState(controller);
+
+  // Fetch on mount, only when the handshake advertised the capability: a
+  // daemon that never advertised `permission_delegation` would refuse this
+  // request, so it is never sent — the same never-send rule the tool toggles
+  // carry.
+  useEffect(() => {
+    if (!delegationSupported) return;
+    void controller.load();
+  }, [controller, delegationSupported]);
+
+  if (!delegationSupported) {
+    return (
+      <p className="device-copy agent-delegation-unavailable" role="note">
+        {DELEGATION_UNAVAILABLE_TEXT}
+      </p>
+    );
+  }
+
+  const { enabled, reply, loadFailed, error, retryLoad } = delegation;
+  const sourceLabel =
+    reply === null
+      ? null
+      : reply.source === "file" && enabled === true
+        ? "On"
+        : delegationSourceSentence(reply.source);
+
+  return (
+    <section className="agent-delegation" aria-label="Answer for created children">
+      <span className="settings-subheading">Answer for created children</span>
+      <label className="agent-delegation-row">
+        <input
+          type="checkbox"
+          role="switch"
+          aria-label="Let agents answer their children's cards"
+          checked={enabled === true}
+          // Locked for the load only: a write in flight must not make the
+          // switch unreachable — the sequence guard owns overlap, and a
+          // control disabled on busy would drop the user's second click.
+          disabled={enabled === null}
+          onChange={(event) => void controller.setEnabled(event.target.checked)}
+        />
+        <span>
+          <span>Let agents answer their children&apos;s cards</span>
+          <span className="agent-profile-tick-note">
+            While this is on, an agent may answer the permission cards of the children it created —
+            allowing a write, a command, a network call: whatever the child asked for. It applies to
+            every child of every agent, not the one you see. You keep seeing every card, and you can
+            always still answer one yourself.
+          </span>
+        </span>
+      </label>
+      {sourceLabel !== null ? (
+        <p className="device-field-hint agent-delegation-source" role="status">
+          {sourceLabel}
+        </p>
+      ) : null}
+      {error === null ? null : (
+        <p role="alert" className="device-error">
+          {error}
+        </p>
+      )}
+      {loadFailed ? (
+        <button type="button" className="settings-device-action" onClick={retryLoad}>
+          Retry
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+/**
  * Settings → Agents: the daemon's agent-profile store, the twin of
  * `ProviderToolSettings` in discipline — capability gate, loading lock,
  * `role="alert"` errors, optimistic whole-document writes with the sequence
@@ -1621,6 +1768,10 @@ function AgentProfilesPanel() {
         title="Agents"
         description="Profiles are the kinds of agent an agent may start. The order here is the order agents read, top down. A profile without the tick stays yours alone: agents never see it."
       />
+      {/* Beside the profiles, on purpose: the switch and the profiles it
+          governs are one consent surface, and splitting them across tabs
+          rebuilds the two-level setting that was refused in so many words. */}
+      <DelegationSetting />
       <div className="settings-stack settings-stack-spaced agent-profiles">
         {error === null ? null : (
           <p role="alert" className="device-error">

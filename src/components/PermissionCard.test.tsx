@@ -16,10 +16,12 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import {
+  OUTCOME_BY_OPTION_KIND,
   PERMISSION_TARGET_LIMIT,
   PermissionCard,
   permissionOriginLabel,
   permissionSubject,
+  resolutionOutcome,
   shortenDeviceId,
   shortenPermissionTarget,
 } from "./PermissionCard";
@@ -585,5 +587,287 @@ describe("PermissionCard", () => {
       await pending.promise;
     });
     expect(onResolved).not.toHaveBeenCalled();
+  });
+});
+
+describe("creator-attributed resolution", () => {
+  it("renders the allowed label when the answerer IS the roster's creator", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: "allowed", answeredBy: "s.creator.1" }}
+          creatorId="s.creator.1"
+        />,
+      );
+    });
+
+    const card = container.querySelector(".permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    // Rendered output, not the event: the label is what the human reads.
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Allowed by its creator · running",
+    );
+    const deny = card.querySelector<HTMLButtonElement>(".permission-card-deny-action");
+    const allow = card.querySelector<HTMLButtonElement>(".permission-card-primary-action");
+    // The human-answer controls are GONE, not disabled: with them removed
+    // there is nothing to grey out and nothing to misread as answerable.
+    expect(deny).toBeNull();
+    expect(allow).toBeNull();
+    // And the one control a resolved card keeps is the clear.
+    const clear = card.querySelector<HTMLButtonElement>(".permission-card-dismiss-action");
+    expect(clear).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("renders the allowed-by-creator wording ONLY for a checked match — a different answerer is named as a session", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: "allowed", answeredBy: "s.other.99" }}
+          creatorId="s.creator.1"
+        />,
+      );
+    });
+
+    const card = container.querySelector(".permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Allowed by session s.other.… · running",
+    );
+    expect(card.querySelector(".permission-card-label")?.textContent).not.toContain("its creator");
+    // The full answerer id stays on the label's title.
+    expect(card.querySelector(".permission-card-label")?.getAttribute("title")).toBe("s.other.99");
+
+    await act(async () => root.unmount());
+  });
+
+  it("cannot claim a creator the roster does not know: an unknown creator also renders the named session", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          // No creatorId: nobody checked, so nobody claims.
+          resolution={{ outcome: "allowed", answeredBy: "s.creator.1" }}
+        />,
+      );
+    });
+
+    const card = container.querySelector(".permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Allowed by session s.creato… · running",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("never reads 'a person answered' into the daemon's silence: an unnamed answer is its own state", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: "denied", answeredBy: null }}
+          creatorId="s.creator.1"
+        />,
+      );
+    });
+
+    const card = container.querySelector(".permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Denied — the daemon did not say who answered — the turn continues without it",
+    );
+    expect(card.querySelector(".permission-card-label")?.textContent).not.toContain("creator");
+    // The card STAYS for the human to read (and clear), it does not vanish
+    // the way the old absent-answeredBy path removed it.
+    expect(card.querySelector(".permission-card-dismiss-action")).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("claims no outcome the daemon did not name: allow_always is allowed, an unknown kind is neither", async () => {
+    // The outcome table walks the daemon's closed vocabulary; the NOTE's
+    // mutation is that flipping allow_always's row must fail these.
+    expect(OUTCOME_BY_OPTION_KIND.allow_once).toBe("allowed");
+    expect(OUTCOME_BY_OPTION_KIND.allow_always).toBe("allowed");
+    expect(OUTCOME_BY_OPTION_KIND.reject_once).toBe("denied");
+    expect(OUTCOME_BY_OPTION_KIND.reject_always).toBe("denied");
+    expect(resolutionOutcome("allow_always")).toBe("allowed");
+    expect(resolutionOutcome("reject_always")).toBe("denied");
+    expect(resolutionOutcome("never_heard_of_it")).toBeNull();
+    expect(resolutionOutcome(undefined)).toBeNull();
+  });
+
+  it("renders an unclaimed outcome as its own state — the card does not invent a decision", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: null, answeredBy: "s.creator.1" }}
+          creatorId="s.creator.1"
+        />,
+      );
+    });
+
+    const card = container.querySelector(".permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Answered by session s.creato… — allowed or denied, the daemon did not say",
+    );
+    // The dot wears the neutral tone, not the denial's colour.
+    expect(card.querySelector(".permission-card-unclaimed")).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("renders an unnamed, unclaimed answer without inventing either fact", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: null, answeredBy: null }}
+        />,
+      );
+    });
+
+    const card = container.querySelector(".permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Answered — by whom and with what outcome, the daemon did not say",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("gives a resolved card its one removal path: Clear fires onResolved", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onResolved = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: "allowed", answeredBy: "s.creator.1" }}
+          creatorId="s.creator.1"
+          onResolved={onResolved}
+        />,
+      );
+    });
+
+    const clear = container.querySelector<HTMLButtonElement>(".permission-card-dismiss-action");
+    if (clear === null) throw new Error("clear button did not render");
+    await act(async () => clear.click());
+    expect(onResolved).toHaveBeenCalledWith("session-1", "tool-a");
+
+    await act(async () => root.unmount());
+  });
+
+  it("carries the attribution on a denial too — that is the event the roster reader needs", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          resolution={{ outcome: "denied", answeredBy: "s.creator.1" }}
+          creatorId="s.creator.1"
+        />,
+      );
+    });
+
+    const card = container.querySelector(".permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Denied by its creator — the turn continues without it",
+    );
+    // The unattributed human denial must not stand in for it.
+    expect(card.querySelector(".permission-card-label")?.textContent).not.toBe(
+      "Denied — the turn continues without it",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("lets the human answer when no outside resolution exists, exactly as before", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mocks.sessionPermissionRespond.mockResolvedValue(undefined);
+
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    const allow = container.querySelector<HTMLButtonElement>(".permission-card-primary-action");
+    if (allow === null) throw new Error("allow button did not render");
+    expect(allow.disabled).toBe(false);
+    await act(async () => allow.click());
+    expect(container.querySelector(".permission-card-label")?.textContent).toBe(
+      "Allowed once · running",
+    );
+
+    await act(async () => root.unmount());
   });
 });

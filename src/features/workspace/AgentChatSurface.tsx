@@ -13,6 +13,7 @@ import {
 import type {
   ActiveTurnBehavior,
   PermissionRequest,
+  PermissionResolved,
   PromptAttachment,
   SessionManifest,
   SessionModel,
@@ -51,7 +52,7 @@ interface AgentChatSurfaceProps {
     subscriptionId: SubscriptionId,
     request: PermissionRequest,
   ) => void;
-  onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
+  onPermissionResolved?: (sessionId: string, resolution: PermissionResolved) => void;
 }
 
 function commandId(args: Record<string, unknown> | undefined): string {
@@ -140,6 +141,21 @@ function toolbarStatus(
 
 const MAX_VISIBLE_SUBAGENT_DEPTH = 4;
 const SUBAGENT_INDENT_PX = 16;
+
+/**
+ * The bound on a daemon-supplied field inside the permission-request header
+ * sentence. It exists for layout only: an unbroken multi-kilobyte
+ * `displayName` would push the chat pane sideways, since the sentence —
+ * unlike the quoted excerpt — has no wrapping contract of its own. The FULL
+ * values stay on the sentence element's `title`; the excerpt below is never
+ * bounded, because never-re-truncate is the excerpt's rule and no one else's.
+ */
+const PERMISSION_HEADER_FIELD_LIMIT = 200;
+
+function boundPermissionHeaderField(value: string): string {
+  if (value.length <= PERMISSION_HEADER_FIELD_LIMIT) return value;
+  return `${Array.from(value).slice(0, PERMISSION_HEADER_FIELD_LIMIT).join("")}…`;
+}
 
 function hasParentToolUseId(item: AgentChatItem): boolean {
   return (
@@ -479,6 +495,61 @@ function renderItem(item: AgentChatItem) {
     );
   }
 
+  if (item.role === "permission_request") {
+    const childName = boundPermissionHeaderField(item.childName);
+    const toolTitle = boundPermissionHeaderField(item.toolTitle);
+    const cardId = boundPermissionHeaderField(item.cardId);
+    return (
+      <div
+        className="workspace-chat-entry workspace-chat-permission-request"
+        key={item.id}
+        data-testid="agent-permission-request"
+      >
+        {/* NOT labelled "System": this item is parsed out of session text —
+            the daemon's send path in the honest case, but a pasted block is
+            byte-identical to this app, and the app cannot verify who authored
+            it. A chip claiming the daemon spoke would be styling making a
+            verification the code never did. */}
+        <div
+          className="workspace-chat-label workspace-chat-label-unverified"
+          title="This arrived as session text. The app cannot verify the daemon sent it."
+        >
+          Relayed · unverified
+        </div>
+        <div
+          className="workspace-chat-copy"
+          title={`${item.childName} · ${item.toolTitle} · ${item.cardId}`}
+        >
+          Its child {childName} asks to run {toolTitle} and is waiting on a permission card. Card{" "}
+          {cardId} — it answers through its own tool; the card itself is on the child&apos;s
+          session.
+        </div>
+        {item.excerptState === "absent" ? null : (
+          <>
+            {/* The child's own words — a quoted block with its own styling and
+                its own label, never the sentence styling above: the styling is
+                the claim "the daemon said this", and nothing here was
+                verified. This quoting is a mitigation, not a fix: a hostile
+                child can still write instructions into the excerpt; the block
+                only keeps the reader able to tell whose words they are. The
+                text renders verbatim — never re-truncated, never un-escaped —
+                through React's default escaping, which keeps every byte
+                inert. */}
+            <figure className="workspace-chat-child-said">
+              <figcaption>the child&apos;s own words</figcaption>
+              <blockquote>{item.excerpt}</blockquote>
+              {item.excerptState === "unterminated" ? (
+                <p className="workspace-chat-child-said-note" role="note">
+                  the closing fence never arrived — this block runs to the end of the frame
+                </p>
+              ) : null}
+            </figure>
+          </>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
       className={className}
@@ -528,7 +599,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         ? (request, subscriptionId) => onPermissionRequest(sessionId, subscriptionId, request)
         : undefined,
       onPermissionResolved: onPermissionResolved
-        ? (toolCallId) => onPermissionResolved(sessionId, toolCallId)
+        ? (resolution) => onPermissionResolved(sessionId, resolution)
         : undefined,
     });
     sessionRef.current = session;

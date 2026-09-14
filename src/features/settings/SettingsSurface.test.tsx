@@ -50,6 +50,10 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
     // handshake advertised `provider_vocabulary`, and the tests that arm it
     // queue their own replies.
     providerVocabularyGet: vi.fn(),
+    // The delegation pair: never called unless the handshake advertised
+    // `permission_delegation`, and every test arms its own replies.
+    delegationGet: vi.fn(),
+    delegationSet: vi.fn(async () => undefined),
     workspacesList: vi.fn(async () => []),
   };
 });
@@ -66,6 +70,8 @@ import {
   agentProfilesGet,
   agentProfilesSet,
   daemonStatus,
+  delegationGet,
+  delegationSet,
   journalRetentionGet,
   journalRetentionSet,
   journalUsage,
@@ -92,7 +98,13 @@ import type {
   ProviderVocabulary,
   ToolPolicyReply,
 } from "../../types/ipc";
-import { ALWAYS_ON_REASON, SettingsSurface, toolPolicyFor } from "./SettingsSurface";
+import {
+  ALWAYS_ON_REASON,
+  DelegationSetting,
+  SettingsSurface,
+  toolPolicyFor,
+} from "./SettingsSurface";
+import { createDelegationController } from "../../lib/delegation";
 import { open } from "@tauri-apps/plugin-dialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -4268,7 +4280,10 @@ describe("Settings agents panel — new profile form", () => {
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Thirty-seven: the fifteen vocabulary sentences, the ACP suggestion
+    // Thirty-eight: the delegation section's one sentence on this panel (an
+    // older daemon's named absence — the switch itself is gated harder and
+    // only renders when the handshake advertises permission_delegation), the
+    // fifteen vocabulary sentences, the ACP suggestion
     // and the in-flight ask, the load-failed and loading sentences, the
     // off-switch pair and the no-note sentence, the delete-confirm copy,
     // the editor hint, the three cap refusals, the model/mode refusals, the
@@ -4278,7 +4293,7 @@ describe("Settings agents panel — new profile form", () => {
     // renders it into one net entry). A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(37);
+    expect(sentences).toHaveLength(38);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;
@@ -4371,5 +4386,212 @@ describe("Settings agents panel — new profile form", () => {
     await act(async () => open?.click());
     await act(async () => undefined);
     expect(container.querySelector(".agent-profile-create")).toBeNull();
+  });
+});
+
+describe("DelegationSetting - the switch beside the profiles", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+
+  const DELEGATION_DAEMON = [
+    "ping",
+    "status",
+    "sessions",
+    "journal",
+    "typed_permissions",
+    "devices",
+    "agent_profiles",
+    "permission_delegation",
+  ];
+
+  function daemonStatusWithDelegated(capabilities: string[]): DaemonStatus {
+    return {
+      state: "connected",
+      pid: 1,
+      instanceId: "settings-test",
+      protocolVersion: 4,
+      clients: 1,
+      capabilities,
+      message: null,
+    };
+  }
+
+  function mountDelegation(capabilities: string[]) {
+    vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWithDelegated(capabilities));
+    root = createRoot(container);
+    const controller = createDelegationController({
+      get: delegationGet as unknown as () => Promise<{
+        enabled: boolean;
+        source: "file" | "default" | "quarantined";
+      }>,
+      set: delegationSet as unknown as (enabled: boolean) => Promise<void>,
+    });
+    act(() => {
+      root!.render(<DelegationSetting controller={controller} />);
+    });
+    return controller;
+  }
+
+  async function settle() {
+    await act(async () => undefined);
+    await act(async () => undefined);
+  }
+
+  function theSwitch() {
+    const input = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Let agents answer their children\'s cards"]',
+    );
+    if (input === null) throw new Error("delegation switch did not render");
+    return input;
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(delegationGet).mockReset();
+    vi.mocked(delegationSet).mockReset();
+    vi.mocked(delegationSet).mockResolvedValue(undefined);
+    // Reset the app's shared controller between tests: the last test's
+    // answer must not be this test's starting point.
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
+  });
+
+  afterEach(async () => {
+    if (root !== null) {
+      await act(async () => root!.unmount());
+      root = null;
+    }
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it("never asks a daemon that does not advertise the capability, and names that absence", async () => {
+    vi.mocked(delegationGet).mockClear();
+    mountDelegation(DELEGATION_DAEMON.slice(0, 7));
+    await settle();
+
+    const note = container.querySelector(".agent-delegation-unavailable");
+    expect(note?.textContent).toContain("permission_delegation");
+    expect(note?.textContent).toContain("older than this app");
+    // The switch is not drawn and the request is never sent - the section is
+    // not broken, it is absent, and the absence has a name.
+    expect(container.querySelector(".agent-delegation")).toBeNull();
+    expect(delegationGet).not.toHaveBeenCalled();
+  });
+
+  it("fetches on mount when the handshake advertised the capability", async () => {
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    expect(delegationGet).toHaveBeenCalledTimes(1);
+    expect(theSwitch().checked).toBe(false);
+    expect(theSwitch().disabled).toBe(false);
+    // `default` is "never configured", not "off": no human said anything yet.
+    expect(container.querySelector(".agent-delegation-source")?.textContent).toBe(
+      "Never configured",
+    );
+  });
+
+  it("states the blast radius and the global scope - the copy without which there is no consent", async () => {
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    const note = container.querySelector(".agent-profile-tick-note")?.textContent ?? "";
+    expect(note).toContain("a write, a command, a network call");
+    expect(note).toContain("every child of every agent");
+    expect(note).toContain("not the one you see");
+  });
+
+  it("renders a quarantined file as damaged - neither never-configured nor deliberately off", async () => {
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "quarantined" });
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    const source = container.querySelector(".agent-delegation-source")?.textContent ?? "";
+    expect(source).toBe("Settings file was damaged — delegation reads off");
+    expect(source).not.toBe("Never configured");
+    expect(source).not.toBe("Off");
+  });
+
+  it("renders a FIFTH source value as its own visible sentence, never a blank status line", async () => {
+    // The cast builds the value a newer daemon could deliver and TypeScript
+    // cannot predict; a plain Record lookup would yield undefined and render
+    // an empty <p role="status"> — a status line that says nothing.
+    const fifthSource = "paused" as unknown as "file" | "default" | "quarantined";
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: fifthSource });
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    const source = container.querySelector(".agent-delegation-source");
+    expect(source).not.toBeNull();
+    const text = source?.textContent ?? "";
+    expect(text).not.toBe("");
+    expect(text).toContain("cannot name");
+  });
+
+  it("the source sentence follows a successful write instead of contradicting the switch", async () => {
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "quarantined" });
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+    expect(container.querySelector(".agent-delegation-source")?.textContent).toBe(
+      "Settings file was damaged — delegation reads off",
+    );
+
+    await act(async () => theSwitch().click());
+    await settle();
+    // The switch reads ON and the sentence says what the daemon now holds —
+    // not the stale "delegation reads off" from before the write.
+    expect(theSwitch().checked).toBe(true);
+    expect(container.querySelector(".agent-delegation-source")?.textContent).toBe("On");
+  });
+
+  it("writes through the controller when toggled, and shows the optimistic value", async () => {
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "file" });
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    await act(async () => theSwitch().click());
+    expect(delegationSet).toHaveBeenCalledWith(true);
+    expect(theSwitch().checked).toBe(true);
+  });
+
+  it("reverts the switch and surfaces the daemon's sentence when the write is refused", async () => {
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "file" });
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+    vi.mocked(delegationSet).mockRejectedValueOnce(new Error("the store refused the write"));
+
+    await act(async () => theSwitch().click());
+    expect(delegationSet).toHaveBeenCalledWith(true);
+    expect(theSwitch().checked).toBe(false);
+    expect(container.querySelector(".device-error")?.textContent).toBe(
+      "the store refused the write",
+    );
+  });
+
+  it("renders beside the profiles in the Agents tab - one consent surface", async () => {
+    vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWithDelegated(DELEGATION_DAEMON));
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [], standingInstructions: "" },
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const tab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-agents']",
+    );
+    if (!tab) throw new Error("Agents tab did not render");
+    await act(async () => tab.click());
+    await act(async () => undefined);
+
+    const panel = container.querySelector("#settings-panel-agents");
+    expect(panel).not.toBeNull();
+    // The switch section and the profile list are siblings in the same panel.
+    expect(panel?.querySelector(".agent-delegation")).not.toBeNull();
+    expect(panel?.querySelector(".agent-profile-list")).not.toBeNull();
+    // The armed capability makes the app actually ask.
+    expect(delegationGet).toHaveBeenCalled();
   });
 });

@@ -1121,3 +1121,41 @@
   justify-content: space-between;
   gap: 8px;
 }
+
+/* The delegation switch, beside the profiles: the section reuses the profile
+   tick's voice. Its three `source` sentences must stay visually distinct
+   states, so the source line renders as its own status paragraph under the
+   row rather than as a note inside the label. */
+.agent-delegation {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+}
+
+.agent-delegation-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.agent-delegation-row > span {
+  display: grid;
+  gap: 2px;
+}
+
+.agent-delegation-source {
+  margin: 0;
+}
+
+.agent-delegation-unavailable {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  color: var(--silence);
+  font-size: 11px;
+}

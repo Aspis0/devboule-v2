@@ -406,10 +406,13 @@ export function extractArtifactHtml(state: AgentSessionState, startIndex = 0): s
 /**
  * The agent's own conversation from `startIndex` on: prose, reasoning, and tool
  * activity. User echoes are dropped (the surface renders the user's prompt and
- * the echo carries the doctrine block), and so are error and system items,
- * which the run's summary card reports in full. An assistant or thought item
- * with no text is a chunk that carried nothing, and a blank row would only be
- * noise. Tool rows are always kept: a tool with no title yet is still activity.
+ * the echo carries the doctrine block), and so are error, system, and parsed
+ * permission-request items, which their own surfaces report in full — the
+ * permission envelope's daemon fields and quoted excerpt have no row here, and
+ * its child-chosen text must not leak into a design transcript. An assistant or
+ * thought item with no text is a chunk that carried nothing, and a blank row
+ * would only be noise. Tool rows are always kept: a tool with no title yet is
+ * still activity.
  */
 export function transcriptItems(
   items: readonly AgentChatItem[],
@@ -418,7 +421,13 @@ export function transcriptItems(
   const rows: DesignTranscriptItem[] = [];
   for (let index = Math.max(0, startIndex); index < items.length; index += 1) {
     const item = items[index];
-    if (item.role === "user" || item.role === "error" || item.role === "system") continue;
+    if (
+      item.role === "user" ||
+      item.role === "error" ||
+      item.role === "system" ||
+      item.role === "permission_request"
+    )
+      continue;
     const parentage = {
       ...(item.parentToolUseId === undefined ? {} : { parentToolUseId: item.parentToolUseId }),
       ...(item.spawnDepth === undefined ? {} : { spawnDepth: item.spawnDepth }),
@@ -1153,10 +1162,11 @@ export function createAgentHost(): DesignHost {
         permissionNotice = null;
         publishSessionChange();
       },
-      onPermissionResolved: (toolCallId: string) => {
+      onPermissionResolved: (resolution) => {
         const entry = pendingPermissions.find(
           (candidate) =>
-            candidate.sessionId === sessionId && candidate.request.toolCallId === toolCallId,
+            candidate.sessionId === sessionId &&
+            candidate.request.toolCallId === resolution.toolCallId,
         );
         if (entry === undefined || !removePendingPermission(entry)) return;
         if (entry.answered) {

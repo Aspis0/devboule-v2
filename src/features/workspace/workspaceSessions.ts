@@ -8,6 +8,7 @@ import {
 } from "../../lib/tauri";
 import type {
   AttentionReason,
+  DelegationState,
   PeerRow,
   ProviderInfo,
   Session,
@@ -272,6 +273,167 @@ export function sessionCreatorBadge(
   return `created by ${name ?? createdBy.slice(0, 8)}`;
 }
 
+/** What a row's delegation pill says, and how loudly. */
+export interface DelegationBadge {
+  /** `unattended` is the loud one; `unknown` the softer, present one. */
+  tone: "unattended" | "unknown" | "active";
+  label: string;
+}
+
+/** The loud pill's words, decided: it is what a person reads when they come
+ * back to find agents ran all night. A fact of the child's birth — never
+ * derived from the live switch, which a human can turn off while such a child
+ * keeps running without asking. */
+export const UNATTENDED_BADGE_LABEL = "runs unattended · created in an auto-accepting profile";
+
+/** The softer marker's words: present, because "the daemon could not
+ * establish" must never collapse into nothing — that is the collapse, in
+ * pixels. */
+export const UNATTENDED_UNKNOWN_BADGE_LABEL = "may run without asking — cannot establish";
+
+/** The delegation ledger's own unknown marker: the row is a child, but no push
+ * has said who answers it (or the state it sent is one this build cannot
+ * read). Present, softer, and never collapsed into "off" — a fifth state
+ * reading as nobody-answers is the roster's version of the confirmed defect. */
+export const DELEGATION_UNKNOWN_BADGE_LABEL =
+  "answering unknown — the daemon did not say who answers";
+
+/**
+ * The table the delegation state walks — one row per value of
+ * `DelegationState["state"]`, so adding a union member without a rendering
+ * decision is a compile error, not a silent benign render. Keyed at runtime by
+ * the raw wire string (`delegationStateRow`), so a value from a newer daemon —
+ * one TypeScript cannot have predicted — falls to the visible unknown badge
+ * instead of falling out of the table into nothing.
+ */
+type KnownDelegationState = DelegationState["state"];
+const DELEGATION_STATE_BADGES: Record<
+  KnownDelegationState,
+  (answered: number) => DelegationBadge | null
+> = {
+  // Off is a definite answer — the child exists, nobody answers for it — and
+  // it renders nothing delegation-specific. Silence here is the truth, not
+  // the collapse: the collapse is an UNKNOWN value taking this row.
+  off: () => null,
+  active: (answered) => ({
+    tone: "active",
+    label: `answers to its creator${answered > 0 ? ` · answered ×${answered}` : ""}`,
+  }),
+  unattended: () => ({ tone: "unattended", label: UNATTENDED_BADGE_LABEL }),
+  unknown: () => ({ tone: "unknown", label: DELEGATION_UNKNOWN_BADGE_LABEL }),
+};
+
+/** The row an out-of-union wire value takes: present, softer, never benign. */
+const UNKNOWN_WIRE_STATE_BADGE: (answered: number) => DelegationBadge | null = () => ({
+  tone: "unknown",
+  label: DELEGATION_UNKNOWN_BADGE_LABEL,
+});
+
+function delegationStateRow(state: string, answered: number): DelegationBadge | null {
+  const row = Object.hasOwn(DELEGATION_STATE_BADGES, state)
+    ? DELEGATION_STATE_BADGES[state as KnownDelegationState]
+    : UNKNOWN_WIRE_STATE_BADGE;
+  return row(answered);
+}
+
+/**
+ * The delegation pills for a roster row, in render order; empty for every row
+ * that owes none.
+ *
+ * Four cases on `delegation`, one per truth, and the absence is one of them:
+ *
+ * - `delegation` absent → **nothing**. Absent means this session is not an
+ *   agent-created child (or no push has described it yet) — never "delegation
+ *   is off". An "off" badge here is the absent-into-none collapse wearing a
+ *   roster badge, and a pill on a human-started session is the same lie.
+ * - `state: "off"` → nothing delegation-specific from the state itself. The
+ *   child exists, nobody answers for it; that is today's ordinary shape.
+ * - `state: "active"` → the quiet pill naming who answers, with the count of
+ *   answered cards once one exists.
+ * - `state: "unattended"` → the loud pill, **independent of the live
+ *   switch**: the child was born able to run without asking and keeps that
+ *   ability after a human turns delegation off, so this pill is the only
+ *   thing telling them which sessions those are. Deriving it from the
+ *   current setting is the named red mutation.
+ * - any other `state` — `"unknown"`, or a value from a newer daemon this
+ *   build cannot read — → the softer, present `unknown` pill. It is the one
+ *   rendering a state value may never take the shape of: nothing. A fifth
+ *   value rendering as a human-started row is the roster's version of the
+ *   confirmed defect, and the table above is what closes it.
+ *
+ * Beside those, the tri-state marker (`DESIGN-what-unattended-means.md`): a
+ * row whose `unattended` is `"yes"` is the loud pill's row even before a push
+ * carries the ledger (the list carries the marker too), and `"unknown"`
+ * renders the softer, present pill — additively, because a creator can be
+ * answering a child whose mode it cannot establish — since "the daemon could
+ * not establish" must never collapse into nothing. That is the collapse, in
+ * pixels. `no`, and absent, render nothing here.
+ */
+export function sessionDelegationBadges(
+  session: Pick<Session, "delegation" | "unattended">,
+): DelegationBadge[] {
+  const badges: DelegationBadge[] = [];
+  const delegation = session.delegation;
+  if (delegation === undefined) {
+    // Not described by a push yet — but the list-carried tri-state is still
+    // a birth fact this row owes its marker for: yes is the loud pill's row,
+    // unknown is the softer present one. Never "no": that value stays silent.
+    if (session.unattended === "yes") {
+      badges.push({ tone: "unattended", label: UNATTENDED_BADGE_LABEL });
+    } else if (session.unattended === "unknown") {
+      badges.push({ tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL });
+    }
+    return badges;
+  }
+  const stateBadge = delegationStateRow(delegation.state, delegation.answered);
+  if (session.unattended === "yes" && delegation.state !== "unattended") {
+    // The birth fact renders the loud pill in the ledger state's place — the
+    // pill appears once, and never as two pills for one row.
+    badges.push({ tone: "unattended", label: UNATTENDED_BADGE_LABEL });
+  } else if (stateBadge !== null) {
+    badges.push(stateBadge);
+  }
+  if (session.unattended === "unknown") {
+    badges.push({ tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL });
+  }
+  return badges;
+}
+
+/**
+ * Whether this row is one a take-back can act on: a child whose creator
+ * answers for it (`active`) — the one case where flipping the setting ends an
+ * answering relationship that exists right now. Every other row says no,
+ * because a control that cannot act is noise that trains the eye to ignore
+ * the pill beside it:
+ *
+ * - `unattended` — the child was born able to run without asking and KEEPS
+ *   that ability after a human turns delegation off, so the click cannot do
+ *   what the button's own accessible name promises. The loud pill stays; the
+ *   empty control does not.
+ * - `off` — there is no answering relationship to end.
+ * - `unknown` — the app cannot say whether a relationship exists, so it
+ *   cannot promise the click acts; refusal beats a guess.
+ * - no `delegation` at all, and any state value this build cannot read — no.
+ *
+ * This is the row-side condition only. The caller adds the setting being on —
+ * the whole point of the control is that it is global, so it reads the one
+ * switch, never a per-row fact.
+ */
+const TAKE_BACK_BY_STATE: Record<KnownDelegationState, boolean> = {
+  off: false,
+  active: true,
+  unattended: false,
+  unknown: false,
+};
+
+export function sessionDelegationTakeBack(session: Pick<Session, "delegation">): boolean {
+  const state = session.delegation?.state;
+  if (state === undefined) return false;
+  return Object.hasOwn(TAKE_BACK_BY_STATE, state)
+    ? TAKE_BACK_BY_STATE[state as KnownDelegationState]
+    : false;
+}
+
 /**
  * Where a roster badge for the A2A `input_required` state would go — measured
  * and deliberately not written.
@@ -353,6 +515,18 @@ export function createWorkspaceSessionController(
     const known = new Map(state.sessions.map((session) => [session.id, session]));
     const sessions = snapshots.map((snapshot): Session => {
       const previous = known.get(snapshot.id);
+      // A child the app can already identify — the push names its creator, or
+      // an earlier push described its ledger. "Absent means not a child" is
+      // only true while nothing has said otherwise; for a row this app KNOWS
+      // is a child, an omitting push is the daemon failing to describe it,
+      // and the honest render is the carried ledger or the unknown marker —
+      // never the benign nothing of a human-started row.
+      const createdBy = snapshot.createdBy ?? previous?.createdBy;
+      const knownChild = createdBy !== undefined || previous?.delegation !== undefined;
+      const delegation =
+        snapshot.delegation ??
+        previous?.delegation ??
+        (knownChild ? { answered: 0, state: "unknown" as const } : undefined);
       const carried = {
         title: snapshot.title,
         state: snapshot.state,
@@ -360,10 +534,27 @@ export function createWorkspaceSessionController(
         // Attention comes and goes with each roster push; assigning it
         // (even undefined) keeps a stale badge from surviving a cleared one.
         attention: snapshot.attention,
+        // The delegation ledger rides the explicit value: `active` must
+        // become `off` the moment a push SAYS so. A push that says nothing
+        // does not un-say what an earlier one said — it carries the last
+        // described ledger forward, and mints `unknown` for a known child no
+        // push has ever described — so a known child can never render as a
+        // session nobody answers for (the collapse audit P2.12 named).
+        delegation,
+        // The creator is identity, like origin: a push that carries it lands
+        // it, and a push that omits it lets the row's known value stand.
+        createdBy: snapshot.createdBy ?? previous?.createdBy,
         // Origin is session identity, not roster state: a push that stops
         // carrying it (or never did) must not erase what the list already
         // said about a row the app is holding, so the previous value stands in.
         origin: snapshot.origin ?? previous?.origin,
+        // The unattended marker is a fact of the session's birth, never
+        // re-derived and never downgraded (the daemon ratchets it the same
+        // way). Absence lets the row's known value stand, and so does a push
+        // claiming "no" over a known "yes": the downgrade direction is the
+        // one that removes a warning, and a birth fact does not un-happen.
+        unattended:
+          previous?.unattended === "yes" ? "yes" : (snapshot.unattended ?? previous?.unattended),
       };
       return previous
         ? { ...previous, ...carried }
