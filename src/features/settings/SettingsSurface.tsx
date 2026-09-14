@@ -306,7 +306,6 @@ function ProviderToolSettings({
   const tools = provider.tools ?? [];
   const [policies, setPolicies] = useState<readonly ToolPolicyEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   // Synchronous mirror of `policies`. It — never the render closure — is
   // what a second rapid write reads and the base its revert applies to
   // (audit findings 1, 8).
@@ -314,6 +313,12 @@ function ProviderToolSettings({
   // Monotonic write sequence: only the newest write owns the UI when it
   // settles, so an older rejection can never clobber a newer row.
   const seqRef = useRef(0);
+  // How many writes are currently between "sent" and "settled". This card
+  // deliberately lets writes overlap (see `persist`), so it is a counter,
+  // and the load effect below reads it to tell "a write was in flight when
+  // this fetch started" — the question the sequence number alone cannot
+  // answer — apart from "a write has settled at some point".
+  const writesInFlightRef = useRef(0);
   // A failed load is terminal, not a loading state: nothing will ever arrive
   // on its own, so the card shows the daemon's sentence and a Retry instead
   // of the loading lock. `loadNonce` re-runs the load effect.
@@ -333,11 +338,19 @@ function ProviderToolSettings({
     // refetch (a reconnect's capability flip, a changed tool list) still
     // apply after a write.
     const seqAtFetch = seqRef.current;
+    const writeWasInFlight = writesInFlightRef.current > 0;
     void toolPolicyGet()
       .then((reply) => {
         if (cancelled) return;
         // A write issued while this fetch was in flight is newer: keep it.
         if (seqRef.current !== seqAtFetch) return;
+        // A write that was ALREADY in flight when the fetch started raced
+        // it: whether the reply predates or postdates that write is
+        // unknowable, so the reply adopts nothing — the write's own settle
+        // (its optimistic row or its revert) is the state of record. The
+        // guard answers "did a write overlap this fetch?", not just "is
+        // there a newer write?".
+        if (writeWasInFlight) return;
         policiesRef.current = reply.policies;
         setPolicies(reply.policies);
         // The store has spoken: a stale load error and its terminal state go.
@@ -380,14 +393,21 @@ function ProviderToolSettings({
     // now, read through the ref and not through the render closure, so an
     // earlier write's optimistic row is part of the base (findings 1, 8).
     const previous = toolPolicyFor(provider.id, policiesRef.current);
-    // Sequence guard (findings 1, 8). Every write is sent immediately, in
-    // click order: a second toggle must still reach the daemon — dropping
-    // it on a stale `busy` loses the user's click. Overlap is resolved when
-    // a write settles instead: only the newest sequence owns the UI, so a
-    // rejection a newer write has superseded reverts nothing and reports
-    // nothing and the newer optimistic row stands.
+    // Sequence guard (findings 1, 8) — the card's real safety, stated here
+    // and honoured by the controls: every write is sent immediately, in
+    // click order; a second toggle must still reach the daemon, so the
+    // controls stay reachable while a write is in flight and the only lock
+    // is the load lock (`loading`) below. Overlap is resolved when a write
+    // settles: only the newest sequence owns the UI, so a rejection a newer
+    // write has superseded reverts nothing and reports nothing and the
+    // newer optimistic row stands. (The agents panel — the twin that writes
+    // a whole document whose row ids the daemon mints — serialises its
+    // writes under one busy span instead, on purpose: an overlapping
+    // whole-document write would re-send an id the daemon had already
+    // replaced. Row-level toggles like these carry no minted identity, so
+    // overlap is safe here and losing the click is not.)
     const seq = ++seqRef.current;
-    setBusy(true);
+    writesInFlightRef.current += 1;
     setError(null);
     // Optimistic row, appended to the ref mirror: it always holds the
     // newest rows, including an earlier write's optimistic row when two
@@ -405,9 +425,9 @@ function ProviderToolSettings({
     setPolicies(optimistic);
     try {
       await toolPolicySet(provider.id, nextEnabled ? null : false, cleanDisabled);
-      // Confirmed. An older write settling here must not clear a busy flag
-      // the newest write still needs.
-      if (seq === seqRef.current) setBusy(false);
+      // Confirmed. An older write settling here owns nothing: the newest
+      // sequence keeps the UI, and there is no lock to release — the
+      // controls were never locked against writes.
       return;
     } catch (cause) {
       // A newer write superseded this one: its optimistic row stands, this
@@ -427,7 +447,8 @@ function ProviderToolSettings({
       policiesRef.current = reverted;
       setPolicies(reverted);
       setError(reasonFromCause(cause));
-      setBusy(false);
+    } finally {
+      writesInFlightRef.current -= 1;
     }
   }
 
@@ -462,7 +483,12 @@ function ProviderToolSettings({
             role="switch"
             aria-label={`Enable tools for ${provider.id}`}
             checked={enabled}
-            disabled={busy || loading}
+            // Locked for the load only: a write in flight must not make the
+            // controls unreachable — the sequence guard owns overlap (see
+            // `persist`), and a control disabled on `busy` would drop the
+            // user's second click, the one thing the policy says never
+            // happens.
+            disabled={loading}
             onChange={(event) => toggleProvider(event.target.checked)}
           />
           <span>Enable tools</span>
@@ -478,7 +504,7 @@ function ProviderToolSettings({
                   id={inputId}
                   type="checkbox"
                   checked={checked}
-                  disabled={busy || alwaysOn || !enabled || loading}
+                  disabled={alwaysOn || !enabled || loading}
                   onChange={(event) => toggleTool(tool.name, event.target.checked)}
                 />
                 <label htmlFor={inputId}>
@@ -1111,34 +1137,48 @@ function NewAgentProfileForm({
  * note in UTF-8 bytes — both refusals name the size, and nothing is ever
  * truncated.
  *
+ * The fields are controlled from the panel: the draft lives one level up
+ * (`editorDraft`, rule 3 of the write discipline), because the row this
+ * editor renders in can be removed by an in-flight delete and restored by
+ * that delete's revert — a draft kept in local state would unmount with the
+ * row and remount empty.
+ *
  * Save sits under the panel's `busy` lock like every other write trigger:
  * while a write is in flight the editor cannot start a second one, so a
  * revert can never land on a document the daemon has just refused.
  */
 function AgentProfileEditor({
-  profile,
+  name,
+  note,
   busy,
+  onFieldChange,
   onSave,
   onClose,
 }: {
-  profile: AgentProfile;
+  /** The draft the panel holds for this editor: the fields' values. */
+  name: string;
+  note: string;
   /** True while a panel write is in flight: Save must not start another. */
   busy: boolean;
+  /** Every keystroke, reported up so the draft survives this component. */
+  onFieldChange: (name: string, note: string) => void;
   onSave: (name: string, note: string) => void;
   onClose: () => void;
 }) {
-  const [name, setName] = useState(profile.name);
-  const [note, setNote] = useState(profile.note);
   const noteBytes = utf8Bytes(note);
   return (
     <div className="agent-inline-editor">
       <label className="device-field">
         Name
-        <input value={name} onChange={(event) => setName(event.target.value)} />
+        <input value={name} onChange={(event) => onFieldChange(event.target.value, note)} />
       </label>
       <label className="device-field">
         Note — what a creating agent reads to choose this profile. Write it for the agent.
-        <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={3} />
+        <textarea
+          value={note}
+          onChange={(event) => onFieldChange(name, event.target.value)}
+          rows={3}
+        />
         <span className="agent-byte-counter">
           {noteBytes} / {MAX_PROFILE_NOTE_BYTES} bytes
         </span>
@@ -1202,9 +1242,26 @@ function AgentProfilesPanel() {
   const documentRef = useRef<AgentProfilesDocument | null>(null);
   // Monotonic write sequence: only the newest write owns the UI when it settles.
   const seqRef = useRef(0);
+  // How many writes are currently inside `persist` — sent, not yet settled
+  // by their read-back or their revert. Unlike the tool card, this panel
+  // never lets writes overlap (rule 1 of the write discipline, at
+  // `persist`), so it is near-always 0 or 1, and the load effect reads it
+  // for the one thing the sequence number cannot say: that a write was
+  // already in flight when a fetch started.
+  const writesInFlightRef = useRef(0);
   // Which row's editor / delete confirm is open. One of each, panel-wide.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteArmedId, setDeleteArmedId] = useState<string | null>(null);
+  // The open editor's unsaved draft, keyed to its row. It lives HERE, not in
+  // the editor's own state, because the row the editor is rendered in can be
+  // removed by an in-flight delete and put back by that delete's revert: the
+  // editor unmounts and remounts, and a draft kept locally would remount
+  // empty. Rule 3 of the write discipline (at `persist`) applies to it
+  // exactly as to the standing draft below: no write that did not carry the
+  // text may release it.
+  const [editorDraft, setEditorDraft] = useState<{ id: string; name: string; note: string } | null>(
+    null,
+  );
   // The new-profile form is open. Rendered closed by default; each open is a
   // fresh mount, so no stale draft survives a Cancel.
   const [creating, setCreating] = useState(false);
@@ -1214,10 +1271,12 @@ function AgentProfilesPanel() {
   // The standing-instructions draft. Null means the textarea shows the
   // document; the first keystroke sets it, so the optimistic document swap
   // of an in-flight write cannot eat what the human is typing mid-write. It
-  // is released — back to null — when a write is confirmed and when a fresh
-  // load lands: the two moments the panel is back in agreement with the
-  // store. A rejected save keeps the draft, so the text survives to be
-  // shortened and retried.
+  // is released only under rule 3 of the write discipline (at `persist`):
+  // by its own writer's confirmation — and only while it is still exactly
+  // what that write sent — or by a fresh load, the one moment the store has
+  // re-asserted itself out of band. No other write touches it: a tick, a
+  // move, a delete or a create confirming while the human is typing has not
+  // stored the typed text, so it must not drop it.
   const [standingDraft, setStandingDraft] = useState<string | null>(null);
   // A failed load is terminal, not a loading state: nothing will ever arrive
   // on its own, so the panel shows the daemon's sentence and a Retry instead
@@ -1235,19 +1294,29 @@ function AgentProfilesPanel() {
     // refetch (a daemon restart's capability flip) apply after a write
     // instead of being discarded for the life of the mount.
     const seqAtFetch = seqRef.current;
+    const writeWasInFlight = writesInFlightRef.current > 0;
     void agentProfilesGet()
       .then((reply) => {
         if (cancelled) return;
         // A write issued while this fetch was in flight is newer: keep it.
         if (seqRef.current !== seqAtFetch) return;
+        // A write that was ALREADY in flight when this fetch started raced
+        // it: whether the reply predates or postdates that write is
+        // unknowable, so the reply adopts nothing — the write's own
+        // read-back (or its revert) is the state of record. Rule 2 of the
+        // write discipline: the guard answers "did a write overlap this
+        // fetch?", not just "is there a newer write?".
+        if (writeWasInFlight) return;
         documentRef.current = reply.document;
         setDocument(reply.document);
         // The store has spoken: the panel agrees with it again, so a stale
-        // load error goes and the standing box re-seeds from the document
-        // rather than keeping a draft typed against an older store.
+        // load error goes and BOTH drafts are released (rule 3) — the
+        // standing box and the open editor re-seed from the document rather
+        // than keeping text typed against an older store.
         setError(null);
         setLoadFailed(false);
         setStandingDraft(null);
+        setEditorDraft(null);
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
@@ -1299,18 +1368,44 @@ function AgentProfilesPanel() {
   const standingBytes = utf8Bytes(standingValue);
 
   /**
-   * Sends one whole-document write, optimistically, under the sequence
-   * guard. `previous` is the ref value this write started from, so a
-   * rejection puts back exactly what the human was seeing, and a rejection a
-   * newer write superseded reverts nothing and reports nothing. Resolves to
-   * true only when this write confirmed as the newest one.
+   * The write discipline — one rule for all six writers (tick, editor,
+   * delete, move, create, standing instructions), stated here once because
+   * it is the one place every writer passes through. Three clauses:
    *
-   * On a confirmation the panel re-reads the document and adopts it: the set
-   * reply names the request, not the stored rows, and a created profile
-   * travels with `id: ""` while the daemon mints the real identity — on
-   * every write that still receives an empty id. Without the read-back the
-   * panel would keep guessing at an identity the store owns, and every
-   * further save of such a row would mint it a new one.
+   * 1. One write owns the panel from its optimistic swap until it settles:
+   *    a confirmation PLUS its read-back, or a refusal's revert. `busy`
+   *    spans that whole stretch, so no second write can start inside it —
+   *    the read-back is part of the write, not an afterthought. This is
+   *    what keeps the daemon's minted ids adopted before the panel is
+   *    writable again: a write that could start in the read-back's window
+   *    would travel on the pre-read-back document, re-send an empty id, and
+   *    make the daemon mint a second identity for the same row.
+   * 2. A document fetch adopts its reply only when NO write overlapped it:
+   *    none in flight when the fetch started (`writesInFlightRef`, read by
+   *    the load effect) and none started while it flew (`seqRef`
+   *    unchanged). The guard answers "did a write overlap this fetch?",
+   *    never just "is there a newer write?" — the write's own read-back or
+   *    revert is the state of record for anything it raced.
+   * 3. What the human typed but has not saved is not a write. The standing
+   *    draft and the open editor's draft (`editorDraft`) live above the
+   *    write plane, and no write that did not carry their text releases
+   *    them. A draft is released only by its own writer's confirmation —
+   *    and only while it is still exactly what was sent — by the human
+   *    abandoning it, or by a fresh load, the one moment the store has
+   *    re-asserted itself out of band.
+   *
+   * `previous` is the ref value this write started from, so a rejection
+   * puts back exactly what the human was seeing, and a rejection a newer
+   * write superseded reverts nothing and reports nothing. Resolves to true
+   * only when this write confirmed as the newest one and its read-back has
+   * landed.
+   *
+   * On a confirmation the panel re-reads the document and adopts it: the
+   * set reply names the request, not the stored rows, and a created
+   * profile travels with `id: ""` while the daemon mints the real
+   * identity — on every write that still receives an empty id. Without the
+   * read-back the panel would keep guessing at an identity the store owns,
+   * and every further save of such a row would mint it a new one.
    */
   async function persist(next: AgentProfilesDocument): Promise<boolean> {
     const previous = documentRef.current;
@@ -1319,33 +1414,28 @@ function AgentProfilesPanel() {
     setError(null);
     documentRef.current = next;
     setDocument(next);
+    writesInFlightRef.current += 1;
     try {
       await agentProfilesSet(next);
-      // The read-back rides this write's sequence: if a newer write has
-      // started, the read adopts nothing — that write re-reads for itself —
-      // so a late reply can never overwrite a newer optimistic state.
-      void agentProfilesGet()
-        .then((reply) => {
-          if (seqRef.current !== seq) return;
+      // The read-back rides this write's sequence (rule 1): `busy` is still
+      // held while it is in flight, so no newer write can have started —
+      // the guard stays only as the same defence every fetch here carries.
+      try {
+        const reply = await agentProfilesGet();
+        if (seqRef.current === seq) {
           documentRef.current = reply.document;
           setDocument(reply.document);
-        })
-        .catch((cause: unknown) => {
-          // The write itself is confirmed, so a failed read-back reverts
-          // nothing; it is named — the panel would otherwise sit on ids the
-          // daemon has already replaced — unless a newer write owns the UI.
-          if (seqRef.current !== seq) return;
-          setError(reasonFromCause(cause));
-        });
+        }
+      } catch (cause: unknown) {
+        // The write itself is confirmed, so a failed read-back reverts
+        // nothing; it is named — the panel would otherwise sit on ids the
+        // daemon has already replaced — unless a newer write owns the UI.
+        if (seqRef.current === seq) setError(reasonFromCause(cause));
+      }
       // An older write settling here must not clear a busy flag the newest
       // write still needs.
       const confirmed = seq === seqRef.current;
-      if (confirmed) {
-        setBusy(false);
-        // Confirmed: the store now holds what was sent, so the standing box
-        // goes back to reading the document. A rejected save keeps the draft.
-        setStandingDraft(null);
-      }
+      if (confirmed) setBusy(false);
       return confirmed;
     } catch (cause) {
       // A refusal adopts nothing: no read-back is issued on this path, and
@@ -1356,6 +1446,8 @@ function AgentProfilesPanel() {
       setError(reasonFromCause(cause));
       setBusy(false);
       return false;
+    } finally {
+      writesInFlightRef.current -= 1;
     }
   }
 
@@ -1363,6 +1455,14 @@ function AgentProfilesPanel() {
     setError(null);
     setLoadFailed(false);
     setLoadNonce((nonce) => nonce + 1);
+  }
+
+  // Closing the editor is the human abandoning it: the draft goes with the
+  // editor (rule 3). A write — even one that removes the editor's row and
+  // then reverts — must never reach this.
+  function closeEditor() {
+    setEditingId(null);
+    setEditorDraft(null);
   }
 
   function toggleEnabled(id: string, next: boolean) {
@@ -1416,8 +1516,10 @@ function AgentProfilesPanel() {
     // Close on CONFIRMATION, never on submission — the new-profile form's
     // rule, and there is one rule: a refusal must leave the editor on screen
     // with the human's draft in its fields, under the error, ready to retry.
+    // (The draft lives in `editorDraft` above the write plane, so this holds
+    // even for a refusal of a write that removed the editor's row: rule 3.)
     void persist(updated).then((confirmed) => {
-      if (confirmed) setEditingId(null);
+      if (confirmed) closeEditor();
     });
   }
 
@@ -1501,9 +1603,16 @@ function AgentProfilesPanel() {
       );
       return;
     }
+    const sent = standingValue;
     const updated = cloneDocument(current);
-    updated.standingInstructions = standingValue;
-    void persist(updated);
+    updated.standingInstructions = sent;
+    void persist(updated).then((confirmed) => {
+      // The store now holds `sent`. The draft is released only while it is
+      // still exactly what was sent (rule 3): keystrokes typed while the
+      // write was in flight are newer than the store and survive it, ready
+      // for a second save.
+      if (confirmed) setStandingDraft((draft) => (draft === sent ? null : draft));
+    });
   }
 
   return (
@@ -1634,7 +1743,14 @@ function AgentProfilesPanel() {
                     className="settings-device-action"
                     disabled={busy || loading}
                     onClick={() => {
-                      setEditingId(editing ? null : profile.id);
+                      // Opening an editor is a fresh draft (rule 3): the
+                      // panel drops any draft left from a previous editing
+                      // session. Closing one is the human abandoning it.
+                      if (editing) closeEditor();
+                      else {
+                        setEditingId(profile.id);
+                        setEditorDraft(null);
+                      }
                       setDeleteArmedId(null);
                     }}
                   >
@@ -1651,10 +1767,12 @@ function AgentProfilesPanel() {
                 </div>
                 {editing ? (
                   <AgentProfileEditor
-                    profile={profile}
+                    name={editorDraft?.id === profile.id ? editorDraft.name : profile.name}
+                    note={editorDraft?.id === profile.id ? editorDraft.note : profile.note}
                     busy={busy}
+                    onFieldChange={(name, note) => setEditorDraft({ id: profile.id, name, note })}
                     onSave={(name, note) => saveProfileFields(profile.id, name, note)}
-                    onClose={() => setEditingId(null)}
+                    onClose={closeEditor}
                   />
                 ) : null}
                 {deleteArmed ? (

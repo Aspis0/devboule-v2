@@ -1766,15 +1766,17 @@ describe("Settings provider tool toggles", () => {
 
     // Regression test for the audit's finding 1 stale revert: two persists
     // fired before either settled, the first rejected, the second accepted.
-    // Before the fix both entered `persist` (the `busy` state guard reads
-    // stale `false` in the same tick) and the first rejection's
+    // Before the fix both entered `persist` and the first rejection's
     // `setPolicies(previous)` clobbered the second write's optimistic row.
     // The fix keeps both writes on the wire, in click order — the second
-    // click is never dropped — and hands the UI to the newest sequence:
-    // a rejection that a newer write superseded reverts nothing and reports
-    // nothing. This test pins that: the two writes run with a render flush
-    // between them, but the first write is still unsettled (its promise
-    // resolves only via `rejectFirst` below) while the second starts.
+    // click is never dropped — and hands the UI to the newest sequence: a
+    // rejection a newer write has superseded reverts nothing and reports
+    // nothing. Both clicks are real clicks on the real controls: the card's
+    // checkboxes stay reachable while a write is in flight (the disabled
+    // attribute locks for the load only), so the overlap policy the persist
+    // comment states is exercised the way a human exercises it. An earlier
+    // version of this test had to reach past the DOM through __reactProps
+    // because the controls were disabled on `busy` — a path no human has.
     let rejectFirst!: (cause: unknown) => void;
     let resolveSecond!: () => void;
     vi.mocked(toolPolicySet)
@@ -1790,34 +1792,16 @@ describe("Settings provider tool toggles", () => {
             resolveSecond = resolve;
           }),
       );
+
     // Toggle A unchecks other_tool; toggle B re-checks it from A's
-    // optimistic row. `fireToggle` calls the real `onChange` handler (the
-    // same function a click calls); the render flush between the fires is
-    // what lets B's closure read A's optimistic row instead of the pre-A
-    // state. `persist` itself is not exported; the handlers close over it.
-    function fireToggle(name: string, next: boolean) {
-      const box = toolCheckbox(name);
-      const reactKey = Object.keys(box).find((key) => key.startsWith("__reactProps"));
-      const onChange = (box as unknown as Record<string, unknown>)[reactKey ?? ""] as
-        | { onChange?: (event: { target: { checked: boolean } }) => void }
-        | undefined;
-      const handler = onChange as { onChange?: unknown } | undefined as
-        | { onChange: (event: { target: { checked: boolean } }) => void }
-        | undefined;
-      if (!handler?.onChange) throw new Error(`onChange for ${name} did not render`);
-      return act(async () => {
-        handler.onChange({ target: { checked: next } });
-      });
-    }
-    const first = fireToggle("other_tool", false);
-    await first;
-    // Let A's optimistic row render before B fires: A is still unsettled
-    // (its promise resolves only via `rejectFirst` below), so this is the
-    // audit's interleaving — the second write starts while the first is
-    // still in flight — with B reading A's row as its base.
+    // optimistic row. A's write is still unsettled (its promise resolves
+    // only via `rejectFirst` below) when B clicks: the audit's
+    // interleaving, with B reading A's row as its base.
+    await act(async () => toolCheckbox("other_tool").click());
     await act(async () => undefined);
-    const second = fireToggle("other_tool", true);
-    await second;
+    expect(toolPolicySet).toHaveBeenCalledTimes(1);
+    await act(async () => toolCheckbox("other_tool").click());
+    await act(async () => undefined);
     expect(toolPolicySet).toHaveBeenCalledTimes(2);
     expect(toolPolicySet).toHaveBeenNthCalledWith(1, "grok", null, ["other_tool"]);
     expect(toolPolicySet).toHaveBeenNthCalledWith(2, "grok", null, []);
@@ -1842,29 +1826,22 @@ describe("Settings provider tool toggles", () => {
     // second write must read the row the first one just wrote — reading the
     // render's `disabledSet` instead would turn the master off with a deny
     // list that omits the tool the user just unchecked, and the stored row
-    // would lose it. Both writes still reach the daemon, in click order.
+    // would lose it. Both writes still reach the daemon, in click order —
+    // two real clicks on two reachable controls, in a single tick.
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [mcpProviderWith()],
       unreadableDirs: 0,
     });
     await renderToolSettings();
 
-    function fire(element: HTMLInputElement, checked: boolean) {
-      const reactKey = Object.keys(element).find((key) => key.startsWith("__reactProps"));
-      const props = (element as unknown as Record<string, unknown>)[reactKey ?? ""] as
-        | { onChange?: (event: { target: { checked: boolean } }) => void }
-        | undefined;
-      if (!props?.onChange) throw new Error("onChange did not render");
-      props.onChange({ target: { checked } });
-    }
     const master = container.querySelector<HTMLInputElement>(
       "input[aria-label='Enable tools for grok']",
     );
     if (!master) throw new Error("master switch did not render");
 
     await act(async () => {
-      fire(toolCheckbox("other_tool"), false);
-      fire(master, false);
+      toolCheckbox("other_tool").click();
+      master.click();
     });
 
     expect(toolPolicySet).toHaveBeenCalledTimes(2);
@@ -2479,6 +2456,94 @@ describe("Settings agents panel", () => {
     expect(container.querySelector(".agent-inline-editor")).toBeNull();
   });
 
+  it("keeps the editor's draft when a refused delete removes and restores its row", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile({ id: "x1" }), makeProfile({ id: "x2", name: "Coder" })],
+      standingInstructions: "",
+    });
+    // The delete's fate is held outside, so each stage of the sequence is
+    // observable deterministically: the optimistic removal, then the
+    // refusal's revert.
+    let rejectSet!: (cause: unknown) => void;
+    vi.mocked(agentProfilesSet).mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSet = reject;
+        }),
+    );
+
+    // Open the editor on the row that will be deleted, and type into it.
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const nameField = container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    const noteField = container.querySelector<HTMLTextAreaElement>(".agent-inline-editor textarea");
+    if (!nameField || !noteField) throw new Error("editor fields did not render");
+    await typeText(nameField, "Scout");
+    await typeText(noteField, "Maps the work before anyone builds.");
+
+    // Delete that same row: the optimistic removal unmounts the editor —
+    // the row, and the editor rendered inside it, are gone from the screen.
+    await act(async () => rowButton("Explorer", "Delete").click());
+    await act(async () => sectionButton("Delete now").click());
+    await act(async () => undefined);
+    expect(container.querySelector(".agent-inline-editor")).toBeNull();
+
+    // The write is refused; the revert brings the row back and the editor
+    // remounts. It must come back with the draft in its fields, under the
+    // error — the rule its own write obeys, held for a write that removed
+    // the row. A draft kept inside the editor's own state would remount
+    // empty here; it lives one level up for exactly this.
+    await act(async () => {
+      rejectSet({ code: "io", message: "profile file unwritable" });
+    });
+    await act(async () => undefined);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "profile file unwritable",
+    );
+    const editor = container.querySelector(".agent-inline-editor");
+    expect(editor).not.toBeNull();
+    expect(editor?.querySelector<HTMLInputElement>("input")?.value).toBe("Scout");
+    expect(editor?.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(
+      "Maps the work before anyone builds.",
+    );
+    expect(rowByName("Explorer").querySelector(".settings-card-title")?.textContent).toBe(
+      "Explorer",
+    );
+  });
+
+  it("keeps the editor's draft across a confirmed write from another row", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile({ id: "x1" }), makeProfile({ id: "x2", name: "Coder" })],
+      standingInstructions: "",
+    });
+    // The store's read-back after the confirmed tick.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [
+          makeProfile({ id: "x1" }),
+          makeProfile({ id: "x2", name: "Coder", enabledForAgents: true }),
+        ],
+        standingInstructions: "",
+      },
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const nameField = container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    if (!nameField) throw new Error("editor name field did not render");
+    await typeText(nameField, "Scout");
+
+    // Another row's write, confirmed with its read-back: the editor stays
+    // open and the draft stays in it — no write that did not carry the
+    // draft may release it.
+    await act(async () => tickBox("Coder").click());
+    await act(async () => undefined);
+
+    const editor = container.querySelector(".agent-inline-editor");
+    expect(editor).not.toBeNull();
+    expect(editor?.querySelector<HTMLInputElement>("input")?.value).toBe("Scout");
+  });
+
   it("refuses a note over 2 KiB with the size named and truncates nothing", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
 
@@ -2547,7 +2612,7 @@ describe("Settings agents panel", () => {
     expect(field.value).toBe(flood);
   });
 
-  it("releases the standing draft once any write is confirmed, so the box agrees with the store", async () => {
+  it("keeps the standing draft on screen when an unrelated write confirms", async () => {
     await renderAgentsPanel({
       profiles: [makeProfile()],
       standingInstructions: "",
@@ -2564,10 +2629,12 @@ describe("Settings agents panel", () => {
     if (!field) throw new Error("standing instructions field did not render");
     await typeText(field, "Always report your plan first.");
 
-    // An unrelated write — the tick. It sends the document as the store holds
-    // it (the draft is deliberately not smuggled into it), and once it is
-    // confirmed the box must agree with the store again: the typed text has
-    // to leave the box visibly, not sit there while the daemon never got it.
+    // An unrelated write — the tick. It sends the document as the store
+    // holds it (the draft is deliberately not smuggled into it), and when
+    // it confirms the typed text must still be in the box: the tick did not
+    // carry the text, so releasing the draft would destroy words no write
+    // ever took. An earlier version of this test pinned the opposite — the
+    // release — which is the silent loss the cumulative audit's finding 1.
     await act(async () => tickBox("Explorer").click());
     await act(async () => undefined);
 
@@ -2577,7 +2644,48 @@ describe("Settings agents panel", () => {
       standingInstructions: "",
     });
     const fieldAfter = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
-    expect(fieldAfter?.value).toBe("");
+    expect(fieldAfter?.value).toBe("Always report your plan first.");
+  });
+
+  it("keeps keystrokes typed while the standing save itself was in flight", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile()],
+      standingInstructions: "",
+    });
+    // The store's read-back after the confirmed save: it holds what was sent.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [makeProfile()], standingInstructions: "Always report" },
+    });
+
+    const field = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+    if (!field) throw new Error("standing instructions field did not render");
+    await typeText(field, "Always report");
+    let resolveSet: (() => void) | undefined;
+    vi.mocked(agentProfilesSet).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSet = resolve;
+        }),
+    );
+    await act(async () => sectionButton("Save standing instructions").click());
+    await act(async () => undefined);
+
+    // The write is in flight carrying "Always report"; the human keeps
+    // typing (the box is deliberately editable mid-write). The confirmation
+    // may release a draft that is still what was sent — this tail is newer
+    // than the store and must survive it.
+    await typeText(field, "Always report your plan first.");
+    await act(async () => {
+      resolveSet?.();
+    });
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [makeProfile()],
+      standingInstructions: "Always report",
+    });
+    const fieldAfter = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+    expect(fieldAfter?.value).toBe("Always report your plan first.");
   });
 
   it("accepts a name at the daemon's own count: 40 astral-plane characters are 40 characters", async () => {
@@ -2746,6 +2854,129 @@ describe("Settings agents panel", () => {
     // in flight: React does not invoke onClick on a disabled button.
     await act(async () => save.click());
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the panel locked until the read-back lands, so no write can re-send an empty id", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile()],
+      standingInstructions: "",
+    });
+    // The write will confirm, and its read-back — where the daemon's minted
+    // ids are adopted — is armed and does not answer yet. This constructs
+    // the window the cumulative audit's finding 3: the moment between the
+    // write's confirmation and its read-back.
+    let resolveReadBack: ((reply: AgentProfilesReply) => void) | undefined;
+    vi.mocked(agentProfilesGet).mockImplementationOnce(
+      () =>
+        new Promise<AgentProfilesReply>((resolve) => {
+          resolveReadBack = resolve;
+        }),
+    );
+
+    await act(async () => tickBox("Explorer").click());
+    await act(async () => undefined);
+
+    // The write is confirmed but its read-back has not landed. Every writer
+    // must still be locked: a write sent now would travel on the
+    // pre-read-back document, re-send `id: ""` for a row the daemon has
+    // already named, and its sequence would discard the very read-back that
+    // was about to heal the panel. An earlier version released `busy`
+    // before the read-back resolved; these assertions are what that got
+    // wrong.
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesGet).toHaveBeenCalledTimes(2);
+    expect(tickBox("Explorer").disabled).toBe(true);
+    expect(sectionButton("New profile").disabled).toBe(true);
+
+    // The read-back lands: the window closes, the minted id is adopted,
+    // and the panel is writable again.
+    resolveReadBack?.({
+      document: {
+        profiles: [makeProfile({ id: "minted-1", enabledForAgents: true })],
+        standingInstructions: "",
+      },
+    });
+    await act(async () => undefined);
+
+    expect(tickBox("Explorer").disabled).toBe(false);
+    expect(sectionButton("New profile").disabled).toBe(false);
+    expect(tickBox("Explorer").checked).toBe(true);
+  });
+
+  it("does not adopt a store fetch that raced a write still in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      await renderAgentsPanel({
+        profiles: [makeProfile()],
+        standingInstructions: "",
+      });
+
+      // A write whose fate is still open: the optimistic tick is on screen,
+      // the daemon has not answered.
+      let rejectSet!: (cause: unknown) => void;
+      vi.mocked(agentProfilesSet).mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectSet = reject;
+          }),
+      );
+      await act(async () => tickBox("Explorer").click());
+      await act(async () => undefined);
+      expect(tickBox("Explorer").checked).toBe(true);
+
+      // While that write is in flight, a daemon restart flips the
+      // capability off and back on, re-running the load effect. Its reply
+      // is the store's pre-write truth — the reply that must adopt nothing.
+      vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+        document: {
+          profiles: [makeProfile({ note: "raced the write" })],
+          standingInstructions: "",
+        },
+      });
+      vi.mocked(daemonStatus).mockResolvedValue(
+        daemonStatusWith(["ping", "status", "sessions", "journal", "typed_permissions", "devices"]),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      vi.mocked(daemonStatus).mockResolvedValue(
+        daemonStatusWith([
+          "ping",
+          "status",
+          "sessions",
+          "journal",
+          "typed_permissions",
+          "devices",
+          "agent_profiles",
+        ]),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(2_100);
+      });
+      await act(async () => undefined);
+
+      // The racing fetch was issued and adopted nothing: the optimistic
+      // document still owns the panel. The old guard compared sequence
+      // numbers only, so this reply WAS adopted here — and the write's
+      // revert then clobbered it — because the guard never asked whether a
+      // write was in flight when the fetch started.
+      expect(agentProfilesGet).toHaveBeenCalledTimes(2);
+      expect(tickBox("Explorer").checked).toBe(true);
+      expect(container.textContent).not.toContain("raced the write");
+
+      // The write then refuses: the revert restores exactly what the human
+      // was seeing, under the error — with no adopted reply in between.
+      await act(async () => {
+        rejectSet({ code: "io", message: "profile file unwritable" });
+      });
+      await act(async () => undefined);
+      expect(tickBox("Explorer").checked).toBe(false);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "profile file unwritable",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -3672,18 +3903,56 @@ describe("Settings agents panel — new profile form", () => {
   });
 
   it("gives every state its own sentence: no two rendered sentences are equal or substrings", async () => {
-    // The property the state sentences exist for, held over the render
-    // itself: enumerate the states, render each, and compare every rendered
-    // sentence with every other — equal is a collapse, and a substring is a
-    // collapse waiting for its neighbouring words to change.
+    // The property the sentences exist for, held over the render itself:
+    // every sentence-bearing state the Agents panel can reach is rendered
+    // here — the vocabulary states, the caps and their refusals, the load
+    // errors, the catalog states, and the standing panel copy — and every
+    // rendered sentence is compared with every other. Equal is a collapse,
+    // and a substring is a collapse waiting for its neighbouring words to
+    // change. An earlier version collected only the vocabulary hints inside
+    // the new-profile form; bdf0318's claim to render "every
+    // sentence-bearing state" was wider than that net, and this is the net
+    // sized to the claim.
     const scenarioNames: string[] = [];
     const sentences: string[] = [];
+    // A sentence already collected from an earlier state is the same
+    // sentence: it enters the net once.
+    const seen = new Set<string>();
+
+    // Sentence-bearing elements only: labels, buttons, row titles and
+    // option texts are not sentences. An element that contains another
+    // collected element (the off-switch wrapper around its two paragraphs,
+    // a role=status wrapper) is dropped — its text would falsely "contain"
+    // the real sentences inside it.
+    const SENTENCE_SELECTOR = [
+      ".settings-page-heading p",
+      ".device-field-hint",
+      ".device-copy",
+      ".agent-profile-tick-note",
+      ".agent-profiles-off p",
+      ".agent-profile-note-empty",
+      ".agent-standing .agent-byte-counter",
+      "[role='alert']",
+      "[role='status']",
+    ].join(",");
 
     async function collectScenario(name: string) {
-      const texts = Array.from(form().querySelectorAll<HTMLElement>(".device-field-hint")).map(
-        (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim(),
+      const panel = container.querySelector("#settings-panel-agents");
+      if (!panel) throw new Error("agents panel did not render");
+      const elements = Array.from(panel.querySelectorAll<HTMLElement>(SENTENCE_SELECTOR));
+      const leaves = elements.filter(
+        (element) => !elements.some((other) => other !== element && element.contains(other)),
       );
-      for (const text of new Set(texts)) {
+      for (const element of leaves) {
+        let text = (element.textContent ?? "").replace(/\s+/g, " ").trim();
+        // The standing counter's leading numbers are data, not copy, and
+        // data prefixes manufacture fake containments ("8400 / 8192…"
+        // contains "0 / 8192…"): compare the copy, tokenise the numbers.
+        if (element.classList.contains("agent-byte-counter")) {
+          text = text.replace(/^\d+ \/ \d+ bytes/, "N / M bytes");
+        }
+        if (text === "" || seen.has(text)) continue;
+        seen.add(text);
         scenarioNames.push(name);
         sentences.push(text);
       }
@@ -3693,6 +3962,31 @@ describe("Settings agents panel — new profile form", () => {
         root = undefined;
       }
       container.innerHTML = "";
+    }
+
+    function agentsSectionButton(text: string): HTMLButtonElement {
+      const button = Array.from(
+        container.querySelectorAll<HTMLButtonElement>("#settings-panel-agents button"),
+      ).find((candidate) => candidate.textContent === text);
+      if (!button) throw new Error(`button ${text} did not render`);
+      return button;
+    }
+
+    function agentRow(name: string): HTMLElement {
+      const row = Array.from(container.querySelectorAll<HTMLElement>(".agent-profile-row")).find(
+        (candidate) => candidate.textContent?.includes(name),
+      );
+      if (!row) throw new Error(`profile row ${name} did not render`);
+      return row;
+    }
+
+    async function openEditorOn(name: string) {
+      const edit = Array.from(agentRow(name).querySelectorAll<HTMLButtonElement>("button")).find(
+        (candidate) => candidate.textContent === "Edit",
+      );
+      if (!edit) throw new Error(`Edit button on ${name} did not render`);
+      await act(async () => edit.click());
+      await act(async () => undefined);
     }
 
     async function armAndOpen(reply: ProviderVocabulary | undefined) {
@@ -3776,9 +4070,215 @@ describe("Settings agents panel — new profile form", () => {
     );
     await collectScenario("unknown state");
 
-    // Nine sentences per pair of axes, minus the daemon-origin sentence
-    // that is the same text on both axes: fifteen in all.
-    expect(sentences).toHaveLength(15);
+    // 9. The ACP mode suggestion, labelled a suggestion. Two catalog
+    // answers are queued because two panels fetch on mount: the default
+    // ProvidersPanel tab consumes the first, the Agents panel's picker the
+    // second — the form's provider must be the ACP one.
+    const zedCatalog = {
+      providers: [makeProvider({ id: "zed", protocol: "acp", executable: "C:\\cli\\zed.cmd" })],
+      unreadableDirs: 0,
+    };
+    vi.mocked(providersList).mockResolvedValueOnce(zedCatalog).mockResolvedValueOnce(zedCatalog);
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({
+        provider: "zed",
+        models: {
+          state: "present",
+          origin: "provider",
+          items: [{ modelId: "zed-model", name: "Zed model" }],
+        },
+      }),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await collectScenario("ACP suggestion");
+
+    // 10. The vocabulary ask still in flight.
+    vi.mocked(providerVocabularyGet).mockReturnValueOnce(
+      new Promise<ProviderVocabulary>(() => undefined),
+    );
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
+    await openForm();
+    await collectScenario("vocabulary in flight");
+
+    // 11. The panel load failed: the daemon's sentence and a Retry.
+    vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWith(OLDER_DAEMON));
+    vi.mocked(agentProfilesGet).mockRejectedValueOnce({
+      code: "io",
+      message: "the store is unreachable",
+    });
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const failedTab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-agents']",
+    );
+    if (!failedTab) throw new Error("Agents tab did not render");
+    await act(async () => failedTab.click());
+    await act(async () => undefined);
+    await collectScenario("load failed");
+
+    // 12. The panel load still in flight.
+    vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWith(OLDER_DAEMON));
+    vi.mocked(agentProfilesGet).mockImplementationOnce(
+      () => new Promise<AgentProfilesReply>(() => undefined),
+    );
+    root = createRoot(container);
+    await act(async () => root!.render(<SettingsSurface />));
+    await act(async () => undefined);
+    const loadingTab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-agents']",
+    );
+    if (!loadingTab) throw new Error("Agents tab did not render");
+    await act(async () => loadingTab.click());
+    await act(async () => undefined);
+    await collectScenario("loading");
+
+    // 13. The off switch, with a note-less row.
+    await renderAgentsPanel({
+      profiles: [makeProfile({ note: "" }), makeProfile({ id: "x2", name: "Coder", note: "" })],
+      standingInstructions: "",
+    });
+    await collectScenario("off switch");
+
+    // 14. A delete armed: the inline confirm's copy.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await act(async () => agentsSectionButton("Delete").click());
+    await act(async () => undefined);
+    await collectScenario("delete armed");
+
+    // 15. The row editor open: its not-editable-here hint.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    await collectScenario("editor open");
+
+    // 16. The name-cap refusal.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    const editorName = container.querySelector<HTMLInputElement>(".agent-inline-editor input");
+    if (!editorName) throw new Error("editor name field did not render");
+    await typeText(editorName, "🦄".repeat(61));
+    await act(async () => agentsSectionButton("Save").click());
+    await act(async () => undefined);
+    await collectScenario("name cap refusal");
+
+    // 17. The note-cap refusal.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openEditorOn("Explorer");
+    const editorNote = container.querySelector<HTMLTextAreaElement>(
+      ".agent-inline-editor textarea",
+    );
+    if (!editorNote) throw new Error("editor note field did not render");
+    await typeText(editorNote, "é".repeat(1100));
+    await act(async () => agentsSectionButton("Save").click());
+    await act(async () => undefined);
+    await collectScenario("note cap refusal");
+
+    // 18. The standing-instructions cap refusal.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    const standingField = container.querySelector<HTMLTextAreaElement>(".agent-standing textarea");
+    if (!standingField) throw new Error("standing instructions field did not render");
+    await typeText(standingField, "é".repeat(4200));
+    await act(async () => agentsSectionButton("Save standing instructions").click());
+    await act(async () => undefined);
+    await collectScenario("standing cap refusal");
+
+    // 19. The create form refusing a missing model.
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await typeText(nameField(), "Scout");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await collectScenario("model missing refusal");
+
+    // 20. The create form refusing a missing mode.
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await typeText(nameField(), "Scout");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await collectScenario("mode missing refusal");
+
+    // 21. The create-time profile-cap refusal: the store reaches the cap
+    // while the form is open (the read-back of an unrelated write adopts a
+    // 64-row store), so the guard under the Create button is what speaks.
+    const sixtyThree = Array.from({ length: 63 }, (_, index) =>
+      makeProfile({ id: `p-${index}`, name: `P ${index}` }),
+    );
+    await renderAgentsPanel({ profiles: sixtyThree, standingInstructions: "" });
+    await openForm();
+    await typeText(nameField(), "Gamma");
+    await typeText(modelControl(), "claude-sonnet-4-5");
+    await typeText(modeControl(), "default");
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [...sixtyThree, storedProfile("minted-cap")],
+        standingInstructions: "",
+      },
+    });
+    await tickCheckbox(rowTicks()[0]!, true);
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await collectScenario("profile cap refusal");
+
+    // 22. The store at the cap: the hint that names it before any typing.
+    const full = Array.from({ length: 64 }, (_, index) =>
+      makeProfile({ id: `c-${index}`, name: `C ${index}` }),
+    );
+    await renderAgentsPanel({ profiles: full, standingInstructions: "" });
+    await collectScenario("at cap");
+
+    // 23. The catalog read and found empty: the only state allowed to say
+    // no agent CLI is installed.
+    vi.mocked(providersList).mockResolvedValueOnce({ providers: [], unreadableDirs: 0 });
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await collectScenario("catalog empty");
+
+    // 24. The catalog read failed: it names the failure, never emptiness.
+    vi.mocked(providersList).mockRejectedValueOnce({ code: "io", message: "the scan failed" });
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    await openForm();
+    await collectScenario("catalog failed");
+
+    // The one declared duplicate: the tick note exists in the form and on
+    // the row — the same control in two places, so identical is right — and
+    // this assertion is what holds them equal, so an edit to either is
+    // loud instead of a silent parting.
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    await openForm();
+    const formAvailableNote = Array.from(
+      form().querySelectorAll<HTMLElement>(".agent-profile-tick-note"),
+    ).find((note) => note.textContent?.startsWith("Lets an agent start"));
+    const rowTickNote = container.querySelector<HTMLElement>(
+      ".agent-profile-row .agent-profile-tick-note",
+    );
+    if (!formAvailableNote || !rowTickNote) throw new Error("tick notes did not render");
+    const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
+    expect(normalize(formAvailableNote.textContent ?? "")).toBe(
+      normalize(rowTickNote.textContent ?? ""),
+    );
+    await collectScenario("tick note pin");
+
+    // The count is part of the net: a scenario that stops rendering its
+    // sentence, or a new sentence nobody rendered here, moves this number.
+    // Thirty-seven: the fifteen vocabulary sentences, the ACP suggestion
+    // and the in-flight ask, the load-failed and loading sentences, the
+    // off-switch pair and the no-note sentence, the delete-confirm copy,
+    // the editor hint, the three cap refusals, the model/mode refusals, the
+    // two profile-cap sentences, the two catalog sentences, the heading
+    // description, the intro copy, the two tick notes, and the standing
+    // copy with its counter (whose numbers are tokenised, so every scenario
+    // renders it into one net entry). A new sentence that does not come
+    // through a scenario here moves this number; so does a sentence a
+    // scenario stopped rendering.
+    expect(sentences).toHaveLength(37);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;
