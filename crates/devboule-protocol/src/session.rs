@@ -365,6 +365,45 @@ pub struct SessionStateSnapshot {
     /// Carried on every push for the same reason as the name.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub labels: std::collections::BTreeMap<String, String>,
+    /// The delegation facts for this session, when it is an agent-created
+    /// child. Carried on **every** push, like the name and the creator, so
+    /// the count never goes stale and an `active → off` transition lands.
+    /// Absent means **not an agent-created child** — a state of its own,
+    /// never to be read as `off`, which is a child whose switch a human
+    /// turned off. On the snapshot only: the protocol `Session` (the
+    /// `sessions_list` struct) does not carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<DelegationState>,
+}
+
+/// The delegation ledger for one agent-created child (snapshot only).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationState {
+    /// How many permission cards of this session were resolved, counted from
+    /// what the journal survived — every resolution, whoever answered.
+    pub answered: u32,
+    /// Whether delegated answers may happen for this child right now
+    /// ([`DelegationRunState::Active`]), may not
+    /// ([`DelegationRunState::Off`]), or whether the child was created in an
+    /// auto-accepting profile and can run without asking at all
+    /// ([`DelegationRunState::Unattended`]) — that last one is a birth fact
+    /// read from the journal's ratcheted column, never recomputed from the
+    /// live switch: after a human turns delegation off, an unattended child
+    /// keeps running without asking, and its row is the only thing telling
+    /// the human which sessions those are.
+    pub state: DelegationRunState,
+}
+
+/// Whether delegated answers may reach this child's cards. The three are
+/// distinct wire values and never collapse: `off` is a child the switch
+/// governs, `unattended` is a child nothing needs to govern.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationRunState {
+    Off,
+    Active,
+    Unattended,
 }
 
 /// What the journal can honestly say about a finished transcript.
@@ -867,6 +906,27 @@ pub enum SessionEvent {
         selected_option_kind: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selected_option_name: Option<String>,
+        /// Who answered, when it was not a person at this machine: the
+        /// session id of the agent that created the card's session and
+        /// answered for it under the delegation switch. Absent (and `null`)
+        /// means a person — the card's default history, so the app renders
+        /// attribution only when delegation actually answered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answered_by: Option<String>,
+    },
+    /// The durable record of a resolution, emitted beside
+    /// [`SessionEvent::PermissionResolved`] on **every** resolution — a
+    /// person's answer, a delegated one, an auto-answer and a cancel alike —
+    /// and journalled, because the snapshot's delegation count is read back
+    /// from what survived, not from live state. `answered_by` is absent for a
+    /// human and names the creator session for a delegated answer; `outcome`
+    /// is the journal's own vocabulary (`allow_once`, `deny`, `timeout`,
+    /// `cancelled`, …), the same string the `permissions` table records.
+    PermissionAnswered {
+        card_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answered_by: Option<String>,
+        outcome: String,
     },
     /// Models, thinking, and modes the live ACP session has declared.
     ///
@@ -1307,6 +1367,7 @@ mod tests {
             context_id: None,
             unattended: UnattendedState::No,
             labels: Default::default(),
+            delegation: None,
         };
         let encoded = serde_json::to_value(snapshot).expect("snapshot json");
         assert_eq!(encoded["workspaceId"], "ws-1");
@@ -1340,6 +1401,10 @@ mod tests {
             context_id: Some("s.root.1".to_string()),
             unattended: UnattendedState::Yes,
             labels: Default::default(),
+            delegation: Some(DelegationState {
+                answered: 3,
+                state: DelegationRunState::Active,
+            }),
         };
         let encoded = serde_json::to_value(&snapshot).expect("snapshot json");
         assert_eq!(encoded["displayName"], "worker");
@@ -2501,6 +2566,7 @@ mod tests {
             context_id: None,
             unattended: UnattendedState::Yes,
             labels: Default::default(),
+            delegation: None,
         };
         for (state, word) in [
             (UnattendedState::Yes, "yes"),

@@ -1827,6 +1827,7 @@ mod tests {
             context_id: None,
             unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
+            delegation: None,
         }]);
         registry.reattach_all(&new_client);
 
@@ -1882,6 +1883,7 @@ mod tests {
             context_id: None,
             unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
+            delegation: None,
         }]);
         registry.reattach_all(&new_client);
 
@@ -2120,6 +2122,7 @@ mod tests {
             context_id: None,
             unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
+            delegation: None,
         }
     }
 

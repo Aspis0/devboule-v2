@@ -101,22 +101,23 @@ pub use ids::{
 };
 pub use messages::{
     validate_display_name, AgentMessageState, AgentProfile, AgentProfilesDocument,
-    AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits,
-    JournalRetention, JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole,
-    PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind,
-    RetentionLimit, RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope,
-    ToolDescriptor, ToolPolicyEntry, Unreclaimable, VocabularyModels, VocabularyModes,
-    VocabularyOrigin, VocabularySource, VocabularyState, PEER_CAPS, PEER_DEFAULT_CAPS,
+    AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody, DelegationSource,
+    JournalLimits, JournalRetention, JournalSessionUsage, JournalStats, JournalUsage,
+    PairingSecret, PeerRole, PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState,
+    RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource, SelfInfo,
+    SessionEventEnvelope, ToolDescriptor, ToolPolicyEntry, Unreclaimable, VocabularyModels,
+    VocabularyModes, VocabularyOrigin, VocabularySource, VocabularyState, PEER_CAPS,
+    PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
 pub use session::{
     cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskState,
     AgentTaskStatus, Attention, AttentionReason, AvailableCommandView, CreateAgentCaps,
-    CreateAgentCard, Cursor, CursorShape, FinishArtifact, FinishArtifactPart,
-    FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar, PermissionOption,
-    PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor, Session,
-    SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
+    CreateAgentCard, Cursor, CursorShape, DelegationRunState, DelegationState, FinishArtifact,
+    FinishArtifactPart, FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar,
+    PermissionOption, PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor,
+    Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
     SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState, SessionStateSnapshot,
     SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage, UnattendedState,
 };
@@ -229,6 +230,19 @@ pub mod caps {
     /// use it is `peer_allows`, not this list: a paired device is refused the
     /// request whichever capability it holds.
     pub const PROVIDER_VOCABULARY: &str = "provider_vocabulary";
+
+    /// The permission-delegation switch (`DelegationGet`/`DelegationSet`):
+    /// whether an agent that created a child may answer that child's
+    /// permission cards.
+    ///
+    /// In both lists for the reason `agent_profiles` is: the handshake
+    /// negotiates the intersection, so a name only one side offers is never
+    /// negotiated, and the client helpers that refuse
+    /// `delegation_get`/`delegation_set` without this name would refuse every
+    /// call against every daemon. Whether a *connection* may use it is
+    /// `peer_allows`, not this list: a paired device is refused both requests
+    /// whichever capability it holds.
+    pub const PERMISSION_DELEGATION: &str = "permission_delegation";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -574,6 +588,11 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // it to tell a daemon that predates `ProviderVocabularyGet` from a
     // provider that published no vocabulary.
     capabilities.push(Capability::new(caps::PROVIDER_VOCABULARY));
+    // Same pairing again, for the delegation switch: the app offers the name
+    // so the intersection keeps it, and reads it to know whether the daemon
+    // serves `DelegationGet`/`DelegationSet` rather than asking a daemon that
+    // would refuse.
+    capabilities.push(Capability::new(caps::PERMISSION_DELEGATION));
     capabilities
 }
 
@@ -613,6 +632,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // intersection keeps it, and reads it before asking a daemon that predates
     // `ProviderVocabularyGet`.
     capabilities.push(Capability::new(caps::PROVIDER_VOCABULARY));
+    // Same pairing, for the delegation switch: the app offers it so the
+    // intersection keeps it, and reads it before asking a daemon that predates
+    // `DelegationGet`/`DelegationSet`.
+    capabilities.push(Capability::new(caps::PERMISSION_DELEGATION));
     capabilities
 }
 
@@ -732,6 +755,31 @@ mod tests {
                 .iter()
                 .any(|cap| cap.as_str() == caps::PROVIDER_VOCABULARY),
             "the negotiated set must keep provider_vocabulary: {agreed:?}"
+        );
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_permission_delegation_capability() {
+        // Both lists, for the reason the tests above state: the handshake
+        // negotiates the intersection, so a name only one side offers is never
+        // negotiated, and the client helpers that refuse
+        // `delegation_get`/`delegation_set` without it would refuse every call.
+        // The switch is the authority gate for delegated permission answers,
+        // so its capability is exactly the kind the `text/markdown` incident
+        // was about: a name missing from either list silently severs the
+        // surface instead of failing loudly.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::PERMISSION_DELEGATION));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::PERMISSION_DELEGATION));
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(
+            agreed
+                .iter()
+                .any(|cap| cap.as_str() == caps::PERMISSION_DELEGATION),
+            "the negotiated set must keep permission_delegation: {agreed:?}"
         );
     }
 

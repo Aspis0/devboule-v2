@@ -194,6 +194,10 @@ pub(crate) struct SessionRuntime {
     /// survive a daemon restart.
     pub(crate) attention: Mutex<Option<Attention>>,
     attention_hooks: Mutex<Option<AttentionHooks>>,
+    /// The delegated-surfacing observer: called once per parked card, at the
+    /// moment it enters the pending table. Installed by the registry at
+    /// birth, beside the attention hooks; never set by the broker itself.
+    permission_park_hook: Mutex<Option<PermissionParkHook>>,
     /// Duplicated OS process handle. Queried by the shared sweeper; never a
     /// PID, which the OS may reuse after the child dies.
     pub(crate) os_handle: Mutex<Option<ProcessHandle>>,
@@ -234,6 +238,10 @@ struct McpReadiness {
     ready: bool,
     failure: Option<String>,
 }
+
+/// The hook type, named once: the closure the registry installs to be told
+/// when a card parks.
+type PermissionParkHook = Arc<dyn Fn(&SessionEvent) + Send + Sync>;
 
 struct AttentionHooks {
     suppressed: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -463,6 +471,7 @@ impl SessionRuntime {
             ),
             attention: Mutex::new(None),
             attention_hooks: Mutex::new(None),
+            permission_park_hook: Mutex::new(None),
             os_handle: Mutex::new(None),
             on_os_death: Mutex::new(None),
             os_death_started: AtomicBool::new(false),
@@ -747,6 +756,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
                 | SessionEvent::PermissionResolved { .. }
+                | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentCreated { .. }
@@ -1907,6 +1917,29 @@ impl SessionRuntime {
         }
     }
 
+    /// Install the delegated-surfacing observer. The registry installs it
+    /// where it installs the attention hooks: one place, at birth, with the
+    /// child's own facts in scope.
+    pub(crate) fn set_permission_park_hook(&self, hook: PermissionParkHook) {
+        if let Ok(mut slot) = self.permission_park_hook.lock() {
+            *slot = Some(hook);
+        }
+    }
+
+    /// Called by the permission broker when a card parks. Best effort and
+    /// silent on a missing hook: a session the registry never dressed (a
+    /// test runtime) simply surfaces nothing.
+    pub(crate) fn notify_permission_park(&self, request: &SessionEvent) {
+        let hook = self
+            .permission_park_hook
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        if let Some(hook) = hook {
+            hook(request);
+        }
+    }
+
     pub(crate) fn attention(&self) -> Option<Attention> {
         self.attention.lock().ok().and_then(|attention| *attention)
     }
@@ -2191,6 +2224,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
                 | SessionEvent::PermissionResolved { .. }
+                | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentCreated { .. }

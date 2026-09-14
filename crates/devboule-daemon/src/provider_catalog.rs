@@ -213,6 +213,10 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_CREATE_AGENT_TOOL,
         "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name.",
     ),
+    (
+        MCP_ANSWER_PERMISSION_TOOL,
+        "Answers one pending permission card of one of your own live children, when the human has turned permission delegation on. The card reaches you as an agent_permission_request notice naming its cardId. outcome is allow_once or deny - never anything durable, and never a card that is not your child's. The human still sees the card either way.",
+    ),
 ];
 
 /// The read-only roster tool, and the one name a tool policy can never
@@ -228,6 +232,15 @@ pub const MCP_SEND_MESSAGE_TOOL: &str = "devboule_send_message";
 /// stored policy may turn agent creation off for a provider, and turning it off
 /// is the safe direction.
 pub const MCP_CREATE_AGENT_TOOL: &str = "devboule_create_agent";
+/// The delegated permission answer (`slice 5b`).
+///
+/// Served to every MCP-capable provider, subject to the provider tool policy
+/// like `devboule_send_message` and `devboule_create_agent`: a stored policy
+/// may take the answer tool away from a provider, and taking it away is the
+/// safe direction. The name carries neither `delegat` nor `grant` on purpose
+/// — the broker table must not reach the delegation switch, which has no
+/// tool at all.
+pub const MCP_ANSWER_PERMISSION_TOOL: &str = "devboule_answer_permission";
 /// The read-only profile-list tool (`create-from-profile`).
 ///
 /// Served to every MCP-capable provider, and **always on**, like the roster

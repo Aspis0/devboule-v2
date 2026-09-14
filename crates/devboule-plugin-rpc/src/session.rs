@@ -272,11 +272,21 @@ impl PluginSession {
                         // The vocabulary query is local to the daemon's own
                         // profile form, like the store above. Listed, not
                         // swept: this match is exhaustive on purpose.
-                        | DaemonMessage::ProviderVocabulary { id, .. } => Some(*id),
+                        | DaemonMessage::ProviderVocabulary { id, .. }
+                        // The delegation switch is local to the daemon's own
+                        // UI for the same reason: a plugin backend may neither
+                        // read nor write what answers its child's permission
+                        // cards. The replies are listed here because they
+                        // carry ids; the push is a broadcast, not a reply.
+                        | DaemonMessage::DelegationState { id, .. }
+                        | DaemonMessage::DelegationSetOk { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)
                         | DaemonMessage::Event(_)
                         | DaemonMessage::SessionAttached { .. }
-                        | DaemonMessage::SubscriptionEvent { .. } => None,
+                        | DaemonMessage::SubscriptionEvent { .. }
+                        // Server-initiated, id-less: it answers no request, so
+                        // it must not be matched against a pending one.
+                        | DaemonMessage::DelegationChanged { .. } => None,
                     };
                     if message_id == Some(id) {
                         return Ok(message);

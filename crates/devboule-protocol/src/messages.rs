@@ -566,6 +566,32 @@ pub enum ClientMessage {
         provider: String,
         refresh: bool,
     },
+    /// Read the permission-delegation switch: whether an agent that created a
+    /// child may answer that child's permission cards. The reply carries
+    /// `source` beside `enabled`, because "off" is three different facts the
+    /// app renders differently — the human turned it off (`file`), nobody ever
+    /// configured it (`default`), or the settings file was damaged and the
+    /// daemon is reading off until it is repaired (`quarantined`).
+    ///
+    /// Local-only, exactly like the profile store: the switch decides what
+    /// this machine's agents may answer on their children's behalf, so a
+    /// paired device is refused by `peer_allows` whichever capability it
+    /// holds. The handshake capability `permission_delegation` is the feature
+    /// gate, the same pairing the profiles pair uses.
+    DelegationGet {
+        id: u64,
+    },
+    /// Set the permission-delegation switch. One boolean for the whole daemon:
+    /// there are no per-session grants, no pause and no cap anywhere in this
+    /// slice — a session id can name a stranger's session after a daemon
+    /// restart, so nothing per-session may exist on disk or in memory to
+    /// revoke. `false` is immediate: every delegated answer arriving after it
+    /// is refused, and a card already surfaced to a creator simply stays what
+    /// it always was — pending for the human.
+    DelegationSet {
+        id: u64,
+        enabled: bool,
+    },
 }
 
 /// Trim a requested display name and check it, or say why it cannot be used.
@@ -647,7 +673,9 @@ impl ClientMessage {
             | Self::ToolPolicySet { id, .. }
             | Self::AgentProfilesGet { id }
             | Self::AgentProfilesSet { id, .. }
-            | Self::ProviderVocabularyGet { id, .. } => Some(*id),
+            | Self::ProviderVocabularyGet { id, .. }
+            | Self::DelegationGet { id }
+            | Self::DelegationSet { id, .. } => Some(*id),
         }
     }
 
@@ -717,7 +745,9 @@ impl ClientMessage {
             | Self::ToolPolicySet { .. }
             | Self::AgentProfilesGet { .. }
             | Self::AgentProfilesSet { .. }
-            | Self::ProviderVocabularyGet { .. } => None,
+            | Self::ProviderVocabularyGet { .. }
+            | Self::DelegationGet { .. }
+            | Self::DelegationSet { .. } => None,
         }
     }
 
@@ -773,6 +803,8 @@ impl ClientMessage {
             Self::ToolPolicySet { .. } => "ToolPolicySet",
             Self::AgentProfilesGet { .. } => "AgentProfilesGet",
             Self::AgentProfilesSet { .. } => "AgentProfilesSet",
+            Self::DelegationGet { .. } => "DelegationGet",
+            Self::DelegationSet { .. } => "DelegationSet",
             Self::ProviderVocabularyGet { .. } => "ProviderVocabularyGet",
         }
     }
@@ -800,7 +832,8 @@ impl ClientMessage {
             | Self::DevicesList { .. }
             | Self::ToolPolicyGet { .. }
             | Self::AgentProfilesGet { .. }
-            | Self::ProviderVocabularyGet { .. } => false,
+            | Self::ProviderVocabularyGet { .. }
+            | Self::DelegationGet { .. } => false,
 
             Self::Shutdown { .. }
             | Self::SessionCreate { .. }
@@ -835,7 +868,8 @@ impl ClientMessage {
             | Self::PeerRevoke { .. }
             | Self::PeerSetCaps { .. }
             | Self::ToolPolicySet { .. }
-            | Self::AgentProfilesSet { .. } => true,
+            | Self::AgentProfilesSet { .. }
+            | Self::DelegationSet { .. } => true,
         }
     }
 }
@@ -1065,6 +1099,40 @@ pub enum DaemonMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         probed_at_ms: Option<u64>,
     },
+    /// The reply to `DelegationGet`: the switch and where the answer came
+    /// from. `source` is a wire value, not a Rust detail: the app renders a
+    /// quarantined file as damaged ("delegation reads off") and a missing one
+    /// as never configured, and collapsing either into plain "off" would turn
+    /// a fact the human needs into a state they cannot distinguish.
+    DelegationState {
+        id: u64,
+        enabled: bool,
+        source: DelegationSource,
+    },
+    /// The reply to `DelegationSet`, carrying what the daemon **stored** —
+    /// not an echo of the request. The value is the same boolean today, but
+    /// the reply is the one acknowledgement a write gets, so it names the
+    /// stored truth: a client that trusts its own request instead would hold
+    /// a value the daemon does not, and nothing would reveal the disagreement
+    /// until a second client's answer refused (`NOTE-a-write-that-does-not-
+    /// say-what-it-stored.md`, the class, applied here from birth).
+    DelegationSetOk {
+        id: u64,
+        enabled: bool,
+        source: DelegationSource,
+    },
+    /// The daemon pushed the switch. Server-initiated and id-less, like
+    /// `Event`: it answers no request, so the client's pending-request table
+    /// must never consume it. The setting is global and read once by the app
+    /// at mount, so a write from any surface — the Settings switch, the
+    /// roster's take-back — has to reach every connected client or a stale
+    /// OFF hides the very control that stops delegation. Delivered to the
+    /// daemon's session watchers, which is every local app connection;
+    /// peers are refused the switch and never hold it.
+    DelegationChanged {
+        enabled: bool,
+        source: DelegationSource,
+    },
 }
 
 /// The three-valued answer to "what does this provider offer". The three are
@@ -1100,6 +1168,21 @@ pub enum VocabularyOrigin {
 pub enum VocabularySource {
     Cache,
     Probe,
+}
+
+/// Where a delegation-switch answer came from. Three values on purpose and
+/// never collapsed: `file` — the human wrote the switch; `default` — no file
+/// exists, which reads off but is "never configured", not "turned off";
+/// `quarantined` — the file existed and was damaged, so the daemon reads off
+/// while holding neither of the other two facts. The missing file reading as
+/// off is the safe direction — it withholds power and invents no knowledge —
+/// and the three answers stay distinct so the app can name which one it got.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationSource {
+    File,
+    Default,
+    Quarantined,
 }
 
 /// The models axis of a `ProviderVocabulary` reply. Items are the live
@@ -2623,6 +2706,7 @@ mod tests {
                     context_id: None,
                     unattended: UnattendedState::No,
                     labels: Default::default(),
+                    delegation: None,
                 }],
             },
         });
@@ -2817,6 +2901,7 @@ mod tests {
                 selected_option_id: Some("allow-once".to_string()),
                 selected_option_kind: Some("allow_once".to_string()),
                 selected_option_name: Some("Allow once".to_string()),
+                answered_by: None,
             },
         });
         let value = serde_json::to_value(&event).expect("permission resolved json");
@@ -2864,6 +2949,7 @@ mod tests {
                     selected_option_id: None,
                     selected_option_kind: None,
                     selected_option_name: None,
+                    answered_by: None,
                 },
             })
         );
@@ -3516,6 +3602,108 @@ mod tests {
             }
             .name(),
             "AgentProfilesSet"
+        );
+    }
+
+    #[test]
+    fn delegation_wire_contract_round_trips_with_its_exact_field_names() {
+        // The app's Settings switch and the roster's take-back are written
+        // against this JSON, and the reply's `source` is the three-valued
+        // answer the panel renders — so the names are asserted on the
+        // serialised form, the same discipline the profiles contract above
+        // applies.
+        let get = serde_json::to_value(ClientMessage::DelegationGet { id: 51 }).expect("json");
+        assert_eq!(get, serde_json::json!({"type": "delegation_get", "id": 51}));
+
+        let set = ClientMessage::DelegationSet {
+            id: 52,
+            enabled: false,
+        };
+        let set_json = serde_json::to_value(&set).expect("json");
+        assert_eq!(
+            set_json,
+            serde_json::json!({"type": "delegation_set", "id": 52, "enabled": false})
+        );
+        assert_eq!(
+            serde_json::from_value::<ClientMessage>(set_json).expect("back"),
+            set
+        );
+
+        for (source, wire) in [
+            (DelegationSource::File, "file"),
+            (DelegationSource::Default, "default"),
+            (DelegationSource::Quarantined, "quarantined"),
+        ] {
+            let state = DaemonMessage::DelegationState {
+                id: 53,
+                enabled: false,
+                source,
+            };
+            let state_json = serde_json::to_value(&state).expect("json");
+            assert_eq!(
+                state_json,
+                serde_json::json!({
+                    "type": "delegation_state", "id": 53,
+                    "enabled": false, "source": wire
+                }),
+                "the {wire} spelling is the one the app renders"
+            );
+            assert_eq!(
+                serde_json::from_value::<DaemonMessage>(state_json).expect("back"),
+                state
+            );
+        }
+
+        // The write reply carries what the daemon stored, not an echo of the
+        // request — the same stored-document rule the NOTE argues for
+        // `AgentProfilesSet` — so the fields are part of the contract, not
+        // decoration a rename could drop.
+        let set_ok = DaemonMessage::DelegationSetOk {
+            id: 54,
+            enabled: true,
+            source: DelegationSource::File,
+        };
+        assert_eq!(
+            serde_json::to_value(&set_ok).expect("json"),
+            serde_json::json!({
+                "type": "delegation_set_ok", "id": 54,
+                "enabled": true, "source": "file"
+            })
+        );
+
+        // The push has no id: it answers no request, so it must never be
+        // routed into the client's pending-request table.
+        let changed = DaemonMessage::DelegationChanged {
+            enabled: false,
+            source: DelegationSource::Quarantined,
+        };
+        assert_eq!(
+            serde_json::to_value(&changed).expect("json"),
+            serde_json::json!({
+                "type": "delegation_changed", "enabled": false,
+                "source": "quarantined"
+            })
+        );
+
+        // The audit and rate-limit sides: the read produces no row, the write
+        // does.
+        assert!(!ClientMessage::DelegationGet { id: 1 }.is_state_changing());
+        assert!(ClientMessage::DelegationSet {
+            id: 1,
+            enabled: true
+        }
+        .is_state_changing());
+        assert_eq!(
+            ClientMessage::DelegationGet { id: 1 }.name(),
+            "DelegationGet"
+        );
+        assert_eq!(
+            ClientMessage::DelegationSet {
+                id: 1,
+                enabled: true
+            }
+            .name(),
+            "DelegationSet"
         );
     }
 

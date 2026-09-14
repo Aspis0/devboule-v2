@@ -23,6 +23,8 @@ mod client;
 #[cfg(feature = "server")]
 mod codex_view;
 #[cfg(feature = "server")]
+mod delegation_store;
+#[cfg(feature = "server")]
 mod device_identity;
 mod diagnostics;
 mod error;
@@ -99,8 +101,8 @@ pub use agent_env::{
 #[cfg(feature = "server")]
 pub use atomic::atomic_write;
 pub use client::{
-    connect, connect_or_spawn, handshake, test_owner, DaemonClient, EventHandler,
-    SessionStateHandler,
+    connect, connect_or_spawn, handshake, test_owner, DaemonClient, DelegationChangedHandler,
+    EventHandler, SessionStateHandler,
 };
 #[cfg(feature = "server")]
 pub use diagnostics::DiagnosticsInput;

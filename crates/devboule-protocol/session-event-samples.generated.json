@@ -143,6 +143,11 @@
     "type": "output"
   },
   {
+    "cardId": "",
+    "outcome": "",
+    "type": "permission_answered"
+  },
+  {
     "args": [],
     "createAgent": {
       "caps": {

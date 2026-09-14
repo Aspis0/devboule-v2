@@ -144,6 +144,51 @@ struct AutoAnswer {
     option: PermissionOption,
 }
 
+/// What a delegated-answer check saw when it looked a card up. `Found`
+/// carries the pending entry so the later take can pin it (`Arc::ptr_eq`):
+/// a card resolved between the check and the answer makes the take refuse,
+/// not resolve.
+pub(super) enum DelegatedPeek {
+    Found {
+        pending: Arc<PendingPermission>,
+        options: Vec<PermissionOption>,
+    },
+    Absent,
+}
+
+/// The gate value for the delegated answer path (`§4.2`).
+///
+/// No public constructor: the fields are private and the only constructor is
+/// `checked_delegated`, a private function of this module, whose single call
+/// site is at the end of [`PermissionBroker::answer_delegated`]'s check
+/// sequence. A caller outside the sequence cannot mint one, so a delegated
+/// answer cannot reach [`PermissionBroker::resolve_checked`] with a card the
+/// checks did not read; and a check that fails returns before the value
+/// exists, so it cannot be diverted into a resolution — not even the
+/// cancelled kind the human path's unsupported-outcome branch takes.
+pub(super) struct CheckedDelegatedCard {
+    pending: Arc<PendingPermission>,
+    option: PermissionOption,
+    journal_outcome: &'static str,
+    answered_by: String,
+}
+
+/// Private constructor: one call site, after the checks. Not `pub`, so the
+/// promise above is compiler-enforced for the whole crate outside this file.
+fn checked_delegated(
+    pending: Arc<PendingPermission>,
+    option: PermissionOption,
+    journal_outcome: &'static str,
+    answered_by: String,
+) -> CheckedDelegatedCard {
+    CheckedDelegatedCard {
+        pending,
+        option,
+        journal_outcome,
+        answered_by,
+    }
+}
+
 struct PermissionTable {
     entries: HashMap<String, Arc<PendingPermission>>,
     closed: bool,
@@ -302,6 +347,12 @@ impl PermissionBroker {
             )));
         }
         table.entries.insert(tool_call_id, Arc::clone(&pending));
+        drop(table);
+        // The card is now parked: the one moment a per-card observer may
+        // learn about it (the delegated-surfacing hook the registry installs
+        // at birth). Fired after the lock is dropped, so the observer sees a
+        // consistent table and cannot re-enter it.
+        runtime.notify_permission_park(&pending.request);
         Ok(pending)
     }
 
@@ -345,6 +396,7 @@ impl PermissionBroker {
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
                 None,
                 "cancelled",
+                None,
             ) {
                 Ok(()) => Err(PermissionResponseError::InvalidRequest(reason)),
                 Err(error) => Err(error),
@@ -363,6 +415,196 @@ impl PermissionBroker {
                 PermissionOutcome::AllowOnce => "allow_once",
                 PermissionOutcome::Deny => "deny",
             },
+            // The human wire path: no attribution, by definition.
+            None,
+        )
+    }
+
+    /// Read one pending card's own options, **without** touching it — the
+    /// check the cancel-trap demands (§0.3: `respond_with_option` with an
+    /// outcome the card does not support completes the card as cancelled, so
+    /// the delegated path validates against the entry before any `respond*`
+    /// call).
+    pub(super) fn peek_delegated(&self, tool_call_id: &str) -> DelegatedPeek {
+        let Ok(table) = self.pending.lock() else {
+            return DelegatedPeek::Absent;
+        };
+        match table.entries.get(tool_call_id) {
+            Some(pending) => {
+                let options = match &pending.request {
+                    SessionEvent::PermissionRequest { options, .. } => options.clone(),
+                    _ => Vec::new(),
+                };
+                DelegatedPeek::Found {
+                    pending: Arc::clone(pending),
+                    options,
+                }
+            }
+            None => DelegatedPeek::Absent,
+        }
+    }
+
+    /// The delegated answer, checks one through six **in order**, and the
+    /// only door an agent's answer has to a resolution.
+    ///
+    /// The commission's rule (§4.2): a denial-on-failed-check cannot be
+    /// written by accident. The mechanism here is a typestate —
+    /// [`CheckedDelegatedCard`] is the only value [`Self::resolve_checked`]
+    /// accepts, its fields are private, and its constructor is a private
+    /// function of *this module*, called exactly once, at the end of the
+    /// check sequence below. A caller that skipped a check has no value to
+    /// pass; a failed check returns before the value exists, so it has
+    /// nowhere to divert into `respond`. The human path
+    /// ([`Self::respond_with_option`]) keeps its own shape and its own trap
+    /// semantics; the delegated path never reaches it.
+    ///
+    /// The checks themselves are supplied as closures because the facts they
+    /// read live one layer up: the switch is the daemon's store (read **at
+    /// call time**, never cached — the read-cadence rule at
+    /// `delegation_store.rs`), the child link and the peer capability are the
+    /// registry's rows. Supplying them is testimony; the behaviour tests
+    /// (C1/C2/C4/C5) hold that testimony to the real wiring.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn answer_delegated(
+        &self,
+        tool_call_id: &str,
+        outcome: PermissionOutcome,
+        switch_on: &dyn Fn() -> bool,
+        resolved_elsewhere: &dyn Fn(&str) -> bool,
+        child_check: &dyn Fn(&str) -> Result<(), String>,
+        caps_check: &dyn Fn(&str) -> Result<(), String>,
+        answered_by: &str,
+    ) -> Result<(), String> {
+        Self::answer_delegated_on(
+            Some(self),
+            tool_call_id,
+            outcome,
+            switch_on,
+            resolved_elsewhere,
+            child_check,
+            caps_check,
+            answered_by,
+        )
+    }
+
+    /// The whole delegated-answer chain, checks one through six in order,
+    /// against whichever broker holds the card (`Some` when the registry's
+    /// scan found it; `None` when no live session's table has it, which is
+    /// check 3's territory). The single-broker wrapper above is its natural
+    /// test seam.
+    ///
+    /// The commission's rule (§4.2): a denial-on-failed-check cannot be
+    /// written by accident. The mechanism is a typestate —
+    /// [`CheckedDelegatedCard`] is the only value [`PermissionBroker::
+    /// resolve_checked`] accepts, its fields are private, and its constructor
+    /// is a private function of this module with exactly one call site, at
+    /// the end of the check sequence below. A caller that skipped a check has
+    /// no value to pass; a failed check returns before the value exists, so
+    /// it has nowhere to divert into `respond`. The human path
+    /// ([`PermissionBroker::respond_with_option`]) keeps its own shape and
+    /// its own trap semantics; the delegated path never reaches it.
+    ///
+    /// The facts some checks read live one layer up: the switch is the
+    /// daemon's store (read **at call time**, never cached — the read-cadence
+    /// rule at `delegation_store.rs`), the child link and the peer
+    /// capability are the registry's rows. Supplying them as closures is
+    /// testimony; the behaviour tests (C1/C2/C4/C5) hold that testimony to
+    /// the real wiring.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn answer_delegated_on(
+        broker: Option<&PermissionBroker>,
+        tool_call_id: &str,
+        outcome: PermissionOutcome,
+        switch_on: &dyn Fn() -> bool,
+        resolved_elsewhere: &dyn Fn(&str) -> bool,
+        child_check: &dyn Fn(&str) -> Result<(), String>,
+        caps_check: &dyn Fn(&str) -> Result<(), String>,
+        answered_by: &str,
+    ) -> Result<(), String> {
+        // Check 1 (+ the found half of 3): the card's own options, read from
+        // the pending entry before any `respond*` call. An outcome the card
+        // does not support is a refusal that leaves the card pending — the
+        // delegated path never completes a card as cancelled for its own
+        // validation failure, which is what the human path's trap does.
+        let peek = broker
+            .map(|broker| broker.peek_delegated(tool_call_id))
+            .unwrap_or(DelegatedPeek::Absent);
+        let selected = match &peek {
+            DelegatedPeek::Found { options, .. } => match select_option(options, outcome, None) {
+                Ok(Some(option)) => Some(option),
+                // A durable option is never chosen implicitly, and the
+                // delegated tool names no option at all: a card offering only
+                // `allow_always`/`reject_always` is not answerable here.
+                Ok(None) | Err(_) => {
+                    return Err(format!(
+                        "this card offers no one-shot option for {outcome:?} (offered: {}); it stays pending for a person",
+                        offered_kinds(options)
+                    ));
+                }
+            },
+            DelegatedPeek::Absent => None,
+        };
+        // Check 2: the switch, read now — the answer that was true when the
+        // card was surfaced says nothing about now.
+        if !switch_on() {
+            return Err(
+                "permission delegation is off; the card stays pending for a person".to_string(),
+            );
+        }
+        // Check 3: the card exists. Unknown and already-resolved are two
+        // sentences, and both inert.
+        let pending = match peek {
+            DelegatedPeek::Found { pending, .. } => pending,
+            DelegatedPeek::Absent => {
+                if resolved_elsewhere(tool_call_id) {
+                    return Err(format!(
+                        "permission request {tool_call_id} has already been resolved"
+                    ));
+                }
+                return Err(format!("unknown permission card {tool_call_id}"));
+            }
+        };
+        // Check 4: the card's session is a live child of the caller — the
+        // registry's `created_by` link, identity taken from the bearer
+        // (§0.1), never from the request.
+        child_check(&pending.session_id)?;
+        // Check 5: a creator whose session belongs to a paired device answers
+        // only if that device holds `answer_permissions`.
+        caps_check(&pending.session_id)?;
+        // Check 6: the single-use take, pinned to the entry the checks read.
+        // Resolved in between means the take refuses and nothing happens.
+        let (journal_outcome, selected) = match (outcome, selected) {
+            (PermissionOutcome::AllowOnce, Some(option)) => ("allow_once", option),
+            (PermissionOutcome::Deny, Some(option)) => ("deny", option),
+            // Unreachable: `selected` is Some whenever `peek` was Found, and
+            // check 3 has already narrowed Found. Spelled rather than
+            // `unreachable!()` so the compiler keeps proving the pair.
+            (_, None) => {
+                return Err(format!("unknown permission card {tool_call_id}"));
+            }
+        };
+        let card = checked_delegated(pending, selected, journal_outcome, answered_by.to_string());
+        let broker = broker.expect("a Found peek implies the broker that holds the card");
+        broker
+            .resolve_checked(card)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Resolve a card whose checks have all passed. The take is pinned to
+    /// the exact entry the checks read, so a card resolved in between is
+    /// refused, not re-resolved.
+    fn resolve_checked(&self, card: CheckedDelegatedCard) -> Result<(), PermissionResponseError> {
+        let pending = self.take(&card.pending.tool_call_id, Some(&card.pending))?;
+        let result = serde_json::json!({
+            "outcome": { "outcome": "selected", "optionId": card.option.option_id }
+        });
+        self.complete(
+            &pending,
+            result,
+            Some(&card.option),
+            card.journal_outcome,
+            Some(&card.answered_by),
         )
     }
 
@@ -392,7 +634,9 @@ impl PermissionBroker {
         let result = serde_json::json!({
             "outcome": { "outcome": "selected", "optionId": option.option_id }
         });
-        self.complete(&pending, result, Some(&option), &option.kind)?;
+        // The daemon answered in the child's own unattended mode: nobody to
+        // attribute it to.
+        self.complete(&pending, result, Some(&option), &option.kind, None)?;
         Ok(true)
     }
 
@@ -415,6 +659,7 @@ impl PermissionBroker {
             serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
             None,
             journal_outcome,
+            None,
         )
         .is_ok()
     }
@@ -456,6 +701,7 @@ impl PermissionBroker {
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
                 None,
                 "cancelled",
+                None,
             );
         }
     }
@@ -526,6 +772,7 @@ impl PermissionBroker {
         result: serde_json::Value,
         selected_option: Option<&PermissionOption>,
         journal_outcome: &str,
+        answered_by: Option<&str>,
     ) -> Result<(), PermissionResponseError> {
         let runtime = pending.runtime.upgrade();
         let recorded = runtime
@@ -550,7 +797,10 @@ impl PermissionBroker {
             );
             if let Some(runtime) = runtime {
                 runtime.remove_permission_request(&pending.tool_call_id);
-                let _ = runtime.publish_agent_event(permission_resolved_event(pending, None), None);
+                let _ = runtime.publish_agent_event(
+                    permission_resolved_event(pending, None, answered_by),
+                    None,
+                );
             }
             self.mark_done(pending, decision);
             return match send_result {
@@ -563,8 +813,24 @@ impl PermissionBroker {
         let send_result = self.dispatch_with_fallback(pending, result);
         if let Some(runtime) = runtime {
             runtime.remove_permission_request(&pending.tool_call_id);
-            let _ = runtime
-                .publish_agent_event(permission_resolved_event(pending, selected_option), None);
+            let _ = runtime.publish_agent_event(
+                permission_resolved_event(pending, selected_option, answered_by),
+                None,
+            );
+            // The durable attribution record, on every resolution: the
+            // snapshot's delegation count is read back from what the journal
+            // survived, and the app's replayed ledger has no other source.
+            let _ = runtime.publish_agent_event(
+                permission_answered_event(pending, answered_by, journal_outcome),
+                Some(
+                    &serde_json::to_string(&permission_answered_event(
+                        pending,
+                        answered_by,
+                        journal_outcome,
+                    ))
+                    .unwrap_or_default(),
+                ),
+            );
         }
         self.mark_done(pending, decision);
         send_result.map_err(PermissionResponseError::Io)
@@ -683,12 +949,30 @@ impl PermissionBroker {
 fn permission_resolved_event(
     pending: &PendingPermission,
     selected_option: Option<&PermissionOption>,
+    answered_by: Option<&str>,
 ) -> SessionEvent {
     SessionEvent::PermissionResolved {
         tool_call_id: pending.tool_call_id.clone(),
         selected_option_id: selected_option.map(|option| option.option_id.clone()),
         selected_option_kind: selected_option.map(|option| option.kind.clone()),
         selected_option_name: selected_option.map(|option| option.name.clone()),
+        answered_by: answered_by.map(str::to_string),
+    }
+}
+
+/// The durable attribution record for one resolution. Every resolution
+/// carries it — a cancellation and an auto-answer answer `None` exactly as a
+/// person's answer does — so the replayed count and the live ledger count the
+/// same events.
+fn permission_answered_event(
+    pending: &PendingPermission,
+    answered_by: Option<&str>,
+    journal_outcome: &str,
+) -> SessionEvent {
+    SessionEvent::PermissionAnswered {
+        card_id: pending.tool_call_id.clone(),
+        answered_by: answered_by.map(str::to_string),
+        outcome: journal_outcome.to_string(),
     }
 }
 
@@ -1823,6 +2107,59 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("closed"), "{error}");
+    }
+
+    /// C6, the mutation that keeps the typestate honest: a validation
+    /// failure on the delegated path refuses and leaves the card pending —
+    /// it never routes into `respond`, which would complete the card as
+    /// cancelled and tell the child its answer was cancelled.
+    #[test]
+    fn the_delegated_path_never_routes_an_unsupported_outcome_into_respond() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(
+                91,
+                permission_with_kinds(
+                    "mixed",
+                    &[("always", "allow_always"), ("reject", "reject_once")],
+                ),
+                &runtime,
+            )
+            .expect("register");
+
+        let error = broker
+            .answer_delegated(
+                "mixed",
+                PermissionOutcome::AllowOnce,
+                &|| true,
+                &|_| false,
+                &|_| Ok(()),
+                &|_| Ok(()),
+                "s.creator",
+            )
+            .expect_err("the card offers no one-shot allow");
+        assert!(error.contains("no one-shot option"), "{error}");
+        assert_eq!(broker.pending_len(), 1, "the card stays pending");
+        assert!(
+            sent.lock().expect("sent lock").is_empty(),
+            "nothing — not even a cancellation — went to the agent"
+        );
+
+        // The supported answer on the same card, once the check passes:
+        // deny maps to the one-shot reject option and resolves.
+        broker
+            .answer_delegated(
+                "mixed",
+                PermissionOutcome::Deny,
+                &|| true,
+                &|_| false,
+                &|_| Ok(()),
+                &|_| Ok(()),
+                "s.creator",
+            )
+            .expect("deny has a one-shot reject");
+        assert_eq!(broker.pending_len(), 0);
     }
 
     #[test]

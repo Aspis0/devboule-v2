@@ -90,6 +90,11 @@ pub struct ServerState {
     /// profile — never cached per session, so an edit takes effect on the next
     /// creation.
     pub(crate) agent_profiles: Arc<crate::agent_profiles::AgentProfilesStore>,
+    /// The permission-delegation switch. Written by `DelegationSet`; the only
+    /// readers are the `DelegationGet`/`DelegationSet` dispatch arms — the
+    /// read-cadence rule lives at the store, and the nothing-reads-it test in
+    /// `delegation_store.rs` holds this field to it.
+    pub(crate) delegation: Arc<crate::delegation_store::DelegationStore>,
     pub sessions: SessionRegistry,
     conn_ids: AtomicU64,
     journal_error: Mutex<Option<String>>,
@@ -267,6 +272,11 @@ impl ServerState {
         // creation: the store holds the document, the creation path asks it for
         // one, and nothing in a session keeps a copy.
         let agent_profiles = Arc::new(crate::agent_profiles::AgentProfilesStore::load(&paths.dir));
+        // The delegation switch loads the same way: the store holds the
+        // boolean, every consumer asks it at the moment it decides (the
+        // read-cadence rule is stated at the store), and a corrupt file
+        // quarantines into read-off with one log line.
+        let delegation = Arc::new(crate::delegation_store::DelegationStore::load(&paths.dir));
         let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
             Ok(journal) => (Some(Arc::new(journal)), None),
             Err(error) => (None, Some(error.to_string())),
@@ -283,6 +293,9 @@ impl ServerState {
         // (`create-from-profile`). It is built here rather than inline in the
         // struct literal below because the store has to be attached to it.
         sessions.attach_agent_profiles(Arc::clone(&agent_profiles));
+        // The switch rides along the same way: the registry holds the store,
+        // and asks it at the moment of each decision.
+        sessions.attach_delegation(Arc::clone(&delegation));
         let state = Arc::new(Self {
             instance_id,
             started: Instant::now(),
@@ -295,6 +308,7 @@ impl ServerState {
             mcp,
             tool_policy,
             agent_profiles,
+            delegation,
             sessions,
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
@@ -388,6 +402,37 @@ impl ServerState {
             watch
                 .conn
                 .queue_state_event(session_state_event(snapshots.clone()));
+        }
+    }
+
+    /// Push the delegation switch to every session-watching connection.
+    ///
+    /// The setting is global to this daemon and its `DelegationGet` is read
+    /// once at the app's mount, so a write that reached only the writer would
+    /// leave every other client — and the writer's other surfaces — holding a
+    /// stale value, and a stale OFF hides the very control that stops
+    /// delegation. The value pushed is the pair the store returned from
+    /// `set`, so every client converges on what the daemon holds rather than
+    /// on what any request said.
+    ///
+    /// Session watchers are the audience because they are every local app
+    /// connection that shows live state: `sessions.watch` is refused to peers,
+    /// and peers are refused the switch (`peer_allows`) and never hold it. A
+    /// local connection that never watches has no switch surface to go stale;
+    /// it answers `DelegationGet` fresh on its next ask. There is no
+    /// last-snapshot suppression here the way the roster broadcast has: the
+    /// pair is two small values, and a repeat of the same value is what lets
+    /// a client that missed an earlier push converge.
+    fn broadcast_delegation(&self, enabled: bool, source: devboule_protocol::DelegationSource) {
+        let watchers = self
+            .session_watchers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for watch in watchers.values() {
+            watch
+                .conn
+                .outbound
+                .enqueue_reply(DaemonMessage::DelegationChanged { enabled, source });
         }
     }
 
@@ -2075,6 +2120,7 @@ fn send_pending_event(
             SessionEvent::AgentStderr { .. } => " agent_stderr".to_string(),
             SessionEvent::PermissionRequest { .. } => " permission_request".to_string(),
             SessionEvent::PermissionResolved { .. } => " permission_resolved".to_string(),
+            SessionEvent::PermissionAnswered { .. } => " permission_answered".to_string(),
             SessionEvent::SessionManifest { .. } => " session_manifest".to_string(),
             SessionEvent::SessionNotice { .. } => " session_notice".to_string(),
             SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
@@ -2426,6 +2472,79 @@ fn dispatch_immediate(
                             .with_id(id),
                     )
                 }
+            }
+        }
+        ClientMessage::DelegationGet { id } => {
+            // The one read: the store answers with the switch and where the
+            // answer came from, and nothing else in the daemon consults it
+            // (the nothing-reads-it test holds that line).
+            let (enabled, source) = state.delegation.get();
+            DaemonMessage::DelegationState {
+                id,
+                enabled,
+                source,
+            }
+        }
+        ClientMessage::DelegationSet { id, enabled } => {
+            // The reply carries what the daemon stored, not an echo of the
+            // request (`NOTE-a-write-that-does-not-say-what-it-stored.md`),
+            // and every session-watching connection is pushed the same pair:
+            // the setting is global and read once at mount by the app, so a
+            // write from any surface must reach every client or a stale OFF
+            // hides the control that stops delegation.
+            match state.delegation.set(enabled) {
+                Ok((enabled, source)) => {
+                    // The setting change is an audited act (§4.3): the actor
+                    // here is always the person at this machine — the peer
+                    // gate refuses the pair before this arm ever runs — and
+                    // the row names the act, not the value.
+                    if let Ok(identity) = state.device_identity() {
+                        state.audit(AuditRecord {
+                            device_id: identity.device_id.clone(),
+                            role: "local".to_string(),
+                            claimed_origin: None,
+                            action: "DelegationSet".to_string(),
+                            session_id: None,
+                            outcome: "ok".to_string(),
+                        });
+                    }
+                    state.broadcast_delegation(enabled, source);
+                    // The delegation facts ride the roster snapshot rows: the
+                    // cache would otherwise serve the pre-flip value until a
+                    // transition happened to rebuild it, so drop it and
+                    // re-push every watcher's roster — a changed row is what
+                    // makes the roster broadcast fire.
+                    {
+                        let owners: Vec<OwnerId> = state
+                            .session_watchers
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .values()
+                            .map(|watch| watch.owner.clone())
+                            .collect::<std::collections::HashSet<_>>()
+                            .into_iter()
+                            .collect();
+                        state.sessions.invalidate_state_roster_cache();
+                        for owner in owners {
+                            state.broadcast_session_state(&owner);
+                        }
+                    }
+                    DaemonMessage::DelegationSetOk {
+                        id,
+                        enabled,
+                        source,
+                    }
+                }
+                // There is no invalid request to a one-boolean store: the
+                // only failure is the write's, and the store kept the value
+                // it already had.
+                Err(error) => DaemonMessage::Error(
+                    WireError::new(
+                        ErrorCode::Io,
+                        format!("Could not save the delegation setting: {error}"),
+                    )
+                    .with_id(id),
+                ),
             }
         }
         ClientMessage::ProviderVocabularyGet {
@@ -3320,9 +3439,13 @@ fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> Option<&'s
         ClientMessage::SessionCreate { mode: None, .. } => None,
         // The profile frames are not session frames at all: they name no mode,
         // no session and no create, so there is nothing here to vet. Their
-        // refusal for a peer is `peer_allows`', and their validation is the
+        // refusal for a peer is `peer_allows`'s, and their validation is the
         // store's.
         ClientMessage::AgentProfilesGet { .. } | ClientMessage::AgentProfilesSet { .. } => None,
+        // The delegation pair is the same shape: no session, no mode, and its
+        // peer refusal is `peer_allows`'s (both roles, always), its validation
+        // the one-boolean store's.
+        ClientMessage::DelegationGet { .. } | ClientMessage::DelegationSet { .. } => None,
         // The vocabulary query is the profile store's companion read and
         // carries no mode either; its peer refusal is `peer_allows`'s, and
         // what it reads is discovery plus the catalog, never a session.
@@ -3613,7 +3736,9 @@ fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::ToolPolicySet { .. }
         | ClientMessage::AgentProfilesGet { .. }
         | ClientMessage::AgentProfilesSet { .. }
-        | ClientMessage::ProviderVocabularyGet { .. } => None,
+        | ClientMessage::ProviderVocabularyGet { .. }
+        | ClientMessage::DelegationGet { .. }
+        | ClientMessage::DelegationSet { .. } => None,
     }
 }
 
@@ -4208,7 +4333,9 @@ fn dispatch_session(
         | ClientMessage::ToolPolicySet { .. }
         | ClientMessage::AgentProfilesGet { .. }
         | ClientMessage::AgentProfilesSet { .. }
-        | ClientMessage::ProviderVocabularyGet { .. }) => unexpected_session_frame(&other),
+        | ClientMessage::ProviderVocabularyGet { .. }
+        | ClientMessage::DelegationGet { .. }
+        | ClientMessage::DelegationSet { .. }) => unexpected_session_frame(&other),
     }
 }
 
@@ -5492,6 +5619,180 @@ mod tests {
             matches!(reply, DaemonMessage::AgentProfiles { id: 43, .. }),
             "got {reply:?}"
         );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The delegation pair, end to end at the dispatch layer: a fresh daemon
+    /// answers `default`, a set stores the file beside the journal and replies
+    /// with what was **stored**, the next get reads it back, and every
+    /// watching connection is pushed the same pair the store returned.
+    #[test]
+    fn delegation_get_and_set_round_trip_and_push_the_stored_value() {
+        let state = ServerState::new("delegation-dispatch".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(27);
+        let watcher = ConnHandle::new(28);
+        state.watch_sessions(&owner, &watcher);
+
+        // A fresh daemon has no file: off, and `default` — the answer that
+        // says "never configured", not "the human turned it off".
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::DelegationGet { id: 31 },
+            &conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("get reply");
+        let DaemonMessage::DelegationState {
+            id,
+            enabled,
+            source,
+        } = reply
+        else {
+            panic!("DelegationGet must reply with DelegationState, got {reply:?}");
+        };
+        assert_eq!(id, 31);
+        assert!(!enabled);
+        assert_eq!(source, devboule_protocol::DelegationSource::Default);
+
+        // The set: the reply is what the daemon stored, the durable copy
+        // lands beside the journal, and the watcher is pushed the same pair.
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::DelegationSet {
+                id: 32,
+                enabled: true,
+            },
+            &conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("set reply");
+        let DaemonMessage::DelegationSetOk {
+            id,
+            enabled,
+            source,
+        } = reply
+        else {
+            panic!("DelegationSet must reply with DelegationSetOk, got {reply:?}");
+        };
+        assert_eq!(id, 32);
+        assert!(enabled);
+        assert_eq!(source, devboule_protocol::DelegationSource::File);
+
+        let pushed = watcher.outbound.pull_replies();
+        assert!(
+            pushed.iter().any(|message| matches!(
+                message,
+                DaemonMessage::DelegationChanged {
+                    enabled: true,
+                    source: devboule_protocol::DelegationSource::File
+                }
+            )),
+            "the watcher must be pushed the stored pair, got {pushed:?}"
+        );
+
+        // The durable copy lands beside the journal and holds the stored
+        // value — the thing a restart reads back (the store's own round-trip
+        // test covers the fresh-load half). This test reads the file, rather
+        // than constructing a second store, so the nothing-reads-it test can
+        // hold `server.rs` to exactly one construction of the store.
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        let durable = std::fs::read(runtime_dir.join("delegation.json")).expect("switch file");
+        let durable: serde_json::Value = serde_json::from_slice(&durable).expect("switch json");
+        assert_eq!(durable["enabled"], true, "the stored value is on the file");
+
+        // The setting change is an audited act, and the actor is always the
+        // person at this machine (the peer gate refuses the pair upstream).
+        let connection =
+            rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+        let mut statement = connection
+            .prepare("SELECT action, outcome FROM audit ORDER BY id")
+            .expect("prepare");
+        let rows: Vec<String> = statement
+            .query_map([], |row| {
+                Ok(format!(
+                    "{}:{}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?
+                ))
+            })
+            .expect("query")
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            rows.iter().any(|row| row == "DelegationSet:ok"),
+            "the flip is audited: {rows:?}"
+        );
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::DelegationGet { id: 33 },
+            &conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("get reply");
+        assert!(
+            matches!(
+                reply,
+                DaemonMessage::DelegationState {
+                    id: 33,
+                    enabled: true,
+                    source: devboule_protocol::DelegationSource::File
+                }
+            ),
+            "got {reply:?}"
+        );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The delegation pair is refused to a paired device holding **every**
+    /// capability, with the refusal naming `permission_delegation` — the
+    /// switch is this machine's own authority setting, both halves of it.
+    #[test]
+    fn both_delegation_frames_are_refused_for_a_peer_connection() {
+        let state = ServerState::new("delegation-peer".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let all_caps = ["view", "send", "answer_permissions", "create_sessions"];
+        let conn = remote_conn_with_caps(PeerRole::Client, None, &all_caps);
+
+        for (label, request) in [
+            ("delegation.get", ClientMessage::DelegationGet { id: 41 }),
+            (
+                "delegation.set",
+                ClientMessage::DelegationSet {
+                    id: 42,
+                    enabled: true,
+                },
+            ),
+        ] {
+            let reply = dispatch(&state, &owner, request, &conn, true, true, true, true)
+                .expect("dispatch reply");
+            let DaemonMessage::Error(error) = reply else {
+                panic!("a peer's delegation frame must be refused, got {reply:?}");
+            };
+            assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
+            assert_eq!(
+                error.message,
+                format!("capability '{label}' was not negotiated"),
+                "the refusal names the rule that fired"
+            );
+        }
 
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(state);

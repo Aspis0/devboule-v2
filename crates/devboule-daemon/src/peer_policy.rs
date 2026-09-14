@@ -168,6 +168,16 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::AgentProfilesGet { .. } => PeerDecision::Deny("agent.profiles.get"),
         ClientMessage::AgentProfilesSet { .. } => PeerDecision::Deny("agent.profiles.set"),
 
+        // The delegation switch is this device's own authority setting: it
+        // decides whether an agent on this machine may answer its child's
+        // permission cards, so a paired device that could set it would be
+        // granting itself answers this machine's human never gave, and one
+        // that could read it would learn whether the door is open. Both
+        // halves refused, the same way the profile store is — whichever
+        // capability the peer holds.
+        ClientMessage::DelegationGet { .. } => PeerDecision::Deny("delegation.get"),
+        ClientMessage::DelegationSet { .. } => PeerDecision::Deny("delegation.set"),
+
         // The provider vocabulary is the profile store's companion read: it
         // says what this machine's providers offer, which is the other half of
         // what a profile stores. A paired device that could read it would be
@@ -720,6 +730,15 @@ pub(crate) mod tests {
                 provider: "claude".to_string(),
                 refresh: false,
             },
+            // The delegation switch, read and write: the same refusal again.
+            // It decides whether this machine's agents may answer their
+            // children's permission cards, so a peer holding every capability
+            // still gets neither half.
+            ClientMessage::DelegationGet { id: 1 },
+            ClientMessage::DelegationSet {
+                id: 1,
+                enabled: true,
+            },
         ];
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for request in &denied {
@@ -996,6 +1015,8 @@ pub(crate) mod tests {
             ClientMessage::AgentProfilesGet { .. } => always("agent.profiles.get"),
             ClientMessage::AgentProfilesSet { .. } => always("agent.profiles.set"),
             ClientMessage::ProviderVocabularyGet { .. } => always("provider.vocabulary.get"),
+            ClientMessage::DelegationGet { .. } => always("delegation.get"),
+            ClientMessage::DelegationSet { .. } => always("delegation.set"),
         }
     }
 
@@ -1006,7 +1027,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 49;
+    pub(crate) const VARIANT_COUNT: usize = 51;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -1063,6 +1084,8 @@ pub(crate) mod tests {
             ClientMessage::AgentProfilesGet { .. } => "AgentProfilesGet",
             ClientMessage::AgentProfilesSet { .. } => "AgentProfilesSet",
             ClientMessage::ProviderVocabularyGet { .. } => "ProviderVocabularyGet",
+            ClientMessage::DelegationGet { .. } => "DelegationGet",
+            ClientMessage::DelegationSet { .. } => "DelegationSet",
         }
     }
 
@@ -1282,6 +1305,11 @@ pub(crate) mod tests {
                 id: 1,
                 provider: "claude".to_string(),
                 refresh: false,
+            },
+            ClientMessage::DelegationGet { id: 1 },
+            ClientMessage::DelegationSet {
+                id: 1,
+                enabled: false,
             },
         ]
     }

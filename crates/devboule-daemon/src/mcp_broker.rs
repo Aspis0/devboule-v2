@@ -21,9 +21,10 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::journal::AuditRecord;
 use devboule_protocol::{
-    CreateAgentCard, OwnerId, PermissionOption, SessionEvent, SessionKind, SessionOrigin,
-    ToolPolicyEntry, WireError,
+    CreateAgentCard, OwnerId, PermissionOption, PermissionOutcome, SessionEvent, SessionKind,
+    SessionOrigin, ToolPolicyEntry, WireError,
 };
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -825,6 +826,80 @@ fn handle_rpc(
                     ))),
                     Err(message) => Ok(Some(rpc_error(id, -32602, &message))),
                 }
+            } else if tool_name == Some(crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL) {
+                // Identity is the bearer, never the arguments: the card this
+                // answers must belong to a child of the session that called.
+                let card_id = message
+                    .pointer("/params/arguments/cardId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let outcome_str = message
+                    .pointer("/params/arguments/outcome")
+                    .and_then(Value::as_str);
+                let (Some(card_id), Some(outcome_str)) = (card_id, outcome_str) else {
+                    return Ok(Some(rpc_error(
+                        id,
+                        -32602,
+                        "cardId and outcome are required",
+                    )));
+                };
+                // The closed outcome table, enforced again at the door: an
+                // agent's allow is one-shot or nothing.
+                let outcome = match outcome_str {
+                    "allow_once" => PermissionOutcome::AllowOnce,
+                    "deny" => PermissionOutcome::Deny,
+                    other => {
+                        return Ok(Some(rpc_error(
+                            id,
+                            -32602,
+                            &format!("unknown outcome {other:?}; use allow_once or deny"),
+                        )));
+                    }
+                };
+                let result = state.sessions.answer_child_permission(
+                    &registration.session_id,
+                    card_id,
+                    outcome,
+                    &|device_id| state.peer_caps(device_id),
+                );
+                let identity = state.device_identity();
+                let audit = |outcome_label: &str| {
+                    if let Ok(identity) = identity {
+                        state.audit(AuditRecord {
+                            device_id: identity.device_id.clone(),
+                            role: "local".to_string(),
+                            claimed_origin: None,
+                            action: crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL.to_string(),
+                            session_id: Some(registration.session_id.clone()),
+                            outcome: outcome_label.to_string(),
+                        });
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        audit("ok");
+                        Ok(Some(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{"type": "text", "text": "answered"}],
+                                "structuredContent": {"state": "answered", "cardId": card_id},
+                                "isError": false,
+                            },
+                        })))
+                    }
+                    Err(sentence) => {
+                        audit("denied");
+                        Ok(Some(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{"type": "text", "text": sentence}],
+                                "isError": true,
+                            },
+                        })))
+                    }
+                }
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -932,6 +1007,21 @@ fn enabled_tool_list(
                 })
             } else if *name == crate::provider_catalog::MCP_CREATE_AGENT_TOOL {
                 crate::provider_catalog::agent_create_input_schema()
+            } else if *name == crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL {
+                // The outcome enum is closed at the schema too: an agent is
+                // offered allow_once or deny, and nothing else. There is no
+                // allow_always from an agent, ever — the protocol's
+                // PermissionOutcome has no such variant, and this table does
+                // not name one.
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "cardId": {"type": "string"},
+                        "outcome": {"type": "string", "enum": ["allow_once", "deny"]},
+                    },
+                    "required": ["cardId", "outcome"],
+                    "additionalProperties": false,
+                })
             } else {
                 json!({"type": "object", "properties": {}, "additionalProperties": false})
             };
@@ -2483,6 +2573,169 @@ mod tests {
             assert_eq!(body["error"]["message"], "Unknown tool", "{name}: {body}");
         }
 
+        // The delegation switch is refused the same way, on the same grounds:
+        // its RPCs (`DelegationGet`/`DelegationSet`) travel the app's wire and
+        // cannot be reached from a bearer, so the only attack is a tool named
+        // after it. `delegat` catches every delegation spelling; `grant`
+        // catches the vocabulary a per-session or per-creator allow would
+        // reach for, and this slice deliberately has no tool by that name —
+        // the only thing that answers a card is `devboule_answer_permission`,
+        // which matches neither word because it reads the pending table, not
+        // the switch.
+        for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+            assert!(
+                !name.contains("delegat") && !name.contains("grant"),
+                "the broker's closed table must not reach the delegation switch: \
+                 {name} carries the switch's vocabulary"
+            );
+        }
+
+        drop(guard);
+        drop(server);
+    }
+
+    /// C8, at the two doors an agent's answer has: the schema the model
+    /// reads offers `allow_once` and `deny` and nothing else, and the arm
+    /// itself refuses any other outcome string before it looks at a card.
+    #[test]
+    fn the_answer_tool_offers_allow_once_or_deny_and_nothing_else() {
+        let state = ServerState::new("mcp-answer-c8".to_string());
+        let owner = owner("mcp-answer-user", "mcp-answer-client");
+        let guard = state
+            .mcp
+            .register("session", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        let body = response_json(&response);
+        let schema = body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL)
+            .expect("the answer tool is listed")["inputSchema"]
+            .clone();
+        assert_eq!(
+            schema["properties"]["outcome"]["enum"],
+            serde_json::json!(["allow_once", "deny"]),
+            "the closed outcome table, at the schema: {schema}"
+        );
+
+        // The arm refuses a durable allow before any card is consulted:
+        // allow_always is not representable from an agent, ever.
+        for (id, arguments, why) in [
+            (
+                2,
+                r#"{"cardId":"card-1","outcome":"allow_always"}"#,
+                "allow_always must be refused at the door",
+            ),
+            (
+                3,
+                r#"{"cardId":"card-1"}"#,
+                "a missing outcome is the caller's mistake",
+            ),
+            (
+                4,
+                r#"{"outcome":"deny"}"#,
+                "a missing cardId is the caller's mistake",
+            ),
+        ] {
+            let message = format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"devboule_answer_permission","arguments":{arguments}}}}}"#
+            );
+            let response = http_request(&state.mcp.url, Some(&format!("Bearer {token}")), &message);
+            let body = response_json(&response);
+            assert_eq!(body["error"]["code"], -32602, "{why}: {body}");
+            assert!(
+                !serde_json::to_string(&body).unwrap().contains("pending"),
+                "{why}: the refusal says nothing about any card: {body}"
+            );
+        }
+
+        drop(guard);
+        drop(server);
+    }
+
+    /// C12, on the answer side: a delegated answer audited with its actor
+    /// session, and a refused answer audited as denied. The rows name the
+    /// actor, never the card's contents.
+    #[test]
+    fn an_answer_through_the_tool_is_audited_with_its_actor() {
+        let state = ServerState::new("mcp-answer-audit".to_string());
+        let owner = owner("mcp-answer-audit-user", "mcp-answer-client");
+        // The state's own store: the registry already holds it, attached at
+        // construction, and the OnceLock keeps the first.
+        let store = Arc::clone(&state.delegation);
+        store.set(true).expect("set on");
+
+        let creator = "s.creator.1".to_string();
+        let child = "s.creator.1.child".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state
+            .sessions
+            .insert_test_child(&child, owner.clone(), &creator);
+
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let runtime = Arc::new(crate::session::SessionRuntime::new());
+        runtime.require_mcp();
+        state.mcp.bind_runtime(&creator, &runtime);
+        state.sessions.test_park_card(&child, "card-audit");
+
+        let message = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_answer_permission","arguments":{"cardId":"card-audit","outcome":"deny"}}}"#;
+        let response = http_request(&state.mcp.url, Some(&format!("Bearer {token}")), message);
+        let body = response_json(&response);
+        assert_eq!(body["result"]["isError"], false, "{body}");
+
+        // The refusal side: with the switch off, the same answer is audited
+        // as denied — and the card stays pending for the human.
+        store.set(false).expect("set off");
+        state.sessions.test_park_card(&child, "card-off");
+        let message = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_answer_permission","arguments":{"cardId":"card-off","outcome":"deny"}}}"#;
+        let response = http_request(&state.mcp.url, Some(&format!("Bearer {token}")), message);
+        let body = response_json(&response);
+        assert_eq!(body["result"]["isError"], true, "{body}");
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        let connection =
+            rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+        let mut statement = connection
+            .prepare("SELECT action, session_id, outcome FROM audit ORDER BY id")
+            .expect("prepare");
+        let rows: Vec<(String, Option<String>, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query")
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            rows.contains(&(
+                "devboule_answer_permission".to_string(),
+                Some(creator.clone()),
+                "ok".to_string()
+            )),
+            "the accepted answer names its actor session: {rows:?}"
+        );
+        assert!(
+            rows.contains(&(
+                "devboule_answer_permission".to_string(),
+                Some(creator.clone()),
+                "denied".to_string()
+            )),
+            "the refused answer is audited as denied: {rows:?}"
+        );
+
         drop(guard);
         drop(server);
     }
@@ -2623,8 +2876,9 @@ mod tests {
 
         // And `tools/list` for the same session still reports every tool the
         // session is served: the roster, the profile list this pass adds, the
-        // sender slice 4 added, and the creation tool slice 5 adds. Disabling
-        // one does not shrink the other rows, which is the point of this test.
+        // sender slice 4 added, the creation tool slice 5 adds, and the
+        // delegated permission answer slice 5b adds. Disabling one does not
+        // shrink the other rows, which is the point of this test.
         let listed = http_request(
             &state.mcp.url,
             Some(&format!("Bearer {token}")),
@@ -2635,7 +2889,7 @@ mod tests {
                 .pointer("/result/tools")
                 .and_then(Value::as_array)
                 .map(|tools| tools.len()),
-            Some(4)
+            Some(5)
         );
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);

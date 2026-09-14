@@ -627,6 +627,14 @@ enum JournalCmd {
         record: PermissionRecord,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
+    PermissionWasRecorded {
+        request_id: String,
+        reply: mpsc::Sender<Result<bool, JournalError>>,
+    },
+    PermissionCount {
+        session_id: String,
+        reply: mpsc::Sender<Result<u32, JournalError>>,
+    },
     MarkReaped {
         session_id: String,
         code: Option<u32>,
@@ -909,6 +917,30 @@ impl Journal {
             payload: payload.to_vec(),
         };
         self.rpc(|reply| JournalCmd::Permission { record, reply })
+    }
+
+    /// Whether any permission card with this request id has ever been
+    /// resolved, by any session. The delegated answer's "already resolved"
+    /// sentence: a replayed id must read as resolved, an invented one as
+    /// unknown, and neither may touch anything. Asked by request id alone —
+    /// the caller does not know which session held the card, and the answer
+    /// reveals nothing but the fact.
+    pub fn permission_was_recorded(&self, request_id: &str) -> Result<bool, JournalError> {
+        self.rpc(|reply| JournalCmd::PermissionWasRecorded {
+            request_id: request_id.to_string(),
+            reply,
+        })
+    }
+
+    /// How many permission cards of one session were resolved — the
+    /// snapshot's delegation count. Counted from the `permissions` table,
+    /// which is the resolution ledger replay reads back, so the count
+    /// survives a restart the way the ledger does.
+    pub fn permission_count(&self, session_id: &str) -> Result<u32, JournalError> {
+        self.rpc(|reply| JournalCmd::PermissionCount {
+            session_id: session_id.to_string(),
+            reply,
+        })
     }
 
     /// Child::wait returned. Does not freeze last_seq and does not write an
@@ -1526,6 +1558,26 @@ fn journal_loop(
                     on_write_error(error);
                 }
                 let _ = reply.send(result);
+            }
+            JournalCmd::PermissionWasRecorded { request_id, reply } => {
+                let count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM permissions WHERE request_id = ?1",
+                        params![&request_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                let _ = reply.send(Ok(count > 0));
+            }
+            JournalCmd::PermissionCount { session_id, reply } => {
+                let count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM permissions WHERE session_id = ?1",
+                        params![&session_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                let _ = reply.send(Ok(count.clamp(0, u32::MAX as i64) as u32));
             }
             JournalCmd::MarkReaped { session_id, code } => {
                 let (degraded, dropped) = degradation_state(&degraded_sessions, &session_id);

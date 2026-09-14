@@ -184,6 +184,24 @@ export interface PermissionResolved {
   selectedOptionId?: string;
   selectedOptionKind?: string;
   selectedOptionName?: string;
+  /**
+   * Who answered, when it was not a person: the session id of the creator
+   * that answered its child's card under the delegation switch. Null or
+   * absent means a person.
+   */
+  answeredBy?: Id | null;
+}
+
+/**
+ * The durable record of a resolution, on every resolution — a person's, a
+ * delegated one, an auto-answer and a cancel alike. `answeredBy` is absent
+ * for a human and names the creator session for a delegated answer.
+ */
+export interface PermissionAnswered {
+  type: "permission_answered";
+  cardId: Id;
+  answeredBy?: Id | null;
+  outcome: string;
 }
 
 export interface SessionModelEffort {
@@ -581,6 +599,17 @@ export interface SessionStateSnapshot {
   unattended?: UnattendedState;
   /** The session's labels, stamped by the daemon. */
   labels?: Record<string, string>;
+  /**
+   * The delegation facts, when this row is an agent-created child. Absent
+   * means NOT an agent-created child — a state of its own, never "off".
+   */
+  delegation?: DelegationState;
+}
+
+/** The delegation ledger for one agent-created child (snapshot only). */
+export interface DelegationState {
+  answered: number;
+  state: "off" | "active" | "unattended";
 }
 
 export type CursorShape = "block" | "underline" | "bar";
@@ -769,6 +798,7 @@ export type SessionEvent =
     }
   | PermissionRequest
   | PermissionResolved
+  | PermissionAnswered
   | SessionManifest
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }

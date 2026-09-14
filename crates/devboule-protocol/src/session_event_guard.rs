@@ -187,6 +187,12 @@ fn session_event_samples() -> Vec<SessionEvent> {
             selected_option_id: None,
             selected_option_kind: None,
             selected_option_name: None,
+            answered_by: None,
+        },
+        PermissionAnswered => SessionEvent::PermissionAnswered {
+            card_id: String::new(),
+            answered_by: None,
+            outcome: String::new(),
         },
         SessionManifest => SessionEvent::SessionManifest {
             provider_id: None,
