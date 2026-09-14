@@ -531,6 +531,27 @@ types (`src/types/ipc.ts:116-137`) but **no component reads it** — the card re
 ordinary `PermissionCard`, so what a person actually sees is the daemon's description sentence and the
 card's own allow/deny buttons.
 
+**The agent profile store.** A creation names a *preset* today, but the list that will replace
+presets already exists: `crates/devboule-daemon/src/agent_profiles.rs` holds the ordered list of
+profiles a human ticked, plus one block of standing instructions. It is one JSON document beside the
+journal, written the way the tool policy file is written — a create-new temp file, a current-user-only
+DACL applied on Windows **before its first byte**, then a rename over the target (`:11-12`). A crash
+therefore leaves the old list or the new one and never half of either, and a document that decides
+what an agent may do is never briefly readable by another user.
+
+It is read **at the moment it is used** — at the moment a creation resolves a profile, and at the
+moment the standing instructions apply (`:6`) — so a human's edit takes effect on the next creation
+rather than on the next session. Both are capped: 8 KiB of standing instructions
+(`MAX_STANDING_INSTRUCTIONS_BYTES`, `:72`), well under the frame cap (`:59`).
+
+The failure direction is the part worth keeping in mind. A document that cannot be read, parsed or
+admitted is **quarantined** exactly as a corrupt tool-policy file is — renamed aside first, never
+deleted (`:144`, `:157-169`, `:501`) — and the store then holds an **empty list and empty standing
+instructions**, never the last good copy (`:22-25`). An unreadable file means "no agent may be created
+and no standing instructions", not "carry on with what we had": see §5, where the permission dimension
+is closed on purpose. A profile's **id** is what a running child records, so a rename cannot move a
+running child onto a different profile (`:331`).
+
 **The finish report and the deposit.** When a child finishes, the daemon reports to the creator
 (`crates/devboule-daemon/src/session.rs:6009`, `:6027`), publishes `ChildFinished` (`:6106`, envelope
 `:6351`, with the state derived from the child provider's own stop reason `:6433`) and deposits the
