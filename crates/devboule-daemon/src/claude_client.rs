@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, WireError};
+use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, SessionModel, WireError};
 use serde_json::Value;
 
 use super::permission_broker::{PermissionBroker, PermissionSender};
@@ -29,6 +29,7 @@ use crate::claude_view::ClaudeView;
 use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
+use crate::profile_delivery::ProfileDelivery;
 use crate::server::ServerState;
 
 const COMMAND_ENV: &str = "DEVBOULE_CLAUDE_COMMAND";
@@ -161,23 +162,141 @@ fn strip_flag(argv: Vec<String>, flag: &str) -> Vec<String> {
     args
 }
 
+/// The model the CLI runs when no `--model` is passed is a *preference* of the
+/// catalog; the profile's model, when one is delivered, is not. Two pure
+/// refusal checks sit below so the tests can hold the sentences without a
+/// [`ServerState`]: **absent vocabulary** and **unknown id** are different
+/// refusals, and collapsing them sends a human hunting a typo when the
+/// provider simply has no dial.
+///
+/// Model — refuse, never substitute: cost and capability are the premise of
+/// the human's choice.
+fn validate_model_choice(models: &[SessionModel], model_id: Option<&str>) -> Result<(), WireError> {
+    let Some(model_id) = model_id else {
+        return Ok(());
+    };
+    if models.is_empty() {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "the profile names a model, but this Claude publishes no models the daemon can deliver; the creation is refused rather than started on a different model",
+        ));
+    }
+    if !models.iter().any(|model| model.model_id == model_id) {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "Claude model '{model_id}' is not among the models this Claude publishes; the creation is refused rather than started on a different model"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Thinking — refuse, by symmetry with the model: the card named the value, so
+/// printing it and not delivering it is the delivery defect in a smaller font.
+/// A model with no thinking options at all is refused with the **absence**
+/// sentence; an option outside the model's own list with the **mismatch**
+/// sentence. They are not the same refusal.
+fn validate_thinking_choice(
+    models: &[SessionModel],
+    model_id: &str,
+    thinking: &str,
+) -> Result<(), WireError> {
+    let Some(model) = models.iter().find(|model| model.model_id == model_id) else {
+        // Unreachable through the creation path: the model choice is validated
+        // first, and a profile always names a model.
+        return Ok(());
+    };
+    let has_efforts = model
+        .efforts
+        .as_ref()
+        .is_some_and(|efforts| !efforts.is_empty());
+    if !has_efforts {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("Claude model '{model_id}' has no thinking options; the profile names one, so the creation is refused"),
+        ));
+    }
+    if !model
+        .efforts
+        .as_ref()
+        .expect("checked above")
+        .iter()
+        .any(|effort| effort.id == thinking)
+    {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("Claude thinking option '{thinking}' is not among model '{model_id}'s thinking options"),
+        ));
+    }
+    Ok(())
+}
+
+/// The model the launch pins: the delivered one, or the catalog's preference
+/// for a create that resolved no profile. One function, so the argv and its
+/// test cannot disagree about who wins.
+fn launch_model_id(delivery: &ProfileDelivery, models: &[SessionModel]) -> Option<String> {
+    delivery
+        .model_id
+        .clone()
+        .or_else(|| crate::claude_catalog::default_model_id(models))
+}
+
+/// The creation-time refusals for one Claude delivery. This is the client
+/// that owns the `--model` and `--permission-mode` flags and the effort
+/// control frame, so this is where the delivery is judged: everything that
+/// cannot be delivered is refused here, before a process exists, and a child
+/// that exists was delivered everything its card printed.
+fn validate_delivery(
+    state: &Arc<ServerState>,
+    delivery: &ProfileDelivery,
+) -> Result<(), WireError> {
+    let mode_id = delivery.mode_id.as_deref().unwrap_or("default");
+    if !crate::claude_view::mode_state(mode_id)
+        .available_modes
+        .iter()
+        .any(|mode| mode.id == mode_id)
+    {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("Claude session mode '{mode_id}' is not available."),
+        ));
+    }
+    // `autoAccept` is a constraint on which mode is delivered: the child must
+    // start in a mode the daemon's own broker answers. `bypassPermissions` is
+    // that mode for Claude; the launch flag is the mechanism.
+    if delivery.auto_accept && !crate::provider_catalog::mode_is_auto_answered(mode_id) {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "the profile asks Claude to approve its own permission prompts and also to start in mode '{mode_id}', which asks the human; the two contradict, so the creation is refused"
+            ),
+        ));
+    }
+    let models = state.claude_models().models;
+    validate_model_choice(&models, delivery.model_id.as_deref())?;
+    if let Some(thinking) = delivery.thinking_option_id.as_deref() {
+        // A profile always names a model, so the delivered model is the one
+        // whose thinking options judge the profile's choice.
+        let model_id = delivery
+            .model_id
+            .clone()
+            .or_else(|| crate::claude_catalog::default_model_id(&models));
+        if let Some(model_id) = model_id {
+            validate_thinking_choice(&models, &model_id, thinking)?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
     mcp: Option<McpLaunchConfig>,
-    requested_mode: Option<String>,
+    delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
-    let requested_mode = requested_mode.unwrap_or_else(|| "default".to_string());
-    if !crate::claude_view::mode_state(&requested_mode)
-        .available_modes
-        .iter()
-        .any(|mode| mode.id == requested_mode)
-    {
-        return Err(WireError::new(
-            ErrorCode::InvalidRequest,
-            format!("Claude session mode '{requested_mode}' is not available."),
-        ));
-    }
+    validate_delivery(state, &delivery)?;
+    let requested_mode = delivery.mode_id.as_deref().unwrap_or("default").to_string();
     let mut args = command.args.clone();
     if let Some(path) = mcp
         .as_ref()
@@ -189,9 +308,13 @@ pub(super) fn spawn_process(
             args.push("--strict-mcp-config".to_string());
         }
     }
+    // The delivered model, when a profile named one, is the launch flag — the
+    // CLI's own default would run a different model at a different price than
+    // the one the card named. A create that resolved no profile keeps the
+    // catalog's preference, exactly as before this delivery existed.
     let args = launch_with_model(
         launch_in_bypass_mode(args),
-        crate::claude_catalog::default_model_id(&state.claude_models().models).as_deref(),
+        launch_model_id(&delivery, &state.claude_models().models).as_deref(),
     );
     let mut process = Command::new(&command.program);
     process
@@ -289,6 +412,22 @@ pub(super) fn spawn_process(
             ));
         }
     };
+    // The thinking option the profile named, delivered as the same effort
+    // control frame the runtime switch uses. The mode frame's bytes are
+    // already in the pipe (written synchronously above), so the CLI reads
+    // mode first and effort second, and the effort is in force before the
+    // first prompt can flow.
+    if let Some(thinking) = delivery.thinking_option_id.as_deref() {
+        let request_id = format!("set-effort-{}", next_id.fetch_add(1, Ordering::Relaxed));
+        send_control_request_frame(
+            Arc::clone(&stdin),
+            request_id,
+            serde_json::json!({
+                "subtype": "apply_flag_settings",
+                "settings": {"effortLevel": thinking},
+            }),
+        );
+    }
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
     let permission_broker = PermissionBroker::with_sender(sender);
     let stderr_source = match ClaudeStderr::start(stderr) {
@@ -1807,6 +1946,7 @@ mod tests {
     use crate::session::{ConnHandle, PendingEvent, StaticImageSink};
     use devboule_protocol::PermissionOutcome;
     use devboule_protocol::PromptAttachment;
+    use devboule_protocol::SessionModelEffort;
     use std::path::PathBuf;
     use std::process::{Child, ChildStdin, ChildStdout};
 
@@ -3606,5 +3746,175 @@ mod tests {
             .plan_prompt(&store, "claude-route-none", "describe this", &[])
             .expect("planned")
             .is_none());
+    }
+
+    fn model(id: &str, effort_ids: Option<Vec<&str>>) -> SessionModel {
+        SessionModel {
+            model_id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            context_tokens: None,
+            current_effort: None,
+            efforts: effort_ids.map(|ids| {
+                ids.into_iter()
+                    .map(|effort| SessionModelEffort {
+                        id: effort.to_string(),
+                        label: effort.to_string(),
+                        description: None,
+                        default: None,
+                    })
+                    .collect()
+            }),
+        }
+    }
+
+    /// Model — refuse, never substitute: the mismatch sentence names the
+    /// published list the id is missing from.
+    #[test]
+    fn a_claude_model_outside_the_vocabulary_is_refused_with_the_mismatch_sentence() {
+        let models = vec![model("claude-opus-5", None), model("claude-sonnet-5", None)];
+        let error = validate_model_choice(&models, Some("claude-bogus-9"))
+            .expect_err("an unknown model id must be refused");
+        assert!(
+            error.message.contains("claude-bogus-9"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("is not among the models"),
+            "the mismatch sentence, not the absence one: {}",
+            error.message
+        );
+    }
+
+    /// An empty published list is a different refusal from an unknown id:
+    /// there is no list the name could have been a typo from.
+    #[test]
+    fn a_claude_model_against_an_empty_vocabulary_is_refused_with_the_absence_sentence() {
+        let error = validate_model_choice(&[], Some("claude-bogus-9"))
+            .expect_err("an empty vocabulary must be refused");
+        assert!(
+            error.message.contains("publishes no models"),
+            "the absence sentence, not the mismatch one: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("is not among"),
+            "the two sentences must stay distinct: {}",
+            error.message
+        );
+    }
+
+    /// A model the catalog does publish is delivered.
+    #[test]
+    fn a_claude_model_inside_the_vocabulary_is_delivered() {
+        let models = vec![model("claude-opus-5", None)];
+        validate_model_choice(&models, Some("claude-opus-5")).expect("delivered");
+    }
+
+    /// Thinking — the absence sentence ("this model has no thinking options")
+    /// is not the mismatch sentence ("that option is not among the model's").
+    /// The ninth catch: collapsing them sends a human hunting a typo when the
+    /// provider simply has no dial.
+    #[test]
+    fn claude_thinking_absence_and_mismatch_are_two_distinct_refusals() {
+        let models = vec![
+            model("claude-no-efforts", None),
+            model("claude-opus-5", Some(vec!["low", "high"])),
+        ];
+        let error = validate_thinking_choice(&models, "claude-no-efforts", "high")
+            .expect_err("a model without thinking options must be refused");
+        assert!(
+            error.message.contains("has no thinking options"),
+            "the absence sentence: {}",
+            error.message
+        );
+
+        let error = validate_thinking_choice(&models, "claude-opus-5", "bogus")
+            .expect_err("an unknown thinking option must be refused");
+        assert!(
+            error.message.contains("is not among"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("has no thinking options"),
+            "the two sentences must stay distinct: {}",
+            error.message
+        );
+
+        validate_thinking_choice(&models, "claude-opus-5", "high").expect("delivered");
+    }
+
+    /// `autoAccept` is a constraint on which mode is delivered: the only
+    /// Claude mode the daemon's broker answers is `bypassPermissions`, so a
+    /// tick over an asking mode is the contradiction, refused.
+    #[test]
+    fn a_claude_auto_accept_tick_over_an_asking_mode_is_refused() {
+        let state = test_state();
+        let mut delivery = ProfileDelivery::for_request(Some("bypassPermissions".to_string()));
+        delivery.auto_accept = true;
+        validate_delivery(&state, &delivery).expect("bypassPermissions answers its own prompts");
+
+        delivery.mode_id = Some("default".to_string());
+        let error = validate_delivery(&state, &delivery)
+            .expect_err("a tick over an asking mode is the contradiction");
+        assert!(
+            error.message.contains("contradict"),
+            "the refusal names both halves: {}",
+            error.message
+        );
+
+        // The same delivery without the tick is fine everywhere.
+        delivery.auto_accept = false;
+        validate_delivery(&state, &delivery).expect("asking mode without the tick");
+    }
+
+    fn test_state() -> Arc<ServerState> {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        ServerState::with_paths(
+            "claude-delivery".to_string(),
+            crate::paths::RuntimePaths::from_dir(std::env::temp_dir().join(format!(
+                "devboule-claude-delivery-{}-{counter}",
+                std::process::id()
+            ))),
+        )
+        .expect("state")
+    }
+
+    /// The launch argv is where the model is delivered to a Claude child: the
+    /// delivered model wins, and only a create that resolved no profile falls
+    /// back to the catalog's preference. The `--model` flag is the delivery —
+    /// dropping the delivered value here would start a child on a model the
+    /// card did not name, at a price the human did not approve.
+    #[test]
+    fn the_delivered_model_is_what_the_claude_argv_pins() {
+        let models = vec![model("claude-opus-5", None), model("claude-sonnet-5", None)];
+        let mut delivery = ProfileDelivery::none();
+        delivery.model_id = Some("claude-sonnet-5".to_string());
+        let args = launch_with_model(
+            launch_in_bypass_mode(vec!["-p".to_string()]),
+            launch_model_id(&delivery, &models).as_deref(),
+        );
+        assert_eq!(
+            args.windows(2)
+                .find(|pair| pair[0] == "--model")
+                .map(|pair| pair[1].as_str()),
+            Some("claude-sonnet-5"),
+            "the delivered model is the launch flag, never the catalog default"
+        );
+
+        // No profile named a model: the catalog's preference, as before.
+        let args = launch_with_model(
+            launch_in_bypass_mode(vec!["-p".to_string()]),
+            launch_model_id(&ProfileDelivery::none(), &models).as_deref(),
+        );
+        assert_eq!(
+            args.windows(2)
+                .find(|pair| pair[0] == "--model")
+                .map(|pair| pair[1].as_str()),
+            Some("claude-opus-5")
+        );
     }
 }

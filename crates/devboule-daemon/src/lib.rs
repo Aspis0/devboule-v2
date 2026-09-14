@@ -50,6 +50,7 @@ mod peer_transport;
 #[cfg(feature = "server")]
 mod pi_view;
 mod process_tree;
+mod profile_delivery;
 pub mod provider_catalog;
 #[cfg(feature = "server")]
 mod provider_update;

@@ -24,6 +24,7 @@ use crate::acp_view::{
     add_vendor_surface, catalog_from_config_options, classify_line, current_mode_id_from_update,
     has_standard_modes, merge_handshake_manifest, unmodeled_content_kind, view_from_envelope_in,
     AcpLineKind, ConfigOptionSurface, HandshakeManifest, ModelSwitchShape, PromptCapabilities,
+    SwitchControlShape,
 };
 use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
@@ -38,6 +39,7 @@ use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
     SpawnedSession, StderrSource, StdioWaitableChild,
 };
+use crate::profile_delivery::ProfileDelivery;
 
 const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
 /// Test/direct-command counterpart to [`COMMAND_ENV`]. A direct command has
@@ -405,9 +407,9 @@ pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
     mcp: Option<McpLaunchConfig>,
-    requested_mode: Option<String>,
+    delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, None, mcp, requested_mode)
+    spawn_process_with_load(state, command, None, mcp, delivery)
 }
 
 pub(super) fn spawn_process_resuming(
@@ -416,7 +418,13 @@ pub(super) fn spawn_process_resuming(
     peer_session_id: String,
     mcp: Option<McpLaunchConfig>,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, Some(peer_session_id), mcp, None)
+    spawn_process_with_load(
+        state,
+        command,
+        Some(peer_session_id),
+        mcp,
+        ProfileDelivery::none(),
+    )
 }
 
 fn spawn_process_with_load(
@@ -424,7 +432,7 @@ fn spawn_process_with_load(
     command: PtyCommand,
     load_session_id: Option<String>,
     mcp: Option<McpLaunchConfig>,
-    requested_mode: Option<String>,
+    delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
     let mut process = Command::new(&command.program);
     process
@@ -535,7 +543,7 @@ fn spawn_process_with_load(
         command.provider_id.clone(),
         load_session_id.as_deref(),
         mcp.as_ref(),
-        requested_mode.as_deref(),
+        delivery.mode_id.as_deref(),
     ) {
         Ok(handshake) => handshake,
         Err(error) => {
@@ -588,6 +596,36 @@ fn spawn_process_with_load(
     transport.set_model_switch_shape(handshake.shape);
     transport.set_prompt_capabilities(handshake.prompt_capabilities);
     transport.seed_manifest_from_event(handshake.event.as_ref());
+    // The profile's delivery, judged now that the handshake has spoken: the
+    // agent's declared modes and switch surfaces are what tell the daemon
+    // what can be delivered, and after the handshake the daemon is not
+    // guessing. A refusal tears the child down here — before it was ever a
+    // session — instead of running a configuration the card did not name.
+    let delivered_mode = handshake.event.as_ref().and_then(|event| match event {
+        SessionEvent::SessionManifest {
+            modes: Some(modes), ..
+        } => Some(modes.current_mode_id.clone()),
+        _ => None,
+    });
+    if let Err(error) = apply_profile_delivery(&transport, &delivery, delivered_mode.as_deref()) {
+        let mut killer = AcpKiller {
+            process: Arc::clone(&process),
+            transport: Arc::clone(&transport),
+            permission_broker: Arc::clone(&transport.permission_broker),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        killer.kill();
+        drop(killer);
+        // AcpTransport owns the only stdin handle. Close it before waiting
+        // for a peer that may require EOF to finish its shutdown path.
+        drop(transport);
+        if let Ok(mut process) = process.lock() {
+            let _ = process.wait();
+        }
+        let _ = stderr_source.discard_and_join();
+        drop(process_job);
+        return Err(error);
+    }
     let writer = AcpWriter {
         transport: Arc::clone(&transport),
         pending: Vec::new(),
@@ -1589,6 +1627,140 @@ type HandshakeResult = (
     String,
     Option<String>,
 );
+
+/// The creation-time delivery for one ACP child, run after the handshake:
+/// this is the point where the agent's own declarations — its modes and its
+/// model/effort switch surfaces — tell the daemon what can be delivered, and
+/// after the handshake the daemon is not guessing. Everything that cannot be
+/// delivered is refused here; a child that exists was delivered everything
+/// its card printed.
+///
+/// Absent vocabulary and unknown id are two different refusals, per field: a
+/// model sent to an agent that declares no switch surface is the absence
+/// sentence, a model outside the agent's declared values is the mismatch
+/// sentence, and the same split holds for the thinking option.
+fn apply_profile_delivery(
+    transport: &Arc<AcpTransport>,
+    delivery: &ProfileDelivery,
+    delivered_mode: Option<&str>,
+) -> Result<(), WireError> {
+    // `autoAccept` is a constraint on which mode is delivered, not a value to
+    // hand over: the delivered mode must be one the daemon's own broker
+    // answers. An agent whose modes are provider-authored prose cannot have
+    // the fact established, and an unestablishable permission fact is
+    // refused, never waved through.
+    if delivery.auto_accept {
+        let mode_id = delivered_mode.ok_or_else(|| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                "the profile asks this agent to approve its own permission prompts, but the agent's handshake declared no modes the daemon can judge; the creation is refused",
+            )
+        })?;
+        if !crate::provider_catalog::mode_is_auto_answered(mode_id) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "the profile asks this agent to approve its own permission prompts and also to start in mode '{mode_id}', which asks the human; the two contradict, so the creation is refused"
+                ),
+            ));
+        }
+    }
+    if delivery.model_id.is_none() && delivery.thinking_option_id.is_none() {
+        return Ok(());
+    }
+    let shape = transport.model_switch_shape();
+    let Some(shape) = shape else {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "the profile names a model, but this agent's session declares no model or effort switch surface; the creation is refused rather than started on a different model",
+        ));
+    };
+    if let Some(model_id) = delivery.model_id.as_deref() {
+        validate_acp_model_choice(&shape.model, model_id)?;
+    }
+    if let Some(effort) = delivery.thinking_option_id.as_deref() {
+        validate_acp_effort_choice(&shape.effort, delivery.model_id.as_deref(), effort)?;
+    }
+    // Deliver on the same wire the runtime switch uses, so the verbs and the
+    // pending-switch confirmation are the proven ones. The send is
+    // synchronous; the agent's confirmation arrives through the pending-switch
+    // machinery and re-emits the manifest, which is how the daemon shows what
+    // the agent really took.
+    let switcher = AcpSwitcher {
+        transport: Arc::clone(transport),
+    };
+    switcher.set_model(
+        delivery.model_id.as_deref(),
+        delivery.thinking_option_id.as_deref(),
+    )
+}
+
+/// The model axis of the ACP refusal: absence of any declared surface is one
+/// sentence, an id outside the agent's declared values is the other. An
+/// empty declared list is no vocabulary — the agent's own answer to the
+/// switch is then the confirmation, and this check refuses nothing.
+fn validate_acp_model_choice(shape: &SwitchControlShape, model_id: &str) -> Result<(), WireError> {
+    let declared: Option<&Vec<String>> = match (shape.config.as_ref(), shape.vendor.as_ref()) {
+        (Some(config), _) => Some(&config.values),
+        (None, Some(vendor)) => Some(&vendor.values),
+        (None, None) => None,
+    };
+    let Some(declared) = declared else {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "this agent declares no model switch surface; the profile names a model, so the creation is refused rather than started on a different model",
+        ));
+    };
+    if !declared.is_empty() && !declared.iter().any(|value| value == model_id) {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("ACP model '{model_id}' is not among the model values this agent declares; the creation is refused rather than started on a different model"),
+        ));
+    }
+    Ok(())
+}
+
+/// The thinking axis of the ACP refusal, with the same absence/mismatch
+/// split. Vendor effort values are per model, so they judge the choice only
+/// when the delivered model declares any; the config-option surface's values
+/// are the option's own vocabulary.
+fn validate_acp_effort_choice(
+    shape: &SwitchControlShape,
+    model_id: Option<&str>,
+    effort: &str,
+) -> Result<(), WireError> {
+    let effort_values: Option<Option<&Vec<String>>> = if let Some(config) = shape.config.as_ref() {
+        Some(Some(&config.values))
+    } else {
+        shape.vendor.as_ref().map(|vendor| {
+            model_id.and_then(|model_id| {
+                vendor
+                    .values_by_model
+                    .iter()
+                    .find(|(model, _)| model == model_id)
+                    .map(|(_, values)| values)
+            })
+        })
+    };
+    let Some(effort_values) = effort_values else {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "this agent declares no thinking-option surface; the profile names one, so the creation is refused",
+        ));
+    };
+    // Values the agent actually declares judge the choice; an empty list
+    // is no vocabulary, and the agent's own answer to the switch is the
+    // confirmation.
+    if let Some(effort_values) = effort_values {
+        if !effort_values.is_empty() && !effort_values.iter().any(|value| value == effort) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("ACP thinking option '{effort}' is not among the thinking options this agent declares; the creation is refused"),
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn handshake(
     transport: &AcpTransport,
@@ -4504,6 +4676,115 @@ mod tests {
             error.message.len() <= MAX_HANDSHAKE_ERROR_BYTES,
             "the banner fits the bound it declares, got {} bytes",
             error.message.len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::{validate_acp_effort_choice, validate_acp_model_choice};
+    use crate::acp_view::{ConfigOptionSurface, SwitchControlShape, VendorSwitchSurface};
+
+    fn vendor_surface(values: &[&str]) -> SwitchControlShape {
+        SwitchControlShape {
+            vendor: Some(VendorSwitchSurface {
+                values: values.iter().map(|value| value.to_string()).collect(),
+                values_by_model: Vec::new(),
+            }),
+            config: None,
+        }
+    }
+
+    fn config_surface(id: &str, values: &[&str]) -> SwitchControlShape {
+        SwitchControlShape {
+            vendor: None,
+            config: Some(ConfigOptionSurface {
+                id: id.to_string(),
+                values: values.iter().map(|value| value.to_string()).collect(),
+            }),
+        }
+    }
+
+    fn no_surface() -> SwitchControlShape {
+        SwitchControlShape {
+            vendor: None,
+            config: None,
+        }
+    }
+
+    /// Absence of any declared surface is one sentence; an id outside the
+    /// declared values is the other. An agent that declares no values at all
+    /// is not judgeable, and the check refuses nothing.
+    #[test]
+    fn acp_model_absence_and_mismatch_are_two_distinct_refusals() {
+        let error = validate_acp_model_choice(&no_surface(), "stub-model")
+            .expect_err("no surface cannot deliver a model");
+        assert!(
+            error.message.contains("declares no model switch surface"),
+            "the absence sentence: {}",
+            error.message
+        );
+
+        let shape = vendor_surface(&["stub-model", "stub-model-new"]);
+        let error = validate_acp_model_choice(&shape, "stub-bogus")
+            .expect_err("an undeclared model id must be refused");
+        assert!(
+            error.message.contains("is not among the model values"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("declares no model switch surface"),
+            "the two sentences must stay distinct: {}",
+            error.message
+        );
+
+        // A surface with no declared values: the agent's own answer is the
+        // confirmation, so nothing is refused here.
+        validate_acp_model_choice(&vendor_surface(&[]), "stub-model")
+            .expect("unjudgeable, not refused");
+        validate_acp_model_choice(&config_surface("model", &["m1"]), "m1").expect("declared");
+    }
+
+    #[test]
+    fn acp_thinking_absence_and_mismatch_are_two_distinct_refusals() {
+        let error = validate_acp_effort_choice(&no_surface(), Some("stub-model"), "high")
+            .expect_err("no surface cannot deliver a thinking option");
+        assert!(
+            error
+                .message
+                .contains("declares no thinking-option surface"),
+            "the absence sentence: {}",
+            error.message
+        );
+
+        // Vendor effort values are per model: only the delivered model's own
+        // declared values judge the choice.
+        let mut shape = vendor_surface(&["stub-model"]);
+        shape.vendor.as_mut().expect("vendor").values_by_model =
+            vec![("stub-model".to_string(), vec!["high".to_string()])];
+        let error = validate_acp_effort_choice(&shape, Some("stub-model"), "bogus")
+            .expect_err("an undeclared effort must be refused");
+        assert!(
+            error.message.contains("is not among the thinking options"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+        // A different model declared nothing, so the choice is unjudgeable.
+        validate_acp_effort_choice(&shape, Some("stub-model-new"), "high")
+            .expect("the delivered model declared no values");
+        // No model delivered: the per-model judgment cannot run.
+        validate_acp_effort_choice(&shape, None, "high").expect("unjudgeable, not refused");
+
+        // The config-option surface judges from the option's own values.
+        let config = config_surface("thought-level", &["low", "high"]);
+        validate_acp_effort_choice(&config, Some("stub-model"), "low").expect("declared");
+        let error = validate_acp_effort_choice(&config, Some("stub-model"), "bogus")
+            .expect_err("an undeclared config value must be refused");
+        assert!(
+            error.message.contains("is not among the thinking options"),
+            "{}",
+            error.message
         );
     }
 }

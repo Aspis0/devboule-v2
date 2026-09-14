@@ -1991,9 +1991,12 @@ pub(crate) struct AgentCreation {
     /// transcript shows (`SessionEvent::AgentCreated`). A record of a birth: a
     /// rename afterwards does not rewrite it.
     pub(crate) profile_name: String,
-    /// The mode the profile saved, applied through the provider's own mode
-    /// switch and never substituted for one the daemon prefers.
-    pub(crate) mode: String,
+    /// Everything the profile delivers to the child — the mode, the model, the
+    /// thinking option and the `autoAccept` constraint — as one typed value.
+    /// The card names all of these; the child is started on all of these or the
+    /// creation is refused, so a child that exists was delivered everything its
+    /// card printed.
+    pub(crate) delivery: crate::profile_delivery::ProfileDelivery,
     pub(crate) overlay: crate::provider_catalog::ToolOverlay,
     /// Whether the profile approves permission prompts in place of the human.
     /// A fact of the birth: it is written onto the child once and never
@@ -3230,7 +3233,7 @@ impl SessionRegistry {
             workspace_id,
             kind,
             provider,
-            mode,
+            crate::profile_delivery::ProfileDelivery::for_request(mode),
             None,
             conn_peer,
             env_provider.as_deref(),
@@ -3248,7 +3251,7 @@ impl SessionRegistry {
         workspace_id: Option<String>,
         kind: SessionKind,
         provider: Option<String>,
-        mode: Option<String>,
+        delivery: crate::profile_delivery::ProfileDelivery,
         command: Option<PtyCommand>,
         conn_peer: &Option<ConnPeer>,
         env_provider: Option<&str>,
@@ -3428,7 +3431,7 @@ impl SessionRegistry {
             owner.clone(),
             command,
             mcp_session,
-            mode,
+            delivery,
         ) {
             Ok(()) => {
                 // A completed ACP handshake proves the provider started and
@@ -5778,7 +5781,7 @@ impl SessionRegistry {
             creation.workspace_id.clone(),
             kind,
             Some(creation.provider.clone()),
-            Some(creation.mode.clone()),
+            creation.delivery.clone(),
             None,
             // The MCP connection is not a client connection: every ownership
             // check below uses the creator's own owner, and the origin was
@@ -7377,8 +7380,13 @@ pub fn spawn_session(
     owner: OwnerId,
     command: PtyCommand,
     mut mcp_session: Option<McpSessionGuard>,
-    requested_mode: Option<String>,
+    delivery: crate::profile_delivery::ProfileDelivery,
 ) -> Result<(), WireError> {
+    // The delivery travels as the one typed value: each client's own
+    // `spawn_process` validates what it can refuse and applies what it owns.
+    // This function holds no per-family knowledge beyond the launch dispatch
+    // that was already here — a new per-family branch would be the crooked
+    // shape the provider-trait refactor's gate forbids.
     if metadata.kind == SessionKind::Claude {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
@@ -7386,7 +7394,7 @@ pub fn spawn_session(
             state,
             command,
             state.mcp.launch_config(&metadata.id),
-            requested_mode.clone(),
+            delivery.clone(),
         )
         .map_err(|error| {
             map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
@@ -7397,7 +7405,7 @@ pub fn spawn_session(
             metadata,
             owner,
             None,
-            requested_mode,
+            delivery.mode_id,
             spawned,
             mcp_session.take(),
         );
@@ -7409,7 +7417,7 @@ pub fn spawn_session(
             state,
             command,
             state.mcp.launch_config(&metadata.id),
-            requested_mode.clone(),
+            delivery.clone(),
         )
         .map_err(|error| {
             map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
@@ -7420,7 +7428,7 @@ pub fn spawn_session(
             metadata,
             owner,
             None,
-            requested_mode,
+            delivery.mode_id,
             spawned,
             mcp_session.take(),
         );
@@ -7429,7 +7437,7 @@ pub fn spawn_session(
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
         let spawned =
-            pi_client::spawn_process(state, command, requested_mode.clone()).map_err(|error| {
+            pi_client::spawn_process(state, command, delivery.clone()).map_err(|error| {
                 map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
             })?;
         return start_spawned_session(
@@ -7438,7 +7446,7 @@ pub fn spawn_session(
             metadata,
             owner,
             None,
-            requested_mode,
+            delivery.mode_id,
             spawned,
             mcp_session.take(),
         );
@@ -7446,16 +7454,17 @@ pub fn spawn_session(
     if metadata.kind == SessionKind::Codex {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        let spawned = codex_client::spawn_process(state, command, requested_mode.clone()).map_err(
-            |error| map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error),
-        )?;
+        let spawned =
+            codex_client::spawn_process(state, command, delivery.clone()).map_err(|error| {
+                map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+            })?;
         return start_spawned_session(
             state,
             registry,
             metadata,
             owner,
             None,
-            requested_mode,
+            delivery.mode_id,
             spawned,
             mcp_session.take(),
         );
@@ -14528,7 +14537,7 @@ mod tests {
                 None,
                 SessionKind::Acp,
                 None,
-                None,
+                crate::profile_delivery::ProfileDelivery::none(),
                 None,
                 &None,
                 Some("codex-acp"),

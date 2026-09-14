@@ -399,6 +399,15 @@ fn main() -> io::Result<()> {
                         }
                     })
                 };
+                // The R2a delivery scenario: an agent that declares no model
+                // catalog at all. The daemon's switch shape is then None, and
+                // a profile naming a model must be refused with the absence
+                // sentence instead of being sent and hoped for.
+                if std::env::var_os("DEVBOULE_STUB_NO_MODELS").is_some() {
+                    if let Some(object) = new_session_result.as_object_mut() {
+                        object.remove("models");
+                    }
+                }
                 if let Some(modes) = stub_modes.as_deref() {
                     // The stub declares the modes the test asked for (`S5`
                     // block 2's worker cell for this provider), so the daemon's

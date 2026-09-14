@@ -1569,7 +1569,16 @@ fn create_agent(
         // sentence a human reads names the profile the way they ticked it.
         profile_id: profile.id.clone(),
         profile_name: profile.name.clone(),
-        mode: profile.mode.clone(),
+        // What the card named is what the child gets: the profile's own mode,
+        // model, thinking option and auto-accept tick, as the one typed
+        // delivery the spawn path applies. A value that cannot be delivered
+        // refuses the creation; nothing here is substituted.
+        delivery: crate::profile_delivery::ProfileDelivery::for_child(
+            &profile.mode,
+            &profile.model,
+            profile.thinking_option_id.as_deref(),
+            &profile.features,
+        ),
         overlay: profile.overlay.clone(),
         unattended: profile.unattended,
         labels,
@@ -1630,11 +1639,17 @@ fn tool_error(id: &Value, message: &str) -> Value {
 /// the payload is what a surface renders, and both come from one reservation.
 ///
 /// The text states what the human is being asked to **approve**, which is the
-/// profile and what it resolves to: the provider, the model, the mode, every
-/// feature with its value, whether the child will approve prompts in their place,
-/// and the caller's labels. A card that named only the profile would ask for a
-/// decision against a word, and the word is the one thing the human cannot check
-/// without opening Settings.
+/// profile and what it resolves to: the provider, the model, the mode, the
+/// thinking option, whether the child will approve prompts in their place (and
+/// which mode does the answering), the feature keys the daemon does not
+/// interpret — named as uninterpreted, never silently dropped — and the
+/// caller's labels. A card that named only the profile would ask for a
+/// decision against a word, and the word is the one thing the human cannot
+/// check without opening Settings.
+///
+/// With the creation refusing every value the clients cannot deliver, this
+/// text is honest by construction rather than by wording: a card a human can
+/// approve into an existing child prints only what the child was delivered.
 fn creation_card(
     creator_session_id: &str,
     creator_name: &str,
@@ -1647,15 +1662,39 @@ fn creation_card(
     // `Auto accept: Yes` is the one phrase that has to be readable at a glance:
     // it is the difference between a child that will ask this human and one that
     // will not.
-    let features = if profile.features.is_empty() {
+    //
+    // `autoAccept` is the feature the daemon interprets, so it is rendered by
+    // the auto-accept line — naming the **mode** that does the answering,
+    // because consent to a mechanism is not consent to a word — and every
+    // other key is named as what it is: stored, delivered never, promised
+    // never. Absent is a third state here, never a silence and never a claim.
+    let uninterpreted = profile
+        .features
+        .iter()
+        .filter(|(key, _)| key.as_str() != crate::provider_catalog::AUTO_ACCEPT_FEATURE)
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>();
+    let features = if uninterpreted.is_empty() {
         "none".to_string()
     } else {
-        profile
-            .features
-            .iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+        format!(
+            "{} (not interpreted by this daemon; carried but never delivered)",
+            uninterpreted.join(", ")
+        )
+    };
+    // The card's auto-accept line reads the same profile fields the marker
+    // reads — the mode that answers, or the tick that demands one — and the
+    // creation refuses a tick whose mode does not answer, so a card a human
+    // can approve into an existing child is a card that told the truth.
+    let auto_accepts = crate::provider_catalog::mode_is_auto_answered(&profile.mode)
+        || crate::profile_delivery::feature_is_true(
+            &profile.features,
+            crate::provider_catalog::AUTO_ACCEPT_FEATURE,
+        );
+    let auto = if auto_accepts {
+        format!("Yes (mode {})", profile.mode)
+    } else {
+        "No".to_string()
     };
     let thinking = profile.thinking_option_id.as_deref().unwrap_or("none");
     // The caller's own labels, and only those: the daemon's four `devboule.`
@@ -1688,7 +1727,7 @@ fn creation_card(
             provider = profile.provider,
             model = profile.model,
             mode = profile.mode,
-            auto = if profile.unattended { "Yes" } else { "No" },
+            auto = auto,
         )),
         command: None,
         args: None,

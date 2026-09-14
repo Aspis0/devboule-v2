@@ -196,6 +196,16 @@ impl CodexState {
             .unwrap_or_else(|_| (String::new(), None))
     }
 
+    /// Whether the handshake's `model/list` brought no models at all. The
+    /// delivery path reads this to refuse an absent vocabulary with its own
+    /// sentence, distinct from "that model id is not among the provider's".
+    pub(crate) fn catalog_is_empty(&self) -> bool {
+        self.catalog
+            .lock()
+            .map(|catalog| catalog.models.is_empty())
+            .unwrap_or(true)
+    }
+
     pub(crate) fn manifest(&self) -> SessionEvent {
         let mode_id = self.mode_id().unwrap_or_else(|| "auto".to_string());
         let catalog = self.catalog.lock().expect("Codex catalog lock");
@@ -224,6 +234,17 @@ impl CodexState {
             .catalog
             .lock()
             .map_err(|_| WireError::new(ErrorCode::Io, "Codex model catalog is unavailable."))?;
+        // Absent vocabulary and unknown id are two different refusals: a
+        // provider that publishes no models cannot deliver any choice, while
+        // a published list that lacks the named id is a typo the human can
+        // fix. Collapsing them sends someone hunting a typo when the provider
+        // simply has no dial.
+        if model_id.is_some() && catalog.models.is_empty() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Codex publishes no models; the profile names one, so the creation is refused",
+            ));
+        }
         let selected = model_id.unwrap_or(catalog.current_model_id.as_str());
         let model = catalog
             .models
@@ -241,6 +262,12 @@ impl CodexState {
             .map(|entry| entry.id.clone())
             .collect::<Vec<_>>();
         if let Some(effort) = effort {
+            if available_efforts.is_empty() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Codex model '{selected}' has no thinking options; the profile names one, so the creation is refused"),
+                ));
+            }
             if !available_efforts.iter().any(|entry| entry == effort) {
                 return Err(WireError::new(
                     ErrorCode::InvalidRequest,
@@ -1184,5 +1211,127 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()
         );
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::{catalog_from_response, CodexCatalog, CodexState};
+
+    fn empty_catalog() -> CodexCatalog {
+        CodexCatalog {
+            models: Vec::new(),
+            current_model_id: String::new(),
+            current_effort: None,
+        }
+    }
+
+    fn catalog_with_model(efforts: Vec<&str>) -> CodexCatalog {
+        let frame = serde_json::json!({
+            "data": [{
+                "id": "gpt-5.1",
+                "displayName": "GPT 5.1",
+                "isDefault": true,
+                "supportedReasoningEfforts": efforts
+                    .iter()
+                    .map(|id| serde_json::json!({"reasoningEffort": id}))
+                    .collect::<Vec<_>>(),
+                "defaultReasoningEffort": efforts.first().map(|id| id.to_string()),
+            }]
+        });
+        catalog_from_response(&frame).expect("catalog")
+    }
+
+    /// Absent vocabulary and unknown id are two different refusals: a
+    /// provider that publishes no models gets the absence sentence, an id
+    /// outside a published list the mismatch sentence.
+    #[test]
+    fn a_codex_model_against_an_empty_catalog_is_the_absence_refusal() {
+        let state = CodexState::new("thread".to_string(), empty_catalog(), "auto");
+        let error = state
+            .set_model(Some("gpt-5.1"), None)
+            .expect_err("an empty catalog cannot deliver a model");
+        assert!(
+            error.message.contains("publishes no models"),
+            "the absence sentence: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("is not in model/list"),
+            "the two sentences must stay distinct: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_codex_model_outside_the_catalog_is_the_mismatch_refusal() {
+        let state = CodexState::new(
+            "thread".to_string(),
+            catalog_with_model(vec!["high"]),
+            "auto",
+        );
+        let error = state
+            .set_model(Some("gpt-bogus"), None)
+            .expect_err("an unknown model id must be refused");
+        assert!(
+            error.message.contains("is not in model/list"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+    }
+
+    /// A model with no thinking options at all is the absence sentence; an
+    /// option outside the model's list is the mismatch sentence. The ninth
+    /// catch, on the effort axis.
+    #[test]
+    fn codex_thinking_absence_and_mismatch_are_two_distinct_refusals() {
+        let none = CodexState::new("thread".to_string(), catalog_with_model(vec![]), "auto");
+        let error = none
+            .set_model(Some("gpt-5.1"), Some("high"))
+            .expect_err("a model without efforts must be refused");
+        assert!(
+            error.message.contains("has no thinking options"),
+            "the absence sentence: {}",
+            error.message
+        );
+
+        let some = CodexState::new(
+            "thread".to_string(),
+            catalog_with_model(vec!["high", "low"]),
+            "auto",
+        );
+        let error = some
+            .set_model(Some("gpt-5.1"), Some("bogus"))
+            .expect_err("an unknown effort must be refused");
+        assert!(
+            error.message.contains("is not available for model"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("has no thinking options"),
+            "the two sentences must stay distinct: {}",
+            error.message
+        );
+    }
+
+    /// The seeded delivery is what the first turn reads back: model and
+    /// effort verbatim.
+    #[test]
+    fn a_seeded_codex_delivery_is_what_the_first_turn_reads() {
+        let state = CodexState::new(
+            "thread".to_string(),
+            catalog_with_model(vec!["high", "low"]),
+            "auto",
+        );
+        state
+            .set_model(Some("gpt-5.1"), Some("low"))
+            .expect("seeded");
+        let (model, effort) = state.model_and_effort();
+        assert_eq!(model, "gpt-5.1");
+        assert_eq!(effort.as_deref(), Some("low"));
+        assert!(!state.catalog_is_empty(), "the catalog has models");
+        let empty = CodexState::new("thread".to_string(), empty_catalog(), "auto");
+        assert!(empty.catalog_is_empty(), "an empty catalog answers empty");
     }
 }

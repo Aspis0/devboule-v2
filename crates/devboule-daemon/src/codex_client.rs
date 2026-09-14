@@ -26,6 +26,7 @@ use crate::codex_view::{
 };
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
+use crate::profile_delivery::ProfileDelivery;
 use crate::server::ServerState;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -149,13 +150,67 @@ pub(super) fn resolve_command(paths: &RuntimePaths) -> Result<PtyCommand, WireEr
     Ok(PtyCommand::new(program, argv, cwd, Vec::new()).with_provider_id("codex"))
 }
 
+/// Whether a Codex child in this mode answers its own permission prompts —
+/// the fact an `autoAccept` delivery demands of the delivered mode. Two
+/// routes, never a provider-name table: the daemon's broker answers the
+/// provider-agnostic ids it owns (`mode_is_auto_answered`), and `full-access`
+/// is this client's own knob, whose approval policy is `never` — the provider
+/// never asks anybody, so the child runs alone however the broker feels. The
+/// other modes keep `on-request`, so the human may be asked and a profile
+/// that ticked `autoAccept` on one is a contradiction.
+fn mode_answers_own_prompts(mode_id: &str) -> bool {
+    crate::provider_catalog::mode_is_auto_answered(mode_id) || mode_id == "full-access"
+}
+
+/// The creation-time refusals Codex can make before a process exists: the
+/// mode must be one of Codex's own, and an `autoAccept` tick demands a mode
+/// that will not ask the human.
+fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {
+    let mode_id = delivery.mode_id.as_deref().unwrap_or("auto");
+    validate_mode(mode_id)?;
+    if delivery.auto_accept && !mode_answers_own_prompts(mode_id) {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "the profile asks Codex to approve its own permission prompts and also to start in mode '{mode_id}', which asks the human; the two contradict, so the creation is refused"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The model and thinking option the profile named, seeded into the state the
+/// first `turn/start` reads its parameters from. The handshake's model/list
+/// catalog is the vocabulary, so the refusal carries the two distinct
+/// sentences: a provider that publishes no models is not a provider whose
+/// named model is unknown.
+fn seed_model_and_effort(
+    state: &Arc<CodexState>,
+    delivery: &ProfileDelivery,
+) -> Result<(), WireError> {
+    if delivery.model_id.is_some() || delivery.thinking_option_id.is_some() {
+        let empty = state.catalog_is_empty();
+        if empty && delivery.model_id.is_some() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "the profile names a model, but Codex publishes no models the daemon can deliver; the creation is refused rather than started on a different model",
+            ));
+        }
+        state.set_model(
+            delivery.model_id.as_deref(),
+            delivery.thinking_option_id.as_deref(),
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
-    requested_mode: Option<String>,
+    delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
-    let mode_id = requested_mode.as_deref().unwrap_or("auto");
-    validate_mode(mode_id)?;
+    validate_delivery(&delivery)?;
+    let mode_id = delivery.mode_id.as_deref().unwrap_or("auto").to_string();
 
     let mut process = Command::new(&command.program);
     process
@@ -237,14 +292,22 @@ pub(super) fn spawn_process(
             format!("Could not read Codex stdout: {error}"),
         )
     })?;
-    let handshake = perform_handshake(&mut stdout, &stdin, &next_id, &command.cwd, mode_id)
+    let handshake = perform_handshake(&mut stdout, &stdin, &next_id, &command.cwd, &mode_id)
         .inspect_err(|_| terminate_shared_process(&process))?;
 
     let state = Arc::new(CodexState::new(
         handshake.thread_id,
         handshake.catalog,
-        mode_id,
+        &mode_id,
     ));
+    // The model and thinking option the profile named, delivered through the
+    // state the first turn reads — and judged against the catalog the
+    // handshake just brought back, so an undeliverable choice refuses here,
+    // before the child is a session, instead of running something else.
+    if let Err(error) = seed_model_and_effort(&state, &delivery) {
+        terminate_shared_process(&process);
+        return Err(error);
+    }
     let peer_session_id = state.thread_id();
     // One registration table for the requests this client awaits answers to
     // (A2-03), shared by the steerer that registers and the reader that
@@ -2368,6 +2431,102 @@ process.stdin.on('data', data => {
             std::fs::read(planned).expect("read"),
             kept,
             "stripped JPEG bytes at the planned path"
+        );
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::{
+        mode_answers_own_prompts, seed_model_and_effort, turn_start_params_for_prompt,
+        validate_delivery, CodexState, ProfileDelivery,
+    };
+    use crate::codex_view::catalog_from_response;
+    use std::sync::Arc;
+
+    fn catalog() -> crate::codex_view::CodexCatalog {
+        let frame = serde_json::json!({
+            "data": [{
+                "id": "gpt-5.1",
+                "displayName": "GPT 5.1",
+                "isDefault": true,
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "high"},
+                    {"reasoningEffort": "low"}
+                ],
+                "defaultReasoningEffort": "high",
+            }]
+        });
+        catalog_from_response(&frame).expect("catalog")
+    }
+
+    /// The seed is the delivery: the first `turn/start` reads its model and
+    /// effort from the state the profile seeded, so a seed that silently
+    /// no-ops would put a child on the app-server's default model while the
+    /// card named another.
+    #[test]
+    fn a_seeded_codex_delivery_reaches_the_first_turn_params() {
+        let state = Arc::new(CodexState::new("thread".to_string(), catalog(), "auto"));
+        let mut delivery = ProfileDelivery::none();
+        delivery.model_id = Some("gpt-5.1".to_string());
+        delivery.thinking_option_id = Some("low".to_string());
+        seed_model_and_effort(&state, &delivery).expect("seeded");
+
+        let params = turn_start_params_for_prompt(&state, "report your result", &[]);
+        assert_eq!(
+            params["model"], "gpt-5.1",
+            "the first turn runs the profile's model"
+        );
+        assert_eq!(
+            params["effort"], "low",
+            "the first turn runs the profile's effort"
+        );
+    }
+
+    fn delivery(mode: &str, auto_accept: bool) -> ProfileDelivery {
+        let mut delivery = ProfileDelivery::for_request(Some(mode.to_string()));
+        delivery.auto_accept = auto_accept;
+        delivery
+    }
+
+    /// The daemon's broker answers the provider-agnostic ids it owns;
+    /// `full-access` is this client's own knob, whose approval policy is
+    /// `never` — the provider never asks anybody. Both admit an
+    /// `autoAccept` tick; everything else asks the human.
+    #[test]
+    fn codex_auto_answer_modes_are_the_broker_list_plus_full_access() {
+        assert!(
+            mode_answers_own_prompts("full-access"),
+            "approvalPolicy never"
+        );
+        assert!(mode_answers_own_prompts("bypass"), "route A");
+        assert!(mode_answers_own_prompts("auto_accept"), "route A");
+        assert!(mode_answers_own_prompts("bypassPermissions"), "route A");
+        assert!(!mode_answers_own_prompts("auto"), "on-request asks");
+        assert!(!mode_answers_own_prompts("read-only"), "on-request asks");
+        assert!(
+            !mode_answers_own_prompts("auto-review"),
+            "eligible is not all: on-request requests may still reach the human"
+        );
+    }
+
+    /// The contradiction is refused at creation: a tick over a mode that
+    /// asks the human names two ways to run and delivers neither.
+    #[test]
+    fn a_codex_auto_accept_tick_over_an_asking_mode_is_refused() {
+        validate_delivery(&delivery("full-access", true)).expect("never asks");
+        validate_delivery(&delivery("auto", false)).expect("asking mode, no tick");
+        let error = validate_delivery(&delivery("auto", true))
+            .expect_err("a tick over an asking mode is the contradiction");
+        assert!(
+            error.message.contains("contradict"),
+            "the refusal names both halves: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("mode 'auto'"),
+            "the refusal names the delivered mode: {}",
+            error.message
         );
     }
 }

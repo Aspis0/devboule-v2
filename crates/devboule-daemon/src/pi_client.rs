@@ -30,6 +30,7 @@ use crate::acp_view::PromptCapabilityState;
 use crate::atomic::atomic_write;
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
+use crate::profile_delivery::ProfileDelivery;
 use crate::server::ServerState;
 
 const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
@@ -249,18 +250,31 @@ fn remove_permission_extension(path: &Path) {
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
-    requested_mode: Option<String>,
+    delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
     // Pi has no permission gate of its own: the gate is the TypeScript extension
     // this module writes just below and passes to the spawn. Inheriting Pi's native
     // behaviour as the default meant the surface that authorises "Create or
     // overwrite a file" never asked, so a session nobody asked a mode for starts in
     // "ask". The chip is the only way back to "bypass", and it is a deliberate click.
-    let mode_id = requested_mode.as_deref().unwrap_or("ask");
-    if !matches!(mode_id, "bypass" | "ask") {
+    let mode_id = delivery.mode_id.as_deref().unwrap_or("ask").to_string();
+    if !matches!(mode_id.as_str(), "bypass" | "ask") {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
             format!("Pi session mode '{mode_id}' is not available."),
+        ));
+    }
+    // `autoAccept` is a constraint on which mode is delivered: `bypass` is the
+    // one Pi mode the daemon's own broker answers (the injected extension
+    // stops gating), so a profile that ticks the toggle and names `ask` asks
+    // the child to ask and not to ask at once. The refusal is the answer; a
+    // substitution is not.
+    if delivery.auto_accept && !crate::provider_catalog::mode_is_auto_answered(&mode_id) {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "the profile asks Pi to approve its own permission prompts and also to start in mode '{mode_id}', which asks the human; the two contradict, so the creation is refused"
+            ),
         ));
     }
     let extension_path = permission_extension_path(state.sessions.runtime_dir());
@@ -375,7 +389,7 @@ pub(super) fn spawn_process(
             ));
         }
     };
-    let handshake = match perform_handshake(&mut stdout, &stdin, &next_id, mode_id) {
+    let handshake = match perform_handshake(&mut stdout, &stdin, &next_id, &mode_id) {
         Ok(handshake) => handshake,
         Err(error) => {
             terminate_shared_process(&process);
@@ -433,8 +447,30 @@ pub(super) fn spawn_process(
         WireError::new(ErrorCode::Io, format!("Could not drain Pi stderr: {error}"))
     })?;
     // The static prompt route reads the live model from the same catalog the
-    // switcher keeps, so the two share one `Arc`.
+    // switcher keeps, so the two share one `Arc`. The switcher is built before
+    // the session is assembled because the delivery runs through it: the same
+    // validated rpc the runtime switch uses is what puts the profile's model
+    // and thinking level in force, and a refusal there tears the child down
+    // before it was ever a session.
     let catalog = Arc::new(Mutex::new(handshake.catalog));
+    let mode_id_state = Arc::new(Mutex::new(mode_id.clone()));
+    let switcher = PiSwitcher {
+        control: Arc::clone(&control),
+        catalog: Arc::clone(&catalog),
+        mode_id: Arc::clone(&mode_id_state),
+        permission_extension_active: Arc::clone(&permission_extension_active),
+    };
+    if delivery.model_id.is_some() || delivery.thinking_option_id.is_some() {
+        if let Err(error) = switcher.set_model(
+            delivery.model_id.as_deref(),
+            delivery.thinking_option_id.as_deref(),
+        ) {
+            terminate_shared_process(&process);
+            remove_permission_extension(&extension_path);
+            drop(process_job);
+            return Err(error);
+        }
+    }
     let static_prompt = Arc::new(PiStaticPrompt::new(
         Arc::clone(&stdin),
         Arc::clone(&next_id),
@@ -444,12 +480,7 @@ pub(super) fn spawn_process(
         process_job,
         master: None,
         killer: Box::new(killer),
-        switcher: Some(Box::new(PiSwitcher {
-            control,
-            catalog,
-            mode_id: Arc::new(Mutex::new(mode_id.to_string())),
-            permission_extension_active,
-        })),
+        switcher: Some(Box::new(switcher)),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
         // Not an ACP session: no negotiated structured route. The static one
@@ -1452,6 +1483,17 @@ impl ModelSwitcher for PiSwitcher {
             return Ok(());
         }
         let model_id = model_id.expect("checked above");
+        // Absent vocabulary and unknown id are two different refusals: a
+        // provider that publishes no models cannot deliver any choice, while
+        // a published list that lacks the named id is a typo the human can
+        // fix. Collapsing them sends someone hunting a typo when the provider
+        // simply has no dial.
+        if current.models.is_empty() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Pi publishes no models; the profile names one, so the creation is refused",
+            ));
+        }
         let model = current.models.get(model_id).ok_or_else(|| {
             WireError::new(
                 ErrorCode::InvalidRequest,
@@ -1507,6 +1549,16 @@ impl ModelSwitcher for PiSwitcher {
             })
             .unwrap_or_default();
         if let Some(effort) = effort {
+            if levels.is_empty() {
+                // Absence, not mismatch: the model publishes no thinking
+                // levels at all, so there is no list the name could have
+                // been a typo from.
+                let error = WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Pi model '{model_id}' has no thinking options; the profile names one, so the creation is refused"),
+                );
+                return Err(self.rollback_error(&current, error));
+            }
             if !thinking_level_allowed(effort, &levels) {
                 let error = WireError::new(
                     ErrorCode::InvalidRequest,
@@ -3246,6 +3298,158 @@ process.stdin.on("data", (chunk) => {
                 plan.images[0].data_base64,
                 base64::engine::general_purpose::STANDARD.encode(&kept),
                 "stripped JPEG bytes, JPEG label"
+            );
+        }
+    }
+    #[cfg(test)]
+    mod delivery_tests {
+        use super::{fake_pi_answering, PiCatalog, PiControl, PiSwitcher};
+        use crate::session::ModelSwitcher;
+        use devboule_protocol::SessionModelEffort;
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+        use std::sync::{Arc, Mutex};
+
+        // Re-exported through the tests module's own namespace where they are
+        // already in scope; the two that are not come straight from home.
+        use crate::session::pi_client::{PiInputKinds, PiModel};
+
+        /// A fake Pi that answers every control command with success and, for
+        /// `get_available_thinking_levels`, a real level list. Each answer echoes
+        /// the request line back, so the test can assert on the *requests* — the
+        /// wire is what the delivery is.
+        const FAKE_PI_DELIVERS: &str = r#"
+    let buffered = "";
+    process.stdin.on("data", (chunk) => {
+      buffered += chunk;
+      let index;
+      while ((index = buffered.indexOf("\n")) >= 0) {
+        const line = buffered.slice(0, index);
+        buffered = buffered.slice(index + 1);
+        const frame = JSON.parse(line);
+        const answer = { id: frame.id, type: "response", success: true, received: line };
+        if (frame.type === "get_available_thinking_levels") {
+          answer.data = { levels: ["high", "low"] };
+        }
+        process.stdout.write(JSON.stringify(answer) + "\n");
+      }
+    });
+    "#;
+
+        /// The delivery is the wire: a delivered model and thinking option are
+        /// the `set_model` and `set_thinking_level` requests this client writes
+        /// after the handshake, in that order, with the delivered values. A
+        /// delivery that skips a request is not a delivery.
+        #[test]
+        fn delivery_writes_set_model_and_set_thinking_level_on_the_wire() {
+            let pi = fake_pi_answering(FAKE_PI_DELIVERS);
+            let catalog = PiCatalog {
+                models: HashMap::from([(
+                    "pi-model".to_string(),
+                    PiModel {
+                        name: "Pi Model".to_string(),
+                        provider: Some("pi-provider".to_string()),
+                        context_tokens: None,
+                        efforts: Some(vec![
+                            SessionModelEffort {
+                                id: "high".to_string(),
+                                label: "High".to_string(),
+                                description: None,
+                                default: Some(true),
+                            },
+                            SessionModelEffort {
+                                id: "low".to_string(),
+                                label: "Low".to_string(),
+                                description: None,
+                                default: None,
+                            },
+                        ]),
+                        input: PiInputKinds::default(),
+                    },
+                )]),
+                current_model_id: Some("pi-model".to_string()),
+                current_provider: Some("pi-provider".to_string()),
+                current_effort: Some("high".to_string()),
+                current_levels: vec!["high".to_string()],
+            };
+            let switcher = PiSwitcher {
+                control: Arc::clone(&pi.control),
+                catalog: Arc::new(Mutex::new(catalog)),
+                mode_id: Arc::new(Mutex::new("ask".to_string())),
+                permission_extension_active: Arc::new(AtomicBool::new(false)),
+            };
+            switcher
+                .set_model(Some("pi-model"), Some("low"))
+                .expect("delivered");
+            let answers = pi.answers();
+
+            let received: Vec<String> = answers
+                .iter()
+                .filter_map(|answer| answer["received"].as_str().map(|line| line.to_string()))
+                .collect();
+            let commands: Vec<String> = received
+                .iter()
+                .filter_map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .ok()?
+                        .get("type")
+                        .and_then(|kind| kind.as_str())
+                        .map(str::to_string)
+                })
+                .collect();
+            assert_eq!(
+                commands,
+                vec![
+                    "set_model".to_string(),
+                    "get_available_thinking_levels".to_string(),
+                    "set_thinking_level".to_string()
+                ],
+                "the delivery writes model then level, on the wire: {received:?}"
+            );
+            assert!(
+                received[0].contains("pi-model"),
+                "the set_model request carries the delivered model: {}",
+                received[0]
+            );
+            assert!(
+                received[2].contains("low"),
+                "the set_thinking_level request carries the delivered level: {}",
+                received[2]
+            );
+        }
+
+        /// The model-absence refusal fires before anything is written: a provider
+        /// that publishes no models cannot deliver any choice, and that is a
+        /// different sentence from "the named model is not in the list". The
+        /// control's stdin is closed — if the test reaches the wire it fails
+        /// loudly instead of passing quietly.
+        #[test]
+        fn a_pi_model_against_an_empty_catalog_is_the_absence_refusal() {
+            let stdin: Arc<Mutex<Option<std::process::ChildStdin>>> = Arc::new(Mutex::new(None));
+            let switcher = PiSwitcher {
+                control: Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1)))),
+                catalog: Arc::new(Mutex::new(PiCatalog {
+                    models: HashMap::new(),
+                    current_model_id: None,
+                    current_provider: None,
+                    current_effort: None,
+                    current_levels: Vec::new(),
+                })),
+                mode_id: Arc::new(Mutex::new("ask".to_string())),
+                permission_extension_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            let error = switcher
+                .set_model(Some("pi-model"), None)
+                .expect_err("an empty catalog cannot deliver a model");
+            assert!(
+                error.message.contains("publishes no models"),
+                "the absence sentence: {}",
+                error.message
+            );
+            assert!(
+                !error.message.contains("is not in get_available_models"),
+                "the two sentences must stay distinct: {}",
+                error.message
             );
         }
     }

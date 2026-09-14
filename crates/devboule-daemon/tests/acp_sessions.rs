@@ -2927,17 +2927,23 @@ struct Slice5Test {
     client: DaemonClient,
 }
 
-/// One profile, as the Settings form saves it: the stub provider, the mode the
-/// preset cells used to name (`default` — the stub declares `ask,default`), the
-/// overlay the caller passes, and ticked for agents.
+/// One profile, as the Settings form saves it: the stub provider, the model
+/// the stub publishes **but does not start on** (`stub-model-new`; the stub's
+/// own default is `stub-model`), the mode the preset cells used to name
+/// (`default` — the stub declares `ask,default`), the overlay the caller
+/// passes, and ticked for agents.
 ///
-/// `id` is spelled rather than minted (`profile-<name>`), so a test can assert
-/// the id the session recorded and rename the profile while keeping it.
+/// The saved model differing from the provider's default is load-bearing: an
+/// assertion on the child is what makes the delivery real, and a fixture that
+/// saved the default would pass even if the daemon delivered nothing. `id` is
+/// spelled rather than minted (`profile-<name>`), so a test can assert the id
+/// the session recorded and rename the profile while keeping it.
 fn stub_profile(name: &str, overlay: &[&str]) -> serde_json::Value {
     stub_profile_with(
         name,
         &format!("profile-{name}"),
         "default",
+        "stub-model-new",
         serde_json::json!({}),
         overlay,
         true,
@@ -2945,12 +2951,13 @@ fn stub_profile(name: &str, overlay: &[&str]) -> serde_json::Value {
 }
 
 /// The same profile with every field a test needs to choose: the mode (a
-/// `bypass`-family mode is what makes a child unattended), the features, the
-/// overlay and whether it is ticked for agents.
+/// `bypass`-family mode is what makes a child unattended), the model, the
+/// features, the overlay and whether it is ticked for agents.
 fn stub_profile_with(
     name: &str,
     id: &str,
     mode: &str,
+    model: &str,
     features: serde_json::Value,
     overlay: &[&str],
     enabled: bool,
@@ -2960,7 +2967,7 @@ fn stub_profile_with(
         "name": name,
         "note": "the profile the slice-5 battery creates from",
         "provider": "devboule-acp-stub",
-        "model": "stub-default",
+        "model": model,
         "modeId": mode,
         "features": features,
         "toolOverlay": overlay,
@@ -3072,6 +3079,14 @@ impl Slice5Test {
             (
                 "DEVBOULE_ACP_STUB_MODES_FILE",
                 file_name(&dir, "stub modes.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_SET_MODEL_FILE",
+                file_name(&dir, "set model.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE",
+                file_name(&dir, "set model effort.txt"),
             ),
             (
                 "DEVBOULE_ACP_STUB_STDIN_FILE",
@@ -3314,6 +3329,26 @@ fn wait_for_creation_card(
     }
 }
 
+/// The creation card's own text, off the creator's transcript: what the human
+/// read when the decision was made. The R2a assertions hold the card against
+/// the child's wire — a card a human could approve into an existing child
+/// printed only what the child was delivered.
+fn creation_card_description(events: &Mutex<Vec<SessionEvent>>) -> String {
+    events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::PermissionRequest {
+                description: Some(description),
+                create_agent: Some(_),
+                ..
+            } => Some(description.clone()),
+            _ => None,
+        })
+        .expect("the creation card's text")
+}
+
 fn slice5_events(events: &Mutex<Vec<SessionEvent>>) -> Vec<SessionEvent> {
     events.lock().expect("events lock").clone()
 }
@@ -3466,6 +3501,30 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
         "the worker cell's mode is what the child was switched to"
     );
 
+    // R2a — what the card printed, the child runs. The fixture deliberately
+    // saves a model the stub does not start on (`stub-model-new`; the stub's
+    // own default is `stub-model`), so an assertion on the child is what
+    // makes the delivery real: a daemon that delivered nothing would be
+    // caught here, because the stub writes down every `session/set_model`
+    // it is sent.
+    let set_model = test.wait_for_observations("set model.txt", 1);
+    assert_eq!(
+        set_model[0].trim(),
+        "stub-model-new",
+        "the child was started on the profile's model, not the provider's default: {set_model:?}"
+    );
+    // And the card named that model and that mode — the human approved what
+    // the child was delivered, by construction.
+    let description = creation_card_description(&events);
+    assert!(
+        description.contains("model stub-model-new, mode default"),
+        "the card names the delivered model and mode: {description}"
+    );
+    assert!(
+        description.contains("auto accept: No"),
+        "an asking profile without the tick says No: {description}"
+    );
+
     wait_for(&events, Duration::from_secs(60), |events| {
         events
             .iter()
@@ -3534,6 +3593,281 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
         Some(deposited.len() as u64),
         "the part's size is the store's size"
     );
+}
+
+/// R2a: the thinking option the card named is delivered on the same wire —
+/// the effort the child's `session/set_model` request carried is what the
+/// stub writes down, and the card's thinking line names the value the human
+/// approved.
+#[test]
+fn the_child_is_delivered_the_thinking_option_the_card_named() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["thinkingOptionId"] = serde_json::json!("low");
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "thinker",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    let child = test.child_of(&creator.id);
+    assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
+
+    let description = creation_card_description(&events);
+    assert!(
+        description.contains("thinking low"),
+        "the card names the delivered thinking option: {description}"
+    );
+    let effort = test.wait_for_observations("set model effort.txt", 1);
+    assert_eq!(
+        effort[0].trim(),
+        "low",
+        "the child starts on the thinking option the card named: {effort:?}"
+    );
+}
+
+/// R2a, model axis: a profile naming a model the agent does not publish is
+/// **refused** — the mismatch sentence, not substituted with the agent's
+/// default. The child never exists, and nothing was sent on the wire.
+#[test]
+fn a_profile_naming_a_model_the_agent_does_not_publish_is_refused() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["model"] = serde_json::json!("stub-nope");
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "wrong model",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("stub-nope") && calls[0].contains("is not among the model values"),
+        "the refusal names the id and the agent's declared values: {calls:?}"
+    );
+    assert!(
+        test.observations("set model.txt").is_empty(),
+        "nothing was sent on the wire for a refused delivery"
+    );
+}
+
+/// R2a, absence versus mismatch: an agent that declares **no** model surface
+/// cannot deliver any model at all, so a profile naming one is refused with
+/// the absence sentence — a different answer from an unknown id in a
+/// published list, because there is no list the name could have been a typo
+/// from.
+#[test]
+fn an_agent_that_declares_no_model_surface_refuses_a_profile_with_a_model() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "no models",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        &[("DEVBOULE_STUB_NO_MODELS", "1")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("declares no model or effort switch surface"),
+        "the absence sentence: {calls:?}"
+    );
+    assert!(
+        !calls[0].contains("is not among the model values"),
+        "absence and mismatch are two different refusals: {calls:?}"
+    );
+}
+
+/// R2a, thinking axis: a thinking option outside what the agent declares for
+/// the delivered model is refused with the mismatch sentence.
+#[test]
+fn a_thinking_option_the_agent_does_not_declare_is_refused() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["thinkingOptionId"] = serde_json::json!("bogus");
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "wrong effort",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("bogus") && calls[0].contains("is not among the thinking options"),
+        "the mismatch sentence for the thinking axis: {calls:?}"
+    );
+    assert!(
+        test.observations("set model.txt").is_empty(),
+        "nothing was delivered for a refused thinking option"
+    );
+}
+
+/// R2a, the contradiction: a profile that ticks `autoAccept` while naming a
+/// mode that asks the human is refused at creation, after the handshake has
+/// said what the agent can actually be in. The child is torn down; the
+/// refusal names both halves. The card still printed `auto accept: Yes` and
+/// named the mode it means — consent to a mechanism, and the mechanism
+/// refused to exist.
+#[test]
+fn an_auto_accept_tick_over_an_asking_mode_is_refused_at_creation() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["features"] = serde_json::json!({"autoAccept": true});
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "contradiction",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    // The card names the mode the tick was read onto: the human consents to a
+    // mechanism, not to a word.
+    test.allow_creation_card(&creator.id, &events);
+    let description = creation_card_description(&events);
+    assert!(
+        description.contains("auto accept: Yes (mode default)"),
+        "the auto-accept line names the mode it means: {description}"
+    );
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("contradict") && calls[0].contains("mode 'default'"),
+        "the refusal names both halves of the contradiction: {calls:?}"
+    );
+    // The child never lived: an asking child with an unattended marker is the
+    // lie in its most dangerous form, and the answer is refusal. The refused
+    // spawn still leaves its *ended* journal row behind — the row is the
+    // durable boundary and the spawn error ends it — so the assertion is on
+    // liveness, not on the row's absence.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// R2a, the identity the refusal buys: a tick over a mode the daemon's own
+/// broker answers admits the creation, the child starts in that mode, and the
+/// marker on the child is the fact the human ticked for — the delivered mode
+/// and the marker are the same fact.
+#[test]
+fn an_auto_accept_child_starts_in_the_mode_the_tick_demands() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["modeId"] = serde_json::json!("auto_accept");
+    profiles["profiles"][0]["features"] = serde_json::json!({"autoAccept": true});
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "unattended",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        // The stub must declare the mode so the daemon has a real switch to
+        // send; `auto_accept` is one of the ids the daemon's own broker
+        // answers.
+        &[("DEVBOULE_STUB_MODES", "ask,auto_accept")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    let description = creation_card_description(&events);
+    assert!(
+        description.contains("auto accept: Yes (mode auto_accept)"),
+        "the card names the answering mode: {description}"
+    );
+    let child = test.child_of(&creator.id);
+    assert!(
+        child.unattended,
+        "the marker and the delivered mode are one fact"
+    );
+    let switched = test.wait_for_observations("set mode.txt", 1);
+    assert_eq!(
+        switched[0].trim(),
+        "auto_accept",
+        "the child was delivered the mode the tick demands: {switched:?}"
+    );
+}
+
+/// R2a, the card's third rule: a feature key the daemon does not interpret is
+/// named as uninterpreted — stored, delivered never, promised never — and the
+/// creation still succeeds, because an uninterpreted key promises nothing.
+#[test]
+fn an_unknown_feature_key_is_named_as_uninterpreted_on_the_card() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["features"] = serde_json::json!({"sandbox": "gVisor"});
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "feature keeper",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    // The creation succeeds: the key is carried, not refused and not hidden.
+    test.allow_creation_card(&creator.id, &events);
+    let description = creation_card_description(&events);
+    // Feature values render as JSON literals, exactly as the store holds them.
+    assert!(
+        description.contains(
+            "sandbox=\"gVisor\" (not interpreted by this daemon; carried but never delivered)"
+        ),
+        "the card names the uninterpreted feature: {description}"
+    );
+    assert!(
+        description.contains("auto accept: No"),
+        "an uninterpreted key is not a tick: {description}"
+    );
+    let child = test.child_of(&creator.id);
+    assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
 }
 
 /// `S5` block 2's overlay, measured on the child's *own* broker connection:
@@ -4491,6 +4825,7 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
             "runner",
             "profile-runner",
             "bypass",
+            "stub-model-new",
             serde_json::json!({}),
             &[],
             true,
@@ -4522,6 +4857,7 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
             "runner",
             "profile-runner",
             "bypass",
+            "stub-model-new",
             serde_json::json!({}),
             &[],
             false,
