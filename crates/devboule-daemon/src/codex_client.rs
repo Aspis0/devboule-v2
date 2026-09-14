@@ -376,6 +376,9 @@ pub(super) fn spawn_process(
         os_handle,
         peer_session_id: Some(peer_session_id),
         agent_version: None,
+        // The delivery was applied inside `spawn_process`, before this value
+        // existed; nothing is left for the session reader to answer.
+        pending_delivery: None,
     })
 }
 
@@ -2493,15 +2496,24 @@ mod delivery_tests {
     /// `full-access` is this client's own knob, whose approval policy is
     /// `never` — the provider never asks anybody. Both admit an
     /// `autoAccept` tick; everything else asks the human.
+    ///
+    /// The broker half is **walked, not hand-listed** (the R2a audit's F9):
+    /// the test iterates the table itself, so a fourth id added to
+    /// `auto_answered_modes` is asserted to answer here the moment it
+    /// exists, and a codex-side predicate change is caught against whatever
+    /// the table holds.
     #[test]
     fn codex_auto_answer_modes_are_the_broker_list_plus_full_access() {
         assert!(
             mode_answers_own_prompts("full-access"),
             "approvalPolicy never"
         );
-        assert!(mode_answers_own_prompts("bypass"), "route A");
-        assert!(mode_answers_own_prompts("auto_accept"), "route A");
-        assert!(mode_answers_own_prompts("bypassPermissions"), "route A");
+        for mode_id in crate::provider_catalog::auto_answered_modes() {
+            assert!(
+                mode_answers_own_prompts(mode_id),
+                "route A: {mode_id} answers its own prompts"
+            );
+        }
         assert!(!mode_answers_own_prompts("auto"), "on-request asks");
         assert!(!mode_answers_own_prompts("read-only"), "on-request asks");
         assert!(

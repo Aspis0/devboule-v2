@@ -536,7 +536,7 @@ fn spawn_process_with_load(
         }
     };
     let mut reader = BufReader::new(stdout);
-    let (deferred, handshake, peer_session_id, agent_version) = match handshake(
+    let (mut deferred, mut handshake, peer_session_id, agent_version) = match handshake(
         &transport,
         &mut reader,
         &command.cwd,
@@ -607,7 +607,42 @@ fn spawn_process_with_load(
         } => Some(modes.current_mode_id.clone()),
         _ => None,
     });
-    if let Err(error) = apply_profile_delivery(&transport, &delivery, delivered_mode.as_deref()) {
+    if let Err(error) = apply_profile_delivery(
+        &transport,
+        &mut reader,
+        &mut deferred,
+        &delivery,
+        delivered_mode.as_deref(),
+    ) {
+        // The refusal teardown is the handshake's, line for line: the same
+        // things are freed, and the same three behaviours hold — a provider
+        // that died during the delivery is named as that, its last stderr
+        // lines travel with the message, and the whole banner is redacted
+        // before it leaves for the caller (the R2a audit's F5).
+        //
+        // Whether the provider died on its own is read **before** the
+        // teardown: after the kill the exit status is ours, and the naming
+        // would fire for every refusal, including an agent that answered
+        // with an error and was then torn down.
+        let exited = 'exited: {
+            // A child whose stdout the daemon just read EOF from is on its
+            // way out: its exit becomes observable a beat after the pipe
+            // closes. A short bounded poll names that death without waiting
+            // on a child that is still alive — a live child is the kill
+            // below's business.
+            for _ in 0..40 {
+                let exited = process
+                    .lock()
+                    .ok()
+                    .and_then(|mut process| process.try_wait().ok().flatten())
+                    .is_some();
+                if exited {
+                    break 'exited true;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            false
+        };
         let mut killer = AcpKiller {
             process: Arc::clone(&process),
             transport: Arc::clone(&transport),
@@ -622,9 +657,52 @@ fn spawn_process_with_load(
         if let Ok(mut process) = process.lock() {
             let _ = process.wait();
         }
-        let _ = stderr_source.discard_and_join();
+        let stderr_lines = stderr_source.discard_and_join();
         drop(process_job);
-        return Err(error);
+        if exited {
+            return Err(redact_handshake_error(
+                WireError::new(
+                    error.code,
+                    format!(
+                        "provider exited during startup: {}",
+                        bounded_excerpt(&error.message, MAX_HANDSHAKE_MESSAGE_BYTES)
+                    ),
+                ),
+                &stderr_lines,
+                mcp.as_ref(),
+            ));
+        }
+        return Err(redact_handshake_error(error, &stderr_lines, mcp.as_ref()));
+    }
+    // The manifest the session is born with is the handshake event, so it is
+    // patched here with what the child actually took: a session created from
+    // a profile starts showing the delivered model, not the handshake's
+    // guess. The agent's own catalog pushes, if any follow, replay through
+    // the deferred lines and update it again.
+    if let Some(SessionEvent::SessionManifest {
+        current_model_id,
+        models,
+        ..
+    }) = handshake.event.as_mut()
+    {
+        if let Some(model_id) = delivery
+            .model_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            *current_model_id = Some(model_id.to_string());
+            if let Some(effort) = delivery
+                .thinking_option_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+            {
+                for model in models.iter_mut() {
+                    if model.model_id == model_id {
+                        model.current_effort = Some(effort.to_string());
+                    }
+                }
+            }
+        }
     }
     let writer = AcpWriter {
         transport: Arc::clone(&transport),
@@ -673,6 +751,9 @@ fn spawn_process_with_load(
         os_handle,
         peer_session_id: Some(peer_session_id),
         agent_version,
+        // The delivery was applied inside `spawn_process`, before this value
+        // existed; nothing is left for the session reader to answer.
+        pending_delivery: None,
     })
 }
 
@@ -712,6 +793,17 @@ struct FollowupSwitch {
     alternate: Option<AlternateSwitch>,
     requested_model_id: Option<String>,
     requested_effort: Option<String>,
+}
+
+/// The switch requests one delivery put on the wire: the primary request's
+/// id, and the follow-up the session reader would send once the primary
+/// succeeded. The creation-time confirm walks both itself — its answers are
+/// read on the spot, because no reader exists yet — while the runtime switch
+/// leaves both to `dispatch_response` as before.
+#[derive(Clone, Debug)]
+struct SentSwitch {
+    primary_id: u64,
+    followup: Option<FollowupSwitch>,
 }
 
 /// A pending switch carries the requested values and the one permitted
@@ -1111,6 +1203,44 @@ impl AcpTransport {
         });
     }
 
+    /// Reflect a creation-time confirmed switch in the remembered manifest.
+    /// The runtime switch reaches the same state through
+    /// `complete_vendor_switch`/`complete_config_switch`, which also publish
+    /// to a live runtime; nothing is published here — the session does not
+    /// exist yet — but the manifest the handshake seeded must not go on
+    /// naming a model the child has already been switched away from.
+    fn patch_manifest_current(&self, model_id: Option<String>, effort: Option<String>) {
+        let Some(model_id) = model_id else {
+            return;
+        };
+        let Some(SessionEvent::SessionManifest {
+            provider_id,
+            models,
+            modes,
+            ..
+        }) = self.last_manifest()
+        else {
+            return;
+        };
+        let models = models
+            .into_iter()
+            .map(|mut model| {
+                if model.model_id == model_id {
+                    if let Some(effort) = &effort {
+                        model.current_effort = Some(effort.clone());
+                    }
+                }
+                model
+            })
+            .collect();
+        self.remember_manifest(&SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id: Some(model_id),
+            models,
+            modes,
+        });
+    }
+
     fn override_manifest_effort(&self, event: SessionEvent) -> SessionEvent {
         let Some(effort) = self.current_effort() else {
             return event;
@@ -1352,10 +1482,16 @@ impl ModelSwitcher for AcpSwitcher {
         let requested_effort = effort.filter(|value| !value.is_empty()).map(str::to_string);
 
         if let Some(model_id) = requested_model {
-            return self.set_requested_model(shape, model_id, requested_effort);
+            // The runtime switch's answers are dispatched by the session
+            // reader (alternates, follow-ups, manifest re-emission). Only
+            // the creation-time confirm walks the sent requests itself; see
+            // `apply_profile_delivery`.
+            self.set_requested_model(shape, model_id, requested_effort)?;
+            return Ok(());
         }
         if let Some(effort) = requested_effort {
-            return self.set_requested_effort(shape, effort);
+            self.set_requested_effort(shape, effort)?;
+            return Ok(());
         }
         let current_model = self.transport.current_model_id().ok_or_else(|| {
             WireError::new(
@@ -1364,6 +1500,7 @@ impl ModelSwitcher for AcpSwitcher {
             )
         })?;
         self.set_requested_model(shape, current_model, None)
+            .map(|_sent| ())
     }
 
     fn set_mode(&self, mode_id: &str) -> Result<(), WireError> {
@@ -1391,7 +1528,7 @@ impl AcpSwitcher {
         shape: ModelSwitchShape,
         model_id: String,
         effort: Option<String>,
-    ) -> Result<(), WireError> {
+    ) -> Result<SentSwitch, WireError> {
         let effort_uses_config = shape.effort.config.is_some();
         let followup = if effort_uses_config {
             effort.as_ref().and_then(|effort| {
@@ -1417,7 +1554,8 @@ impl AcpSwitcher {
         match shape.model.config.as_ref() {
             Some(config) => {
                 let alternate = self.vendor_model_alternate(&shape, &model_id, effort.clone());
-                self.transport
+                let primary_id = self
+                    .transport
                     .request_set_config_option(
                         &config.id,
                         &model_id,
@@ -1425,9 +1563,13 @@ impl AcpSwitcher {
                         Some(model_id.clone()),
                         effort.clone(),
                         alternate,
-                        followup,
+                        followup.clone(),
                     )
                     .map_err(acp_io_error)?;
+                Ok(SentSwitch {
+                    primary_id,
+                    followup,
+                })
             }
             None => {
                 // The old vendor catalog sometimes carries a per-model
@@ -1443,19 +1585,23 @@ impl AcpSwitcher {
                         .or_else(|| self.transport.default_effort_for_model(&model_id))
                 };
                 let alternate = self.config_model_alternate(&shape, &model_id);
-                self.transport
-                    .request_set_model(model_id, vendor_effort, alternate, followup)
+                let primary_id = self
+                    .transport
+                    .request_set_model(model_id, vendor_effort, alternate, followup.clone())
                     .map_err(acp_io_error)?;
+                Ok(SentSwitch {
+                    primary_id,
+                    followup,
+                })
             }
         }
-        Ok(())
     }
 
     fn set_requested_effort(
         &self,
         shape: ModelSwitchShape,
         effort: String,
-    ) -> Result<(), WireError> {
+    ) -> Result<SentSwitch, WireError> {
         let current_model = self.transport.current_model_id();
         match shape.effort.config.as_ref() {
             Some(config) => {
@@ -1473,7 +1619,8 @@ impl AcpSwitcher {
                     )),
                     None => None,
                 };
-                self.transport
+                let primary_id = self
+                    .transport
                     .request_set_config_option(
                         &config.id,
                         &effort,
@@ -1484,6 +1631,10 @@ impl AcpSwitcher {
                         None,
                     )
                     .map_err(acp_io_error)?;
+                Ok(SentSwitch {
+                    primary_id,
+                    followup: None,
+                })
             }
             None => {
                 let model_id = current_model.ok_or_else(|| {
@@ -1493,12 +1644,16 @@ impl AcpSwitcher {
                     )
                 })?;
                 let alternate = self.config_effort_alternate(&shape, &effort);
-                self.transport
+                let primary_id = self
+                    .transport
                     .request_set_model(model_id, Some(effort), alternate, None)
                     .map_err(acp_io_error)?;
+                Ok(SentSwitch {
+                    primary_id,
+                    followup: None,
+                })
             }
         }
-        Ok(())
     }
 
     fn vendor_model_alternate(
@@ -1641,6 +1796,8 @@ type HandshakeResult = (
 /// sentence, and the same split holds for the thinking option.
 fn apply_profile_delivery(
     transport: &Arc<AcpTransport>,
+    reader: &mut BufReader<ChildStdout>,
+    deferred: &mut Vec<serde_json::Value>,
     delivery: &ProfileDelivery,
     delivered_mode: Option<&str>,
 ) -> Result<(), WireError> {
@@ -1682,17 +1839,105 @@ fn apply_profile_delivery(
         validate_acp_effort_choice(&shape.effort, delivery.model_id.as_deref(), effort)?;
     }
     // Deliver on the same wire the runtime switch uses, so the verbs and the
-    // pending-switch confirmation are the proven ones. The send is
-    // synchronous; the agent's confirmation arrives through the pending-switch
-    // machinery and re-emits the manifest, which is how the daemon shows what
-    // the agent really took.
+    // pending-switch bookkeeping are the proven ones. The send is
+    // synchronous — and so is the **confirmation**: the response is read
+    // here, the way the handshake reads its answers, because the session
+    // reader that dispatches responses does not exist yet. A creation that
+    // reported success now would promise a model the child may never run
+    // (the R2a audit's F3): an agent that answers the switch with an error
+    // refuses the creation instead.
     let switcher = AcpSwitcher {
         transport: Arc::clone(transport),
     };
-    switcher.set_model(
-        delivery.model_id.as_deref(),
-        delivery.thinking_option_id.as_deref(),
-    )
+    let requested_model = delivery
+        .model_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let requested_effort = delivery
+        .thinking_option_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let sent = if let Some(model_id) = &requested_model {
+        switcher.set_requested_model(shape, model_id.clone(), requested_effort.clone())?
+    } else if let Some(effort) = &requested_effort {
+        switcher.set_requested_effort(shape, effort.clone())?
+    } else {
+        return Ok(());
+    };
+    confirm_switch(transport, reader, deferred, &sent, delivery)?;
+    // What the card named is now what the transport reports, so the runtime
+    // switcher starts from the delivered values rather than the handshake's
+    // guess.
+    if let Some(model_id) = &requested_model {
+        transport.update_current_model_id(Some(model_id.clone()));
+    }
+    if let Some(effort) = &requested_effort {
+        transport.update_current_effort(Some(effort.clone()));
+    }
+    transport.patch_manifest_current(requested_model, requested_effort);
+    Ok(())
+}
+
+/// The creation-time switch confirmation, primary and follow-up: each
+/// response is read on the spot and its pending entries retired here,
+/// because the reader that would dispatch them never sees this response. An
+/// error answer — or a peer that dies waiting — is the creation's refusal.
+fn confirm_switch(
+    transport: &Arc<AcpTransport>,
+    reader: &mut BufReader<ChildStdout>,
+    deferred: &mut Vec<serde_json::Value>,
+    sent: &SentSwitch,
+    delivery: &ProfileDelivery,
+) -> Result<(), WireError> {
+    confirm_one_switch(transport, reader, deferred, sent.primary_id, delivery)?;
+    if let Some(followup) = &sent.followup {
+        let followup_id = match &followup.request {
+            SwitchRequest::Vendor { model_id, effort } => transport
+                .request_set_model(model_id.clone(), effort.clone(), None, None)
+                .map_err(acp_io_error)?,
+            SwitchRequest::Config {
+                config_id,
+                value,
+                control,
+            } => transport
+                .request_set_config_option(config_id, value, *control, None, None, None, None)
+                .map_err(acp_io_error)?,
+        };
+        confirm_one_switch(transport, reader, deferred, followup_id, delivery)?;
+    }
+    Ok(())
+}
+
+fn confirm_one_switch(
+    transport: &Arc<AcpTransport>,
+    reader: &mut BufReader<ChildStdout>,
+    deferred: &mut Vec<serde_json::Value>,
+    id: u64,
+    delivery: &ProfileDelivery,
+) -> Result<(), WireError> {
+    let response = read_response_envelope(transport, reader, id, deferred);
+    transport.remove_pending_id(id);
+    transport.remove_model_switch(id);
+    let response = response?;
+    // An error **object** is the agent's own answer to the switch: the card
+    // promised what was delivered, the agent would not take it, so the
+    // creation is refused rather than started on a different model. A
+    // transport failure above keeps its `Io` code, because that is not a
+    // refusal — it is a death or a broken pipe, and the naming downstream
+    // (or the plain pipe error) has to be able to say so.
+    if let Some(error) = response.get("error") {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "the agent refused the delivered model '{}' the card promised, so the creation is refused rather than started on a different model: {}",
+                delivery.model_id.as_deref().unwrap_or(""),
+                acp_request_error_message(error)
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The model axis of the ACP refusal: absence of any declared surface is one
@@ -1895,13 +2140,35 @@ fn read_response(
     expected_id: u64,
     deferred: &mut Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, WireError> {
+    let value = read_response_envelope(transport, reader, expected_id, deferred)?;
+    if let Some(error) = value.get("error") {
+        return Err(WireError::new(
+            ErrorCode::Io,
+            acp_request_error_message(error),
+        ));
+    }
+    Ok(value)
+}
+
+/// The raw response naming `expected_id`: lines that name anything else are
+/// deferred, a closed stdout and a malformed line are transport errors, and
+/// an error **object** is returned as the value, because one caller — the
+/// creation-time confirm — must tell an agent's refusal apart from a
+/// transport failure. The handshake path goes through [`read_response`],
+/// which converts the error object for it.
+fn read_response_envelope(
+    transport: &AcpTransport,
+    reader: &mut BufReader<ChildStdout>,
+    expected_id: u64,
+    deferred: &mut Vec<serde_json::Value>,
+) -> Result<serde_json::Value, WireError> {
     loop {
         let mut line = String::new();
         let count = reader.read_line(&mut line).map_err(acp_io_error)?;
         if count == 0 {
             return Err(WireError::new(
                 ErrorCode::Io,
-                "ACP agent closed stdout during handshake.",
+                "ACP agent closed stdout before the answer arrived.",
             ));
         }
         let line = line.trim_end_matches('\n').trim_end_matches('\r');
@@ -1919,12 +2186,6 @@ fn read_response(
         if !transport.response_seen(expected_id) {
             eprintln!("skipping ACP response with an unknown id {expected_id}");
             continue;
-        }
-        if let Some(error) = value.get("error") {
-            return Err(WireError::new(
-                ErrorCode::Io,
-                acp_request_error_message(error),
-            ));
         }
         return Ok(value);
     }

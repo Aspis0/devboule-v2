@@ -359,6 +359,15 @@ struct SpawnedSession {
     os_handle: Option<ProcessHandle>,
     peer_session_id: Option<String>,
     agent_version: Option<String>,
+    /// A profile delivery the client could not apply before its session
+    /// reader existed. Pi's switch is an awaited control rpc, and the only
+    /// code that can deliver its answer is the reader thread this module
+    /// starts, so the client hands the rpc over instead of blocking on an
+    /// answer nobody can give yet. [`start_spawned_session`] runs it once
+    /// that reader is live; a refusal tears the child down and fails the
+    /// creation before any prompt can reach it. Every other client delivers
+    /// inside its own `spawn_process` and passes `None`.
+    pending_delivery: Option<Box<dyn FnOnce() -> Result<(), WireError> + Send>>,
 }
 
 struct PtyKiller {
@@ -3453,24 +3462,31 @@ impl SessionRegistry {
                 // (audit-2 §2).
                 self.clear_pending_child(&metadata.id);
                 if let Some(journal) = &self.journal {
-                    // Trade, made deliberately: the end marker must not be
-                    // silently lost (try_send drops on a saturated queue)
-                    // and must not freeze this dispatch thread either — the
-                    // blocking send is an unbounded 5 ms busy-loop with no
-                    // timeout. A rare failure path affords a throwaway
-                    // thread, and the row still ends once the queue drains,
-                    // so the integration test's sessions_list deadline-poll
-                    // stays valid.
-                    let journal = Arc::clone(journal);
-                    let id = metadata.id.clone();
-                    let _ = std::thread::Builder::new()
-                        .name("journal-end-marker".into())
-                        .spawn(move || {
-                            let _ = journal.mark_ended_blocking(&id, record_generation, None);
-                        });
+                    // The row is ended **synchronously**: this is the last
+                    // line between the row this function wrote and the
+                    // caller's refusal, and an end left to a fire-and-forget
+                    // thread is an end a daemon death in that window undoes —
+                    // the row would come back `status=live` and resurrect a
+                    // phantom recovered session, the exact fate the
+                    // row-before-spawn rule exists to prevent (the R2a
+                    // audit's F8). The blocking send is a ~5 ms busy-loop on
+                    // a queue that just accepted this process's writes; on
+                    // this rare failure path that wait is cheaper than the
+                    // phantom.
+                    let _ = journal.mark_ended_blocking(&metadata.id, record_generation, None);
                 }
                 if let Some(provider_id) = &metadata.provider {
-                    state.record_provider_health(provider_id, Err(&error));
+                    // Only a failure of the provider or the pipe says
+                    // anything about the provider's health. A creation-time
+                    // refusal the profile alone decides — an unknown model
+                    // or mode, an `autoAccept` contradiction, an agent
+                    // refusing the delivered switch — is `InvalidRequest` by
+                    // convention across the clients, and a profile mistake
+                    // must not mark a healthy provider unhealthy (the R2a
+                    // audit's F6).
+                    if spawn_failure_is_provider_health(&error) {
+                        state.record_provider_health(provider_id, Err(&error));
+                    }
                 }
                 return Err(error);
             }
@@ -7373,6 +7389,21 @@ fn sweep_os_liveness(
     }
 }
 
+/// Whether a failed spawn says anything about the **provider's** health.
+///
+/// The clients refuse, before and around the spawn, every value the profile
+/// alone decides — an unknown model, mode or thinking option, a catalogue
+/// that publishes nothing, an `autoAccept` contradiction, an agent refusing
+/// the delivered switch — and every one of those refusals is
+/// `ErrorCode::InvalidRequest` by convention; nothing else on a spawn path
+/// raises that code (a provider-side failure is `Io`/`Internal`, including
+/// Pi's extension not activating). A profile mistake is the human's to fix
+/// in the profile: recording it against the provider degrades the Settings
+/// health line for a correctly installed provider (the R2a audit's F6).
+fn spawn_failure_is_provider_health(error: &WireError) -> bool {
+    error.code != ErrorCode::InvalidRequest
+}
+
 pub fn spawn_session(
     state: &Arc<ServerState>,
     registry: &SessionRegistry,
@@ -7598,6 +7629,7 @@ pub fn spawn_session(
         os_handle,
         peer_session_id: None,
         agent_version: None,
+        pending_delivery: None,
     };
     start_spawned_session(
         state,
@@ -7665,6 +7697,7 @@ fn start_spawned_session(
         os_handle,
         peer_session_id,
         agent_version,
+        pending_delivery,
     } = spawned;
     if let (Some(provider_id), Some(version)) = (&metadata.provider, agent_version.as_deref()) {
         state.record_provider_version(provider_id, version);
@@ -7916,6 +7949,20 @@ fn start_spawned_session(
     }
     if let Some(coalesce_handle) = orphaned_coalesce {
         let _ = coalesce_handle.join();
+    }
+    // The pending delivery runs here and only here: it is an awaited rpc
+    // whose answers only the session reader delivers, and that reader is now
+    // live. Run any earlier and the wait outlives its deliverer — fifteen
+    // seconds of stall, then a refusal, for every child a profile creates
+    // (the R2a audit's F1). A refused delivery tears the child down — the
+    // registry entry was already inserted, so the close is what kills, reaps
+    // and removes the permission extension — and fails the creation, before
+    // any prompt can reach a child the card did not describe.
+    if let Some(deliver) = pending_delivery {
+        if let Err(error) = deliver() {
+            let _ = registry.close(&id, &owner, &None);
+            return Err(error);
+        }
     }
     // A child can die before the create transition is published. Mark that
     // exit as covered by this first snapshot; the second check catches an
@@ -8492,6 +8539,90 @@ mod tests {
     use devboule_protocol::{
         ClientMessage, MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
     };
+
+    /// The refused spawn's journal row is ended **by the time the refusal
+    /// returns** (the R2a audit's F8): the row was written Live before the
+    /// spawn, and an end left to a fire-and-forget thread is an end a daemon
+    /// death in that window undoes — the row would come back `status=live`
+    /// and resurrect a phantom recovered session. The spawn here fails on a
+    /// program that does not exist, the most ordinary spawn failure there
+    /// is.
+    #[test]
+    fn a_refused_spawn_ends_its_journal_row_before_the_refusal_is_returned() {
+        let state = ServerState::new("refused-row-ends".to_string());
+        let owner = OwnerId::new("local", "test").expect("owner");
+        let command = PtyCommand::new(
+            "definitely-not-a-real-program-xyz",
+            Vec::new(),
+            std::env::temp_dir(),
+            Vec::new(),
+        );
+        let meta = SessionCreateMeta::default();
+        state
+            .sessions
+            .create_with_provider_env(
+                &state,
+                &owner,
+                None,
+                SessionKind::Terminal,
+                None,
+                crate::profile_delivery::ProfileDelivery::for_request(None),
+                Some(command),
+                &None,
+                None,
+                &meta,
+            )
+            .expect_err("a nonexistent program refuses the spawn");
+
+        // No poll: the end is synchronous, so the very first read after the
+        // refusal sees it.
+        let rows = state
+            .sessions
+            .journal
+            .as_ref()
+            .expect("the test state has a journal")
+            .list()
+            .expect("journal rows");
+        let row = rows
+            .iter()
+            .find(|row| row.title == "Terminal")
+            .expect("the refused spawn's row");
+        assert!(
+            matches!(row.status, crate::journal::PersistStatus::Ended),
+            "the row is ended when the refusal is returned, not left live: {:?}",
+            row.status
+        );
+    }
+
+    /// The health recorder's class line (the R2a audit's F6): a refusal the
+    /// profile alone decides — an unknown model or mode, an `autoAccept`
+    /// contradiction, an agent refusing the delivered switch — is
+    /// `InvalidRequest` and says nothing about the provider; a provider or
+    /// pipe failure is any other code and does. Three saved profiles with a
+    /// tick over an asking mode must not read as three unhealthy providers.
+    #[test]
+    fn a_profile_refusal_does_not_read_as_provider_health() {
+        assert!(!spawn_failure_is_provider_health(&WireError::new(
+            ErrorCode::InvalidRequest,
+            "Claude model 'x' is not among the models this Claude publishes; the creation is refused rather than started on a different model",
+        )));
+        assert!(!spawn_failure_is_provider_health(&WireError::new(
+            ErrorCode::InvalidRequest,
+            "the profile asks Claude to approve its own permission prompts and also to start in mode 'default', which asks the human; the two contradict, so the creation is refused",
+        )));
+        assert!(!spawn_failure_is_provider_health(&WireError::new(
+            ErrorCode::InvalidRequest,
+            "the agent refused the delivered model 'stub-model-new' the card promised, so the creation is refused rather than started on a different model: ACP request failed (-32602): unknown model",
+        )));
+        assert!(spawn_failure_is_provider_health(&WireError::new(
+            ErrorCode::Io,
+            "ACP stdio failed: broken pipe",
+        )));
+        assert!(spawn_failure_is_provider_health(&WireError::new(
+            ErrorCode::Io,
+            "Pi permission extension not active.",
+        )));
+    }
 
     /// A Write sink that records everything, standing in for the PTY input
     /// side so the DSR fast path is observable without a ConPTY.

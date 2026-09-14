@@ -3727,14 +3727,151 @@ fn a_thinking_option_the_agent_does_not_declare_is_refused() {
     );
 }
 
-/// R2a, the contradiction: a profile that ticks `autoAccept` while naming a
-/// mode that asks the human is refused at creation, after the handshake has
-/// said what the agent can actually be in. The child is torn down; the
-/// refusal names both halves. The card still printed `auto accept: Yes` and
-/// named the mode it means — consent to a mechanism, and the mechanism
-/// refused to exist.
+/// R2a F3 — the switch is **confirmed**, not just sent: an agent that
+/// answers the delivered `session/set_model` with an error refuses the
+/// creation. Before the confirm existed, this shape ended with a live child
+/// on the agent's own model, an `AgentError` on a transcript nobody reads at
+/// creation time, and a tool result that had already said the child was
+/// delivered the card's model.
 #[test]
-fn an_auto_accept_tick_over_an_asking_mode_is_refused_at_creation() {
+fn an_agent_that_refuses_the_delivered_model_refuses_the_creation() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "refused model",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        // The stub takes the switch off the wire (it writes `set model.txt`)
+        // and then answers it the way a plan-limited agent does: an error.
+        &[("DEVBOULE_STUB_REJECT_SET_MODEL", "1")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    // The switch went out, and the agent's own refusal came back as the
+    // creation's answer — not as a session id plus a transcript error.
+    let received = test.wait_for_observations("set model.txt", 1);
+    assert_eq!(
+        received[0].trim(),
+        "stub-model-new",
+        "the switch was on the wire: {received:?}"
+    );
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("the agent refused the delivered model"),
+        "the creation carries the refusal: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("unknown model"),
+        "the agent's own words travel with it: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("stub-model-new"),
+        "the refusal names the model the card promised: {calls:?}"
+    );
+
+    // Nothing survives to answer a prompt the card did not describe.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// R2a F5 — the delivery refusal's teardown is the handshake's, including
+/// the three behaviours the old copy dropped: an agent that **dies** with
+/// the switch unanswered is named as a provider that exited during startup,
+/// its last stderr line travels with the message, and the whole banner goes
+/// through the same redaction the handshake failure uses.
+#[test]
+fn an_agent_that_dies_mid_delivery_is_named_as_an_exited_provider() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "dies mid delivery",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        &[("DEVBOULE_STUB_DIE_BEFORE_SET_MODEL_REPLY", "1")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("provider exited during startup"),
+        "the death is named as a startup exit, not a profile refusal: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("Agent stderr"),
+        "the stderr tail travels with the message: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("dying before the set_model reply"),
+        "the provider's own last line is in the tail: {calls:?}"
+    );
+
+    // And nothing survives: the child is gone, and the tool call carries the
+    // refusal instead of a session id.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// R2a, the contradiction — decided **before the card**: a profile that
+/// ticks `autoAccept` while naming a mode that asks the human is refused
+/// without the consent card ever being raised, because the judgement needs
+/// the profile alone and consent is not spent on a creation the daemon has
+/// already decided to refuse (the R2a audit's F7).
+///
+/// What the previous shape of this test could catch and this one cannot: the
+/// card's own text. The old test approved a card that read
+/// `auto accept: Yes (mode default)` — the sentence naming a mode that asks
+/// as the mode that answers — and then watched the creation fail behind it.
+/// That sentence is now unreachable by construction: there is no card, which
+/// is the fix. The ACP-specific half of the old refusal (the agent's
+/// post-handshake mode disagreeing with the profile's) keeps its own
+/// creation-time judgement in `apply_profile_delivery`, which no pre-card
+/// gate can replace.
+#[test]
+fn an_auto_accept_tick_over_an_asking_mode_is_refused_before_the_card() {
     let _lock = lock_tests();
     let mut profiles = worker_profile_document();
     profiles["profiles"][0]["features"] = serde_json::json!({"autoAccept": true});
@@ -3749,20 +3886,35 @@ fn an_auto_accept_tick_over_an_asking_mode_is_refused_at_creation() {
     );
     let creator = test.creator_session();
     let events = test.attach(&creator);
-    // The card names the mode the tick was read onto: the human consents to a
-    // mechanism, not to a word.
-    test.allow_creation_card(&creator.id, &events);
-    let description = creation_card_description(&events);
-    assert!(
-        description.contains("auto accept: Yes (mode default)"),
-        "the auto-accept line names the mode it means: {description}"
-    );
 
     let calls = test.wait_for_observations("mcp calls.txt", 1);
     assert!(
         calls[0].contains("contradict") && calls[0].contains("mode 'default'"),
         "the refusal names both halves of the contradiction: {calls:?}"
     );
+
+    // No consent card was ever raised on the creator: the human was never
+    // asked to approve what had already been refused. The creation's answer
+    // has already landed (the call log above), so any card would have had to
+    // precede it; the window is polled to make the absence stand.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        assert!(
+            !events.lock().expect("events").iter().any(|event| matches!(
+                event,
+                SessionEvent::PermissionRequest {
+                    create_agent: Some(_),
+                    ..
+                }
+            )),
+            "no consent card is raised for a creation already refused"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
     // The child never lived: an asking child with an unattended marker is the
     // lie in its most dangerous form, and the answer is refusal. The refused
     // spawn still leaves its *ended* journal row behind — the row is the

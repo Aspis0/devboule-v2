@@ -38,6 +38,14 @@ const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
 type ClaudeModeResponses = Arc<Mutex<HashMap<String, Sender<Result<(), String>>>>>;
 
+/// The delivery's effort requests that have been written and are waiting for
+/// the CLI's answer: request id → the effort the profile named. The session
+/// reader answers them in `ClaudeReader::dispatch_control_response` — a
+/// refused effort fails the session the way a refused initial mode does,
+/// instead of disappearing while the child runs at the CLI's own level (the
+/// R2a audit's F2).
+type ClaudeDeliveryEfforts = Arc<Mutex<HashMap<String, String>>>;
+
 struct ClaudePendingControl {
     request_id: String,
     input: Value,
@@ -60,11 +68,13 @@ struct ClaudeModeGate {
 type ClaudeModeGateRef = Arc<Mutex<ClaudeModeGate>>;
 
 /// Launch-time mode gate wiring: the stdin the gate writes through, the gate
-/// itself, and the response deadline.
+/// itself, the response deadline, and the delivery's effort requests the
+/// reader must answer.
 struct ClaudeModeGateWiring {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     gate: ClaudeModeGateRef,
     timeout: Duration,
+    delivery_efforts: ClaudeDeliveryEfforts,
 }
 
 impl ClaudeModeGateWiring {
@@ -73,6 +83,7 @@ impl ClaudeModeGateWiring {
             stdin,
             gate,
             timeout: CONTROL_RESPONSE_TIMEOUT,
+            delivery_efforts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -181,7 +192,14 @@ fn validate_model_choice(models: &[SessionModel], model_id: Option<&str>) -> Res
             "the profile names a model, but this Claude publishes no models the daemon can deliver; the creation is refused rather than started on a different model",
         ));
     }
-    if !models.iter().any(|model| model.model_id == model_id) {
+    // The runtime paths judge with the suffix-tolerant comparison, and the
+    // CLI's own `current_model_id` — a real, displayed id — can carry the
+    // `[1m]` spelling. A profile built from such an id must not be refused
+    // here when the live switch accepts it.
+    if !models
+        .iter()
+        .any(|model| crate::claude_catalog::model_ids_match(&model.model_id, model_id))
+    {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
             format!(
@@ -202,7 +220,10 @@ fn validate_thinking_choice(
     model_id: &str,
     thinking: &str,
 ) -> Result<(), WireError> {
-    let Some(model) = models.iter().find(|model| model.model_id == model_id) else {
+    let Some(model) = models
+        .iter()
+        .find(|model| crate::claude_catalog::model_ids_match(&model.model_id, model_id))
+    else {
         // Unreachable through the creation path: the model choice is validated
         // first, and a profile always names a model.
         return Ok(());
@@ -248,7 +269,7 @@ fn launch_model_id(delivery: &ProfileDelivery, models: &[SessionModel]) -> Optio
 /// cannot be delivered is refused here, before a process exists, and a child
 /// that exists was delivered everything its card printed.
 fn validate_delivery(
-    state: &Arc<ServerState>,
+    catalog: &crate::claude_catalog::ClaudeCatalogSnapshot,
     delivery: &ProfileDelivery,
 ) -> Result<(), WireError> {
     let mode_id = delivery.mode_id.as_deref().unwrap_or("default");
@@ -273,17 +294,31 @@ fn validate_delivery(
             ),
         ));
     }
-    let models = state.claude_models().models;
-    validate_model_choice(&models, delivery.model_id.as_deref())?;
+    // A **provisional** catalog is no vocabulary, and this codebase already
+    // says so one function over: `validate_claude_effort` refuses to judge
+    // when the runtime catalog is provisional. The creation path obeys the
+    // same rule (the R2a audit's F4): a CLI upgrade invalidates the
+    // version-keyed cache, and until the derivation finishes the fallback's
+    // three aliases are a placeholder, not a list to judge a profile's saved
+    // id against. Judging it there manufactured intermittent refusals of
+    // legitimate profiles. The `--model` argv below takes whatever the CLI
+    // knows, so nothing is delivered that this skip cannot account for; the
+    // runtime effort switch judges the thinking axis against the live
+    // catalog once it exists.
+    if catalog.state == crate::claude_catalog::ClaudeCatalogState::Provisional {
+        return Ok(());
+    }
+    let models = &catalog.models;
+    validate_model_choice(models, delivery.model_id.as_deref())?;
     if let Some(thinking) = delivery.thinking_option_id.as_deref() {
         // A profile always names a model, so the delivered model is the one
         // whose thinking options judge the profile's choice.
         let model_id = delivery
             .model_id
             .clone()
-            .or_else(|| crate::claude_catalog::default_model_id(&models));
+            .or_else(|| crate::claude_catalog::default_model_id(models));
         if let Some(model_id) = model_id {
-            validate_thinking_choice(&models, &model_id, thinking)?;
+            validate_thinking_choice(models, &model_id, thinking)?;
         }
     }
     Ok(())
@@ -295,7 +330,7 @@ pub(super) fn spawn_process(
     mcp: Option<McpLaunchConfig>,
     delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
-    validate_delivery(state, &delivery)?;
+    validate_delivery(&state.claude_models(), &delivery)?;
     let requested_mode = delivery.mode_id.as_deref().unwrap_or("default").to_string();
     let mut args = command.args.clone();
     if let Some(path) = mcp
@@ -412,21 +447,26 @@ pub(super) fn spawn_process(
             ));
         }
     };
-    // The thinking option the profile named, delivered as the same effort
-    // control frame the runtime switch uses. The mode frame's bytes are
-    // already in the pipe (written synchronously above), so the CLI reads
-    // mode first and effort second, and the effort is in force before the
-    // first prompt can flow.
+    // The thinking option the profile named, delivered synchronously right
+    // after the mode frame it follows (both are in the pipe before a reader
+    // exists, so the gate — opened only by the session reader's delivery of
+    // the mode response — cannot flush a prompt between or before them), and
+    // with its response tracked: a CLI that refuses the effort fails the
+    // session instead of silently running at its own level (the R2a audit's
+    // F2). A write failure here is a refused creation, like a failed mode
+    // write above.
+    let delivery_efforts: ClaudeDeliveryEfforts = Arc::new(Mutex::new(HashMap::new()));
     if let Some(thinking) = delivery.thinking_option_id.as_deref() {
-        let request_id = format!("set-effort-{}", next_id.fetch_add(1, Ordering::Relaxed));
-        send_control_request_frame(
-            Arc::clone(&stdin),
-            request_id,
-            serde_json::json!({
-                "subtype": "apply_flag_settings",
-                "settings": {"effortLevel": thinking},
-            }),
-        );
+        if let Err(error) = send_initial_effort(&stdin, &next_id, &delivery_efforts, thinking) {
+            if let Ok(mut process) = process.lock() {
+                terminate_process(&mut process);
+            }
+            drop(process_job);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not send Claude effort request: {error}"),
+            ));
+        }
     }
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
     let permission_broker = PermissionBroker::with_sender(sender);
@@ -462,13 +502,15 @@ pub(super) fn spawn_process(
         permission_broker: Arc::clone(&permission_broker),
         cancelled: Arc::new(AtomicBool::new(false)),
     };
+    let mut wiring = ClaudeModeGateWiring::new(Arc::clone(&stdin), Arc::clone(&mode_gate));
+    wiring.delivery_efforts = Arc::clone(&delivery_efforts);
     let reader_dispatch = ClaudeReader::with_mode_gate(
         ClaudeView::new(Some(command.cwd.clone())),
         Arc::clone(&permission_broker),
         Arc::clone(&controls),
         Arc::clone(&mode_responses),
         Arc::clone(&next_id),
-        ClaudeModeGateWiring::new(Arc::clone(&stdin), Arc::clone(&mode_gate)),
+        wiring,
     );
     Ok(SpawnedSession {
         process_job,
@@ -493,6 +535,9 @@ pub(super) fn spawn_process(
         os_handle,
         peer_session_id: None,
         agent_version: None,
+        // The delivery was applied inside `spawn_process`, before this value
+        // existed; nothing is left for the session reader to answer.
+        pending_delivery: None,
     })
 }
 
@@ -1049,6 +1094,47 @@ fn start_initial_mode(
     Ok(mode_gate)
 }
 
+/// The thinking option the profile named, delivered as the same effort
+/// control frame the runtime switch uses — written **synchronously**, next
+/// to the mode frame written just before it. Both frames are in the pipe
+/// before any reader exists, and the gate opens only when the session reader
+/// delivers the mode response, so the CLI reads mode, effort, prompts, in
+/// pipe order; nothing can race the flush (`start_initial_mode`'s write is
+/// synchronous for the same reason).
+///
+/// The request is registered in `delivery_efforts` before the write, so the
+/// session reader can route the CLI's answer: success retires it, and a
+/// refusal fails the session — a refused effort is a refused card promise,
+/// not a silence. The request id is returned for tests and for the reader's
+/// pending map.
+fn send_initial_effort(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    next_id: &AtomicU64,
+    delivery_efforts: &ClaudeDeliveryEfforts,
+    effort: &str,
+) -> io::Result<String> {
+    let request_id = format!("initial-effort-{}", next_id.fetch_add(1, Ordering::Relaxed));
+    delivery_efforts
+        .lock()
+        .map_err(|_| io::Error::other("Claude delivery effort map lock poisoned"))?
+        .insert(request_id.clone(), effort.to_string());
+    let bytes = control_request_frame_bytes(
+        &request_id,
+        serde_json::json!({
+            "subtype": "apply_flag_settings",
+            "settings": {"effortLevel": effort},
+        }),
+    )
+    .ok_or_else(|| io::Error::other("Could not encode Claude effort request."))?;
+    if let Err(error) = write_child_stdin(stdin, &bytes, "Claude") {
+        if let Ok(mut efforts) = delivery_efforts.lock() {
+            efforts.remove(&request_id);
+        }
+        return Err(error);
+    }
+    Ok(request_id)
+}
+
 /// Flush the prompts queued behind the gate and mark it Ready. The caller
 /// holds the gate lock; a write failure leaves the gate awaiting so the
 /// caller can fail it through the normal path.
@@ -1275,6 +1361,9 @@ struct ClaudeReader {
     permission_broker: Arc<PermissionBroker>,
     controls: Arc<Mutex<HashMap<u64, ClaudePendingControl>>>,
     mode_responses: ClaudeModeResponses,
+    /// The delivery's effort requests this reader must answer; empty unless
+    /// the spawn wrote an effort frame (see `send_initial_effort`).
+    delivery_efforts: ClaudeDeliveryEfforts,
     next_id: Arc<AtomicU64>,
     stdin: Option<Arc<Mutex<Option<ChildStdin>>>>,
     mode_gate: Option<ClaudeModeGateRef>,
@@ -1329,6 +1418,7 @@ impl ClaudeReader {
             permission_broker,
             controls,
             mode_responses,
+            delivery_efforts: Arc::new(Mutex::new(HashMap::new())),
             next_id,
             stdin: None,
             mode_gate: None,
@@ -1351,6 +1441,7 @@ impl ClaudeReader {
         reader.stdin = Some(wiring.stdin);
         reader.mode_gate = Some(wiring.gate);
         reader.initial_mode_timeout = wiring.timeout;
+        reader.delivery_efforts = wiring.delivery_efforts;
         reader
     }
 
@@ -1601,6 +1692,51 @@ impl ClaudeReader {
                 _ => Err("Claude returned an invalid permission mode response.".to_string()),
             };
             self.complete_initial_mode(runtime, request_id, result);
+            return true;
+        }
+        // A delivery effort response: the profile's thinking option was the
+        // card's promise, so a refusal fails the session exactly as a
+        // refused initial mode does — an AgentError on the transcript, stdin
+        // closed so the child cannot go on to answer anything at the CLI's
+        // own level. An ignored response here is the silence the R2a audit's
+        // F2 convicted.
+        let delivered_effort = self
+            .delivery_efforts
+            .lock()
+            .ok()
+            .and_then(|mut efforts| efforts.remove(request_id));
+        if let Some(effort) = delivered_effort {
+            let failure = match value.pointer("/response/subtype").and_then(Value::as_str) {
+                Some("success") => None,
+                Some("error") => Some(
+                    value
+                        .pointer("/response/error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Claude rejected the delivered thinking option.")
+                        .to_string(),
+                ),
+                _ => Some(
+                    "Claude returned an invalid response to the delivered thinking option."
+                        .to_string(),
+                ),
+            };
+            if let Some(error) = failure {
+                let message = format!(
+                    "Claude refused the delivered thinking option '{effort}': {error}; the child is being torn down rather than left on its own effort level."
+                );
+                if let Some(mode_gate) = &self.mode_gate {
+                    fail_initial_mode_parts(
+                        mode_gate,
+                        self.stdin.as_ref(),
+                        runtime,
+                        None,
+                        false,
+                        &message,
+                    );
+                } else {
+                    self.publish(runtime, SessionEvent::AgentError { message });
+                }
+            }
             return true;
         }
         let sender = self
@@ -1942,6 +2078,7 @@ impl StderrSource for ClaudeStderr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::claude_catalog::ClaudeCatalogSnapshot;
     use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
     use crate::session::{ConnHandle, PendingEvent, StaticImageSink};
     use devboule_protocol::PermissionOutcome;
@@ -2258,6 +2395,7 @@ mod tests {
                 stdin,
                 gate,
                 timeout,
+                delivery_efforts: Arc::new(Mutex::new(HashMap::new())),
             },
         )
     }
@@ -3789,6 +3927,14 @@ mod tests {
 
     /// An empty published list is a different refusal from an unknown id:
     /// there is no list the name could have been a typo from.
+    ///
+    /// The state this test constructs is one production does not build: the
+    /// R2a audit's F10 found no production path to an empty vocabulary (the
+    /// fallback lists three aliases, a derivation never caches empty, and
+    /// since the F4 fix a provisional catalog is not judged at all). The
+    /// arm's remaining reachable input is a hand-edited cache file carrying
+    /// `models: []`; the sentence is pinned for that state, and for its own
+    /// integrity as the absence half of the two-sentence split.
     #[test]
     fn a_claude_model_against_an_empty_vocabulary_is_refused_with_the_absence_sentence() {
         let error = validate_model_choice(&[], Some("claude-bogus-9"))
@@ -3847,40 +3993,48 @@ mod tests {
     }
 
     /// `autoAccept` is a constraint on which mode is delivered: the only
-    /// Claude mode the daemon's broker answers is `bypassPermissions`, so a
-    /// tick over an asking mode is the contradiction, refused.
+    /// The tick contradiction, walked over the **whole** closed mode
+    /// vocabulary `claude_view::mode_state` declares — not two hand-picked
+    /// ids (the R2a audit's F9): for every mode, a tick is admitted exactly
+    /// when the daemon's own broker answers that mode, and refused with the
+    /// contradiction sentence otherwise. A provisional catalog stands in for
+    /// the model axis, which this test does not exercise: the mode and tick
+    /// are judged before the catalog is ever consulted.
     #[test]
     fn a_claude_auto_accept_tick_over_an_asking_mode_is_refused() {
-        let state = test_state();
-        let mut delivery = ProfileDelivery::for_request(Some("bypassPermissions".to_string()));
-        delivery.auto_accept = true;
-        validate_delivery(&state, &delivery).expect("bypassPermissions answers its own prompts");
-
-        delivery.mode_id = Some("default".to_string());
-        let error = validate_delivery(&state, &delivery)
-            .expect_err("a tick over an asking mode is the contradiction");
+        let catalog = ClaudeCatalogSnapshot::provisional(crate::claude_catalog::fallback_models());
+        let vocabulary = crate::claude_view::mode_state("default")
+            .available_modes
+            .iter()
+            .map(|mode| mode.id.clone())
+            .collect::<Vec<_>>();
         assert!(
-            error.message.contains("contradict"),
-            "the refusal names both halves: {}",
-            error.message
+            vocabulary.len() >= 5,
+            "the vocabulary this test walks is the one claude_view declares: {vocabulary:?}"
         );
+        for mode_id in &vocabulary {
+            let mut delivery = ProfileDelivery::for_request(Some(mode_id.clone()));
+            delivery.auto_accept = true;
+            if crate::provider_catalog::mode_is_auto_answered(mode_id) {
+                validate_delivery(&catalog, &delivery).unwrap_or_else(|error| {
+                    panic!("{mode_id} answers its own prompts: {}", error.message)
+                });
+            } else {
+                let error = validate_delivery(&catalog, &delivery)
+                    .expect_err("a tick over an asking mode is the contradiction");
+                assert!(
+                    error.message.contains("contradict") && error.message.contains(mode_id),
+                    "the refusal names both halves for {mode_id}: {}",
+                    error.message
+                );
+            }
 
-        // The same delivery without the tick is fine everywhere.
-        delivery.auto_accept = false;
-        validate_delivery(&state, &delivery).expect("asking mode without the tick");
-    }
-
-    fn test_state() -> Arc<ServerState> {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        ServerState::with_paths(
-            "claude-delivery".to_string(),
-            crate::paths::RuntimePaths::from_dir(std::env::temp_dir().join(format!(
-                "devboule-claude-delivery-{}-{counter}",
-                std::process::id()
-            ))),
-        )
-        .expect("state")
+            // The same mode without the tick is fine everywhere.
+            let mut delivery = ProfileDelivery::for_request(Some(mode_id.clone()));
+            delivery.auto_accept = false;
+            validate_delivery(&catalog, &delivery)
+                .unwrap_or_else(|error| panic!("{mode_id} without the tick: {}", error.message));
+        }
     }
 
     /// The launch argv is where the model is delivered to a Claude child: the
@@ -3915,6 +4069,192 @@ mod tests {
                 .find(|pair| pair[0] == "--model")
                 .map(|pair| pair[1].as_str()),
             Some("claude-opus-5")
+        );
+    }
+    /// R2a F2, the write: the delivery's effort frame is written
+    /// **synchronously**, so a stdin that cannot take it refuses the
+    /// delivery here — at the spawn, with the child still young — instead of
+    /// failing silently on a thread nobody joins.
+    #[test]
+    fn an_effort_frame_that_cannot_be_written_refuses_the_delivery() {
+        let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+        let efforts: ClaudeDeliveryEfforts = Arc::new(Mutex::new(HashMap::new()));
+        let error = send_initial_effort(&stdin, &AtomicU64::new(1), &efforts, "low")
+            .expect_err("a closed stdin refuses the effort delivery");
+        assert!(
+            format!("{error}").contains("stdin is closed"),
+            "the write failure is the delivery's refusal: {error}"
+        );
+        assert!(
+            efforts.lock().expect("efforts").is_empty(),
+            "a request that never reached the pipe is not left pending"
+        );
+    }
+
+    /// R2a F2, the answer: the delivery's effort request is **tracked**. A
+    /// CLI that refuses `apply_flag_settings` fails the session the way a
+    /// refused initial mode does — an AgentError naming the refused effort,
+    /// stdin closed so the child cannot go on answering at its own level —
+    /// instead of the response disappearing while the card's promise quietly
+    /// does not hold.
+    #[test]
+    fn a_refused_delivery_effort_fails_the_session_instead_of_passing_silently() {
+        let mut harness = initial_mode_test_setup();
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let delivery_efforts: ClaudeDeliveryEfforts = Arc::new(Mutex::new(HashMap::new()));
+        // The spawn's delivery, in pipe order right behind the mode frame.
+        let effort_request_id =
+            send_initial_effort(&harness.stdin, &harness.next_id, &delivery_efforts, "low")
+                .expect("the effort frame is written synchronously");
+        let mut reader = ClaudeReader::with_mode_gate(
+            ClaudeView::new(Some(PathBuf::from(r"C:\work"))),
+            Arc::clone(&broker),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::clone(&harness.next_id),
+            ClaudeModeGateWiring {
+                stdin: Arc::clone(&harness.stdin),
+                gate: Arc::clone(&harness.gate),
+                timeout: CONTROL_RESPONSE_TIMEOUT,
+                delivery_efforts,
+            },
+        );
+        let (runtime, conn) = attached(&broker);
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        writer.write_all(b"Reply DONE").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+
+        // The pipe already holds mode, then effort: the effort frame's echo
+        // is readable before any response was fed, which is the ordering the
+        // synchronous write buys.
+        let mode_request = read_json_line(&mut harness.stdout);
+        assert_eq!(mode_request["request"]["subtype"], "set_permission_mode");
+        let effort_echo = read_json_line(&mut harness.stdout);
+        assert_eq!(
+            effort_echo["request"]["subtype"], "apply_flag_settings",
+            "the effort frame is second on the wire: {effort_echo}"
+        );
+        assert_eq!(effort_echo["request_id"], effort_request_id);
+
+        // The CLI confirms the mode; the gate opens and the prompt flows.
+        let response = initial_mode_response(&mode_request);
+        reader
+            .feed(format!("{response}\n").as_bytes(), &runtime)
+            .expect("mode response");
+        let prompt = read_json_line(&mut harness.stdout);
+        assert_eq!(prompt["message"]["content"][0]["text"], "Reply DONE");
+
+        // Then the CLI refuses the delivered effort. The response must not
+        // be swallowed.
+        let refusal = serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": effort_request_id,
+                "error": "effort level not supported",
+            }
+        });
+        reader
+            .feed(format!("{refusal}\n").as_bytes(), &runtime)
+            .expect("effort response");
+
+        let events = drain(&conn);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                SessionEvent::AgentError { message }
+                    if message.contains("refused the delivered thinking option 'low'")
+                        && message.contains("effort level not supported")
+            )),
+            "the refusal is published, naming the effort and the CLI's words: {:?}",
+            slice_of_kinds(&events)
+        );
+        assert!(
+            matches!(
+                harness.gate.lock().expect("gate").state,
+                ClaudeModeGateState::Failed(_)
+            ),
+            "the gate is failed: nothing further flows"
+        );
+        assert!(
+            harness.stdin.lock().expect("stdin").is_none(),
+            "the transport is closed so the child cannot answer anything"
+        );
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    fn slice_of_kinds(events: &[SessionEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|event| match event {
+                SessionEvent::AgentError { message } => {
+                    format!("error({})", message.chars().take(120).collect::<String>())
+                }
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// R2a F4: a **provisional** catalog is no vocabulary, and the creation
+    /// path now refuses to judge on it, exactly as the runtime path
+    /// (`validate_claude_effort`) already does. A CLI upgrade empties the
+    /// version-keyed cache and the fallback's three aliases are a
+    /// placeholder, not a list to judge a saved id against; judging it there
+    /// manufactured intermittent refusals of legitimate profiles. The
+    /// derived catalog judges, with the suffix-tolerant comparison the
+    /// runtime paths use.
+    #[test]
+    fn a_model_is_not_judged_against_a_provisional_catalog_and_the_derived_one_matches_suffixes() {
+        fn delivery(model: &str, thinking: Option<&str>) -> ProfileDelivery {
+            ProfileDelivery::for_child("default", model, thinking, &serde_json::Map::new())
+        }
+
+        fn derived_with(model_id: &str, efforts: &[&str]) -> ClaudeCatalogSnapshot {
+            ClaudeCatalogSnapshot::derived(vec![model(model_id, Some(efforts.to_vec()))])
+        }
+
+        // Provisional: the fallback aliases are not a vocabulary to judge
+        // with, so a profile naming a real derived id is admitted, not
+        // refused with a sentence blaming a typo that is not there.
+        let provisional =
+            ClaudeCatalogSnapshot::provisional(crate::claude_catalog::fallback_models());
+        validate_delivery(
+            &provisional,
+            &delivery("claude-opus-5-20260101", Some("high")),
+        )
+        .expect("a provisional catalog judges nothing");
+
+        // Derived: the real list judges, through the suffix-tolerant match
+        // the live switch uses — the CLI's own `[1m]` spelling is a real,
+        // displayed model id.
+        let derived = derived_with("claude-opus-5-20260101[1m]", &["low", "high"]);
+        validate_delivery(&derived, &delivery("claude-opus-5-20260101", Some("high")))
+            .expect("the `[1m]` spelling matches without its suffix");
+
+        // An id the derived list genuinely does not carry is still refused —
+        // the mismatch sentence, not the absence one.
+        let error = validate_delivery(&derived, &delivery("claude-bogus", None))
+            .expect_err("an unknown id in a derived catalog is refused");
+        assert!(
+            error.message.contains("is not among the models"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+
+        // The thinking axis still judges against the delivered model's own
+        // options once the catalog is derived.
+        let error = validate_delivery(&derived, &delivery("claude-opus-5-20260101", Some("bogus")))
+            .expect_err("an unknown thinking option is refused");
+        assert!(
+            error.message.contains("is not among model"),
+            "the thinking mismatch sentence: {}",
+            error.message
         );
     }
 }

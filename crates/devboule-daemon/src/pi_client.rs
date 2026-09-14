@@ -247,16 +247,19 @@ fn remove_permission_extension(path: &Path) {
     }
 }
 
-pub(super) fn spawn_process(
-    state: &Arc<ServerState>,
-    command: PtyCommand,
-    delivery: ProfileDelivery,
-) -> Result<SpawnedSession, WireError> {
-    // Pi has no permission gate of its own: the gate is the TypeScript extension
-    // this module writes just below and passes to the spawn. Inheriting Pi's native
+/// The creation-time refusals Pi can make before a process exists: the mode
+/// must be one of Pi's own, and an `autoAccept` tick demands a mode that
+/// will not ask the human. `bypass` is the one Pi mode the daemon's own
+/// broker answers (the injected extension stops gating), so a profile that
+/// ticks the toggle and names `ask` asks the child to ask and not to ask at
+/// once — the refusal is the answer; a substitution is not.
+fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {
+    // Pi has no permission gate of its own: the gate is the TypeScript
+    // extension spawn writes and passes to the child. Inheriting Pi's native
     // behaviour as the default meant the surface that authorises "Create or
-    // overwrite a file" never asked, so a session nobody asked a mode for starts in
-    // "ask". The chip is the only way back to "bypass", and it is a deliberate click.
+    // overwrite a file" never asked, so a session nobody asked a mode for
+    // starts in "ask". The chip is the only way back to "bypass", and it is
+    // a deliberate click.
     let mode_id = delivery.mode_id.as_deref().unwrap_or("ask").to_string();
     if !matches!(mode_id.as_str(), "bypass" | "ask") {
         return Err(WireError::new(
@@ -264,11 +267,6 @@ pub(super) fn spawn_process(
             format!("Pi session mode '{mode_id}' is not available."),
         ));
     }
-    // `autoAccept` is a constraint on which mode is delivered: `bypass` is the
-    // one Pi mode the daemon's own broker answers (the injected extension
-    // stops gating), so a profile that ticks the toggle and names `ask` asks
-    // the child to ask and not to ask at once. The refusal is the answer; a
-    // substitution is not.
     if delivery.auto_accept && !crate::provider_catalog::mode_is_auto_answered(&mode_id) {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
@@ -277,6 +275,16 @@ pub(super) fn spawn_process(
             ),
         ));
     }
+    Ok(())
+}
+
+pub(super) fn spawn_process(
+    state: &Arc<ServerState>,
+    command: PtyCommand,
+    delivery: ProfileDelivery,
+) -> Result<SpawnedSession, WireError> {
+    validate_delivery(&delivery)?;
+    let mode_id = delivery.mode_id.as_deref().unwrap_or("ask").to_string();
     let extension_path = permission_extension_path(state.sessions.runtime_dir());
     let args = spawn_args(&command, &extension_path)?;
     if let Err(error) = write_permission_extension(&extension_path) {
@@ -407,8 +415,12 @@ pub(super) fn spawn_process(
         terminate_shared_process(&process);
         remove_permission_extension(&extension_path);
         drop(process_job);
+        // A provider failure, not a profile refusal: the extension the
+        // daemon injected never announced itself, which says something about
+        // this Pi build and nothing about the profile. The code is what the
+        // health recorder reads (`spawn_failure_is_provider_health`).
         return Err(WireError::new(
-            ErrorCode::InvalidRequest,
+            ErrorCode::Io,
             "Pi permission extension not active.",
         ));
     }
@@ -460,17 +472,16 @@ pub(super) fn spawn_process(
         mode_id: Arc::clone(&mode_id_state),
         permission_extension_active: Arc::clone(&permission_extension_active),
     };
-    if delivery.model_id.is_some() || delivery.thinking_option_id.is_some() {
-        if let Err(error) = switcher.set_model(
-            delivery.model_id.as_deref(),
-            delivery.thinking_option_id.as_deref(),
-        ) {
-            terminate_shared_process(&process);
-            remove_permission_extension(&extension_path);
-            drop(process_job);
-            return Err(error);
-        }
-    }
+    // The delivery is NOT awaited here. `set_model` is an awaited control
+    // rpc, and the only code that can deliver its answer is the session
+    // reader thread — which `start_spawned_session` starts after this
+    // function returns. An awaited call at this point stalls fifteen seconds
+    // against a deliverer that does not exist and then kills every child a
+    // profile creates (the R2a audit's F1). The rpc travels as a hook on the
+    // `SpawnedSession` instead; the hook runs once that reader is live, and
+    // a refusal there still tears the child down before it can answer
+    // anything.
+    let pending_delivery = pending_pi_delivery(&switcher, &delivery);
     let static_prompt = Arc::new(PiStaticPrompt::new(
         Arc::clone(&stdin),
         Arc::clone(&next_id),
@@ -494,7 +505,29 @@ pub(super) fn spawn_process(
         os_handle,
         peer_session_id: handshake.peer_session_id,
         agent_version: None,
+        pending_delivery,
     })
+}
+
+/// The profile's delivery as the rpc it is: the switcher's awaited
+/// `set_model`, packaged for [`session::start_spawned_session`] to run once
+/// the session reader thread can deliver the answer. `None` when the profile
+/// names neither a model nor a thinking level. The switcher this clones
+/// shares the catalog and mode state with the one on the session, so the
+/// delivery and the runtime switch move the same state.
+fn pending_pi_delivery(
+    switcher: &PiSwitcher,
+    delivery: &ProfileDelivery,
+) -> Option<Box<dyn FnOnce() -> Result<(), WireError> + Send>> {
+    if delivery.model_id.is_none() && delivery.thinking_option_id.is_none() {
+        return None;
+    }
+    let switcher = switcher.clone_switcher();
+    let model_id = delivery.model_id.clone();
+    let effort = delivery.thinking_option_id.clone();
+    Some(Box::new(move || {
+        switcher.set_model(model_id.as_deref(), effort.as_deref())
+    }))
 }
 
 fn terminate_process(process: &mut Child) {
@@ -3451,6 +3484,451 @@ process.stdin.on("data", (chunk) => {
                 "the two sentences must stay distinct: {}",
                 error.message
             );
+        }
+
+        /// The tick contradiction, walked over pi's own closed mode
+        /// vocabulary plus the broker table (the R2a audit's F9 — this
+        /// refusal had no test at all): for every mode pi can start in, a
+        /// tick is admitted exactly when the daemon's broker answers that
+        /// mode, and refused with the contradiction sentence otherwise.
+        #[test]
+        fn a_pi_auto_accept_tick_over_an_asking_mode_is_refused() {
+            fn delivery(mode: &str, tick: bool) -> crate::profile_delivery::ProfileDelivery {
+                let mut delivery = crate::profile_delivery::ProfileDelivery::for_child(
+                    mode,
+                    "pi-model",
+                    None,
+                    &serde_json::Map::new(),
+                );
+                delivery.auto_accept = tick;
+                delivery
+            }
+            let validate_delivery = super::super::validate_delivery;
+
+            // The closed table intersects pi's own vocabulary at exactly
+            // `bypass`: that intersection is the route a tick rides, so it
+            // is asserted, not assumed.
+            let broker = crate::provider_catalog::auto_answered_modes();
+            assert!(
+                broker.contains(&"bypass"),
+                "bypass is the pi mode the daemon's broker answers"
+            );
+            let vocabulary = ["bypass", "ask"];
+            for mode_id in vocabulary {
+                if crate::provider_catalog::mode_is_auto_answered(mode_id) {
+                    validate_delivery(&delivery(mode_id, true)).unwrap_or_else(|error| {
+                        panic!("{mode_id} answers its own prompts: {}", error.message)
+                    });
+                } else {
+                    let error = validate_delivery(&delivery(mode_id, true))
+                        .expect_err("a tick over an asking mode is the contradiction");
+                    assert!(
+                        error.message.contains("contradict") && error.message.contains(mode_id),
+                        "the refusal names both halves for {mode_id}: {}",
+                        error.message
+                    );
+                }
+                validate_delivery(&delivery(mode_id, false)).unwrap_or_else(|error| {
+                    panic!("{mode_id} without the tick: {}", error.message)
+                });
+            }
+
+            // A mode that is not pi's at all is refused with its own
+            // sentence, tick or no tick.
+            let error = validate_delivery(&delivery("default", false))
+                .expect_err("an unknown mode is refused");
+            assert!(
+                error.message.contains("is not available"),
+                "the mode sentence: {}",
+                error.message
+            );
+        }
+    }
+
+    /// A fake Pi that logs every command it is asked and answers each with
+    /// the id-correlated success the control protocol spells, with real
+    /// levels for `get_available_thinking_levels`.
+    const FAKE_PI_DELIVERY_ANSWERS: &str = r#"
+const fs = require("fs");
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    fs.appendFileSync(process.env.DEVBOULE_FAKE_PI_LOG, frame.type + "\n");
+    const answer = { id: frame.id, type: "response", success: true, received: line };
+    if (frame.type === "get_available_thinking_levels") {
+      answer.data = { levels: ["high", "low"] };
+    }
+    process.stdout.write(JSON.stringify(answer) + "\n");
+  }
+});
+"#;
+
+    /// The same fake, refusing every `set_model` the way a build that will
+    /// not take the model answers: `success: false`, with an error.
+    const FAKE_PI_DELIVERY_REFUSES: &str = r#"
+const fs = require("fs");
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    fs.appendFileSync(process.env.DEVBOULE_FAKE_PI_LOG, frame.type + "\n");
+    const answer = { id: frame.id, type: "response",
+      success: frame.type !== "set_model",
+      error: "unknown model", received: line };
+    if (frame.type === "get_available_thinking_levels") {
+      answer.data = { levels: ["high", "low"] };
+    }
+    process.stdout.write(JSON.stringify(answer) + "\n");
+  }
+});
+"#;
+
+    /// The lifecycle the R2a audit's F1 convicted: a profile delivery for pi
+    /// is an awaited control rpc, and the only code that can deliver its
+    /// answer is the session reader thread `start_spawned_session` starts.
+    /// These tests drive that real ordering — the `SpawnedSession` is
+    /// assembled the way `spawn_process` assembles it, the delivery travels
+    /// as [`pending_pi_delivery`] packages it, and **no fixture starts a
+    /// reader for the client**: the deliverer under test is the production
+    /// one. A regression that runs the delivery before that reader exists
+    /// cannot be answered here except by the fifteen-second timeout and the
+    /// refusal that follows — which is exactly the production failure.
+    mod lifecycle_tests {
+        use super::super::{
+            pending_pi_delivery, PiCatalog, PiControl, PiInputKinds, PiKiller, PiModel, PiReader,
+            PiStaticPrompt, PiStderr, PiStdout, PiSwitcher, PiWriter,
+        };
+        use crate::process_tree::JobObject;
+        use crate::profile_delivery::ProfileDelivery;
+        use crate::server::ServerState;
+        use crate::session::permission_broker::PermissionBroker;
+        use crate::session::{start_spawned_session, SpawnedSession, StdioWaitableChild};
+        use devboule_protocol::{OwnerId, SessionEvent, SessionModelEffort};
+        use std::collections::HashMap;
+        use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        /// The delivery test's model, verbatim: one model, two levels.
+        fn delivery_catalog() -> PiCatalog {
+            PiCatalog {
+                models: HashMap::from([(
+                    "pi-model".to_string(),
+                    PiModel {
+                        name: "Pi Model".to_string(),
+                        provider: Some("pi-provider".to_string()),
+                        context_tokens: None,
+                        efforts: Some(vec![
+                            SessionModelEffort {
+                                id: "high".to_string(),
+                                label: "High".to_string(),
+                                description: None,
+                                default: Some(true),
+                            },
+                            SessionModelEffort {
+                                id: "low".to_string(),
+                                label: "Low".to_string(),
+                                description: None,
+                                default: None,
+                            },
+                        ]),
+                        input: PiInputKinds::default(),
+                    },
+                )]),
+                current_model_id: Some("pi-model".to_string()),
+                current_provider: Some("pi-provider".to_string()),
+                current_effort: Some("high".to_string()),
+                current_levels: vec!["high".to_string()],
+            }
+        }
+
+        fn pi_delivery() -> ProfileDelivery {
+            ProfileDelivery::for_child("ask", "pi-model", Some("low"), &serde_json::Map::new())
+        }
+
+        /// A fake Pi on real pipes. Stdout is deliberately **not** wrapped in
+        /// a reader thread here — the `PiStdout` the session reader will
+        /// drain is built inside `spawned_session`, and nothing else reads
+        /// the child.
+        struct SpawnedPi {
+            process: Arc<Mutex<Child>>,
+            stdout: ChildStdout,
+            stdin: Arc<Mutex<Option<ChildStdin>>>,
+            stderr: ChildStderr,
+            next_id: Arc<AtomicU64>,
+            catalog: Arc<Mutex<PiCatalog>>,
+        }
+
+        fn spawned_pi(script: &str, log: &std::path::Path) -> SpawnedPi {
+            let mut child = Command::new("node")
+                .arg("-e")
+                .arg(script)
+                .env("DEVBOULE_FAKE_PI_LOG", log)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{}",
+                        super::node_unavailable("Pi delivery lifecycle test", &error)
+                    )
+                });
+            let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+            let stdout = child.stdout.take().expect("stdout");
+            let stderr = child.stderr.take().expect("stderr");
+            SpawnedPi {
+                process: Arc::new(Mutex::new(child)),
+                stdout,
+                stdin,
+                stderr,
+                next_id: Arc::new(AtomicU64::new(1)),
+                catalog: Arc::new(Mutex::new(delivery_catalog())),
+            }
+        }
+
+        /// The `SpawnedSession` the production spawn assembles, with the
+        /// delivery pending exactly as `pending_pi_delivery` packages it. No
+        /// reader thread is started here: `start_spawned_session` is what
+        /// starts it, which is the fact under test.
+        fn spawned_session(pi: SpawnedPi) -> SpawnedSession {
+            let stdout = PiStdout::spawn(pi.stdout).expect("Pi stdout");
+            let control = Arc::new(PiControl::new(
+                Arc::clone(&pi.stdin),
+                Arc::clone(&pi.next_id),
+            ));
+            let permission_broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+            let reader = PiReader::new(
+                Vec::new(),
+                SessionEvent::SessionManifest {
+                    provider_id: Some("pi".to_string()),
+                    current_model_id: None,
+                    models: Vec::new(),
+                    modes: None,
+                },
+                Arc::clone(&permission_broker),
+                Arc::new(Mutex::new(HashMap::new())),
+                Arc::clone(&pi.next_id),
+                Arc::clone(&control),
+                Arc::clone(&pi.stdin),
+                Arc::new(AtomicBool::new(true)),
+            );
+            let switcher = PiSwitcher {
+                control,
+                catalog: Arc::clone(&pi.catalog),
+                mode_id: Arc::new(Mutex::new("ask".to_string())),
+                permission_extension_active: Arc::new(AtomicBool::new(true)),
+            };
+            let pending_delivery = pending_pi_delivery(&switcher, &pi_delivery());
+            SpawnedSession {
+                process_job: JobObject::new().expect("process job"),
+                master: None,
+                killer: Box::new(PiKiller {
+                    process: Arc::clone(&pi.process),
+                    stdin: Arc::clone(&pi.stdin),
+                    next_id: Arc::clone(&pi.next_id),
+                    permission_broker: Arc::clone(&permission_broker),
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    extension_path: std::env::temp_dir().join(format!(
+                        "devboule-pi-lifecycle-ext-{}.ts",
+                        std::process::id()
+                    )),
+                }),
+                switcher: Some(Box::new(switcher)),
+                child: Box::new(StdioWaitableChild {
+                    process: Arc::clone(&pi.process),
+                }),
+                writer: Arc::new(Mutex::new(Box::new(PiWriter {
+                    stdin: Arc::clone(&pi.stdin),
+                    next_id: Arc::clone(&pi.next_id),
+                    pending: Vec::new(),
+                })
+                    as Box<dyn std::io::Write + Send>)),
+                image_sink: None,
+                static_image_sink: Some(Arc::new(PiStaticPrompt::new(
+                    Arc::clone(&pi.stdin),
+                    Arc::clone(&pi.next_id),
+                    Arc::clone(&pi.catalog),
+                ))),
+                reader: Box::new(stdout),
+                reader_dispatch: Some(Box::new(reader)),
+                stderr: Some(Box::new(
+                    PiStderr::start(pi.stderr).expect("stderr wrapper"),
+                )),
+                permission_broker: Some(Arc::clone(&permission_broker)),
+                os_handle: None,
+                peer_session_id: None,
+                agent_version: None,
+                pending_delivery,
+            }
+        }
+
+        fn metadata(id: &str) -> devboule_protocol::Session {
+            devboule_protocol::Session {
+                id: id.to_string(),
+                workspace_id: None,
+                cwd: None,
+                kind: crate::session::SessionKind::Pi,
+                title: "Pi".to_string(),
+                state: devboule_protocol::SessionState::Live { generation: 1 },
+                elapsed_ms: Some(0),
+                provider: Some("pi".to_string()),
+                peer_session_id: None,
+                created_at_ms: 1,
+                origin: devboule_protocol::SessionOrigin::local(),
+                display_name: None,
+                created_by: None,
+                profile_id: None,
+                context_id: None,
+                unattended: false,
+                labels: Default::default(),
+            }
+        }
+
+        fn log_path(tag: &str) -> std::path::PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "devboule-pi-lifecycle-{tag}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::create_dir_all(&dir);
+            let log = dir.join("commands.log");
+            let _ = std::fs::remove_file(&log);
+            log
+        }
+
+        fn read_log(log: &std::path::Path) -> Vec<String> {
+            std::fs::read_to_string(log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        fn wait_for_commands(log: &std::path::Path, wanted: &[&str]) -> Vec<String> {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let commands = read_log(log);
+                if wanted
+                    .iter()
+                    .all(|want| commands.iter().any(|command| command == want))
+                {
+                    return commands;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the switch never reached the child: {commands:?}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        fn child_exited(process: &Arc<Mutex<Child>>) -> bool {
+            for _ in 0..100 {
+                if let Ok(mut child) = process.lock() {
+                    if child.try_wait().ok().flatten().is_some() {
+                        return true;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            false
+        }
+
+        /// The answer to F1: the delivery completes because the session
+        /// reader — the thread `start_spawned_session` starts, and nothing
+        /// else — delivers the switch's answer. The three requests the
+        /// switcher writes are on the wire and answered by the time the
+        /// start returns.
+        #[test]
+        fn the_session_reader_delivers_the_profile_switch_start_spawned_session_awaits_it() {
+            let log = log_path("ok");
+            let state = ServerState::new("pi-delivery-lifecycle".to_string());
+            let owner = OwnerId::new("local", "test").expect("owner");
+            let pi = spawned_pi(super::FAKE_PI_DELIVERY_ANSWERS, &log);
+            let session_id = "pifelifecycleok1".to_string();
+
+            start_spawned_session(
+                &state,
+                &state.sessions,
+                metadata(&session_id),
+                owner.clone(),
+                None,
+                Some("ask".to_string()),
+                spawned_session(pi),
+                None,
+            )
+            .expect("the delivery completes once the session reader is live");
+
+            let commands = wait_for_commands(
+                &log,
+                &[
+                    "set_model",
+                    "get_available_thinking_levels",
+                    "set_thinking_level",
+                ],
+            );
+            assert!(
+                commands.contains(&"set_model".to_string()),
+                "the switch is on the wire: {commands:?}"
+            );
+            let _ = state.sessions.close(&session_id, &owner, &None);
+            let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
+        }
+
+        /// The other half of the repair: a refused switch is still a
+        /// refusal — the hook's error tears the child down and fails the
+        /// session start, so no child the card did not describe survives to
+        /// answer anything, and the roster never lists it.
+        #[test]
+        fn a_refused_delivery_tears_the_child_down_and_fails_the_start() {
+            let log = log_path("refused");
+            let state = ServerState::new("pi-delivery-refusal".to_string());
+            let owner = OwnerId::new("local", "test").expect("owner");
+            let pi = spawned_pi(super::FAKE_PI_DELIVERY_REFUSES, &log);
+            let process = Arc::clone(&pi.process);
+            let session_id = "pifelifecycleref1".to_string();
+
+            let error = start_spawned_session(
+                &state,
+                &state.sessions,
+                metadata(&session_id),
+                owner.clone(),
+                None,
+                Some("ask".to_string()),
+                spawned_session(pi),
+                None,
+            )
+            .expect_err("a refused switch must refuse the session start");
+
+            assert!(
+                error.message.contains("set_model failed"),
+                "the refusal names the refused rpc: {}",
+                error.message
+            );
+            assert!(
+                !state
+                    .sessions
+                    .list(&owner)
+                    .expect("roster")
+                    .iter()
+                    .any(|session| session.id == session_id),
+                "the refused child is not left on the roster"
+            );
+            assert!(
+                child_exited(&process),
+                "the child was killed by the refusal teardown"
+            );
+            let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
         }
     }
 }

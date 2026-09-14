@@ -608,6 +608,13 @@ fn main() -> io::Result<()> {
                 }
             }
             "session/set_model" => {
+                if std::env::var_os("DEVBOULE_STUB_DIE_BEFORE_SET_MODEL_REPLY").is_some() {
+                    // Dies with the switch on the wire and no answer written:
+                    // the creation-time confirm reads an EOF, and the
+                    // teardown names what died and why from the stderr tail.
+                    eprintln!("stub: dying before the set_model reply, as asked");
+                    return Ok(());
+                }
                 if config_mode && !hybrid_config_options && !hybrid_effort_only && !load_models_push
                 {
                     // Measured on claude-agent-acp 0.76.0: this verb does not

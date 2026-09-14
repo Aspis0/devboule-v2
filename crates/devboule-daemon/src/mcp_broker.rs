@@ -1508,6 +1508,22 @@ fn create_agent(
     if crate::provider_catalog::find_available(&profile.provider).is_none() {
         return tool_error(id, "provider not installed");
     }
+    // The contradiction the profile alone decides is decided **here**, before
+    // the reservation and before the card: a tick over a mode that asks the
+    // human is refused without spending the human's consent on a creation
+    // the daemon had already decided to refuse, and without the card reading
+    // "auto accept: Yes (mode ask)" for exactly that configuration (the R2a
+    // audit's F7). The clients re-judge at spawn time, where the *delivered*
+    // mode — not the profile's — is the fact.
+    if crate::provider_catalog::auto_accept_tick_contradicts(&profile.mode, &profile.features) {
+        return tool_error(
+            id,
+            &format!(
+                "the profile asks the agent to approve its own permission prompts and also to start in mode '{}', which asks the human; the two contradict, so the creation is refused",
+                profile.mode
+            ),
+        );
+    }
     // The child's labels, stamped here where all four facts are known. Stamped
     // into the same map the caller wrote, so a human reads one list; refused if
     // the caller tried to write one of them (`parse_labels`), so the daemon's
@@ -1682,16 +1698,13 @@ fn creation_card(
             uninterpreted.join(", ")
         )
     };
-    // The card's auto-accept line reads the same profile fields the marker
-    // reads — the mode that answers, or the tick that demands one — and the
-    // creation refuses a tick whose mode does not answer, so a card a human
-    // can approve into an existing child is a card that told the truth.
-    let auto_accepts = crate::provider_catalog::mode_is_auto_answered(&profile.mode)
-        || crate::profile_delivery::feature_is_true(
-            &profile.features,
-            crate::provider_catalog::AUTO_ACCEPT_FEATURE,
-        );
-    let auto = if auto_accepts {
+    // The card's auto-accept line reads the mode, and only the mode: the
+    // broker refuses a tick over an asking mode before this card is raised,
+    // so on every card a human can actually approve, the tick and the mode
+    // already agree, and "Yes" names the mode that does the answering (the
+    // R2a audit's F7). `profile_is_unattended` keeps the tick half for the
+    // marker; here it is the mode that can be approved into existence.
+    let auto = if crate::provider_catalog::mode_is_auto_answered(&profile.mode) {
         format!("Yes (mode {})", profile.mode)
     } else {
         "No".to_string()

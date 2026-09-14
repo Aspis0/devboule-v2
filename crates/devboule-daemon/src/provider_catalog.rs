@@ -395,9 +395,31 @@ pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
 /// these are the ids the daemon speaks itself, and no provider name is
 /// reachable from here.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn auto_answered_modes() -> &'static [&'static str] {
+    &["bypass", "auto_accept", "bypassPermissions"]
+}
+
 pub(crate) fn mode_is_auto_answered(mode_id: &str) -> bool {
-    const AUTO_ANSWERED: &[&str] = &["bypass", "auto_accept", "bypassPermissions"];
-    AUTO_ANSWERED.contains(&mode_id)
+    auto_answered_modes().contains(&mode_id)
+}
+
+/// Whether the profile's `autoAccept` tick contradicts its own mode, judged
+/// from the profile alone (`R2a` F7).
+///
+/// A tick demands a mode the daemon's own broker answers; a profile whose
+/// mode asks the human asks the child to ask and not to ask at once. The
+/// judgement needs no provider and no handshake — it reads the same closed
+/// table [`mode_is_auto_answered`] reads — so the broker applies it
+/// **before** the consent card is raised (consent is not spent on a creation
+/// the daemon has already decided to refuse), and the clients apply it again
+/// at spawn time, where the *delivered* mode is the fact.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn auto_accept_tick_contradicts(
+    mode_id: &str,
+    features: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    crate::profile_delivery::feature_is_true(features, AUTO_ACCEPT_FEATURE)
+        && !mode_is_auto_answered(mode_id)
 }
 
 /// The one feature key that means "approve my permission prompts"
