@@ -9,7 +9,7 @@ use crate::handshake::{ClientHello, DaemonHello};
 use crate::project::{Project, Workspace, WorkspaceIsolation};
 use crate::session::{
     ActiveTurnBehavior, AgentActivityState, Cursor, PermissionOutcome, Persistence, ResumeResult,
-    Session, SessionEvent, SessionKind, SubscriptionId,
+    Session, SessionEvent, SessionKind, SessionModeView, SessionModel, SubscriptionId,
 };
 
 /// The role a device is paired as, on the wire as `"client"` or `"daemon"`.
@@ -545,6 +545,24 @@ pub enum ClientMessage {
         id: u64,
         document: AgentProfilesDocument,
     },
+    /// Ask what one provider offers — its models and its modes — so the
+    /// profile form can be authored from real vocabulary instead of free
+    /// text. `provider` is a catalog provider id or alias, canonicalised the
+    /// way the profile store canonicalises one; the reply carries the
+    /// canonical id back. `refresh: false` is a cached read; `refresh: true`
+    /// re-probes now, which for most providers briefly starts the provider's
+    /// process (Claude costs a file scan instead).
+    ///
+    /// Local-only, exactly like the profile store: a paired device is refused
+    /// by `peer_allows` whichever capability it holds. The handshake
+    /// capability `provider_vocabulary` is the feature gate: a daemon without
+    /// it predates this query, which is a different fact from the query
+    /// answering `absent`, and the two must never be collapsed.
+    ProviderVocabularyGet {
+        id: u64,
+        provider: String,
+        refresh: bool,
+    },
 }
 
 /// Trim a requested display name and check it, or say why it cannot be used.
@@ -625,7 +643,8 @@ impl ClientMessage {
             | Self::ToolPolicyGet { id }
             | Self::ToolPolicySet { id, .. }
             | Self::AgentProfilesGet { id }
-            | Self::AgentProfilesSet { id, .. } => Some(*id),
+            | Self::AgentProfilesSet { id, .. }
+            | Self::ProviderVocabularyGet { id, .. } => Some(*id),
         }
     }
 
@@ -694,7 +713,8 @@ impl ClientMessage {
             | Self::ToolPolicyGet { .. }
             | Self::ToolPolicySet { .. }
             | Self::AgentProfilesGet { .. }
-            | Self::AgentProfilesSet { .. } => None,
+            | Self::AgentProfilesSet { .. }
+            | Self::ProviderVocabularyGet { .. } => None,
         }
     }
 
@@ -750,6 +770,7 @@ impl ClientMessage {
             Self::ToolPolicySet { .. } => "ToolPolicySet",
             Self::AgentProfilesGet { .. } => "AgentProfilesGet",
             Self::AgentProfilesSet { .. } => "AgentProfilesSet",
+            Self::ProviderVocabularyGet { .. } => "ProviderVocabularyGet",
         }
     }
 
@@ -775,7 +796,8 @@ impl ClientMessage {
             | Self::ProvidersList { .. }
             | Self::DevicesList { .. }
             | Self::ToolPolicyGet { .. }
-            | Self::AgentProfilesGet { .. } => false,
+            | Self::AgentProfilesGet { .. }
+            | Self::ProviderVocabularyGet { .. } => false,
 
             Self::Shutdown { .. }
             | Self::SessionCreate { .. }
@@ -1017,6 +1039,88 @@ pub enum DaemonMessage {
     AgentProfilesSetOk {
         id: u64,
     },
+    /// The reply to `ProviderVocabularyGet`: what one provider offers, both
+    /// axes, and how this answer was produced. The item shapes are the live
+    /// manifest's ([`SessionModel`], [`SessionModeView`]) reused unchanged —
+    /// the vocabulary is the same shape everywhere and only its origin
+    /// differs, which is carried explicitly rather than flattened.
+    ///
+    /// `source` says whether THIS reply came from the cache or from a fresh
+    /// probe. `probed_at_ms` is when the cache entry was filled and is
+    /// therefore a cache fact: a probe reply is fresh by definition and omits
+    /// it. Both optional fields are absent from the wire — never an explicit
+    /// `null` — and `origin` on an axis follows one biconditional: it is set
+    /// if and only if that axis's state is `Present`.
+    ProviderVocabulary {
+        id: u64,
+        /// The canonical provider id the reply answers for, as the profile
+        /// store would store it.
+        provider: String,
+        models: VocabularyModels,
+        modes: VocabularyModes,
+        source: VocabularySource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        probed_at_ms: Option<u64>,
+    },
+}
+
+/// The three-valued answer to "what does this provider offer". The three are
+/// distinct wire values on purpose and must never collapse: `present` — a
+/// source answered with a list (never with empty items); `none` — the source
+/// can answer and answered "I have none"; `absent` — no source could answer
+/// (the agent declared no model shape, the probe failed, the provider is not
+/// installed). "The provider published nothing" and "nobody could ask" are
+/// different facts.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VocabularyState {
+    Present,
+    None,
+    Absent,
+}
+
+/// Who authored a `present` vocabulary list: the provider's own answer on its
+/// wire, or the daemon's own mapping (Claude's, Codex's and pi's modes are the
+/// launcher's vocabulary — the provider cannot report them). Set only when
+/// the state is [`VocabularyState::Present`], in both directions.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VocabularyOrigin {
+    Provider,
+    Daemon,
+}
+
+/// How a `ProviderVocabulary` reply was produced: served from the daemon's
+/// cache, or probed fresh for this request.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VocabularySource {
+    Cache,
+    Probe,
+}
+
+/// The models axis of a `ProviderVocabulary` reply. Items are the live
+/// manifest's shape, reused. `origin` is Some exactly when `state` is
+/// [`VocabularyState::Present`]; a `present` with no items is a collapsed
+/// absence and is never sent.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyModels {
+    pub state: VocabularyState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<VocabularyOrigin>,
+    pub items: Vec<SessionModel>,
+}
+
+/// The modes axis of a `ProviderVocabulary` reply. Same shape discipline as
+/// [`VocabularyModels`].
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyModes {
+    pub state: VocabularyState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<VocabularyOrigin>,
+    pub items: Vec<SessionModeView>,
 }
 
 /// This device's own advertised identity. `remote` deliberately carries only
@@ -1544,6 +1648,155 @@ mod tests {
         // The ordinary case: a generic error path formats the whole frame.
         let wrapped = format!("unexpected daemon frame {code:?}");
         assert!(!wrapped.contains("ABCD2345"), "{wrapped}");
+    }
+
+    #[test]
+    fn the_three_vocabulary_states_are_three_distinct_wire_words() {
+        // `present`, `none` and `absent` are three different facts and three
+        // different wire values. Asserting on the serialised JSON, not the
+        // Rust variant, is what makes a collapse of two of them — into an
+        // empty `present`, a shared "nothing", or any synonym — a red test
+        // rather than a silent loss.
+        let words = [
+            (VocabularyState::Present, "present"),
+            (VocabularyState::None, "none"),
+            (VocabularyState::Absent, "absent"),
+        ];
+        for (state, word) in words {
+            assert_eq!(
+                serde_json::to_value(state).expect("json"),
+                serde_json::json!(word),
+                "{word} must serialise to exactly its wire word"
+            );
+        }
+    }
+
+    #[test]
+    fn the_vocabulary_origins_and_source_keep_their_wire_words() {
+        assert_eq!(
+            serde_json::to_value(VocabularyOrigin::Provider).expect("json"),
+            serde_json::json!("provider")
+        );
+        assert_eq!(
+            serde_json::to_value(VocabularyOrigin::Daemon).expect("json"),
+            serde_json::json!("daemon")
+        );
+        assert_eq!(
+            serde_json::to_value(VocabularySource::Cache).expect("json"),
+            serde_json::json!("cache")
+        );
+        assert_eq!(
+            serde_json::to_value(VocabularySource::Probe).expect("json"),
+            serde_json::json!("probe")
+        );
+    }
+
+    #[test]
+    fn an_unset_origin_is_absent_from_the_wire_not_null() {
+        // One shape goes out: an optional reply field is omitted, never an
+        // explicit `null`. The TypeScript reader tolerates both because a
+        // reader should be tolerant; that tolerance is not a second encoding
+        // the daemon may pick.
+        let axis = VocabularyModels {
+            state: VocabularyState::Absent,
+            origin: None,
+            items: Vec::new(),
+        };
+        let json = serde_json::to_value(&axis).expect("json");
+        assert!(json.get("origin").is_none(), "got {json}");
+        assert!(json.get("items").is_some(), "got {json}");
+
+        // The set case still emits the key, so the omission is a decision and
+        // not a lost field.
+        let axis = VocabularyModels {
+            state: VocabularyState::Present,
+            origin: Some(VocabularyOrigin::Provider),
+            items: Vec::new(),
+        };
+        let json = serde_json::to_value(&axis).expect("json");
+        assert_eq!(json.get("origin"), Some(&serde_json::json!("provider")));
+    }
+
+    #[test]
+    fn the_vocabulary_reply_omits_probed_at_on_a_probe_reply_and_names_the_field_camel_case() {
+        // `probedAtMs` is a cache fact: a probe reply is fresh by definition,
+        // so the field is absent — not null. The cached case emits the camelCase
+        // key the TypeScript mirror reads.
+        let probe = DaemonMessage::ProviderVocabulary {
+            id: 7,
+            provider: "claude".to_string(),
+            models: VocabularyModels {
+                state: VocabularyState::Present,
+                origin: Some(VocabularyOrigin::Provider),
+                items: Vec::new(),
+            },
+            modes: VocabularyModes {
+                state: VocabularyState::Present,
+                origin: Some(VocabularyOrigin::Daemon),
+                items: Vec::new(),
+            },
+            source: VocabularySource::Probe,
+            probed_at_ms: None,
+        };
+        let json = serde_json::to_value(&probe).expect("json");
+        assert!(json.get("probedAtMs").is_none(), "got {json}");
+        assert_eq!(json.get("source"), Some(&serde_json::json!("probe")));
+        assert_eq!(json.get("provider"), Some(&serde_json::json!("claude")));
+
+        let cached = DaemonMessage::ProviderVocabulary {
+            id: 8,
+            provider: "claude".to_string(),
+            models: VocabularyModels {
+                state: VocabularyState::Present,
+                origin: Some(VocabularyOrigin::Provider),
+                items: Vec::new(),
+            },
+            modes: VocabularyModes {
+                state: VocabularyState::Absent,
+                origin: None,
+                items: Vec::new(),
+            },
+            source: VocabularySource::Cache,
+            probed_at_ms: Some(1_700_000_000_000),
+        };
+        let json = serde_json::to_value(&cached).expect("json");
+        assert_eq!(
+            json.get("probedAtMs"),
+            Some(&serde_json::json!(1_700_000_000_000_u64)),
+            "got {json}"
+        );
+    }
+
+    #[test]
+    fn origin_on_the_wire_is_present_exactly_when_the_state_is_present() {
+        // The biconditional, asserted on the wire in both directions: a
+        // `present` state implies an `origin` key, and a `none`/`absent`
+        // state implies no `origin` key — so a reader can never hold an
+        // origin without a present list, and the key can never silently
+        // become a second source of truth about the state.
+        fn axis_json(
+            state: VocabularyState,
+            origin: Option<VocabularyOrigin>,
+        ) -> serde_json::Value {
+            serde_json::to_value(VocabularyModes {
+                state,
+                origin,
+                items: Vec::new(),
+            })
+            .expect("json")
+        }
+        let json = axis_json(VocabularyState::Present, Some(VocabularyOrigin::Daemon));
+        assert!(
+            json.get("origin").is_some(),
+            "a present axis must carry its origin, got {json}"
+        );
+        for state in [VocabularyState::None, VocabularyState::Absent] {
+            let json = axis_json(state, None);
+            assert!(
+                json.get("origin").is_none(),
+                "a {state:?} axis must not carry an origin, got {json}"
+            );
+        }
     }
 
     #[test]

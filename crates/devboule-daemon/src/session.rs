@@ -15060,6 +15060,7 @@ mod tests {
             ClientMessage::ToolPolicySet { .. } => None,
             ClientMessage::AgentProfilesGet { .. } => None,
             ClientMessage::AgentProfilesSet { .. } => None,
+            ClientMessage::ProviderVocabularyGet { .. } => None,
         }
     }
 

@@ -105,7 +105,8 @@ pub use messages::{
     JournalRetention, JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole,
     PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind,
     RetentionLimit, RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope,
-    ToolDescriptor, ToolPolicyEntry, Unreclaimable, PEER_CAPS, PEER_DEFAULT_CAPS,
+    ToolDescriptor, ToolPolicyEntry, Unreclaimable, VocabularyModels, VocabularyModes,
+    VocabularyOrigin, VocabularySource, VocabularyState, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -210,6 +211,19 @@ pub mod caps {
     /// may use it is `peer_allows`, not this list: a paired device is refused
     /// both requests whichever capability it holds.
     pub const AGENT_PROFILES: &str = "agent_profiles";
+
+    /// The provider-vocabulary query (`ProviderVocabularyGet`): what one
+    /// provider offers — its models and modes — so the profile form can be
+    /// authored from real vocabulary instead of free text.
+    ///
+    /// In both lists for the reason `agent_profiles` is: the handshake
+    /// negotiates the intersection, so a name only one side offers is never
+    /// negotiated, and the app reads this name to tell "this daemon predates
+    /// the query" from "this provider published no vocabulary" — two absences
+    /// the form must not collapse into one answer. Whether a *connection* may
+    /// use it is `peer_allows`, not this list: a paired device is refused the
+    /// request whichever capability it holds.
+    pub const PROVIDER_VOCABULARY: &str = "provider_vocabulary";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -550,6 +564,11 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // whether the daemon serves `AgentProfilesGet`/`AgentProfilesSet` rather
     // than asking a daemon that would refuse.
     capabilities.push(Capability::new(caps::AGENT_PROFILES));
+    // Same pairing again, for the vocabulary the profile form is authored
+    // from: the app offers the name so the intersection keeps it, and reads
+    // it to tell a daemon that predates `ProviderVocabularyGet` from a
+    // provider that published no vocabulary.
+    capabilities.push(Capability::new(caps::PROVIDER_VOCABULARY));
     capabilities
 }
 
@@ -585,6 +604,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // intersection keeps it, and reads it before asking a daemon that predates
     // `AgentProfilesGet`/`AgentProfilesSet`.
     capabilities.push(Capability::new(caps::AGENT_PROFILES));
+    // Same pairing, for the vocabulary query: the app offers it so the
+    // intersection keeps it, and reads it before asking a daemon that predates
+    // `ProviderVocabularyGet`.
+    capabilities.push(Capability::new(caps::PROVIDER_VOCABULARY));
     capabilities
 }
 
@@ -682,6 +705,28 @@ mod tests {
             agreed.iter().any(|cap| cap.as_str() == caps::AGENT_CREATE),
             "the negotiated set must keep agent_create: {:?}",
             agreed.iter().map(Capability::as_str).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_provider_vocabulary_capability() {
+        // Both lists, for the reason the tests above state: the handshake
+        // negotiates the intersection, so a name only one side offers is never
+        // negotiated, and the app's only signal that a daemon cannot answer the
+        // vocabulary query would be an unknown-method error — an absence that
+        // must stay distinct from the query answering `absent`.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::PROVIDER_VOCABULARY));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::PROVIDER_VOCABULARY));
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(
+            agreed
+                .iter()
+                .any(|cap| cap.as_str() == caps::PROVIDER_VOCABULARY),
+            "the negotiated set must keep provider_vocabulary: {agreed:?}"
         );
     }
 

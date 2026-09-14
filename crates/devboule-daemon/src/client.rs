@@ -929,6 +929,39 @@ impl DaemonClient {
         }
     }
 
+    /// What one provider offers — its models and its modes — for the profile
+    /// form. `refresh: false` is a cached read; `refresh: true` re-probes
+    /// now, which briefly starts the provider's process (Claude costs a file
+    /// scan instead).
+    ///
+    /// Refused unless the handshake negotiated `provider_vocabulary`: a
+    /// daemon without the capability predates the query, and asking it would
+    /// fail on a frame it cannot read. That absence is a different fact from
+    /// the query answering `absent`, and this gate is what keeps the two
+    /// apart on the client side.
+    ///
+    /// The reply is the daemon's frame rather than a reshaped value, exactly
+    /// as `agent_profiles_get` hands on the document frame: the caller
+    /// matches `DaemonMessage::ProviderVocabulary` and reads the axes it
+    /// needs.
+    pub fn provider_vocabulary_get(
+        &self,
+        provider: &str,
+        refresh: bool,
+    ) -> Result<DaemonMessage, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::PROVIDER_VOCABULARY)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProviderVocabularyGet {
+            id,
+            provider: provider.to_string(),
+            refresh,
+        })? {
+            reply @ DaemonMessage::ProviderVocabulary { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn journal_usage(&self) -> Result<JournalUsage, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalUsage { id })? {
@@ -1571,7 +1604,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         // listed rather than swept into a wildcard: this match is exhaustive on
         // purpose, so a new reply variant is a compile error here until it is
         // given a decision.
-        DaemonMessage::Devices { id, .. }
+        DaemonMessage::ProviderVocabulary { id, .. }
+        | DaemonMessage::Devices { id, .. }
         | DaemonMessage::PairingCode { id, .. }
         | DaemonMessage::PairingPending { id, .. }
         | DaemonMessage::PairingDone { id, .. }

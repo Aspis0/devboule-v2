@@ -113,6 +113,13 @@ pub struct ServerState {
     provider_cli_versions: Mutex<HashMap<String, (String, CliVersionFingerprint)>>,
     /// Executable paths whose Claude version probe is already running.
     claude_version_probes: Mutex<HashSet<std::path::PathBuf>>,
+    /// The provider-vocabulary cache: what each installed provider's models
+    /// and modes look like, keyed by canonical provider id and invalidated by
+    /// `refresh: true`, by changed discovery facts, and by a 30-minute TTL
+    /// (`provider_vocabulary.rs`). It feeds the profile form only — the live
+    /// `SessionManifest` never reads it, and per-session chips keep coming
+    /// from the manifest as before.
+    pub(crate) provider_vocabulary: crate::provider_vocabulary::VocabularyCache,
     /// The only process-launch seam for provider updates. Tests replace this
     /// runner so no npm or network is ever started by the test suite.
     npm_install_runner: Arc<dyn NpmInstallRunner>,
@@ -289,6 +296,7 @@ impl ServerState {
             provider_versions: Mutex::new(HashMap::new()),
             provider_cli_versions: Mutex::new(HashMap::new()),
             claude_version_probes: Mutex::new(HashSet::new()),
+            provider_vocabulary: crate::provider_vocabulary::VocabularyCache::default(),
             npm_install_runner,
             paths: paths_for_state,
             journal: journal_for_peers,
@@ -551,7 +559,7 @@ impl ServerState {
             .insert(provider_id.to_string(), (version, fingerprint));
     }
 
-    fn provider_cli_version(
+    pub(crate) fn provider_cli_version(
         &self,
         provider_id: &str,
         executable: &std::path::Path,
@@ -2374,6 +2382,11 @@ fn dispatch_immediate(
                 }
             }
         }
+        ClientMessage::ProviderVocabularyGet {
+            id,
+            provider,
+            refresh,
+        } => crate::provider_vocabulary::provider_vocabulary_reply(state, id, &provider, refresh),
         ClientMessage::DevicesList { .. }
         | ClientMessage::PairingStart { .. }
         | ClientMessage::PairingComplete { .. }
@@ -3261,6 +3274,10 @@ fn peer_mode_refusal(state: &ServerState, request: &ClientMessage) -> Option<&'s
         // refusal for a peer is `peer_allows`', and their validation is the
         // store's.
         ClientMessage::AgentProfilesGet { .. } | ClientMessage::AgentProfilesSet { .. } => None,
+        // The vocabulary query is the profile store's companion read and
+        // carries no mode either; its peer refusal is `peer_allows`'s, and
+        // what it reads is discovery plus the catalog, never a session.
+        ClientMessage::ProviderVocabularyGet { .. } => None,
         // A set-mode asks to *switch* a session into a mode, so the session's
         // kind decides whether this daemon lets a peer name that mode at all.
         ClientMessage::SessionSetMode {
@@ -3546,7 +3563,8 @@ fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::ToolPolicyGet { .. }
         | ClientMessage::ToolPolicySet { .. }
         | ClientMessage::AgentProfilesGet { .. }
-        | ClientMessage::AgentProfilesSet { .. } => None,
+        | ClientMessage::AgentProfilesSet { .. }
+        | ClientMessage::ProviderVocabularyGet { .. } => None,
     }
 }
 
@@ -4140,7 +4158,8 @@ fn dispatch_session(
         | ClientMessage::ToolPolicyGet { .. }
         | ClientMessage::ToolPolicySet { .. }
         | ClientMessage::AgentProfilesGet { .. }
-        | ClientMessage::AgentProfilesSet { .. }) => unexpected_session_frame(&other),
+        | ClientMessage::AgentProfilesSet { .. }
+        | ClientMessage::ProviderVocabularyGet { .. }) => unexpected_session_frame(&other),
     }
 }
 
@@ -4514,7 +4533,7 @@ fn reply_result(id: u64, result: Result<DaemonMessage, WireError>) -> DaemonMess
     }
 }
 
-fn unix_millis() -> u64 {
+pub(crate) fn unix_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(0))
@@ -5423,6 +5442,477 @@ mod tests {
         assert!(
             matches!(reply, DaemonMessage::AgentProfiles { id: 43, .. }),
             "got {reply:?}"
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The vocabulary query is the profile store's companion read and is
+    /// refused on the same terms: a paired device holding **every**
+    /// capability still gets refused, and the refusal is the capability
+    /// error the app already renders. The handshake capability that
+    /// advertises the query to the app is deliberately not a peer
+    /// capability, so no capability set can open this arm.
+    #[test]
+    fn a_vocabulary_request_is_refused_for_a_peer_connection() {
+        let state = ServerState::new("vocabulary-peer".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let all_caps = ["view", "send", "answer_permissions", "create_sessions"];
+        let conn = remote_conn_with_caps(PeerRole::Client, None, &all_caps);
+
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderVocabularyGet {
+                id: 51,
+                provider: "claude".to_string(),
+                refresh: false,
+            },
+            &conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("dispatch reply");
+        let DaemonMessage::Error(error) = reply else {
+            panic!("a peer's vocabulary request must be refused, got {reply:?}");
+        };
+        assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
+        assert_eq!(
+            error.message, "capability 'provider.vocabulary.get' was not negotiated",
+            "the refusal names the rule that fired"
+        );
+
+        // The refusal is the gate and not the connection: the same frame from
+        // the local pipe is served.
+        let local = ConnHandle::new(27);
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderVocabularyGet {
+                id: 52,
+                provider: "claude".to_string(),
+                refresh: false,
+            },
+            &local,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("local reply");
+        assert!(
+            matches!(reply, DaemonMessage::ProviderVocabulary { id: 52, .. }),
+            "got {reply:?}"
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// An unknown provider id is the caller's mistake and is refused with
+    /// the catalog's own sentence — the same walk, and the same sentence,
+    /// the profile store refuses a document with.
+    #[test]
+    fn an_unknown_provider_vocabulary_request_is_an_invalid_request() {
+        let state = ServerState::new("vocabulary-bogus".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(28);
+
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderVocabularyGet {
+                id: 53,
+                provider: "bogus".to_string(),
+                refresh: false,
+            },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("dispatch reply");
+        let DaemonMessage::Error(error) = reply else {
+            panic!("an unknown provider must be refused, got {reply:?}");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.id, Some(53));
+        assert!(
+            error.message.contains("bogus"),
+            "the sentence names what was refused: {}",
+            error.message
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// What pass 1 answers, end to end through dispatch, asserted on the
+    /// serialised wire:
+    ///
+    /// - Claude answers `present` on both axes, its models origin following
+    ///   the catalog state and its modes `daemon`-origin (the launcher's
+    ///   `--permission-mode` values — the provider cannot report modes).
+    /// - Every other provider answers `absent` — a different wire word from
+    ///   `none`, never an empty `present`.
+    /// - `origin` is present exactly when the state is `present`, and a
+    ///   probe reply omits `probedAtMs` rather than sending `null`.
+    /// - No spawn outcome was recorded: Claude's read costs no process.
+    #[test]
+    fn a_vocabulary_read_answers_on_the_wire_as_the_spec_spells_it() {
+        let state = ServerState::new("vocabulary-wire".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(29);
+
+        let claude_reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderVocabularyGet {
+                id: 54,
+                provider: "claude".to_string(),
+                refresh: true,
+            },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("claude reply");
+        let DaemonMessage::ProviderVocabulary { provider, .. } = &claude_reply else {
+            panic!("got {claude_reply:?}");
+        };
+        assert_eq!(provider, "claude", "the reply carries the canonical id");
+        assert_vocabulary_wire(&claude_reply);
+
+        let json = serde_json::to_value(&claude_reply).expect("json");
+        for axis in ["models", "modes"] {
+            let axis_json = &json[axis];
+            assert_eq!(
+                axis_json["state"],
+                serde_json::json!("present"),
+                "Claude's {axis} axis answers present"
+            );
+            assert!(
+                !axis_json["items"]
+                    .as_array()
+                    .expect("present items")
+                    .is_empty(),
+                "a present axis never ships empty items"
+            );
+        }
+        // Modes are ours, not Claude's: the launcher's vocabulary, honestly
+        // labelled.
+        assert_eq!(
+            json["modes"]["origin"],
+            serde_json::json!("daemon"),
+            "Claude cannot report modes; the daemon must say the list is its own"
+        );
+        // Models origin follows the catalog: extraction worked (`provider`)
+        // or the fallback table answered (`daemon`). Either is honest; both
+        // carry a non-empty list.
+        assert!(
+            json["models"]["origin"] == serde_json::json!("provider")
+                || json["models"]["origin"] == serde_json::json!("daemon"),
+            "got {}",
+            json["models"]["origin"]
+        );
+        // A probe reply omits probedAtMs entirely — it is fresh by
+        // definition.
+        assert!(json.get("probedAtMs").is_none(), "got {json}");
+        // No spawn outcome was recorded for the read: the catalog comes from
+        // the CLI's files on disk, not from a process.
+        assert_eq!(
+            state.provider_health("claude"),
+            "unknown",
+            "a Claude vocabulary read must not spawn anything"
+        );
+
+        // The debug-only provider whose binary cannot exist anywhere makes
+        // `not installed` reachable without depending on this machine.
+        let absent_reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderVocabularyGet {
+                id: 55,
+                provider: "devboule-absent-probe".to_string(),
+                refresh: true,
+            },
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("absent reply");
+        let DaemonMessage::ProviderVocabulary { provider, .. } = &absent_reply else {
+            panic!("got {absent_reply:?}");
+        };
+        assert_eq!(provider, "devboule-absent-probe");
+        let json = serde_json::to_value(&absent_reply).expect("json");
+        for axis in ["models", "modes"] {
+            assert_eq!(
+                json[axis]["state"],
+                serde_json::json!("absent"),
+                "a provider that cannot answer is `absent`, a distinct wire value"
+            );
+            assert!(
+                json[axis].get("origin").is_none(),
+                "an absent axis carries no origin, got {}",
+                json[axis]
+            );
+            assert_eq!(
+                json[axis]["items"].as_array().expect("items").len(),
+                0,
+                "an absent axis carries no items"
+            );
+        }
+        assert_vocabulary_wire(&absent_reply);
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The biconditional, on the daemon's actual replies and in both
+    /// directions: an axis carries `origin` if and only if its state is
+    /// `present`. Together with the protocol-crate wire test this is what
+    /// keeps the two fields from becoming a second, unstated source of truth
+    /// about the state.
+    #[test]
+    fn origin_travels_exactly_with_a_present_state_on_every_reply() {
+        let state = ServerState::new("vocabulary-biconditional".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(30);
+
+        for (provider, refresh) in [
+            ("claude", true),
+            ("devboule-absent-probe", true),
+            ("claude", false),
+            ("devboule-absent-probe", false),
+        ] {
+            let reply = dispatch(
+                &state,
+                &owner,
+                ClientMessage::ProviderVocabularyGet {
+                    id: 56,
+                    provider: provider.to_string(),
+                    refresh,
+                },
+                &conn,
+                false,
+                false,
+                false,
+                false,
+            )
+            .expect("reply");
+            let json = serde_json::to_value(&reply).expect("json");
+            for axis in ["models", "modes"] {
+                let state_word = json[axis]["state"].as_str().expect("state word");
+                let has_origin = json[axis].get("origin").is_some();
+                assert_eq!(
+                    has_origin,
+                    state_word == "present",
+                    "{provider} (refresh: {refresh}) {axis}: origin presence must equal present, got {json}"
+                );
+                if state_word == "present" {
+                    assert!(
+                        !json[axis]["items"].as_array().expect("items").is_empty(),
+                        "a present axis never ships empty items: {json}"
+                    );
+                } else {
+                    assert_eq!(
+                        state_word, "absent",
+                        "pass 1 answers only present or absent: {json}"
+                    );
+                }
+            }
+        }
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// Assert the reply's optional fields keep the one encoding the protocol
+    /// went with: absent from the wire, never an explicit `null`. Read
+    /// through `.get()`, which distinguishes a missing key from a null one.
+    fn assert_vocabulary_wire(reply: &DaemonMessage) {
+        let json = serde_json::to_value(reply).expect("json");
+        match json.get("probedAtMs") {
+            None => {}
+            Some(serde_json::Value::Number(_)) => {}
+            Some(other) => panic!("probedAtMs must be a number or absent, got {other}"),
+        }
+        for axis in ["models", "modes"] {
+            match json[axis].get("origin") {
+                None => {}
+                Some(serde_json::Value::String(_)) => {}
+                Some(other) => panic!("{axis}.origin must be a string or absent, got {other}"),
+            }
+        }
+    }
+
+    /// The cache: two reads within the TTL probe once, the second answer
+    /// says `cache` and reports when its entry was filled; `refresh: true`
+    /// re-probes despite the warm entry and answers as a probe; an entry
+    /// older than the TTL is probed again. Counted on the probe counter, not
+    /// inferred from log lines.
+    #[test]
+    fn the_vocabulary_cache_serves_second_reads_and_refresh_re_probes() {
+        let state = ServerState::new("vocabulary-cache".to_string());
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(31);
+        let request = |id: u64, refresh: bool| ClientMessage::ProviderVocabularyGet {
+            id,
+            provider: "devboule-absent-probe".to_string(),
+            refresh,
+        };
+
+        let first = dispatch(
+            &state,
+            &owner,
+            request(61, false),
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("first reply");
+        assert_eq!(state.provider_vocabulary.probe_count(), 1);
+        let DaemonMessage::ProviderVocabulary { source, .. } = &first else {
+            panic!("got {first:?}");
+        };
+        assert!(matches!(source, devboule_protocol::VocabularySource::Probe));
+
+        let second = dispatch(
+            &state,
+            &owner,
+            request(62, false),
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("second reply");
+        assert_eq!(
+            state.provider_vocabulary.probe_count(),
+            1,
+            "the second read within the TTL must be served from the cache"
+        );
+        let DaemonMessage::ProviderVocabulary {
+            source,
+            probed_at_ms,
+            ..
+        } = &second
+        else {
+            panic!("got {second:?}");
+        };
+        assert!(matches!(source, devboule_protocol::VocabularySource::Cache));
+        assert!(
+            probed_at_ms.is_some(),
+            "a cache reply names when the entry was filled"
+        );
+
+        let refreshed = dispatch(
+            &state,
+            &owner,
+            request(63, true),
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("refresh reply");
+        assert_eq!(
+            state.provider_vocabulary.probe_count(),
+            2,
+            "refresh: true must re-probe despite a warm entry"
+        );
+        let DaemonMessage::ProviderVocabulary {
+            source,
+            probed_at_ms,
+            ..
+        } = &refreshed
+        else {
+            panic!("got {refreshed:?}");
+        };
+        assert!(matches!(source, devboule_protocol::VocabularySource::Probe));
+        assert!(probed_at_ms.is_none());
+
+        // Past the TTL the warm entry is stale and the read probes again.
+        state
+            .provider_vocabulary
+            .backdate("devboule-absent-probe", 30 * 60 * 1000);
+        let aged = dispatch(
+            &state,
+            &owner,
+            request(64, false),
+            &conn,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("aged reply");
+        assert_eq!(
+            state.provider_vocabulary.probe_count(),
+            3,
+            "an entry past the TTL must be probed again"
+        );
+        let DaemonMessage::ProviderVocabulary { source, .. } = &aged else {
+            panic!("got {aged:?}");
+        };
+        assert!(matches!(source, devboule_protocol::VocabularySource::Probe));
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The vocabulary cache is form-only: the live catalog path — the one
+    /// that feeds the session manifest's model chips — never reads it, so a
+    /// poisoned cache entry cannot reach a session's manifest.
+    #[test]
+    fn the_vocabulary_cache_never_feeds_the_live_catalog_path() {
+        let state = ServerState::new("vocabulary-manifest".to_string());
+        let marker = "bogus-from-vocabulary-cache".to_string();
+        state.provider_vocabulary.inject(
+            "claude",
+            devboule_protocol::VocabularyModels {
+                state: devboule_protocol::VocabularyState::Present,
+                origin: Some(devboule_protocol::VocabularyOrigin::Daemon),
+                items: vec![devboule_protocol::SessionModel {
+                    model_id: marker.clone(),
+                    name: marker.clone(),
+                    description: None,
+                    context_tokens: None,
+                    current_effort: None,
+                    efforts: None,
+                }],
+            },
+            devboule_protocol::VocabularyModes {
+                state: devboule_protocol::VocabularyState::Absent,
+                origin: None,
+                items: Vec::new(),
+            },
+        );
+        // The catalog path still answers from the derivation/cache chain,
+        // not from the vocabulary cache.
+        let snapshot = state.claude_models();
+        assert!(
+            snapshot.models.iter().all(|model| model.model_id != marker),
+            "the live catalog path must not read the vocabulary cache"
         );
 
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();

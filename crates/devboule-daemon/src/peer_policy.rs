@@ -168,6 +168,16 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::AgentProfilesGet { .. } => PeerDecision::Deny("agent.profiles.get"),
         ClientMessage::AgentProfilesSet { .. } => PeerDecision::Deny("agent.profiles.set"),
 
+        // The provider vocabulary is the profile store's companion read: it
+        // says what this machine's providers offer, which is the other half of
+        // what a profile stores. A paired device that could read it would be
+        // reading this machine's capability shape, and the handshake
+        // capability that advertises the query to the app is deliberately not
+        // a peer capability — no peer may hold it, so no arm but this one.
+        ClientMessage::ProviderVocabularyGet { .. } => {
+            PeerDecision::Deny("provider.vocabulary.get")
+        }
+
         // Local-only information: pid, instance id, live counts and the
         // secret-store selector, none of which a peer needs. Peers use `Ping`
         // and `DevicesList.self_info` (muse M7, §8b A13).
@@ -631,6 +641,14 @@ pub(crate) mod tests {
                 id: 1,
                 document: devboule_protocol::AgentProfilesDocument::default(),
             },
+            // The vocabulary query is the profile store's companion read, and
+            // the same refusal: what this machine's providers offer is this
+            // machine's own settings material.
+            ClientMessage::ProviderVocabularyGet {
+                id: 1,
+                provider: "claude".to_string(),
+                refresh: false,
+            },
         ];
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for request in &denied {
@@ -795,6 +813,7 @@ pub(crate) mod tests {
             ClientMessage::ToolPolicySet { .. } => always("tool.policy.set"),
             ClientMessage::AgentProfilesGet { .. } => always("agent.profiles.get"),
             ClientMessage::AgentProfilesSet { .. } => always("agent.profiles.set"),
+            ClientMessage::ProviderVocabularyGet { .. } => always("provider.vocabulary.get"),
         }
     }
 
@@ -805,7 +824,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 48;
+    pub(crate) const VARIANT_COUNT: usize = 49;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -861,6 +880,7 @@ pub(crate) mod tests {
             ClientMessage::ToolPolicySet { .. } => "ToolPolicySet",
             ClientMessage::AgentProfilesGet { .. } => "AgentProfilesGet",
             ClientMessage::AgentProfilesSet { .. } => "AgentProfilesSet",
+            ClientMessage::ProviderVocabularyGet { .. } => "ProviderVocabularyGet",
         }
     }
 
@@ -1075,6 +1095,11 @@ pub(crate) mod tests {
             ClientMessage::AgentProfilesSet {
                 id: 1,
                 document: devboule_protocol::AgentProfilesDocument::default(),
+            },
+            ClientMessage::ProviderVocabularyGet {
+                id: 1,
+                provider: "claude".to_string(),
+                refresh: false,
             },
         ]
     }

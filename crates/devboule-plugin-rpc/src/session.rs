@@ -268,7 +268,11 @@ impl PluginSession {
                         // may not read or write what this machine's agents are
                         // created from. Listed, not swept.
                         | DaemonMessage::AgentProfiles { id, .. }
-                        | DaemonMessage::AgentProfilesSetOk { id } => Some(*id),
+                        | DaemonMessage::AgentProfilesSetOk { id }
+                        // The vocabulary query is local to the daemon's own
+                        // profile form, like the store above. Listed, not
+                        // swept: this match is exhaustive on purpose.
+                        | DaemonMessage::ProviderVocabulary { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)
                         | DaemonMessage::Event(_)
                         | DaemonMessage::SessionAttached { .. }
