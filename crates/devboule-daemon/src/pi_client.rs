@@ -326,7 +326,15 @@ pub(crate) fn unattended_answer(delivered_mode: Option<&str>) -> UnattendedState
 /// broker answers (the injected extension stops gating), so a profile that
 /// ticks the toggle and names `ask` asks the child to ask and not to ask at
 /// once — the refusal is the answer; a substitution is not.
-fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {
+/// The tick half of [`validate_delivery`] as one predicate, shared with the
+/// tests that cross it against the pre-card gate (the re-audit's P1): the
+/// gate's `Contradicts` for pi must name exactly the pairs this refuses.
+pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
+    let mode_id = delivery.mode_id.as_deref().unwrap_or(DEFAULT_MODE);
+    delivery.auto_accept && !crate::provider_catalog::mode_is_auto_answered(mode_id)
+}
+
+pub(super) fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {
     // Pi has no permission gate of its own: the gate is the TypeScript
     // extension spawn writes and passes to the child. Inheriting Pi's native
     // behaviour as the default meant the surface that authorises "Create or
@@ -344,7 +352,7 @@ fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {
             format!("Pi session mode '{mode_id}' is not available."),
         ));
     }
-    if delivery.auto_accept && !crate::provider_catalog::mode_is_auto_answered(&mode_id) {
+    if tick_contradicts(delivery) {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
             format!(
@@ -3643,6 +3651,11 @@ process.stdin.on("data", (chunk) => {
     /// not take the model answers: `success: false`, with an error.
     const FAKE_PI_DELIVERY_REFUSES: &str = r#"
 const fs = require("fs");
+// An open listener keeps this process alive when its stdin closes, so "the
+// child exited" after the teardown can only mean the kill did it — a
+// teardown that merely closed the pipe cannot satisfy the assertion (the
+// re-audit's P3-6).
+require("net").createServer().listen(0, "127.0.0.1");
 let buffered = "";
 process.stdin.on("data", (chunk) => {
   buffered += chunk;
@@ -3663,6 +3676,75 @@ process.stdin.on("data", (chunk) => {
 });
 "#;
 
+    /// The gated fake: every request is logged the moment it arrives (so a
+    /// test can see the delivery is in flight) but the `set_model` answer is
+    /// held until a gate file appears. It is the P2-1 window made
+    /// deterministic: the reader is live, the rpc is on the wire, the answer
+    /// never comes.
+    const FAKE_PI_DELIVERY_GATED: &str = r#"
+const fs = require("fs");
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    fs.appendFileSync(process.env.DEVBOULE_FAKE_PI_LOG, frame.type + "\n");
+    if (frame.type === "set_model" && !fs.existsSync(process.env.DEVBOULE_FAKE_PI_GATE)) {
+      const held = setInterval(() => {
+        if (fs.existsSync(process.env.DEVBOULE_FAKE_PI_GATE)) {
+          clearInterval(held);
+          answer(frame);
+        }
+      }, 20);
+      return;
+    }
+    answer(frame);
+  }
+});
+function answer(frame) {
+  const answer = { id: frame.id, type: "response", success: true };
+  if (frame.type === "get_available_thinking_levels") {
+    answer.data = { levels: ["high", "low"] };
+  }
+  process.stdout.write(JSON.stringify(answer) + "\n");
+}
+"#;
+
+    /// A fake that serves the real `spawn_process` handshake — `get_state`,
+    /// `get_available_models`, `get_available_thinking_levels` — and then
+    /// answers whatever else comes, logging every frame. This is the fake
+    /// the spawn seam is tested with (the re-audit's P2-3).
+    const FAKE_PI_SPAWN_HANDSHAKE: &str = r#"
+const fs = require("fs");
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    fs.appendFileSync(process.env.DEVBOULE_FAKE_PI_LOG, frame.type + "\n");
+    let answer = { success: true };
+    if (frame.type === "get_state") {
+      answer.data = { model: { id: "pi-model", provider: "pi-provider" }, thinkingLevel: "high" };
+    } else if (frame.type === "get_available_models") {
+      answer.data = { models: [
+        { id: "pi-model", name: "Pi Model", provider: "pi-provider", thinkingLevelMap: { high: {}, low: {} } }
+      ] };
+    } else if (frame.type === "get_available_thinking_levels") {
+      answer.data = { levels: ["high", "low"] };
+    }
+    answer.id = frame.id;
+    answer.type = "response";
+    process.stdout.write(JSON.stringify(answer) + "\n");
+  }
+});
+"#;
+
     /// The lifecycle the R2a audit's F1 convicted: a profile delivery for pi
     /// is an awaited control rpc, and the only code that can deliver its
     /// answer is the session reader thread `start_spawned_session` starts.
@@ -3674,9 +3756,10 @@ process.stdin.on("data", (chunk) => {
     /// cannot be answered here except by the fifteen-second timeout and the
     /// refusal that follows — which is exactly the production failure.
     mod lifecycle_tests {
+        use super::super::PtyCommand;
         use super::super::{
-            pending_pi_delivery, PiCatalog, PiControl, PiInputKinds, PiKiller, PiModel, PiReader,
-            PiStaticPrompt, PiStderr, PiStdout, PiSwitcher, PiWriter,
+            pending_pi_delivery, spawn_process, PiCatalog, PiControl, PiInputKinds, PiKiller,
+            PiModel, PiReader, PiStaticPrompt, PiStderr, PiStdout, PiSwitcher, PiWriter,
         };
         use crate::process_tree::JobObject;
         use crate::profile_delivery::ProfileDelivery;
@@ -3741,10 +3824,19 @@ process.stdin.on("data", (chunk) => {
         }
 
         fn spawned_pi(script: &str, log: &std::path::Path) -> SpawnedPi {
+            spawned_pi_with_env(script, log, &[])
+        }
+
+        fn spawned_pi_with_env(
+            script: &str,
+            log: &std::path::Path,
+            extra: &[(&str, String)],
+        ) -> SpawnedPi {
             let mut child = Command::new("node")
                 .arg("-e")
                 .arg(script)
                 .env("DEVBOULE_FAKE_PI_LOG", log)
+                .envs(extra.iter().map(|(key, value)| (*key, value)))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -3903,6 +3995,27 @@ process.stdin.on("data", (chunk) => {
             }
         }
 
+        /// Production never spawns a bare program name: the catalog resolves
+        /// the provider executable to an absolute path before the launch
+        /// (`InstalledAgent::acp_command` — element 0 is the path
+        /// CreateProcess will run). The test resolves the same way, both to
+        /// stay faithful to that contract and because a `current_dir` on the
+        /// command changes how a bare name would be searched.
+        fn node_program() -> String {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            for dir in std::env::split_paths(&path) {
+                let candidate = dir.join("node.exe");
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+            let error = std::io::Error::new(std::io::ErrorKind::NotFound, "node.exe not on PATH");
+            panic!(
+                "{}",
+                super::node_unavailable("Pi spawn wiring test", &error)
+            );
+        }
+
         fn child_exited(process: &Arc<Mutex<Child>>) -> bool {
             for _ in 0..100 {
                 if let Ok(mut child) = process.lock() {
@@ -3999,6 +4112,164 @@ process.stdin.on("data", (chunk) => {
                 child_exited(&process),
                 "the child was killed by the refusal teardown"
             );
+            let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
+        }
+
+        /// The re-audit's P2-1: the session is not visible until it is
+        /// configured. The gated fake holds the `set_model` answer, so the
+        /// delivery — and with it the whole create — sits in flight while
+        /// the child is already spawned and the reader already running. In
+        /// that window the registry holds the entry as `Configuring`: no
+        /// roster read may hand the id out, because a prompt sent now would
+        /// be silently discarded if the delivery were refused. The old
+        /// insert-as-live shape fails the not-listed assertion here.
+        #[test]
+        fn a_session_is_not_listed_until_its_delivery_lands() {
+            let log = log_path("window");
+            let gate = log.parent().expect("log dir").join("gate.txt");
+            let _ = std::fs::remove_file(&gate);
+            let state = ServerState::new("pi-delivery-window".to_string());
+            let owner = OwnerId::new("local", "test").expect("owner");
+            let pi = spawned_pi_with_env(
+                super::FAKE_PI_DELIVERY_GATED,
+                &log,
+                &[("DEVBOULE_FAKE_PI_GATE", gate.to_string_lossy().into_owned())],
+            );
+            let session_id = "pifelifecyclewin1".to_string();
+            let metadata = metadata(&session_id);
+            let owner_for_start = owner.clone();
+            let state_for_start = Arc::clone(&state);
+            let start = std::thread::Builder::new()
+                .name("pi-delivery-window-start".to_string())
+                .spawn(move || {
+                    start_spawned_session(
+                        &state_for_start,
+                        &state_for_start.sessions,
+                        metadata,
+                        owner_for_start,
+                        None,
+                        Some("ask".to_string()),
+                        spawned_session(pi),
+                        None,
+                    )
+                    .expect("the delivery completes once the gate opens")
+                })
+                .expect("spawn the create thread");
+
+            // The request is on the wire and the fake is holding its answer:
+            // the delivery — and therefore the create — is in flight now.
+            wait_for_commands(&log, &["set_model"]);
+            for _ in 0..10 {
+                assert!(
+                    !state
+                        .sessions
+                        .list(&owner)
+                        .expect("roster")
+                        .iter()
+                        .any(|session| session.id == session_id),
+                    "a session inside its delivery window is not listed"
+                );
+                assert!(
+                    !state
+                        .sessions
+                        .state_snapshots(&owner)
+                        .iter()
+                        .any(|snapshot| snapshot.id == session_id),
+                    "a session inside its delivery window has no snapshot"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+
+            // The gate opens, the delivery lands, the create returns — and
+            // only then does the session exist for its peers.
+            std::fs::write(&gate, b"go").expect("open the gate");
+            start.join().expect("the create thread");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let listed = state
+                    .sessions
+                    .list(&owner)
+                    .expect("roster")
+                    .iter()
+                    .any(|session| session.id == session_id);
+                assert!(
+                    listed || Instant::now() < deadline,
+                    "the session is listed once its delivery has landed"
+                );
+                if listed {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = state.sessions.close(&session_id, &owner, &None);
+            let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
+        }
+
+        /// The re-audit's P2-3: the seam the F1 repair created is
+        /// `spawn_process` building the hook and handing it to the
+        /// `SpawnedSession` — and no test called `spawn_process` for pi at
+        /// all, so passing `None` there left the suite green while the
+        /// profile's model died silently at spawn. This test runs the real
+        /// seam: the real `spawn_process` (its handshake served by the fake,
+        /// its extension written into the state's runtime dir), its output
+        /// fed to the real `start_spawned_session`, and the profile's switch
+        /// asserted on the child's wire. Cut the wiring — `None` in place of
+        /// the hook — and nothing ever answers the switch: the wait times
+        /// out, red.
+        #[test]
+        fn spawn_process_wires_the_delivery_the_reader_will_run() {
+            let log = log_path("spawnwiring");
+            let state = ServerState::new("pi-spawn-wiring".to_string());
+            let owner = OwnerId::new("local", "test").expect("owner");
+            // The fake is a script FILE the way a real Pi launch carries its
+            // entry, with `--` ending the node options: `spawn_args` injects
+            // `--mode rpc` and the extension path after the entry, and those
+            // are the entry's argv, not node's.
+            let script = log.parent().expect("log dir").join("fake-pi-entry.js");
+            std::fs::write(&script, super::FAKE_PI_SPAWN_HANDSHAKE)
+                .expect("write the fake pi entry");
+            let command = PtyCommand::new(
+                node_program(),
+                vec![script.to_string_lossy().into_owned(), "--".to_string()],
+                std::env::temp_dir(),
+                vec![(
+                    "DEVBOULE_FAKE_PI_LOG".to_string(),
+                    log.to_string_lossy().into_owned(),
+                )],
+            );
+            let delivery = ProfileDelivery::for_child(
+                "bypass",
+                "pi-model",
+                Some("low"),
+                &serde_json::Map::new(),
+            );
+            let spawned = spawn_process(&state, command, delivery)
+                .expect("spawn_process assembles the child and the delivery hook");
+            let session_id = "pifelifecyclespawn1".to_string();
+            start_spawned_session(
+                &state,
+                &state.sessions,
+                metadata(&session_id),
+                owner.clone(),
+                None,
+                None,
+                spawned,
+                None,
+            )
+            .expect("the delivery lands once the session reader is live");
+            let commands = wait_for_commands(
+                &log,
+                &[
+                    "set_model",
+                    "get_available_thinking_levels",
+                    "set_thinking_level",
+                ],
+            );
+            assert!(
+                commands.contains(&"set_model".to_string()),
+                "the profile's switch reached the child through production's own wiring: {commands:?}"
+            );
+            let _ = state.sessions.close(&session_id, &owner, &None);
             let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
         }
     }

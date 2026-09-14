@@ -708,6 +708,13 @@ fn acp_startup_failure_includes_agent_stderr() {
         "startup error did not include stderr: {}",
         error
     );
+    // The stub really exited on its own before the teardown: the naming is
+    // the truth here, and this is the direction that keeps the handshake
+    // arm's exit read honest after it moved pre-kill.
+    assert!(
+        error.to_string().contains("provider exited during startup"),
+        "an agent that died during its startup is named as that: {error}"
+    );
 }
 
 #[test]
@@ -741,6 +748,13 @@ fn acp_handshake_failure_ends_the_journal_row_and_records_provider_failure() {
     assert!(
         error.to_string().contains("(-32000)"),
         "create error must carry the numeric JSON-RPC code: {error}"
+    );
+    // The stub answers the error and KEEPS RUNNING: the daemon killed it. A
+    // post-kill exit read would see our own kill and name this an exited
+    // provider — the vacuous check the re-audit flagged (P3-1's sibling).
+    assert!(
+        !error.to_string().contains("provider exited during startup"),
+        "a live agent failing a handshake is not an exited provider: {error}"
     );
 
     // The journal row was upserted before spawn; a failed spawn must end it,
@@ -3780,6 +3794,13 @@ fn an_agent_that_refuses_the_delivered_model_refuses_the_creation() {
         calls[0].contains("stub-model-new"),
         "the refusal names the model the card promised: {calls:?}"
     );
+    // The agent was ALIVE when the daemon tore it down: naming it an exited
+    // provider would be the lie the pre-kill exit read exists to prevent
+    // (the re-audit's P3-1, the direction the old mutation table missed).
+    assert!(
+        !calls[0].contains("provider exited during startup"),
+        "a live agent that refused is not an exited provider: {calls:?}"
+    );
 
     // Nothing survives to answer a prompt the card did not describe.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -3863,23 +3884,28 @@ fn an_agent_that_dies_mid_delivery_is_named_as_an_exited_provider() {
     }
 }
 
-/// R2a, the contradiction — decided **before the card**: a profile that
-/// ticks `autoAccept` while naming a mode that asks the human is refused
-/// without the consent card ever being raised, because the judgement needs
-/// the profile alone and consent is not spent on a creation the daemon has
-/// already decided to refuse (the R2a audit's F7).
+/// R2a, the contradiction — bounded by **authority** (the re-audit's P1):
+/// the pre-card gate refuses only where the daemon owns the tick rule, and
+/// an ACP agent's modes are the agent's own vocabulary, so a ticked profile
+/// naming a non-daemon mode is **not** refused before the card. The client
+/// judges at spawn time, where the delivered mode is the fact: the stub
+/// declares `ask,default` and starts in `ask`, and the daemon's
+/// post-handshake guard refuses the tick over that delivered mode. The
+/// handshake delivers the profile's mode first, so the fact the guard
+/// judges is the mode the child would actually start in.
 ///
-/// What the previous shape of this test could catch and this one cannot: the
-/// card's own text. The old test approved a card that read
-/// `auto accept: Yes (mode default)` — the sentence naming a mode that asks
-/// as the mode that answers — and then watched the creation fail behind it.
-/// That sentence is now unreachable by construction: there is no card, which
-/// is the fix. The ACP-specific half of the old refusal (the agent's
-/// post-handshake mode disagreeing with the profile's) keeps its own
-/// creation-time judgement in `apply_profile_delivery`, which no pre-card
-/// gate can replace.
+/// What the previous shape of this test caught that this one cannot, and
+/// what this one catches back: the old test pinned the pre-card refusal of
+/// an ACP-family creation over a non-daemon mode id — a pin this must not
+/// keep, because that same refusal convicted Codex `full-access` profiles
+/// the Codex client itself accepts. If the too-wide gate returns, this test
+/// goes red from the other direction: the card is never raised (the
+/// `allow_creation_card` below times out) and no delivery ever runs. The
+/// ACP guard's own sentence — unasserted since the old contradiction test
+/// replaced it (the re-audit's P3-5) — is asserted here again, at its real
+/// site.
 #[test]
-fn an_auto_accept_tick_over_an_asking_mode_is_refused_before_the_card() {
+fn an_auto_accept_tick_over_the_delivered_asking_mode_is_refused_by_the_delivery() {
     let _lock = lock_tests();
     let mut profiles = worker_profile_document();
     profiles["profiles"][0]["features"] = serde_json::json!({"autoAccept": true});
@@ -3895,39 +3921,139 @@ fn an_auto_accept_tick_over_an_asking_mode_is_refused_before_the_card() {
     let creator = test.creator_session();
     let events = test.attach(&creator);
 
+    // The card IS raised: the daemon does not claim to know what the
+    // profile's mode means for an agent whose vocabulary it does not own,
+    // so consent is spent on the only judgement that can decide — the
+    // agent's own handshake.
+    test.allow_creation_card(&creator.id, &events);
+
+    // The refusal carries the delivery guard's sentence, naming the mode the
+    // handshake actually DELIVERED: the handshake switches the session to the
+    // profile's mode first, and the guard judges that fact — here the
+    // delivered mode and the profile's spelling coincide, because the switch
+    // succeeded. The stub's starting mode is never named: what is judged is
+    // what the child would start in.
     let calls = test.wait_for_observations("mcp calls.txt", 1);
     assert!(
-        calls[0].contains("contradict") && calls[0].contains("mode 'default'"),
-        "the refusal names both halves of the contradiction: {calls:?}"
+        calls[0].contains("which asks the human"),
+        "the refusal names the contradiction: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("mode 'default'"),
+        "the refusal names the delivered mode: {calls:?}"
     );
 
-    // No consent card was ever raised on the creator: the human was never
-    // asked to approve what had already been refused. The creation's answer
-    // has already landed (the call log above), so any card would have had to
-    // precede it; the window is polled to make the absence stand.
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // Nothing survives to answer a prompt the card did not describe.
+    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
         assert!(
-            !events.lock().expect("events").iter().any(|event| matches!(
-                event,
-                SessionEvent::PermissionRequest {
-                    create_agent: Some(_),
-                    ..
-                }
-            )),
-            "no consent card is raised for a creation already refused"
+            !live_child,
+            "no live child was left behind by the refused creation"
         );
         if Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
 
-    // The child never lived: an asking child with an unattended marker is the
-    // lie in its most dangerous form, and the answer is refusal. The refused
-    // spawn still leaves its *ended* journal row behind — the row is the
-    // durable boundary and the spawn error ends it — so the assertion is on
-    // liveness, not on the row's absence.
+/// The P3-5 half a black-box test can pin: a ticked profile whose mode the
+/// agent has no vocabulary for is refused at the handshake, before any
+/// switch is promised — the stub here declares no modes at all
+/// (`DEVBOULE_STUB_OMIT_MODES`), so there is nothing the daemon could ask
+/// the agent about and nothing its guard could judge. The guard's absence
+/// sentence itself ("declared no modes the daemon can judge") sits behind a
+/// path profile creations cannot reach: a profile always names a mode, and a
+/// mode absent from the agent's declarations is refused by the handshake
+/// first — exactly the refusal asserted here. The absence arm stays as the
+/// defensive half of the match for a mode-less delivery no creator can
+/// express today.
+#[test]
+fn a_ticked_profile_over_an_agent_with_no_modes_is_refused_at_the_handshake() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["features"] = serde_json::json!({"autoAccept": true});
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "no modes declared",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[("DEVBOULE_STUB_OMIT_MODES", "1")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("is not available"),
+        "the refusal names the mode the agent has no vocabulary for: {calls:?}"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The re-audit's P2-2: the creation-time confirm carries a deadline. An
+/// agent that takes the switch off the wire and never answers cannot hold
+/// the creation — the child, the reservation and the caller's tool call —
+/// forever: the tool call comes back inside the bound with an `Io` refusal,
+/// and nothing survives.
+#[test]
+fn an_agent_that_ignores_the_model_switch_cannot_hang_the_creation() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "mute on the switch",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        &[
+            ("DEVBOULE_STUB_IGNORE_SET_MODEL", "1"),
+            ("DEVBOULE_ACP_RESPONSE_TIMEOUT_MS", "1000"),
+        ],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("did not answer within"),
+        "the mute agent is named as an unanswered wait, not a hang: {calls:?}"
+    );
+
+    // Nothing survives to answer a prompt the card did not describe.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let live_child = test

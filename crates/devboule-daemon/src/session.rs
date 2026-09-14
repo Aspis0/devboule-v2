@@ -533,6 +533,19 @@ pub(super) fn process_gone() -> WireError {
     WireError::new(ErrorCode::InvalidRequest, "This terminal process is gone.")
 }
 
+/// The refusal an id-addressed peer call gets when the id names an entry
+/// that is still inside its delivery window (the re-audit's P2-1): the
+/// session does not exist for its peers until the profile's delivery has
+/// landed, so the honest answer is `SessionNotFound`, not "gone" — nothing
+/// was ever visible to lose.
+fn not_found_while_configuring(entry: &RegistryEntry) -> WireError {
+    if entry.is_configuring() {
+        not_found()
+    } else {
+        process_gone()
+    }
+}
+
 fn unauthorized() -> WireError {
     WireError::new(
         ErrorCode::Unauthorized,
@@ -2491,23 +2504,31 @@ impl SessionRegistry {
     fn build_state_snapshots(&self, owner: &OwnerId) -> Vec<SessionStateSnapshot> {
         #[cfg(test)]
         self.full_roster_builds.fetch_add(1, Ordering::Relaxed);
-        let mut sessions = self
+        let (sessions_from_map, hidden_ids) = self
             .inner
             .lock()
             .map(|map| {
-                map.values()
-                    .filter(|entry| entry.owner().user == owner.user)
+                let hidden_ids: std::collections::HashSet<String> = map
+                    .values()
+                    .filter(|entry| entry.is_configuring())
+                    .map(|entry| entry.metadata().id.clone())
+                    .collect();
+                let sessions = map
+                    .values()
+                    .filter(|entry| entry.owner().user == owner.user && !entry.is_configuring())
                     .map(|entry| (entry.to_session(), entry.runtime().attention()))
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                (sessions, hidden_ids)
             })
             .unwrap_or_default();
+        let mut sessions = sessions_from_map;
         let live_ids = sessions
             .iter()
             .map(|(session, _)| session.id.clone())
             .collect::<std::collections::HashSet<_>>();
         if let Some(rows) = self.journal_roster() {
             sessions.extend(rows.into_iter().filter_map(|row| {
-                if live_ids.contains(&row.id) {
+                if live_ids.contains(&row.id) || hidden_ids.contains(&row.id) {
                     return None;
                 }
                 (row.owner == owner.user).then(|| (row.to_session(), None))
@@ -2547,6 +2568,7 @@ impl SessionRegistry {
         let snapshot = self.inner.lock().ok().and_then(|map| {
             map.get(session_id)
                 .filter(|entry| entry.owner().user == owner.user)
+                .filter(|entry| !entry.is_configuring())
                 .map(|entry| {
                     let session = entry.to_session();
                     SessionStateSnapshot {
@@ -3623,12 +3645,15 @@ impl SessionRegistry {
                 }
             }
             let old_entry = map.remove(session_id);
-            let had_live_slot = matches!(old_entry, Some(RegistryEntry::Live(_)));
+            let had_live_slot = matches!(
+                old_entry,
+                Some(RegistryEntry::Live(_)) | Some(RegistryEntry::Configuring(_))
+            );
             (old_entry, had_live_slot)
         };
         if let Some(old_entry) = old_entry {
             match old_entry {
-                RegistryEntry::Live(session) => {
+                RegistryEntry::Live(session) | RegistryEntry::Configuring(session) => {
                     // A resume replaces a live entry: the process that held it
                     // is gone, so this is a child's end like any other (`S5`
                     // decisions 7 and 8, audit S5-01) — reported once and its
@@ -3930,6 +3955,9 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let session = map.get_mut(session_id).ok_or_else(not_found)?;
             check_user_owner(session, owner, &None)?;
+            if session.is_configuring() {
+                return Err(not_found());
+            }
             let session = session.as_live_mut().ok_or_else(process_gone)?;
             session.preserve_on_exit.store(true, Ordering::SeqCst);
             session.killer.clone_killer()
@@ -3954,6 +3982,9 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let session = map.get_mut(session_id).ok_or_else(not_found)?;
             check_user_owner(session, owner, &conn.conn_peer)?;
+            if session.is_configuring() {
+                return Err(not_found());
+            }
             let session = session.as_live_mut().ok_or_else(process_gone)?;
             (session.killer.clone_killer(), Arc::clone(&session.runtime))
         };
@@ -4048,7 +4079,11 @@ impl SessionRegistry {
         };
         self.forget_agent_creator(session_id);
         match session {
-            Some(RegistryEntry::Live(session)) => {
+            // A `Configuring` entry closes exactly like a live one: the
+            // delivery-refusal path tears a half-started child down through
+            // this arm, and teardown is the one thing the delivery window
+            // must never block.
+            Some(RegistryEntry::Live(session)) | Some(RegistryEntry::Configuring(session)) => {
                 // The last chance to report this child to its creator (`S5` §3,
                 // audit S5-01): the row is out of the map, the runtime is still
                 // here, and the report is claimed exactly once, so a child whose
@@ -4131,6 +4166,9 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get_mut(session_id).ok_or_else(not_found)?;
             check_user_owner(entry, owner, &conn.conn_peer)?;
+            if entry.is_configuring() {
+                return Err(not_found());
+            }
             let session = entry.as_live_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
@@ -4167,6 +4205,9 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get_mut(session_id).ok_or_else(not_found)?;
             check_user_owner(entry, owner, &None)?;
+            if entry.is_configuring() {
+                return Err(not_found());
+            }
             let session = entry.as_live_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
@@ -4238,6 +4279,9 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get_mut(session_id).ok_or_else(not_found)?;
             check_user_owner(entry, owner, &conn.conn_peer)?;
+            if entry.is_configuring() {
+                return Err(not_found());
+            }
             let session = entry.as_live_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
@@ -4593,10 +4637,14 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let source = map.get(from_session).ok_or_else(not_found)?;
             check_user_owner(source, owner, &conn.conn_peer)?;
-            let source = source.as_live().ok_or_else(process_gone)?;
+            let source = source
+                .as_live()
+                .ok_or_else(|| not_found_while_configuring(source))?;
             let target = map.get(to_session).ok_or_else(not_found)?;
             check_user_owner(target, owner, &conn.conn_peer)?;
-            let target = target.as_live().ok_or_else(process_gone)?;
+            let target = target
+                .as_live()
+                .ok_or_else(|| not_found_while_configuring(target))?;
             // Refused here, inside the same section: a message that would cross
             // two peer hops never reaches the brake table, so the refusal cannot
             // leave a slot behind it.
@@ -4802,7 +4850,9 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
             check_user_owner(entry, owner, &conn.conn_peer)?;
-            let session = entry.as_live().ok_or_else(process_gone)?;
+            let session = entry
+                .as_live()
+                .ok_or_else(|| not_found_while_configuring(entry))?;
             (
                 Arc::clone(&session.writer),
                 session.image_sink.clone(),
@@ -5199,7 +5249,9 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
-            let live = entry.as_live().ok_or_else(process_gone)?;
+            let live = entry
+                .as_live()
+                .ok_or_else(|| not_found_while_configuring(entry))?;
             #[cfg(windows)]
             {
                 let daemon_sid = crate::security::current_user_sid().map_err(|error| {
@@ -5245,7 +5297,9 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
             check_user_owner(entry, owner, &conn.conn_peer)?;
-            let session = entry.as_live().ok_or_else(process_gone)?;
+            let session = entry
+                .as_live()
+                .ok_or_else(|| not_found_while_configuring(entry))?;
             (Arc::clone(&session.runtime), session.master.clone())
         };
         check_resize_owner(&runtime, conn, subscription_id)?;
@@ -5296,9 +5350,18 @@ impl SessionRegistry {
             .inner
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
+        // A session inside its delivery window does not exist for its peers
+        // (the re-audit's P2-1): the entry is skipped, and the row the
+        // journal wrote before the spawn is skipped with it, so no roster
+        // read can hand out an id a prompt would be lost on.
+        let hidden: std::collections::HashSet<String> = map
+            .values()
+            .filter(|entry| entry.is_configuring())
+            .map(|entry| entry.metadata().id.clone())
+            .collect();
         let mut sessions: Vec<Session> = map
             .values()
-            .filter(|entry| entry.owner().user == owner.user)
+            .filter(|entry| entry.owner().user == owner.user && !entry.is_configuring())
             .map(RegistryEntry::to_session)
             .collect();
         drop(map);
@@ -5309,6 +5372,9 @@ impl SessionRegistry {
                         continue;
                     }
                     if sessions.iter().any(|session| session.id == row.id) {
+                        continue;
+                    }
+                    if hidden.contains(&row.id) {
                         continue;
                     }
                     sessions.push(row.to_session());
@@ -5385,7 +5451,9 @@ impl SessionRegistry {
         if entry.owner().user != owner.user {
             return Err(not_found());
         }
-        let live = entry.as_live().ok_or_else(process_gone)?;
+        let live = entry
+            .as_live()
+            .ok_or_else(|| not_found_while_configuring(entry))?;
         Ok(AgentCreator {
             owner: entry.owner().clone(),
             origin: live.metadata.origin.clone(),
@@ -7848,12 +7916,23 @@ fn start_spawned_session(
     // Insert BEFORE starting the reader. A shell can exit before the reader
     // thread gets scheduled; inserting later would let EOF cleanup miss the
     // map entry and strand the session.
+    //
+    // The entry goes in as `Configuring` and is promoted to `Live` only
+    // after the delivery below has landed (the re-audit's P2-1). A child
+    // that is live but not yet configured is the authority gap this slice
+    // exists to close: between this insert and the delivery there used to be
+    // a listed, promptable session whose card had not been honoured — a peer
+    // could see it, send it work, and have that work silently die with a
+    // refused delivery. A `Configuring` entry is invisible to every roster
+    // read and refused by every id-addressed peer call, while the daemon's
+    // own teardown paths (the refusal's `close`, EOF reaping) still reach
+    // it.
     {
         let Ok(mut map) = registry.inner.lock() else {
             teardown_session(session);
             return Err(internal("Session state is unavailable."));
         };
-        map.insert(id.clone(), RegistryEntry::Live(Box::new(session)));
+        map.insert(id.clone(), RegistryEntry::Configuring(Box::new(session)));
     }
 
     let (coalesce_handle, reader_dispatch) = match reader_dispatch {
@@ -7906,7 +7985,9 @@ fn start_spawned_session(
         }
     });
     if let Ok(mut map) = registry.inner.lock() {
-        if let Some(session) = map.get_mut(&id).and_then(RegistryEntry::as_live_mut) {
+        // The entry is `Configuring` until the delivery lands; the daemon's
+        // own bookkeeping reaches through the window, peers do not.
+        if let Some(session) = map.get_mut(&id).and_then(RegistryEntry::as_session_mut) {
             session.coalesce_handle = coalesce_handle;
             session.stderr_handle = stderr_handle;
         }
@@ -7944,7 +8025,7 @@ fn start_spawned_session(
     let mut orphaned_reader = Some(reader_handle);
     let mut orphaned_coalesce = None;
     if let Ok(mut map) = registry.inner.lock() {
-        if let Some(session) = map.get_mut(&id).and_then(RegistryEntry::as_live_mut) {
+        if let Some(session) = map.get_mut(&id).and_then(RegistryEntry::as_session_mut) {
             session.reader_handle = orphaned_reader.take();
             session.coalesce_handle = orphaned_coalesce.take();
         }
@@ -7960,13 +8041,22 @@ fn start_spawned_session(
     // live. Run any earlier and the wait outlives its deliverer — fifteen
     // seconds of stall, then a refusal, for every child a profile creates
     // (the R2a audit's F1). A refused delivery tears the child down — the
-    // registry entry was already inserted, so the close is what kills, reaps
-    // and removes the permission extension — and fails the creation, before
-    // any prompt can reach a child the card did not describe.
+    // registry entry is still in its `Configuring` state, whose teardown the
+    // close serves — and fails the creation, before any prompt can reach a
+    // child the card did not describe.
     if let Some(deliver) = pending_delivery {
         if let Err(error) = deliver() {
             let _ = registry.close(&id, &owner, &None);
             return Err(error);
+        }
+    }
+    // The delivery landed: the session exists. The promotion is one
+    // critical section — remove and reinsert under the same lock hold — so
+    // no other thread can observe the id absent, and from here on the
+    // rosters list it and every id-addressed call reaches it.
+    if let Ok(mut map) = registry.inner.lock() {
+        if let Some(RegistryEntry::Configuring(session)) = map.remove(&id) {
+            map.insert(id.clone(), RegistryEntry::Live(session));
         }
     }
     // A child can die before the create transition is published. Mark that
@@ -8096,7 +8186,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     // Captured before the mutable borrow below: a preserved session stays in
     // the map, and its end still owes its creator a report (audit S5B-03).
     let owner = map.get(id).map(|entry| entry.owner().clone());
-    let Some(session) = map.get_mut(id).and_then(RegistryEntry::as_live_mut) else {
+    let Some(session) = map.get_mut(id).and_then(RegistryEntry::as_session_mut) else {
         return false;
     };
     session.reader_handle = None;
@@ -8140,7 +8230,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     // a child whose provider exited on its own — the common end — which used to
     // take the row out without releasing the slot or telling the creator.
     let ended = map.get(id).and_then(|entry| {
-        entry.as_live().map(|live| {
+        entry.as_session().map(|live| {
             (
                 live_session_view(live),
                 Arc::clone(&live.runtime),
@@ -8148,7 +8238,11 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
             )
         })
     });
-    let Some(RegistryEntry::Live(session)) = map.remove(id) else {
+    // `Configuring` is taken too: a child whose delivery never landed is
+    // still a child whose end owes the teardown below.
+    let (Some(RegistryEntry::Live(session)) | Some(RegistryEntry::Configuring(session))) =
+        map.remove(id)
+    else {
         return false;
     };
     let mut session = *session;
@@ -8627,6 +8721,213 @@ mod tests {
             ErrorCode::Io,
             "Pi permission extension not active.",
         )));
+    }
+
+    fn ticked_features() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({ "autoAccept": true })
+            .as_object()
+            .expect("object")
+            .to_owned()
+    }
+
+    /// The crossing the re-audit's P1 found missing: the pre-card gate and
+    /// the clients' own spawn-time tick rules, asserted against each other
+    /// over the daemon's mode vocabulary plus the provider-authored ids the
+    /// audit named. The invariant that convicts the old gate is exact — a
+    /// pair the pre-card gate refuses must be a pair the client that will
+    /// speak for the child also refuses — and for Claude and pi, whose tick
+    /// rule is the daemon's own, the two verdicts must agree outright.
+    #[test]
+    fn the_pre_card_tick_refusal_never_exceeds_what_the_clients_refuse_at_spawn() {
+        use crate::provider_catalog::{judge_auto_accept_tick, AutoAcceptTick};
+        let features = ticked_features();
+        let modes = [
+            "bypass",
+            "auto_accept",
+            "bypassPermissions",
+            "default",
+            "ask",
+            "plan",
+            "acceptEdits",
+            "auto",
+            "full-access",
+            "auto-review",
+        ];
+        for (provider, spawn_refuses) in [
+            (
+                "claude",
+                super::claude_client::tick_contradicts
+                    as fn(&crate::profile_delivery::ProfileDelivery) -> bool,
+            ),
+            ("pi", super::pi_client::tick_contradicts),
+            ("codex", super::codex_client::tick_contradicts),
+        ] {
+            for mode in modes {
+                let delivery = crate::profile_delivery::ProfileDelivery::for_child(
+                    mode,
+                    "some-model",
+                    None,
+                    &features,
+                );
+                let pre_card_refuses = judge_auto_accept_tick(provider, mode, &features)
+                    == AutoAcceptTick::Contradicts;
+                let spawn_refuses = spawn_refuses(&delivery);
+                assert!(
+                    !pre_card_refuses || spawn_refuses,
+                    "{provider} {mode}: the pre-card gate refuses a pair the client accepts at spawn"
+                );
+                // The gate is exact where the rule is the daemon's own: a
+                // silent gate over a refused pair would move the
+                // contradiction behind the consent card (the R2a audit's F7).
+                if provider != "codex" {
+                    assert_eq!(
+                        pre_card_refuses, spawn_refuses,
+                        "{provider} {mode}: the gate and the client disagree"
+                    );
+                }
+            }
+        }
+        // The conviction itself, spelled: `full-access` + tick is accepted
+        // by Codex's own rule and is `NotOursToJudge` pre-card — never
+        // refused by a table that did not author it.
+        let delivery = crate::profile_delivery::ProfileDelivery::for_child(
+            "full-access",
+            "some-model",
+            None,
+            &features,
+        );
+        assert!(!super::codex_client::tick_contradicts(&delivery));
+        assert_eq!(
+            judge_auto_accept_tick("codex", "full-access", &features),
+            AutoAcceptTick::NotOursToJudge
+        );
+    }
+
+    /// The convention the F6 classifier rests on, asserted against the
+    /// **producers** and not hand-built errors (the re-audit's P3-3): every
+    /// creation-time refusal a client can make from the profile alone is
+    /// `InvalidRequest`, so `spawn_failure_is_provider_health` reads false
+    /// for it. A client that reclassified one of these as `Io` would flip
+    /// the health recording for every profile mistake, and this is the test
+    /// that goes red.
+    #[test]
+    fn every_clients_creation_time_profile_refusal_is_invalid_request() {
+        let refusal_is_not_provider_health = |error: WireError, what: &str| {
+            assert_eq!(
+                error.code,
+                ErrorCode::InvalidRequest,
+                "{what} must be a profile refusal, not provider health: {error:?}"
+            );
+            assert!(
+                !spawn_failure_is_provider_health(&error),
+                "{what} must not read as provider health: {error:?}"
+            );
+        };
+        // pi: an unknown mode, and the tick over an asking mode.
+        refusal_is_not_provider_health(
+            super::pi_client::validate_delivery(
+                &crate::profile_delivery::ProfileDelivery::for_child(
+                    "no-such-mode",
+                    "m",
+                    None,
+                    &serde_json::Map::new(),
+                ),
+            )
+            .expect_err("unknown pi mode"),
+            "pi unknown mode",
+        );
+        refusal_is_not_provider_health(
+            super::pi_client::validate_delivery(
+                &crate::profile_delivery::ProfileDelivery::for_child(
+                    "ask",
+                    "m",
+                    None,
+                    &ticked_features(),
+                ),
+            )
+            .expect_err("pi tick over ask"),
+            "pi tick over an asking mode",
+        );
+        // Codex: an unknown mode, and the tick over an on-request mode.
+        refusal_is_not_provider_health(
+            super::codex_client::validate_delivery(
+                &crate::profile_delivery::ProfileDelivery::for_child(
+                    "no-such-mode",
+                    "m",
+                    None,
+                    &serde_json::Map::new(),
+                ),
+            )
+            .expect_err("unknown codex mode"),
+            "codex unknown mode",
+        );
+        refusal_is_not_provider_health(
+            super::codex_client::validate_delivery(
+                &crate::profile_delivery::ProfileDelivery::for_child(
+                    "auto",
+                    "m",
+                    None,
+                    &ticked_features(),
+                ),
+            )
+            .expect_err("codex tick over auto"),
+            "codex tick over an on-request mode",
+        );
+        // Claude: the tick over the default mode, and — on a derived but
+        // empty catalog — a model with no vocabulary to be judged against.
+        refusal_is_not_provider_health(
+            super::claude_client::validate_delivery(
+                &crate::claude_catalog::ClaudeCatalogSnapshot::derived(Vec::new()),
+                &crate::profile_delivery::ProfileDelivery::for_child(
+                    "default",
+                    "m",
+                    None,
+                    &ticked_features(),
+                ),
+            )
+            .expect_err("claude tick over default"),
+            "claude tick over an asking mode",
+        );
+        refusal_is_not_provider_health(
+            super::claude_client::validate_delivery(
+                &crate::claude_catalog::ClaudeCatalogSnapshot::derived(Vec::new()),
+                &crate::profile_delivery::ProfileDelivery::for_child(
+                    "default",
+                    "some-model",
+                    None,
+                    &serde_json::Map::new(),
+                ),
+            )
+            .expect_err("claude model over an empty catalog"),
+            "claude model absence",
+        );
+        // ACP: the model axis's absence sentence — an agent that declares no
+        // surface at all — and its mismatch sentence against a declared one.
+        refusal_is_not_provider_health(
+            super::acp_client::validate_acp_model_choice(
+                &crate::acp_view::SwitchControlShape {
+                    vendor: None,
+                    config: None,
+                },
+                "some-model",
+            )
+            .expect_err("acp model with no declared surface"),
+            "acp model axis absence",
+        );
+        refusal_is_not_provider_health(
+            super::acp_client::validate_acp_model_choice(
+                &crate::acp_view::SwitchControlShape {
+                    vendor: Some(crate::acp_view::VendorSwitchSurface {
+                        values: vec!["other-model".to_string()],
+                        values_by_model: Vec::new(),
+                    }),
+                    config: None,
+                },
+                "some-model",
+            )
+            .expect_err("acp model outside the declared values"),
+            "acp model axis mismatch",
+        );
     }
 
     /// A Write sink that records everything, standing in for the PTY input
@@ -13636,7 +13937,11 @@ mod tests {
             let map = registry.inner.lock().expect("registry");
             match map.get("agent-poisoned-writer").expect("session") {
                 RegistryEntry::Live(session) => Arc::clone(&session.writer),
-                RegistryEntry::Transcript(_) => panic!("expected live session"),
+                // A test-fixture entry is inserted as Live, never as the
+                // delivery-window state; the arm only closes the match.
+                RegistryEntry::Configuring(_) | RegistryEntry::Transcript(_) => {
+                    panic!("expected live session")
+                }
             }
         };
         std::thread::spawn(move || {

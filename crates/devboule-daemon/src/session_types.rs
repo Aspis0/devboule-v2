@@ -297,13 +297,46 @@ pub(super) struct TranscriptSession {
 
 pub(super) enum RegistryEntry {
     Live(Box<super::PtySession>),
+    /// The child is spawned, the reader may even be running, but the
+    /// profile's delivery has not landed yet — the session exists for the
+    /// daemon's own teardown paths and for nobody else (the re-audit's
+    /// P2-1). A `Configuring` entry is invisible to every roster read and
+    /// refused by every id-addressed peer call, so a child that is live
+    /// but not yet configured cannot be found, prompted, or closed from
+    /// the outside; the delivery's own refusal path closes it by id
+    /// because teardown is exactly what the variant still permits.
+    Configuring(Box<super::PtySession>),
     Transcript(Box<TranscriptSession>),
 }
 
 impl RegistryEntry {
+    /// Whether this entry is a session its peers must not see yet.
+    pub(super) fn is_configuring(&self) -> bool {
+        matches!(self, Self::Configuring(_))
+    }
+
+    /// The session for the daemon's own bookkeeping — handle storage, EOF
+    /// reaping, teardown — which reaches through the delivery window. Peer
+    /// calls never use this; they use [`Self::as_live`], which stops at the
+    /// window.
+    pub(super) fn as_session(&self) -> Option<&super::PtySession> {
+        match self {
+            Self::Live(session) | Self::Configuring(session) => Some(session),
+            Self::Transcript(_) => None,
+        }
+    }
+
+    /// The mutable half of [`Self::as_session`].
+    pub(super) fn as_session_mut(&mut self) -> Option<&mut super::PtySession> {
+        match self {
+            Self::Live(session) | Self::Configuring(session) => Some(session),
+            Self::Transcript(_) => None,
+        }
+    }
+
     pub(super) fn owner(&self) -> &OwnerId {
         match self {
-            Self::Live(session) => &session.owner,
+            Self::Live(session) | Self::Configuring(session) => &session.owner,
             Self::Transcript(session) => &session.owner,
         }
     }
@@ -312,7 +345,7 @@ impl RegistryEntry {
     /// ownership, origin and kind checks all read one field of it.
     pub(super) fn metadata(&self) -> &Session {
         match self {
-            Self::Live(session) => &session.metadata,
+            Self::Live(session) | Self::Configuring(session) => &session.metadata,
             Self::Transcript(session) => &session.metadata,
         }
     }
@@ -326,29 +359,35 @@ impl RegistryEntry {
 
     pub(super) fn runtime(&self) -> Arc<super::SessionRuntime> {
         match self {
-            Self::Live(session) => Arc::clone(&session.runtime),
+            Self::Live(session) | Self::Configuring(session) => Arc::clone(&session.runtime),
             Self::Transcript(session) => Arc::clone(&session.runtime),
         }
     }
 
+    /// The wire view. Callers that serve rosters filter [`Self::Configuring`]
+    /// out before reaching this; the arm exists so the internal readers of a
+    /// session's own metadata (a finish report, a resume that just inserted
+    /// the entry) never need to care about the window.
     pub(super) fn to_session(&self) -> Session {
         match self {
-            Self::Live(session) => super::live_session_view(session),
+            Self::Live(session) | Self::Configuring(session) => super::live_session_view(session),
             Self::Transcript(session) => session.metadata.clone(),
         }
     }
 
+    /// The session a **peer** sees: a configuring session does not exist yet.
     pub(super) fn as_live(&self) -> Option<&super::PtySession> {
         match self {
             Self::Live(session) => Some(session),
-            Self::Transcript(_) => None,
+            Self::Configuring(_) | Self::Transcript(_) => None,
         }
     }
 
+    /// The mutable half of [`Self::as_live`].
     pub(super) fn as_live_mut(&mut self) -> Option<&mut super::PtySession> {
         match self {
             Self::Live(session) => Some(session),
-            Self::Transcript(_) => None,
+            Self::Configuring(_) | Self::Transcript(_) => None,
         }
     }
 }

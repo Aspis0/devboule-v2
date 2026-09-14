@@ -399,27 +399,83 @@ pub(crate) fn auto_answered_modes() -> &'static [&'static str] {
     &["bypass", "auto_accept", "bypassPermissions"]
 }
 
+/// The client-only build answers no permission requests, so this has no
+/// caller there — the gate that reads it is server-only by definition.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) fn mode_is_auto_answered(mode_id: &str) -> bool {
     auto_answered_modes().contains(&mode_id)
 }
 
-/// Whether the profile's `autoAccept` tick contradicts its own mode, judged
-/// from the profile alone (`R2a` F7).
+/// The pre-card verdict on an `autoAccept` tick against the profile's own
+/// mode, split by who owns the mode id (`R2a` F7, narrowed by the re-audit's
+/// P1).
 ///
-/// A tick demands a mode the daemon's own broker answers; a profile whose
-/// mode asks the human asks the child to ask and not to ask at once. The
-/// judgement needs no provider and no handshake — it reads the same closed
-/// table [`mode_is_auto_answered`] reads — so the broker applies it
-/// **before** the consent card is raised (consent is not spent on a creation
-/// the daemon has already decided to refuse), and the clients apply it again
-/// at spawn time, where the *delivered* mode is the fact.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub(crate) fn auto_accept_tick_contradicts(
+/// The distinction is **authorship**, and it is the same one
+/// `peer_policy::unattended_mode` draws for the birth marker: a mode id this
+/// daemon did not author is a fact this daemon cannot state, and a gate that
+/// refuses must not guess in the refusing direction. The conviction was
+/// Codex's `full-access` — provider-authored vocabulary, `approvalPolicy:
+/// never`, never asks anybody — which a `!mode_is_auto_answered` shape
+/// refused before the card while Codex's own client accepted it at spawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "server")]
+pub(crate) enum AutoAcceptTick {
+    /// The daemon knows the pair is consistent: the tick is off, or the mode
+    /// is one of the provider-agnostic ids [`mode_is_auto_answered`] lists —
+    /// the one piece of mode vocabulary the daemon owns, and one every
+    /// family's spawn-time check honours.
+    Consistent,
+    /// The daemon owns this family's tick rule and the profile violates it,
+    /// so the creation is refused before the card. Two families only: for
+    /// Claude and Pi the tick's meaning **is** "start in a mode the daemon's
+    /// own broker answers" (the launch flag and the permission extension are
+    /// the mechanisms), the profile's mode is the delivered mode — no
+    /// handshake negotiates it — and each client's spawn-time check is
+    /// exactly this predicate. The rule reads only the daemon's table, so
+    /// the refusal is on vocabulary the daemon owns even though the mode id
+    /// it refuses may be the family's own spelling.
+    Contradicts,
+    /// The mode id is not the daemon's, so whether the tick contradicts is
+    /// not the daemon's fact to state: the family that owns the knob judges
+    /// at spawn time, where the delivered mode is the fact. Codex's rule is
+    /// its own (`codex_client::mode_answers_own_prompts` extends the daemon's
+    /// table with `full-access`), an ACP agent's modes are authored at
+    /// runtime and judged post-handshake, and a user-defined provider —
+    /// which resolves to the ACP family — fails safe the same way: it is
+    /// judged by the client that will speak for it, never refused by a
+    /// table that never heard of it.
+    NotOursToJudge,
+}
+
+/// The pre-card judgement of an `autoAccept` tick against the profile's own
+/// mode (`R2a` F7, narrowed by the re-audit's P1 into the authorship split
+/// [`AutoAcceptTick`] names).
+///
+/// [`mode_is_auto_answered`] is still the only mode table this reads. What
+/// changed is the conclusion a non-table id licenses: the old shape read
+/// "not broker-answered" as "asks the human" — a fact about vocabulary the
+/// daemon did not author, and wrong for exactly the modes providers spell
+/// for never-asking. The broker refuses only on [`AutoAcceptTick::Contradicts`];
+/// every other family re-judges at spawn time, where the *delivered* mode is
+/// the fact.
+#[cfg(feature = "server")]
+pub(crate) fn judge_auto_accept_tick(
+    provider: &str,
     mode_id: &str,
     features: &serde_json::Map<String, serde_json::Value>,
-) -> bool {
-    crate::profile_delivery::feature_is_true(features, AUTO_ACCEPT_FEATURE)
-        && !mode_is_auto_answered(mode_id)
+) -> AutoAcceptTick {
+    if !crate::profile_delivery::feature_is_true(features, AUTO_ACCEPT_FEATURE) {
+        return AutoAcceptTick::Consistent;
+    }
+    if mode_is_auto_answered(mode_id) {
+        return AutoAcceptTick::Consistent;
+    }
+    match session_kind_for(provider) {
+        devboule_protocol::SessionKind::Claude | devboule_protocol::SessionKind::Pi => {
+            AutoAcceptTick::Contradicts
+        }
+        _ => AutoAcceptTick::NotOursToJudge,
+    }
 }
 
 /// The one feature key that means "approve my permission prompts"
@@ -3238,6 +3294,81 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             "",
         ] {
             assert!(!super::mode_is_auto_answered(mode), "{mode}");
+        }
+    }
+
+    fn ticked() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({ "autoAccept": true })
+            .as_object()
+            .expect("object")
+            .to_owned()
+    }
+
+    /// The pre-card tick judgement (the re-audit's P1): a verdict that
+    /// refuses exists only where the daemon owns the rule — Claude and Pi —
+    /// and the daemon's own table always concludes *satisfied*, never
+    /// refused. Codex's `full-access` is the conviction: provider-authored
+    /// vocabulary, and the answer is `NotOursToJudge`, not a refusal.
+    #[test]
+    fn the_pre_card_tick_judgement_refuses_only_where_the_daemon_owns_the_rule() {
+        let features = ticked();
+        use super::AutoAcceptTick::*;
+        // No tick: consistent for every family and every mode spelling.
+        for provider in [
+            "claude",
+            "pi",
+            "codex",
+            "devboule-acp-stub",
+            "someone-elses-agent",
+        ] {
+            for mode in ["default", "ask", "full-access", "bypass"] {
+                assert_eq!(
+                    super::judge_auto_accept_tick(provider, mode, &serde_json::Map::new()),
+                    Consistent,
+                    "{provider} {mode}: no tick, no contradiction"
+                );
+            }
+        }
+        // A tick over a daemon-owned id: satisfied, whatever the family.
+        for provider in ["claude", "pi", "codex", "devboule-acp-stub"] {
+            for mode in super::auto_answered_modes() {
+                assert_eq!(
+                    super::judge_auto_accept_tick(provider, mode, &features),
+                    Consistent,
+                    "{provider} {mode}: the broker answers this mode"
+                );
+            }
+        }
+        // The daemon-owned tick rules: Claude and Pi refuse any other mode id.
+        for provider in ["claude", "pi"] {
+            for mode in ["default", "ask", "acceptEdits", "plan"] {
+                assert_eq!(
+                    super::judge_auto_accept_tick(provider, mode, &features),
+                    Contradicts,
+                    "{provider} {mode}: the tick demands a mode the broker answers"
+                );
+            }
+        }
+        // The families that own their knob: no pre-card conclusion at all —
+        // including `full-access`, the case the old gate refused in error.
+        for provider in [
+            "codex",
+            "devboule-acp-stub",
+            "a-provider-from-a-config-file",
+        ] {
+            for mode in [
+                "default",
+                "ask",
+                "full-access",
+                "auto-review",
+                "acceptEdits",
+            ] {
+                assert_eq!(
+                    super::judge_auto_accept_tick(provider, mode, &features),
+                    NotOursToJudge,
+                    "{provider} {mode}: not the daemon's fact to state"
+                );
+            }
         }
     }
 

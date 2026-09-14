@@ -162,16 +162,28 @@ fn mode_answers_own_prompts(mode_id: &str) -> bool {
     crate::provider_catalog::mode_is_auto_answered(mode_id) || mode_id == "full-access"
 }
 
+/// The tick half of [`validate_delivery`] as one predicate, shared with the
+/// tests that cross it against the pre-card gate (the re-audit's P1): the
+/// pre-card gate must never refuse a pair this rule accepts, and `full-access`
+/// + tick is the pair that convicts — accepted here, `NotOursToJudge` there.
+pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
+    let mode_id = delivery
+        .mode_id
+        .as_deref()
+        .unwrap_or(crate::codex_view::DEFAULT_MODE);
+    delivery.auto_accept && !mode_answers_own_prompts(mode_id)
+}
+
 /// The creation-time refusals Codex can make before a process exists: the
 /// mode must be one of Codex's own, and an `autoAccept` tick demands a mode
 /// that will not ask the human.
-fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {
+pub(super) fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {
     let mode_id = delivery
         .mode_id
         .as_deref()
         .unwrap_or(crate::codex_view::DEFAULT_MODE);
     validate_mode(mode_id)?;
-    if delivery.auto_accept && !mode_answers_own_prompts(mode_id) {
+    if tick_contradicts(delivery) {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
             format!(

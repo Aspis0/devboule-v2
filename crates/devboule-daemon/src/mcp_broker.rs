@@ -1528,9 +1528,25 @@ fn create_agent(
     // human is refused without spending the human's consent on a creation
     // the daemon had already decided to refuse, and without the card reading
     // "auto accept: Yes (mode ask)" for exactly that configuration (the R2a
-    // audit's F7). The clients re-judge at spawn time, where the *delivered*
-    // mode — not the profile's — is the fact.
-    if crate::provider_catalog::auto_accept_tick_contradicts(&profile.mode, &profile.features) {
+    // audit's F7).
+    //
+    // The refusal is bounded by **authorship** (the re-audit's P1): this gate
+    // concludes only where the daemon owns the rule. Claude and Pi's tick
+    // rule is the daemon's own — start in a mode the broker answers — and
+    // the profile's mode is the delivered mode for both. Codex's knob
+    // (`full-access`) and every ACP agent's modes are the family's own
+    // vocabulary, so the daemon refuses nothing there: the client re-judges
+    // at spawn time, where the delivered mode is the fact. The old shape
+    // judged every provider from the shared table alone and refused a Codex
+    // `full-access` profile its own client accepts.
+    if matches!(
+        crate::provider_catalog::judge_auto_accept_tick(
+            &profile.provider,
+            &profile.mode,
+            &profile.features
+        ),
+        crate::provider_catalog::AutoAcceptTick::Contradicts
+    ) {
         return tool_error(
             id,
             &format!(

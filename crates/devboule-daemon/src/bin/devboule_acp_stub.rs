@@ -408,7 +408,12 @@ fn main() -> io::Result<()> {
                         object.remove("models");
                     }
                 }
-                if let Some(modes) = stub_modes.as_deref() {
+                if std::env::var_os("DEVBOULE_STUB_OMIT_MODES").is_some() {
+                    // The re-audit's P3-5: the daemon's tick guard has a
+                    // sentence for a handshake that declared no modes the
+                    // daemon can judge, and reaching it needs an agent that
+                    // says nothing about modes at all.
+                } else if let Some(modes) = stub_modes.as_deref() {
                     // The stub declares the modes the test asked for (`S5`
                     // block 2's worker cell for this provider), so the daemon's
                     // `has_standard_modes` is true and the child's creation
@@ -608,6 +613,13 @@ fn main() -> io::Result<()> {
                 }
             }
             "session/set_model" => {
+                if std::env::var_os("DEVBOULE_STUB_IGNORE_SET_MODEL").is_some() {
+                    // The mute agent the re-audit's P2-2 convicts with: the
+                    // switch is taken off the wire and nothing ever comes
+                    // back. Only a deadline on the daemon's read turns this
+                    // into a refusal instead of an eternal wait.
+                    continue;
+                }
                 if std::env::var_os("DEVBOULE_STUB_DIE_BEFORE_SET_MODEL_REPLY").is_some() {
                     // Dies with the switch on the wire and no answer written:
                     // the creation-time confirm reads an EOF, and the

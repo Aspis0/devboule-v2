@@ -268,7 +268,18 @@ fn launch_model_id(delivery: &ProfileDelivery, models: &[SessionModel]) -> Optio
 /// control frame, so this is where the delivery is judged: everything that
 /// cannot be delivered is refused here, before a process exists, and a child
 /// that exists was delivered everything its card printed.
-fn validate_delivery(
+/// The tick half of [`validate_delivery`] as one predicate, shared with the
+/// tests that cross it against the pre-card gate (the re-audit's P1): the
+/// gate's `Contradicts` for Claude must name exactly the pairs this refuses.
+pub(crate) fn tick_contradicts(delivery: &ProfileDelivery) -> bool {
+    let mode_id = delivery
+        .mode_id
+        .as_deref()
+        .unwrap_or(crate::claude_view::DEFAULT_MODE);
+    delivery.auto_accept && !crate::provider_catalog::mode_is_auto_answered(mode_id)
+}
+
+pub(super) fn validate_delivery(
     catalog: &crate::claude_catalog::ClaudeCatalogSnapshot,
     delivery: &ProfileDelivery,
 ) -> Result<(), WireError> {
@@ -289,7 +300,7 @@ fn validate_delivery(
     // `autoAccept` is a constraint on which mode is delivered: the child must
     // start in a mode the daemon's own broker answers. `bypassPermissions` is
     // that mode for Claude; the launch flag is the mechanism.
-    if delivery.auto_accept && !crate::provider_catalog::mode_is_auto_answered(mode_id) {
+    if tick_contradicts(delivery) {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
             format!(

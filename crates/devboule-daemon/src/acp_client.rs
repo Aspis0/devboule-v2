@@ -53,6 +53,7 @@ pub const ACP_TURN_SILENCE: Duration = Duration::from_secs(60);
 const TURN_TIMEOUT_ENV: &str = "DEVBOULE_ACP_TURN_TIMEOUT_MS";
 const MAX_ACP_PERMISSION_LINE_BYTES: usize = 256 * 1024;
 const ACP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+const RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
 
 type AcpModeResponses = Arc<Mutex<HashMap<u64, Sender<Result<(), String>>>>>;
 
@@ -63,6 +64,113 @@ fn turn_silence() -> Duration {
         .map(Duration::from_millis)
         .filter(|duration| !duration.is_zero())
         .unwrap_or(ACP_TURN_SILENCE)
+}
+
+/// The bound one awaited response carries — the handshake rpcs and the
+/// creation-time confirm alike. Tests shorten it through the environment;
+/// production gets the fifteen seconds every other awaited rpc in the
+/// daemon carries.
+fn response_timeout() -> Duration {
+    std::env::var(RESPONSE_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(Duration::from_millis)
+        .filter(|duration| !duration.is_zero())
+        .unwrap_or(ACP_RESPONSE_TIMEOUT)
+}
+
+/// Whether the child's stdout can be read without blocking.
+///
+/// `Ok(true)` — bytes are in the pipe, so one `fill_buf` read returns
+/// immediately. `Ok(false)` — the pipe is open but empty, so wait. `Err` —
+/// the pipe is broken or unreadable: the child is gone (or going), and the
+/// read must surface that as the EOF sentence instead of the deadline.
+#[cfg(windows)]
+fn stdout_has_bytes_or_died(reader: &BufReader<ChildStdout>) -> Result<bool, ()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+    let mut available: u32 = 0;
+    let ok = unsafe {
+        PeekNamedPipe(
+            reader.get_ref().as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok != 0 {
+        Ok(available > 0)
+    } else {
+        Err(())
+    }
+}
+
+/// The same question where there is no pipe to peek: fall through to the
+/// plain blocking read, which is the behaviour this platform always had.
+#[cfg(not(windows))]
+fn stdout_has_bytes_or_died(_reader: &BufReader<ChildStdout>) -> Result<bool, ()> {
+    Ok(true)
+}
+
+/// Read one newline-terminated line, bounded by `deadline`.
+///
+/// `BufRead::read_line` on a child's stdout has no timeout of its own, and
+/// an agent that takes the request off the wire and never answers it would
+/// hold the creation — the child, the reservation, the journal row and the
+/// caller's tool call — forever (the re-audit's P2-2). So the read is
+/// assembled from non-blocking pieces: bytes already in the `BufReader` are
+/// consumed without I/O, and the pipe is peeked before every fill, so no
+/// read ever sits in a syscall the deadline cannot reach. A mute agent
+/// becomes an `Io` refusal naming the wait; a dead agent becomes the same
+/// EOF sentence the plain read produced.
+fn read_line_bounded(
+    reader: &mut BufReader<ChildStdout>,
+    deadline: Instant,
+) -> Result<String, WireError> {
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        let buffered = reader.buffer();
+        if let Some(pos) = buffered.iter().position(|byte| *byte == b'\n') {
+            line.extend_from_slice(&buffered[..=pos]);
+            reader.consume(pos + 1);
+            return Ok(String::from_utf8_lossy(&line).into_owned());
+        }
+        line.extend_from_slice(buffered);
+        reader.consume(buffered.len());
+        match stdout_has_bytes_or_died(reader) {
+            Ok(true) => match reader.fill_buf() {
+                Ok(bytes) => {
+                    if bytes.is_empty() {
+                        return Err(WireError::new(
+                            ErrorCode::Io,
+                            "ACP agent closed stdout before the answer arrived.",
+                        ));
+                    }
+                }
+                Err(error) => return Err(acp_io_error(error)),
+            },
+            Ok(false) => {
+                if Instant::now() >= deadline {
+                    return Err(WireError::new(
+                        ErrorCode::Io,
+                        format!(
+                            "the ACP agent did not answer within {}s; the creation is refused rather than awaited without end",
+                            response_timeout().as_secs()
+                        ),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(()) => {
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    "ACP agent closed stdout before the answer arrived.",
+                ));
+            }
+        }
+    }
 }
 
 fn advertised_initialize_params() -> Result<serde_json::Value, WireError> {
@@ -547,6 +655,15 @@ fn spawn_process_with_load(
     ) {
         Ok(handshake) => handshake,
         Err(error) => {
+            // A provider that died during its own startup — initialize,
+            // session/new, session/load, set_mode — never became a session
+            // (audit-2 §1): it is named as that, not as an I/O fault that
+            // reads like a protocol problem. The status is read **before**
+            // the teardown, through the same pre-kill poll the delivery arm
+            // uses: a post-kill `try_wait` sees our own kill's cached status
+            // and names every handshake failure an exit, including one the
+            // daemon caused on a live agent.
+            let exited = provider_exited_before_teardown(&process);
             let mut killer = AcpKiller {
                 process: Arc::clone(&process),
                 transport: Arc::clone(&transport),
@@ -562,16 +679,6 @@ fn spawn_process_with_load(
                 let _ = process.wait();
             }
             let stderr_lines = stderr_source.discard_and_join();
-            // A provider that died during its own startup — initialize,
-            // session/new, session/load, set_mode — never became a session
-            // (audit-2 §1): it is named as that, not as an I/O fault that
-            // reads like a protocol problem. `wait` above leaves the status
-            // cached, so `try_wait` answers without touching the process.
-            let exited = process
-                .lock()
-                .ok()
-                .and_then(|mut process| process.try_wait().ok().flatten())
-                .is_some();
             drop(process_job);
             if exited {
                 // The boundary is *named* on top of the provider's own words:
@@ -624,25 +731,9 @@ fn spawn_process_with_load(
         // teardown: after the kill the exit status is ours, and the naming
         // would fire for every refusal, including an agent that answered
         // with an error and was then torn down.
-        let exited = 'exited: {
-            // A child whose stdout the daemon just read EOF from is on its
-            // way out: its exit becomes observable a beat after the pipe
-            // closes. A short bounded poll names that death without waiting
-            // on a child that is still alive — a live child is the kill
-            // below's business.
-            for _ in 0..40 {
-                let exited = process
-                    .lock()
-                    .ok()
-                    .and_then(|mut process| process.try_wait().ok().flatten())
-                    .is_some();
-                if exited {
-                    break 'exited true;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            false
-        };
+        // The same pre-kill read the handshake arm makes: a live agent that
+        // answered with an error must not be named as an exited provider.
+        let exited = provider_exited_before_teardown(&process);
         let mut killer = AcpKiller {
             process: Arc::clone(&process),
             transport: Arc::clone(&transport),
@@ -1884,6 +1975,29 @@ fn apply_profile_delivery(
 /// response is read on the spot and its pending entries retired here,
 /// because the reader that would dispatch them never sees this response. An
 /// error answer — or a peer that dies waiting — is the creation's refusal.
+/// Whether the provider has already exited on its own, read **before** the
+/// teardown: after the kill the exit status is ours, and naming from a
+/// post-kill read would fire for every refusal, including an agent that
+/// answered with an error and was then torn down — which is exactly what the
+/// handshake arm's old post-kill read did (the re-audit's P3-1 note). A child
+/// whose stdout the daemon just read EOF from is on its way out: its exit
+/// becomes observable a beat after the pipe closes, hence the short bounded
+/// poll rather than one `try_wait`.
+fn provider_exited_before_teardown(process: &Arc<Mutex<std::process::Child>>) -> bool {
+    for _ in 0..40 {
+        let exited = process
+            .lock()
+            .ok()
+            .and_then(|mut process| process.try_wait().ok().flatten())
+            .is_some();
+        if exited {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
 fn confirm_switch(
     transport: &Arc<AcpTransport>,
     reader: &mut BufReader<ChildStdout>,
@@ -1944,7 +2058,10 @@ fn confirm_one_switch(
 /// sentence, an id outside the agent's declared values is the other. An
 /// empty declared list is no vocabulary — the agent's own answer to the
 /// switch is then the confirmation, and this check refuses nothing.
-fn validate_acp_model_choice(shape: &SwitchControlShape, model_id: &str) -> Result<(), WireError> {
+pub(super) fn validate_acp_model_choice(
+    shape: &SwitchControlShape,
+    model_id: &str,
+) -> Result<(), WireError> {
     let declared: Option<&Vec<String>> = match (shape.config.as_ref(), shape.vendor.as_ref()) {
         (Some(config), _) => Some(&config.values),
         (None, Some(vendor)) => Some(&vendor.values),
@@ -1969,7 +2086,7 @@ fn validate_acp_model_choice(shape: &SwitchControlShape, model_id: &str) -> Resu
 /// split. Vendor effort values are per model, so they judge the choice only
 /// when the delivered model declares any; the config-option surface's values
 /// are the option's own vocabulary.
-fn validate_acp_effort_choice(
+pub(super) fn validate_acp_effort_choice(
     shape: &SwitchControlShape,
     model_id: Option<&str>,
     effort: &str,
@@ -2162,15 +2279,12 @@ fn read_response_envelope(
     expected_id: u64,
     deferred: &mut Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, WireError> {
+    // One deadline per awaited response: every read below is made against
+    // it, so the handshake rpcs and the confirm share the bound (the
+    // re-audit's P2-2).
+    let deadline = Instant::now() + response_timeout();
     loop {
-        let mut line = String::new();
-        let count = reader.read_line(&mut line).map_err(acp_io_error)?;
-        if count == 0 {
-            return Err(WireError::new(
-                ErrorCode::Io,
-                "ACP agent closed stdout before the answer arrived.",
-            ));
-        }
+        let line = read_line_bounded(reader, deadline)?;
         let line = line.trim_end_matches('\n').trim_end_matches('\r');
         let value = match serde_json::from_str::<serde_json::Value>(line) {
             Ok(value) => value,
