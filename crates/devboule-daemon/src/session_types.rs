@@ -301,10 +301,14 @@ pub(super) enum RegistryEntry {
     /// profile's delivery has not landed yet — the session exists for the
     /// daemon's own teardown paths and for nobody else (the re-audit's
     /// P2-1). A `Configuring` entry is invisible to every roster read and
-    /// refused by every id-addressed peer call, so a child that is live
-    /// but not yet configured cannot be found, prompted, or closed from
-    /// the outside; the delivery's own refusal path closes it by id
-    /// because teardown is exactly what the variant still permits.
+    /// refused by every id-addressed peer call through the one door such a
+    /// call resolves its id through (`peer_entry`/`peer_entry_mut` in
+    /// `session.rs` — a `Configuring` entry answers `SessionNotFound`
+    /// there, so a new peer path cannot forget the window by resolving
+    /// through it), while a child that is live but not yet configured
+    /// cannot be found, prompted, or closed from the outside; the
+    /// delivery's own refusal path closes it by id because teardown is
+    /// exactly what the variant still permits.
     Configuring(Box<super::PtySession>),
     Transcript(Box<TranscriptSession>),
 }
@@ -315,19 +319,23 @@ impl RegistryEntry {
         matches!(self, Self::Configuring(_))
     }
 
-    /// The session for the daemon's own bookkeeping — handle storage, EOF
-    /// reaping, teardown — which reaches through the delivery window. Peer
-    /// calls never use this; they use [`Self::as_live`], which stops at the
-    /// window.
-    pub(super) fn as_session(&self) -> Option<&super::PtySession> {
+    /// The entry's child process slot — `Live` and `Configuring` both hold
+    /// one; `Transcript` does not. This answers the **daemon's** question,
+    /// *"is there a child here?"* — the resume guard, handle
+    /// storage, EOF reaping, teardown — and it deliberately reaches through
+    /// the delivery window: a `Configuring` child is exactly the child a
+    /// refused delivery must tear down. It never answers the peer's
+    /// question, *"does this session exist yet?"* — peers ask
+    /// [`Self::as_peer_visible`], which stops at the window.
+    pub(super) fn as_child_process(&self) -> Option<&super::PtySession> {
         match self {
             Self::Live(session) | Self::Configuring(session) => Some(session),
             Self::Transcript(_) => None,
         }
     }
 
-    /// The mutable half of [`Self::as_session`].
-    pub(super) fn as_session_mut(&mut self) -> Option<&mut super::PtySession> {
+    /// The mutable half of [`Self::as_child_process`].
+    pub(super) fn as_child_process_mut(&mut self) -> Option<&mut super::PtySession> {
         match self {
             Self::Live(session) | Self::Configuring(session) => Some(session),
             Self::Transcript(_) => None,
@@ -375,16 +383,22 @@ impl RegistryEntry {
         }
     }
 
-    /// The session a **peer** sees: a configuring session does not exist yet.
-    pub(super) fn as_live(&self) -> Option<&super::PtySession> {
+    /// The session a **peer** sees — the answer to *"does this session exist
+    /// for the outside yet?"*: a configuring session does not exist yet, and
+    /// a transcript-only entry holds no child. The daemon's own question,
+    /// *"is there a child process here?"*, is [`Self::as_child_process`],
+    /// which reaches through the delivery window; the two are deliberately
+    /// different predicates over the same enum, and the names are not
+    /// interchangeable.
+    pub(super) fn as_peer_visible(&self) -> Option<&super::PtySession> {
         match self {
             Self::Live(session) => Some(session),
             Self::Configuring(_) | Self::Transcript(_) => None,
         }
     }
 
-    /// The mutable half of [`Self::as_live`].
-    pub(super) fn as_live_mut(&mut self) -> Option<&mut super::PtySession> {
+    /// The mutable half of [`Self::as_peer_visible`].
+    pub(super) fn as_peer_visible_mut(&mut self) -> Option<&mut super::PtySession> {
         match self {
             Self::Live(session) => Some(session),
             Self::Configuring(_) | Self::Transcript(_) => None,

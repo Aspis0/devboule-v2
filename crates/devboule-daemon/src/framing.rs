@@ -38,7 +38,8 @@ use crate::peer_transport::{NoiseReader, NoiseWriter};
 use std::os::windows::io::AsRawHandle;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, HANDLE,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile};
@@ -503,7 +504,24 @@ fn wait_for_operation(
             let _ = windows_sys::Win32::System::IO::CancelIoEx(handle, overlapped);
         }
         let mut transferred = 0u32;
-        let _ = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
+        // The deadline fired while a read may have been completing in the
+        // same instant: CancelIoEx races the transfer, and whichever way the
+        // race resolves, bytes the kernel moved into `buffer` are off the
+        // pipe. Dropping them here splits the frame — its tail arrives, its
+        // head never does, and the reader parks waiting for a newline that
+        // the peer will never resend. A completed or partially completed
+        // read owns its bytes, so they are returned to the caller; the
+        // deadline is re-checked before the next chunk is requested, so a
+        // genuinely idle pipe still times out bounded.
+        let ok = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
+        if ok != 0 && transferred > 0 {
+            return Ok(Some(transferred));
+        }
+        let aborted =
+            io::Error::last_os_error().raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32);
+        if aborted && transferred > 0 {
+            return Ok(Some(transferred));
+        }
         return Ok(None);
     }
     if wait != WAIT_OBJECT_0 {

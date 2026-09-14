@@ -4177,11 +4177,87 @@ process.stdin.on("data", (chunk) => {
                         .any(|snapshot| snapshot.id == session_id),
                     "a session inside its delivery window has no snapshot"
                 );
+                // The repair pass's P1-1, reconciled with the one-door
+                // design: the delete here is refused `SessionNotFound` —
+                // the answer `peer_entry` gives every id-addressed peer
+                // call for a `Configuring` entry — not the close-first
+                // refusal. The decision, so the next reader does not
+                // relitigate it:
+                // - it is what the variant's own contract says — a
+                //   `Configuring` entry is invisible to every id-addressed
+                //   peer call;
+                // - it does not confirm to a peer that the id exists, and
+                //   during the window no peer legitimately holds that id
+                //   (the create returns it only after promotion);
+                // - an API where `sessions_list` says the session does not
+                //   exist while `delete` says "close it first" contradicts
+                //   itself. One door, one answer.
+                // What the refusal must still prevent is the P1's harm: the
+                // windowed entry holds a running child, and an unrefused
+                // delete here would remove that child's entry mid-delivery.
+                // Non-removal is proved end to end below: the gate opens,
+                // the create completes, the id is listed.
+                let delete_error = state
+                    .sessions
+                    .delete_session(&session_id, &owner)
+                    .expect_err("delete inside the delivery window must be refused");
+                assert_eq!(
+                    delete_error.code,
+                    devboule_protocol::ErrorCode::SessionNotFound,
+                    "the windowed delete takes the peer-visibility door's answer, not the close-first guard: {delete_error:?}"
+                );
                 std::thread::sleep(Duration::from_millis(50));
             }
 
             // The gate opens, the delivery lands, the create returns — and
-            // only then does the session exist for its peers.
+            // only then does the session exist for its peers. Resume's guard
+            // (the re-audit's P2-1) sits behind the journal-row lookup and
+            // `resume_handle`, and only ACP rows take that path — so the
+            // resume refusal is observed by writing the row a resumed ACP
+            // child carries and naming the windowed id the way the audit's
+            // trigger describes. The named-provider resolution the resume
+            // performs before the guard needs the direct-command override.
+            std::env::set_var("DEVBOULE_ACP_COMMAND", r#"["cmd"]"#);
+            std::env::set_var("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub");
+            if let Some(journal) = state.sessions.journal.as_ref() {
+                let mut row = crate::journal::new_session_record(
+                    session_id.clone(),
+                    owner.user.clone(),
+                    None,
+                    devboule_protocol::SessionKind::Acp,
+                    "gated delivery",
+                );
+                row.provider = Some("devboule-acp-stub".to_string());
+                row.peer_session_id = Some("stub-session".to_string());
+                journal
+                    .upsert_blocking(row)
+                    .expect("the resumed row is on the journal");
+            }
+            let conn = crate::session::ConnHandle::new(91);
+            let resume_error = state
+                .sessions
+                .resume(&state, &session_id, &owner, &conn)
+                .expect_err("resume inside the delivery window must be refused");
+            assert!(
+                resume_error
+                    .message
+                    .contains("cannot be resumed while its process is running"),
+                "the resume refusal names the running child: {resume_error:?}"
+            );
+            std::env::remove_var("DEVBOULE_ACP_COMMAND");
+            std::env::remove_var("DEVBOULE_ACP_PROVIDER_ID");
+            // Still refused, still present: the guard is a refusal, not a
+            // teardown, and the child the create will return is untouched.
+            assert!(
+                !state
+                    .sessions
+                    .list(&owner)
+                    .expect("roster")
+                    .iter()
+                    .any(|session| session.id == session_id),
+                "the windowed child stays hidden after the refused resume"
+            );
+
             std::fs::write(&gate, b"go").expect("open the gate");
             start.join().expect("the create thread");
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -4201,6 +4277,34 @@ process.stdin.on("data", (chunk) => {
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
+            // The close-first arm must not go silently dead above the
+            // window: the same id, promoted, is a peer-visible session
+            // holding a running child, and its delete is refused with the
+            // close-first refusal — the arm the `SessionNotFound`
+            // reconciliation answers around, not removes. A suite that lost
+            // this assertion would delete the guard by unreachability.
+            let close_first_error = state
+                .sessions
+                .delete_session(&session_id, &owner)
+                .expect_err("deleting a live session must be refused");
+            assert_eq!(
+                close_first_error.code,
+                devboule_protocol::ErrorCode::InvalidRequest,
+                "the live delete is the close-first refusal: {close_first_error:?}"
+            );
+            assert_eq!(
+                close_first_error.message, "Close the session before deleting it.",
+                "the live delete refusal demands the close"
+            );
+            assert!(
+                state
+                    .sessions
+                    .list(&owner)
+                    .expect("roster")
+                    .iter()
+                    .any(|session| session.id == session_id),
+                "the refused live delete leaves the session listed"
+            );
             let _ = state.sessions.close(&session_id, &owner, &None);
             let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
         }

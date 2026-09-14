@@ -4076,6 +4076,59 @@ fn an_agent_that_ignores_the_model_switch_cannot_hang_the_creation() {
     }
 }
 
+/// The re-audit's P2-3, as a test: an agent that keeps the pipe non-empty
+/// without ever writing a newline. A read bound consulted only when the
+/// pipe is quiet never fires against this agent; the bound must hold while
+/// bytes keep coming, and the refusal must name the wait the same way the
+/// mute agent's does.
+#[test]
+fn an_agent_that_dribbles_without_a_newline_cannot_hang_the_creation() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "dribble on the switch",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        &[
+            ("DEVBOULE_STUB_DRIBBLE_SET_MODEL", "1"),
+            ("DEVBOULE_ACP_RESPONSE_TIMEOUT_MS", "1000"),
+        ],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("did not answer within"),
+        "the dribbler is named as an unanswered wait, not a hang: {calls:?}"
+    );
+
+    // Nothing survives to answer a prompt the card did not describe.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// R2a, the identity the refusal buys: a tick over a mode the daemon's own
 /// broker answers admits the creation, the child starts in that mode, and the
 /// marker on the child is the fact the human ticked for — the delivered mode

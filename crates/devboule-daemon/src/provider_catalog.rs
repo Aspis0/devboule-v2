@@ -489,7 +489,19 @@ pub(crate) fn judge_auto_accept_tick(
         devboule_protocol::SessionKind::Claude | devboule_protocol::SessionKind::Pi => {
             AutoAcceptTick::Contradicts
         }
-        _ => AutoAcceptTick::NotOursToJudge,
+        // Every arm spelled, no wildcard: a family added to the closed
+        // `SessionKind` must be decided here, not inherit the benign
+        // verdict. The three below all answer "not ours to judge" — Codex
+        // owns its knob (`codex_client::mode_answers_own_prompts` extends
+        // the daemon's table with `full-access`), an ACP agent's modes are
+        // authored at runtime and judged post-handshake, and a terminal has
+        // no permission mechanism for a tick to contradict at all.
+        // `session_kind_for` maps every name that is not one of the three
+        // authored families to `Acp`, so `Terminal` is unreachable through
+        // this door today — it is decided, not defaulted.
+        devboule_protocol::SessionKind::Acp
+        | devboule_protocol::SessionKind::Codex
+        | devboule_protocol::SessionKind::Terminal => AutoAcceptTick::NotOursToJudge,
     }
 }
 
@@ -3408,6 +3420,52 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
                 );
             }
         }
+    }
+
+    /// The repair pass's closed-dimension rule, applied to the pre-card
+    /// judgement: every `SessionKind` arm of `judge_auto_accept_tick` has a
+    /// pinned verdict, reached through each kind's own provider spelling,
+    /// so a family's verdict is a recorded decision rather than whatever a
+    /// wildcard happened to return (the re-audit's P2-5). The match in
+    /// `judge_auto_accept_tick` spells every arm with no wildcard, so
+    /// adding a sixth family is a compile error before this test can even
+    /// run — and this test then forces whoever adds it to write down what
+    /// the new family's verdict is.
+    #[test]
+    fn every_session_kind_has_a_pinned_pre_card_tick_verdict() {
+        use super::AutoAcceptTick::*;
+        use devboule_protocol::SessionKind;
+
+        // The provider spellings each kind resolves from
+        // (`session_kind_for`): the three authored families by name, every
+        // other name — including a user-defined provider from a config
+        // file — to the ACP family. `Terminal` is unreachable through
+        // `session_kind_for` today, so its verdict is pinned through the
+        // accessor itself, one arm at a time, below.
+        let verdict_for_provider =
+            |provider: &str| super::judge_auto_accept_tick(provider, "ask", &ticked());
+        assert_eq!(verdict_for_provider("claude"), Contradicts);
+        assert_eq!(verdict_for_provider("pi"), Contradicts);
+        assert_eq!(verdict_for_provider("codex"), NotOursToJudge);
+        assert_eq!(verdict_for_provider("devboule-acp-stub"), NotOursToJudge);
+        assert_eq!(
+            verdict_for_provider("someone-elses-agent-from-a-config-file"),
+            NotOursToJudge
+        );
+
+        // The closed table, walked one arm at a time through the accessor
+        // the match serves: adding a variant to `SessionKind` makes the
+        // match in `judge_auto_accept_tick` fail to compile, and the new
+        // arm must be given its verdict before this table can be extended.
+        let kind_of_provider = |provider: &str| super::session_kind_for(provider);
+        assert_eq!(kind_of_provider("claude"), SessionKind::Claude);
+        assert_eq!(kind_of_provider("pi"), SessionKind::Pi);
+        assert_eq!(kind_of_provider("codex"), SessionKind::Codex);
+        assert_eq!(kind_of_provider("devboule-acp-stub"), SessionKind::Acp);
+        assert_eq!(
+            kind_of_provider("someone-elses-agent-from-a-config-file"),
+            SessionKind::Acp
+        );
     }
 
     /// The published schema of `devboule_create_agent` cannot express a provider,

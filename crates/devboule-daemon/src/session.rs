@@ -546,6 +546,49 @@ fn not_found_while_configuring(entry: &RegistryEntry) -> WireError {
     }
 }
 
+/// The one door an id-addressed peer call resolves its id through: the
+/// entry must exist, belong to this owner, and be past its delivery window.
+/// A `Configuring` entry answers `SessionNotFound` here, because the session
+/// does not exist for peers until the delivery has landed (the re-audit's
+/// P2-1/P2-2 — the variant's own doc claims this refusal, and this door is
+/// what makes the claim true rather than a per-site edit). A new peer path
+/// cannot forget the window: there is no second lookup that skips it.
+/// Daemon-side readers — teardown, EOF reaping, handle storage, the resume
+/// guard — do not go through this door; they ask
+/// `RegistryEntry::as_child_process` directly. `delete_session` cannot
+/// resolve through the door either (an id absent from the map must fall
+/// through to its journal-only branch), but for an entry the map holds it
+/// repeats the door's answer — `Configuring` is refused `SessionNotFound`
+/// there too, before its own close-first guard.
+fn peer_entry<'a>(
+    map: &'a HashMap<String, RegistryEntry>,
+    session_id: &str,
+    owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
+) -> Result<&'a RegistryEntry, WireError> {
+    let entry = map.get(session_id).ok_or_else(not_found)?;
+    check_user_owner(entry, owner, conn_peer)?;
+    if entry.is_configuring() {
+        return Err(not_found());
+    }
+    Ok(entry)
+}
+
+/// The mutable half of [`peer_entry`].
+fn peer_entry_mut<'a>(
+    map: &'a mut HashMap<String, RegistryEntry>,
+    session_id: &str,
+    owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
+) -> Result<&'a mut RegistryEntry, WireError> {
+    let entry = map.get_mut(session_id).ok_or_else(not_found)?;
+    check_user_owner(entry, owner, conn_peer)?;
+    if entry.is_configuring() {
+        return Err(not_found());
+    }
+    Ok(entry)
+}
+
 fn unauthorized() -> WireError {
     WireError::new(
         ErrorCode::Unauthorized,
@@ -3120,7 +3163,23 @@ impl SessionRegistry {
                     if entry.owner().user != owner.user {
                         return Err(unauthorized());
                     }
-                    if entry.as_live().is_some() {
+                    // Inside the delivery window the delete answers what
+                    // every id-addressed peer call answers through
+                    // `peer_entry`: `SessionNotFound`. A `Configuring`
+                    // entry does not exist for peers — `sessions_list`
+                    // never names the id, and no peer legitimately holds it
+                    // (the create returns it only after promotion) — so
+                    // "close the session before deleting it" would
+                    // contradict the roster and confirm an id the caller
+                    // should not know. One door, one answer.
+                    if entry.is_configuring() {
+                        return Err(not_found());
+                    }
+                    // Past the window the close-first guard stands (the
+                    // re-audit's P1-1): a session a peer can see holds a
+                    // running child, and an unrefused delete here would
+                    // remove that child's row and entry out from under it.
+                    if entry.as_peer_visible().is_some() {
                         return Err(WireError::new(
                             ErrorCode::InvalidRequest,
                             "Close the session before deleting it.",
@@ -3634,8 +3693,15 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             if let Some(entry) = map.get(session_id) {
                 check_user_owner(entry, owner, &conn.conn_peer)?;
+                // *"Is the child that holds this entry still running?"* —
+                // asked over `as_child_process`, because a `Configuring`
+                // entry is a running child the same way a `Live` one is.
+                // Over the peer-visibility accessor the refusal silently
+                // stopped covering the delivery window, and a resume there
+                // replaced a running child out from under its in-flight
+                // create (the re-audit's P2-1).
                 if entry
-                    .as_live()
+                    .as_child_process()
                     .is_some_and(|session| !session.runtime.process_exited())
                 {
                     return Err(WireError::new(
@@ -3834,6 +3900,17 @@ impl SessionRegistry {
             };
             if let Some(existing) = map.get(session_id) {
                 check_user_owner(existing, owner, &conn.conn_peer)?;
+                // Attach reaches this arm whenever the registry holds the
+                // id — including inside the delivery window, where
+                // `runtime_for_user` answered `SessionNotFound` and the
+                // caller fell back here on exactly that code (the
+                // re-audit's P2-2). Handing back the windowed child's
+                // runtime through the fallback would re-open the window the
+                // door just closed.
+                if existing.is_configuring() {
+                    journal.unpin(session_id);
+                    return Err(not_found());
+                }
                 journal.unpin(session_id);
                 return Ok(existing.runtime());
             }
@@ -3953,12 +4030,8 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let session = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(session, owner, &None)?;
-            if session.is_configuring() {
-                return Err(not_found());
-            }
-            let session = session.as_live_mut().ok_or_else(process_gone)?;
+            let entry = peer_entry_mut(&mut map, session_id, owner, &None)?;
+            let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
             session.preserve_on_exit.store(true, Ordering::SeqCst);
             session.killer.clone_killer()
         };
@@ -3980,12 +4053,8 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let session = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(session, owner, &conn.conn_peer)?;
-            if session.is_configuring() {
-                return Err(not_found());
-            }
-            let session = session.as_live_mut().ok_or_else(process_gone)?;
+            let entry = peer_entry_mut(&mut map, session_id, owner, &conn.conn_peer)?;
+            let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
             (session.killer.clone_killer(), Arc::clone(&session.runtime))
         };
         check_attached(&runtime, conn, subscription_id)?;
@@ -3994,7 +4063,14 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            if let Some(session) = map.get_mut(session_id).and_then(RegistryEntry::as_live_mut) {
+            // Peer-visible shape on purpose, though this is bookkeeping: a
+            // `Configuring` entry here would be a *different* child — the
+            // resume that replaced the one just killed — and must not
+            // inherit its `preserve_on_exit`.
+            if let Some(session) = map
+                .get_mut(session_id)
+                .and_then(RegistryEntry::as_peer_visible_mut)
+            {
                 session.preserve_on_exit.store(true, Ordering::SeqCst);
             }
         }
@@ -4064,7 +4140,12 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             if let Some(entry) = map.get(session_id) {
                 check_user_owner(entry, owner, conn_peer)?;
-                if let Some(session) = entry.as_live() {
+                // Close is teardown: it reaches through the delivery window
+                // exactly like the `Configuring` arm below, so the same
+                // child-slot accessor answers for both variants here. (For a
+                // windowed child the store is a no-op — `transition_ready`
+                // is not raised until the delivery lands and promotes.)
+                if let Some(session) = entry.as_child_process() {
                     session
                         .runtime
                         .transition_ready
@@ -4164,12 +4245,8 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let entry = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner, &conn.conn_peer)?;
-            if entry.is_configuring() {
-                return Err(not_found());
-            }
-            let session = entry.as_live_mut().ok_or_else(process_gone)?;
+            let entry = peer_entry_mut(&mut map, session_id, owner, &conn.conn_peer)?;
+            let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
                     ErrorCode::InvalidRequest,
@@ -4203,12 +4280,8 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let entry = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner, &None)?;
-            if entry.is_configuring() {
-                return Err(not_found());
-            }
-            let session = entry.as_live_mut().ok_or_else(process_gone)?;
+            let entry = peer_entry_mut(&mut map, session_id, owner, &None)?;
+            let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
                     ErrorCode::InvalidRequest,
@@ -4277,12 +4350,8 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let entry = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner, &conn.conn_peer)?;
-            if entry.is_configuring() {
-                return Err(not_found());
-            }
-            let session = entry.as_live_mut().ok_or_else(process_gone)?;
+            let entry = peer_entry_mut(&mut map, session_id, owner, &conn.conn_peer)?;
+            let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
             if !session.metadata.kind.is_agent() {
                 return Err(WireError::new(
                     ErrorCode::InvalidRequest,
@@ -4635,16 +4704,10 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let source = map.get(from_session).ok_or_else(not_found)?;
-            check_user_owner(source, owner, &conn.conn_peer)?;
-            let source = source
-                .as_live()
-                .ok_or_else(|| not_found_while_configuring(source))?;
-            let target = map.get(to_session).ok_or_else(not_found)?;
-            check_user_owner(target, owner, &conn.conn_peer)?;
-            let target = target
-                .as_live()
-                .ok_or_else(|| not_found_while_configuring(target))?;
+            let source = peer_entry(&map, from_session, owner, &conn.conn_peer)?;
+            let source = source.as_peer_visible().ok_or_else(process_gone)?;
+            let target = peer_entry(&map, to_session, owner, &conn.conn_peer)?;
+            let target = target.as_peer_visible().ok_or_else(process_gone)?;
             // Refused here, inside the same section: a message that would cross
             // two peer hops never reaches the brake table, so the refusal cannot
             // leave a slot behind it.
@@ -4848,11 +4911,8 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let entry = map.get(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner, &conn.conn_peer)?;
-            let session = entry
-                .as_live()
-                .ok_or_else(|| not_found_while_configuring(entry))?;
+            let entry = peer_entry(&map, session_id, owner, &conn.conn_peer)?;
+            let session = entry.as_peer_visible().ok_or_else(process_gone)?;
             (
                 Arc::clone(&session.writer),
                 session.image_sink.clone(),
@@ -5250,7 +5310,7 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
             let live = entry
-                .as_live()
+                .as_peer_visible()
                 .ok_or_else(|| not_found_while_configuring(entry))?;
             #[cfg(windows)]
             {
@@ -5295,11 +5355,8 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let entry = map.get(session_id).ok_or_else(not_found)?;
-            check_user_owner(entry, owner, &conn.conn_peer)?;
-            let session = entry
-                .as_live()
-                .ok_or_else(|| not_found_while_configuring(entry))?;
+            let entry = peer_entry(&map, session_id, owner, &conn.conn_peer)?;
+            let session = entry.as_peer_visible().ok_or_else(process_gone)?;
             (Arc::clone(&session.runtime), session.master.clone())
         };
         check_resize_owner(&runtime, conn, subscription_id)?;
@@ -5452,7 +5509,7 @@ impl SessionRegistry {
             return Err(not_found());
         }
         let live = entry
-            .as_live()
+            .as_peer_visible()
             .ok_or_else(|| not_found_while_configuring(entry))?;
         Ok(AgentCreator {
             owner: entry.owner().clone(),
@@ -6234,7 +6291,7 @@ impl SessionRegistry {
             .ok()?
             .get(session_id)
             .filter(|entry| entry.owner().user == owner.user)
-            .and_then(|entry| entry.as_live())
+            .and_then(|entry| entry.as_peer_visible())
             .map(|live| Arc::clone(&live.runtime))
     }
 
@@ -6265,7 +6322,7 @@ impl SessionRegistry {
     fn child_view(&self, child: &str) -> Option<(Session, Arc<SessionRuntime>, OwnerId)> {
         let map = self.inner.lock().ok()?;
         let entry = map.get(child)?;
-        let live = entry.as_live()?;
+        let live = entry.as_peer_visible()?;
         Some((
             live_session_view(live),
             Arc::clone(&live.runtime),
@@ -6521,7 +6578,7 @@ impl SessionRegistry {
         let mut sessions = map
             .values()
             .filter_map(|entry| {
-                let live = entry.as_live()?;
+                let live = entry.as_peer_visible()?;
                 if live.owner.user != owner.user
                     || !matches!(live.metadata.kind, SessionKind::Acp | SessionKind::Claude)
                 {
@@ -6570,7 +6627,7 @@ impl SessionRegistry {
             .map(|map| {
                 map.values()
                     .filter_map(|entry| {
-                        let session = entry.as_live()?;
+                        let session = entry.as_peer_visible()?;
                         (session.metadata.kind == SessionKind::Claude)
                             .then(|| Arc::clone(&session.runtime))
                     })
@@ -6595,6 +6652,13 @@ impl SessionRegistry {
     ) -> Option<(SessionKind, Option<String>)> {
         let map = self.inner.lock().ok()?;
         let entry = map.get(session_id)?;
+        // A session inside its delivery window does not exist for the peer
+        // gate either (the re-audit's P2-2): `None` is this function's
+        // "the daemon does not know this session", and the caller refuses
+        // on that.
+        if entry.is_configuring() {
+            return None;
+        }
         let kind = entry.metadata().kind.clone();
         Some((kind, entry.runtime().current_mode_id()))
     }
@@ -6624,7 +6688,19 @@ impl SessionRegistry {
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
         match map.get(session_id) {
-            Some(entry) => check_user_owner(entry, owner, conn_peer),
+            Some(entry) => {
+                check_user_owner(entry, owner, conn_peer)?;
+                // The ordering gate must not admit a session that is still
+                // inside its delivery window (the re-audit's P2-2): the
+                // honest answer is the one the operation behind this gate
+                // would give — `SessionNotFound` — while the unknown-id
+                // refusal above stays `unauthorized`, so a probe still
+                // learns nothing from comparing replies.
+                if entry.is_configuring() {
+                    return Err(not_found());
+                }
+                Ok(())
+            }
             None => Err(unauthorized()),
         }
     }
@@ -6652,9 +6728,13 @@ impl SessionRegistry {
             .inner
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
-        let session = map.get(session_id).ok_or_else(not_found)?;
-        check_user_owner(session, owner, &conn.conn_peer)?;
-        Ok(session.runtime())
+        // The peer door: attach, resize, detach and permission responses
+        // reach a `Configuring` session through here, and the door refuses
+        // the delivery window (the re-audit's P2-2). A transcript entry is
+        // addressable — it is a roster member — so the door lets it through
+        // and the runtime below serves it.
+        let entry = peer_entry(&map, session_id, owner, &conn.conn_peer)?;
+        Ok(entry.runtime())
     }
 }
 
@@ -7436,8 +7516,12 @@ fn sweep_os_liveness(
     };
     let work: Vec<(Arc<SessionRuntime>, OwnerId)> = map
         .values()
+        // Peer visibility, deliberately: a windowed child's death is the
+        // delivery's own refusal to observe (the awaited rpc times out and
+        // the close tears it down), and the sweep's transitions must not
+        // fire for a session no roster lists.
         .filter_map(|entry| {
-            let session = entry.as_live()?;
+            let session = entry.as_peer_visible()?;
             Some((Arc::clone(&session.runtime), session.owner.clone()))
         })
         .collect();
@@ -7987,7 +8071,10 @@ fn start_spawned_session(
     if let Ok(mut map) = registry.inner.lock() {
         // The entry is `Configuring` until the delivery lands; the daemon's
         // own bookkeeping reaches through the window, peers do not.
-        if let Some(session) = map.get_mut(&id).and_then(RegistryEntry::as_session_mut) {
+        if let Some(session) = map
+            .get_mut(&id)
+            .and_then(RegistryEntry::as_child_process_mut)
+        {
             session.coalesce_handle = coalesce_handle;
             session.stderr_handle = stderr_handle;
         }
@@ -8025,7 +8112,10 @@ fn start_spawned_session(
     let mut orphaned_reader = Some(reader_handle);
     let mut orphaned_coalesce = None;
     if let Ok(mut map) = registry.inner.lock() {
-        if let Some(session) = map.get_mut(&id).and_then(RegistryEntry::as_session_mut) {
+        if let Some(session) = map
+            .get_mut(&id)
+            .and_then(RegistryEntry::as_child_process_mut)
+        {
             session.reader_handle = orphaned_reader.take();
             session.coalesce_handle = orphaned_coalesce.take();
         }
@@ -8186,7 +8276,10 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     // Captured before the mutable borrow below: a preserved session stays in
     // the map, and its end still owes its creator a report (audit S5B-03).
     let owner = map.get(id).map(|entry| entry.owner().clone());
-    let Some(session) = map.get_mut(id).and_then(RegistryEntry::as_session_mut) else {
+    let Some(session) = map
+        .get_mut(id)
+        .and_then(RegistryEntry::as_child_process_mut)
+    else {
         return false;
     };
     session.reader_handle = None;
@@ -8230,7 +8323,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     // a child whose provider exited on its own — the common end — which used to
     // take the row out without releasing the slot or telling the creator.
     let ended = map.get(id).and_then(|entry| {
-        entry.as_session().map(|live| {
+        entry.as_child_process().map(|live| {
             (
                 live_session_view(live),
                 Arc::clone(&live.runtime),
@@ -14378,7 +14471,7 @@ mod tests {
             .lock()
             .expect("registry")
             .get(&session_id)
-            .and_then(RegistryEntry::as_live)
+            .and_then(RegistryEntry::as_peer_visible)
             .is_some_and(|session| session.preserve_on_exit.load(Ordering::Acquire)));
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
@@ -14519,7 +14612,7 @@ mod tests {
             let mut map = registry.inner.lock().expect("map");
             let live = map
                 .get_mut(child)
-                .and_then(RegistryEntry::as_live_mut)
+                .and_then(RegistryEntry::as_peer_visible_mut)
                 .expect("the live child");
             live.metadata.display_name = Some("worker".to_string());
             live.metadata.created_by = Some(creator.to_string());
@@ -14657,7 +14750,7 @@ mod tests {
         {
             let mut map = registry.inner.lock().expect("registry");
             let entry = map.get_mut(&session_id).expect("live entry");
-            entry.as_live_mut().expect("live session").owner = resumer.clone();
+            entry.as_peer_visible_mut().expect("live session").owner = resumer.clone();
         }
         let map = registry.inner.lock().expect("registry");
         let entry = map.get(&session_id).expect("transferred entry");
@@ -15088,7 +15181,7 @@ mod tests {
     fn set_entry_origin(registry: &SessionRegistry, id: &str, origin: SessionOrigin) {
         let mut map = registry.inner.lock().expect("registry");
         let entry = map.get_mut(id).expect("entry");
-        entry.as_live_mut().expect("live").metadata.origin = origin;
+        entry.as_peer_visible_mut().expect("live").metadata.origin = origin;
     }
 
     /// Every ownership path this registry exposes, called for `id` by `owner`
@@ -15725,7 +15818,7 @@ mod tests {
     fn set_entry_kind(registry: &SessionRegistry, id: &str, kind: SessionKind) {
         let mut map = registry.inner.lock().expect("registry");
         let entry = map.get_mut(id).expect("entry");
-        entry.as_live_mut().expect("live").metadata.kind = kind;
+        entry.as_peer_visible_mut().expect("live").metadata.kind = kind;
     }
 
     /// §8b A4/A5 need two facts about a session a peer names: its provider kind

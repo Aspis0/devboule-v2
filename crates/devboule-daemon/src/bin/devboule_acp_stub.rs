@@ -613,6 +613,18 @@ fn main() -> io::Result<()> {
                 }
             }
             "session/set_model" => {
+                if std::env::var_os("DEVBOULE_STUB_DRIBBLE_SET_MODEL").is_some() {
+                    // The re-audit's P2-3 agent: bytes keep arriving forever
+                    // and none of them is a newline, so the pipe is never
+                    // quiet. A read bound consulted only when the pipe is
+                    // empty never fires; one consulted on every iteration
+                    // does. Runs until the refusal teardown kills the child.
+                    loop {
+                        let _ = stdout.write_all(b" ");
+                        let _ = stdout.flush();
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
                 if std::env::var_os("DEVBOULE_STUB_IGNORE_SET_MODEL").is_some() {
                     // The mute agent the re-audit's P2-2 convicts with: the
                     // switch is taken off the wire and nothing ever comes

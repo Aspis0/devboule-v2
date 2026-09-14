@@ -107,30 +107,70 @@ fn stdout_has_bytes_or_died(reader: &BufReader<ChildStdout>) -> Result<bool, ()>
     }
 }
 
-/// The same question where there is no pipe to peek: fall through to the
-/// plain blocking read, which is the behaviour this platform always had.
+/// Where there is no pipe to peek, this question has no non-blocking answer.
+/// `Ok(true)` means one thing only: *proceed into the fill* — and on this
+/// platform that fill blocks until bytes arrive or the child dies, with the
+/// deadline unable to reach it. It must never be read as "bytes are
+/// available"; [`read_line_bounded`]'s platform paragraph states what bound
+/// does and does not exist here.
 #[cfg(not(windows))]
-fn stdout_has_bytes_or_died(_reader: &BufReader<ChildStdout>) -> Result<bool, ()> {
+fn stdout_blocks_until_bytes(_reader: &BufReader<ChildStdout>) -> Result<bool, ()> {
     Ok(true)
 }
 
-/// Read one newline-terminated line, bounded by `deadline`.
+/// Read one newline-terminated line, bounded by `deadline` — on Windows.
 ///
 /// `BufRead::read_line` on a child's stdout has no timeout of its own, and
 /// an agent that takes the request off the wire and never answers it would
 /// hold the creation — the child, the reservation, the journal row and the
-/// caller's tool call — forever (the re-audit's P2-2). So the read is
-/// assembled from non-blocking pieces: bytes already in the `BufReader` are
-/// consumed without I/O, and the pipe is peeked before every fill, so no
-/// read ever sits in a syscall the deadline cannot reach. A mute agent
-/// becomes an `Io` refusal naming the wait; a dead agent becomes the same
-/// EOF sentence the plain read produced.
+/// caller's tool call — forever (the re-audit's P2-2). On Windows the read
+/// is assembled from non-blocking pieces: bytes already in the `BufReader`
+/// are consumed without I/O, the pipe is peeked before every fill, and —
+/// the re-audit's P2-3 — the deadline is checked at the top of every
+/// iteration, so an agent that keeps the pipe non-empty without a newline
+/// is refused as boundedly as a mute one, and the line never grows past
+/// [`MAX_ACP_PERMISSION_LINE_BYTES`]. A mute or dribbling agent becomes an
+/// `Io` refusal naming the wait; a dead agent becomes the same EOF sentence
+/// the plain read produced.
+///
+/// **On every other platform this read is not bounded.** There is no pipe
+/// peek in std to poll a child's stdout against a deadline, and no
+/// non-blocking mode without a libc this crate does not carry, so the
+/// deadline has no mechanism to act through: `deadline` is accepted to keep
+/// one call shape and is deliberately not honoured there. An agent that
+/// never answers — or answers in bytes that never form a newline — holds
+/// the creation on such a platform exactly the way the pre-fix read did.
+/// Windows is the only target this daemon is built and tested on; a
+/// platform added later must either give this function a real poll or keep
+/// this paragraph telling the truth.
 fn read_line_bounded(
     reader: &mut BufReader<ChildStdout>,
     deadline: Instant,
 ) -> Result<String, WireError> {
     let mut line: Vec<u8> = Vec::new();
     loop {
+        // The deadline is consulted on every iteration, not only when the
+        // peek reports the pipe quiet (the re-audit's P2-3): a dribbler
+        // that keeps bytes flowing without a newline must hit the same
+        // bound a mute agent does.
+        if Instant::now() >= deadline {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "the ACP agent did not answer within {}s; the creation is refused rather than awaited without end",
+                    response_timeout().as_secs()
+                ),
+            ));
+        }
+        if line.len() > MAX_ACP_PERMISSION_LINE_BYTES {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "the ACP agent wrote more than {} bytes without a newline; the creation is refused rather than buffered without end",
+                    MAX_ACP_PERMISSION_LINE_BYTES
+                ),
+            ));
+        }
         let buffered = reader.buffer();
         if let Some(pos) = buffered.iter().position(|byte| *byte == b'\n') {
             line.extend_from_slice(&buffered[..=pos]);
@@ -139,7 +179,14 @@ fn read_line_bounded(
         }
         line.extend_from_slice(buffered);
         reader.consume(buffered.len());
-        match stdout_has_bytes_or_died(reader) {
+        // The Windows name asks what the peek sees; the other-platform name
+        // states that the following fill is the blocking step. Two names,
+        // because the honest answer differs per platform.
+        #[cfg(windows)]
+        let peek = stdout_has_bytes_or_died(reader);
+        #[cfg(not(windows))]
+        let peek = stdout_blocks_until_bytes(reader);
+        match peek {
             Ok(true) => match reader.fill_buf() {
                 Ok(bytes) => {
                     if bytes.is_empty() {
@@ -152,15 +199,6 @@ fn read_line_bounded(
                 Err(error) => return Err(acp_io_error(error)),
             },
             Ok(false) => {
-                if Instant::now() >= deadline {
-                    return Err(WireError::new(
-                        ErrorCode::Io,
-                        format!(
-                            "the ACP agent did not answer within {}s; the creation is refused rather than awaited without end",
-                            response_timeout().as_secs()
-                        ),
-                    ));
-                }
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(()) => {
