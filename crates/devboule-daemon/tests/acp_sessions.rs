@@ -5106,6 +5106,12 @@ fn empty_standing_instructions_leave_the_first_prompt_alone() {
 /// the profile's own mode at the creation, and un-ticking that profile
 /// afterwards leaves the running child as it was — while every new creation is
 /// refused, and the refusal names no profile at all.
+///
+/// Both surfaces the fact lives on are read: the live registry view
+/// (`sessions_list`) *and* the journal row, which is what the name claims —
+/// `sessions_list` alone serves a live child from its in-memory birth
+/// metadata and would pass against the pre-tri-state journal, so the durable
+/// half is asserted against the stored row (audit R2b-1 §8.2).
 #[test]
 fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
     let _lock = lock_tests();
@@ -5170,6 +5176,24 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
         "the marker is a fact of the birth, not a view of the current settings"
     );
 
+    // The durable half, the one the name claims: the journal row keeps the
+    // birth marker after the un-tick. `journal_usage` waits for the
+    // asynchronous journal writer, so the read cannot race the write.
+    test.client.journal_usage().expect("flush journal");
+    let stored: i64 = Connection::open(test.harness.paths.journal_file())
+        .expect("open journal")
+        .query_row(
+            "SELECT unattended_state FROM sessions WHERE id = ?1",
+            [child.id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("the child's journal row");
+    assert_eq!(
+        stored, 2,
+        "the stored rank is `yes`: the un-tick rewrote neither the live child \
+         nor the row it was born with"
+    );
+
     // A new creation is refused, and the sentence names no profile: an agent must
     // not learn which profiles exist but are forbidden.
     let second = test.creator_session();
@@ -5185,6 +5209,90 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
         "the refusal must not leak what exists but is forbidden: {}",
         calls[1]
     );
+}
+
+/// The restart is the one path a durable format exists for (audit R2b-1
+/// §8.3): after the daemon process is replaced, the child's marker is read
+/// back from the journal on **both** post-restart surfaces — the recovered
+/// roster row, and the resumed session whose metadata comes from
+/// `session_metadata_for_resume` copying `record.unattended_state`. A resume
+/// is not a creation, so nothing on the path re-derives: a child born `yes`
+/// comes back `yes` from the row alone.
+#[test]
+fn the_unattended_marker_survives_a_daemon_restart_and_a_resume() {
+    let _test_lock = lock_tests();
+    // The delivery is judged against the modes the agent publishes at the
+    // handshake, so the stub must declare the route-A id the create names.
+    // Process-global like AcpTest's own knobs, and safe under the test lock;
+    // the guard keeps a failure from leaking it into the next test.
+    struct ClearModes;
+    impl Drop for ClearModes {
+        fn drop(&mut self) {
+            std::env::remove_var("DEVBOULE_STUB_MODES");
+        }
+    }
+    std::env::set_var("DEVBOULE_STUB_MODES", "ask,bypass");
+    let _clear = ClearModes;
+    let mut test = AcpTest::new(&[]);
+    // Route A: the daemon's own broker answers this delivered id whatever
+    // the agent's own vocabulary says — the same fact the profile battery's
+    // bypass children carry, reached without a profile.
+    let session = test
+        .client
+        .session_create_with(
+            None,
+            SessionKind::Acp,
+            None,
+            Some("bypass".to_string()),
+            None,
+        )
+        .expect("create an unattended ACP session");
+    assert_eq!(
+        session.unattended,
+        devboule_protocol::UnattendedState::Yes,
+        "the birth marker: the broker answers this id"
+    );
+    // journal_usage waits for the asynchronous journal writer, so the
+    // restart cannot race the birth row still being persisted.
+    test.client.journal_usage().expect("flush journal");
+
+    test.restart();
+
+    let recovered = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("recovered session missing after restart");
+    assert_eq!(
+        recovered.unattended,
+        devboule_protocol::UnattendedState::Yes,
+        "the recovered roster row reads what the birth wrote"
+    );
+
+    // The real resume entry: `session_resume` reads the journal record and
+    // hands it to `session_metadata_for_resume`, whose `unattended` field is
+    // the row's, never a re-derivation.
+    let resumed = test
+        .client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect("resume recovered ACP session");
+    assert!(
+        matches!(&resumed, ResumeResult::Resumed { session }
+            if session.unattended == devboule_protocol::UnattendedState::Yes),
+        "the resumed session keeps the birth marker: {resumed:?}"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close the resumed session");
 }
 
 /// Renaming the profile a child was started from changes nothing about the child:

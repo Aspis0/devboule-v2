@@ -267,9 +267,16 @@ pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
 ///
 /// - **Route A — the daemon answers itself.** A delivered mode carrying one
 ///   of the provider-agnostic ids `provider_catalog::mode_is_auto_answered`
-///   lists is answered by the daemon's own broker, whatever family the
-///   session belongs to; the shared helper below is the one list, and every
-///   arm's dictionary sits behind it.
+///   lists is answered by the daemon's own broker, whatever *agent* family
+///   the session belongs to; the shared helper below is the one list, and
+///   every arm's dictionary sits behind it. A terminal is **not** an agent
+///   family: the broker's auto-answer call sites cover the agent clients
+///   only, and a terminal has no permission mechanism at all, so there is no
+///   permission moment for anything to answer and no mode id — including a
+///   route-A id — can make one exist. The kind match below, not this list,
+///   decides a terminal, and it says `no` (audit R2b-1 §3.1: a terminal
+///   created with `mode: "bypass"` used to answer `yes` because this check
+///   ran first).
 /// - **Route B — the daemon authored the knob.** For Claude, Codex and Pi
 ///   the dictionary is the client family's own mode table
 ///   (`claude_view::unattended_answer`, `codex_view::unattended_answer`,
@@ -280,21 +287,32 @@ pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
 ///   watching" is the lie in its most dangerous direction.
 /// - **Cannot establish.** An ACP agent's modes are `{id, name, description}`
 ///   prose the agent authored; no table here judges them. Outside the three
-///   route-A ids the answer is `unknown`, so a user-defined provider in a
-///   config file — a child the daemon has never heard a provider name for —
-///   is answered without any code path noticing the provider at all. The
-///   same arm covers what nobody said: an absent or empty delivered mode is
-///   `unknown` for a family the daemon does not set a mode for, and a
-///   terminal — which has no permission mechanism at all, and never had one
-///   to be told about — carries `no`, exactly what the collapsed `bool` this
-///   marker replaces recorded for it.
+///   route-A ids the answer is `unknown`. The same arm covers what nobody
+///   said: an absent or empty delivered mode is `unknown` for a family the
+///   daemon does not set a mode for, and a terminal — which has no
+///   permission mechanism at all, and never had one to be told about —
+///   carries `no`, exactly what the collapsed `bool` this marker replaces
+///   recorded for it. A user-defined provider's child from a config file
+///   lands in this arm because `session_kind_for(provider)` — the one
+///   provider-name match on this path, read at the birth before this
+///   function is consulted — maps every name that is not one of the three
+///   authored families to [`SessionKind::Acp`], whose arm is `unknown`: no
+///   name beyond the three is ever *interpreted*, and an unrecognised one
+///   fails toward the honest answer, not toward `no`.
 pub fn unattended_mode(
     kind: SessionKind,
     delivered_mode: Option<&str>,
 ) -> devboule_protocol::UnattendedState {
     use devboule_protocol::UnattendedState;
     let delivered_mode = delivered_mode.filter(|mode| !mode.is_empty());
-    if delivered_mode.is_some_and(crate::provider_catalog::mode_is_auto_answered) {
+    // Route A before the kind match, but never for a terminal: `Yes` claims
+    // the daemon's own broker will answer this child's permission moments,
+    // and a terminal has none to answer — no mode id delivered to it can
+    // make the claim true, so the one-condition gate keeps the kind match's
+    // `no` the rule for it instead of a fall-through an id could outrank.
+    if kind != SessionKind::Terminal
+        && delivered_mode.is_some_and(crate::provider_catalog::mode_is_auto_answered)
+    {
         return UnattendedState::Yes;
     }
     match kind {
@@ -756,8 +774,8 @@ pub(crate) mod tests {
     #[test]
     fn the_unattended_derivation_has_three_reachable_arms() {
         use devboule_protocol::UnattendedState;
-        // Route A: the shared helper, for every family, however the mode
-        // reached the child.
+        // Route A: the shared helper, for every agent family, however the
+        // mode reached the child.
         for kind in [SessionKind::Acp, SessionKind::Claude, SessionKind::Pi] {
             assert_eq!(
                 unattended_mode(kind.clone(), Some("bypass")),
@@ -765,6 +783,17 @@ pub(crate) mod tests {
                 "{kind:?}: the daemon's own broker answers this id"
             );
         }
+        // Route A does not reach a terminal: the broker is wired for the
+        // agent clients only, and a terminal has no permission mechanism at
+        // all, so there is no permission moment for anything to answer. The
+        // kind match decides it, and the route-A id must not outrank the
+        // kind — this is the pair that answered `yes` before the gate.
+        assert_eq!(
+            unattended_mode(SessionKind::Terminal, Some("bypass")),
+            UnattendedState::No,
+            "a terminal with a route-A id is still a terminal: no mechanism, \
+             nothing to answer, `no`"
+        );
         // Route B: Codex `full-access` is the daemon's own knob
         // (`approvalPolicy: never`) while the broker stays silent — the case
         // that proves a two-value, route-A-only marker under-reports.
@@ -788,8 +817,32 @@ pub(crate) mod tests {
             unattended_mode(SessionKind::Claude, Some("acceptEdits")),
             UnattendedState::No
         );
+        // `auto-review` is `unknown`, not `no`: the daemon's own peer gate
+        // counts the same id as one that can pass a permission moment with
+        // nobody answering (`prompt_skipping_mode`), so the silent row `no`
+        // renders was the wrongly-benign badge (audit R2b-1 §3.3). It is not
+        // `yes` either — a model reviewer may hand a moment back.
         assert_eq!(
             unattended_mode(SessionKind::Codex, Some("auto-review")),
+            UnattendedState::Unknown,
+            "the peer gate calls this id prompt-skipping, so the marker cannot \
+             render the benign nothing"
+        );
+        // The empty string is the same absence as `None` — filtered out
+        // above — so the three authored families answer with their own
+        // default mode, each of which stops at the human (audit R2b-1 §3.2:
+        // "the empty string for every family is unknown" is not the rule the
+        // code applies; this pins the rule the code applies).
+        assert_eq!(
+            unattended_mode(SessionKind::Claude, Some("")),
+            UnattendedState::No
+        );
+        assert_eq!(
+            unattended_mode(SessionKind::Codex, Some("")),
+            UnattendedState::No
+        );
+        assert_eq!(
+            unattended_mode(SessionKind::Pi, Some("")),
             UnattendedState::No
         );
         // Unknown: a mode id the daemon did not author. The ACP family is

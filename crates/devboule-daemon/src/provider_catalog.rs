@@ -328,6 +328,21 @@ pub fn mcp_tools_for(agent_id: &str) -> Vec<devboule_protocol::ToolDescriptor> {
 /// stream-json kind, `codex` the app-server kind, `pi` the RPC kind, and every
 /// other provider a created session may name is ACP. `resolve_session_provider`
 /// reads the pair back and would refuse a `claude` sent as ACP.
+///
+/// This is also the **one place a provider name is consulted on the
+/// `unattended` marker's path** (audit R2b-1 §5.1): the birth, the consent
+/// card and `list_profiles` all resolve the kind here before
+/// `peer_policy::unattended_mode` judges the delivered mode against it, so
+/// the derivation does depend on a provider-name match — what it never does
+/// is *interpret* one. The default arm is the conservative one for the
+/// marker: a name that is not one of the three authored families is ACP,
+/// whose arm answers `unknown`. The match is case-sensitive, unlike its
+/// neighbour [`catalog_provider_id`], which is documented case-insensitive:
+/// a profile spelling its provider `Claude` resolves the catalog row but
+/// derives under ACP and answers `unknown` where `claude` would answer the
+/// family's own value. That direction is the safe one (an uncertainty, never
+/// a false certainty), and the asymmetry is spelled out here so the next
+/// reader does not take either behaviour for the other's.
 #[cfg(feature = "server")]
 pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind {
     use devboule_protocol::SessionKind;
@@ -3252,6 +3267,18 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             UnattendedState::Unknown,
             "a provider-authored vocabulary cannot be established, tick or no tick"
         );
+        // The kind resolution behind `prediction` is **case-sensitive** —
+        // unlike the catalog row match, which is documented
+        // case-insensitive — so a differently spelled name derives under ACP
+        // and answers `unknown`. That asymmetry is deliberate and pinned:
+        // the failure direction is an uncertainty, never a false certainty
+        // (audit R2b-1 §5.1).
+        assert_eq!(
+            prediction("Claude", "default"),
+            UnattendedState::Unknown,
+            "`Claude` is not `claude`: the kind match is exact, and the miss \
+             fails toward unknown"
+        );
         // Route B: the daemon-authored knobs, in the client family's own
         // dictionary. Codex `full-access` is `approvalPolicy: never` in this
         // daemon's own turn parameters — the case that proves a route-A-only
@@ -3262,7 +3289,6 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         for (provider, mode) in [
             ("codex", "read-only"),
             ("codex", "auto"),
-            ("codex", "auto-review"),
             ("claude", "acceptEdits"),
             ("claude", "auto"),
             ("claude", "default"),
@@ -3274,6 +3300,18 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
                 "{provider} {mode} asks, and the daemon authored it"
             );
         }
+        // Codex `auto-review` is the one authored id that answers `unknown`:
+        // the peer gate counts it as a mode that can pass a permission moment
+        // with nobody answering (`prompt_skipping_mode`), so `no` — which
+        // renders as nothing — is the wrongly-benign badge; and it is not
+        // `yes`, because a model reviewer may hand a moment back (audit
+        // R2b-1 §3.3).
+        assert_eq!(
+            prediction("codex", "auto-review"),
+            UnattendedState::Unknown,
+            "the peer gate calls this id prompt-skipping, so the marker renders \
+             the present unknown, never the benign nothing"
+        );
         assert_eq!(prediction("pi", "bypass"), UnattendedState::Yes);
     }
 

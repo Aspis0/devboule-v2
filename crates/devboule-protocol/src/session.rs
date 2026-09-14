@@ -2428,11 +2428,110 @@ mod tests {
             "state": { "type": "live", "generation": 1 },
             "createdAtMs": 1
         });
-        let decoded: Session = serde_json::from_value(frame).expect("older frame");
+        let decoded = serde_json::from_value::<Session>(frame).expect("older frame");
         assert_eq!(
             decoded.unattended,
             UnattendedState::Unknown,
             "a row the daemon has not said anything about is unknown, never no"
+        );
+    }
+
+    /// The type change the 4 → 5 protocol bump exists for (audit R2b-1 §7).
+    /// `unattended` crossed the wire as an optional JSON boolean and now
+    /// crosses as a lowercase string written on every frame. `#[serde(default)]`
+    /// covers an absent key — the test above — and has no effect on a key
+    /// present with the wrong type, so an old writer's `"unattended": true`
+    /// must **fail** to decode. That failure is why the handshake itself must
+    /// refuse a 4-speaking peer: a decode failure is terminal for the
+    /// connection, and reading it as a reconnect handoff is the silent churn
+    /// the bump removes. A bool-tolerant shim added in the future turns this
+    /// red — which is correct, because such a shim invalidates the premise
+    /// the bump documents.
+    #[test]
+    fn an_old_boolean_unattended_key_fails_to_decode() {
+        let frame = serde_json::json!({
+            "id": "s.bool.1",
+            "workspaceId": null,
+            "kind": "terminal",
+            "title": "Terminal",
+            "state": { "type": "live", "generation": 1 },
+            "createdAtMs": 1,
+            "unattended": true
+        });
+        assert!(
+            serde_json::from_value::<Session>(frame).is_err(),
+            "a JSON boolean is not a dialect this crate speaks"
+        );
+
+        // The same frame without the key still decodes, as `unknown` — the
+        // absence `#[serde(default)]` is actually for.
+        let frame = serde_json::json!({
+            "id": "s.bool.1",
+            "workspaceId": null,
+            "kind": "terminal",
+            "title": "Terminal",
+            "state": { "type": "live", "generation": 1 },
+            "createdAtMs": 1
+        });
+        let decoded = serde_json::from_value::<Session>(frame).expect("key-absent frame");
+        assert_eq!(decoded.unattended, UnattendedState::Unknown);
+    }
+
+    /// The roster surface (audit R2b-1 §6.2): the pushed
+    /// [`SessionStateSnapshot`] carries the marker as a **key on every push**
+    /// — for all three answers — and a push without the key reads `unknown`.
+    /// The attributes on the two structs are symmetric by eye, but nothing
+    /// pinned the snapshot's half: a `skip_serializing_if` added to this
+    /// struct alone would have passed every `Session` test and silenced the
+    /// one row a push-only child arrives as.
+    #[test]
+    fn the_roster_snapshot_carries_the_marker_on_every_push() {
+        let snapshot = SessionStateSnapshot {
+            id: "s.push.1".to_string(),
+            workspace_id: None,
+            kind: SessionKind::Pi,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(5),
+            attention: None,
+            origin: SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: UnattendedState::Yes,
+            labels: Default::default(),
+        };
+        for (state, word) in [
+            (UnattendedState::Yes, "yes"),
+            (UnattendedState::No, "no"),
+            (UnattendedState::Unknown, "unknown"),
+        ] {
+            let value = serde_json::to_value(&SessionStateSnapshot {
+                unattended: state,
+                ..snapshot.clone()
+            })
+            .expect("snapshot json");
+            assert_eq!(
+                value["unattended"], word,
+                "the key is present on every push, whatever the answer"
+            );
+        }
+
+        // And an older push without the key reads `unknown`, never `no`.
+        let frame = serde_json::json!({
+            "id": "s.push.1",
+            "workspaceId": null,
+            "kind": "pi",
+            "title": "Agent",
+            "state": { "type": "live", "generation": 1 },
+            "elapsedMs": 5
+        });
+        let decoded = serde_json::from_value::<SessionStateSnapshot>(frame).expect("older push");
+        assert_eq!(
+            decoded.unattended,
+            UnattendedState::Unknown,
+            "a push the daemon has not said anything about is unknown, never no"
         );
     }
 }

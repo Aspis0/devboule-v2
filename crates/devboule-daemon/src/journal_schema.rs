@@ -222,6 +222,23 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                      every other existing row reads `unknown`"
                 );
             }
+            // The shape is judged **before** the stamp (audit R2b-1 finding 2):
+            // the column exists by now — just added, or pre-existing with a
+            // name that collides — and if its shape is not the one this daemon
+            // writes, the open must leave the file at `user_version` 11.
+            // Stamping and committing first would brick it: this build refuses
+            // the shape at the post-commit validation, and every older build
+            // refuses the version at [`JournalError::FutureSchema`], so no
+            // build could ever open the file again. The refusal is the same
+            // `Corrupt` the post-commit check raises; the decisive difference
+            // is the version left on disk, because nothing here has committed
+            // and the whole transaction — the `ALTER`, the promotion, the
+            // stamp — rolls back.
+            if !is_our_unattended_state_shape(column_shape(&tx, "unattended_state")?) {
+                return Err(JournalError::Corrupt(
+                    "journal schema has an unexpected sessions.unattended_state column".to_string(),
+                ));
+            }
         }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
@@ -332,18 +349,25 @@ fn validate_profile_columns(conn: &Connection) -> Result<(), JournalError> {
     // `no`. A hand-made `unattended_state TEXT` (or a nullable one, or one
     // defaulting to `no`) is a schema this daemon cannot read honestly and
     // takes the corrupt-journal path.
-    let shape = column_shape(conn, "unattended_state")?;
-    let ours = matches!(
-        shape,
-        Some((ref kind, 1, Some(ref default)))
-            if kind.eq_ignore_ascii_case("integer") && default == "1"
-    );
-    if !ours {
+    if !is_our_unattended_state_shape(column_shape(conn, "unattended_state")?) {
         return Err(JournalError::Corrupt(
             "journal schema has an unexpected sessions.unattended_state column".to_string(),
         ));
     }
     Ok(())
+}
+
+/// The one shape `unattended_state` may have: `INTEGER NOT NULL DEFAULT 1`,
+/// the rank of `unknown` — the shape the v12 migration adds and
+/// [`validate_profile_columns`] enforces after the fact, and the shape the
+/// pre-stamp guard in [`open_connection`] demands before the version stamp
+/// commits. Both checks spell it here, together, so they cannot drift.
+fn is_our_unattended_state_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
+    matches!(
+        shape,
+        Some((ref kind, 1, Some(ref default)))
+            if kind.eq_ignore_ascii_case("integer") && default == "1"
+    )
 }
 
 /// One column's `(type, notnull, default)` as SQLite reports it, or `None` when
@@ -2014,6 +2038,48 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
         }
         assert_eq!(raw("s.before-tri.asking"), 1);
         assert_eq!(raw("s.before-tri.unattended"), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The ordering the pre-stamp guard fixes (audit R2b-1 finding 2): a v11
+    /// file that already carries an `unattended_state` column of the wrong
+    /// shape is refused with `user_version` still **11**. The open returns
+    /// `Err` with or without the guard — the post-commit validation raises
+    /// the same `Corrupt` — so the assertion that proves the ordering is the
+    /// version left on disk: stamp-then-check leaves 12, and the file is then
+    /// openable by no build, old (`FutureSchema`) or new (`Corrupt`).
+    #[test]
+    fn a_v12_migration_does_not_stamp_a_colliding_column() {
+        let (dir, path) = v11_journal_with_rows(&[("s.before-tri.asking", 1, "profile-bypass")]);
+        {
+            let conn = Connection::open(&path).expect("open the v11 journal");
+            conn.execute("ALTER TABLE sessions ADD COLUMN unattended_state TEXT", [])
+                .expect("the stray colliding column");
+        }
+        let error = match Journal::open(&path) {
+            Err(error) => error,
+            Ok(journal) => {
+                journal.shutdown();
+                panic!("the colliding column is refused");
+            }
+        };
+        assert!(
+            matches!(error, JournalError::Corrupt(_)),
+            "the corrupt-journal path is the one that refuses it: {error}"
+        );
+        assert!(
+            error.to_string().contains("unattended_state"),
+            "the message names the column: {error}"
+        );
+        let version: i32 = Connection::open(&path)
+            .expect("open the refused journal")
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(
+            version, 11,
+            "the stamp never commits: the file stays openable by an older build, \
+             and the next open re-attempts the migration"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

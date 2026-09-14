@@ -20,8 +20,8 @@
 //!   versions and which binary to update. Neither side may hang or try to
 //!   parse the rest of the stream as the other version.
 //!
-//! This crate speaks only version [`PROTOCOL_VERSION`] (4), with
-//! [`PROTOCOL_MIN_VERSION`] also 4. Older dialects are refused: required
+//! This crate speaks only version [`PROTOCOL_VERSION`] (5), with
+//! [`PROTOCOL_MIN_VERSION`] also 5. Older dialects are refused: required
 //! fields (`created_at_ms`, `Workspace.path`, subscription identity) were
 //! added and the daemon always serializes the current struct, so agreeing on
 //! an older version
@@ -126,7 +126,12 @@ pub use session::{
 /// A field added with `#[serde(default)]` is backward compatible and needs
 /// no bump (`cwd`). A required field is a breaking change and requires
 /// bumping both this constant and [`PROTOCOL_MIN_VERSION`] (`created_at_ms`,
-/// `Workspace.path`).
+/// `Workspace.path`), and so is a field that changes **type** with the key
+/// kept: 4 → 5 moved `unattended` from an optional JSON boolean to the
+/// `UnattendedState` string written on every `Session` /
+/// `SessionStateSnapshot` frame — `serde(default)` covers an absent key, not
+/// a key present with the wrong type, so a 4-speaking peer passed the old
+/// handshake and died on the first session frame.
 /// The daemon always serializes the current struct regardless of the agreed
 /// version, so negotiating down does not produce an old-shaped payload;
 /// refusing the handshake is the only protection.
@@ -135,11 +140,11 @@ pub use session::{
 /// `agent_background_tasks_changed`): the daemon and app are shipped together,
 /// and these output-only tags do not change existing request shapes. Revisit
 /// this if peers become independently versioned.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.
-pub const PROTOCOL_MIN_VERSION: u32 = 4;
+pub const PROTOCOL_MIN_VERSION: u32 = 5;
 
 /// Well-known capability names. These are strings on the wire so a peer that
 /// does not know a name can still complete the handshake.
@@ -636,8 +641,8 @@ mod tests {
 
     #[test]
     fn protocol_version_and_min_match() {
-        assert_eq!(PROTOCOL_VERSION, 4);
-        assert_eq!(PROTOCOL_MIN_VERSION, 4);
+        assert_eq!(PROTOCOL_VERSION, 5);
+        assert_eq!(PROTOCOL_MIN_VERSION, 5);
     }
 
     #[test]
