@@ -548,10 +548,13 @@ pub enum ClientMessage {
     /// Ask what one provider offers — its models and its modes — so the
     /// profile form can be authored from real vocabulary instead of free
     /// text. `provider` is a catalog provider id or alias, canonicalised the
-    /// way the profile store canonicalises one; the reply carries the
+    /// way the profile store canonicalises one — trimmed first, then
+    /// resolved by the catalog's own walk — and the reply carries the
     /// canonical id back. `refresh: false` is a cached read; `refresh: true`
     /// re-probes now, which for most providers briefly starts the provider's
-    /// process (Claude costs a file scan instead).
+    /// process (Claude usually costs a file scan; the one process it can
+    /// start is the native version probe, and only while its installed
+    /// version is still unknown).
     ///
     /// Local-only, exactly like the profile store: a paired device is refused
     /// by `peer_allows` whichever capability it holds. The handshake
@@ -1112,6 +1115,32 @@ pub struct VocabularyModels {
     pub items: Vec<SessionModel>,
 }
 
+impl VocabularyModels {
+    /// The way every axis builder constructs this struct: it refuses the two
+    /// pairs the biconditional forbids — an `origin` on a `none`/`absent`
+    /// axis, and a `present` axis without one — so an illegal combination is
+    /// rejected at construction rather than merely never built. The fields
+    /// stay public for the serializer's derives and for tests that pin the
+    /// wire encoding itself.
+    pub fn new(
+        state: VocabularyState,
+        origin: Option<VocabularyOrigin>,
+        items: Vec<SessionModel>,
+    ) -> Result<Self, String> {
+        if origin.is_some() != matches!(state, VocabularyState::Present) {
+            return Err(format!(
+                "origin is present exactly when the state is present: got {state:?} with {} origin",
+                if origin.is_some() { "an" } else { "no" }
+            ));
+        }
+        Ok(Self {
+            state,
+            origin,
+            items,
+        })
+    }
+}
+
 /// The modes axis of a `ProviderVocabulary` reply. Same shape discipline as
 /// [`VocabularyModels`].
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1121,6 +1150,28 @@ pub struct VocabularyModes {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<VocabularyOrigin>,
     pub items: Vec<SessionModeView>,
+}
+
+impl VocabularyModes {
+    /// Same discipline as [`VocabularyModels::new`]: the biconditional as
+    /// code, refusing the pairs no builder may emit.
+    pub fn new(
+        state: VocabularyState,
+        origin: Option<VocabularyOrigin>,
+        items: Vec<SessionModeView>,
+    ) -> Result<Self, String> {
+        if origin.is_some() != matches!(state, VocabularyState::Present) {
+            return Err(format!(
+                "origin is present exactly when the state is present: got {state:?} with {} origin",
+                if origin.is_some() { "an" } else { "no" }
+            ));
+        }
+        Ok(Self {
+            state,
+            origin,
+            items,
+        })
+    }
 }
 
 /// This device's own advertised identity. `remote` deliberately carries only
@@ -1769,11 +1820,16 @@ mod tests {
 
     #[test]
     fn origin_on_the_wire_is_present_exactly_when_the_state_is_present() {
-        // The biconditional, asserted on the wire in both directions: a
+        // The biconditional, asserted in both directions. On the wire: a
         // `present` state implies an `origin` key, and a `none`/`absent`
         // state implies no `origin` key — so a reader can never hold an
         // origin without a present list, and the key can never silently
-        // become a second source of truth about the state.
+        // become a second source of truth about the state. In the
+        // constructor: the illegal pairs themselves — `(none, Some)`,
+        // `(absent, Some)`, and a `present` without an origin — are built
+        // through the constructor every axis builder uses and must be
+        // refused, because a legal-inputs-only wire test exercises
+        // `skip_serializing_if`, not the invariant.
         fn axis_json(
             state: VocabularyState,
             origin: Option<VocabularyOrigin>,
@@ -1796,6 +1852,40 @@ mod tests {
                 json.get("origin").is_none(),
                 "a {state:?} axis must not carry an origin, got {json}"
             );
+        }
+        // The forbidden half of the biconditional, on both axis types: each
+        // illegal pair goes through the real constructor and is refused.
+        for (state, origin) in [
+            (VocabularyState::None, Some(VocabularyOrigin::Daemon)),
+            (VocabularyState::Absent, Some(VocabularyOrigin::Provider)),
+            (VocabularyState::Present, None),
+        ] {
+            assert!(
+                VocabularyModes::new(state, origin, Vec::new()).is_err(),
+                "an axis of {state:?} with origin {origin:?} must be refused"
+            );
+            assert!(
+                VocabularyModels::new(state, origin, Vec::new()).is_err(),
+                "an axis of {state:?} with origin {origin:?} must be refused"
+            );
+        }
+        // Every legal pair still builds, in both directions of the
+        // biconditional.
+        assert!(VocabularyModes::new(
+            VocabularyState::Present,
+            Some(VocabularyOrigin::Provider),
+            Vec::new()
+        )
+        .is_ok());
+        assert!(VocabularyModels::new(
+            VocabularyState::Present,
+            Some(VocabularyOrigin::Daemon),
+            Vec::new()
+        )
+        .is_ok());
+        for state in [VocabularyState::None, VocabularyState::Absent] {
+            assert!(VocabularyModes::new(state, None, Vec::new()).is_ok());
+            assert!(VocabularyModels::new(state, None, Vec::new()).is_ok());
         }
     }
 

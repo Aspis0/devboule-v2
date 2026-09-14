@@ -4,13 +4,15 @@
 //!
 //! Spec: `reports/remote-agents/SPEC-provider-vocabulary-query.md` §4-§6.
 //! Pass 1 of the brief lands the wire, the gate, the cache and the one
-//! provider that costs nothing: Claude's models come from the catalog
-//! derivation, which reads the CLI's files on disk and is already warmed by
-//! `providers_list`, so a Claude vocabulary read spawns no process. Every
-//! other provider answers `absent` — no source could answer yet — which is
-//! the wire value that makes the form completable for everyone on day one;
-//! pass 2 upgrades three of them to `present` with spawn probes and changes
-//! no shape.
+//! provider that costs almost nothing: Claude's models come from the catalog
+//! derivation, which reads the CLI's files on disk. The one process a
+//! Claude read can start is the native version probe, and only while the
+//! installed version is still unknown — the same one-shot probe
+//! `providers_list` starts, and once the version is settled a read costs
+//! file reads only. Every other provider answers `absent` — no source could
+//! answer yet — which is the wire value that makes the form completable for
+//! everyone on day one; pass 2 upgrades three of them to `present` with
+//! spawn probes and changes no shape.
 //!
 //! Two rules govern this module (`BRIEF-provider-vocabulary-daemon.md`):
 //!
@@ -40,13 +42,26 @@ use crate::server::ServerState;
 /// is picked up without anyone reaching for the refresh button.
 const VOCABULARY_CACHE_TTL_MS: u64 = 30 * 60 * 1000;
 
+/// The longest provider string this handler will echo in a refusal. Both
+/// sibling refusals cap before they echo (`MAX_PROFILE_FIELD_BYTES` in
+/// `agent_profiles.rs`, `MAX_POLICY_NAME_BYTES` in `tool_policy.rs`): the
+/// string is caller input with nothing bounding its length, and an uncapped
+/// echo builds an error frame at least as large as the request — larger,
+/// when the bytes JSON-escape — which `MAX_FRAME_BYTES` then refuses,
+/// dropping the connection the reply was about to travel on.
+const MAX_PROVIDER_ECHO_BYTES: usize = 128;
+
 /// One cached vocabulary answer.
 ///
 /// The key facts are the discovery facts that invalidate the entry: a
 /// discovery pass that changes the executable or the installed version
 /// produces different facts, and the entry simply stops matching — which is
 /// invalidation (2) of the spec's three, invalidation (1) being `refresh:
-/// true` handled at the call site and (3) the TTL below.
+/// true` handled at the call site and (3) the TTL below. The fourth
+/// invalidation is Claude's catalog derivation completing: it changes the
+/// answer without changing any fact here, so it cannot be a key — the
+/// completion callback evicts the entry outright
+/// ([`VocabularyCache::invalidate`]).
 struct CacheEntry {
     executable: Option<String>,
     version: Option<String>,
@@ -140,6 +155,21 @@ impl VocabularyCache {
         );
     }
 
+    /// Drop one provider's cached answer outright. This is the fourth
+    /// invalidation: the catalog derivation completing changes Claude's
+    /// answer without changing the executable or the version, so it cannot
+    /// be expressed as a key fact. The completion callback evicts instead,
+    /// and the next read re-probes into the derived catalog — a human is
+    /// never served the provisional fallback, labelled `cache`, after the
+    /// provider's own list is already available.
+    pub(crate) fn invalidate(&self, provider: &str) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        entries.remove(provider);
+    }
+
     /// Move one provider's cached answer into the past, for the TTL test.
     #[cfg(test)]
     pub(crate) fn backdate(&self, provider: &str, by_ms: u64) {
@@ -191,6 +221,23 @@ pub(crate) fn provider_vocabulary_reply(
     provider: &str,
     refresh: bool,
 ) -> DaemonMessage {
+    // Canonicalised the way the profile store canonicalises one: trimmed
+    // first, then resolved by the catalog's own walk — and never echoed
+    // past the cap, because the refusal sentence would otherwise repeat an
+    // unbounded caller string into a frame the app renders.
+    let provider = provider.trim();
+    if provider.len() > MAX_PROVIDER_ECHO_BYTES {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "the provider is {} bytes, over the {MAX_PROVIDER_ECHO_BYTES}-byte cap",
+                    provider.len()
+                ),
+            )
+            .with_id(id),
+        );
+    }
     let Some(canonical) = crate::provider_catalog::catalog_provider_id(provider) else {
         return DaemonMessage::Error(
             WireError::new(
@@ -254,9 +301,10 @@ fn probe_axes(state: &Arc<ServerState>, canonical: &str) -> (VocabularyModels, V
         .probes
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     match canonical {
-        // Claude costs no process: the catalog derivation reads the CLI's
-        // files on disk and `providers_list` already warms it
-        // (`server.rs::providers_reply`). Both axes are `present`.
+        // Claude costs (almost) no process: the catalog derivation reads the
+        // CLI's files on disk. The one process a read can start is the
+        // native version probe, inside `claude_models`, and only while the
+        // installed version is still unknown. Both axes are `present`.
         "claude" => claude_axes(state),
         // Every other provider answers `absent` in this pass: no source could
         // answer. That is a wire value, never an empty `present` and never
@@ -276,40 +324,42 @@ fn probe_axes(state: &Arc<ServerState>, canonical: &str) -> (VocabularyModels, V
 ///   all; the four-plus-one modes are the launcher's `--permission-mode`
 ///   values, and saying `provider` there would be a lie the form repeats.
 fn claude_axes(state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
-    let snapshot = state.claude_models();
-    let models = VocabularyModels {
-        state: VocabularyState::Present,
-        origin: Some(match snapshot.state {
-            crate::claude_catalog::ClaudeCatalogState::Derived => VocabularyOrigin::Provider,
-            crate::claude_catalog::ClaudeCatalogState::Provisional => VocabularyOrigin::Daemon,
-        }),
-        items: snapshot.models,
-    };
+    let models = claude_models_axis(state.claude_models());
     // The current mode is a live-session fact and belongs to the manifest;
     // the vocabulary carries only the available list, so the "current" id
     // the shared builder requires is filled and dropped.
-    let modes = VocabularyModes {
-        state: VocabularyState::Present,
-        origin: Some(VocabularyOrigin::Daemon),
-        items: crate::claude_view::mode_state("default").available_modes,
-    };
+    let modes = VocabularyModes::new(
+        VocabularyState::Present,
+        Some(VocabularyOrigin::Daemon),
+        crate::claude_view::mode_state("default").available_modes,
+    )
+    .expect("a present modes axis always carries its origin");
     (models, modes)
+}
+
+/// The models axis a catalog snapshot maps to — the whole of the origin
+/// honesty on the only real vocabulary in this pass, as a pure function so
+/// a test drives the mapping itself rather than two literals: `Derived` is
+/// the provider's own answer, `Provisional` the daemon's fallback table,
+/// and the items pass through unchanged. `claude_axes` feeds this from
+/// `ServerState::claude_models`.
+fn claude_models_axis(snapshot: crate::claude_catalog::ClaudeCatalogSnapshot) -> VocabularyModels {
+    let origin = match snapshot.state {
+        crate::claude_catalog::ClaudeCatalogState::Derived => VocabularyOrigin::Provider,
+        crate::claude_catalog::ClaudeCatalogState::Provisional => VocabularyOrigin::Daemon,
+    };
+    VocabularyModels::new(VocabularyState::Present, Some(origin), snapshot.models)
+        .expect("a present models axis always carries its origin")
 }
 
 /// The `absent` answer: items empty, origin omitted — both, in both
 /// directions, exactly as the biconditional requires.
 fn absent_axes() -> (VocabularyModels, VocabularyModes) {
     (
-        VocabularyModels {
-            state: VocabularyState::Absent,
-            origin: None,
-            items: Vec::new(),
-        },
-        VocabularyModes {
-            state: VocabularyState::Absent,
-            origin: None,
-            items: Vec::new(),
-        },
+        VocabularyModels::new(VocabularyState::Absent, None, Vec::new())
+            .expect("an absent axis carries no origin"),
+        VocabularyModes::new(VocabularyState::Absent, None, Vec::new())
+            .expect("an absent axis carries no origin"),
     )
 }
 
@@ -386,28 +436,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(runtime_dir);
     }
 
-    /// Models origin follows the catalog state: an extraction that worked is
-    /// the provider's own answer; the fallback table is ours. Both halves of
-    /// the mapping are exercised through the pure mapping the probe uses.
+    /// Models origin follows the catalog state, driven through the real
+    /// mapping `claude_axes` uses: an extraction that worked is the
+    /// provider's own answer; the fallback table is ours. Both catalog
+    /// states are fed through [`claude_models_axis`] and the whole axis is
+    /// walked — state, origin, and the items carried through — because a
+    /// test of two literals cannot see the mapping invert and label the
+    /// daemon's aliases as the provider's answer mid-consent.
     #[test]
     fn claude_models_origin_follows_the_catalog_state() {
-        let derived = VocabularyModels {
-            state: VocabularyState::Present,
-            origin: Some(VocabularyOrigin::Provider),
-            items: crate::claude_catalog::fallback_models(),
-        };
-        let provisional = VocabularyModels {
-            state: VocabularyState::Present,
-            origin: Some(VocabularyOrigin::Daemon),
-            items: crate::claude_catalog::fallback_models(),
-        };
+        let derived = claude_models_axis(crate::claude_catalog::ClaudeCatalogSnapshot::derived(
+            crate::claude_catalog::fallback_models(),
+        ));
+        assert_eq!(derived.state, VocabularyState::Present);
+        assert_eq!(
+            derived.origin,
+            Some(VocabularyOrigin::Provider),
+            "a derived catalog is the provider's own answer"
+        );
+        assert_eq!(
+            derived
+                .items
+                .iter()
+                .map(|model| model.model_id.as_str())
+                .collect::<Vec<_>>(),
+            ["opus", "sonnet", "haiku"],
+            "the mapping carries the snapshot's items through unchanged"
+        );
+
+        let provisional =
+            claude_models_axis(crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                crate::claude_catalog::fallback_models(),
+            ));
+        assert_eq!(provisional.state, VocabularyState::Present);
+        assert_eq!(
+            provisional.origin,
+            Some(VocabularyOrigin::Daemon),
+            "the fallback table is the daemon's answer, never labelled the provider's"
+        );
+        assert_eq!(provisional.items, derived.items);
         assert_ne!(
-            derived.origin, provisional.origin,
+            provisional.origin, derived.origin,
             "Derived and Provisional must not share an origin"
         );
-        assert_eq!(derived.state, VocabularyState::Present);
-        assert!(matches!(derived.origin, Some(VocabularyOrigin::Provider)));
-        assert!(matches!(provisional.origin, Some(VocabularyOrigin::Daemon)));
+
+        // The same snapshot shapes `claude_axes` serves, through the real
+        // builder: every axis it produces satisfies the constructor's
+        // biconditional.
+        let state = state();
+        let (models, modes) = claude_axes(&state);
+        assert!(VocabularyModels::new(models.state, models.origin, models.items).is_ok());
+        assert!(VocabularyModes::new(modes.state, modes.origin, modes.items).is_ok());
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
     }
 
     /// The absent answer: both axes `absent`, items empty, origin omitted.
@@ -503,6 +585,112 @@ mod tests {
                 .is_none(),
             "a new installed version must miss the cache"
         );
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The fourth invalidation: the catalog derivation completing evicts the
+    /// cached Claude answer. The derivation changes the answer without
+    /// changing any discovery fact — the executable and the version are
+    /// byte-identical before and after — so the facts cannot catch it; an
+    /// entry filled from the provisional (fallback-alias) answer while the
+    /// derivation ran must not survive the completion callback, or a consent
+    /// card is shown the daemon's own aliases labelled `cache` for a full
+    /// TTL after the provider's own list is already available.
+    #[test]
+    fn a_completed_catalog_derivation_evicts_the_cached_claude_answer() {
+        let state = state();
+        let facts = (
+            Some("C:\\fake\\claude.exe".to_string()),
+            Some("2.1.0".to_string()),
+        );
+        let now = crate::server::unix_millis();
+        state.provider_vocabulary.store(
+            "claude",
+            facts.clone(),
+            now,
+            VocabularyModels {
+                state: VocabularyState::Present,
+                origin: Some(VocabularyOrigin::Daemon),
+                items: crate::claude_catalog::fallback_models(),
+            },
+            VocabularyModes {
+                state: VocabularyState::Present,
+                origin: Some(VocabularyOrigin::Daemon),
+                items: crate::claude_view::mode_state("default").available_modes,
+            },
+        );
+        // The provisional answer is live: the facts a real cold read stored
+        // match the next read.
+        assert!(
+            state
+                .provider_vocabulary
+                .get("claude", &facts, now)
+                .is_some(),
+            "the entry must be served before the derivation completes"
+        );
+        // The derivation delivers. This is the exact callback
+        // `start_claude_derivation` installs on the worker thread.
+        state.claude_catalog_derived(crate::claude_catalog::fallback_models());
+        assert!(
+            state
+                .provider_vocabulary
+                .get("claude", &facts, now)
+                .is_none(),
+            "the derived answer must supersede the cached provisional one"
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The refusal never echoes an uncapped caller string. A provider field
+    /// just under `MAX_FRAME_BYTES` of `"` characters is a legal frame, but
+    /// JSON escaping makes an echoed reply *larger* than the request, so an
+    /// uncapped refusal builds an error frame the framing layer refuses —
+    /// dropping the connection. Both sibling refusals cap before they echo;
+    /// this one does too.
+    #[test]
+    fn an_over_cap_provider_is_refused_without_echoing_it_whole() {
+        let state = state();
+        let flood = "\"".repeat(700_000);
+        let reply = provider_vocabulary_reply(&state, 90, &flood, false);
+        let DaemonMessage::Error(error) = &reply else {
+            panic!("an over-cap provider must be refused, got {reply:?}");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.id, Some(90));
+        assert_eq!(
+            error.message, "the provider is 700000 bytes, over the 128-byte cap",
+            "the cap refusal names the size, not the string"
+        );
+        let frame = serde_json::to_vec(&reply).expect("the refusal serialises");
+        assert!(
+            frame.len() <= devboule_protocol::MAX_FRAME_BYTES,
+            "the refusal frame must stay under MAX_FRAME_BYTES, got {} bytes",
+            frame.len()
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// `provider` is canonicalised the way the profile store canonicalises
+    /// one: trimmed first. The document the app reads promises this, and a
+    /// padded but known id is a provider the catalog publishes, not a
+    /// refusal.
+    #[test]
+    fn a_padded_known_provider_is_trimmed_before_the_catalog_walk() {
+        let state = state();
+        let reply = provider_vocabulary_reply(&state, 91, "  claude  ", false);
+        let DaemonMessage::ProviderVocabulary { provider, .. } = &reply else {
+            panic!("a padded known provider must be served, got {reply:?}");
+        };
+        assert_eq!(provider, "claude", "the reply carries the canonical id");
+
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(state);
         let _ = std::fs::remove_dir_all(runtime_dir);

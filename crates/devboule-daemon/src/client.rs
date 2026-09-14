@@ -931,8 +931,9 @@ impl DaemonClient {
 
     /// What one provider offers — its models and its modes — for the profile
     /// form. `refresh: false` is a cached read; `refresh: true` re-probes
-    /// now, which briefly starts the provider's process (Claude costs a file
-    /// scan instead).
+    /// now, which briefly starts the provider's process (Claude usually
+    /// costs a file scan; the one process it can start is the native
+    /// version probe, and only while its installed version is unknown).
     ///
     /// Refused unless the handshake negotiated `provider_vocabulary`: a
     /// daemon without the capability predates the query, and asking it would

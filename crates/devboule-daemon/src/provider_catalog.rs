@@ -1141,7 +1141,7 @@ pub fn find_available(id: &str) -> Option<InstalledAgent> {
     find_available_in_paths(id, &path_directories_for_available())
 }
 
-fn path_directories_for_available() -> Vec<PathBuf> {
+pub(crate) fn path_directories_for_available() -> Vec<PathBuf> {
     match std::env::var_os("PATH") {
         Some(paths) => std::env::split_paths(&paths).collect(),
         None => Vec::new(),

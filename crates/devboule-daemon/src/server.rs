@@ -113,12 +113,19 @@ pub struct ServerState {
     provider_cli_versions: Mutex<HashMap<String, (String, CliVersionFingerprint)>>,
     /// Executable paths whose Claude version probe is already running.
     claude_version_probes: Mutex<HashSet<std::path::PathBuf>>,
+    /// Test-only: how many times `probe_native_version` was entered. That
+    /// function is the spawn seam itself — entering it is what becomes a
+    /// `claude --version` process in a release build — so the test that pins
+    /// a Claude read's process cost counts entries here instead of watching
+    /// `provider_health`, which no real probe writes.
+    #[cfg(test)]
+    version_probe_entries: AtomicU64,
     /// The provider-vocabulary cache: what each installed provider's models
     /// and modes look like, keyed by canonical provider id and invalidated by
-    /// `refresh: true`, by changed discovery facts, and by a 30-minute TTL
-    /// (`provider_vocabulary.rs`). It feeds the profile form only — the live
-    /// `SessionManifest` never reads it, and per-session chips keep coming
-    /// from the manifest as before.
+    /// `refresh: true`, by changed discovery facts, by a 30-minute TTL, and
+    /// by the catalog derivation completing (`provider_vocabulary.rs`). It
+    /// feeds the profile form only — the live `SessionManifest` never reads
+    /// it, and per-session chips keep coming from the manifest as before.
     pub(crate) provider_vocabulary: crate::provider_vocabulary::VocabularyCache,
     /// The only process-launch seam for provider updates. Tests replace this
     /// runner so no npm or network is ever started by the test suite.
@@ -296,6 +303,8 @@ impl ServerState {
             provider_versions: Mutex::new(HashMap::new()),
             provider_cli_versions: Mutex::new(HashMap::new()),
             claude_version_probes: Mutex::new(HashSet::new()),
+            #[cfg(test)]
+            version_probe_entries: AtomicU64::new(0),
             provider_vocabulary: crate::provider_vocabulary::VocabularyCache::default(),
             npm_install_runner,
             paths: paths_for_state,
@@ -559,6 +568,14 @@ impl ServerState {
             .insert(provider_id.to_string(), (version, fingerprint));
     }
 
+    /// How many times the native version probe was entered: the process
+    /// count of whatever path is under test, observed where a release build
+    /// actually spawns.
+    #[cfg(test)]
+    fn version_probe_entry_count(&self) -> u64 {
+        self.version_probe_entries.load(Ordering::SeqCst)
+    }
+
     pub(crate) fn provider_cli_version(
         &self,
         provider_id: &str,
@@ -574,7 +591,19 @@ impl ServerState {
     }
 
     pub(crate) fn claude_models(self: &Arc<Self>) -> crate::claude_catalog::ClaudeCatalogSnapshot {
-        let Some(agent) = crate::provider_catalog::find_available("claude") else {
+        self.claude_models_in_paths(&crate::provider_catalog::path_directories_for_available())
+    }
+
+    /// `claude_models` with the PATH scan injected: the same body over
+    /// explicit search directories, so a test can install a native Claude
+    /// that exists nowhere else on the machine. Production callers go
+    /// through [`ServerState::claude_models`].
+    pub(crate) fn claude_models_in_paths(
+        self: &Arc<Self>,
+        directories: &[std::path::PathBuf],
+    ) -> crate::claude_catalog::ClaudeCatalogSnapshot {
+        let Some(agent) = crate::provider_catalog::find_available_in_paths("claude", directories)
+        else {
             return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
                 crate::claude_catalog::fallback_models(),
             );
@@ -679,8 +708,25 @@ impl ServerState {
         };
         let _ =
             crate::claude_catalog::start_derivation(source, runtime_dir, version, move |models| {
-                state.sessions.publish_claude_catalog(models)
+                state.claude_catalog_derived(models)
             });
+    }
+
+    /// What happens when the catalog derivation delivers: the manifest
+    /// publication the live sessions read, and the eviction of Claude's
+    /// vocabulary-cache entry. The eviction is the fourth invalidation: a
+    /// completed derivation changes the vocabulary answer without changing
+    /// any discovery fact — the executable and the version are byte-identical
+    /// before and after — so an entry filled from the provisional fallback
+    /// while the derivation ran cannot be caught by the facts and must be
+    /// dropped here, or the next read serves it, labelled `cache`, until the
+    /// TTL expires.
+    pub(crate) fn claude_catalog_derived(
+        self: &Arc<Self>,
+        models: Vec<devboule_protocol::SessionModel>,
+    ) {
+        self.provider_vocabulary.invalidate("claude");
+        self.sessions.publish_claude_catalog(models);
     }
 
     fn invalidate_provider_update_caches(&self, provider_id: &str) {
@@ -2695,7 +2741,10 @@ fn probe_native_version(
 ) -> Option<(String, CliVersionFingerprint)> {
     #[cfg(test)]
     {
-        let _ = state;
+        // Counted above the stubbed body: the entry is the seam a real
+        // spawn flows through, so a test that pins "no process" watches
+        // this counter and not `provider_health`.
+        state.version_probe_entries.fetch_add(1, Ordering::SeqCst);
         let _ = agent;
         None
     }
@@ -5627,12 +5676,15 @@ mod tests {
         // A probe reply omits probedAtMs entirely — it is fresh by
         // definition.
         assert!(json.get("probedAtMs").is_none(), "got {json}");
-        // No spawn outcome was recorded for the read: the catalog comes from
-        // the CLI's files on disk, not from a process.
+        // The read itself recorded no health outcome. `provider_health` is
+        // written by session-start handshakes, and a real version probe
+        // records none either, so this pins only that THIS read wrote
+        // nothing — the read's process cost is pinned where a process
+        // actually begins, by the version-probe seam test below.
         assert_eq!(
             state.provider_health("claude"),
             "unknown",
-            "a Claude vocabulary read must not spawn anything"
+            "a vocabulary read must not record a health outcome"
         );
 
         // The debug-only provider whose binary cannot exist anywhere makes
@@ -5679,6 +5731,88 @@ mod tests {
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(state);
         let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The read's process cost, observed where a process actually begins.
+    /// `probe_native_version` is the only function on the Claude vocabulary
+    /// path that can start a process — a release build turns each entry into
+    /// one `claude --version` — so the test counts entries at that seam on a
+    /// synthetic native install (a `claude.exe` in a directory only this
+    /// test scans), where the machine's own installs cannot reach the
+    /// assertion. A cold read — version unknown — enters the seam exactly
+    /// once, which is the honest cost the module doc states; a read whose
+    /// version is already settled, the state `providers_list` leaves the
+    /// daemon in, enters it zero times.
+    #[test]
+    fn a_claude_read_enters_the_version_probe_seam_only_while_the_version_is_unknown() {
+        let temp = std::env::temp_dir().join(format!(
+            "devboule-vocabulary-seam-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).expect("temp dir");
+        let fake = temp.join("claude.exe");
+        std::fs::write(&fake, b"not really claude").expect("fake binary");
+
+        let state = ServerState::new("vocabulary-spawn-seam".to_string());
+        let directories = vec![temp.clone()];
+        let agent = crate::provider_catalog::find_available_in_paths("claude", &directories)
+            .expect("the synthetic native claude must resolve");
+        assert_eq!(
+            agent.install_channel,
+            crate::provider_catalog::InstallChannel::Native,
+            "a bare executable is a native install, no npm prefix"
+        );
+
+        // Cold: the version is unknown, and the read starts the version
+        // probe. In a test build the probe body is stubbed — no process is
+        // ever launched — but the entry, the seam itself, is still counted.
+        let before = state.version_probe_entry_count();
+        let snapshot = state.claude_models_in_paths(&directories);
+        assert_eq!(
+            snapshot.state,
+            crate::claude_catalog::ClaudeCatalogState::Provisional
+        );
+        // The probe runs on its own thread and leaves the in-flight guard
+        // when it is done; the entry count is final once the guard clears.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while state
+            .claude_version_probes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(&agent.executable)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the version probe never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            state.version_probe_entry_count(),
+            before + 1,
+            "an unknown version must start exactly one version probe"
+        );
+
+        // Warm: the version is settled — what a real probe or
+        // `providers_list` records — and the same read costs no process.
+        let fingerprint = executable_fingerprint(&agent.executable).expect("fingerprint");
+        state.record_provider_cli_version("claude", "9.9.9-test", fingerprint);
+        let before = state.version_probe_entry_count();
+        let _ = state.claude_models_in_paths(&directories);
+        assert_eq!(
+            state.version_probe_entry_count(),
+            before,
+            "a read whose version fact is settled must enter no spawn seam"
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(state);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+        let _ = std::fs::remove_dir_all(temp);
     }
 
     /// The biconditional, on the daemon's actual replies and in both
