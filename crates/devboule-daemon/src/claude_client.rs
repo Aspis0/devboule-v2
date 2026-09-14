@@ -272,7 +272,10 @@ fn validate_delivery(
     catalog: &crate::claude_catalog::ClaudeCatalogSnapshot,
     delivery: &ProfileDelivery,
 ) -> Result<(), WireError> {
-    let mode_id = delivery.mode_id.as_deref().unwrap_or("default");
+    let mode_id = delivery
+        .mode_id
+        .as_deref()
+        .unwrap_or(crate::claude_view::DEFAULT_MODE);
     if !crate::claude_view::mode_state(mode_id)
         .available_modes
         .iter()
@@ -331,7 +334,11 @@ pub(super) fn spawn_process(
     delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
     validate_delivery(&state.claude_models(), &delivery)?;
-    let requested_mode = delivery.mode_id.as_deref().unwrap_or("default").to_string();
+    let requested_mode = delivery
+        .mode_id
+        .as_deref()
+        .unwrap_or(crate::claude_view::DEFAULT_MODE)
+        .to_string();
     let mut args = command.args.clone();
     if let Some(path) = mcp
         .as_ref()

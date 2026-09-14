@@ -3463,11 +3463,16 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
     assert_eq!(child.kind, SessionKind::Acp);
     assert_eq!(child.provider.as_deref(), Some("devboule-acp-stub"));
     // `create-from-profile`: the session records the profile's **stable id** and
-    // not its name, belongs to the creator's context, was not born unattended,
-    // and carries the four labels the daemon stamped.
+    // not its name, belongs to the creator's context, carries the honest marker
+    // — `unknown`, because the stub's `default` mode is a vocabulary the
+    // provider authored and the daemon was never told whether it asks — and
+    // carries the four labels the daemon stamped.
     assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
     assert_eq!(child.context_id.as_deref(), Some(creator.id.as_str()));
-    assert!(!child.unattended);
+    assert_eq!(
+        child.unattended,
+        devboule_protocol::UnattendedState::Unknown
+    );
     assert_eq!(
         child.labels.get("devboule.created-by").map(String::as_str),
         Some(creator.id.as_str())
@@ -3520,9 +3525,12 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
         description.contains("model stub-model-new, mode default"),
         "the card names the delivered model and mode: {description}"
     );
+    // The stub's `default` mode is a vocabulary the provider authored, so the
+    // card asserts neither direction (R2b): it says cannot-establish, which
+    // is honest, and never the plain "No" the old binary card printed.
     assert!(
-        description.contains("auto accept: No"),
-        "an asking profile without the tick says No: {description}"
+        description.contains("auto accept: Cannot establish"),
+        "a provider-authored mode is not asserted either way: {description}"
     );
 
     wait_for(&events, Duration::from_secs(60), |events| {
@@ -3973,8 +3981,9 @@ fn an_auto_accept_child_starts_in_the_mode_the_tick_demands() {
         "the card names the answering mode: {description}"
     );
     let child = test.child_of(&creator.id);
-    assert!(
+    assert_eq!(
         child.unattended,
+        devboule_protocol::UnattendedState::Yes,
         "the marker and the delivered mode are one fact"
     );
     let switched = test.wait_for_observations("set mode.txt", 1);
@@ -4014,9 +4023,11 @@ fn an_unknown_feature_key_is_named_as_uninterpreted_on_the_card() {
         ),
         "the card names the uninterpreted feature: {description}"
     );
+    // An uninterpreted key is not a tick — and the provider-authored mode is
+    // not asserted either way (R2b): the line says cannot-establish.
     assert!(
-        description.contains("auto accept: No"),
-        "an uninterpreted key is not a tick: {description}"
+        description.contains("auto accept: Cannot establish"),
+        "an uninterpreted key is not a tick, and the mode is not judged by name: {description}"
     );
     let child = test.child_of(&creator.id);
     assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
@@ -4998,8 +5009,9 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
     test.allow_creation_card(&creator.id, &events);
     let child = test.child_of(&creator.id);
     assert_eq!(child.profile_id.as_deref(), Some("profile-runner"));
-    assert!(
+    assert_eq!(
         child.unattended,
+        devboule_protocol::UnattendedState::Yes,
         "a profile whose mode auto-answers permission prompts makes an unattended child"
     );
 
@@ -5026,8 +5038,9 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
         .into_iter()
         .find(|session| session.id == child.id)
         .expect("the child is still listed");
-    assert!(
+    assert_eq!(
         again.unattended,
+        devboule_protocol::UnattendedState::Yes,
         "the marker is a fact of the birth, not a view of the current settings"
     );
 

@@ -30,8 +30,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use devboule_protocol::{
     ErrorCode, JournalRetention, PeerRole, Project, RetentionPatch, Session, SessionEvent,
-    SessionKind, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity, WireError,
-    Workspace, WorkspaceIsolation,
+    SessionKind, SessionOrigin, SessionOriginKind, SessionState, TranscriptIntegrity,
+    UnattendedState, WireError, Workspace, WorkspaceIsolation,
 };
 
 #[path = "journal_replay.rs"]
@@ -51,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 11;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 12;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -251,12 +251,20 @@ pub struct SessionRecord {
     /// session that created it. NULL only for rows that predate v11, which
     /// [`SessionRecord::to_session`] reads back as the session's own id.
     pub context_id: Option<String>,
-    /// Whether this session was born from a profile that approves permission
-    /// prompts in place of the human. Written once, by the creation, and never
-    /// re-derived: un-ticking the profile afterwards does not change the row.
-    /// `0` for every row that predates v11 — the only honest reading, since no
-    /// profile existed to have approved anything.
-    pub unattended: bool,
+    /// Whether this session can pass a permission moment with no human
+    /// answering, as the tri-state [`UnattendedState`] knows it. Derived once,
+    /// by the creation that delivered the mode, and never re-derived:
+    /// un-ticking the profile afterwards does not change the row.
+    ///
+    /// The boolean `unattended` **column** stays beside the tri-state
+    /// `unattended_state` column this value is stored in: it is ratcheted by
+    /// the same `MAX` as before and absorbs the `yes` half for rows written
+    /// before v12, so a database this daemon upgrades never has a rewritten
+    /// column. The v12 backfill maps an old `1` to `yes` and an old `0` to
+    /// **`unknown`** — never `no`: the old bool never distinguished "we knew
+    /// a human was watching" from "we were not told", and reading it as `no`
+    /// would manufacture a certainty that was never recorded.
+    pub unattended_state: UnattendedState,
     /// The session's labels, as the JSON object the daemon stamped. Empty for a
     /// session with none (a human's own sessions carry none), and for every row
     /// that predates v11.
@@ -456,7 +464,7 @@ impl SessionRecord {
             created_by: self.created_by.clone(),
             profile_id: self.profile_id.clone(),
             context_id: Some(self.context()),
-            unattended: self.unattended,
+            unattended: self.unattended_state,
             labels: self.labels.clone(),
         }
     }
@@ -2175,8 +2183,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             generation, status, exit_code, closed, last_seq, degraded,
             dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
             reaped, peer_session_id, provider, origin_kind, origin_device, origin_role,
-            display_name, created_by, profile_id, context_id, unattended, labels
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)
+            display_name, created_by, profile_id, context_id, unattended, unattended_state, labels
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -2204,6 +2212,12 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             -- predates the marker, an ordinary end) must not erase what the
             -- creation recorded.
             unattended = MAX(sessions.unattended, excluded.unattended),
+            -- The tri-state the marker actually travels in ratchets under the
+            -- same never-downward rule, ordered `no < unknown < yes`: a row
+            -- may move up that order and never down, because the asymmetry
+            -- says a session that ran alone and does not show is worse than
+            -- one that shows and did not need to.
+            unattended_state = MAX(sessions.unattended_state, excluded.unattended_state),
             -- Same rule: labels are written once, at the creation. A later
             -- upsert with an empty map (the common one, every end marker)
             -- must not erase them.
@@ -2236,11 +2250,35 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             record.created_by,
             record.profile_id,
             record.context_id,
-            if record.unattended { 1 } else { 0 },
+            if record.unattended_state == UnattendedState::Yes { 1 } else { 0 },
+            unattended_state_rank(record.unattended_state),
             labels,
         ],
     )?;
     Ok(())
+}
+
+/// The tri-state's integer encoding, in the never-downward order
+/// `no < unknown < yes`: the SQL `MAX` ratchet compares these, so the order
+/// is load-bearing and the numbers are the order.
+fn unattended_state_rank(state: UnattendedState) -> i64 {
+    match state {
+        UnattendedState::No => 0,
+        UnattendedState::Unknown => 1,
+        UnattendedState::Yes => 2,
+    }
+}
+
+/// The inverse of [`unattended_state_rank`], for reading the column back. A
+/// value the daemon does not write — a hand-edited row, a future encoding —
+/// reads as `unknown`, the honest default, rather than as a certainty nobody
+/// recorded.
+fn unattended_state_from_rank(rank: i64) -> UnattendedState {
+    match rank {
+        0 => UnattendedState::No,
+        2 => UnattendedState::Yes,
+        _ => UnattendedState::Unknown,
+    }
 }
 
 /// The labels column: one JSON object, and `{}` for a session that carries none
@@ -2739,7 +2777,9 @@ pub fn new_session_record(
         // rather than storing, so there is one place that answers that question.
         profile_id: None,
         context_id: None,
-        unattended: false,
+        // `unknown` is the honest default: a record whose creation has not
+        // derived the marker yet is a record nobody has said anything about.
+        unattended_state: UnattendedState::Unknown,
         labels: std::collections::BTreeMap::new(),
     }
 }
@@ -4343,6 +4383,70 @@ mod tests {
             .expect("audit count");
         assert_eq!(audit_rows, 1, "retention never sweeps the audit table");
         journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The tri-state ratchet, at the write it lives in (R2b): a row's
+    /// `unattended_state` may move up the order `no < unknown < yes` and never
+    /// down, whatever a later upsert carries — a resume rebuilt from an older
+    /// row, or an ordinary end marker, must not walk a birth fact backwards.
+    /// The boolean column beside it is the yes-absorbing term and ratchets the
+    /// same way, so a `yes` birth never loses its old-style flag either.
+    #[test]
+    fn the_unattended_state_ratchet_never_walks_a_row_back_down() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("journal");
+
+        // `yes`, then a later write that says `no`.
+        let mut yes = sample_session("s.ratchet.yes");
+        yes.unattended_state = UnattendedState::Yes;
+        journal.upsert_blocking(yes).expect("store yes");
+        let mut downgraded = sample_session("s.ratchet.yes");
+        downgraded.unattended_state = UnattendedState::No;
+        journal.upsert_blocking(downgraded).expect("rewrite as no");
+
+        // `unknown`, then a later write that says `no`.
+        let mut unknown = sample_session("s.ratchet.unknown");
+        unknown.unattended_state = UnattendedState::Unknown;
+        journal.upsert_blocking(unknown).expect("store unknown");
+        let mut lowered = sample_session("s.ratchet.unknown");
+        lowered.unattended_state = UnattendedState::No;
+        journal.upsert_blocking(lowered).expect("rewrite as no");
+
+        journal.flush().expect("flush");
+        let rows = journal.list().expect("list");
+        let yes_row = rows
+            .iter()
+            .find(|row| row.id == "s.ratchet.yes")
+            .expect("yes row");
+        assert_eq!(
+            yes_row.unattended_state,
+            UnattendedState::Yes,
+            "a later `no` write must not walk a `yes` birth backwards"
+        );
+        let unknown_row = rows
+            .iter()
+            .find(|row| row.id == "s.ratchet.unknown")
+            .expect("unknown row");
+        assert_eq!(
+            unknown_row.unattended_state,
+            UnattendedState::Unknown,
+            "a later `no` write must not walk an `unknown` row down to `no`"
+        );
+        journal.shutdown();
+
+        // The raw columns: the tri-state held, and the boolean column — the
+        // yes-absorbing term — kept the `yes` birth's flag too.
+        let conn = Connection::open(&path).expect("raw");
+        let (state_rank, boolean): (i64, i64) = conn
+            .query_row(
+                "SELECT unattended_state, unattended FROM sessions WHERE id = 's.ratchet.yes'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("yes row columns");
+        assert_eq!(state_rank, 2, "the tri-state stayed at yes");
+        assert_eq!(boolean, 1, "the boolean column kept the yes birth");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -163,6 +163,36 @@ pub struct Attention {
     pub at_ms: u64,
 }
 
+/// Whether a session can pass a permission moment with no human answering.
+///
+/// A closed wire enum with three values, because there are three states of
+/// knowledge, not two. The daemon's marker derives from the session's
+/// **delivered** mode, judged by the vocabulary that authored it: the daemon's
+/// own mode dictionaries answer `yes` or `no`, and a mode whose vocabulary is
+/// the provider's own (an ACP agent's `{id, name, description}` modes are
+/// prose) is `unknown` — deriving a permission fact from prose is a defect,
+/// not a solution. `unknown` is a value, never an absence dressed up: it says
+/// "the daemon was not told or cannot establish", which is the one answer a
+/// boolean could not carry, and it is the default a frame without the key
+/// reads as — a session nobody said anything about is not a session a human
+/// is watching.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UnattendedState {
+    /// The daemon knows the session asks: its delivered mode is one the
+    /// daemon itself authored and knows stops at a human.
+    No,
+    /// The daemon cannot establish the answer. The mode's vocabulary is the
+    /// provider's own, or no mode was ever said.
+    #[default]
+    Unknown,
+    /// The daemon knows the session answers its own permission prompts: the
+    /// delivered mode is one its own broker honours, or one the daemon
+    /// authored the knob for (a launch flag, a turn parameter, an extension
+    /// it wrote).
+    Yes,
+}
+
 /// Public session metadata returned by `session_create` and `sessions_list`.
 ///
 /// `workspace_id` is optional in M2 because workspace lookup is not
@@ -253,19 +283,22 @@ pub struct Session {
     /// value from the session's own id, which is the rule the field states.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
-    /// True when this session was created from a profile that approves
-    /// permission prompts in place of the human.
+    /// Whether this session can pass a permission moment with no human
+    /// answering, as [`UnattendedState`] knows it.
     ///
-    /// A fact of the session's **birth**: written once by the creation and
-    /// never re-derived, so a human who later un-ticks that profile, or edits
-    /// its mode, does not change what this child already is — it did run
-    /// unattended. `#[serde(default)]` for the same reason `created_by` has it:
-    /// a client that speaks an older dialect still parses a frame carrying it,
-    /// and a row written before the flag existed reads back as `false`, which
-    /// is the only honest reading (no profile existed to have approved
-    /// anything).
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub unattended: bool,
+    /// A fact of the session's **birth**, derived once from the mode the
+    /// daemon delivered and never re-derived: a human who later un-ticks that
+    /// profile, or edits its mode, does not change what this child already
+    /// is — it did run that way. Written on **every** frame the daemon emits
+    /// for a child; `#[serde(default)]` so a frame that predates the field
+    /// (or a journal row written before the tri-state existed) reads back as
+    /// `unknown` — the honest reading, since nobody has said — and never as
+    /// `no`, which would claim a human is watching when the truth is that
+    /// nobody knows. The old `bool` shape could not carry the third value:
+    /// `default` + `skip_serializing_if` made absent and `false` the same
+    /// value, which is the collapse this field exists to remove.
+    #[serde(default)]
+    pub unattended: UnattendedState,
     /// The labels this session carries: the caller's own free-form map with the
     /// four `devboule.` keys (`created-by`, `depth`, `origin`, `profile`) the
     /// daemon stamped into it.
@@ -320,24 +353,18 @@ pub struct SessionStateSnapshot {
     /// only what the push carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
-    /// Whether this session was born from an auto-accepting profile. Carried on
-    /// every push: the marker is a fact of the row, and a row that arrives
-    /// without it is a row that was not unattended.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub unattended: bool,
+    /// Whether this session can pass a permission moment with no human
+    /// answering (`UnattendedState`). Carried on **every** push, like the
+    /// name and the creator, because a push-only row has only what the push
+    /// carries — and a row that arrives without the marker must not be read
+    /// as `no`, which is what the collapsed `bool` this field replaces made
+    /// every absent row say.
+    #[serde(default)]
+    pub unattended: UnattendedState,
     /// The session's labels, stamped by the daemon and readable by a human.
     /// Carried on every push for the same reason as the name.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub labels: std::collections::BTreeMap<String, String>,
-}
-
-/// `skip_serializing_if` for a flag whose absence means `false`.
-///
-/// The counterpart of `Option::is_none` for a `bool`: a frame that predates the
-/// flag deserializes to `false` through `#[serde(default)]`, so serializing an
-/// explicit `false` would add a key that carries nothing.
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// What the journal can honestly say about a finished transcript.
@@ -1278,7 +1305,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: UnattendedState::No,
             labels: Default::default(),
         };
         let encoded = serde_json::to_value(snapshot).expect("snapshot json");
@@ -1311,7 +1338,7 @@ mod tests {
             created_by: Some("s.parent.1".to_string()),
             profile_id: Some("profile-1".to_string()),
             context_id: Some("s.root.1".to_string()),
-            unattended: true,
+            unattended: UnattendedState::Yes,
             labels: Default::default(),
         };
         let encoded = serde_json::to_value(&snapshot).expect("snapshot json");
@@ -1328,7 +1355,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: UnattendedState::No,
             labels: Default::default(),
             ..snapshot
         };
@@ -1355,7 +1382,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: UnattendedState::No,
             labels: Default::default(),
         };
         let value = serde_json::to_value(&session).expect("json");
@@ -1387,7 +1414,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: UnattendedState::No,
             labels: Default::default(),
         };
         let value = serde_json::to_value(&session).expect("json");
@@ -1429,7 +1456,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: UnattendedState::No,
             labels: Default::default(),
         };
         let mut value = serde_json::to_value(&session).expect("json");
@@ -1464,7 +1491,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: UnattendedState::No,
             labels: Default::default(),
         };
         let encoded = serde_json::to_value(&session).expect("session json");
@@ -1504,7 +1531,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: UnattendedState::No,
             labels: Default::default(),
         };
         let value = serde_json::to_value(&session).expect("json");
@@ -1954,7 +1981,7 @@ mod tests {
                 created_by: None,
                 profile_id: None,
                 context_id: None,
-                unattended: false,
+                unattended: UnattendedState::No,
                 labels: Default::default(),
             }),
         };
@@ -2127,7 +2154,7 @@ mod tests {
             created_by: Some("s.parent.1".to_string()),
             profile_id: Some("profile-1".to_string()),
             context_id: Some("s.root.1".to_string()),
-            unattended: true,
+            unattended: UnattendedState::Yes,
             labels: Default::default(),
         };
         let value = serde_json::to_value(&session).expect("json");
@@ -2144,7 +2171,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: UnattendedState::No,
             labels: Default::default(),
             ..session
         };
@@ -2348,6 +2375,64 @@ mod tests {
             .task_state(true),
             AgentTaskState::Canceled,
             "a transcript whose daemon died did not complete anything"
+        );
+    }
+
+    /// The frozen wire contract (slice-5b app-delegation report §6.3): the
+    /// marker crosses as `unattended: "yes" | "no" | "unknown"`, is a **key on
+    /// every write** (the collapsed `bool` it replaces skipped `false`, which
+    /// made absent and false the same value), and a frame without the key
+    /// reads as `unknown` — the daemon has not said — never as `no`, which
+    /// would claim a human is watching when the truth is that nobody knows.
+    #[test]
+    fn unattended_is_required_on_every_write_and_absent_reads_as_unknown() {
+        let session = Session {
+            id: "s.child.1".to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: SessionKind::Claude,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: None,
+            provider: Some("claude".to_string()),
+            peer_session_id: None,
+            created_at_ms: 1,
+            origin: SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: UnattendedState::Yes,
+            labels: Default::default(),
+        };
+        let value = serde_json::to_value(&session).expect("session json");
+        assert_eq!(
+            value["unattended"], "yes",
+            "the wire words are the frozen contract's, and the key is present on a write"
+        );
+
+        // `no` is written too — a marker that only ever said `yes` would be
+        // the assertion of the negative the contract forbids.
+        let asking = Session {
+            unattended: UnattendedState::No,
+            ..session.clone()
+        };
+        let value = serde_json::to_value(&asking).expect("session json");
+        assert_eq!(value["unattended"], "no", "the key is never skipped");
+
+        let frame = serde_json::json!({
+            "id": "s.old.1",
+            "workspaceId": null,
+            "kind": "terminal",
+            "title": "Terminal",
+            "state": { "type": "live", "generation": 1 },
+            "createdAtMs": 1
+        });
+        let decoded: Session = serde_json::from_value(frame).expect("older frame");
+        assert_eq!(
+            decoded.unattended,
+            UnattendedState::Unknown,
+            "a row the daemon has not said anything about is unknown, never no"
         );
     }
 }

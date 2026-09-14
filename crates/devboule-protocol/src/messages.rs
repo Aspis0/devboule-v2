@@ -1669,7 +1669,7 @@ pub struct SessionEventEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SessionState, SessionStateSnapshot};
+    use crate::{SessionState, SessionStateSnapshot, UnattendedState};
 
     #[test]
     fn the_pairing_code_is_never_debug_formatted() {
@@ -2621,7 +2621,7 @@ mod tests {
                     created_by: None,
                     profile_id: None,
                     context_id: None,
-                    unattended: false,
+                    unattended: UnattendedState::No,
                     labels: Default::default(),
                 }],
             },

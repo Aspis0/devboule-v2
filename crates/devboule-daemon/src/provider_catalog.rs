@@ -203,7 +203,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_LIST_PROFILES_TOOL,
-        "Lists the agent profiles the human enabled for agents, in the human's own order, with the note that says when to use each one. Call this before devboule_create_agent.",
+        "Lists the agent profiles the human enabled for agents, in the human's own order, with the note that says when to use each one. Call this before devboule_create_agent. Each profile's unattended field is a prediction: \"yes\" means a session created from it approves its own permission prompts, \"no\" means it asks the human, \"unknown\" means Devboule cannot promise either way - the child may stop on its first permission card.",
     ),
     (
         MCP_SEND_MESSAGE_TOOL,
@@ -384,16 +384,16 @@ pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
     }
 }
 
-/// The mode ids the daemon itself answers a permission request in, and the one
-/// list of them.
+/// The mode ids the daemon itself answers a permission request in, and the
+/// one list of them.
 ///
 /// Two callers, one list, so the two cannot drift: `PermissionBroker::
 /// auto_answer` grants from this predicate at run time — a session in one of
-/// these modes never asks a human — and [`profile_is_unattended`] reads it at
-/// a child's birth, so the marker a child carries names exactly a mode the
-/// broker would have honoured. The list is provider-agnostic by construction:
-/// these are the ids the daemon speaks itself, and no provider name is
-/// reachable from here.
+/// these modes never asks a human — and `peer_policy::unattended_mode` checks
+/// it first at a child's birth, so the marker a child carries names exactly a
+/// mode the broker would have honoured. The list is provider-agnostic by
+/// construction: these are the ids the daemon speaks itself, and no provider
+/// name is reachable from here.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) fn auto_answered_modes() -> &'static [&'static str] {
     &["bypass", "auto_accept", "bypassPermissions"]
@@ -430,41 +430,6 @@ pub(crate) fn auto_accept_tick_contradicts(
 /// accepted spelling would be a second vocabulary for one meaning.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) const AUTO_ACCEPT_FEATURE: &str = "autoAccept";
-
-/// Whether a child created from this profile approves permission prompts in
-/// place of the human.
-///
-/// Two halves, both **the profile's own fields**, and the answer is the
-/// disjunction because the two say the same thing in two vocabularies:
-///
-/// - the **mode**, when it is one of the three provider-agnostic ids the
-///   daemon itself answers a prompt in ([`mode_is_auto_answered`], the same
-///   predicate `PermissionBroker::auto_answer` grants from at run time). A
-///   provider's own unattended spellings are deliberately **not** read here:
-///   the provider dimension is open by construction, and a child from a
-///   provider the daemon has never heard of must work — a table of today's
-///   names answers nothing about tomorrow's ([`mode_is_unattended`] is that
-///   description, and nothing new may be derived from it);
-/// - the **feature** [`AUTO_ACCEPT_FEATURE`], set to `true`: the human's own
-///   statement that this profile's children approve prompts. It is read here
-///   and nowhere else, and it grants nothing — the daemon grants nothing from a
-///   feature, and a provider client that does not implement the toggle asks for
-///   a permission the human answers. What it buys is that the children created
-///   from such a profile are *described* as unattended, which is the fact the
-///   human ticked for.
-///
-/// Where the marker cannot be justified from the profile's own data it is
-/// **false** and the child asks: a marker we cannot defend is worse than no
-/// marker. The marker describes, it never grants — the permission decision is
-/// the broker's, taken from the mode the session is actually in.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub(crate) fn profile_is_unattended(profile: &devboule_protocol::AgentProfile) -> bool {
-    mode_is_auto_answered(&profile.mode_id)
-        || matches!(
-            profile.features.get(AUTO_ACCEPT_FEATURE),
-            Some(serde_json::Value::Bool(true))
-        )
-}
 
 /// The exact id the catalog publishes for `agent_id`, when it publishes tools
 /// under any spelling of it.
@@ -3190,32 +3155,24 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             );
         }
     }
-    /// The `unattended` marker comes from the profile's own fields and from
-    /// nothing else: one of the three provider-agnostic mode ids the broker
-    /// answers, or the human's own `autoAccept` toggle. A provider's own
-    /// unattended spellings are **not** read — the provider axis is open
-    /// (rev 11), so a child the daemon cannot justify the marker for asks
-    /// instead.
+    /// The `unattended` derivation is keyed on **authorship**, never on a
+    /// provider name, and never on the profile's `autoAccept` tick (R2b): the
+    /// delivered mode is what the birth judges, route A is the daemon's own
+    /// broker list, route B is each client family's own dictionary, and a
+    /// vocabulary the daemon did not author answers `unknown`. The old test
+    /// this one replaces pinned the two-disjunct profile predicate the design
+    /// deleted; the coverage that survives it is re-expressed here against the
+    /// derivation that replaced it.
     #[test]
-    fn a_profile_is_unattended_only_from_its_own_fields() {
-        let profile = |provider: &str, mode: &str, features: serde_json::Value| {
-            devboule_protocol::AgentProfile {
-                id: "profile-1".to_string(),
-                name: "one".to_string(),
-                icon: None,
-                note: String::new(),
-                provider: provider.to_string(),
-                model: "a-model".to_string(),
-                mode_id: mode.to_string(),
-                thinking_option_id: None,
-                features: features.as_object().cloned().unwrap_or_default(),
-                tool_overlay: Vec::new(),
-                enabled_for_agents: true,
-            }
+    fn the_unattended_derivation_is_keyed_on_authorship_and_never_on_the_tick() {
+        use devboule_protocol::UnattendedState;
+        let prediction = |provider: &str, mode: &str| {
+            crate::peer_policy::unattended_mode(super::session_kind_for(provider), Some(mode))
         };
-        // The three ids the daemon itself auto-answers a permission request
-        // in, whatever the provider is called — including a name the catalog
-        // has never heard of.
+        // Route A: the three ids the daemon itself auto-answers a permission
+        // request in, whatever the family — including a provider the catalog
+        // has never heard of (the mechanical test: a user-defined provider's
+        // child is answered without any code path noticing the name).
         for provider in [
             "grok",
             "codex",
@@ -3223,55 +3180,45 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             "a-provider-that-does-not-exist-yet",
         ] {
             for mode in ["bypass", "auto_accept", "bypassPermissions"] {
-                assert!(
-                    super::profile_is_unattended(&profile(provider, mode, serde_json::json!({}))),
-                    "{provider} {mode}"
+                assert_eq!(
+                    prediction(provider, mode),
+                    UnattendedState::Yes,
+                    "{provider} {mode}: the daemon's own broker answers it"
                 );
             }
         }
-        // The human's own toggle, on a mode that would otherwise ask, on a
-        // provider the catalog does not know.
-        assert!(super::profile_is_unattended(&profile(
-            "a-provider-that-does-not-exist-yet",
-            "ask",
-            serde_json::json!({"autoAccept": true})
-        )));
-        // A provider's own unattended spelling is **not** the marker: where
-        // the profile's own data cannot justify it, it is false and the child
-        // asks. The names live on only in `mode_is_unattended`'s description
-        // of today's providers, and nothing is derived from them here.
+        // The human's own toggle is **not an input**: the marker reads the
+        // mode the delivery carries, and a tick can never move the answer.
+        // (A tick over an asking mode is refused at creation by a different
+        // check; the prediction here stays honest about what the mode does.)
+        assert_eq!(
+            prediction("a-provider-that-does-not-exist-yet", "ask"),
+            UnattendedState::Unknown,
+            "a provider-authored vocabulary cannot be established, tick or no tick"
+        );
+        // Route B: the daemon-authored knobs, in the client family's own
+        // dictionary. Codex `full-access` is `approvalPolicy: never` in this
+        // daemon's own turn parameters — the case that proves a route-A-only
+        // boolean under-reports.
+        assert_eq!(prediction("codex", "full-access"), UnattendedState::Yes);
+        // A mode that still asks the human says `no`, from the same tables
+        // that admit the mode at all.
         for (provider, mode) in [
-            ("codex", "full-access"),
+            ("codex", "read-only"),
+            ("codex", "auto"),
             ("codex", "auto-review"),
             ("claude", "acceptEdits"),
             ("claude", "auto"),
+            ("claude", "default"),
+            ("pi", "ask"),
         ] {
-            assert!(
-                !super::profile_is_unattended(&profile(provider, mode, serde_json::json!({}))),
-                "{provider} {mode} must not be marked unattended by name"
+            assert_eq!(
+                prediction(provider, mode),
+                UnattendedState::No,
+                "{provider} {mode} asks, and the daemon authored it"
             );
         }
-        // And nothing else: a mode that still asks the human, a feature whose
-        // name is not this one, and a value that is not `true`.
-        assert!(!super::profile_is_unattended(&profile(
-            "grok",
-            "ask",
-            serde_json::json!({})
-        )));
-        assert!(
-            !super::profile_is_unattended(&profile("codex", "auto", serde_json::json!({}))),
-            "decision 2's exclusion: codex `auto` is on-request plus workspaceWrite"
-        );
-        assert!(!super::profile_is_unattended(&profile(
-            "grok",
-            "ask",
-            serde_json::json!({"autoAccept": "yes"})
-        )));
-        assert!(!super::profile_is_unattended(&profile(
-            "grok",
-            "ask",
-            serde_json::json!({"auto_accept": true})
-        )));
+        assert_eq!(prediction("pi", "bypass"), UnattendedState::Yes);
     }
 
     /// The one list the broker grants from and the birth marker reads: exactly

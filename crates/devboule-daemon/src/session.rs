@@ -123,6 +123,11 @@ mod codex_client;
 mod event_pull;
 #[path = "pi_client.rs"]
 mod pi_client;
+/// Pi's mode dictionary, re-exported for the `unattended` derivation: the
+/// vocabulary lives in the client that writes the permission extension, and
+/// `peer_policy::unattended_mode` reads it from there without this module
+/// growing any judgement of its own.
+pub(crate) use pi_client::unattended_answer as pi_unattended_answer;
 #[path = "session_types.rs"]
 mod session_types;
 #[path = "shell_command.rs"]
@@ -470,11 +475,11 @@ fn session_metadata_for_resume(
         // And so are the creation-from-profile facts (v11): the profile it was
         // started from, the context it belongs to, the marker it was born with
         // and its labels. A resume is not a creation, so none of them is
-        // re-derived here — a child that was unattended comes back unattended
-        // even if its profile has been un-ticked or edited in the meantime.
+        // re-derived here — a child born `yes` comes back `yes` even if its
+        // profile has been un-ticked or edited in the meantime.
         profile_id: record.profile_id,
         context_id: Some(context_id),
-        unattended: record.unattended,
+        unattended: record.unattended_state,
         labels: record.labels,
     }
 }
@@ -1875,11 +1880,6 @@ pub(crate) struct SessionCreateMeta {
     /// (`create-from-profile`). `None` for every create that resolved no
     /// profile, which is the human's provider picker and every terminal.
     pub(crate) profile_id: Option<String>,
-    /// Whether the profile that made this session approves permission prompts
-    /// in place of the human. Decided once, by the creation, and written onto
-    /// the row: un-ticking the profile afterwards does not change it, because
-    /// the child did run that way.
-    pub(crate) unattended: bool,
     /// The labels the creation stamped — the caller's own map plus the daemon's
     /// four `devboule.` keys. Empty for a create that is not an agent's.
     pub(crate) labels: std::collections::BTreeMap<String, String>,
@@ -1920,14 +1920,13 @@ impl SessionCreateMeta {
             overlay,
             origin: Some(origin.clone()),
             cwd,
-            // The four creation-from-profile facts are written by the creation
+            // The creation-from-profile facts are written by the creation
             // that resolved a profile, beside the reservation above: this
             // function is the part of a child's birth that does not depend on
             // which profile made it. `context_id: None` here would be "this
             // child is its own context", which is the truth only until the
             // caller puts the creator's context in.
             profile_id: None,
-            unattended: false,
             labels: std::collections::BTreeMap::new(),
             context_id: None,
         }
@@ -2007,10 +2006,6 @@ pub(crate) struct AgentCreation {
     /// card printed.
     pub(crate) delivery: crate::profile_delivery::ProfileDelivery,
     pub(crate) overlay: crate::provider_catalog::ToolOverlay,
-    /// Whether the profile approves permission prompts in place of the human.
-    /// A fact of the birth: it is written onto the child once and never
-    /// re-derived, so un-ticking the profile later changes nothing.
-    pub(crate) unattended: bool,
     /// The labels the child carries: the caller's own plus the four the daemon
     /// stamped.
     pub(crate) labels: std::collections::BTreeMap<String, String>,
@@ -3350,14 +3345,22 @@ impl SessionRegistry {
         record.created_by = meta.created_by.clone();
         // The creation-from-profile facts, written once, here, and never
         // re-derived from the store afterwards (v11). A create that resolved no
-        // profile — the human's provider picker, a terminal — leaves all four at
+        // profile — the human's provider picker, a terminal — leaves them at
         // their defaults, and a create that did leaves the daemon's own record
         // of it: the profile's **stable id** (a rename later cannot make this
-        // child misreport what it was started from), the marker the profile's
-        // auto-accepting mode earned at birth, the labels the creation stamped,
-        // and the context this session belongs to.
+        // child misreport what it was started from), the labels the creation
+        // stamped, and the context this session belongs to.
         record.profile_id = meta.profile_id.clone();
-        record.unattended = meta.unattended;
+        // The marker, derived here from the **delivered** mode (R2b): this is
+        // the one place the kind and the delivery the child is started on meet
+        // the row, so the marker is the delivery's own judgement — a profile's
+        // feature tick is not an input, and a create that resolved no profile
+        // is judged by its family's own default. ACP vocabularies are the
+        // agent's own prose, so they answer `unknown` unless the daemon's
+        // broker itself answers the delivered id.
+        let unattended_state =
+            crate::peer_policy::unattended_mode(kind.clone(), delivery.mode_id.as_deref());
+        record.unattended_state = unattended_state;
         record.labels = meta.labels.clone();
         // Its own id, unless its creator's context came in with the creation:
         // that inheritance is the whole rule, and it is applied once, here, so
@@ -3389,7 +3392,7 @@ impl SessionRegistry {
             created_by: meta.created_by.clone(),
             profile_id: meta.profile_id.clone(),
             context_id: Some(context_id),
-            unattended: meta.unattended,
+            unattended: unattended_state,
             labels: meta.labels.clone(),
         };
         crate::agent_env::inject_session_env(
@@ -5778,11 +5781,13 @@ impl SessionRegistry {
         meta.reservation = Some(ticket.reservation());
         // The creation-from-profile facts, on the same meta the reservation
         // travels on: one place describes a child's birth. The mode and the
-        // overlay already went through `for_agent_child` above; these four are
-        // what the profile added to the creation, and none of them is re-derived
-        // later — the row keeps what the birth measured.
+        // overlay already went through `for_agent_child` above; these are
+        // what the profile added to the creation, and none of them is
+        // re-derived later — the row keeps what the birth measured. The
+        // marker itself is derived inside `create_with_provider_env` from the
+        // delivery this creation carries, which is the same mode the child
+        // will actually be started in.
         meta.profile_id = Some(creation.profile_id.clone());
-        meta.unattended = creation.unattended;
         meta.labels = creation.labels.clone();
         meta.context_id = creation.context_id.clone();
         // The id the reservation already registered a link for (audit S5B-04):
@@ -11252,7 +11257,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         };
         let runtime = SessionRuntime::from_replay(
@@ -11423,7 +11428,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         };
         let (broker, _) = permission_broker::test_broker();
@@ -13229,7 +13234,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         };
         let runtime = Arc::new(SessionRuntime::with_journal(
@@ -14476,7 +14481,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         };
         let session = PtySession {
@@ -14595,7 +14600,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         };
         let session = PtySession {
@@ -14763,7 +14768,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         };
         RegistryEntry::Transcript(Box::new(TranscriptSession {

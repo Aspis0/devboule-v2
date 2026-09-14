@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     ErrorCode, PermissionOption, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
-    SessionModelEffort, WireError,
+    SessionModelEffort, UnattendedState, WireError,
 };
 use serde_json::Value;
 
@@ -247,6 +247,79 @@ fn remove_permission_extension(path: &Path) {
     }
 }
 
+/// The mode the daemon delivers when a create names none — the same default
+/// `validate_delivery` and the spawn seed read, so the marker and the child
+/// cannot disagree about what an absent mode means.
+pub(crate) const DEFAULT_MODE: &str = "ask";
+
+/// One entry of the daemon's own Pi mode vocabulary, and the answer the
+/// `unattended` marker derives from it.
+///
+/// The vocabulary and the marker's dictionary are **one table**: the mode
+/// list the manifest presents, the ids `validate_delivery` and `set_mode`
+/// admit, and the marker's answers all come from here, so a new Pi mode
+/// cannot be added without an answer — the `unattended` field is required by
+/// the type, and there is no fall-through to be silent in. This is route-B
+/// knowledge and it lives here, in the family that writes the permission
+/// extension, never in a central table of mode names.
+struct PiMode {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    /// `bypass` is route A and route B in one mode: it is one of the
+    /// provider-agnostic ids the daemon's own broker answers, and the
+    /// mechanism is the permission extension **this daemon writes** ceasing
+    /// to gate. `ask` stops at the human for every tool.
+    unattended: UnattendedState,
+}
+
+const PI_MODES: &[PiMode] = &[
+    PiMode {
+        id: "bypass",
+        name: "Bypass",
+        description: "Tools run without asking (Pi's native behaviour)",
+        unattended: UnattendedState::Yes,
+    },
+    PiMode {
+        id: "ask",
+        name: "Always ask",
+        description: "Ask before every tool call",
+        unattended: UnattendedState::No,
+    },
+];
+
+fn mode_is_known(mode_id: &str) -> bool {
+    PI_MODES.iter().any(|mode| mode.id == mode_id)
+}
+
+fn available_mode_views() -> Vec<SessionModeView> {
+    PI_MODES
+        .iter()
+        .map(|mode| SessionModeView {
+            id: mode.id.to_string(),
+            name: mode.name.to_string(),
+            description: Some(mode.description.to_string()),
+        })
+        .collect()
+}
+
+/// The marker's answer for one delivered Pi mode: the table walk above, with
+/// the daemon's own default for a create that named none.
+///
+/// A mode id the table does not carry is a mode the daemon never authored —
+/// it cannot be judged, and the answer is `unknown`, never `no`. The
+/// delivery validation refuses such a mode before a child exists, so a
+/// surviving child should never hit the miss; the miss arm exists so the
+/// derivation itself stays honest if it ever is reached.
+pub(crate) fn unattended_answer(delivered_mode: Option<&str>) -> UnattendedState {
+    let mode_id = delivered_mode.unwrap_or(DEFAULT_MODE);
+    PI_MODES
+        .iter()
+        .find(|mode| mode.id == mode_id)
+        .map(|mode| mode.unattended)
+        .unwrap_or(UnattendedState::Unknown)
+}
+
 /// The creation-time refusals Pi can make before a process exists: the mode
 /// must be one of Pi's own, and an `autoAccept` tick demands a mode that
 /// will not ask the human. `bypass` is the one Pi mode the daemon's own
@@ -260,8 +333,12 @@ fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {
     // overwrite a file" never asked, so a session nobody asked a mode for
     // starts in "ask". The chip is the only way back to "bypass", and it is
     // a deliberate click.
-    let mode_id = delivery.mode_id.as_deref().unwrap_or("ask").to_string();
-    if !matches!(mode_id.as_str(), "bypass" | "ask") {
+    let mode_id = delivery
+        .mode_id
+        .as_deref()
+        .unwrap_or(DEFAULT_MODE)
+        .to_string();
+    if !mode_is_known(&mode_id) {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
             format!("Pi session mode '{mode_id}' is not available."),
@@ -284,7 +361,11 @@ pub(super) fn spawn_process(
     delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
     validate_delivery(&delivery)?;
-    let mode_id = delivery.mode_id.as_deref().unwrap_or("ask").to_string();
+    let mode_id = delivery
+        .mode_id
+        .as_deref()
+        .unwrap_or(DEFAULT_MODE)
+        .to_string();
     let extension_path = permission_extension_path(state.sessions.runtime_dir());
     let args = spawn_args(&command, &extension_path)?;
     if let Err(error) = write_permission_extension(&extension_path) {
@@ -910,20 +991,10 @@ fn manifest_from_catalog(catalog: &PiCatalog, mode_id: &str) -> SessionEvent {
         models,
         modes: Some(SessionModeStateView {
             current_mode_id: mode_id.to_string(),
-            available_modes: vec![
-                SessionModeView {
-                    id: "bypass".to_string(),
-                    name: "Bypass".to_string(),
-                    description: Some(
-                        "Tools run without asking (Pi's native behaviour)".to_string(),
-                    ),
-                },
-                SessionModeView {
-                    id: "ask".to_string(),
-                    name: "Always ask".to_string(),
-                    description: Some("Ask before every tool call".to_string()),
-                },
-            ],
+            // One vocabulary, one table: the manifest presents exactly the
+            // modes [`validate_delivery`], `set_mode` and the `unattended`
+            // marker judge.
+            available_modes: available_mode_views(),
         }),
     }
 }
@@ -1629,7 +1700,7 @@ impl ModelSwitcher for PiSwitcher {
     }
 
     fn set_mode(&self, mode_id: &str) -> Result<(), WireError> {
-        if !matches!(mode_id, "bypass" | "ask") {
+        if !mode_is_known(mode_id) {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 format!("Pi session mode '{mode_id}' is not available."),
@@ -3790,7 +3861,7 @@ process.stdin.on("data", (chunk) => {
                 created_by: None,
                 profile_id: None,
                 context_id: None,
-                unattended: false,
+                unattended: devboule_protocol::UnattendedState::No,
                 labels: Default::default(),
             }
         }

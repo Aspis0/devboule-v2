@@ -150,9 +150,12 @@ mod tests {
         assert!(!delivery.auto_accept);
     }
 
-    /// The tick is the boolean `true` and only that: the same reading
-    /// `profile_is_unattended` makes, so the card, the marker and the
-    /// delivery cannot disagree about what a tick is.
+    /// The tick is the boolean `true` and only that: the same reading the
+    /// delivery's `auto_accept` constraint is validated by, so the card, the
+    /// refusal and the delivery cannot disagree about what a tick is. The
+    /// tick is a constraint on which mode is delivered — it is never an input
+    /// to the `unattended` marker, which the birth derives from the delivered
+    /// mode alone (R2b).
     #[test]
     fn the_tick_is_only_the_boolean_true() {
         assert!(feature_is_true(

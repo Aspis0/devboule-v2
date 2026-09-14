@@ -9,7 +9,8 @@ use std::time::Instant;
 
 use devboule_protocol::{
     ErrorCode, NoticeSeverity, PermissionOption, SessionEvent, SessionModeStateView,
-    SessionModeView, SessionModel, SessionModelEffort, ToolLocation, TurnUsage, WireError,
+    SessionModeView, SessionModel, SessionModelEffort, ToolLocation, TurnUsage, UnattendedState,
+    WireError,
 };
 use serde_json::Value;
 
@@ -426,11 +427,39 @@ fn manifest_from_catalog(catalog: &CodexCatalog, mode_id: &str) -> SessionEvent 
     }
 }
 
+/// The mode the daemon delivers when a create names none — the same default
+/// the turn parameters are seeded from, so the marker and the child cannot
+/// disagree about what an absent mode means.
+pub(crate) const DEFAULT_MODE: &str = "auto";
+
+/// One entry of the daemon's own Codex mode vocabulary, and the answer the
+/// `unattended` marker derives from it.
+///
+/// The vocabulary and the marker's dictionary are **one table**, the same
+/// table [`validate_mode`] admits ids from: a mode Codex does not have cannot
+/// be validated in, and a mode added here cannot exist without an answer —
+/// the `unattended` field is required by the type, so there is no
+/// fall-through to be silent in. This is route-B knowledge and it lives here,
+/// in the family that owns `approvalPolicy`, never in a central table of
+/// mode names.
+const CODEX_MODES: &[(&str, UnattendedState)] = &[
+    ("read-only", UnattendedState::No),
+    ("auto", UnattendedState::No),
+    // `auto-review` routes eligible approvals through a model reviewer, and a
+    // model reviewer may still hand a moment back to the human: the marker
+    // promises "no human needed", which this mode does not. (The preset
+    // refusal list's separate `mode_is_unattended` counts it, and the two
+    // lists are never merged.)
+    ("auto-review", UnattendedState::No),
+    // The daemon's own knob, spelled in its own turn parameters:
+    // `approvalPolicy: never`. Codex asks nobody, which the broker's
+    // route-A ids alone would never say — the case that proves two values do
+    // not suffice.
+    ("full-access", UnattendedState::Yes),
+];
+
 pub(crate) fn validate_mode(mode_id: &str) -> Result<(), WireError> {
-    if matches!(
-        mode_id,
-        "read-only" | "auto" | "auto-review" | "full-access"
-    ) {
+    if CODEX_MODES.iter().any(|(id, _)| *id == mode_id) {
         Ok(())
     } else {
         Err(WireError::new(
@@ -438,6 +467,23 @@ pub(crate) fn validate_mode(mode_id: &str) -> Result<(), WireError> {
             format!("Codex session mode '{mode_id}' is not available."),
         ))
     }
+}
+
+/// The marker's answer for one delivered Codex mode: the table walk above,
+/// with the daemon's own default for a create that named none.
+///
+/// A mode id the table does not carry is a mode the daemon never authored —
+/// it cannot be judged, and the answer is `unknown`, never `no`. The
+/// delivery validation refuses such a mode before a child exists, so a
+/// surviving child should never hit the miss; the miss arm exists so the
+/// derivation itself stays honest if it ever is reached.
+pub(crate) fn unattended_answer(delivered_mode: Option<&str>) -> UnattendedState {
+    let mode_id = delivered_mode.unwrap_or(DEFAULT_MODE);
+    CODEX_MODES
+        .iter()
+        .find(|(id, _)| *id == mode_id)
+        .map(|(_, answer)| *answer)
+        .unwrap_or(UnattendedState::Unknown)
 }
 
 pub(crate) fn mode_values(mode_id: &str) -> serde_json::Map<String, Value> {

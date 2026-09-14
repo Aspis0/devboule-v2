@@ -118,7 +118,7 @@ pub use session::{
     PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor, Session,
     SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
     SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState, SessionStateSnapshot,
-    SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage,
+    SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage, UnattendedState,
 };
 
 /// Current protocol dialect spoken by this crate.

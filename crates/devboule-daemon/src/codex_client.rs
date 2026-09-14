@@ -166,7 +166,10 @@ fn mode_answers_own_prompts(mode_id: &str) -> bool {
 /// mode must be one of Codex's own, and an `autoAccept` tick demands a mode
 /// that will not ask the human.
 fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireError> {
-    let mode_id = delivery.mode_id.as_deref().unwrap_or("auto");
+    let mode_id = delivery
+        .mode_id
+        .as_deref()
+        .unwrap_or(crate::codex_view::DEFAULT_MODE);
     validate_mode(mode_id)?;
     if delivery.auto_accept && !mode_answers_own_prompts(mode_id) {
         return Err(WireError::new(
@@ -210,7 +213,11 @@ pub(super) fn spawn_process(
     delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
     validate_delivery(&delivery)?;
-    let mode_id = delivery.mode_id.as_deref().unwrap_or("auto").to_string();
+    let mode_id = delivery
+        .mode_id
+        .as_deref()
+        .unwrap_or(crate::codex_view::DEFAULT_MODE)
+        .to_string();
 
     let mut process = Command::new(&command.program);
     process

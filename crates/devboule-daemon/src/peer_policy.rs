@@ -256,6 +256,59 @@ pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
     }
 }
 
+/// The `unattended` marker for one session: the honest answer to "can this
+/// session pass a permission moment with no human answering", derived from
+/// the mode the daemon **delivered** (`DESIGN-what-unattended-means.md`).
+///
+/// This is the sibling of [`prompt_skipping_mode`] — in the same home, keyed
+/// the same way, and **never merged with it**: a mode can skip prompts for a
+/// peer and still be un-establishable for this marker. The two differ in
+/// shape where their knowledge differs:
+///
+/// - **Route A — the daemon answers itself.** A delivered mode carrying one
+///   of the provider-agnostic ids `provider_catalog::mode_is_auto_answered`
+///   lists is answered by the daemon's own broker, whatever family the
+///   session belongs to; the shared helper below is the one list, and every
+///   arm's dictionary sits behind it.
+/// - **Route B — the daemon authored the knob.** For Claude, Codex and Pi
+///   the dictionary is the client family's own mode table
+///   (`claude_view::unattended_answer`, `codex_view::unattended_answer`,
+///   `pi_client::unattended_answer`) — the vocabulary the daemon delivers
+///   and therefore knows. A mode id those tables do not carry is a mode the
+///   daemon never authored, and the answer is `unknown`, never `no`: an
+///   unauthored id is an absence of knowledge, and reading it as "a human is
+///   watching" is the lie in its most dangerous direction.
+/// - **Cannot establish.** An ACP agent's modes are `{id, name, description}`
+///   prose the agent authored; no table here judges them. Outside the three
+///   route-A ids the answer is `unknown`, so a user-defined provider in a
+///   config file — a child the daemon has never heard a provider name for —
+///   is answered without any code path noticing the provider at all. The
+///   same arm covers what nobody said: an absent or empty delivered mode is
+///   `unknown` for a family the daemon does not set a mode for, and a
+///   terminal — which has no permission mechanism at all, and never had one
+///   to be told about — carries `no`, exactly what the collapsed `bool` this
+///   marker replaces recorded for it.
+pub fn unattended_mode(
+    kind: SessionKind,
+    delivered_mode: Option<&str>,
+) -> devboule_protocol::UnattendedState {
+    use devboule_protocol::UnattendedState;
+    let delivered_mode = delivered_mode.filter(|mode| !mode.is_empty());
+    if delivered_mode.is_some_and(crate::provider_catalog::mode_is_auto_answered) {
+        return UnattendedState::Yes;
+    }
+    match kind {
+        SessionKind::Claude => crate::claude_view::unattended_answer(delivered_mode),
+        SessionKind::Codex => crate::codex_view::unattended_answer(delivered_mode),
+        // `pi_client` is `session`'s submodule; the dictionary is re-exported
+        // beside the module declarations there, the way `session_runtime`'s
+        // types are.
+        SessionKind::Pi => crate::session::pi_unattended_answer(delivered_mode),
+        SessionKind::Acp => UnattendedState::Unknown,
+        SessionKind::Terminal => UnattendedState::No,
+    }
+}
+
 /// §8b A5/R3, the whole rule: why a paired device may not choose `mode_id` for
 /// a `kind` session, or `None` when it may.
 ///
@@ -694,6 +747,82 @@ pub(crate) mod tests {
         assert!(!prompt_skipping_mode(SessionKind::Pi, "default"));
         assert!(!prompt_skipping_mode(SessionKind::Acp, "any-agent-mode"));
         assert!(!prompt_skipping_mode(SessionKind::Terminal, "anything"));
+    }
+
+    /// The `unattended` derivation's three arms, each reachable (R2b): route
+    /// A (the broker's own ids), route B (each family's own dictionary), and
+    /// the arm the marker exists for — a vocabulary the daemon did not author
+    /// answers `unknown`, never `no`, and so does what nobody said.
+    #[test]
+    fn the_unattended_derivation_has_three_reachable_arms() {
+        use devboule_protocol::UnattendedState;
+        // Route A: the shared helper, for every family, however the mode
+        // reached the child.
+        for kind in [SessionKind::Acp, SessionKind::Claude, SessionKind::Pi] {
+            assert_eq!(
+                unattended_mode(kind.clone(), Some("bypass")),
+                UnattendedState::Yes,
+                "{kind:?}: the daemon's own broker answers this id"
+            );
+        }
+        // Route B: Codex `full-access` is the daemon's own knob
+        // (`approvalPolicy: never`) while the broker stays silent — the case
+        // that proves a two-value, route-A-only marker under-reports.
+        assert_eq!(
+            unattended_mode(SessionKind::Codex, Some("full-access")),
+            UnattendedState::Yes,
+            "route B: the daemon authored the knob and it never asks"
+        );
+        // No: daemon-authored modes that stop at the human, including each
+        // family's own default when the create named no mode at all.
+        assert_eq!(
+            unattended_mode(SessionKind::Claude, None),
+            UnattendedState::No
+        );
+        assert_eq!(
+            unattended_mode(SessionKind::Codex, None),
+            UnattendedState::No
+        );
+        assert_eq!(unattended_mode(SessionKind::Pi, None), UnattendedState::No);
+        assert_eq!(
+            unattended_mode(SessionKind::Claude, Some("acceptEdits")),
+            UnattendedState::No
+        );
+        assert_eq!(
+            unattended_mode(SessionKind::Codex, Some("auto-review")),
+            UnattendedState::No
+        );
+        // Unknown: a mode id the daemon did not author. The ACP family is
+        // made of them; a miss in a daemon family's own table is the same
+        // answer, because an unauthored id is an absence of knowledge and
+        // reading it as `no` would claim a human is watching.
+        assert_eq!(
+            unattended_mode(SessionKind::Acp, Some("agent-authored-mode")),
+            UnattendedState::Unknown
+        );
+        assert_eq!(
+            unattended_mode(SessionKind::Claude, Some("sudo-not-a-mode")),
+            UnattendedState::Unknown,
+            "a dictionary miss is unknown, never no"
+        );
+        // Unknown: what nobody said. An absent mode for a family the daemon
+        // does not set a mode for, and the empty string, are absences of
+        // knowledge — the third arm must be reachable from silence too.
+        assert_eq!(
+            unattended_mode(SessionKind::Acp, None),
+            UnattendedState::Unknown
+        );
+        assert_eq!(
+            unattended_mode(SessionKind::Acp, Some("")),
+            UnattendedState::Unknown
+        );
+        // A terminal has no permission mechanism at all, and never had one to
+        // be told about: `no`, exactly what the collapsed bool recorded for
+        // it, and the roster renders nothing.
+        assert_eq!(
+            unattended_mode(SessionKind::Terminal, None),
+            UnattendedState::No
+        );
     }
 
     /// §8b A5/R3, the ACP half: ACP mode ids belong to the agent, so a paired

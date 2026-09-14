@@ -2972,7 +2972,9 @@ mod tests {
                 created_by: None,
                 profile_id: None,
                 context_id: None,
-                unattended: false,
+                // The marker this fixture is silent about: the notice path
+                // reads nothing from it, and `unknown` says exactly that.
+                unattended_state: devboule_protocol::UnattendedState::Unknown,
                 labels: Default::default(),
             })
             .expect("session row");

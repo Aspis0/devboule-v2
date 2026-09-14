@@ -1278,7 +1278,6 @@ struct ResolvedProfile {
     /// The provider's feature values, exactly as saved.
     features: serde_json::Map<String, Value>,
     overlay: crate::provider_catalog::ToolOverlay,
-    unattended: bool,
 }
 
 /// Resolve the profile a creation named, out of the profiles the human ticked.
@@ -1337,16 +1336,27 @@ fn resolve_profile(
         // has already refused a name outside the broker's table, so this can
         // only ever remove a tool the broker serves.
         overlay: crate::provider_catalog::ToolOverlay::from_profile_names(&profile.tool_overlay),
-        // Derived from the profile's own fields, once, at the moment of the
-        // call: `provider_catalog::profile_is_unattended`.
-        unattended: crate::provider_catalog::profile_is_unattended(profile),
     })
+}
+
+/// The per-profile **prediction** the list and the card serve (F6): the same
+/// tri-state the child's birth will derive, judged before the child exists
+/// from the profile's mode and the family that mode would be delivered in.
+/// No session exists yet, so nothing here is observed — it is the delivery's
+/// own dictionary answering for the mode the profile names.
+fn predicted_unattended(provider: &str, mode_id: &str) -> devboule_protocol::UnattendedState {
+    crate::peer_policy::unattended_mode(
+        crate::provider_catalog::session_kind_for(provider),
+        Some(mode_id),
+    )
 }
 
 /// One `devboule_list_profiles` call (`create-from-profile`).
 ///
 /// The ticked profiles, in the human's stored order and never sorted, as
-/// `{name, note, provider, model, mode, unattended}`. Nothing else is served:
+/// `{name, note, provider, model, mode, unattended}`, the last a tri-state
+/// **prediction** (`"yes" | "no" | "unknown"`) whose meaning the tool's
+/// description spells out for the caller. Nothing else is served:
 /// not the id (a caller names a profile by its name, and the id is the daemon's
 /// key for the session it records), not a profile the human did not tick, and
 /// not the standing instructions — those are not a profile's business to read.
@@ -1367,7 +1377,12 @@ fn list_profiles(store: &crate::agent_profiles::AgentProfilesStore, id: &Value) 
                 "provider": profile.provider,
                 "model": profile.model,
                 "mode": profile.mode_id,
-                "unattended": crate::provider_catalog::profile_is_unattended(profile),
+                // The prediction, not a promise: the same tri-state the
+                // child's birth will derive, judged from the mode and the
+                // family that mode would be delivered in. `unknown` is a
+                // value here — an agent picking a profile *because it will
+                // not ask* must get `unknown`, never a false `no`.
+                "unattended": predicted_unattended(&profile.provider, &profile.mode_id),
             })
         })
         .collect();
@@ -1596,7 +1611,6 @@ fn create_agent(
             &profile.features,
         ),
         overlay: profile.overlay.clone(),
-        unattended: profile.unattended,
         labels,
         context_id: Some(context_id),
         depth,
@@ -1644,6 +1658,21 @@ fn tool_error(id: &Value, message: &str) -> Value {
             "isError": true,
         },
     })
+}
+
+/// The card's auto-accept line, worded per the tri-state's own rule — never
+/// assert the negative, and never assert the affirmative of the unknown: a
+/// mode whose vocabulary is the agent's own is "cannot establish", not "No",
+/// because the child may yet run without asking. One function so the wording
+/// and its test cannot disagree.
+fn auto_accept_line(answer: devboule_protocol::UnattendedState, mode_id: &str) -> String {
+    match answer {
+        devboule_protocol::UnattendedState::Yes => format!("Yes (mode {mode_id})"),
+        devboule_protocol::UnattendedState::No => format!("No — mode {mode_id} asks the human"),
+        devboule_protocol::UnattendedState::Unknown => format!(
+            "Cannot establish — mode {mode_id} belongs to the agent's own vocabulary, so whether it asks is not something Devboule can check"
+        ),
+    }
 }
 
 /// The creation card (`S5` decisions 4 and 5; `create-from-profile`).
@@ -1698,17 +1727,14 @@ fn creation_card(
             uninterpreted.join(", ")
         )
     };
-    // The card's auto-accept line reads the mode, and only the mode: the
-    // broker refuses a tick over an asking mode before this card is raised,
-    // so on every card a human can actually approve, the tick and the mode
-    // already agree, and "Yes" names the mode that does the answering (the
-    // R2a audit's F7). `profile_is_unattended` keeps the tick half for the
-    // marker; here it is the mode that can be approved into existence.
-    let auto = if crate::provider_catalog::mode_is_auto_answered(&profile.mode) {
-        format!("Yes (mode {})", profile.mode)
-    } else {
-        "No".to_string()
-    };
+    // The card's auto-accept line reads the mode, and only the mode, through
+    // the same prediction the birth will apply: the tick over an asking mode
+    // is refused before this card is raised (the R2a audit's F7), so on every
+    // card carrying a tick, "Yes" names the mode that does the answering.
+    let auto = auto_accept_line(
+        predicted_unattended(&profile.provider, &profile.mode),
+        &profile.mode,
+    );
     let thinking = profile.thinking_option_id.as_deref().unwrap_or("none");
     // The caller's own labels, and only those: the daemon's four `devboule.`
     // keys are stamped at the creation and would tell the human nothing they are
@@ -3217,6 +3243,26 @@ mod tests {
         serde_json::json!({ "profiles": profiles, "standingInstructions": standing })
     }
 
+    /// The card's three auto-accept wordings, one per arm of the tri-state:
+    /// the affirmative names the mode that answers, the negative names the
+    /// mode that asks, and the unknown asserts neither direction.
+    #[test]
+    fn the_card_auto_accept_line_speaks_all_three_answers() {
+        use devboule_protocol::UnattendedState;
+        assert_eq!(
+            auto_accept_line(UnattendedState::Yes, "auto_accept"),
+            "Yes (mode auto_accept)"
+        );
+        assert_eq!(
+            auto_accept_line(UnattendedState::No, "default"),
+            "No — mode default asks the human"
+        );
+        assert_eq!(
+            auto_accept_line(UnattendedState::Unknown, "default"),
+            "Cannot establish — mode default belongs to the agent's own vocabulary, so whether it asks is not something Devboule can check",
+        );
+    }
+
     /// No profile enabled at all: every creation is refused, and the refusal
     /// names **no** profile — an agent must not learn what exists but is
     /// forbidden.
@@ -3420,8 +3466,12 @@ mod tests {
         );
         assert!(!resolved.overlay.allows("devboule_send_message"));
         assert!(resolved.overlay.allows("devboule_list_agents"));
-        assert!(
-            resolved.unattended,
+        // The marker is no longer a field on the resolution: the birth derives
+        // it from the delivery. The same prediction the list serves says what
+        // this profile's mode would earn.
+        assert_eq!(
+            predicted_unattended(&resolved.provider, &resolved.mode),
+            devboule_protocol::UnattendedState::Yes,
             "the mode auto-answers permission prompts"
         );
     }
@@ -3648,7 +3698,7 @@ mod tests {
             created_by: Some("s.parent.1".to_string()),
             profile_id: Some("profile-worker".to_string()),
             context_id: Some("s.parent.1".to_string()),
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         };
         let result = created_result(&json!(7), &session);
@@ -3718,10 +3768,14 @@ mod tests {
         assert_eq!(profiles[0]["provider"], "claude");
         assert_eq!(profiles[0]["model"], "the model the human saved");
         assert_eq!(profiles[0]["mode"], "default");
-        assert_eq!(profiles[0]["unattended"], false);
+        assert_eq!(profiles[0]["unattended"], "no");
         assert_eq!(
-            profiles[1]["unattended"], true,
-            "the mode and the feature that approve prompts in place of the human"
+            profiles[1]["unattended"], "yes",
+            "the mode auto-answers, so creating from it yields a session that will not ask"
+        );
+        assert_eq!(
+            profiles[0]["provider"], "claude",
+            "fixture sanity: the first profile is the daemon-authored asking mode"
         );
         assert!(
             !listed["result"]["structuredContent"]

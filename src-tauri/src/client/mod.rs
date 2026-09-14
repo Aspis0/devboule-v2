@@ -1825,7 +1825,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         }]);
         registry.reattach_all(&new_client);
@@ -1880,7 +1880,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         }]);
         registry.reattach_all(&new_client);
@@ -2118,7 +2118,7 @@ mod tests {
             created_by: None,
             profile_id: None,
             context_id: None,
-            unattended: false,
+            unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         }
     }

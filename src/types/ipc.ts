@@ -345,6 +345,17 @@ export interface PromptAttachment {
   data: string;
 }
 
+/**
+ * Whether a session can pass a permission moment with no human answering (the
+ * closed wire enum the daemon derives from the session's **delivered** mode).
+ * A mode whose vocabulary is the provider's own — an ACP agent's modes are
+ * three free strings, prose the daemon did not author — is `"unknown"`: the
+ * daemon was not told, and reading that as `"no"` would claim a human is
+ * watching when nobody knows. `"unknown"` renders as its own present marker,
+ * never as nothing and never as `"no"`.
+ */
+export type UnattendedState = "yes" | "no" | "unknown";
+
 export interface Session {
   id: Id;
   workspaceId: Id | null;
@@ -420,12 +431,12 @@ export interface Session {
    */
   contextId?: Id;
   /**
-   * True when this session was born from a profile that approves permission
-   * prompts in place of the human (protocol `Session.unattended`). A fact of the
-   * birth: un-ticking or editing that profile afterwards does not change it.
-   * Absent means not unattended.
+   * Whether this session can pass a permission moment with no human answering
+   * (protocol `Session.unattended`). A fact of the birth: un-ticking or editing
+   * that profile afterwards does not change it, and the daemon ratchets it and
+   * never downgrades it.
    */
-  unattended?: boolean;
+  unattended?: UnattendedState;
   /**
    * The session's labels: the caller's own map plus the four `devboule.` keys
    * the daemon stamps. For display, and for nothing else — no code decides
@@ -566,8 +577,8 @@ export interface SessionStateSnapshot {
    * on every push, like the name and the creator.
    */
   contextId?: Id;
-  /** Whether this session was born from an auto-accepting profile. */
-  unattended?: boolean;
+  /** Whether this session can pass a permission moment with no human answering. */
+  unattended?: UnattendedState;
   /** The session's labels, stamped by the daemon. */
   labels?: Record<string, string>;
 }
