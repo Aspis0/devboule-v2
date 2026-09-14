@@ -146,6 +146,22 @@ export function parseAgentPermissionRequest(text: string): AgentPermissionReques
       }
     }
     excerptState = end === lines.length ? "unterminated" : "closed";
+    if (excerptState === "closed") {
+      // The grammar has exactly one quoted block — the daemon composes a
+      // single `child-said:` opener line. An opener AFTER the closer means a
+      // header value swallowed a newline and planted a complete second block
+      // (the header's fields are documented single daemon-composed lines; a
+      // `displayName` carrying `\nchild-said:\nend child-said` is re-audit
+      // F14, and its quoted block then ends where a header value said it
+      // did, dropping the real one silently). That frame is malformed, and a
+      // malformed frame renders as the raw text it arrived as rather than
+      // being half-interpreted. A bare extra closer is deliberately NOT this
+      // rule: the block keeps the words before it, and preventing that is
+      // the daemon escaper's job, not a guess this side can make.
+      for (let at = end + 1; at < lines.length; at += 1) {
+        if (lines[at] === EXCERPT_OPEN) return null;
+      }
+    }
     // Without the closer the block runs to the envelope body's end; the
     // body's own trailing newline before the closing tag is the frame's, not
     // the child's, so it does not join the excerpt.

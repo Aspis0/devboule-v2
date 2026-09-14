@@ -14,8 +14,10 @@ import type {
   Session,
   SessionKind,
   SessionStateSnapshot,
+  UnattendedState,
 } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
+import { boundByGraphemes } from "../../lib/graphemeBound";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
@@ -270,7 +272,9 @@ export function sessionCreatorBadge(
   const createdBy = session.createdBy?.trim();
   if (!createdBy) return null;
   const name = creatorNames.get(createdBy);
-  return `created by ${name ?? createdBy.slice(0, 8)}`;
+  // The id fallback bounds by grapheme clusters, like the permission card's
+  // answerer head — a unit-based slice halves an astral scalar (re-audit F12).
+  return `created by ${name ?? boundByGraphemes(createdBy, 8)}`;
 }
 
 /** What a row's delegation pill says, and how loudly. */
@@ -337,6 +341,63 @@ function delegationStateRow(state: string, answered: number): DelegationBadge | 
 }
 
 /**
+ * The tri-state marker's pill, one row per wire value of `UnattendedState` —
+ * the walked-table rule the delegation ledger's state already follows, applied
+ * to the field one column over on the same push. Adding a union member without
+ * a rendering decision is a compile error; a value from a newer or misbehaving
+ * daemon (`"unspecified"`, a fifth spelling) is keyed by its raw string and
+ * falls to a visible arm, never out of a `===` chain into the silence that
+ * reads as "a person answers for this row".
+ */
+const UNATTENDED_PILLS: Record<UnattendedState, DelegationBadge | null> = {
+  // `no` is silent on purpose: the daemon said somebody must ask, and the
+  // active badge (or the plain row) is the truth.
+  no: null,
+  yes: { tone: "unattended", label: UNATTENDED_BADGE_LABEL },
+  unknown: { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
+};
+
+/** The row an out-of-union tri-state takes: present, softer, never benign. */
+const UNATTENDED_UNREADABLE_PILL: DelegationBadge = {
+  tone: "unknown",
+  label: UNATTENDED_UNKNOWN_BADGE_LABEL,
+};
+
+function unattendedPill(value: string): DelegationBadge | null {
+  return Object.hasOwn(UNATTENDED_PILLS, value)
+    ? UNATTENDED_PILLS[value as UnattendedState]
+    : UNATTENDED_UNREADABLE_PILL;
+}
+
+/**
+ * How much warning each tri-state value carries, for the ratchet below: the
+ * marker is a fact of the session's birth, never re-derived and never
+ * downgraded — the daemon ratchets it the same way, and the downgrade
+ * direction is the one that removes a warning. A value this build cannot read
+ * ranks with `unknown`: it may be a warning, and nothing readable may erase it.
+ */
+const UNATTENDED_RANK: Record<UnattendedState, number> = { no: 0, unknown: 1, yes: 2 };
+
+function unattendedRank(value: UnattendedState): number {
+  return Object.hasOwn(UNATTENDED_RANK, value) ? UNATTENDED_RANK[value] : 1;
+}
+
+/**
+ * Merges one tri-state observation into the row's known one. Absence lets the
+ * known value stand; a readable value wins only when it warns at least as
+ * loudly as the one it would replace — so `no` can never erase `unknown`
+ * (re-audit F8) any more than it could erase `yes`.
+ */
+function ratchetUnattended(
+  previous: UnattendedState | undefined,
+  next: UnattendedState | undefined,
+): UnattendedState | undefined {
+  if (next === undefined) return previous;
+  if (previous === undefined) return next;
+  return unattendedRank(next) >= unattendedRank(previous) ? next : previous;
+}
+
+/**
  * The delegation pills for a roster row, in render order; empty for every row
  * that owes none.
  *
@@ -374,28 +435,29 @@ export function sessionDelegationBadges(
 ): DelegationBadge[] {
   const badges: DelegationBadge[] = [];
   const delegation = session.delegation;
+  // The pill the row's tri-state earns. Absent renders nothing (nothing has
+  // said otherwise about a row this app holds); "no" is silent on purpose;
+  // "unknown" AND any value this build cannot read take the softer present
+  // marker — an out-of-union value is not a "no", and falling into that
+  // silence is the collapse the walked table exists to prevent.
+  const pill = session.unattended === undefined ? null : unattendedPill(session.unattended);
   if (delegation === undefined) {
     // Not described by a push yet — but the list-carried tri-state is still
     // a birth fact this row owes its marker for: yes is the loud pill's row,
-    // unknown is the softer present one. Never "no": that value stays silent.
-    if (session.unattended === "yes") {
-      badges.push({ tone: "unattended", label: UNATTENDED_BADGE_LABEL });
-    } else if (session.unattended === "unknown") {
-      badges.push({ tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL });
-    }
+    // unknown (and unreadable) the softer present one. Never "no": that
+    // value stays silent.
+    if (pill !== null) badges.push(pill);
     return badges;
   }
   const stateBadge = delegationStateRow(delegation.state, delegation.answered);
-  if (session.unattended === "yes" && delegation.state !== "unattended") {
+  if (pill?.tone === "unattended" && delegation.state !== "unattended") {
     // The birth fact renders the loud pill in the ledger state's place — the
     // pill appears once, and never as two pills for one row.
-    badges.push({ tone: "unattended", label: UNATTENDED_BADGE_LABEL });
+    badges.push(pill);
   } else if (stateBadge !== null) {
     badges.push(stateBadge);
   }
-  if (session.unattended === "unknown") {
-    badges.push({ tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL });
-  }
+  if (pill?.tone === "unknown") badges.push(pill);
   return badges;
 }
 
@@ -454,6 +516,33 @@ export function sessionDelegationTakeBack(session: Pick<Session, "delegation">):
  * roster first — that is a wire change, not this function.
  */
 
+/**
+ * Merges one listed row with what earlier pushes and lists already said about
+ * the same session. The list is authoritative for what it carries (title,
+ * state, elapsed, attention, an explicit ledger) and stands in for nothing it
+ * omits — the same rules `applySnapshot` applies to a pushed roster, because
+ * `refresh()` erases rows just as a push replaces them (re-audit F5: the
+ * known-child mint existed only on the push path, so every session exit and
+ * daemon reconnect re-rendered a child as a human-started row until the next
+ * push). Creator, origin and the tri-state are identity and birth facts, not
+ * list state: an omitting list lets the row's known values stand, and a known
+ * child no source has described still mints the unknown ledger.
+ */
+function carrySession(listed: Session, previous: Session | undefined): Session {
+  const createdBy = listed.createdBy ?? previous?.createdBy;
+  const knownChild = createdBy !== undefined || previous?.delegation !== undefined;
+  return {
+    ...listed,
+    createdBy,
+    origin: listed.origin ?? previous?.origin,
+    delegation:
+      listed.delegation ??
+      previous?.delegation ??
+      (knownChild ? { answered: 0, state: "unknown" as const } : undefined),
+    unattended: ratchetUnattended(previous?.unattended, listed.unattended),
+  };
+}
+
 export function createWorkspaceSessionController(
   source: WorkspaceSessionSource = DEFAULT_SOURCE,
 ): WorkspaceSessionController {
@@ -493,7 +582,13 @@ export function createWorkspaceSessionController(
     const generation = ++refreshGeneration;
     publish({ ...state, loading: true, error: null });
     try {
-      const listed = stripSessions(workspaceSessions(await source.list()));
+      // The list merges with what the app already knows (see `carrySession`);
+      // it never publishes rows verbatim, or every refresh would strip the
+      // ledger, creator and birth facts earlier pushes landed.
+      const known = new Map(state.sessions.map((session) => [session.id, session]));
+      const listed = stripSessions(
+        workspaceSessions(await source.list()).map((row) => carrySession(row, known.get(row.id))),
+      );
       if (generation !== refreshGeneration) return;
       publish({
         ...state,
@@ -550,11 +645,12 @@ export function createWorkspaceSessionController(
         origin: snapshot.origin ?? previous?.origin,
         // The unattended marker is a fact of the session's birth, never
         // re-derived and never downgraded (the daemon ratchets it the same
-        // way). Absence lets the row's known value stand, and so does a push
-        // claiming "no" over a known "yes": the downgrade direction is the
-        // one that removes a warning, and a birth fact does not un-happen.
-        unattended:
-          previous?.unattended === "yes" ? "yes" : (snapshot.unattended ?? previous?.unattended),
+        // way). Absence lets the row's known value stand, and so does any
+        // push warning less loudly than the value it would replace — a push
+        // claiming "no" over a known "unknown" or "yes" changes nothing:
+        // the downgrade direction is the one that removes a warning, and a
+        // birth fact does not un-happen.
+        unattended: ratchetUnattended(previous?.unattended, snapshot.unattended),
       };
       return previous
         ? { ...previous, ...carried }

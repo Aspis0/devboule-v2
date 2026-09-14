@@ -36,6 +36,7 @@ import {
 import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
+import { boundByGraphemes } from "../../lib/graphemeBound";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 
@@ -152,9 +153,57 @@ const SUBAGENT_INDENT_PX = 16;
  */
 const PERMISSION_HEADER_FIELD_LIMIT = 200;
 
+// Bounded by grapheme clusters, not code units: a unit-based pre-check
+// appends an ellipsis to a 200-unit astral name whose 100 scalars were
+// already inside the bound — a truncation that did not happen — and a
+// unit-based cut splits a scalar in half (re-audit F12).
 function boundPermissionHeaderField(value: string): string {
-  if (value.length <= PERMISSION_HEADER_FIELD_LIMIT) return value;
-  return `${Array.from(value).slice(0, PERMISSION_HEADER_FIELD_LIMIT).join("")}…`;
+  return boundByGraphemes(value, PERMISSION_HEADER_FIELD_LIMIT);
+}
+
+/**
+ * The excerpt's rendering decision, one row per value of the parser's closed
+ * `excerptState` vocabulary — the walked-table rule this slice applied to
+ * `delegation.state` and the setting's `source`, applied to the vocabulary
+ * this slice itself introduced (re-audit F7: two `===` tests made the
+ * fallthrough the benign `"closed"` render, and a new member without a
+ * rendering decision was neither a compile error nor a failing test). A value
+ * outside the vocabulary at runtime — a mixed bundle, a refactor that missed a
+ * row — takes the visible unknown-state arm: the words that did arrive still
+ * show, with a note that their state could not be established, never the
+ * silent render that claims the fence closed.
+ */
+type KnownExcerptState = Extract<AgentChatItem, { role: "permission_request" }>["excerptState"];
+const EXCERPT_STATE_RENDER: Record<KnownExcerptState, { block: boolean; note: string | null }> = {
+  closed: { block: true, note: null },
+  unterminated: {
+    block: true,
+    note: "the closing fence never arrived — this block runs to the end of the frame",
+  },
+  // Re-audit F3: `"absent"` rendered `null` — no block, no note, no sentence
+  // — while the frame's header fields still parsed, so a frame whose opener
+  // was not byte-exact lost the child's words with no marker at all. The
+  // absence of quoted words is its own visible fact: the frame arrived, the
+  // words did not.
+  absent: {
+    block: false,
+    note: "this frame carried no quoted block — no `child-said:` opener arrived, so none of the child's words are shown",
+  },
+};
+const UNKNOWN_EXCERPT_STATE_RENDER: { block: boolean; note: string | null } = {
+  block: true,
+  note: "the quoted block's state was not recognised — these are the words the frame carried, unbounded",
+};
+
+/** Exported for the out-of-union test: the walk is the render decision, and
+ * the test casts a value TypeScript cannot predict through it. */
+export function excerptRenderFor(state: KnownExcerptState): {
+  block: boolean;
+  note: string | null;
+} {
+  return Object.hasOwn(EXCERPT_STATE_RENDER, state)
+    ? EXCERPT_STATE_RENDER[state]
+    : UNKNOWN_EXCERPT_STATE_RENDER;
 }
 
 function hasParentToolUseId(item: AgentChatItem): boolean {
@@ -524,28 +573,37 @@ function renderItem(item: AgentChatItem) {
           {cardId} — it answers through its own tool; the card itself is on the child&apos;s
           session.
         </div>
-        {item.excerptState === "absent" ? null : (
-          <>
-            {/* The child's own words — a quoted block with its own styling and
-                its own label, never the sentence styling above: the styling is
-                the claim "the daemon said this", and nothing here was
-                verified. This quoting is a mitigation, not a fix: a hostile
-                child can still write instructions into the excerpt; the block
-                only keeps the reader able to tell whose words they are. The
-                text renders verbatim — never re-truncated, never un-escaped —
-                through React's default escaping, which keeps every byte
-                inert. */}
+        {(() => {
+          const excerptRender = excerptRenderFor(item.excerptState);
+          if (!excerptRender.block) {
+            // No quoted block: the note stands alone — a blockquote here
+            // would style absence as if words were quoted inside it.
+            return excerptRender.note === null ? null : (
+              <p className="workspace-chat-child-said-note" role="note">
+                {excerptRender.note}
+              </p>
+            );
+          }
+          // The child's own words — a quoted block with its own styling and
+          // its own label, never the sentence styling above: the styling is
+          // the claim "the daemon said this", and nothing here was
+          // verified. This quoting is a mitigation, not a fix: a hostile
+          // child can still write instructions into the excerpt; the block
+          // only keeps the reader able to tell whose words they are. The
+          // text renders verbatim — never re-truncated, never un-escaped —
+          // through React's default escaping, which keeps every byte inert.
+          return (
             <figure className="workspace-chat-child-said">
               <figcaption>the child&apos;s own words</figcaption>
               <blockquote>{item.excerpt}</blockquote>
-              {item.excerptState === "unterminated" ? (
+              {excerptRender.note === null ? null : (
                 <p className="workspace-chat-child-said-note" role="note">
-                  the closing fence never arrived — this block runs to the end of the frame
+                  {excerptRender.note}
                 </p>
-              ) : null}
+              )}
             </figure>
-          </>
-        )}
+          );
+        })()}
       </div>
     );
   }

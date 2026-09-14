@@ -4531,6 +4531,60 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     expect(text).toContain("cannot name");
   });
 
+  it("names the unknown while the stored answer is in flight — the empty switch is not an off (re-audit F10)", async () => {
+    vi.mocked(delegationGet).mockImplementation(() => new Promise(() => undefined));
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    // The switch renders empty and locked — and the empty state is named,
+    // never left to read as a definite off.
+    expect(theSwitch().checked).toBe(false);
+    expect(theSwitch().disabled).toBe(true);
+    const status = container.querySelector(".agent-delegation-source");
+    expect(status?.textContent).toBe("Reading the stored answer…");
+    expect(status?.textContent).not.toBe("Off");
+    expect(status?.textContent).not.toBe("Never configured");
+  });
+
+  it("names the unknown after a failed load too — permanent, not styled into an off (re-audit F10)", async () => {
+    vi.mocked(delegationGet).mockRejectedValue(new Error("the daemon is unreachable"));
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    expect(theSwitch().disabled).toBe(true);
+    const status = container.querySelector(".agent-delegation-source")?.textContent ?? "";
+    expect(status).toContain("could not be read");
+    expect(status).toContain("not an off");
+    // The way back stays on the panel beside the named state.
+    expect(container.querySelector(".settings-device-action")?.textContent).toBe("Retry");
+  });
+
+  it("reports a reply that contradicts itself instead of dressing it up (re-audit F11)", async () => {
+    // `quarantined` reads off with a sane daemon; a reply pairing it with
+    // `enabled: true` is inconsistent, and the render must name the
+    // inconsistency rather than print "delegation reads off" beside a
+    // checked switch — a sentence inventing a coherence the reply lacks.
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: true, source: "quarantined" });
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    expect(theSwitch().checked).toBe(true);
+    const status = container.querySelector(".agent-delegation-source")?.textContent ?? "";
+    expect(status).toContain("contradicts itself");
+    expect(status).not.toContain("reads off");
+  });
+
+  it("reports the contradiction for never-configured beside an on switch too", async () => {
+    vi.mocked(delegationGet).mockResolvedValue({ enabled: true, source: "default" });
+    mountDelegation(DELEGATION_DAEMON);
+    await settle();
+
+    expect(theSwitch().checked).toBe(true);
+    const status = container.querySelector(".agent-delegation-source")?.textContent ?? "";
+    expect(status).toContain("contradicts itself");
+    expect(status).not.toBe("Never configured");
+  });
+
   it("the source sentence follows a successful write instead of contradicting the switch", async () => {
     vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "quarantined" });
     mountDelegation(DELEGATION_DAEMON);

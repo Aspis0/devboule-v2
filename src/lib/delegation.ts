@@ -66,7 +66,9 @@ export interface DelegationController {
   /**
    * The one write path. Both entry points — the Agents panel's switch and a
    * roster row's take-back — call this and nothing else: the write machinery
-   * (optimistic swap, sequence guard, revert) exists here once.
+   * (optimistic swap, sequence guard, revert) exists here once. Resolves
+   * true when the daemon accepted the write — including one a newer write
+   * superseded, which the daemon still holds — and false when it refused it.
    */
   setEnabled: (next: boolean) => Promise<boolean>;
 }
@@ -168,13 +170,11 @@ export function createDelegationController(
     writesInFlight += 1;
     enabledRef = next;
     publish({ ...state, enabled: next, error: null });
-    let reloadReply = false;
+    let accepted = false;
     try {
       await source.set(next);
-      // Confirmed. An older write settling here owns nothing: the newest
-      // sequence keeps the UI.
-      reloadReply = thisSeq === seq;
-      return reloadReply;
+      accepted = true;
+      return true;
     } catch (cause) {
       // A newer write superseded this one: its optimistic value stands, this
       // rejection reports nothing.
@@ -189,23 +189,30 @@ export function createDelegationController(
       return false;
     } finally {
       writesInFlight -= 1;
-      if (reloadReply) {
-        // The write was accepted, so the stored answer is now this write:
-        // the source sentence the last fetch produced is stale the moment
-        // the daemon takes it, and leaving it standing lets the panel say
-        // "delegation reads off" beside a switch it just turned on. Adopt the
-        // write as the current reply — the daemon's own `file` source is its
-        // name for a persisted, deliberately-written answer — and drop any
-        // stale refusal sentence with it.
+      if (accepted) {
+        // Two decisions the old code folded into one boolean, now separate:
+        //
+        // WHAT THE DAEMON HOLDS — an acceptance is a fact about the daemon
+        // and is stamped whenever it happens, even though a newer write owns
+        // the UI. Skipping the stamp when superseded is what let a later
+        // refusal revert onto a value the daemon no longer holds: an
+        // accepted ON forgotten, then a refused OFF "restoring" the panel to
+        // OFF over a daemon holding ON — the switch reading "off" while
+        // agents answer their children's permission cards.
+        //
+        // WHO OWNS THE UI — only the newest write publishes the full panel
+        // state (reply, error cleared). A superseded acceptance still moves
+        // the displayed value onto the daemon's fact — a consent surface
+        // never shows LESS authority than is live — but leaves any standing
+        // refusal sentence alone: the newest write's settlement is free to
+        // overwrite it, accepted or reverted onto the stamp above.
         const reply: DelegationReply = { enabled: next, source: "file" };
         confirmedRef = next;
+        enabledRef = next;
         if (thisSeq === seq) {
-          publish({
-            reply,
-            enabled: next,
-            loadFailed: false,
-            error: null,
-          });
+          publish({ reply, enabled: next, loadFailed: false, error: null });
+        } else {
+          publish({ ...state, reply, enabled: next, loadFailed: false });
         }
       }
     }

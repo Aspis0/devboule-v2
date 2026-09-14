@@ -127,9 +127,194 @@ describe("delegation controller", () => {
     releaseGet();
     await Promise.all([fetch, write]);
     expect(controller.getState().enabled).toBe(true);
-    // The raced refresh's reply was refused; the standing reply is still the
-    // one the first load adopted (source "file"), not the racer's.
+    // The racer's reply never adopted: the standing reply's source is the
+    // write's own minted "file", not the racer's "default". (Source alone
+    // cannot tell the first load's reply from the write's mint — both are
+    // "file"; the enabled assertion above is what pins whose reply stands.)
     expect(controller.getState().reply?.source).toBe("file");
+  });
+
+  it("a fetch that started while a write was in flight adopts nothing, sequence untouched", async () => {
+    // The guard's two halves catch two different races. A write issued BEFORE
+    // the fetch bumps the sequence before the fetch reads it, so the sequence
+    // half alone never fires here: the write was in flight when the fetch
+    // started, and whether the reply predates or postdates the write is
+    // unknowable. Only the in-flight half can refuse this reply.
+    let releaseGet!: () => void;
+    const gate = new Promise<DelegationReply>((resolve) => {
+      releaseGet = () => resolve({ enabled: false, source: "default" });
+    });
+    let call = 0;
+    const controller = createDelegationController({
+      get: async () => (call++ === 0 ? { enabled: false, source: "file" } : gate),
+      set: async () => undefined,
+    });
+    await controller.load();
+    const write = controller.setEnabled(true);
+    const fetch = controller.load();
+    releaseGet();
+    await Promise.all([fetch, write]);
+    // The write confirmed ON; the racer's OFF never adopts over it — not the
+    // switch, and not the stored reply the next refusal would revert onto.
+    expect(controller.getState().enabled).toBe(true);
+    expect(controller.getState().reply).toEqual({ enabled: true, source: "file" });
+  });
+
+  it("an accepted write that a newer write superseded still stamps the confirmation", async () => {
+    // F1 (re-audit): `confirmedRef` is a fact about the DAEMON — it must move
+    // whenever the daemon accepts, even when a newer write owns the UI by the
+    // time the acceptance lands. OFF confirmed by the load; write A flips ON
+    // and the daemon TAKES it; write B flips OFF and the daemon refuses B. A
+    // refusal that reverts onto the load's OFF shows a switch reading "off"
+    // over a daemon holding ON — agents keep answering their children's
+    // cards while the panel says nobody does.
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = () => resolve();
+    });
+    const calls: boolean[] = [];
+    const controller = createDelegationController({
+      get: async () => ({ enabled: false, source: "file" }),
+      set: async (enabled) => {
+        calls.push(enabled);
+        if (calls.length === 1) {
+          await gateA; // A accepted.
+          return;
+        }
+        throw new Error("store B refused"); // B refused.
+      },
+    });
+    await controller.load();
+    const first = controller.setEnabled(true);
+    const second = controller.setEnabled(false);
+    releaseA();
+    await Promise.all([first, second]);
+    expect(calls).toEqual([true, false]);
+    // The daemon accepted ON and refused OFF: ON is what the switch shows.
+    expect(controller.getState().enabled).toBe(true);
+    expect(controller.getState().reply).toEqual({ enabled: true, source: "file" });
+    expect(controller.getState().error).toBe("store B refused");
+  });
+
+  it("an accepted write surfaces even when the newer refusal settled before it", async () => {
+    // The other settle order of the same interleaving: B's refusal lands
+    // first — the panel reverts onto the load's OFF — and THEN A's acceptance
+    // arrives. The acceptance is still a fact about the daemon, and a consent
+    // surface never shows less authority than is live.
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = () => resolve();
+    });
+    let releaseB!: () => void;
+    const gateB = new Promise<void>((resolve) => {
+      releaseB = () => resolve();
+    });
+    const calls: boolean[] = [];
+    const controller = createDelegationController({
+      get: async () => ({ enabled: false, source: "file" }),
+      set: async (enabled) => {
+        calls.push(enabled);
+        if (calls.length === 1) {
+          await gateA; // A accepted.
+          return;
+        }
+        await gateB;
+        throw new Error("store B refused"); // B refused.
+      },
+    });
+    await controller.load();
+    const first = controller.setEnabled(true);
+    const second = controller.setEnabled(false);
+    releaseA();
+    await first;
+    // A's acceptance landed while B still flew: the daemon holds ON, so the
+    // switch shows ON, not B's optimistic OFF.
+    expect(controller.getState().enabled).toBe(true);
+    releaseB();
+    await second;
+    // B's refusal reverts onto the stamped confirmation — ON — not onto OFF.
+    expect(controller.getState().enabled).toBe(true);
+    expect(controller.getState().reply).toEqual({ enabled: true, source: "file" });
+    // B's refusal is still the newest refused write, so its sentence stands.
+    expect(controller.getState().error).toBe("store B refused");
+  });
+
+  it("two rapid writes both accepted settle on the newer value when responses land in order", async () => {
+    // The direction the fix must NOT move: the daemon takes A's ON and then
+    // B's OFF, and the responses land in that order — so OFF stands. The
+    // older write's acceptance must not ride over the newer write's answer.
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = () => resolve();
+    });
+    let releaseB!: () => void;
+    const gateB = new Promise<void>((resolve) => {
+      releaseB = () => resolve();
+    });
+    const calls: boolean[] = [];
+    const controller = createDelegationController({
+      get: async () => ({ enabled: false, source: "file" }),
+      set: async (enabled) => {
+        calls.push(enabled);
+        if (calls.length === 1) {
+          await gateA; // A accepted first.
+          return;
+        }
+        await gateB; // B accepted second.
+        return;
+      },
+    });
+    await controller.load();
+    const first = controller.setEnabled(true);
+    const second = controller.setEnabled(false);
+    releaseA();
+    await first;
+    releaseB();
+    await second;
+    expect(calls).toEqual([true, false]);
+    expect(controller.getState().enabled).toBe(false);
+    expect(controller.getState().reply).toEqual({ enabled: false, source: "file" });
+    expect(controller.getState().error).toBeNull();
+  });
+
+  it("an older acceptance landing after a newer one shows what the daemon took last", async () => {
+    // The app cannot see the daemon's processing order — only which
+    // acceptance landed last. The responses here deliver B first, A second,
+    // so the daemon ends holding A's ON; the panel follows that fact instead
+    // of freezing on the write that was issued last. A consent surface
+    // erring under unknowable order errs toward the authority that is live.
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = () => resolve();
+    });
+    let releaseB!: () => void;
+    const gateB = new Promise<void>((resolve) => {
+      releaseB = () => resolve();
+    });
+    const calls: boolean[] = [];
+    const controller = createDelegationController({
+      get: async () => ({ enabled: false, source: "file" }),
+      set: async (enabled) => {
+        calls.push(enabled);
+        if (calls.length === 1) {
+          await gateA; // A accepted, response delivered second.
+          return;
+        }
+        await gateB; // B accepted, response delivered first.
+        return;
+      },
+    });
+    await controller.load();
+    const first = controller.setEnabled(true);
+    const second = controller.setEnabled(false);
+    releaseB();
+    await second;
+    expect(controller.getState().enabled).toBe(false);
+    releaseA();
+    await first;
+    expect(controller.getState().enabled).toBe(true);
+    expect(controller.getState().reply).toEqual({ enabled: true, source: "file" });
+    expect(controller.getState().error).toBeNull();
   });
 
   it("set does nothing from a guess: no write before the store has answered", async () => {

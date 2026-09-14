@@ -1842,6 +1842,59 @@ describe("Workspace sessions", () => {
     expect(sessionPermissionRespond).not.toHaveBeenCalled();
   });
 
+  it("surfaces a waiting card behind a resolved one instead of hiding it (re-audit F6)", async () => {
+    // Two cards queued for one session; the head is resolved from outside.
+    // The head-find handed the panel's slot to the RESOLVED card — whose
+    // only control is Clear — so the waiting card's Allow/Deny were
+    // unreachable and nothing said a second card existed. The slot belongs
+    // to the card that needs the human; the resolved one keeps its place
+    // behind it and takes the slot back once the waiting one is answered.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    const emitB = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-b]");
+    if (emitA === null || emitB === null) throw new Error("permission emitters did not render");
+    await act(async () => emitA.click());
+    await act(async () => emitB.click());
+    expect(container.querySelector(".permission-card")?.textContent).toContain("cmd.exe");
+
+    const resolved = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved]",
+    );
+    if (resolved === null) throw new Error("resolved emitter did not render");
+    await act(async () => resolved.click());
+
+    const waiting = container.querySelector(".permission-card");
+    if (waiting === null) throw new Error("waiting card did not render behind the resolved one");
+    expect(waiting.textContent).toContain("ping.exe");
+    expect(waiting.textContent).not.toContain("cmd.exe");
+    const allow = waiting.querySelector<HTMLButtonElement>(".permission-card-primary-action");
+    if (allow === null) throw new Error("waiting card's allow control did not render");
+    expect(allow.disabled).toBe(false);
+
+    // Answering B hands the slot back to the resolved A: it never vanished,
+    // and Clear — not Allow — is its control now.
+    await act(async () => allow.click());
+    await act(async () => undefined);
+    const answered = container.querySelector(".permission-card");
+    expect(answered).not.toBeNull();
+    expect(answered?.textContent).toContain("cmd.exe");
+    expect(answered?.querySelector(".permission-card-label")?.textContent).toBe(
+      "Answered — by whom and with what outcome, the daemon did not say",
+    );
+    expect(answered?.querySelector(".permission-card-dismiss-action")?.textContent).toBe("Clear");
+    expect(answered?.querySelector(".permission-card-primary-action")).toBeNull();
+  });
+
   it("keeps the other session's card when two sessions share a toolCallId", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       acpSession("session-a", "agent a"),

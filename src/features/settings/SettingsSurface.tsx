@@ -1222,17 +1222,36 @@ const DELEGATION_UNAVAILABLE_TEXT =
   "This daemon is older than this app: it does not advertise the permission_delegation capability, so it cannot keep the switch this section is for. Nothing was sent to it.";
 
 /**
- * The three sentences the stored answer's `source` renders as. They are
- * pairwise distinct on purpose: `default` is "never configured" — a human
- * said nothing yet; `quarantined` is neither that nor "off" — a human DID
+ * The sentence for a reply that disagrees with itself: `enabled: true` beside
+ * a source that can only read off. The daemon's vocabulary has no such pair,
+ * so this renders a fact the app cannot smooth over — the reply said both.
+ */
+const DELEGATION_CONTRADICTION_LABEL =
+  "The daemon's answer contradicts itself — the switch reads on, from a source that can only be off";
+
+/**
+ * The sentences the stored answer's `source` renders as, one row per value and
+ * an arm for each switch reading: `off` is the sentence when the daemon's
+ * answer agrees with an off switch, `on` the one beside an on switch. They are
+ * pairwise distinct on purpose: `default` is "never configured" — a human said
+ * nothing yet; `quarantined` is neither that nor "off" — a human DID
  * configure, and the file came back damaged; `file` is the deliberate case.
  * Collapsing any two is the absent-into-none defect wearing a settings label
- * (cross-check §2, the eighth catch).
+ * (cross-check §2, the eighth catch). The `on` arms of `default` and
+ * `quarantined` are the contradiction sentence (re-audit F11): an inconsistent
+ * reply is reported as inconsistent, never dressed up as a coherent sentence
+ * that contradicts the checked switch beside it.
  */
-export const DELEGATION_SOURCE_LABELS: Record<DelegationReply["source"], string> = {
-  file: "Off",
-  default: "Never configured",
-  quarantined: "Settings file was damaged — delegation reads off",
+export const DELEGATION_SOURCE_LABELS: Record<
+  DelegationReply["source"],
+  { off: string; on: string }
+> = {
+  file: { off: "Off", on: "On" },
+  default: { off: "Never configured", on: DELEGATION_CONTRADICTION_LABEL },
+  quarantined: {
+    off: "Settings file was damaged — delegation reads off",
+    on: DELEGATION_CONTRADICTION_LABEL,
+  },
 };
 
 /**
@@ -1247,15 +1266,31 @@ const DELEGATION_SOURCE_UNKNOWN_LABEL =
   "Delegation's stored answer came from a source this app cannot name";
 
 /**
+ * The status line while the stored answer has not landed. The switch holds no
+ * value yet — it must not sit there reading as a definite off with no
+ * sentence saying otherwise (re-audit F10: the benign reading of an unknown
+ * value).
+ */
+const DELEGATION_PENDING_LABEL = "Reading the stored answer…";
+
+/**
+ * The status line when the stored answer never arrived. A failed load is
+ * terminal: the switch stays empty, and the empty state is named — never
+ * styled into a definite off.
+ */
+const DELEGATION_UNREADABLE_LABEL =
+  "The stored answer could not be read — the switch holds no value, not an off";
+
+/**
  * Walks the closed source vocabulary by its raw string, so a value from a
  * newer daemon takes the visible unknown sentence instead of falling out of
  * the record into a blank render. Absent (an incomplete reply) never reaches
  * here: the controller refuses it at the wire boundary and the section shows
  * the failure instead.
  */
-function delegationSourceSentence(source: string): string {
+function delegationSourceSentence(source: string, enabled: boolean): string {
   return Object.hasOwn(DELEGATION_SOURCE_LABELS, source)
-    ? DELEGATION_SOURCE_LABELS[source as DelegationReply["source"]]
+    ? DELEGATION_SOURCE_LABELS[source as DelegationReply["source"]][enabled ? "on" : "off"]
     : DELEGATION_SOURCE_UNKNOWN_LABEL;
 }
 
@@ -1300,12 +1335,21 @@ export function DelegationSetting({
   }
 
   const { enabled, reply, loadFailed, error, retryLoad } = delegation;
-  const sourceLabel =
-    reply === null
-      ? null
-      : reply.source === "file" && enabled === true
-        ? "On"
-        : delegationSourceSentence(reply.source);
+  // The status line, from a walked table — never a definite sentence beside a
+  // switch whose value is not known. While the answer has not landed, and
+  // after a load has failed for good, the switch holds NO value (re-audit
+  // F10): unchecked-and-disabled is not allowed to sit there reading as a
+  // definite off with nothing saying otherwise, so the unknown state has its
+  // own present sentence. A reply that somehow arrived without a value is
+  // refused by the controller, so no arm claims off on silence.
+  const statusLine =
+    enabled === null
+      ? loadFailed
+        ? DELEGATION_UNREADABLE_LABEL
+        : DELEGATION_PENDING_LABEL
+      : reply === null
+        ? null
+        : delegationSourceSentence(reply.source, enabled);
 
   return (
     <section className="agent-delegation" aria-label="Answer for created children">
@@ -1332,9 +1376,9 @@ export function DelegationSetting({
           </span>
         </span>
       </label>
-      {sourceLabel !== null ? (
+      {statusLine !== null ? (
         <p className="device-field-hint agent-delegation-source" role="status">
-          {sourceLabel}
+          {statusLine}
         </p>
       ) : null}
       {error === null ? null : (

@@ -520,8 +520,19 @@ export function Workspace({
   const takeBack = useCallback(() => {
     void delegation.setEnabled(false);
   }, [delegation]);
+  // The panel's slot is for the card that needs the human: the first
+  // UNRESOLVED card of the session. A resolved card at the head must not
+  // hide a waiting one behind it (re-audit F6) — a resolved card offers only
+  // Clear, so find-on-head made the waiting card's Allow/Deny unreachable
+  // and said nothing about a second card existing. When nothing waits, the
+  // resolved card stays on screen: it never vanishes on the strength of the
+  // resolution event alone, and Clear is its removal path.
   const selectedPermission =
-    permissionQueue.find((item) => item.sessionId === selectedSessionId) ?? null;
+    permissionQueue.find(
+      (item) => item.sessionId === selectedSessionId && item.resolution === undefined,
+    ) ??
+    permissionQueue.find((item) => item.sessionId === selectedSessionId) ??
+    null;
   const sessionStatusText = sessionsError
     ? sessionsError
     : sessionCreating

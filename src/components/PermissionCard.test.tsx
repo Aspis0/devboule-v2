@@ -22,6 +22,7 @@ import {
   permissionOriginLabel,
   permissionSubject,
   resolutionOutcome,
+  shortenAnswererId,
   shortenDeviceId,
   shortenPermissionTarget,
 } from "./PermissionCard";
@@ -113,6 +114,25 @@ describe("shortenPermissionTarget", () => {
     expect(shortened).toContain("…");
     expect(shortened.startsWith("C:/Users/gualt")).toBe(true);
     expect(shortened.endsWith("DesignSurface.tsx")).toBe(true);
+  });
+});
+
+describe("shortenAnswererId", () => {
+  it("bounds the id by grapheme clusters, not code units (re-audit F12)", () => {
+    // Eight emoji are 16 UTF-16 code units — over a unit-based pre-check's
+    // limit while being exactly the limit in clusters. The unit version cut
+    // half of each pair away and appended an ellipsis; the cluster version
+    // returns the id whole, because it fits.
+    const eight = "🚀".repeat(8);
+    expect(shortenAnswererId(eight)).toBe(eight);
+    // Nine emoji (18 units) genuinely overflow: the cut takes WHOLE clusters,
+    // so no astral scalar is halved into a lone surrogate rendering U+FFFD.
+    expect(shortenAnswererId("🚀".repeat(9))).toBe(`${eight}…`);
+  });
+
+  it("leaves a plain ASCII id that fits, as before", () => {
+    expect(shortenAnswererId("s.parent")).toBe("s.parent");
+    expect(shortenAnswererId("s.creator-session.42")).toBe("s.creato…");
   });
 });
 

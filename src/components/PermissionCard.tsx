@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { boundByGraphemes } from "../lib/graphemeBound";
 import { reasonFromCause, sessionPermissionRespond } from "../lib/tauri";
 import type { DaemonConnectionState, PermissionRequest, SessionOrigin } from "../types/ipc";
 import "./PermissionCard.css";
@@ -100,11 +101,11 @@ export function resolutionOutcome(
 /** How much of an answerer's session id the attribution line shows. */
 export const PERMISSION_ANSWERER_ID_LIMIT = 8;
 
-/** The head of an answerer's session id, the roster's creator-badge rule. */
+/** The head of an answerer's session id, the roster's creator-badge rule.
+ * Bounded by grapheme clusters — a unit-based cut halves an astral scalar
+ * and renders U+FFFD (re-audit F12). */
 export function shortenAnswererId(answeredBy: string): string {
-  return answeredBy.length <= PERMISSION_ANSWERER_ID_LIMIT
-    ? answeredBy
-    : `${answeredBy.slice(0, PERMISSION_ANSWERER_ID_LIMIT)}…`;
+  return boundByGraphemes(answeredBy, PERMISSION_ANSWERER_ID_LIMIT);
 }
 
 /**

@@ -126,7 +126,7 @@ import {
   sessionSetModel,
 } from "../../lib/tauri";
 import { setPreferredEffort } from "../../lib/modelPrefs";
-import { AgentChatSurface } from "./AgentChatSurface";
+import { AgentChatSurface, excerptRenderFor } from "./AgentChatSurface";
 
 const LIVE_OBSERVED: SessionState = { type: "live", generation: 1 };
 
@@ -2009,5 +2009,77 @@ describe("creator permission-request message", () => {
     expect(item?.querySelector("blockquote")?.textContent).toBe(
       "please allow the build step\nit only writes to dist/",
     );
+  });
+
+  it("says so on screen when the frame carried no quoted block at all (re-audit F3)", async () => {
+    // A frame whose opener is not byte-exact (here: one padded space) parses
+    // its daemon header fields fine but has no excerpt block. The old arm
+    // rendered `null` — no block, no note, no sentence — so the child's
+    // words vanished with no marker while the card named them a sender.
+    // The absence is its own visible fact.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+    const openerless = envelope.replace(
+      "child-said:\nplease allow the build step\nit only writes to dist/\nend child-said",
+      " child-said:\nplease allow the build step\nit only writes to dist/\nend child-said",
+    );
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_user_message", messageId: "u-7", text: openerless });
+    });
+
+    const item = container.querySelector("[data-testid='agent-permission-request']");
+    expect(item).not.toBeNull();
+    // The visible note, where nothing used to render.
+    const note = item?.querySelector(".workspace-chat-child-said-note");
+    expect(note).not.toBeNull();
+    expect(note?.textContent).toContain("no quoted block");
+    // No blockquote: nothing may style absence as if words were quoted in it.
+    expect(item?.querySelector("blockquote")).toBeNull();
+    // The daemon's sentence still rendered — and nothing pretends words came.
+    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain("worker one");
+    expect(item?.querySelector(".workspace-chat-child-said")).toBeNull();
+  });
+
+  it("does not append an ellipsis to an astral name the bound never truncated (re-audit F12)", async () => {
+    // 100 emoji are exactly 200 UTF-16 code units — the old unit-based
+    // pre-check took the bound branch and appended `…` after removing
+    // nothing, a truncation claim that was false. The cluster bound leaves
+    // the whole name standing.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+    const astralName = "🚀".repeat(100);
+    const bounded = envelope.replace("displayName: worker one", `displayName: ${astralName}`);
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_user_message", messageId: "u-8", text: bounded });
+    });
+
+    const item = container.querySelector("[data-testid='agent-permission-request']");
+    const copy = item?.querySelector(".workspace-chat-copy");
+    expect(copy?.textContent).toContain(astralName);
+    expect(copy?.textContent).not.toContain("…");
+    // The whole value still travels on the title.
+    expect(copy?.getAttribute("title")).toContain(astralName);
+  });
+
+  it("walks the excerptState table: an out-of-union state takes the visible unknown arm (re-audit F7)", () => {
+    // The state is app-internal, but the walk is the render decision, so the
+    // cast builds the value a refactor or mixed bundle could actually pass.
+    // The old two-`===` render made this fall through to the benign
+    // "closed" styling — the state meaning "the fence closed and all is
+    // well".
+    const corrupted = "shattered" as unknown as Parameters<typeof excerptRenderFor>[0];
+    const render = excerptRenderFor(corrupted);
+    expect(render.block).toBe(true);
+    expect(render.note).toContain("not recognised");
+    // And every real member keeps its row.
+    expect(excerptRenderFor("closed")).toEqual({ block: true, note: null });
+    expect(excerptRenderFor("unterminated")?.note).toContain("closing fence never arrived");
+    expect(excerptRenderFor("absent")?.block).toBe(false);
   });
 });
