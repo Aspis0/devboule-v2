@@ -4493,6 +4493,66 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     );
   });
 
+  it("re-reads when the daemon restarts — a cached answer may not outlive its daemon", async () => {
+    // Audit 3 F2: the setting was read at mount only, so a daemon restart
+    // that reloads `delegation.json` — the writer the app's own `source:
+    // "file"` sentence names — left the panel stale forever. Here the poll's
+    // next answer reports a fresh daemon instance with NO disconnected gap;
+    // the effect must re-ask on the instance's identity alone.
+    vi.useFakeTimers();
+    try {
+      const statusFor = (instanceId: string): DaemonStatus => ({
+        state: "connected",
+        pid: 1,
+        instanceId,
+        protocolVersion: 4,
+        clients: 1,
+        capabilities: DELEGATION_DAEMON,
+        message: null,
+      });
+      const answers: DaemonStatus[] = [statusFor("instance-a"), statusFor("instance-b")];
+      vi.mocked(daemonStatus).mockImplementation(() => {
+        const next = answers.shift();
+        return Promise.resolve(next ?? statusFor("instance-b"));
+      });
+      vi.mocked(delegationGet)
+        .mockResolvedValueOnce({ enabled: false, source: "file" })
+        .mockResolvedValueOnce({ enabled: true, source: "file" });
+
+      root = createRoot(container);
+      const controller = createDelegationController({
+        get: delegationGet as unknown as () => Promise<{
+          enabled: boolean;
+          source: "file" | "default" | "quarantined";
+        }>,
+        set: delegationSet as unknown as (enabled: boolean) => Promise<void>,
+      });
+      await act(async () => {
+        root!.render(<DelegationSetting controller={controller} />);
+      });
+      await act(async () => undefined);
+
+      // The first instance answered: off, and the human's corrective control
+      // (the switch) reads that value.
+      expect(delegationGet).toHaveBeenCalledTimes(1);
+      expect(theSwitch().checked).toBe(false);
+
+      // The restart: a new instance, same capabilities, no gap observed.
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      await act(async () => undefined);
+
+      // The panel followed its new daemon: it read the fresh answer (on — a
+      // human flipped delegation.json while the old daemon was down) instead
+      // of keeping the dead instance's word.
+      expect(delegationGet).toHaveBeenCalledTimes(2);
+      expect(theSwitch().checked).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("states the blast radius and the global scope - the copy without which there is no consent", async () => {
     vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "default" });
     mountDelegation(DELEGATION_DAEMON);
@@ -4531,14 +4591,22 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     expect(text).toContain("cannot name");
   });
 
-  it("names the unknown while the stored answer is in flight — the empty switch is not an off (re-audit F10)", async () => {
+  it("names the unknown while the stored answer is in flight — and the CONTROL looks unknown, not off", async () => {
     vi.mocked(delegationGet).mockImplementation(() => new Promise(() => undefined));
     mountDelegation(DELEGATION_DAEMON);
     await settle();
 
-    // The switch renders empty and locked — and the empty state is named,
-    // never left to read as a definite off.
+    // The control itself must look unknown (audit 3 F5 — the re-audit's fix
+    // corrected the sentence beside the control but left the switch reading
+    // as a definite off): the dash paints `indeterminate`, the aria state is
+    // mixed, and the unknown treatment marks the control it locks. What the
+    // old assertion pinned — `checked === false` — is still true (a
+    // dash-painting checkbox must not claim a checkedness), but it is no
+    // longer the state a human reads.
     expect(theSwitch().checked).toBe(false);
+    expect(theSwitch().indeterminate).toBe(true);
+    expect(theSwitch().getAttribute("aria-checked")).toBe("mixed");
+    expect(theSwitch().className).toContain("agent-delegation-switch-unknown");
     expect(theSwitch().disabled).toBe(true);
     const status = container.querySelector(".agent-delegation-source");
     expect(status?.textContent).toBe("Reading the stored answer…");
@@ -4546,11 +4614,16 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     expect(status?.textContent).not.toBe("Never configured");
   });
 
-  it("names the unknown after a failed load too — permanent, not styled into an off (re-audit F10)", async () => {
+  it("names the unknown after a failed load too — and the CONTROL looks unknown, not off", async () => {
     vi.mocked(delegationGet).mockRejectedValue(new Error("the daemon is unreachable"));
     mountDelegation(DELEGATION_DAEMON);
     await settle();
 
+    // The unknown state is the unknown state wherever it comes from: a read
+    // that never answers and one that fails render the same honest control.
+    expect(theSwitch().checked).toBe(false);
+    expect(theSwitch().indeterminate).toBe(true);
+    expect(theSwitch().getAttribute("aria-checked")).toBe("mixed");
     expect(theSwitch().disabled).toBe(true);
     const status = container.querySelector(".agent-delegation-source")?.textContent ?? "";
     expect(status).toContain("could not be read");
@@ -4611,8 +4684,20 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     expect(theSwitch().checked).toBe(true);
   });
 
-  it("reverts the switch and surfaces the daemon's sentence when the write is refused", async () => {
-    vi.mocked(delegationGet).mockResolvedValue({ enabled: false, source: "file" });
+  it("reverts the switch, reports the refusal, then asks the daemon what it actually holds", async () => {
+    // Audit 3 F1: a rejection says the transport failed, not what the daemon
+    // holds. The surface reports the refusal AND follows the re-read that
+    // settles the doubt — here the re-read is gated, so the sentence's
+    // standing time is under the test's hand.
+    let releaseReread!: () => void;
+    const reread = new Promise<{ enabled: boolean; source: "file" | "default" | "quarantined" }>(
+      (resolve) => {
+        releaseReread = () => resolve({ enabled: false, source: "default" });
+      },
+    );
+    vi.mocked(delegationGet)
+      .mockResolvedValueOnce({ enabled: false, source: "default" })
+      .mockImplementationOnce(() => reread);
     mountDelegation(DELEGATION_DAEMON);
     await settle();
     vi.mocked(delegationSet).mockRejectedValueOnce(new Error("the store refused the write"));
@@ -4622,6 +4707,16 @@ describe("DelegationSetting - the switch beside the profiles", () => {
     expect(theSwitch().checked).toBe(false);
     expect(container.querySelector(".device-error")?.textContent).toBe(
       "the store refused the write",
+    );
+
+    // The daemon answers the re-read: it holds what the panel fell back to,
+    // so the panel is consistent again and the refusal sentence is gone.
+    releaseReread();
+    await settle();
+    expect(container.querySelector(".device-error")).toBeNull();
+    expect(theSwitch().checked).toBe(false);
+    expect(container.querySelector(".agent-delegation-source")?.textContent).toBe(
+      "Never configured",
     );
   });
 

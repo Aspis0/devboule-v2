@@ -1317,14 +1317,16 @@ export function DelegationSetting({
   const delegationSupported = daemon.capabilities.includes(DELEGATION_CAPABILITY);
   const delegation = useDelegationState(controller);
 
-  // Fetch on mount, only when the handshake advertised the capability: a
-  // daemon that never advertised `permission_delegation` would refuse this
-  // request, so it is never sent — the same never-send rule the tool toggles
-  // carry.
+  // Fetch on mount, only when the handshake advertised the capability, and
+  // again whenever the daemon's identity changes (audit 3, F2): a daemon
+  // restart — even one the 2 s poll never saw as a gap — or a reconnect
+  // invalidates every cached answer, and the stored value may have been moved
+  // by the `delegation.json` this section's own `source: "file"` sentence
+  // advertises. The guard refuses a fetch the pipe cannot carry yet.
   useEffect(() => {
-    if (!delegationSupported) return;
+    if (!delegationSupported || daemon.state !== "connected") return;
     void controller.load();
-  }, [controller, delegationSupported]);
+  }, [controller, delegationSupported, daemon.state, daemon.instanceId]);
 
   if (!delegationSupported) {
     return (
@@ -1360,6 +1362,17 @@ export function DelegationSetting({
           role="switch"
           aria-label="Let agents answer their children's cards"
           checked={enabled === true}
+          // An unknown switch must LOOK unknown, not look off (audit 3, F5):
+          // `indeterminate` paints the dash a human reads as "no value", the
+          // mixed aria state names it to assistive tech, and the class ties
+          // it to the app's dashed unknown treatment elsewhere. `checked` is
+          // false under it — a checkbox that paints the dash must not also
+          // claim a definite checkedness — but the dash is what the eye gets.
+          aria-checked={enabled === null ? "mixed" : enabled ? "true" : "false"}
+          ref={(el) => {
+            if (el !== null) el.indeterminate = enabled === null;
+          }}
+          className={enabled === null ? "agent-delegation-switch-unknown" : undefined}
           // Locked for the load only: a write in flight must not make the
           // switch unreachable — the sequence guard owns overlap, and a
           // control disabled on busy would drop the user's second click.

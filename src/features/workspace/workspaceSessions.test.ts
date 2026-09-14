@@ -751,6 +751,20 @@ describe("session title", () => {
     };
     expect(sessionTitle(recovered)).toBe("Agent s.4242.7");
   });
+
+  it("bounds the id fallback by grapheme clusters, never a halved scalar", () => {
+    // Audit 3 F10: the title's id fallback was the last unit-based cut of a
+    // daemon-generated id — the same cut the `created by` badge 100 lines
+    // below cites as its reason for bounding. Nine rockets (18 UTF-16 units)
+    // fall past the 8-unit limit either way; the slice halves four of them
+    // into U+FFFD in the strip, the cluster bound shortens whole glyphs.
+    const astralId = "🚀".repeat(9);
+    expect(sessionTitle({ ...liveSession(astralId, "  "), kind: "acp" })).toBe(
+      `Agent ${"🚀".repeat(8)}…`,
+    );
+    // ASCII within the bound is untouched, exactly as the slice left it.
+    expect(sessionTitle({ ...liveSession("s.4242.7", "  "), kind: "acp" })).toBe("Agent s.4242.7");
+  });
 });
 
 describe("session identity badges", () => {
@@ -772,6 +786,15 @@ describe("session identity badges", () => {
 
   it("falls back to the creator's short id prefix when the roster has not named it", () => {
     expect(sessionCreatorBadge(child("s.4242.1"), new Map())).toBe("created by s.4242.1");
+  });
+
+  it("bounds the creator's id fallback by grapheme clusters, never a halved scalar", () => {
+    // Audit 3 F10: the badge's fallback was bound but untested — nine
+    // rockets pass the 8-unit limit either way, and only the cluster bound
+    // keeps whole glyphs (the unit slice rendered four U+FFFD beside the
+    // creator's name). This is the test that makes the bound's removal red.
+    const astral = "🚀".repeat(9);
+    expect(sessionCreatorBadge(child(astral), new Map())).toBe(`created by ${"🚀".repeat(8)}…`);
   });
 
   it("shows no creator badge on a session a person started", () => {
@@ -1234,6 +1257,117 @@ describe("delegation facts ride the roster push", () => {
       { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
     ]);
     release();
+  });
+
+  it("ranks an out-of-union tri-state WITH the unreadable: a later no cannot erase it either", async () => {
+    // Audit 3 F7: the rank table's fallback is what keeps a value this build
+    // cannot read ranked with `unknown` — precisely so the benign `no`
+    // cannot overwrite it. With that fallback gone, the unreadable marker
+    // (the visible pill a person reads when they come back) silently becomes
+    // an ordinary row. The cast builds the value the compiler refuses to.
+    const outOfUnion = "unspecified" as unknown as UnattendedState;
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("child-ratchet-fifth")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    watched.listener?.([
+      {
+        id: "child-ratchet-fifth",
+        workspaceId: null,
+        kind: "acp",
+        title: "worker",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        unattended: outOfUnion,
+      },
+    ]);
+    expect(controller.getState().sessions[0].unattended).toBe(outOfUnion);
+    watched.listener?.([
+      {
+        id: "child-ratchet-fifth",
+        workspaceId: null,
+        kind: "acp",
+        title: "worker",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        unattended: "no",
+      },
+    ]);
+    // The unreadable marker is a warning the app cannot read; only a value
+    // that warns at least as loudly may replace it, and `no` does not.
+    expect(controller.getState().sessions[0].unattended).toBe(outOfUnion);
+    expect(sessionDelegationBadges(controller.getState().sessions[0])).toEqual([
+      { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
+    ]);
+    release();
+  });
+
+  it("ratchets on the list path too: a refresh that omits the tri-state cannot unbirth it", async () => {
+    // Audit 3 F6: the ratchet's tests covered the push path only, and the
+    // list path's call was one mutation from dropping the birth fact — a
+    // refresh whose list omits `unattended` would erase the loud pill an
+    // earlier push had landed, in the strip, silently.
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      // The list names no tri-state at all — the omission the carry exists
+      // for. Same id as the pushed row, so the refresh merges against it.
+      list: vi.fn(async () => [liveSession("child-push")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    watched.listener?.([childSnapshot(0, "unattended")]);
+    expect(controller.getState().sessions[0].unattended).toBe("yes");
+    await controller.refresh();
+    const row = controller.getState().sessions[0];
+    expect(row.unattended).toBe("yes");
+    expect(sessionDelegationBadges(row)).toEqual([
+      { tone: "unattended", label: UNATTENDED_BADGE_LABEL },
+    ]);
+    release();
+  });
+
+  it("does not leave the strip loading when a create invalidates the refresh that was in flight", async () => {
+    // Audit 3 F12: refresh() published `loading: true`, then a create()
+    // bumped the generation; when the list finally answered, the superseded
+    // refresh bailed WITHOUT clearing the flag — the strip kept saying
+    // "Loading sessions…" until the next push or refresh.
+    let releaseList!: () => void;
+    const gatedList = new Promise<Session[]>((resolve) => {
+      releaseList = () => resolve([liveSession("child-slow-list")]);
+    });
+    const controller = createWorkspaceSessionController({
+      list: vi
+        .fn<() => Promise<Session[]>>()
+        .mockImplementationOnce(() => gatedList)
+        .mockResolvedValue([]),
+      create: vi.fn(async () => liveSession("terminal-created")),
+    });
+    const slow = controller.refresh();
+    // The create invalidates the in-flight refresh the moment it starts.
+    const created = controller.create();
+    releaseList();
+    await Promise.all([slow, created]);
+    expect(controller.getState().loading).toBe(false);
+    expect(controller.getState().creating).toBe(false);
   });
 
   it("mints and carries on the list path too: refresh() does not erase a known child", async () => {

@@ -2703,6 +2703,129 @@ describe("delegation on the roster", () => {
     expect(strip).not.toBeUndefined();
   });
 
+  it("reports a refused take-back on the roster surface, where the click happened", async () => {
+    // Audit 3 F4: the refusal's sentence existed only on the Settings tab —
+    // the roster's button vanished and came back with no word on the surface
+    // the human clicked. The re-read the refusal schedules is held back so
+    // the sentence's standing time is under the test's hand.
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({ enabled: true, source: "file" })
+      .mockImplementation(() => new Promise(() => undefined));
+    const delegation = createDelegationController({
+      get,
+      set: vi.fn(async () => {
+        throw new Error("the store refused the take-back");
+      }),
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace delegation={delegation} />);
+    });
+    await act(async () => undefined);
+    await pushRoster([activeChild]);
+    await act(async () => undefined);
+
+    const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
+    if (takeBack === null) throw new Error("take-back did not render");
+    await act(async () => takeBack.click());
+    await act(async () => undefined);
+
+    const alerts = Array.from(container.querySelectorAll('[role="alert"]')).map(
+      (element) => element.textContent ?? "",
+    );
+    expect(alerts.some((text) => text.includes("the store refused the take-back"))).toBe(true);
+  });
+
+  it("offers the take-back while the delegation answer is unknown, and the click still writes", async () => {
+    // Audit 3 F2 with F5: the control that stops delegation must not be
+    // gated on the panel's belief — a failed read leaves the app knowing
+    // nothing, and that is exactly when a human may need to act. The write
+    // needs no stored answer: `false` can only reduce what the daemon
+    // exercises (see `setEnabled` in `lib/delegation.ts`).
+    const set = vi.fn(async () => undefined);
+    const delegation = createDelegationController({
+      get: vi.fn(async () => {
+        throw new Error("the daemon is unreachable");
+      }),
+      set,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace delegation={delegation} />);
+    });
+    await act(async () => undefined);
+    await pushRoster([activeChild]);
+    await act(async () => undefined);
+
+    // Unknown is not off: the control stands on the active row.
+    const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
+    expect(takeBack).not.toBeNull();
+    if (takeBack === null) throw new Error("take-back did not render");
+    await act(async () => takeBack.click());
+    await act(async () => undefined);
+    expect(set).toHaveBeenCalledWith(false);
+    expect(delegation.getState().enabled).toBe(false);
+    // The daemon took the take-back: the store now holds a definite off, and
+    // the control leaves with the belief it no longer needs to correct.
+    expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
+  });
+
+  it("re-reads the switch when the daemon restarts, and the take-back follows the fresh answer", async () => {
+    // Audit 3 F2: nothing re-read the setting after the first load, so a
+    // daemon restart that reloads `delegation.json` left the roster's belief
+    // stale forever — here the restart is even invisible to the poll (no
+    // disconnected gap): only the instance id changes. The controller must
+    // re-ask, and the row's control must follow the fresh answer.
+    vi.useFakeTimers();
+    try {
+      const statusFor = (instanceId: string): DaemonStatus => ({
+        state: "connected",
+        pid: 42,
+        instanceId,
+        protocolVersion: 1,
+        clients: 1,
+        capabilities: [...daemonConnected.capabilities, "permission_delegation"],
+        message: null,
+      });
+      const answers: DaemonStatus[] = [statusFor("daemon-a"), statusFor("daemon-b")];
+      vi.mocked(daemonStatus).mockImplementation(() => {
+        const next = answers.shift();
+        return Promise.resolve(next ?? statusFor("daemon-b"));
+      });
+      const get = vi
+        .fn()
+        .mockResolvedValueOnce({ enabled: false, source: "file" })
+        .mockResolvedValueOnce({ enabled: true, source: "file" });
+      const delegation = createDelegationController({ get, set: vi.fn(async () => undefined) });
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace delegation={delegation} />);
+      });
+      await act(async () => undefined);
+      await pushRoster([activeChild]);
+      await act(async () => undefined);
+
+      // The first daemon holds off: no take-back, honestly.
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
+
+      // The restart: a new instance, same capabilities, no gap observed.
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      await act(async () => undefined);
+
+      // The roster re-asked its new daemon — which holds ON, a human having
+      // flipped delegation.json while the old one was down — and the control
+      // that answers it is back.
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(container.querySelector(".workspace-tab-takeback")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders no delegation pill and no take-back on a human-started session", async () => {
     const delegation = enabledController();
     root = createRoot(container);

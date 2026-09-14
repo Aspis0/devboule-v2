@@ -171,7 +171,10 @@ export function sessionTitle(
   if (displayName) return displayName;
   const title = session.title.trim();
   if (title) return title;
-  return `${isAgentKind(session.kind) ? "Agent" : "Terminal"} ${session.id.slice(0, 8)}`;
+  // The id fallback bounds by grapheme clusters, like the `created by` badge
+  // and the answerer head: a unit-based cut halves an astral scalar and
+  // renders U+FFFD in the strip (audit 3, F10 — the sibling of :275-276).
+  return `${isAgentKind(session.kind) ? "Agent" : "Terminal"} ${boundByGraphemes(session.id, 8)}`;
 }
 
 /**
@@ -554,6 +557,10 @@ export function createWorkspaceSessionController(
     error: null,
   };
   let refreshGeneration = 0;
+  // Refreshes between "started" and "settled". `loading` belongs to the newest
+  // of them; the counter is what lets a superseded refresh know whether some
+  // newer refresh still owns the flag it may no longer clear.
+  let refreshesInFlight = 0;
   const listeners = new Set<() => void>();
   // Ids the user opened explicitly (from History) in this app run. They keep
   // their tab even when the daemon reports no running process.
@@ -580,6 +587,7 @@ export function createWorkspaceSessionController(
 
   const refresh = async (): Promise<void> => {
     const generation = ++refreshGeneration;
+    refreshesInFlight += 1;
     publish({ ...state, loading: true, error: null });
     try {
       // The list merges with what the app already knows (see `carrySession`);
@@ -600,6 +608,17 @@ export function createWorkspaceSessionController(
     } catch {
       if (generation !== refreshGeneration) return;
       publish({ ...state, loading: false, error: LIST_ERROR });
+    } finally {
+      refreshesInFlight -= 1;
+      // A superseded refresh must not leave the flag it published dangling:
+      // create() and open() bump the generation without touching `loading`,
+      // so a list answer dropped after them would otherwise leave the strip
+      // saying "Loading sessions…" until the next push (audit 3, F12). Clear
+      // it here only when no newer refresh is in flight to own the flag —
+      // one that is, publishes `loading: false` for itself when it settles.
+      if (generation !== refreshGeneration && refreshesInFlight === 0 && state.loading) {
+        publish({ ...state, loading: false });
+      }
     }
   };
 

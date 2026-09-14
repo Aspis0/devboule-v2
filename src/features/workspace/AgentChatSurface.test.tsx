@@ -2067,6 +2067,37 @@ describe("creator permission-request message", () => {
     expect(copy?.getAttribute("title")).toContain(astralName);
   });
 
+  it("shortens an over-limit astral name by whole clusters, with the ellipsis the cut owes", async () => {
+    // Audit 3 F10: 100 rockets sit exactly at the 200-unit limit — the one
+    // length where a unit slice and the cluster bound agree — so the test
+    // above cannot see the bound's removal. 201 rockets (402 UTF-16 units,
+    // 201 clusters) goes past BOTH readings and they part ways: the cluster
+    // bound keeps 200 whole glyphs and names the cut with `…`; the unit
+    // slice would keep 100 whole glyphs and no ellipsis — half the name,
+    // silently. (A name between 101 and 200 rockets would not discriminate
+    // either: the cluster bound leaves it whole.)
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+    const overLimit = "🚀".repeat(201);
+    const bounded = envelope.replace("displayName: worker one", `displayName: ${overLimit}`);
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_user_message", messageId: "u-9", text: bounded });
+    });
+
+    const item = container.querySelector("[data-testid='agent-permission-request']");
+    const copy = item?.querySelector(".workspace-chat-copy");
+    // Bounded to the whole clusters under the limit, and the shortening is
+    // named — never the silent unit cut, and never a halved scalar.
+    expect(copy?.textContent).toContain("🚀".repeat(200));
+    expect(copy?.textContent).not.toContain(overLimit);
+    expect(copy?.textContent).toContain("…");
+    // The whole value still travels on the title.
+    expect(copy?.getAttribute("title")).toContain(overLimit);
+  });
+
   it("walks the excerptState table: an out-of-union state takes the visible unknown arm (re-audit F7)", () => {
     // The state is app-internal, but the walk is the render decision, so the
     // cast builds the value a refactor or mixed bundle could actually pass.

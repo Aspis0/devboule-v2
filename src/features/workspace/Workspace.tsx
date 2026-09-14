@@ -510,13 +510,29 @@ export function Workspace({
   // only in Settings — so the roster's control is right even if Settings was
   // never opened. Capability-gated like every delegation RPC: a daemon that
   // never advertised `permission_delegation` is never asked.
+  //
+  // The read is keyed on the daemon's IDENTITY, not just this component's
+  // mount (audit 3, F2): a daemon restart — even one the 2 s poll never saw
+  // as a gap — changes `instanceId`, and every reconnect transitions
+  // `state`. Either way the store's answer is re-asked, because a connection
+  // that dropped and returned means every cached answer is a guess, and the
+  // `delegation.json` the app's own `source: "file"` sentence advertises
+  // moves the daemon's value with no app-side event.
   const delegationState = useSyncExternalStore(delegation.subscribe, delegation.getState);
   const delegationSupported = daemon.capabilities.includes(DELEGATION_CAPABILITY);
   useEffect(() => {
-    if (!delegationSupported) return;
+    if (!delegationSupported || daemon.state !== "connected") return;
     void delegation.load();
-  }, [delegation, delegationSupported]);
-  const takeBackAvailable = delegationSupported && delegationState.enabled === true;
+  }, [delegation, delegationSupported, daemon.state, daemon.instanceId]);
+  // The honest gate for the control that stops delegation (audit 3, F2): it
+  // is hidden only when the store POSITIVELY holds `false` — a value it can
+  // hold only from a daemon answer or an accepted write, never from silence —
+  // and it stays visible in the unknown state (`null`), where hiding it would
+  // let a stale belief withdraw the one control that corrects it. The write
+  // itself is the honest action from unknown: `false` needs no stored answer
+  // (see `setEnabled` in `lib/delegation.ts`), so the click acts instead of
+  // decorating a maybe.
+  const takeBackAvailable = delegationSupported && delegationState.enabled !== false;
   const takeBack = useCallback(() => {
     void delegation.setEnabled(false);
   }, [delegation]);
@@ -963,6 +979,18 @@ export function Workspace({
             >
               ×
             </button>
+          </div>
+        ) : null}
+
+        {delegationState.error !== null ? (
+          // The refusal (or failed read) reported where the delegation control
+          // lives — the roster row's take-back included — never only on the
+          // Settings tab (audit 3, F4: a refused consent control may not be
+          // silent on the surface it was clicked on). No dismiss button: the
+          // sentence is the store's standing answer, and the next successful
+          // read or write clears it.
+          <div className="workspace-session-error" role="alert">
+            <span className="workspace-session-error-text">{delegationState.error}</span>
           </div>
         ) : null}
 

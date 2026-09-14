@@ -43,10 +43,11 @@ export interface DelegationState {
    */
   reply: DelegationReply | null;
   /**
-   * What the UI shows the switch as. Null only while the first fetch is in
-   * flight; afterwards the newest write's optimistic value, or the store's
-   * answer. A switch rendered before this is set would be a guess, which is
-   * the one thing a consent surface must not be.
+   * What the UI shows the switch as. Null while no answer has landed: the
+   * first fetch is in flight, or a rejected write's re-read also failed and
+   * the store holds nothing it may show as definite. In both states nothing
+   * on screen may be edited into existence from a guess — and the unknown is
+   * rendered as unknown, never as a definite off.
    */
   enabled: boolean | null;
   /**
@@ -129,7 +130,16 @@ export function createDelegationController(
     for (const listener of [...listeners]) listener();
   };
 
-  const load = async (): Promise<void> => {
+  /**
+   * The read path. `invalidateOnFail` marks the read sent to settle the doubt
+   * a rejected write created (see the refusal arm below): when THAT read also
+   * fails, the store holds no answer it may show as definite, so the panel
+   * goes to the named unknown instead of keeping a value the daemon may have
+   * replaced. Every other reader — mount, reconnect, Retry — keeps its
+   * already-shown value on failure, because nothing happened in between that
+   * could have invalidated it.
+   */
+  const load = async (invalidateOnFail = false): Promise<void> => {
     const seqAtFetch = seq;
     const writeWasInFlight = writesInFlight > 0;
     try {
@@ -152,25 +162,45 @@ export function createDelegationController(
       confirmedRef = reply.enabled;
       publish({ reply, enabled: reply.enabled, loadFailed: false, error: null });
     } catch (cause: unknown) {
-      if (enabledRef !== null) {
-        // A later answer exists; the panel already shows a value, so the
-        // failed refresh is reported, not terminal.
+      if (enabledRef !== null && !invalidateOnFail) {
+        // A later answer exists and nothing has shaken trust in it; the panel
+        // already shows a value, so the failed refresh is reported, not
+        // terminal.
         publish({ ...state, error: reasonFromCause(cause) });
         return;
       }
+      // No answer the panel may show as definite survives a failed read here:
+      // either none ever landed, or the one on screen lost the store's trust
+      // to a rejected write. The named unknown is the honest state — the
+      // switch renders it (never a definite off), and Retry re-asks.
+      enabledRef = null;
+      confirmedRef = null;
       publish({ reply: null, enabled: null, loadFailed: true, error: reasonFromCause(cause) });
     }
   };
 
   const setEnabled = async (next: boolean): Promise<boolean> => {
-    // A write never starts from a guess: until the store has answered once,
-    // there is nothing to write from and nothing to revert onto.
-    if (enabledRef === null || enabledRef === next) return false;
+    // The two directions of the switch are not symmetric, and the asymmetry is
+    // the honesty:
+    //
+    // GRANTING authority (`true`) needs a stored answer first — until the
+    // store has answered once there is nothing to write from and nothing to
+    // revert onto, and the one thing this store exists to prevent is a write
+    // authorised by a guess.
+    //
+    // TAKING authority back (`false`) does not. `false` can only reduce what
+    // the daemon exercises, and the human reaching for it may be acting
+    // precisely BECAUSE the answer cannot be read (a failed load, a rejected
+    // write whose re-read failed) — the unknown state must not withdraw the
+    // control that stops delegation. It is skipped only when the store
+    // positively holds `false`, where the click could not act.
+    if (next ? enabledRef !== false : enabledRef === false) return false;
     const thisSeq = ++seq;
     writesInFlight += 1;
     enabledRef = next;
     publish({ ...state, enabled: next, error: null });
     let accepted = false;
+    let refusedNewest = false;
     try {
       await source.set(next);
       accepted = true;
@@ -179,13 +209,18 @@ export function createDelegationController(
       // A newer write superseded this one: its optimistic value stands, this
       // rejection reports nothing.
       if (thisSeq !== seq) return false;
-      // The daemon refused, so the panel reverts onto the last CONFIRMED
-      // value — not onto `enabledRef` as it stood when this write started,
-      // which an earlier still-in-flight write may have optimistically moved
-      // to a value the daemon never accepted (two refused rapid writes would
-      // otherwise leave the switch showing ON over a daemon holding OFF).
+      // The rejection is a fact about the transport, not the store — the
+      // daemon may have applied the write and lost the reply. The panel
+      // falls back to the last CONFIRMED value — not onto `enabledRef` as it
+      // stood when this write started, which an earlier still-in-flight write
+      // may have optimistically moved to a value the daemon never accepted
+      // (two refused rapid writes would otherwise leave the switch showing ON
+      // over a daemon holding OFF) — with the refusal's sentence beside it,
+      // and the re-read below goes and finds out what the daemon actually
+      // holds.
       enabledRef = confirmedRef;
       publish({ ...state, enabled: confirmedRef, error: reasonFromCause(cause) });
+      refusedNewest = true;
       return false;
     } finally {
       writesInFlight -= 1;
@@ -206,6 +241,12 @@ export function createDelegationController(
         // never shows LESS authority than is live — but leaves any standing
         // refusal sentence alone: the newest write's settlement is free to
         // overwrite it, accepted or reverted onto the stamp above.
+        //
+        // The minted `source` carries an obligation on the daemon contract
+        // (audit 3, F11): a successful `delegation_set` must leave
+        // `delegation_get`'s `source` at `file`, or the app must stop minting
+        // it — the app cannot check the provenance it asserts here, so the
+        // sentence is only as true as the daemon makes it.
         const reply: DelegationReply = { enabled: next, source: "file" };
         confirmedRef = next;
         enabledRef = next;
@@ -214,6 +255,18 @@ export function createDelegationController(
         } else {
           publish({ ...state, reply, enabled: next, loadFailed: false });
         }
+      } else if (refusedNewest) {
+        // The rejection did not say what the daemon holds, so ask. This runs
+        // after the in-flight counter dropped, so the re-read is an ordinary
+        // fetch: it obeys the same ownership guard as every read — a write
+        // issued while it flies discards its reply — and on success the
+        // daemon's answer replaces both the fallback value and the refusal
+        // sentence. On failure the load's invalidated path takes the panel to
+        // the named unknown: after a rejected write, `confirmedRef` is a
+        // belief about a store the app just failed to reach twice, not a
+        // fact, and a definite render of it is the false claim this file
+        // exists to prevent.
+        void load(true);
       }
     }
   };

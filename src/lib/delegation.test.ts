@@ -4,6 +4,12 @@ import type { DelegationReply } from "../types/ipc";
 
 const fileOn: DelegationReply = { enabled: true, source: "file" };
 
+/** Lets the controller's un-awaited follow-up reads (a rejection's re-read)
+ * finish before the assertions run. */
+const flush = async (): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+};
+
 describe("delegation controller", () => {
   it("adopts the store's answer, value and source together", async () => {
     const get = vi.fn(async () => fileOn);
@@ -42,13 +48,17 @@ describe("delegation controller", () => {
   });
 
   it("a refused write reverts to the value the human was seeing and reports the sentence", async () => {
+    // The re-read the refusal schedules is held back forever here: this test
+    // pins the settlement of the write itself — the revert and the sentence —
+    // and the re-read's later correction has its own tests below.
+    const get = vi
+      .fn<() => Promise<DelegationReply>>()
+      .mockResolvedValueOnce({ enabled: false, source: "file" })
+      .mockImplementation(() => new Promise<DelegationReply>(() => undefined));
     const set = vi.fn(async () => {
       throw new Error("the store would not take it");
     });
-    const controller = createDelegationController({
-      get: async () => ({ enabled: false, source: "file" }),
-      set,
-    });
+    const controller = createDelegationController({ get, set });
     await controller.load();
     const confirmed = await controller.setEnabled(true);
     expect(confirmed).toBe(false);
@@ -200,7 +210,9 @@ describe("delegation controller", () => {
     // The other settle order of the same interleaving: B's refusal lands
     // first — the panel reverts onto the load's OFF — and THEN A's acceptance
     // arrives. The acceptance is still a fact about the daemon, and a consent
-    // surface never shows less authority than is live.
+    // surface never shows less authority than is live. The re-read the
+    // refusal schedules is held back: this test pins the settle order, and
+    // the re-read would adopt (and clear the sentence) only after it.
     let releaseA!: () => void;
     const gateA = new Promise<void>((resolve) => {
       releaseA = () => resolve();
@@ -210,8 +222,12 @@ describe("delegation controller", () => {
       releaseB = () => resolve();
     });
     const calls: boolean[] = [];
+    const get = vi
+      .fn<() => Promise<DelegationReply>>()
+      .mockResolvedValueOnce({ enabled: false, source: "file" })
+      .mockImplementation(() => new Promise<DelegationReply>(() => undefined));
     const controller = createDelegationController({
-      get: async () => ({ enabled: false, source: "file" }),
+      get,
       set: async (enabled) => {
         calls.push(enabled);
         if (calls.length === 1) {
@@ -240,9 +256,13 @@ describe("delegation controller", () => {
   });
 
   it("two rapid writes both accepted settle on the newer value when responses land in order", async () => {
-    // The direction the fix must NOT move: the daemon takes A's ON and then
-    // B's OFF, and the responses land in that order — so OFF stands. The
-    // older write's acceptance must not ride over the newer write's answer.
+    // What this interleaving pins is the END of the trace. The published
+    // trace is ON -> off -> ON -> off: while B is still in flight, A's
+    // superseded acceptance DOES move the display onto A's ON — a consent
+    // surface never shows less authority than is live, and the arm at the
+    // acceptance says so itself. What must not happen is that move surviving
+    // B's own acceptance: B's is the last acceptance to land, so OFF stands
+    // at the end with nothing left in flight to ride over it.
     let releaseA!: () => void;
     const gateA = new Promise<void>((resolve) => {
       releaseA = () => resolve();
@@ -269,6 +289,10 @@ describe("delegation controller", () => {
     const second = controller.setEnabled(false);
     releaseA();
     await first;
+    // The window the old comment denied: A's superseded acceptance holds the
+    // display while B flies. Pinned here so the trace this test promises is
+    // the trace it assures.
+    expect(controller.getState().enabled).toBe(true);
     releaseB();
     await second;
     expect(calls).toEqual([true, false]);
@@ -385,6 +409,15 @@ describe("delegation controller", () => {
     // settles, so B's optimistic base was A's unconfirmed true. Both writes
     // are refused. Reverting onto B's base would leave the panel showing ON
     // — a value the daemon never accepted — over a daemon holding OFF.
+    //
+    // Scope note (audit 3, F8): at the one execution of the revert line this
+    // interleaving reaches, B's optimistic value and the confirmed value
+    // coincide (B flips back to OFF), so the PUBLISHED panel cannot
+    // discriminate the revert's base here — what this test still guards is
+    // the load's stamp feeding that revert (removing it fails these
+    // assertions). The base itself is witnessed by the mirror test below, in
+    // the interleaving where the two values part ways: one refused write,
+    // then a retry of the same value.
     let releaseFirst!: () => void;
     const firstSet = new Promise<void>((resolve) => {
       releaseFirst = () => resolve();
@@ -415,9 +448,15 @@ describe("delegation controller", () => {
 
   it("a refused write after a CONFIRMED write reverts onto the confirmation", async () => {
     // ON confirmed by the daemon; a refused OFF must put ON back — the value
-    // the daemon actually holds — not the pre-write optimistic base.
+    // the daemon actually holds — not the pre-write optimistic base. The
+    // re-read the refusal schedules is held back: this test pins the revert
+    // moment; the re-read's correction has its own tests below.
+    const get = vi
+      .fn<() => Promise<DelegationReply>>()
+      .mockResolvedValueOnce({ enabled: false, source: "file" })
+      .mockImplementation(() => new Promise<DelegationReply>(() => undefined));
     const controller = createDelegationController({
-      get: async () => ({ enabled: false, source: "file" }),
+      get,
       set: vi
         .fn()
         .mockResolvedValueOnce(undefined)
@@ -428,5 +467,123 @@ describe("delegation controller", () => {
     expect(await controller.setEnabled(false)).toBe(false);
     expect(controller.getState().enabled).toBe(true);
     expect(controller.getState().error).toBe("the store refused the second");
+  });
+
+  it("a rejected write re-reads, and the daemon's answer replaces the fallback", async () => {
+    // Audit 3 F1: a rejection is a fact about the transport, not the store —
+    // the daemon may have applied the write and lost the reply. The refusal
+    // is reported, then the controller goes and finds out; the answer that
+    // comes back through the guarded read path is what the panel ends on,
+    // with the refusal sentence cleared.
+    let releaseReread!: () => void;
+    const reread = new Promise<DelegationReply>((resolve) => {
+      releaseReread = () => resolve({ enabled: true, source: "file" });
+    });
+    let call = 0;
+    const controller = createDelegationController({
+      get: vi.fn(async (): Promise<DelegationReply> =>
+        call++ === 0 ? { enabled: false, source: "file" } : reread,
+      ),
+      set: vi.fn(async () => {
+        throw new Error("the app did not answer");
+      }),
+    });
+    await controller.load();
+    expect(await controller.setEnabled(true)).toBe(false);
+    // The fallback stands only until the re-read answers.
+    expect(controller.getState().enabled).toBe(false);
+    expect(controller.getState().error).toBe("the app did not answer");
+    releaseReread();
+    await flush();
+    // The daemon HAD applied the lost write: the panel now says so.
+    expect(controller.getState().enabled).toBe(true);
+    expect(controller.getState().reply).toEqual({ enabled: true, source: "file" });
+    expect(controller.getState().error).toBeNull();
+  });
+
+  it("a rejected write whose re-read also fails leaves the panel unknown, never a definite off", async () => {
+    // After a rejected write, the last confirmed value is a belief about a
+    // store the app just failed to reach; if the read sent to settle that
+    // doubt fails too, rendering that belief as a definite switch is the
+    // false claim this file exists to prevent. The panel goes to the named
+    // unknown — where Retry lives, and where the take-back still works.
+    let call = 0;
+    const controller = createDelegationController({
+      get: vi.fn(async (): Promise<DelegationReply> => {
+        call += 1;
+        if (call === 1) return { enabled: false, source: "file" };
+        throw new Error("the daemon is gone");
+      }),
+      set: vi.fn(async () => {
+        throw new Error("the app did not answer");
+      }),
+    });
+    await controller.load();
+    expect(await controller.setEnabled(true)).toBe(false);
+    await flush();
+    expect(controller.getState().enabled).toBeNull();
+    expect(controller.getState().loadFailed).toBe(true);
+    expect(controller.getState().error).toBe("the daemon is gone");
+  });
+
+  it("the control that stops delegation works from the unknown state; granting still needs an answer", async () => {
+    // The asymmetric half of the write rule (audit 3, F2): `false` can only
+    // reduce what the daemon exercises, so the take-back must act from the
+    // unknown — the human may be reaching for it BECAUSE the answer cannot
+    // be read. `true` from silence is still the write-from-a-guess this
+    // store refuses, and `false` over a confirmed `false` stays a no-op.
+    const set = vi.fn(async () => undefined);
+    const controller = createDelegationController({
+      get: vi.fn(async (): Promise<DelegationReply> => {
+        throw new Error("the daemon is unreachable");
+      }),
+      set,
+    });
+    await controller.load();
+    expect(controller.getState().loadFailed).toBe(true);
+    expect(await controller.setEnabled(true)).toBe(false);
+    expect(set).not.toHaveBeenCalled();
+    expect(await controller.setEnabled(false)).toBe(true);
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(set).toHaveBeenCalledWith(false);
+    expect(controller.getState().enabled).toBe(false);
+    expect(controller.getState().loadFailed).toBe(false);
+    // And once the store holds false, another take-back is a no-op, not a
+    // second write.
+    expect(await controller.setEnabled(false)).toBe(false);
+    expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refused write leaves the mirror on the CONFIRMED base, so the same value can still be written", async () => {
+    // Audit 3 F8: the refusal's published panel is the confirmed value under
+    // either revert base, so only the ref mirror can witness where the
+    // revert landed — a retry of the refused value reaches the daemon only
+    // if the mirror went back to the confirmed value instead of the
+    // optimistic one. The re-read the refusal scheduled is gated, so at the
+    // moment of the retry nothing but the mirror can answer the guard.
+    let releaseReread!: () => void;
+    const reread = new Promise<DelegationReply>((resolve) => {
+      releaseReread = () => resolve({ enabled: false, source: "file" });
+    });
+    let call = 0;
+    const set = vi.fn(async () => {
+      if (set.mock.calls.length === 1) throw new Error("store refused");
+    });
+    const controller = createDelegationController({
+      get: vi.fn(async (): Promise<DelegationReply> =>
+        call++ === 0 ? { enabled: false, source: "file" } : reread,
+      ),
+      set,
+    });
+    await controller.load();
+    expect(await controller.setEnabled(true)).toBe(false);
+    const retry = controller.setEnabled(true);
+    expect(set).toHaveBeenCalledTimes(2);
+    releaseReread();
+    expect(await retry).toBe(true);
+    await flush();
+    // The retried write confirmed; the stale re-read (issued before it) was
+    // discarded by the sequence guard, not allowed to overwrite it.
+    expect(controller.getState().enabled).toBe(true);
   });
 });

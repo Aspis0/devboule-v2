@@ -1151,6 +1151,17 @@
   margin: 0;
 }
 
+/* The switch with no value (the first read in flight, or a rejected write
+   whose re-read failed too): the control itself must look unknown, not look
+   off (audit 3, F5). `indeterminate` paints the dash; the dashed outline and
+   the silence colour are the treatment the roster's unknown pill wears, so
+   "this app cannot name this value" reads the same way on both surfaces. */
+.agent-delegation-switch-unknown {
+  outline: 1px dashed var(--silence);
+  outline-offset: 2px;
+  opacity: 0.8;
+}
+
 .agent-delegation-unavailable {
   margin: 0;
   padding: 10px 14px;
