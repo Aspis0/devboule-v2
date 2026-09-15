@@ -1039,7 +1039,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | tokio-util | 0.7.19 | Rust transitive (lockfile) | MIT |
 | toml | 0.8.2 | Rust direct runtime | MIT OR Apache-2.0 |
 | toml | 0.9.12+spec-1.1.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| toml | 1.1.4+spec-1.1.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| toml | 1.1.6+spec-1.1.0 | Rust direct runtime | MIT OR Apache-2.0 |
 | toml_datetime | 0.6.3 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | toml_datetime | 0.7.5+spec-1.1.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | toml_datetime | 1.1.1+spec-1.1.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
@@ -1249,25 +1249,25 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | @napi-rs/canvas-win32-arm64-msvc | 1.0.9 | npm transitive optional/platform | MIT |
 | @napi-rs/canvas-win32-x64-msvc | 1.0.9 | npm transitive optional/platform | MIT |
 | @oxc-project/types | 0.147.0 | npm transitive | MIT |
-| @oxfmt/binding-android-arm-eabi | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-android-arm64 | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-darwin-arm64 | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-darwin-x64 | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-freebsd-x64 | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-arm-gnueabihf | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-arm-musleabihf | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-arm64-gnu | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-arm64-musl | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-ppc64-gnu | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-riscv64-gnu | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-riscv64-musl | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-s390x-gnu | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-x64-gnu | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-linux-x64-musl | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-openharmony-arm64 | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-win32-arm64-msvc | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-win32-ia32-msvc | 0.67.0 | npm transitive optional/platform | MIT |
-| @oxfmt/binding-win32-x64-msvc | 0.67.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-android-arm-eabi | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-android-arm64 | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-darwin-arm64 | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-darwin-x64 | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-freebsd-x64 | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm-gnueabihf | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm-musleabihf | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm64-gnu | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm64-musl | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-ppc64-gnu | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-riscv64-gnu | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-riscv64-musl | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-s390x-gnu | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-x64-gnu | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-x64-musl | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-openharmony-arm64 | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-win32-arm64-msvc | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-win32-ia32-msvc | 0.68.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-win32-x64-msvc | 0.68.0 | npm transitive optional/platform | MIT |
 | @oxlint/binding-android-arm-eabi | 1.80.0 | npm transitive optional/platform | MIT |
 | @oxlint/binding-android-arm64 | 1.80.0 | npm transitive optional/platform | MIT |
 | @oxlint/binding-darwin-arm64 | 1.80.0 | npm transitive optional/platform | MIT |
@@ -1378,7 +1378,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | magic-string | 1.2.3 | npm transitive | MIT |
 | nanoid | 3.3.18 | npm transitive | MIT |
 | obug | 2.1.4 | npm transitive | MIT |
-| oxfmt | 0.67.0 | npm direct build/test | MIT |
+| oxfmt | 0.68.0 | npm direct build/test | MIT |
 | oxlint | 1.80.0 | npm direct build/test | MIT |
 | pdfjs-dist | 6.3.289 | npm direct runtime | Apache-2.0 |
 | picocolors | 1.1.1 | npm transitive | ISC |

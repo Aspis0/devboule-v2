@@ -49,9 +49,12 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 # Codex `CODEX_HOME` carrier (broker S6): the `config.toml` this daemon writes
 # for a Codex child is a wire contract with codex-cli, so the pin is exact.
-# 0.8.2 is already resolved in this workspace (devboule-augur), so this adds
-# no package — the happy coincidence, not the rule.
-toml = "=0.8.2"
+# Landed at 0.8.2 because that was already resolved in the workspace — the
+# author's own comment called that "the happy coincidence, not the rule", and
+# the merge gate then applied the rule: every direct dependency sits at the
+# latest stable major, so the pin moved to 1.x (the `to_string`/`from_str`
+# pair this crate uses is unchanged across that major).
+toml = "=1.1.6"
 # ACP wire/schema types, pinned exactly because this is a wire contract.
 # 2.1.0 carries schema 1.7.0 and is Apache-2.0. The note this replaces called
 # 2.0.0 "the audited release" and put its schema at 1.7.0: that is 2.1.0's

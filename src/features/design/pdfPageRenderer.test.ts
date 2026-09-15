@@ -450,12 +450,12 @@ describe("the count and the rung below the floor", () => {
     // payload that fits only at the last rung is a page the ceiling forced down.
     const small = Uint8Array.from({ length: 40 }, (_, index) => index);
     const large = Uint8Array.from({ length: 200 }, (_, index) => index);
-    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockImplementation(
-      function (this: HTMLCanvasElement) {
-        const payload = this.width > 350 ? large : small;
-        return `data:image/jpeg;base64,${btoa(String.fromCharCode(...payload))}`;
-      },
-    );
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockImplementation(function (
+      this: HTMLCanvasElement,
+    ) {
+      const payload = this.width > 350 ? large : small;
+      return `data:image/jpeg;base64,${btoa(String.fromCharCode(...payload))}`;
+    });
 
     const result = await renderPdfPages(
       PDF_BYTES,
