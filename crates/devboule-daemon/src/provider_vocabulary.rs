@@ -294,7 +294,15 @@ fn vocabulary_reply(
 /// module, and move unchanged. A probe that cannot answer is the `absent`
 /// state, not an error — `Err` is reserved for cannot-even-try, and this
 /// pass has no `Err` arm at all.
-fn probe_axes(state: &Arc<ServerState>, canonical: &str) -> (VocabularyModels, VocabularyModes) {
+///
+/// `pub(crate)` for the provider trait's `vocabulary` delegation
+/// (`provider.rs`): the impl resolves its family and asks this selector with
+/// its own id, keeping this function the one probe home until the selector
+/// itself is absorbed.
+pub(crate) fn probe_axes(
+    state: &Arc<ServerState>,
+    canonical: &str,
+) -> (VocabularyModels, VocabularyModes) {
     #[cfg(test)]
     state
         .provider_vocabulary

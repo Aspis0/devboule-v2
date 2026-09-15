@@ -828,6 +828,18 @@ pub(crate) const AGENT_PRESETS: &[AgentPreset] = &[
     },
 ];
 
+/// Every provider row the catalog publishes, in catalog order, test-only
+/// rows included because a debug daemon serves them. This is the enumeration
+/// the provider registry binds its implementations through (`provider.rs`):
+/// the catalog stays the one list of names.
+pub(crate) fn catalog_provider_rows() -> impl Iterator<Item = &'static KnownAgent> {
+    KNOWN_AGENTS
+        .iter()
+        // The test-only rows are part of the catalog a debug build serves
+        // (audit S5B-08); a release build's list is empty.
+        .chain(TEST_ONLY_AGENTS.iter())
+}
+
 /// The provider ids the catalog publishes, in catalog order, test-only rows
 /// included because a debug daemon serves them.
 #[cfg(test)]

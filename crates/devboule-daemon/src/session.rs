@@ -124,6 +124,12 @@ mod codex_client;
 mod event_pull;
 #[path = "pi_client.rs"]
 mod pi_client;
+/// The class-level provider seam: the `Provider` trait, one implementation
+/// per family, and the registry the spawn road resolves through. Declared
+/// from here like the other children; the spawn road is its only caller
+/// until pass 2b/2c convert the rest.
+#[path = "provider.rs"]
+mod provider;
 /// Pi's mode dictionary, re-exported for the `unattended` derivation: the
 /// vocabulary lives in the client that writes the permission extension, and
 /// `peer_policy::unattended_mode` reads it from there without this module
@@ -143,7 +149,6 @@ pub use session_types::PtyCommand;
 use session_types::{
     Disposition, OutputMetrics, PendingItem, PullState, RegistryEntry, TranscriptSession,
 };
-use shell_command::resolve_pty_command;
 pub use shell_command::write_test_pty_command;
 
 /// Unsent live output one attachment may hold before the unsent suffix is
@@ -3396,18 +3401,44 @@ impl SessionRegistry {
     ) -> (SessionKind, Option<String>, Option<ProviderProvenance>) {
         let requested = provider.filter(|id| !id.is_empty());
         let env_provider = env_provider.filter(|value| !value.is_empty());
-        let kind = if kind == SessionKind::Acp
-            && (requested.as_deref() == Some("pi")
-                || requested.as_deref() == Some("codex")
-                || (requested.is_none() && matches!(env_provider, Some("claude" | "pi" | "codex"))))
-        {
-            if requested.as_deref() == Some("pi") || env_provider == Some("pi") {
-                SessionKind::Pi
-            } else if requested.as_deref() == Some("codex") || env_provider == Some("codex") {
-                SessionKind::Codex
+        // The family remap routes through the provider registry: the id
+        // names a provider, the provider's own `wire_kind` is the kind a
+        // native family answers with, and both the requested/env asymmetry
+        // and the arm order are the impls' `acp_create_remap_rank`. The
+        // env override participates only when the request named nothing or
+        // named a native family itself — the gate the literal spelling
+        // closed with `requested.is_none()` — and the rank minimum
+        // reproduces the arm order (pi, then codex, then claude) for every
+        // input, including the ones where the env road outranks the
+        // request's.
+        let kind = if kind == SessionKind::Acp {
+            let providers = provider::catalog_registry();
+            let requested_provider = requested.as_deref().map(|id| providers.provider_for(id));
+            let request_opens = requested_provider
+                .as_ref()
+                .map(|candidate| {
+                    candidate
+                        .acp_create_remap_rank(ProviderProvenance::Request)
+                        .is_some()
+                })
+                .unwrap_or(true);
+            let env_candidate = if request_opens {
+                env_provider.map(|id| providers.provider_for(id))
             } else {
-                SessionKind::Claude
-            }
+                None
+            };
+            requested_provider
+                .into_iter()
+                .map(|candidate| (candidate, ProviderProvenance::Request))
+                .chain(env_candidate.map(|candidate| (candidate, ProviderProvenance::Env)))
+                .filter_map(|(candidate, provenance)| {
+                    candidate
+                        .acp_create_remap_rank(provenance)
+                        .map(|rank| (rank, candidate))
+                })
+                .min_by_key(|(rank, _)| *rank)
+                .map(|(_, candidate)| candidate.wire_kind())
+                .unwrap_or(SessionKind::Acp)
         } else {
             kind
         };
@@ -3536,28 +3567,32 @@ impl SessionRegistry {
             Self::resolve_session_provider(kind, provider, env_provider);
         let mut command = match command {
             Some(command) => command,
-            None if kind == SessionKind::Claude => claude_client::resolve_command(&self.paths)?,
-            None if kind == SessionKind::Pi => pi_client::resolve_command(&self.paths)?,
-            None if kind == SessionKind::Codex => codex_client::resolve_command(&self.paths)?,
-            None if kind == SessionKind::Acp => match provider.clone() {
-                Some(id) => {
-                    Self::reject_env_npx_wrapper(&id, provenance, &self.paths)?;
-                    acp_client::resolve_named(&id, &self.paths)?
+            None => {
+                // The command road is the registry's to resolve: the kind
+                // names its family, the family resolves its own command —
+                // the ACP family's named road consults the catalog, the
+                // native families run their fixed roads, the terminal road
+                // resolves the shell.
+                let family = provider::catalog_registry().provider_for_kind(&kind);
+                // The npx consent gate is catalog policy (design §3.3.5) and
+                // stays in this file; it keys on the one family whose named
+                // road can resolve a catalog wrapper, not on the kind. Same
+                // refusals as the kind-keyed arm it replaces, and no new
+                // catalog read on any road that never had one.
+                if let Some(id) = provider.as_deref() {
+                    if family.resolves_named_from_catalog() {
+                        Self::reject_env_npx_wrapper(id, provenance, &self.paths)?;
+                    }
                 }
-                None => acp_client::resolve_command(&self.paths)?,
-            },
-            None => resolve_pty_command(&self.paths)?,
+                family.resolve_command(&self.paths, provider.as_deref())?
+            }
         };
         if let Some(cwd) = workspace_cwd {
             command.cwd = cwd;
         }
-        let session_provider = match kind {
-            SessionKind::Acp => provider.or_else(|| command.provider_id.clone()),
-            SessionKind::Claude => Some("claude".to_string()),
-            SessionKind::Pi => Some("pi".to_string()),
-            SessionKind::Codex => Some("codex".to_string()),
-            SessionKind::Terminal => None,
-        };
+        let session_provider = provider::catalog_registry()
+            .provider_for_kind(&kind)
+            .stamp_session_provider(provider.clone(), command.provider_id.clone());
         // One clock read: the journal row and the wire metadata must carry
         // the same instant so a caller can compare them.
         //
@@ -8298,250 +8333,30 @@ pub fn spawn_session(
     mut mcp_session: Option<McpSessionGuard>,
     delivery: crate::profile_delivery::ProfileDelivery,
 ) -> Result<(), WireError> {
-    // The delivery travels as the one typed value: each client's own
-    // `spawn_process` validates what it can refuse and applies what it owns.
-    // This function holds no per-family knowledge beyond the launch dispatch
-    // that was already here — a new per-family branch would be the crooked
-    // shape the provider-trait refactor's gate forbids.
-    if metadata.kind == SessionKind::Claude {
-        let workspace_id = metadata.workspace_id.clone();
-        let workspace_path = command.cwd.clone();
-        let spawned = claude_client::spawn_process(
-            state,
-            command,
-            state.mcp.launch_config(&metadata.id),
-            delivery.clone(),
-        )
-        .map_err(|error| {
-            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-        })?;
-        return start_spawned_session(
-            state,
-            registry,
-            metadata,
-            owner,
-            None,
-            delivery.mode_id,
-            spawned,
-            mcp_session.take(),
-        );
-    }
-    if metadata.kind == SessionKind::Acp {
-        let workspace_id = metadata.workspace_id.clone();
-        let workspace_path = command.cwd.clone();
-        let spawned = acp_client::spawn_process(
-            state,
-            command,
-            state.mcp.launch_config(&metadata.id),
-            delivery.clone(),
-        )
-        .map_err(|error| {
-            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-        })?;
-        return start_spawned_session(
-            state,
-            registry,
-            metadata,
-            owner,
-            None,
-            delivery.mode_id,
-            spawned,
-            mcp_session.take(),
-        );
-    }
-    if metadata.kind == SessionKind::Pi {
-        let workspace_id = metadata.workspace_id.clone();
-        let workspace_path = command.cwd.clone();
-        // S9 live: `launch_config` yields `Some` for registered sessions, so pi
-        // children start with the bridge; unregistered spawns keep the old road
-        // (permission extension only, no bridge, no env).
-        let spawned = pi_client::spawn_process(
-            state,
-            command,
-            state.mcp.launch_config(&metadata.id),
-            delivery.clone(),
-        )
-        .map_err(|error| {
-            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-        })?;
-        return start_spawned_session(
-            state,
-            registry,
-            metadata,
-            owner,
-            None,
-            delivery.mode_id,
-            spawned,
-            mcp_session.take(),
-        );
-    }
-    if metadata.kind == SessionKind::Codex {
-        let workspace_id = metadata.workspace_id.clone();
-        let workspace_path = command.cwd.clone();
-        // S9 live: `launch_config` yields `Some` for registered sessions, so Codex
-        // children start with their home; unregistered spawns keep the old road
-        // (no home, no env, no handshake assertion).
-        let spawned = codex_client::spawn_process(
-            state,
-            command,
-            state.mcp.launch_config(&metadata.id),
-            delivery.clone(),
-        )
-        .map_err(|error| {
-            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-        })?;
-        return start_spawned_session(
-            state,
-            registry,
-            metadata,
-            owner,
-            None,
-            delivery.mode_id,
-            spawned,
-            mcp_session.take(),
-        );
-    }
-
-    // On Windows portable-pty selects ConPTY internally. ConPTY may issue a
-    // DSR query (`ESC[6n`) at startup and stalls its render pipeline until it
-    // is answered. The DAEMON is the single responder: publish_output routes
-    // the emulator's PtyWrite replies straight back to this writer. Clients
-    // must not answer DSR themselves (a second reply would reach the child).
-    let pty_system = portable_pty::native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: INITIAL_ROWS,
-            cols: INITIAL_COLS,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|error| pty_wire_error("Could not open the terminal.", error))?;
+    // The delivery travels as the one typed value: each family's `spawn`
+    // validates what it can refuse and applies what it owns. The dispatch is
+    // the registry's — no arm matches on the kind or names a family — and
+    // each family's workspace error mapping happens inside its own `spawn`,
+    // which is why none is applied here.
     let workspace_id = metadata.workspace_id.clone();
-    let workspace_path = command.cwd.clone();
-    let mut child = pair
-        .slave
-        .spawn_command(command.to_command_builder())
-        .map_err(|error| workspace_spawn_error(workspace_id.as_deref(), &workspace_path, error))?;
-
-    // portable-pty 0.9 exposes the native Windows process handle on Child,
-    // but does not expose CREATE_SUSPENDED. Assign immediately after spawn so
-    // the normal race window is only the interval between CreateProcessW and
-    // these calls. Closing it completely would require adapting portable-pty's
-    // ConPTY CreateProcessW seam to create suspended and resume after both
-    // assignments; that is deliberately not part of this milestone.
-    #[cfg(windows)]
-    let (process_job, os_handle) = {
-        let process_job = match JobObject::new() {
-            Ok(process_job) => process_job,
-            Err(error) => {
-                terminate_spawned_child(pair, child);
-                return Err(WireError::new(
-                    ErrorCode::Io,
-                    format!("Could not create the terminal process job: {error}"),
-                ));
-            }
-        };
-        let process_handle = match child.as_raw_handle() {
-            Some(process_handle) => process_handle,
-            None => {
-                terminate_spawned_child(pair, child);
-                return Err(WireError::new(
-                    ErrorCode::Io,
-                    "The terminal process has no native handle.",
-                ));
-            }
-        };
-        if let Err(error) = state
-            .process_job
-            .assign(process_handle)
-            .and_then(|()| process_job.assign(process_handle))
-        {
-            terminate_spawned_child(pair, child);
-            return Err(WireError::new(
-                ErrorCode::Io,
-                format!("Could not contain the terminal process: {error}"),
-            ));
-        }
-        let os_handle = match ProcessHandle::duplicate(process_handle) {
-            Ok(handle) => Some(handle),
-            Err(error) => {
-                eprintln!("could not duplicate terminal process handle for OS liveness: {error}");
-                None
-            }
-        };
-        (process_job, os_handle)
-    };
-
-    #[cfg(not(windows))]
-    let process_job = JobObject::new().map_err(|error| {
-        WireError::new(
-            ErrorCode::Io,
-            format!("Could not create the terminal process job: {error}"),
-        )
-    })?;
-    #[cfg(not(windows))]
-    let os_handle = None;
-
-    let killer = child.clone_killer();
-
-    let writer = match pair.master.take_writer() {
-        Ok(writer) => writer,
-        Err(_) => {
-            let mut killer = killer;
-            let _ = killer.kill();
-            drop(pair.master);
-            let _ = child.wait();
-            return Err(WireError::new(
-                ErrorCode::Io,
-                "Could not attach to the terminal.",
-            ));
-        }
-    };
-    let reader = match pair.master.try_clone_reader() {
-        Ok(reader) => reader,
-        Err(_) => {
-            let mut killer = killer;
-            let _ = killer.kill();
-            drop(writer);
-            drop(pair.master);
-            let _ = child.wait();
-            return Err(WireError::new(
-                ErrorCode::Io,
-                "Could not read from the terminal.",
-            ));
-        }
-    };
-
-    let spawned = SpawnedSession {
-        process_job,
-        master: Some(Arc::new(Mutex::new(pair.master))),
-        killer: Box::new(PtyKiller { inner: killer }),
-        switcher: None,
-        child: Box::new(PtyWaitableChild { child }),
-        writer: Arc::new(Mutex::new(writer)),
-        // A terminal's writer is a PTY: nothing there can open a path, so no
-        // structured prompt route.
-        image_sink: None,
-        static_image_sink: None,
-        reader,
-        reader_dispatch: None,
-        stderr: None,
-        permission_broker: None,
-        os_handle,
-        peer_session_id: None,
-        agent_version: None,
-        pending_delivery: None,
-        pending_codex_verify: None,
-    };
+    let spawned = provider::catalog_registry()
+        .provider_for_kind(&metadata.kind)
+        .spawn(
+            state,
+            command,
+            state.mcp.launch_config(&metadata.id),
+            delivery.clone(),
+            workspace_id.as_deref(),
+        )?;
     start_spawned_session(
         state,
         registry,
         metadata,
         owner,
         None,
-        None,
+        delivery.mode_id,
         spawned,
-        mcp_session,
+        mcp_session.take(),
     )
 }
 

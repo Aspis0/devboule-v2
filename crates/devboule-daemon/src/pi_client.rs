@@ -675,7 +675,7 @@ const PI_MODES: &[PiMode] = &[
     },
 ];
 
-fn mode_is_known(mode_id: &str) -> bool {
+pub(super) fn mode_is_known(mode_id: &str) -> bool {
     PI_MODES.iter().any(|mode| mode.id == mode_id)
 }
 

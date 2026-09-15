@@ -746,8 +746,9 @@ struct ClaudePromptPlan {
 /// fact the peer agreed to — there is no handshake to negotiate with. Read
 /// through the shared enum, not compared against a literal, so a later change
 /// to what "statically known" authorises cannot silently re-route this
-/// sender.
-fn claude_delivery() -> super::ImageDelivery {
+/// sender. `pub(super)` for the provider trait's `image_delivery`
+/// delegation (`provider.rs`) — the fact stays in the family module.
+pub(super) fn claude_delivery() -> super::ImageDelivery {
     super::ImageDelivery::StaticImageBlock
 }
 

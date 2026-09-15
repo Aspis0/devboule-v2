@@ -1475,8 +1475,10 @@ struct CodexPromptPlan {
 /// fact the peer agreed to — no negotiation, no capability probe. There is
 /// deliberately no probe here: an unknown method on this surface answers
 /// `-32600`, not `-32601`, so a method-not-found fallback would never fire and
-/// the feature would fail silent.
-fn codex_delivery() -> super::ImageDelivery {
+/// the feature would fail silent. `pub(super)` for the provider trait's
+/// `image_delivery` delegation (`provider.rs`) — the fact stays in the
+/// family module.
+pub(super) fn codex_delivery() -> super::ImageDelivery {
     super::ImageDelivery::StaticImageBlock
 }
 
