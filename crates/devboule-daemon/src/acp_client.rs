@@ -24,6 +24,7 @@ use crate::acp_view::{
     add_vendor_surface, catalog_from_config_options, classify_line, current_mode_id_from_update,
     has_standard_modes, merge_handshake_manifest, unmodeled_content_kind, view_from_envelope_in,
     AcpLineKind, ConfigOptionSurface, HandshakeManifest, ModelSwitchShape, PromptCapabilities,
+    SwitchControlShape,
 };
 use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
@@ -38,6 +39,7 @@ use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
     SpawnedSession, StderrSource, StdioWaitableChild,
 };
+use crate::profile_delivery::ProfileDelivery;
 
 const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
 /// Test/direct-command counterpart to [`COMMAND_ENV`]. A direct command has
@@ -51,6 +53,7 @@ pub const ACP_TURN_SILENCE: Duration = Duration::from_secs(60);
 const TURN_TIMEOUT_ENV: &str = "DEVBOULE_ACP_TURN_TIMEOUT_MS";
 const MAX_ACP_PERMISSION_LINE_BYTES: usize = 256 * 1024;
 const ACP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+const RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
 
 type AcpModeResponses = Arc<Mutex<HashMap<u64, Sender<Result<(), String>>>>>;
 
@@ -61,6 +64,151 @@ fn turn_silence() -> Duration {
         .map(Duration::from_millis)
         .filter(|duration| !duration.is_zero())
         .unwrap_or(ACP_TURN_SILENCE)
+}
+
+/// The bound one awaited response carries — the handshake rpcs and the
+/// creation-time confirm alike. Tests shorten it through the environment;
+/// production gets the fifteen seconds every other awaited rpc in the
+/// daemon carries.
+fn response_timeout() -> Duration {
+    std::env::var(RESPONSE_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(Duration::from_millis)
+        .filter(|duration| !duration.is_zero())
+        .unwrap_or(ACP_RESPONSE_TIMEOUT)
+}
+
+/// Whether the child's stdout can be read without blocking.
+///
+/// `Ok(true)` — bytes are in the pipe, so one `fill_buf` read returns
+/// immediately. `Ok(false)` — the pipe is open but empty, so wait. `Err` —
+/// the pipe is broken or unreadable: the child is gone (or going), and the
+/// read must surface that as the EOF sentence instead of the deadline.
+#[cfg(windows)]
+fn stdout_has_bytes_or_died(reader: &BufReader<ChildStdout>) -> Result<bool, ()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+    let mut available: u32 = 0;
+    let ok = unsafe {
+        PeekNamedPipe(
+            reader.get_ref().as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok != 0 {
+        Ok(available > 0)
+    } else {
+        Err(())
+    }
+}
+
+/// Where there is no pipe to peek, this question has no non-blocking answer.
+/// `Ok(true)` means one thing only: *proceed into the fill* — and on this
+/// platform that fill blocks until bytes arrive or the child dies, with the
+/// deadline unable to reach it. It must never be read as "bytes are
+/// available"; [`read_line_bounded`]'s platform paragraph states what bound
+/// does and does not exist here.
+#[cfg(not(windows))]
+fn stdout_blocks_until_bytes(_reader: &BufReader<ChildStdout>) -> Result<bool, ()> {
+    Ok(true)
+}
+
+/// Read one newline-terminated line, bounded by `deadline` — on Windows.
+///
+/// `BufRead::read_line` on a child's stdout has no timeout of its own, and
+/// an agent that takes the request off the wire and never answers it would
+/// hold the creation — the child, the reservation, the journal row and the
+/// caller's tool call — forever (the re-audit's P2-2). On Windows the read
+/// is assembled from non-blocking pieces: bytes already in the `BufReader`
+/// are consumed without I/O, the pipe is peeked before every fill, and —
+/// the re-audit's P2-3 — the deadline is checked at the top of every
+/// iteration, so an agent that keeps the pipe non-empty without a newline
+/// is refused as boundedly as a mute one, and the line never grows past
+/// [`MAX_ACP_PERMISSION_LINE_BYTES`]. A mute or dribbling agent becomes an
+/// `Io` refusal naming the wait; a dead agent becomes the same EOF sentence
+/// the plain read produced.
+///
+/// **On every other platform this read is not bounded.** There is no pipe
+/// peek in std to poll a child's stdout against a deadline, and no
+/// non-blocking mode without a libc this crate does not carry, so the
+/// deadline has no mechanism to act through: `deadline` is accepted to keep
+/// one call shape and is deliberately not honoured there. An agent that
+/// never answers — or answers in bytes that never form a newline — holds
+/// the creation on such a platform exactly the way the pre-fix read did.
+/// Windows is the only target this daemon is built and tested on; a
+/// platform added later must either give this function a real poll or keep
+/// this paragraph telling the truth.
+fn read_line_bounded(
+    reader: &mut BufReader<ChildStdout>,
+    deadline: Instant,
+) -> Result<String, WireError> {
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        // The deadline is consulted on every iteration, not only when the
+        // peek reports the pipe quiet (the re-audit's P2-3): a dribbler
+        // that keeps bytes flowing without a newline must hit the same
+        // bound a mute agent does.
+        if Instant::now() >= deadline {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "the ACP agent did not answer within {}s; the creation is refused rather than awaited without end",
+                    response_timeout().as_secs()
+                ),
+            ));
+        }
+        if line.len() > MAX_ACP_PERMISSION_LINE_BYTES {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "the ACP agent wrote more than {} bytes without a newline; the creation is refused rather than buffered without end",
+                    MAX_ACP_PERMISSION_LINE_BYTES
+                ),
+            ));
+        }
+        let buffered = reader.buffer();
+        if let Some(pos) = buffered.iter().position(|byte| *byte == b'\n') {
+            line.extend_from_slice(&buffered[..=pos]);
+            reader.consume(pos + 1);
+            return Ok(String::from_utf8_lossy(&line).into_owned());
+        }
+        line.extend_from_slice(buffered);
+        reader.consume(buffered.len());
+        // The Windows name asks what the peek sees; the other-platform name
+        // states that the following fill is the blocking step. Two names,
+        // because the honest answer differs per platform.
+        #[cfg(windows)]
+        let peek = stdout_has_bytes_or_died(reader);
+        #[cfg(not(windows))]
+        let peek = stdout_blocks_until_bytes(reader);
+        match peek {
+            Ok(true) => match reader.fill_buf() {
+                Ok(bytes) => {
+                    if bytes.is_empty() {
+                        return Err(WireError::new(
+                            ErrorCode::Io,
+                            "ACP agent closed stdout before the answer arrived.",
+                        ));
+                    }
+                }
+                Err(error) => return Err(acp_io_error(error)),
+            },
+            Ok(false) => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(()) => {
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    "ACP agent closed stdout before the answer arrived.",
+                ));
+            }
+        }
+    }
 }
 
 fn advertised_initialize_params() -> Result<serde_json::Value, WireError> {
@@ -405,9 +553,9 @@ pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
     mcp: Option<McpLaunchConfig>,
-    requested_mode: Option<String>,
+    delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, None, mcp, requested_mode)
+    spawn_process_with_load(state, command, None, mcp, delivery)
 }
 
 pub(super) fn spawn_process_resuming(
@@ -416,7 +564,13 @@ pub(super) fn spawn_process_resuming(
     peer_session_id: String,
     mcp: Option<McpLaunchConfig>,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, Some(peer_session_id), mcp, None)
+    spawn_process_with_load(
+        state,
+        command,
+        Some(peer_session_id),
+        mcp,
+        ProfileDelivery::none(),
+    )
 }
 
 fn spawn_process_with_load(
@@ -424,7 +578,7 @@ fn spawn_process_with_load(
     command: PtyCommand,
     load_session_id: Option<String>,
     mcp: Option<McpLaunchConfig>,
-    requested_mode: Option<String>,
+    delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
     let mut process = Command::new(&command.program);
     process
@@ -528,17 +682,26 @@ fn spawn_process_with_load(
         }
     };
     let mut reader = BufReader::new(stdout);
-    let (deferred, handshake, peer_session_id, agent_version) = match handshake(
+    let (mut deferred, mut handshake, peer_session_id, agent_version) = match handshake(
         &transport,
         &mut reader,
         &command.cwd,
         command.provider_id.clone(),
         load_session_id.as_deref(),
         mcp.as_ref(),
-        requested_mode.as_deref(),
+        delivery.mode_id.as_deref(),
     ) {
         Ok(handshake) => handshake,
         Err(error) => {
+            // A provider that died during its own startup — initialize,
+            // session/new, session/load, set_mode — never became a session
+            // (audit-2 §1): it is named as that, not as an I/O fault that
+            // reads like a protocol problem. The status is read **before**
+            // the teardown, through the same pre-kill poll the delivery arm
+            // uses: a post-kill `try_wait` sees our own kill's cached status
+            // and names every handshake failure an exit, including one the
+            // daemon caused on a live agent.
+            let exited = provider_exited_before_teardown(&process);
             let mut killer = AcpKiller {
                 process: Arc::clone(&process),
                 transport: Arc::clone(&transport),
@@ -554,16 +717,6 @@ fn spawn_process_with_load(
                 let _ = process.wait();
             }
             let stderr_lines = stderr_source.discard_and_join();
-            // A provider that died during its own startup — initialize,
-            // session/new, session/load, set_mode — never became a session
-            // (audit-2 §1): it is named as that, not as an I/O fault that
-            // reads like a protocol problem. `wait` above leaves the status
-            // cached, so `try_wait` answers without touching the process.
-            let exited = process
-                .lock()
-                .ok()
-                .and_then(|mut process| process.try_wait().ok().flatten())
-                .is_some();
             drop(process_job);
             if exited {
                 // The boundary is *named* on top of the provider's own words:
@@ -588,6 +741,98 @@ fn spawn_process_with_load(
     transport.set_model_switch_shape(handshake.shape);
     transport.set_prompt_capabilities(handshake.prompt_capabilities);
     transport.seed_manifest_from_event(handshake.event.as_ref());
+    // The profile's delivery, judged now that the handshake has spoken: the
+    // agent's declared modes and switch surfaces are what tell the daemon
+    // what can be delivered, and after the handshake the daemon is not
+    // guessing. A refusal tears the child down here — before it was ever a
+    // session — instead of running a configuration the card did not name.
+    let delivered_mode = handshake.event.as_ref().and_then(|event| match event {
+        SessionEvent::SessionManifest {
+            modes: Some(modes), ..
+        } => Some(modes.current_mode_id.clone()),
+        _ => None,
+    });
+    if let Err(error) = apply_profile_delivery(
+        &transport,
+        &mut reader,
+        &mut deferred,
+        &delivery,
+        delivered_mode.as_deref(),
+    ) {
+        // The refusal teardown is the handshake's, line for line: the same
+        // things are freed, and the same three behaviours hold — a provider
+        // that died during the delivery is named as that, its last stderr
+        // lines travel with the message, and the whole banner is redacted
+        // before it leaves for the caller (the R2a audit's F5).
+        //
+        // Whether the provider died on its own is read **before** the
+        // teardown: after the kill the exit status is ours, and the naming
+        // would fire for every refusal, including an agent that answered
+        // with an error and was then torn down.
+        // The same pre-kill read the handshake arm makes: a live agent that
+        // answered with an error must not be named as an exited provider.
+        let exited = provider_exited_before_teardown(&process);
+        let mut killer = AcpKiller {
+            process: Arc::clone(&process),
+            transport: Arc::clone(&transport),
+            permission_broker: Arc::clone(&transport.permission_broker),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        killer.kill();
+        drop(killer);
+        // AcpTransport owns the only stdin handle. Close it before waiting
+        // for a peer that may require EOF to finish its shutdown path.
+        drop(transport);
+        if let Ok(mut process) = process.lock() {
+            let _ = process.wait();
+        }
+        let stderr_lines = stderr_source.discard_and_join();
+        drop(process_job);
+        if exited {
+            return Err(redact_handshake_error(
+                WireError::new(
+                    error.code,
+                    format!(
+                        "provider exited during startup: {}",
+                        bounded_excerpt(&error.message, MAX_HANDSHAKE_MESSAGE_BYTES)
+                    ),
+                ),
+                &stderr_lines,
+                mcp.as_ref(),
+            ));
+        }
+        return Err(redact_handshake_error(error, &stderr_lines, mcp.as_ref()));
+    }
+    // The manifest the session is born with is the handshake event, so it is
+    // patched here with what the child actually took: a session created from
+    // a profile starts showing the delivered model, not the handshake's
+    // guess. The agent's own catalog pushes, if any follow, replay through
+    // the deferred lines and update it again.
+    if let Some(SessionEvent::SessionManifest {
+        current_model_id,
+        models,
+        ..
+    }) = handshake.event.as_mut()
+    {
+        if let Some(model_id) = delivery
+            .model_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            *current_model_id = Some(model_id.to_string());
+            if let Some(effort) = delivery
+                .thinking_option_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+            {
+                for model in models.iter_mut() {
+                    if model.model_id == model_id {
+                        model.current_effort = Some(effort.to_string());
+                    }
+                }
+            }
+        }
+    }
     let writer = AcpWriter {
         transport: Arc::clone(&transport),
         pending: Vec::new(),
@@ -635,6 +880,10 @@ fn spawn_process_with_load(
         os_handle,
         peer_session_id: Some(peer_session_id),
         agent_version,
+        // The delivery was applied inside `spawn_process`, before this value
+        // existed; nothing is left for the session reader to answer.
+        pending_delivery: None,
+        pending_codex_verify: None,
     })
 }
 
@@ -674,6 +923,17 @@ struct FollowupSwitch {
     alternate: Option<AlternateSwitch>,
     requested_model_id: Option<String>,
     requested_effort: Option<String>,
+}
+
+/// The switch requests one delivery put on the wire: the primary request's
+/// id, and the follow-up the session reader would send once the primary
+/// succeeded. The creation-time confirm walks both itself — its answers are
+/// read on the spot, because no reader exists yet — while the runtime switch
+/// leaves both to `dispatch_response` as before.
+#[derive(Clone, Debug)]
+struct SentSwitch {
+    primary_id: u64,
+    followup: Option<FollowupSwitch>,
 }
 
 /// A pending switch carries the requested values and the one permitted
@@ -1073,6 +1333,44 @@ impl AcpTransport {
         });
     }
 
+    /// Reflect a creation-time confirmed switch in the remembered manifest.
+    /// The runtime switch reaches the same state through
+    /// `complete_vendor_switch`/`complete_config_switch`, which also publish
+    /// to a live runtime; nothing is published here — the session does not
+    /// exist yet — but the manifest the handshake seeded must not go on
+    /// naming a model the child has already been switched away from.
+    fn patch_manifest_current(&self, model_id: Option<String>, effort: Option<String>) {
+        let Some(model_id) = model_id else {
+            return;
+        };
+        let Some(SessionEvent::SessionManifest {
+            provider_id,
+            models,
+            modes,
+            ..
+        }) = self.last_manifest()
+        else {
+            return;
+        };
+        let models = models
+            .into_iter()
+            .map(|mut model| {
+                if model.model_id == model_id {
+                    if let Some(effort) = &effort {
+                        model.current_effort = Some(effort.clone());
+                    }
+                }
+                model
+            })
+            .collect();
+        self.remember_manifest(&SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id: Some(model_id),
+            models,
+            modes,
+        });
+    }
+
     fn override_manifest_effort(&self, event: SessionEvent) -> SessionEvent {
         let Some(effort) = self.current_effort() else {
             return event;
@@ -1314,10 +1612,16 @@ impl ModelSwitcher for AcpSwitcher {
         let requested_effort = effort.filter(|value| !value.is_empty()).map(str::to_string);
 
         if let Some(model_id) = requested_model {
-            return self.set_requested_model(shape, model_id, requested_effort);
+            // The runtime switch's answers are dispatched by the session
+            // reader (alternates, follow-ups, manifest re-emission). Only
+            // the creation-time confirm walks the sent requests itself; see
+            // `apply_profile_delivery`.
+            self.set_requested_model(shape, model_id, requested_effort)?;
+            return Ok(());
         }
         if let Some(effort) = requested_effort {
-            return self.set_requested_effort(shape, effort);
+            self.set_requested_effort(shape, effort)?;
+            return Ok(());
         }
         let current_model = self.transport.current_model_id().ok_or_else(|| {
             WireError::new(
@@ -1326,6 +1630,7 @@ impl ModelSwitcher for AcpSwitcher {
             )
         })?;
         self.set_requested_model(shape, current_model, None)
+            .map(|_sent| ())
     }
 
     fn set_mode(&self, mode_id: &str) -> Result<(), WireError> {
@@ -1353,7 +1658,7 @@ impl AcpSwitcher {
         shape: ModelSwitchShape,
         model_id: String,
         effort: Option<String>,
-    ) -> Result<(), WireError> {
+    ) -> Result<SentSwitch, WireError> {
         let effort_uses_config = shape.effort.config.is_some();
         let followup = if effort_uses_config {
             effort.as_ref().and_then(|effort| {
@@ -1379,7 +1684,8 @@ impl AcpSwitcher {
         match shape.model.config.as_ref() {
             Some(config) => {
                 let alternate = self.vendor_model_alternate(&shape, &model_id, effort.clone());
-                self.transport
+                let primary_id = self
+                    .transport
                     .request_set_config_option(
                         &config.id,
                         &model_id,
@@ -1387,9 +1693,13 @@ impl AcpSwitcher {
                         Some(model_id.clone()),
                         effort.clone(),
                         alternate,
-                        followup,
+                        followup.clone(),
                     )
                     .map_err(acp_io_error)?;
+                Ok(SentSwitch {
+                    primary_id,
+                    followup,
+                })
             }
             None => {
                 // The old vendor catalog sometimes carries a per-model
@@ -1405,19 +1715,23 @@ impl AcpSwitcher {
                         .or_else(|| self.transport.default_effort_for_model(&model_id))
                 };
                 let alternate = self.config_model_alternate(&shape, &model_id);
-                self.transport
-                    .request_set_model(model_id, vendor_effort, alternate, followup)
+                let primary_id = self
+                    .transport
+                    .request_set_model(model_id, vendor_effort, alternate, followup.clone())
                     .map_err(acp_io_error)?;
+                Ok(SentSwitch {
+                    primary_id,
+                    followup,
+                })
             }
         }
-        Ok(())
     }
 
     fn set_requested_effort(
         &self,
         shape: ModelSwitchShape,
         effort: String,
-    ) -> Result<(), WireError> {
+    ) -> Result<SentSwitch, WireError> {
         let current_model = self.transport.current_model_id();
         match shape.effort.config.as_ref() {
             Some(config) => {
@@ -1435,7 +1749,8 @@ impl AcpSwitcher {
                     )),
                     None => None,
                 };
-                self.transport
+                let primary_id = self
+                    .transport
                     .request_set_config_option(
                         &config.id,
                         &effort,
@@ -1446,6 +1761,10 @@ impl AcpSwitcher {
                         None,
                     )
                     .map_err(acp_io_error)?;
+                Ok(SentSwitch {
+                    primary_id,
+                    followup: None,
+                })
             }
             None => {
                 let model_id = current_model.ok_or_else(|| {
@@ -1455,12 +1774,16 @@ impl AcpSwitcher {
                     )
                 })?;
                 let alternate = self.config_effort_alternate(&shape, &effort);
-                self.transport
+                let primary_id = self
+                    .transport
                     .request_set_model(model_id, Some(effort), alternate, None)
                     .map_err(acp_io_error)?;
+                Ok(SentSwitch {
+                    primary_id,
+                    followup: None,
+                })
             }
         }
-        Ok(())
     }
 
     fn vendor_model_alternate(
@@ -1589,6 +1912,256 @@ type HandshakeResult = (
     String,
     Option<String>,
 );
+
+/// The creation-time delivery for one ACP child, run after the handshake:
+/// this is the point where the agent's own declarations — its modes and its
+/// model/effort switch surfaces — tell the daemon what can be delivered, and
+/// after the handshake the daemon is not guessing. Everything that cannot be
+/// delivered is refused here; a child that exists was delivered everything
+/// its card printed.
+///
+/// Absent vocabulary and unknown id are two different refusals, per field: a
+/// model sent to an agent that declares no switch surface is the absence
+/// sentence, a model outside the agent's declared values is the mismatch
+/// sentence, and the same split holds for the thinking option.
+fn apply_profile_delivery(
+    transport: &Arc<AcpTransport>,
+    reader: &mut BufReader<ChildStdout>,
+    deferred: &mut Vec<serde_json::Value>,
+    delivery: &ProfileDelivery,
+    delivered_mode: Option<&str>,
+) -> Result<(), WireError> {
+    // `autoAccept` is a constraint on which mode is delivered, not a value to
+    // hand over: the delivered mode must be one the daemon's own broker
+    // answers. An agent whose modes are provider-authored prose cannot have
+    // the fact established, and an unestablishable permission fact is
+    // refused, never waved through.
+    if delivery.auto_accept {
+        let mode_id = delivered_mode.ok_or_else(|| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                "the profile asks this agent to approve its own permission prompts, but the agent's handshake declared no modes the daemon can judge; the creation is refused",
+            )
+        })?;
+        if !crate::provider_catalog::mode_is_auto_answered(mode_id) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "the profile asks this agent to approve its own permission prompts and also to start in mode '{mode_id}', which asks the human; the two contradict, so the creation is refused"
+                ),
+            ));
+        }
+    }
+    if delivery.model_id.is_none() && delivery.thinking_option_id.is_none() {
+        return Ok(());
+    }
+    let shape = transport.model_switch_shape();
+    let Some(shape) = shape else {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "the profile names a model, but this agent's session declares no model or effort switch surface; the creation is refused rather than started on a different model",
+        ));
+    };
+    if let Some(model_id) = delivery.model_id.as_deref() {
+        validate_acp_model_choice(&shape.model, model_id)?;
+    }
+    if let Some(effort) = delivery.thinking_option_id.as_deref() {
+        validate_acp_effort_choice(&shape.effort, delivery.model_id.as_deref(), effort)?;
+    }
+    // Deliver on the same wire the runtime switch uses, so the verbs and the
+    // pending-switch bookkeeping are the proven ones. The send is
+    // synchronous — and so is the **confirmation**: the response is read
+    // here, the way the handshake reads its answers, because the session
+    // reader that dispatches responses does not exist yet. A creation that
+    // reported success now would promise a model the child may never run
+    // (the R2a audit's F3): an agent that answers the switch with an error
+    // refuses the creation instead.
+    let switcher = AcpSwitcher {
+        transport: Arc::clone(transport),
+    };
+    let requested_model = delivery
+        .model_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let requested_effort = delivery
+        .thinking_option_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let sent = if let Some(model_id) = &requested_model {
+        switcher.set_requested_model(shape, model_id.clone(), requested_effort.clone())?
+    } else if let Some(effort) = &requested_effort {
+        switcher.set_requested_effort(shape, effort.clone())?
+    } else {
+        return Ok(());
+    };
+    confirm_switch(transport, reader, deferred, &sent, delivery)?;
+    // What the card named is now what the transport reports, so the runtime
+    // switcher starts from the delivered values rather than the handshake's
+    // guess.
+    if let Some(model_id) = &requested_model {
+        transport.update_current_model_id(Some(model_id.clone()));
+    }
+    if let Some(effort) = &requested_effort {
+        transport.update_current_effort(Some(effort.clone()));
+    }
+    transport.patch_manifest_current(requested_model, requested_effort);
+    Ok(())
+}
+
+/// The creation-time switch confirmation, primary and follow-up: each
+/// response is read on the spot and its pending entries retired here,
+/// because the reader that would dispatch them never sees this response. An
+/// error answer — or a peer that dies waiting — is the creation's refusal.
+/// Whether the provider has already exited on its own, read **before** the
+/// teardown: after the kill the exit status is ours, and naming from a
+/// post-kill read would fire for every refusal, including an agent that
+/// answered with an error and was then torn down — which is exactly what the
+/// handshake arm's old post-kill read did (the re-audit's P3-1 note). A child
+/// whose stdout the daemon just read EOF from is on its way out: its exit
+/// becomes observable a beat after the pipe closes, hence the short bounded
+/// poll rather than one `try_wait`.
+fn provider_exited_before_teardown(process: &Arc<Mutex<std::process::Child>>) -> bool {
+    for _ in 0..40 {
+        let exited = process
+            .lock()
+            .ok()
+            .and_then(|mut process| process.try_wait().ok().flatten())
+            .is_some();
+        if exited {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
+fn confirm_switch(
+    transport: &Arc<AcpTransport>,
+    reader: &mut BufReader<ChildStdout>,
+    deferred: &mut Vec<serde_json::Value>,
+    sent: &SentSwitch,
+    delivery: &ProfileDelivery,
+) -> Result<(), WireError> {
+    confirm_one_switch(transport, reader, deferred, sent.primary_id, delivery)?;
+    if let Some(followup) = &sent.followup {
+        let followup_id = match &followup.request {
+            SwitchRequest::Vendor { model_id, effort } => transport
+                .request_set_model(model_id.clone(), effort.clone(), None, None)
+                .map_err(acp_io_error)?,
+            SwitchRequest::Config {
+                config_id,
+                value,
+                control,
+            } => transport
+                .request_set_config_option(config_id, value, *control, None, None, None, None)
+                .map_err(acp_io_error)?,
+        };
+        confirm_one_switch(transport, reader, deferred, followup_id, delivery)?;
+    }
+    Ok(())
+}
+
+fn confirm_one_switch(
+    transport: &Arc<AcpTransport>,
+    reader: &mut BufReader<ChildStdout>,
+    deferred: &mut Vec<serde_json::Value>,
+    id: u64,
+    delivery: &ProfileDelivery,
+) -> Result<(), WireError> {
+    let response = read_response_envelope(transport, reader, id, deferred);
+    transport.remove_pending_id(id);
+    transport.remove_model_switch(id);
+    let response = response?;
+    // An error **object** is the agent's own answer to the switch: the card
+    // promised what was delivered, the agent would not take it, so the
+    // creation is refused rather than started on a different model. A
+    // transport failure above keeps its `Io` code, because that is not a
+    // refusal — it is a death or a broken pipe, and the naming downstream
+    // (or the plain pipe error) has to be able to say so.
+    if let Some(error) = response.get("error") {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "the agent refused the delivered model '{}' the card promised, so the creation is refused rather than started on a different model: {}",
+                delivery.model_id.as_deref().unwrap_or(""),
+                acp_request_error_message(error)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The model axis of the ACP refusal: absence of any declared surface is one
+/// sentence, an id outside the agent's declared values is the other. An
+/// empty declared list is no vocabulary — the agent's own answer to the
+/// switch is then the confirmation, and this check refuses nothing.
+pub(super) fn validate_acp_model_choice(
+    shape: &SwitchControlShape,
+    model_id: &str,
+) -> Result<(), WireError> {
+    let declared: Option<&Vec<String>> = match (shape.config.as_ref(), shape.vendor.as_ref()) {
+        (Some(config), _) => Some(&config.values),
+        (None, Some(vendor)) => Some(&vendor.values),
+        (None, None) => None,
+    };
+    let Some(declared) = declared else {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "this agent declares no model switch surface; the profile names a model, so the creation is refused rather than started on a different model",
+        ));
+    };
+    if !declared.is_empty() && !declared.iter().any(|value| value == model_id) {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("ACP model '{model_id}' is not among the model values this agent declares; the creation is refused rather than started on a different model"),
+        ));
+    }
+    Ok(())
+}
+
+/// The thinking axis of the ACP refusal, with the same absence/mismatch
+/// split. Vendor effort values are per model, so they judge the choice only
+/// when the delivered model declares any; the config-option surface's values
+/// are the option's own vocabulary.
+pub(super) fn validate_acp_effort_choice(
+    shape: &SwitchControlShape,
+    model_id: Option<&str>,
+    effort: &str,
+) -> Result<(), WireError> {
+    let effort_values: Option<Option<&Vec<String>>> = if let Some(config) = shape.config.as_ref() {
+        Some(Some(&config.values))
+    } else {
+        shape.vendor.as_ref().map(|vendor| {
+            model_id.and_then(|model_id| {
+                vendor
+                    .values_by_model
+                    .iter()
+                    .find(|(model, _)| model == model_id)
+                    .map(|(_, values)| values)
+            })
+        })
+    };
+    let Some(effort_values) = effort_values else {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "this agent declares no thinking-option surface; the profile names one, so the creation is refused",
+        ));
+    };
+    // Values the agent actually declares judge the choice; an empty list
+    // is no vocabulary, and the agent's own answer to the switch is the
+    // confirmation.
+    if let Some(effort_values) = effort_values {
+        if !effort_values.is_empty() && !effort_values.iter().any(|value| value == effort) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("ACP thinking option '{effort}' is not among the thinking options this agent declares; the creation is refused"),
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn handshake(
     transport: &AcpTransport,
@@ -1723,15 +2296,34 @@ fn read_response(
     expected_id: u64,
     deferred: &mut Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, WireError> {
+    let value = read_response_envelope(transport, reader, expected_id, deferred)?;
+    if let Some(error) = value.get("error") {
+        return Err(WireError::new(
+            ErrorCode::Io,
+            acp_request_error_message(error),
+        ));
+    }
+    Ok(value)
+}
+
+/// The raw response naming `expected_id`: lines that name anything else are
+/// deferred, a closed stdout and a malformed line are transport errors, and
+/// an error **object** is returned as the value, because one caller — the
+/// creation-time confirm — must tell an agent's refusal apart from a
+/// transport failure. The handshake path goes through [`read_response`],
+/// which converts the error object for it.
+fn read_response_envelope(
+    transport: &AcpTransport,
+    reader: &mut BufReader<ChildStdout>,
+    expected_id: u64,
+    deferred: &mut Vec<serde_json::Value>,
+) -> Result<serde_json::Value, WireError> {
+    // One deadline per awaited response: every read below is made against
+    // it, so the handshake rpcs and the confirm share the bound (the
+    // re-audit's P2-2).
+    let deadline = Instant::now() + response_timeout();
     loop {
-        let mut line = String::new();
-        let count = reader.read_line(&mut line).map_err(acp_io_error)?;
-        if count == 0 {
-            return Err(WireError::new(
-                ErrorCode::Io,
-                "ACP agent closed stdout during handshake.",
-            ));
-        }
+        let line = read_line_bounded(reader, deadline)?;
         let line = line.trim_end_matches('\n').trim_end_matches('\r');
         let value = match serde_json::from_str::<serde_json::Value>(line) {
             Ok(value) => value,
@@ -1747,12 +2339,6 @@ fn read_response(
         if !transport.response_seen(expected_id) {
             eprintln!("skipping ACP response with an unknown id {expected_id}");
             continue;
-        }
-        if let Some(error) = value.get("error") {
-            return Err(WireError::new(
-                ErrorCode::Io,
-                acp_request_error_message(error),
-            ));
         }
         return Ok(value);
     }
@@ -4504,6 +5090,115 @@ mod tests {
             error.message.len() <= MAX_HANDSHAKE_ERROR_BYTES,
             "the banner fits the bound it declares, got {} bytes",
             error.message.len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::{validate_acp_effort_choice, validate_acp_model_choice};
+    use crate::acp_view::{ConfigOptionSurface, SwitchControlShape, VendorSwitchSurface};
+
+    fn vendor_surface(values: &[&str]) -> SwitchControlShape {
+        SwitchControlShape {
+            vendor: Some(VendorSwitchSurface {
+                values: values.iter().map(|value| value.to_string()).collect(),
+                values_by_model: Vec::new(),
+            }),
+            config: None,
+        }
+    }
+
+    fn config_surface(id: &str, values: &[&str]) -> SwitchControlShape {
+        SwitchControlShape {
+            vendor: None,
+            config: Some(ConfigOptionSurface {
+                id: id.to_string(),
+                values: values.iter().map(|value| value.to_string()).collect(),
+            }),
+        }
+    }
+
+    fn no_surface() -> SwitchControlShape {
+        SwitchControlShape {
+            vendor: None,
+            config: None,
+        }
+    }
+
+    /// Absence of any declared surface is one sentence; an id outside the
+    /// declared values is the other. An agent that declares no values at all
+    /// is not judgeable, and the check refuses nothing.
+    #[test]
+    fn acp_model_absence_and_mismatch_are_two_distinct_refusals() {
+        let error = validate_acp_model_choice(&no_surface(), "stub-model")
+            .expect_err("no surface cannot deliver a model");
+        assert!(
+            error.message.contains("declares no model switch surface"),
+            "the absence sentence: {}",
+            error.message
+        );
+
+        let shape = vendor_surface(&["stub-model", "stub-model-new"]);
+        let error = validate_acp_model_choice(&shape, "stub-bogus")
+            .expect_err("an undeclared model id must be refused");
+        assert!(
+            error.message.contains("is not among the model values"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("declares no model switch surface"),
+            "the two sentences must stay distinct: {}",
+            error.message
+        );
+
+        // A surface with no declared values: the agent's own answer is the
+        // confirmation, so nothing is refused here.
+        validate_acp_model_choice(&vendor_surface(&[]), "stub-model")
+            .expect("unjudgeable, not refused");
+        validate_acp_model_choice(&config_surface("model", &["m1"]), "m1").expect("declared");
+    }
+
+    #[test]
+    fn acp_thinking_absence_and_mismatch_are_two_distinct_refusals() {
+        let error = validate_acp_effort_choice(&no_surface(), Some("stub-model"), "high")
+            .expect_err("no surface cannot deliver a thinking option");
+        assert!(
+            error
+                .message
+                .contains("declares no thinking-option surface"),
+            "the absence sentence: {}",
+            error.message
+        );
+
+        // Vendor effort values are per model: only the delivered model's own
+        // declared values judge the choice.
+        let mut shape = vendor_surface(&["stub-model"]);
+        shape.vendor.as_mut().expect("vendor").values_by_model =
+            vec![("stub-model".to_string(), vec!["high".to_string()])];
+        let error = validate_acp_effort_choice(&shape, Some("stub-model"), "bogus")
+            .expect_err("an undeclared effort must be refused");
+        assert!(
+            error.message.contains("is not among the thinking options"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+        // A different model declared nothing, so the choice is unjudgeable.
+        validate_acp_effort_choice(&shape, Some("stub-model-new"), "high")
+            .expect("the delivered model declared no values");
+        // No model delivered: the per-model judgment cannot run.
+        validate_acp_effort_choice(&shape, None, "high").expect("unjudgeable, not refused");
+
+        // The config-option surface judges from the option's own values.
+        let config = config_surface("thought-level", &["low", "high"]);
+        validate_acp_effort_choice(&config, Some("stub-model"), "low").expect("declared");
+        let error = validate_acp_effort_choice(&config, Some("stub-model"), "bogus")
+            .expect_err("an undeclared config value must be refused");
+        assert!(
+            error.message.contains("is not among the thinking options"),
+            "{}",
+            error.message
         );
     }
 }

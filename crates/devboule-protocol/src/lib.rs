@@ -20,8 +20,8 @@
 //!   versions and which binary to update. Neither side may hang or try to
 //!   parse the rest of the stream as the other version.
 //!
-//! This crate speaks only version [`PROTOCOL_VERSION`] (4), with
-//! [`PROTOCOL_MIN_VERSION`] also 4. Older dialects are refused: required
+//! This crate speaks only version [`PROTOCOL_VERSION`] (5), with
+//! [`PROTOCOL_MIN_VERSION`] also 5. Older dialects are refused: required
 //! fields (`created_at_ms`, `Workspace.path`, subscription identity) were
 //! added and the daemon always serializes the current struct, so agreeing on
 //! an older version
@@ -101,23 +101,25 @@ pub use ids::{
 };
 pub use messages::{
     validate_display_name, AgentMessageState, AgentProfile, AgentProfilesDocument,
-    AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits,
-    JournalRetention, JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole,
-    PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind,
-    RetentionLimit, RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope,
-    ToolDescriptor, ToolPolicyEntry, Unreclaimable, PEER_CAPS, PEER_DEFAULT_CAPS,
+    AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody, DelegationSource,
+    JournalLimits, JournalRetention, JournalSessionUsage, JournalStats, JournalUsage,
+    PairingSecret, PeerRole, PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState,
+    RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource, SelfInfo,
+    SessionEventEnvelope, ToolDescriptor, ToolPolicyEntry, Unreclaimable, VocabularyModels,
+    VocabularyModes, VocabularyOrigin, VocabularySource, VocabularyState, PEER_CAPS,
+    PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
 pub use session::{
     cursor_replay_ok, ActiveTurnBehavior, AgentActivityState, AgentBackgroundTask, AgentTaskState,
     AgentTaskStatus, Attention, AttentionReason, AvailableCommandView, CreateAgentCaps,
-    CreateAgentCard, Cursor, CursorShape, FinishArtifact, FinishArtifactPart,
-    FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar, PermissionOption,
-    PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor, Session,
-    SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
+    CreateAgentCard, Cursor, CursorShape, DelegationRunState, DelegationState, FinishArtifact,
+    FinishArtifactPart, FinishArtifactPartMetadata, NoticeSeverity, PermissionEnvVar,
+    PermissionOption, PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor,
+    Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
     SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState, SessionStateSnapshot,
-    SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage,
+    SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage, UnattendedState,
 };
 
 /// Current protocol dialect spoken by this crate.
@@ -125,7 +127,12 @@ pub use session::{
 /// A field added with `#[serde(default)]` is backward compatible and needs
 /// no bump (`cwd`). A required field is a breaking change and requires
 /// bumping both this constant and [`PROTOCOL_MIN_VERSION`] (`created_at_ms`,
-/// `Workspace.path`).
+/// `Workspace.path`), and so is a field that changes **type** with the key
+/// kept: 4 → 5 moved `unattended` from an optional JSON boolean to the
+/// `UnattendedState` string written on every `Session` /
+/// `SessionStateSnapshot` frame — `serde(default)` covers an absent key, not
+/// a key present with the wrong type, so a 4-speaking peer passed the old
+/// handshake and died on the first session frame.
 /// The daemon always serializes the current struct regardless of the agreed
 /// version, so negotiating down does not produce an old-shaped payload;
 /// refusing the handshake is the only protection.
@@ -134,11 +141,11 @@ pub use session::{
 /// `agent_background_tasks_changed`): the daemon and app are shipped together,
 /// and these output-only tags do not change existing request shapes. Revisit
 /// this if peers become independently versioned.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.
-pub const PROTOCOL_MIN_VERSION: u32 = 4;
+pub const PROTOCOL_MIN_VERSION: u32 = 5;
 
 /// Well-known capability names. These are strings on the wire so a peer that
 /// does not know a name can still complete the handshake.
@@ -210,6 +217,32 @@ pub mod caps {
     /// may use it is `peer_allows`, not this list: a paired device is refused
     /// both requests whichever capability it holds.
     pub const AGENT_PROFILES: &str = "agent_profiles";
+
+    /// The provider-vocabulary query (`ProviderVocabularyGet`): what one
+    /// provider offers — its models and modes — so the profile form can be
+    /// authored from real vocabulary instead of free text.
+    ///
+    /// In both lists for the reason `agent_profiles` is: the handshake
+    /// negotiates the intersection, so a name only one side offers is never
+    /// negotiated, and the app reads this name to tell "this daemon predates
+    /// the query" from "this provider published no vocabulary" — two absences
+    /// the form must not collapse into one answer. Whether a *connection* may
+    /// use it is `peer_allows`, not this list: a paired device is refused the
+    /// request whichever capability it holds.
+    pub const PROVIDER_VOCABULARY: &str = "provider_vocabulary";
+
+    /// The permission-delegation switch (`DelegationGet`/`DelegationSet`):
+    /// whether an agent that created a child may answer that child's
+    /// permission cards.
+    ///
+    /// In both lists for the reason `agent_profiles` is: the handshake
+    /// negotiates the intersection, so a name only one side offers is never
+    /// negotiated, and the client helpers that refuse
+    /// `delegation_get`/`delegation_set` without this name would refuse every
+    /// call against every daemon. Whether a *connection* may use it is
+    /// `peer_allows`, not this list: a paired device is refused both requests
+    /// whichever capability it holds.
+    pub const PERMISSION_DELEGATION: &str = "permission_delegation";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -550,6 +583,16 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // whether the daemon serves `AgentProfilesGet`/`AgentProfilesSet` rather
     // than asking a daemon that would refuse.
     capabilities.push(Capability::new(caps::AGENT_PROFILES));
+    // Same pairing again, for the vocabulary the profile form is authored
+    // from: the app offers the name so the intersection keeps it, and reads
+    // it to tell a daemon that predates `ProviderVocabularyGet` from a
+    // provider that published no vocabulary.
+    capabilities.push(Capability::new(caps::PROVIDER_VOCABULARY));
+    // Same pairing again, for the delegation switch: the app offers the name
+    // so the intersection keeps it, and reads it to know whether the daemon
+    // serves `DelegationGet`/`DelegationSet` rather than asking a daemon that
+    // would refuse.
+    capabilities.push(Capability::new(caps::PERMISSION_DELEGATION));
     capabilities
 }
 
@@ -585,6 +628,14 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // intersection keeps it, and reads it before asking a daemon that predates
     // `AgentProfilesGet`/`AgentProfilesSet`.
     capabilities.push(Capability::new(caps::AGENT_PROFILES));
+    // Same pairing, for the vocabulary query: the app offers it so the
+    // intersection keeps it, and reads it before asking a daemon that predates
+    // `ProviderVocabularyGet`.
+    capabilities.push(Capability::new(caps::PROVIDER_VOCABULARY));
+    // Same pairing, for the delegation switch: the app offers it so the
+    // intersection keeps it, and reads it before asking a daemon that predates
+    // `DelegationGet`/`DelegationSet`.
+    capabilities.push(Capability::new(caps::PERMISSION_DELEGATION));
     capabilities
 }
 
@@ -613,8 +664,8 @@ mod tests {
 
     #[test]
     fn protocol_version_and_min_match() {
-        assert_eq!(PROTOCOL_VERSION, 4);
-        assert_eq!(PROTOCOL_MIN_VERSION, 4);
+        assert_eq!(PROTOCOL_VERSION, 5);
+        assert_eq!(PROTOCOL_MIN_VERSION, 5);
     }
 
     #[test]
@@ -682,6 +733,53 @@ mod tests {
             agreed.iter().any(|cap| cap.as_str() == caps::AGENT_CREATE),
             "the negotiated set must keep agent_create: {:?}",
             agreed.iter().map(Capability::as_str).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_provider_vocabulary_capability() {
+        // Both lists, for the reason the tests above state: the handshake
+        // negotiates the intersection, so a name only one side offers is never
+        // negotiated, and the app's only signal that a daemon cannot answer the
+        // vocabulary query would be an unknown-method error — an absence that
+        // must stay distinct from the query answering `absent`.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::PROVIDER_VOCABULARY));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::PROVIDER_VOCABULARY));
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(
+            agreed
+                .iter()
+                .any(|cap| cap.as_str() == caps::PROVIDER_VOCABULARY),
+            "the negotiated set must keep provider_vocabulary: {agreed:?}"
+        );
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_permission_delegation_capability() {
+        // Both lists, for the reason the tests above state: the handshake
+        // negotiates the intersection, so a name only one side offers is never
+        // negotiated, and the client helpers that refuse
+        // `delegation_get`/`delegation_set` without it would refuse every call.
+        // The switch is the authority gate for delegated permission answers,
+        // so its capability is exactly the kind the `text/markdown` incident
+        // was about: a name missing from either list silently severs the
+        // surface instead of failing loudly.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::PERMISSION_DELEGATION));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::PERMISSION_DELEGATION));
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(
+            agreed
+                .iter()
+                .any(|cap| cap.as_str() == caps::PERMISSION_DELEGATION),
+            "the negotiated set must keep permission_delegation: {agreed:?}"
         );
     }
 

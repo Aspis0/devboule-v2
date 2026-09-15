@@ -1823,6 +1823,11 @@ mod tests {
             origin: devboule_protocol::SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: devboule_protocol::UnattendedState::No,
+            labels: Default::default(),
+            delegation: None,
         }]);
         registry.reattach_all(&new_client);
 
@@ -1874,6 +1879,11 @@ mod tests {
             origin: devboule_protocol::SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: devboule_protocol::UnattendedState::No,
+            labels: Default::default(),
+            delegation: None,
         }]);
         registry.reattach_all(&new_client);
 
@@ -2108,6 +2118,11 @@ mod tests {
             origin: devboule_protocol::SessionOrigin::local(),
             display_name: None,
             created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: devboule_protocol::UnattendedState::No,
+            labels: Default::default(),
+            delegation: None,
         }
     }
 

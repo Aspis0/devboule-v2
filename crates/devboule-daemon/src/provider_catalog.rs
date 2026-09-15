@@ -202,12 +202,24 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         "Lists live Devboule agent sessions known by the daemon, with their display name, the session that created them, their lifecycle state and their creation depth.",
     ),
     (
+        MCP_LIST_PROFILES_TOOL,
+        "Lists the agent profiles the human enabled for agents, in the human's own order, with the note that says when to use each one. Call this before devboule_create_agent. Each profile's unattended field is a prediction: \"yes\" means a session created from it approves its own permission prompts, \"no\" means it asks the human, \"unknown\" means Devboule cannot promise either way - the child may stop on its first permission card.",
+    ),
+    (
         MCP_SEND_MESSAGE_TOOL,
         "Sends a message to one live Devboule agent session.",
     ),
     (
         MCP_CREATE_AGENT_TOOL,
-        "Creates a new Devboule agent session from a preset and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id and display name.",
+        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name.",
+    ),
+    (
+        MCP_SET_AGENT_PROFILE_TOOL,
+        "Moves one of your own live child sessions onto a profile the human enabled for agents: the child is asked to switch to the profile's mode, then to the profile's model and thinking option, and the profile is recorded on the child. The human is never asked, and the child is never restarted; a provider that refuses the switch refuses the move. Moving onto a profile that runs unattended is permanent - the child's row keeps the marker even if it is moved back.",
+    ),
+    (
+        MCP_ANSWER_PERMISSION_TOOL,
+        "Answers one pending permission card of one of your own live children, when the human has turned permission delegation on. The card reaches you as an agent_permission_request notice naming its cardId. outcome is allow_once or deny - never anything durable, and never a card that is not your child's. The human still sees the card either way.",
     ),
 ];
 
@@ -224,6 +236,35 @@ pub const MCP_SEND_MESSAGE_TOOL: &str = "devboule_send_message";
 /// stored policy may turn agent creation off for a provider, and turning it off
 /// is the safe direction.
 pub const MCP_CREATE_AGENT_TOOL: &str = "devboule_create_agent";
+/// The move tool (slice 5b §2, Pass A): a creator moves its own live child
+/// onto a named ticked profile.
+///
+/// Served to every MCP-capable provider, subject to the provider tool policy
+/// like `devboule_create_agent`. The name carries "profile" on purpose — it is
+/// the one write-shaped companion to the create tool on this surface — but the
+/// profile store is only ever **read** through the same resolver the create
+/// tool uses; nothing a caller sends reaches the store's own RPCs, and the
+/// authority for the move is the `created_by` link, never the name.
+pub const MCP_SET_AGENT_PROFILE_TOOL: &str = "devboule_set_agent_profile";
+/// The delegated permission answer (`slice 5b`).
+///
+/// Served to every MCP-capable provider, subject to the provider tool policy
+/// like `devboule_send_message` and `devboule_create_agent`: a stored policy
+/// may take the answer tool away from a provider, and taking it away is the
+/// safe direction. The name carries neither `delegat` nor `grant` on purpose
+/// — the broker table must not reach the delegation switch, which has no
+/// tool at all.
+pub const MCP_ANSWER_PERMISSION_TOOL: &str = "devboule_answer_permission";
+/// The read-only profile-list tool (`create-from-profile`).
+///
+/// Served to every MCP-capable provider, and **always on**, like the roster
+/// tool: the creation tool names a profile and nothing else, so a caller that
+/// cannot list the profiles cannot create anything at all. That is the same
+/// reasoning the always-on roster tool gets — the tool that is the only way to
+/// say who to talk to is the tool a stored policy must not be able to take
+/// away — and it is why [`crate::tool_policy::is_tool_enabled`] answers for
+/// this name before it reads a policy.
+pub const MCP_LIST_PROFILES_TOOL: &str = "devboule_list_profiles";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`] (`S5` §2).
 ///
@@ -232,24 +273,28 @@ pub const MCP_CREATE_AGENT_TOOL: &str = "devboule_create_agent";
 /// broker's own list of known parameters is read *out of this document* — so a
 /// parameter can never be described here and unchecked there.
 ///
-/// There is deliberately **no `mode`**: a preset chooses the mode, a caller
-/// cannot. `notifyOnFinish` defaults to true.
+/// There is deliberately no `provider`, `model`, `mode`, `settings`, `features`
+/// or `preset`: a profile the human wrote and ticked is the only way to say what
+/// to run, and what an agent cannot express is what no check can get wrong.
+/// `labels` is a free map of strings with the `devboule.` prefix reserved for
+/// the daemon's own facts. `notifyOnFinish` defaults to true.
 #[cfg(feature = "server")]
 pub(crate) fn agent_create_input_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
+            "profile": {
+                "type": "string",
+                "description": "Name of a profile the human enabled for agents; see devboule_list_profiles."
+            },
             "title": {
                 "type": "string",
                 "description": "The child's display name, 1 to 60 characters."
             },
-            "provider": {
-                "type": "string",
-                "description": "Catalog provider id: claude, codex, pi, grok, qwen or gemini."
-            },
-            "preset": {
-                "type": "string",
-                "description": "worker or design."
+            "labels": {
+                "type": "object",
+                "description": "Optional labels for the child: string to string. The devboule. prefix is reserved.",
+                "additionalProperties": {"type": "string"}
             },
             "workspaceId": {
                 "type": "string",
@@ -268,21 +313,54 @@ pub(crate) fn agent_create_input_schema() -> serde_json::Value {
                 "description": "Whether this session is told when the child finishes. Default true."
             }
         },
-        "required": ["title", "provider", "preset", "initialPrompt"],
+        "required": ["profile", "title", "initialPrompt"],
+        "additionalProperties": false
+    })
+}
+
+/// The `tools/list` input schema of [`MCP_SET_AGENT_PROFILE_TOOL`] (slice 5b
+/// §2).
+///
+/// Closed on purpose, like [`agent_create_input_schema`], and rhyming with the
+/// landed create schema: the profile argument is the profile's **name**, the
+/// same way `devboule_create_agent` names one. There is deliberately no
+/// caller, owner, or creator parameter — identity is imposed by the broker
+/// from the bearer's registration (`registration.session_id`), never stated by
+/// the caller — and no provider, model, mode or feature parameter: a profile
+/// the human wrote and ticked is the only way to say what to run, read at the
+/// moment of the call.
+#[cfg(feature = "server")]
+pub(crate) fn agent_set_profile_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "session": {
+                "type": "string",
+                "description": "The id or display name of one of your own live child sessions."
+            },
+            "profile": {
+                "type": "string",
+                "description": "Name of a profile the human enabled for agents; see devboule_list_profiles."
+            }
+        },
+        "required": ["session", "profile"],
         "additionalProperties": false
     })
 }
 
 /// Which providers can be served the broker's tools, keyed by catalog id.
 ///
-/// The broker registers for the ACP and Claude stream-json session kinds
-/// only; `codex` (app-server) and `pi` (RPC) have no MCP channel, and a
-/// provider absent from this table advertises no tools — the panel then hides
-/// its tool section, because there is nothing there to gate.
+/// S9: all four session families host carriers now — ACP and Claude as before,
+/// plus `codex` (app-server `CODEX_HOME` carrier, S6) and `pi` (RPC bridge, S5)
+/// with post-spawn verification (S7/S8). A provider absent from this table
+/// advertises no tools — the panel then hides its tool section, because there
+/// is nothing there to gate.
 pub const AGENT_MCP_TOOLS: &[(&str, &[(&str, &str)])] = &[
     ("claude", MCP_BROKER_TOOLS),
+    ("codex", MCP_BROKER_TOOLS),
     ("gemini", MCP_BROKER_TOOLS),
     ("grok", MCP_BROKER_TOOLS),
+    ("pi", MCP_BROKER_TOOLS),
     ("qwen", MCP_BROKER_TOOLS),
 ];
 
@@ -310,6 +388,21 @@ pub fn mcp_tools_for(agent_id: &str) -> Vec<devboule_protocol::ToolDescriptor> {
 /// stream-json kind, `codex` the app-server kind, `pi` the RPC kind, and every
 /// other provider a created session may name is ACP. `resolve_session_provider`
 /// reads the pair back and would refuse a `claude` sent as ACP.
+///
+/// This is also the **one place a provider name is consulted on the
+/// `unattended` marker's path** (audit R2b-1 §5.1): the birth, the consent
+/// card and `list_profiles` all resolve the kind here before
+/// `peer_policy::unattended_mode` judges the delivered mode against it, so
+/// the derivation does depend on a provider-name match — what it never does
+/// is *interpret* one. The default arm is the conservative one for the
+/// marker: a name that is not one of the three authored families is ACP,
+/// whose arm answers `unknown`. The match is case-sensitive, unlike its
+/// neighbour [`catalog_provider_id`], which is documented case-insensitive:
+/// a profile spelling its provider `Claude` resolves the catalog row but
+/// derives under ACP and answers `unknown` where `claude` would answer the
+/// family's own value. That direction is the safe one (an uncertainty, never
+/// a false certainty), and the asymmetry is spelled out here so the next
+/// reader does not take either behaviour for the other's.
 #[cfg(feature = "server")]
 pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind {
     use devboule_protocol::SessionKind;
@@ -323,6 +416,16 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 
 /// May a preset ever resolve to this mode, for this provider (`S5` decision 2)?
 ///
+/// A description of today's providers, and a description only: the modes the
+/// two named providers document as unattended, spelled as they spell them. It
+/// serves the preset table's property tests and nothing else — it is **not**
+/// what decides a permission prompt at run time (that is
+/// `PermissionBroker::auto_answer`, which honours exactly the three
+/// provider-agnostic ids [`mode_is_auto_answered`] lists), and **nothing new
+/// may be derived from it** (rev 11: the provider axis is open, so no new
+/// table, `match` or constant may grow from a list of provider or mode names —
+/// the next providers are queued and some will be user-defined).
+///
 /// Written as a refusal list rather than an allow list, and the reason is the
 /// decision's own: the modes a session nobody is watching may not be in have
 /// names, and a new mode a provider adds is judged by them rather than by
@@ -330,9 +433,8 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 ///
 /// Three sources, all named:
 ///
-/// - the modes the daemon itself auto-answers a permission request in
-///   (`PermissionBroker::auto_answer`) — `bypass`, `auto_accept`,
-///   `bypassPermissions` — because a session in one of them never asks a human;
+/// - the three provider-agnostic ids the daemon itself answers a permission
+///   request in ([`mode_is_auto_answered`]);
 /// - Codex's own unattended pair: `full-access` is `approvalPolicy: never`, and
 ///   `auto-review` hands approvals to a model reviewer;
 /// - Claude's `acceptEdits`, which approves every edit tool without prompting,
@@ -340,30 +442,14 @@ pub(crate) fn session_kind_for(provider: &str) -> devboule_protocol::SessionKind
 ///   Codex spells `auto-review`.
 ///
 /// Codex's `auto` is deliberately **not** on the list: it is `on-request` plus
-/// `workspaceWrite`, which is exactly the mode decision 2 allows.
-/// Whether a session nobody is watching could reach this mode (`S5` decision
-/// 2). Test-only by construction: the *table* is the production artefact and the
-/// property test is what proves no cell resolves to one of these names.
-///
-/// The names are the decision's own: the modes the daemon auto-answers a
-/// permission request in (`PermissionBroker::auto_answer`), Codex's
-/// `full-access` and `auto-review`, and the two Claude modes that approve in
-/// place of the human (`acceptEdits` approves edits without prompting, `auto`
-/// hands approvals to a model reviewer).
-///
-/// Codex's `auto` is **not** in the list and must not be added: it is an
-/// approval policy of `on-request` with a `workspaceWrite` sandbox and no
-/// network, which still asks the human. The two are one word apart and mean
-/// opposite things, which is why the exclusion is written per family.
-///
-/// Aliases resolve first, so an alias cannot reach a mode its provider's own
-/// spelling would refuse.
+/// `workspaceWrite`, which is exactly the mode decision 2 allows. Aliases
+/// resolve first, so an alias cannot reach a mode its provider's own spelling
+/// would refuse.
 #[cfg(test)]
 pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
-    const AUTO_ANSWERED: &[&str] = &["bypass", "auto_accept", "bypassPermissions"];
     const CODEX_UNATTENDED: &[&str] = &["full-access", "auto-review"];
     const CLAUDE_UNATTENDED: &[&str] = &["acceptEdits", "auto"];
-    if AUTO_ANSWERED.contains(&mode_id) {
+    if mode_is_auto_answered(mode_id) {
         return true;
     }
     match catalog_provider_id(provider) {
@@ -372,6 +458,121 @@ pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
         _ => false,
     }
 }
+
+/// The mode ids the daemon itself answers a permission request in, and the
+/// one list of them.
+///
+/// Two callers, one list, so the two cannot drift: `PermissionBroker::
+/// auto_answer` grants from this predicate at run time — a session in one of
+/// these modes never asks a human — and `peer_policy::unattended_mode` checks
+/// it first at a child's birth, so the marker a child carries names exactly a
+/// mode the broker would have honoured. The list is provider-agnostic by
+/// construction: these are the ids the daemon speaks itself, and no provider
+/// name is reachable from here.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn auto_answered_modes() -> &'static [&'static str] {
+    &["bypass", "auto_accept", "bypassPermissions"]
+}
+
+/// The client-only build answers no permission requests, so this has no
+/// caller there — the gate that reads it is server-only by definition.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) fn mode_is_auto_answered(mode_id: &str) -> bool {
+    auto_answered_modes().contains(&mode_id)
+}
+
+/// The pre-card verdict on an `autoAccept` tick against the profile's own
+/// mode, split by who owns the mode id (`R2a` F7, narrowed by the re-audit's
+/// P1).
+///
+/// The distinction is **authorship**, and it is the same one
+/// `peer_policy::unattended_mode` draws for the birth marker: a mode id this
+/// daemon did not author is a fact this daemon cannot state, and a gate that
+/// refuses must not guess in the refusing direction. The conviction was
+/// Codex's `full-access` — provider-authored vocabulary, `approvalPolicy:
+/// never`, never asks anybody — which a `!mode_is_auto_answered` shape
+/// refused before the card while Codex's own client accepted it at spawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "server")]
+pub(crate) enum AutoAcceptTick {
+    /// The daemon knows the pair is consistent: the tick is off, or the mode
+    /// is one of the provider-agnostic ids [`mode_is_auto_answered`] lists —
+    /// the one piece of mode vocabulary the daemon owns, and one every
+    /// family's spawn-time check honours.
+    Consistent,
+    /// The daemon owns this family's tick rule and the profile violates it,
+    /// so the creation is refused before the card. Two families only: for
+    /// Claude and Pi the tick's meaning **is** "start in a mode the daemon's
+    /// own broker answers" (the launch flag and the permission extension are
+    /// the mechanisms), the profile's mode is the delivered mode — no
+    /// handshake negotiates it — and each client's spawn-time check is
+    /// exactly this predicate. The rule reads only the daemon's table, so
+    /// the refusal is on vocabulary the daemon owns even though the mode id
+    /// it refuses may be the family's own spelling.
+    Contradicts,
+    /// The mode id is not the daemon's, so whether the tick contradicts is
+    /// not the daemon's fact to state: the family that owns the knob judges
+    /// at spawn time, where the delivered mode is the fact. Codex's rule is
+    /// its own (`codex_client::mode_answers_own_prompts` extends the daemon's
+    /// table with `full-access`), an ACP agent's modes are authored at
+    /// runtime and judged post-handshake, and a user-defined provider —
+    /// which resolves to the ACP family — fails safe the same way: it is
+    /// judged by the client that will speak for it, never refused by a
+    /// table that never heard of it.
+    NotOursToJudge,
+}
+
+/// The pre-card judgement of an `autoAccept` tick against the profile's own
+/// mode (`R2a` F7, narrowed by the re-audit's P1 into the authorship split
+/// [`AutoAcceptTick`] names).
+///
+/// [`mode_is_auto_answered`] is still the only mode table this reads. What
+/// changed is the conclusion a non-table id licenses: the old shape read
+/// "not broker-answered" as "asks the human" — a fact about vocabulary the
+/// daemon did not author, and wrong for exactly the modes providers spell
+/// for never-asking. The broker refuses only on [`AutoAcceptTick::Contradicts`];
+/// every other family re-judges at spawn time, where the *delivered* mode is
+/// the fact.
+#[cfg(feature = "server")]
+pub(crate) fn judge_auto_accept_tick(
+    provider: &str,
+    mode_id: &str,
+    features: &serde_json::Map<String, serde_json::Value>,
+) -> AutoAcceptTick {
+    if !crate::profile_delivery::feature_is_true(features, AUTO_ACCEPT_FEATURE) {
+        return AutoAcceptTick::Consistent;
+    }
+    if mode_is_auto_answered(mode_id) {
+        return AutoAcceptTick::Consistent;
+    }
+    match session_kind_for(provider) {
+        devboule_protocol::SessionKind::Claude | devboule_protocol::SessionKind::Pi => {
+            AutoAcceptTick::Contradicts
+        }
+        // Every arm spelled, no wildcard: a family added to the closed
+        // `SessionKind` must be decided here, not inherit the benign
+        // verdict. The three below all answer "not ours to judge" — Codex
+        // owns its knob (`codex_client::mode_answers_own_prompts` extends
+        // the daemon's table with `full-access`), an ACP agent's modes are
+        // authored at runtime and judged post-handshake, and a terminal has
+        // no permission mechanism for a tick to contradict at all.
+        // `session_kind_for` maps every name that is not one of the three
+        // authored families to `Acp`, so `Terminal` is unreachable through
+        // this door today — it is decided, not defaulted.
+        devboule_protocol::SessionKind::Acp
+        | devboule_protocol::SessionKind::Codex
+        | devboule_protocol::SessionKind::Terminal => AutoAcceptTick::NotOursToJudge,
+    }
+}
+
+/// The one feature key that means "approve my permission prompts"
+/// (`create-from-profile`).
+///
+/// Paseo spells the toggle `Auto Accept`, and this is the only spelling read:
+/// the features map is otherwise free-form and nothing consults it, so a second
+/// accepted spelling would be a second vocabulary for one meaning.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub(crate) const AUTO_ACCEPT_FEATURE: &str = "autoAccept";
 
 /// The exact id the catalog publishes for `agent_id`, when it publishes tools
 /// under any spelling of it.
@@ -400,10 +601,29 @@ pub fn mcp_catalog_id(agent_id: &str) -> Option<&'static str> {
 /// authority beside the stored `ToolPolicyEntry` the human edits; the overlay
 /// is the preset's own deny list, and the effective answer for one tool is
 /// "the stored policy allows it AND the overlay allows it".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(feature = "server")]
 pub(crate) struct ToolOverlay {
-    pub(crate) disabled: &'static [&'static str],
+    /// The tool names this overlay removes, from whichever source made it.
+    disabled: OverlayNames,
+}
+
+/// Where an overlay's deny list comes from.
+///
+/// Two sources, one type, because both have to be consulted at the same two
+/// places (`tools/list` and `tools/call`): a preset's own table, which the
+/// catalog's constants hold and which must stay `const` for the preset table to
+/// be one, and a profile the human wrote — read from the store at the moment of
+/// the creation and therefore owned by the value that resolved it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "server")]
+enum OverlayNames {
+    /// A preset's list, borrowed from the catalog's own table.
+    Preset(&'static [&'static str]),
+    /// A profile's list, exactly as the store holds it. `agent_profiles.rs`
+    /// has already refused any name outside the broker's own table, so a name
+    /// here can only ever match a tool the broker serves.
+    Profile(Vec<String>),
 }
 
 #[cfg(feature = "server")]
@@ -417,17 +637,42 @@ impl Default for ToolOverlay {
 impl ToolOverlay {
     /// The empty overlay: the session is served exactly what its provider's
     /// stored policy allows.
-    pub(crate) const NONE: Self = Self { disabled: &[] };
+    pub(crate) const NONE: Self = Self {
+        disabled: OverlayNames::Preset(&[]),
+    };
     /// A design child: no `devboule_send_message` and no
     /// `devboule_create_agent`. It keeps the roster, which is its own bearer's
     /// read-only view. Depth alone would not stop it (a depth-1 child may
     /// create), so the deny list is the rule.
     pub(crate) const DESIGN: Self = Self {
-        disabled: &[MCP_SEND_MESSAGE_TOOL, MCP_CREATE_AGENT_TOOL],
+        disabled: OverlayNames::Preset(&[MCP_SEND_MESSAGE_TOOL, MCP_CREATE_AGENT_TOOL]),
     };
 
-    pub(crate) fn allows(self, name: &str) -> bool {
-        !self.disabled.contains(&name)
+    /// A profile's overlay: the tools the human's profile denies, by name.
+    pub(crate) fn from_profile_names(names: &[String]) -> Self {
+        Self {
+            disabled: OverlayNames::Profile(names.to_vec()),
+        }
+    }
+
+    /// The names this overlay denies, for the tests that must see them.
+    ///
+    /// A view, not a field: the two sources hold their names differently, and a
+    /// test that walked `disabled` directly would be testing the representation
+    /// rather than the rule.
+    #[cfg(test)]
+    pub(crate) fn denied(&self) -> Vec<&str> {
+        match &self.disabled {
+            OverlayNames::Preset(names) => names.to_vec(),
+            OverlayNames::Profile(names) => names.iter().map(String::as_str).collect(),
+        }
+    }
+
+    pub(crate) fn allows(&self, name: &str) -> bool {
+        match &self.disabled {
+            OverlayNames::Preset(names) => !names.contains(&name),
+            OverlayNames::Profile(names) => !names.iter().any(|denied| denied == name),
+        }
     }
 }
 
@@ -437,14 +682,11 @@ impl ToolOverlay {
 /// A cell is a *promise* about a provider, and the daemon keeps it only where
 /// it can: the mode is applied through the provider's own mode switch, and the
 /// overlay only reaches a provider whose sessions are given an MCP connection
-/// at all. `pi` and `codex` cells are kept deliberately even though the broker
-/// is registered for ACP and Claude sessions only (`session.rs` registers it on
-/// `SessionKind::Acp | SessionKind::Claude`, the same rule that predates this
-/// slice): a child on those providers gets no MCP tools, so its overlay is
-/// inert today, and deleting the cells would silently make those presets
-/// unavailable to a caller that asks for them. When the broker grows a
-/// non-ACP transport, the cell already says what the child must be denied.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// at all. S9: all agent families host carriers, so pi/codex deny-cells are
+/// enforced live (a `design` Codex child sees neither the tool it may not call
+/// nor any tool its provider's policy already turned off) — the same rule the
+/// ACP families always had.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(feature = "server")]
 pub(crate) struct AgentPresetCell {
     /// Catalog id, exactly as [`KNOWN_AGENTS`] spells it.
@@ -463,6 +705,12 @@ pub(crate) struct AgentPreset {
     pub(crate) cells: &'static [AgentPresetCell],
 }
 
+// Kept as data, not as a path (`BRIEF-slice-5.md` §2 rev 9): a profile is now the
+// only thing a creation resolves, and these rows survive as the **seed values**
+// the Settings → Agents form offers and as the two overlays it starts from. No
+// production caller resolves one, which is what `#[allow(dead_code)]` says; the
+// slice that publishes the seeds to the app is what removes this block.
+#[allow(dead_code)]
 #[cfg(feature = "server")]
 pub(crate) const AGENT_PRESET_WORKER: &str = "worker";
 #[cfg(feature = "server")]
@@ -488,6 +736,7 @@ pub(crate) const AGENT_PREAMBLE: &str =
 /// debug-only health probe that implements no `session/set_mode`, so a
 /// creation naming it is refused with `no non-bypass mode for provider`.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 const PRESET_WORKER_CELLS: &[AgentPresetCell] = &[
     AgentPresetCell {
         provider: "pi",
@@ -528,6 +777,7 @@ const PRESET_WORKER_CELLS: &[AgentPresetCell] = &[
 /// `initialPrompt`. A frozen copy in the catalog would be a second source of
 /// truth for a prompt the app still owns.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 const PRESET_DESIGN_CELLS: &[AgentPresetCell] = &[
     AgentPresetCell {
         provider: "pi",
@@ -564,6 +814,7 @@ const PRESET_DESIGN_CELLS: &[AgentPresetCell] = &[
 /// The closed preset table (`S5` §2). A preset not in this list is an unknown
 /// preset and is refused by name rather than resolved by default.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 pub(crate) const AGENT_PRESETS: &[AgentPreset] = &[
     AgentPreset {
         id: AGENT_PRESET_WORKER,
@@ -594,9 +845,9 @@ fn catalog_provider_ids() -> Vec<&'static str> {
 /// The catalog's own spelling of `agent_id`, when it publishes the id or an
 /// alias of it.
 ///
-/// `mcp_catalog_id` answers only for the four MCP-capable providers, which is
-/// exactly the wrong set here: pi and codex host no MCP broker but are two of
-/// the three preset modes. This walks the whole catalog instead.
+/// `mcp_catalog_id` answers only for MCP-capable providers, which is the wrong
+/// set here: a profile may name any installed provider, so this walks the whole
+/// catalog instead.
 #[cfg(any(feature = "server", test))]
 pub(crate) fn catalog_provider_id(agent_id: &str) -> Option<&'static str> {
     KNOWN_AGENTS
@@ -620,6 +871,7 @@ pub(crate) fn catalog_provider_id(agent_id: &str) -> Option<&'static str> {
 /// The preset with this id, or `None`. Case-sensitive: a preset id is our own
 /// closed vocabulary, not a user's spelling.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 pub(crate) fn agent_preset(preset_id: &str) -> Option<&'static AgentPreset> {
     AGENT_PRESETS.iter().find(|preset| preset.id == preset_id)
 }
@@ -633,6 +885,7 @@ pub(crate) fn agent_preset(preset_id: &str) -> Option<&'static AgentPreset> {
 /// different sentence from an unknown provider — the first is a limit of this
 /// version, the second is a typo.
 #[cfg(feature = "server")]
+#[allow(dead_code)]
 pub(crate) fn resolve_agent_preset(
     preset_id: &str,
     provider_id: &str,
@@ -647,7 +900,7 @@ pub(crate) fn resolve_agent_preset(
         .cells
         .iter()
         .find(|cell| cell.provider == provider)
-        .copied()
+        .cloned()
     {
         return Ok((preset, cell));
     }
@@ -676,6 +929,7 @@ pub(crate) fn resolve_agent_preset(
 /// `test_only_cell` at all, and a release daemon therefore refuses both with
 /// `unknown provider`.
 #[cfg(all(feature = "server", debug_assertions))]
+#[allow(dead_code)]
 fn test_only_cell(preset_id: &str, provider: &str) -> Option<AgentPresetCell> {
     let cell = |provider: &'static str, overlay: ToolOverlay| {
         Some(AgentPresetCell {
@@ -704,7 +958,7 @@ fn test_only_cell(preset_id: &str, provider: &str) -> Option<AgentPresetCell> {
 pub(crate) fn overlay_names() -> Vec<ToolOverlay> {
     AGENT_PRESETS
         .iter()
-        .flat_map(|preset| preset.cells.iter().map(|cell| cell.overlay))
+        .flat_map(|preset| preset.cells.iter().map(|cell| cell.overlay.clone()))
         .collect()
 }
 
@@ -1014,7 +1268,7 @@ pub fn find_available(id: &str) -> Option<InstalledAgent> {
     find_available_in_paths(id, &path_directories_for_available())
 }
 
-fn path_directories_for_available() -> Vec<PathBuf> {
+pub(crate) fn path_directories_for_available() -> Vec<PathBuf> {
     match std::env::var_os("PATH") {
         Some(paths) => std::env::split_paths(&paths).collect(),
         None => Vec::new(),
@@ -2823,7 +3077,11 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
     /// the lookup does not serve, or the reverse.
     #[test]
     fn the_canonical_id_agrees_with_the_tool_lookup() {
-        for spelling in ["claude", "CLAUDE", "Claude", "grok", "GROK", "Grok"] {
+        // S9: pi and codex are served rows now (carriers S5/S6, verified S7/S8).
+        for spelling in [
+            "claude", "CLAUDE", "Claude", "grok", "GROK", "Grok", "pi", "PI", "Pi", "codex",
+            "CODEX", "Codex",
+        ] {
             let canonical = super::mcp_catalog_id(spelling).expect("a catalog id");
             assert_eq!(
                 super::mcp_catalog_id(canonical),
@@ -2839,7 +3097,7 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         }
         // A name the catalog does not publish is no id and is served no tools:
         // the predicate the policy store admits a row with, on both sides.
-        for unknown in ["claude-acp", "codex", "does-not-exist", ""] {
+        for unknown in ["claude-acp", "does-not-exist", ""] {
             assert_eq!(super::mcp_catalog_id(unknown), None, "{unknown}");
             assert!(super::mcp_tools_for(unknown).is_empty(), "{unknown}");
         }
@@ -2929,7 +3187,7 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             for cell in preset.cells {
                 let design = preset.id == super::AGENT_PRESET_DESIGN;
                 assert_eq!(
-                    cell.overlay.disabled.is_empty(),
+                    cell.overlay.denied().is_empty(),
                     !design,
                     "only the design preset may carry an overlay"
                 );
@@ -2946,8 +3204,8 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         assert!(!design.allows(super::MCP_SEND_MESSAGE_TOOL));
         assert!(design.allows(super::MCP_ROSTER_TOOL));
         assert_eq!(
-            design.disabled,
-            &[super::MCP_SEND_MESSAGE_TOOL, super::MCP_CREATE_AGENT_TOOL]
+            design.denied(),
+            vec![super::MCP_SEND_MESSAGE_TOOL, super::MCP_CREATE_AGENT_TOOL]
         );
         let worker = super::ToolOverlay::NONE;
         for tool in [
@@ -2964,8 +3222,8 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             .map(|(name, _)| *name)
             .collect();
         for overlay in super::overlay_names() {
-            for disabled in overlay.disabled {
-                assert!(published.contains(disabled), "{disabled} is not a tool");
+            for disabled in overlay.denied() {
+                assert!(published.contains(&disabled), "{disabled} is not a tool");
             }
         }
     }
@@ -3040,5 +3298,273 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
                 preset.id
             );
         }
+    }
+    /// The `unattended` derivation is keyed on **authorship**, never on a
+    /// provider name, and never on the profile's `autoAccept` tick (R2b): the
+    /// delivered mode is what the birth judges, route A is the daemon's own
+    /// broker list, route B is each client family's own dictionary, and a
+    /// vocabulary the daemon did not author answers `unknown`. The old test
+    /// this one replaces pinned the two-disjunct profile predicate the design
+    /// deleted; the coverage that survives it is re-expressed here against the
+    /// derivation that replaced it.
+    #[test]
+    fn the_unattended_derivation_is_keyed_on_authorship_and_never_on_the_tick() {
+        use devboule_protocol::UnattendedState;
+        let prediction = |provider: &str, mode: &str| {
+            crate::peer_policy::unattended_mode(super::session_kind_for(provider), Some(mode))
+        };
+        // Route A: the three ids the daemon itself auto-answers a permission
+        // request in, whatever the family — including a provider the catalog
+        // has never heard of (the mechanical test: a user-defined provider's
+        // child is answered without any code path noticing the name).
+        for provider in [
+            "grok",
+            "codex",
+            "claude",
+            "a-provider-that-does-not-exist-yet",
+        ] {
+            for mode in ["bypass", "auto_accept", "bypassPermissions"] {
+                assert_eq!(
+                    prediction(provider, mode),
+                    UnattendedState::Yes,
+                    "{provider} {mode}: the daemon's own broker answers it"
+                );
+            }
+        }
+        // The human's own toggle is **not an input**: the marker reads the
+        // mode the delivery carries, and a tick can never move the answer.
+        // (A tick over an asking mode is refused at creation by a different
+        // check; the prediction here stays honest about what the mode does.)
+        assert_eq!(
+            prediction("a-provider-that-does-not-exist-yet", "ask"),
+            UnattendedState::Unknown,
+            "a provider-authored vocabulary cannot be established, tick or no tick"
+        );
+        // The kind resolution behind `prediction` is **case-sensitive** —
+        // unlike the catalog row match, which is documented
+        // case-insensitive — so a differently spelled name derives under ACP
+        // and answers `unknown`. That asymmetry is deliberate and pinned:
+        // the failure direction is an uncertainty, never a false certainty
+        // (audit R2b-1 §5.1).
+        assert_eq!(
+            prediction("Claude", "default"),
+            UnattendedState::Unknown,
+            "`Claude` is not `claude`: the kind match is exact, and the miss \
+             fails toward unknown"
+        );
+        // Route B: the daemon-authored knobs, in the client family's own
+        // dictionary. Codex `full-access` is `approvalPolicy: never` in this
+        // daemon's own turn parameters — the case that proves a route-A-only
+        // boolean under-reports.
+        assert_eq!(prediction("codex", "full-access"), UnattendedState::Yes);
+        // A mode that still asks the human says `no`, from the same tables
+        // that admit the mode at all.
+        for (provider, mode) in [
+            ("codex", "read-only"),
+            ("codex", "auto"),
+            ("claude", "acceptEdits"),
+            ("claude", "auto"),
+            ("claude", "default"),
+            ("pi", "ask"),
+        ] {
+            assert_eq!(
+                prediction(provider, mode),
+                UnattendedState::No,
+                "{provider} {mode} asks, and the daemon authored it"
+            );
+        }
+        // Codex `auto-review` is the one authored id that answers `unknown`:
+        // the peer gate counts it as a mode that can pass a permission moment
+        // with nobody answering (`prompt_skipping_mode`), so `no` — which
+        // renders as nothing — is the wrongly-benign badge; and it is not
+        // `yes`, because a model reviewer may hand a moment back (audit
+        // R2b-1 §3.3).
+        assert_eq!(
+            prediction("codex", "auto-review"),
+            UnattendedState::Unknown,
+            "the peer gate calls this id prompt-skipping, so the marker renders \
+             the present unknown, never the benign nothing"
+        );
+        assert_eq!(prediction("pi", "bypass"), UnattendedState::Yes);
+    }
+
+    /// The one list the broker grants from and the birth marker reads: exactly
+    /// the three provider-agnostic ids, and no provider's own spelling.
+    #[test]
+    fn the_auto_answer_list_is_exactly_the_three_provider_agnostic_ids() {
+        for mode in ["bypass", "auto_accept", "bypassPermissions"] {
+            assert!(super::mode_is_auto_answered(mode), "{mode}");
+        }
+        for mode in [
+            "ask",
+            "default",
+            "full-access",
+            "auto-review",
+            "acceptEdits",
+            "auto",
+            "",
+        ] {
+            assert!(!super::mode_is_auto_answered(mode), "{mode}");
+        }
+    }
+
+    fn ticked() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({ "autoAccept": true })
+            .as_object()
+            .expect("object")
+            .to_owned()
+    }
+
+    /// The pre-card tick judgement (the re-audit's P1): a verdict that
+    /// refuses exists only where the daemon owns the rule — Claude and Pi —
+    /// and the daemon's own table always concludes *satisfied*, never
+    /// refused. Codex's `full-access` is the conviction: provider-authored
+    /// vocabulary, and the answer is `NotOursToJudge`, not a refusal.
+    #[test]
+    fn the_pre_card_tick_judgement_refuses_only_where_the_daemon_owns_the_rule() {
+        let features = ticked();
+        use super::AutoAcceptTick::*;
+        // No tick: consistent for every family and every mode spelling.
+        for provider in [
+            "claude",
+            "pi",
+            "codex",
+            "devboule-acp-stub",
+            "someone-elses-agent",
+        ] {
+            for mode in ["default", "ask", "full-access", "bypass"] {
+                assert_eq!(
+                    super::judge_auto_accept_tick(provider, mode, &serde_json::Map::new()),
+                    Consistent,
+                    "{provider} {mode}: no tick, no contradiction"
+                );
+            }
+        }
+        // A tick over a daemon-owned id: satisfied, whatever the family.
+        for provider in ["claude", "pi", "codex", "devboule-acp-stub"] {
+            for mode in super::auto_answered_modes() {
+                assert_eq!(
+                    super::judge_auto_accept_tick(provider, mode, &features),
+                    Consistent,
+                    "{provider} {mode}: the broker answers this mode"
+                );
+            }
+        }
+        // The daemon-owned tick rules: Claude and Pi refuse any other mode id.
+        for provider in ["claude", "pi"] {
+            for mode in ["default", "ask", "acceptEdits", "plan"] {
+                assert_eq!(
+                    super::judge_auto_accept_tick(provider, mode, &features),
+                    Contradicts,
+                    "{provider} {mode}: the tick demands a mode the broker answers"
+                );
+            }
+        }
+        // The families that own their knob: no pre-card conclusion at all —
+        // including `full-access`, the case the old gate refused in error.
+        for provider in [
+            "codex",
+            "devboule-acp-stub",
+            "a-provider-from-a-config-file",
+        ] {
+            for mode in [
+                "default",
+                "ask",
+                "full-access",
+                "auto-review",
+                "acceptEdits",
+            ] {
+                assert_eq!(
+                    super::judge_auto_accept_tick(provider, mode, &features),
+                    NotOursToJudge,
+                    "{provider} {mode}: not the daemon's fact to state"
+                );
+            }
+        }
+    }
+
+    /// The repair pass's closed-dimension rule, applied to the pre-card
+    /// judgement: every `SessionKind` arm of `judge_auto_accept_tick` has a
+    /// pinned verdict, reached through each kind's own provider spelling,
+    /// so a family's verdict is a recorded decision rather than whatever a
+    /// wildcard happened to return (the re-audit's P2-5). The match in
+    /// `judge_auto_accept_tick` spells every arm with no wildcard, so
+    /// adding a sixth family is a compile error before this test can even
+    /// run — and this test then forces whoever adds it to write down what
+    /// the new family's verdict is.
+    #[test]
+    fn every_session_kind_has_a_pinned_pre_card_tick_verdict() {
+        use super::AutoAcceptTick::*;
+        use devboule_protocol::SessionKind;
+
+        // The provider spellings each kind resolves from
+        // (`session_kind_for`): the three authored families by name, every
+        // other name — including a user-defined provider from a config
+        // file — to the ACP family. `Terminal` is unreachable through
+        // `session_kind_for` today, so its verdict is pinned through the
+        // accessor itself, one arm at a time, below.
+        let verdict_for_provider =
+            |provider: &str| super::judge_auto_accept_tick(provider, "ask", &ticked());
+        assert_eq!(verdict_for_provider("claude"), Contradicts);
+        assert_eq!(verdict_for_provider("pi"), Contradicts);
+        assert_eq!(verdict_for_provider("codex"), NotOursToJudge);
+        assert_eq!(verdict_for_provider("devboule-acp-stub"), NotOursToJudge);
+        assert_eq!(
+            verdict_for_provider("someone-elses-agent-from-a-config-file"),
+            NotOursToJudge
+        );
+
+        // The closed table, walked one arm at a time through the accessor
+        // the match serves: adding a variant to `SessionKind` makes the
+        // match in `judge_auto_accept_tick` fail to compile, and the new
+        // arm must be given its verdict before this table can be extended.
+        let kind_of_provider = |provider: &str| super::session_kind_for(provider);
+        assert_eq!(kind_of_provider("claude"), SessionKind::Claude);
+        assert_eq!(kind_of_provider("pi"), SessionKind::Pi);
+        assert_eq!(kind_of_provider("codex"), SessionKind::Codex);
+        assert_eq!(kind_of_provider("devboule-acp-stub"), SessionKind::Acp);
+        assert_eq!(
+            kind_of_provider("someone-elses-agent-from-a-config-file"),
+            SessionKind::Acp
+        );
+    }
+
+    /// The published schema of `devboule_create_agent` cannot express a provider,
+    /// a preset, a model, a mode or a feature: what an agent cannot say is what no
+    /// check of ours can get wrong (`S5` §2 rev 9).
+    #[test]
+    fn the_create_agent_schema_cannot_express_a_provider_or_a_preset() {
+        let schema = super::agent_create_input_schema();
+        let properties = schema["properties"].as_object().expect("properties");
+        let mut names: Vec<&str> = properties.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "cwd",
+                "initialPrompt",
+                "labels",
+                "notifyOnFinish",
+                "profile",
+                "title",
+                "workspaceId",
+            ]
+        );
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .map(|name| name.as_str().expect("a name"))
+            .collect();
+        assert_eq!(required, ["profile", "title", "initialPrompt"]);
+        for forbidden in [
+            "provider", "preset", "model", "mode", "features", "settings",
+        ] {
+            assert!(
+                !properties.contains_key(forbidden),
+                "{forbidden} must not be expressible at all"
+            );
+        }
+        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
     }
 }

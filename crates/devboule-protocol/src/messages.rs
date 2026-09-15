@@ -9,7 +9,7 @@ use crate::handshake::{ClientHello, DaemonHello};
 use crate::project::{Project, Workspace, WorkspaceIsolation};
 use crate::session::{
     ActiveTurnBehavior, AgentActivityState, Cursor, PermissionOutcome, Persistence, ResumeResult,
-    Session, SessionEvent, SessionKind, SubscriptionId,
+    Session, SessionEvent, SessionKind, SessionModeView, SessionModel, SubscriptionId,
 };
 
 /// The role a device is paired as, on the wire as `"client"` or `"daemon"`.
@@ -545,6 +545,53 @@ pub enum ClientMessage {
         id: u64,
         document: AgentProfilesDocument,
     },
+    /// Ask what one provider offers — its models and its modes — so the
+    /// profile form can be authored from real vocabulary instead of free
+    /// text. `provider` is a catalog provider id or alias, canonicalised the
+    /// way the profile store canonicalises one — trimmed first, then
+    /// resolved by the catalog's own walk — and the reply carries the
+    /// canonical id back. `refresh: false` is a cached read; `refresh: true`
+    /// re-probes now, which for most providers briefly starts the provider's
+    /// process (Claude usually costs a file scan; the one process it can
+    /// start is the native version probe, and only while its installed
+    /// version is still unknown).
+    ///
+    /// Local-only, exactly like the profile store: a paired device is refused
+    /// by `peer_allows` whichever capability it holds. The handshake
+    /// capability `provider_vocabulary` is the feature gate: a daemon without
+    /// it predates this query, which is a different fact from the query
+    /// answering `absent`, and the two must never be collapsed.
+    ProviderVocabularyGet {
+        id: u64,
+        provider: String,
+        refresh: bool,
+    },
+    /// Read the permission-delegation switch: whether an agent that created a
+    /// child may answer that child's permission cards. The reply carries
+    /// `source` beside `enabled`, because "off" is three different facts the
+    /// app renders differently — the human turned it off (`file`), nobody ever
+    /// configured it (`default`), or the settings file was damaged and the
+    /// daemon is reading off until it is repaired (`quarantined`).
+    ///
+    /// Local-only, exactly like the profile store: the switch decides what
+    /// this machine's agents may answer on their children's behalf, so a
+    /// paired device is refused by `peer_allows` whichever capability it
+    /// holds. The handshake capability `permission_delegation` is the feature
+    /// gate, the same pairing the profiles pair uses.
+    DelegationGet {
+        id: u64,
+    },
+    /// Set the permission-delegation switch. One boolean for the whole daemon:
+    /// there are no per-session grants, no pause and no cap anywhere in this
+    /// slice — a session id can name a stranger's session after a daemon
+    /// restart, so nothing per-session may exist on disk or in memory to
+    /// revoke. `false` is immediate: every delegated answer arriving after it
+    /// is refused, and a card already surfaced to a creator simply stays what
+    /// it always was — pending for the human.
+    DelegationSet {
+        id: u64,
+        enabled: bool,
+    },
 }
 
 /// Trim a requested display name and check it, or say why it cannot be used.
@@ -625,7 +672,10 @@ impl ClientMessage {
             | Self::ToolPolicyGet { id }
             | Self::ToolPolicySet { id, .. }
             | Self::AgentProfilesGet { id }
-            | Self::AgentProfilesSet { id, .. } => Some(*id),
+            | Self::AgentProfilesSet { id, .. }
+            | Self::ProviderVocabularyGet { id, .. }
+            | Self::DelegationGet { id }
+            | Self::DelegationSet { id, .. } => Some(*id),
         }
     }
 
@@ -694,7 +744,10 @@ impl ClientMessage {
             | Self::ToolPolicyGet { .. }
             | Self::ToolPolicySet { .. }
             | Self::AgentProfilesGet { .. }
-            | Self::AgentProfilesSet { .. } => None,
+            | Self::AgentProfilesSet { .. }
+            | Self::ProviderVocabularyGet { .. }
+            | Self::DelegationGet { .. }
+            | Self::DelegationSet { .. } => None,
         }
     }
 
@@ -750,6 +803,9 @@ impl ClientMessage {
             Self::ToolPolicySet { .. } => "ToolPolicySet",
             Self::AgentProfilesGet { .. } => "AgentProfilesGet",
             Self::AgentProfilesSet { .. } => "AgentProfilesSet",
+            Self::DelegationGet { .. } => "DelegationGet",
+            Self::DelegationSet { .. } => "DelegationSet",
+            Self::ProviderVocabularyGet { .. } => "ProviderVocabularyGet",
         }
     }
 
@@ -775,7 +831,9 @@ impl ClientMessage {
             | Self::ProvidersList { .. }
             | Self::DevicesList { .. }
             | Self::ToolPolicyGet { .. }
-            | Self::AgentProfilesGet { .. } => false,
+            | Self::AgentProfilesGet { .. }
+            | Self::ProviderVocabularyGet { .. }
+            | Self::DelegationGet { .. } => false,
 
             Self::Shutdown { .. }
             | Self::SessionCreate { .. }
@@ -810,7 +868,8 @@ impl ClientMessage {
             | Self::PeerRevoke { .. }
             | Self::PeerSetCaps { .. }
             | Self::ToolPolicySet { .. }
-            | Self::AgentProfilesSet { .. } => true,
+            | Self::AgentProfilesSet { .. }
+            | Self::DelegationSet { .. } => true,
         }
     }
 }
@@ -1017,6 +1076,185 @@ pub enum DaemonMessage {
     AgentProfilesSetOk {
         id: u64,
     },
+    /// The reply to `ProviderVocabularyGet`: what one provider offers, both
+    /// axes, and how this answer was produced. The item shapes are the live
+    /// manifest's ([`SessionModel`], [`SessionModeView`]) reused unchanged —
+    /// the vocabulary is the same shape everywhere and only its origin
+    /// differs, which is carried explicitly rather than flattened.
+    ///
+    /// `source` says whether THIS reply came from the cache or from a fresh
+    /// probe. `probed_at_ms` is when the cache entry was filled and is
+    /// therefore a cache fact: a probe reply is fresh by definition and omits
+    /// it. Both optional fields are absent from the wire — never an explicit
+    /// `null` — and `origin` on an axis follows one biconditional: it is set
+    /// if and only if that axis's state is `Present`.
+    ProviderVocabulary {
+        id: u64,
+        /// The canonical provider id the reply answers for, as the profile
+        /// store would store it.
+        provider: String,
+        models: VocabularyModels,
+        modes: VocabularyModes,
+        source: VocabularySource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        probed_at_ms: Option<u64>,
+    },
+    /// The reply to `DelegationGet`: the switch and where the answer came
+    /// from. `source` is a wire value, not a Rust detail: the app renders a
+    /// quarantined file as damaged ("delegation reads off") and a missing one
+    /// as never configured, and collapsing either into plain "off" would turn
+    /// a fact the human needs into a state they cannot distinguish.
+    DelegationState {
+        id: u64,
+        enabled: bool,
+        source: DelegationSource,
+    },
+    /// The reply to `DelegationSet`, carrying what the daemon **stored** —
+    /// not an echo of the request. The value is the same boolean today, but
+    /// the reply is the one acknowledgement a write gets, so it names the
+    /// stored truth: a client that trusts its own request instead would hold
+    /// a value the daemon does not, and nothing would reveal the disagreement
+    /// until a second client's answer refused (`NOTE-a-write-that-does-not-
+    /// say-what-it-stored.md`, the class, applied here from birth).
+    DelegationSetOk {
+        id: u64,
+        enabled: bool,
+        source: DelegationSource,
+    },
+    /// The daemon pushed the switch. Server-initiated and id-less, like
+    /// `Event`: it answers no request, so the client's pending-request table
+    /// must never consume it. The setting is global and read once by the app
+    /// at mount, so a write from any surface — the Settings switch, the
+    /// roster's take-back — has to reach every connected client or a stale
+    /// OFF hides the very control that stops delegation. Delivered to the
+    /// daemon's session watchers, which is every local app connection;
+    /// peers are refused the switch and never hold it.
+    DelegationChanged {
+        enabled: bool,
+        source: DelegationSource,
+    },
+}
+
+/// The three-valued answer to "what does this provider offer". The three are
+/// distinct wire values on purpose and must never collapse: `present` — a
+/// source answered with a list (never with empty items); `none` — the source
+/// can answer and answered "I have none"; `absent` — no source could answer
+/// (the agent declared no model shape, the probe failed, the provider is not
+/// installed). "The provider published nothing" and "nobody could ask" are
+/// different facts.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VocabularyState {
+    Present,
+    None,
+    Absent,
+}
+
+/// Who authored a `present` vocabulary list: the provider's own answer on its
+/// wire, or the daemon's own mapping (Claude's, Codex's and pi's modes are the
+/// launcher's vocabulary — the provider cannot report them). Set only when
+/// the state is [`VocabularyState::Present`], in both directions.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VocabularyOrigin {
+    Provider,
+    Daemon,
+}
+
+/// How a `ProviderVocabulary` reply was produced: served from the daemon's
+/// cache, or probed fresh for this request.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VocabularySource {
+    Cache,
+    Probe,
+}
+
+/// Where a delegation-switch answer came from. Three values on purpose and
+/// never collapsed: `file` — the human wrote the switch; `default` — no file
+/// exists, which reads off but is "never configured", not "turned off";
+/// `quarantined` — the file existed and was damaged, so the daemon reads off
+/// while holding neither of the other two facts. The missing file reading as
+/// off is the safe direction — it withholds power and invents no knowledge —
+/// and the three answers stay distinct so the app can name which one it got.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationSource {
+    File,
+    Default,
+    Quarantined,
+}
+
+/// The models axis of a `ProviderVocabulary` reply. Items are the live
+/// manifest's shape, reused. `origin` is Some exactly when `state` is
+/// [`VocabularyState::Present`]; a `present` with no items is a collapsed
+/// absence and is never sent.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyModels {
+    pub state: VocabularyState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<VocabularyOrigin>,
+    pub items: Vec<SessionModel>,
+}
+
+impl VocabularyModels {
+    /// The way every axis builder constructs this struct: it refuses the two
+    /// pairs the biconditional forbids — an `origin` on a `none`/`absent`
+    /// axis, and a `present` axis without one — so an illegal combination is
+    /// rejected at construction rather than merely never built. The fields
+    /// stay public for the serializer's derives and for tests that pin the
+    /// wire encoding itself.
+    pub fn new(
+        state: VocabularyState,
+        origin: Option<VocabularyOrigin>,
+        items: Vec<SessionModel>,
+    ) -> Result<Self, String> {
+        if origin.is_some() != matches!(state, VocabularyState::Present) {
+            return Err(format!(
+                "origin is present exactly when the state is present: got {state:?} with {} origin",
+                if origin.is_some() { "an" } else { "no" }
+            ));
+        }
+        Ok(Self {
+            state,
+            origin,
+            items,
+        })
+    }
+}
+
+/// The modes axis of a `ProviderVocabulary` reply. Same shape discipline as
+/// [`VocabularyModels`].
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyModes {
+    pub state: VocabularyState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<VocabularyOrigin>,
+    pub items: Vec<SessionModeView>,
+}
+
+impl VocabularyModes {
+    /// Same discipline as [`VocabularyModels::new`]: the biconditional as
+    /// code, refusing the pairs no builder may emit.
+    pub fn new(
+        state: VocabularyState,
+        origin: Option<VocabularyOrigin>,
+        items: Vec<SessionModeView>,
+    ) -> Result<Self, String> {
+        if origin.is_some() != matches!(state, VocabularyState::Present) {
+            return Err(format!(
+                "origin is present exactly when the state is present: got {state:?} with {} origin",
+                if origin.is_some() { "an" } else { "no" }
+            ));
+        }
+        Ok(Self {
+            state,
+            origin,
+            items,
+        })
+    }
 }
 
 /// This device's own advertised identity. `remote` deliberately carries only
@@ -1514,7 +1752,7 @@ pub struct SessionEventEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SessionState, SessionStateSnapshot};
+    use crate::{SessionState, SessionStateSnapshot, UnattendedState};
 
     #[test]
     fn the_pairing_code_is_never_debug_formatted() {
@@ -1544,6 +1782,194 @@ mod tests {
         // The ordinary case: a generic error path formats the whole frame.
         let wrapped = format!("unexpected daemon frame {code:?}");
         assert!(!wrapped.contains("ABCD2345"), "{wrapped}");
+    }
+
+    #[test]
+    fn the_three_vocabulary_states_are_three_distinct_wire_words() {
+        // `present`, `none` and `absent` are three different facts and three
+        // different wire values. Asserting on the serialised JSON, not the
+        // Rust variant, is what makes a collapse of two of them — into an
+        // empty `present`, a shared "nothing", or any synonym — a red test
+        // rather than a silent loss.
+        let words = [
+            (VocabularyState::Present, "present"),
+            (VocabularyState::None, "none"),
+            (VocabularyState::Absent, "absent"),
+        ];
+        for (state, word) in words {
+            assert_eq!(
+                serde_json::to_value(state).expect("json"),
+                serde_json::json!(word),
+                "{word} must serialise to exactly its wire word"
+            );
+        }
+    }
+
+    #[test]
+    fn the_vocabulary_origins_and_source_keep_their_wire_words() {
+        assert_eq!(
+            serde_json::to_value(VocabularyOrigin::Provider).expect("json"),
+            serde_json::json!("provider")
+        );
+        assert_eq!(
+            serde_json::to_value(VocabularyOrigin::Daemon).expect("json"),
+            serde_json::json!("daemon")
+        );
+        assert_eq!(
+            serde_json::to_value(VocabularySource::Cache).expect("json"),
+            serde_json::json!("cache")
+        );
+        assert_eq!(
+            serde_json::to_value(VocabularySource::Probe).expect("json"),
+            serde_json::json!("probe")
+        );
+    }
+
+    #[test]
+    fn an_unset_origin_is_absent_from_the_wire_not_null() {
+        // One shape goes out: an optional reply field is omitted, never an
+        // explicit `null`. The TypeScript reader tolerates both because a
+        // reader should be tolerant; that tolerance is not a second encoding
+        // the daemon may pick.
+        let axis = VocabularyModels {
+            state: VocabularyState::Absent,
+            origin: None,
+            items: Vec::new(),
+        };
+        let json = serde_json::to_value(&axis).expect("json");
+        assert!(json.get("origin").is_none(), "got {json}");
+        assert!(json.get("items").is_some(), "got {json}");
+
+        // The set case still emits the key, so the omission is a decision and
+        // not a lost field.
+        let axis = VocabularyModels {
+            state: VocabularyState::Present,
+            origin: Some(VocabularyOrigin::Provider),
+            items: Vec::new(),
+        };
+        let json = serde_json::to_value(&axis).expect("json");
+        assert_eq!(json.get("origin"), Some(&serde_json::json!("provider")));
+    }
+
+    #[test]
+    fn the_vocabulary_reply_omits_probed_at_on_a_probe_reply_and_names_the_field_camel_case() {
+        // `probedAtMs` is a cache fact: a probe reply is fresh by definition,
+        // so the field is absent — not null. The cached case emits the camelCase
+        // key the TypeScript mirror reads.
+        let probe = DaemonMessage::ProviderVocabulary {
+            id: 7,
+            provider: "claude".to_string(),
+            models: VocabularyModels {
+                state: VocabularyState::Present,
+                origin: Some(VocabularyOrigin::Provider),
+                items: Vec::new(),
+            },
+            modes: VocabularyModes {
+                state: VocabularyState::Present,
+                origin: Some(VocabularyOrigin::Daemon),
+                items: Vec::new(),
+            },
+            source: VocabularySource::Probe,
+            probed_at_ms: None,
+        };
+        let json = serde_json::to_value(&probe).expect("json");
+        assert!(json.get("probedAtMs").is_none(), "got {json}");
+        assert_eq!(json.get("source"), Some(&serde_json::json!("probe")));
+        assert_eq!(json.get("provider"), Some(&serde_json::json!("claude")));
+
+        let cached = DaemonMessage::ProviderVocabulary {
+            id: 8,
+            provider: "claude".to_string(),
+            models: VocabularyModels {
+                state: VocabularyState::Present,
+                origin: Some(VocabularyOrigin::Provider),
+                items: Vec::new(),
+            },
+            modes: VocabularyModes {
+                state: VocabularyState::Absent,
+                origin: None,
+                items: Vec::new(),
+            },
+            source: VocabularySource::Cache,
+            probed_at_ms: Some(1_700_000_000_000),
+        };
+        let json = serde_json::to_value(&cached).expect("json");
+        assert_eq!(
+            json.get("probedAtMs"),
+            Some(&serde_json::json!(1_700_000_000_000_u64)),
+            "got {json}"
+        );
+    }
+
+    #[test]
+    fn origin_on_the_wire_is_present_exactly_when_the_state_is_present() {
+        // The biconditional, asserted in both directions. On the wire: a
+        // `present` state implies an `origin` key, and a `none`/`absent`
+        // state implies no `origin` key — so a reader can never hold an
+        // origin without a present list, and the key can never silently
+        // become a second source of truth about the state. In the
+        // constructor: the illegal pairs themselves — `(none, Some)`,
+        // `(absent, Some)`, and a `present` without an origin — are built
+        // through the constructor every axis builder uses and must be
+        // refused, because a legal-inputs-only wire test exercises
+        // `skip_serializing_if`, not the invariant.
+        fn axis_json(
+            state: VocabularyState,
+            origin: Option<VocabularyOrigin>,
+        ) -> serde_json::Value {
+            serde_json::to_value(VocabularyModes {
+                state,
+                origin,
+                items: Vec::new(),
+            })
+            .expect("json")
+        }
+        let json = axis_json(VocabularyState::Present, Some(VocabularyOrigin::Daemon));
+        assert!(
+            json.get("origin").is_some(),
+            "a present axis must carry its origin, got {json}"
+        );
+        for state in [VocabularyState::None, VocabularyState::Absent] {
+            let json = axis_json(state, None);
+            assert!(
+                json.get("origin").is_none(),
+                "a {state:?} axis must not carry an origin, got {json}"
+            );
+        }
+        // The forbidden half of the biconditional, on both axis types: each
+        // illegal pair goes through the real constructor and is refused.
+        for (state, origin) in [
+            (VocabularyState::None, Some(VocabularyOrigin::Daemon)),
+            (VocabularyState::Absent, Some(VocabularyOrigin::Provider)),
+            (VocabularyState::Present, None),
+        ] {
+            assert!(
+                VocabularyModes::new(state, origin, Vec::new()).is_err(),
+                "an axis of {state:?} with origin {origin:?} must be refused"
+            );
+            assert!(
+                VocabularyModels::new(state, origin, Vec::new()).is_err(),
+                "an axis of {state:?} with origin {origin:?} must be refused"
+            );
+        }
+        // Every legal pair still builds, in both directions of the
+        // biconditional.
+        assert!(VocabularyModes::new(
+            VocabularyState::Present,
+            Some(VocabularyOrigin::Provider),
+            Vec::new()
+        )
+        .is_ok());
+        assert!(VocabularyModels::new(
+            VocabularyState::Present,
+            Some(VocabularyOrigin::Daemon),
+            Vec::new()
+        )
+        .is_ok());
+        for state in [VocabularyState::None, VocabularyState::Absent] {
+            assert!(VocabularyModes::new(state, None, Vec::new()).is_ok());
+            assert!(VocabularyModels::new(state, None, Vec::new()).is_ok());
+        }
     }
 
     #[test]
@@ -2276,6 +2702,11 @@ mod tests {
                     origin: crate::SessionOrigin::peer("device-phone", PeerRole::Client),
                     display_name: None,
                     created_by: None,
+                    profile_id: None,
+                    context_id: None,
+                    unattended: UnattendedState::No,
+                    labels: Default::default(),
+                    delegation: None,
                 }],
             },
         });
@@ -2470,6 +2901,7 @@ mod tests {
                 selected_option_id: Some("allow-once".to_string()),
                 selected_option_kind: Some("allow_once".to_string()),
                 selected_option_name: Some("Allow once".to_string()),
+                answered_by: None,
             },
         });
         let value = serde_json::to_value(&event).expect("permission resolved json");
@@ -2517,6 +2949,7 @@ mod tests {
                     selected_option_id: None,
                     selected_option_kind: None,
                     selected_option_name: None,
+                    answered_by: None,
                 },
             })
         );
@@ -3169,6 +3602,108 @@ mod tests {
             }
             .name(),
             "AgentProfilesSet"
+        );
+    }
+
+    #[test]
+    fn delegation_wire_contract_round_trips_with_its_exact_field_names() {
+        // The app's Settings switch and the roster's take-back are written
+        // against this JSON, and the reply's `source` is the three-valued
+        // answer the panel renders — so the names are asserted on the
+        // serialised form, the same discipline the profiles contract above
+        // applies.
+        let get = serde_json::to_value(ClientMessage::DelegationGet { id: 51 }).expect("json");
+        assert_eq!(get, serde_json::json!({"type": "delegation_get", "id": 51}));
+
+        let set = ClientMessage::DelegationSet {
+            id: 52,
+            enabled: false,
+        };
+        let set_json = serde_json::to_value(&set).expect("json");
+        assert_eq!(
+            set_json,
+            serde_json::json!({"type": "delegation_set", "id": 52, "enabled": false})
+        );
+        assert_eq!(
+            serde_json::from_value::<ClientMessage>(set_json).expect("back"),
+            set
+        );
+
+        for (source, wire) in [
+            (DelegationSource::File, "file"),
+            (DelegationSource::Default, "default"),
+            (DelegationSource::Quarantined, "quarantined"),
+        ] {
+            let state = DaemonMessage::DelegationState {
+                id: 53,
+                enabled: false,
+                source,
+            };
+            let state_json = serde_json::to_value(&state).expect("json");
+            assert_eq!(
+                state_json,
+                serde_json::json!({
+                    "type": "delegation_state", "id": 53,
+                    "enabled": false, "source": wire
+                }),
+                "the {wire} spelling is the one the app renders"
+            );
+            assert_eq!(
+                serde_json::from_value::<DaemonMessage>(state_json).expect("back"),
+                state
+            );
+        }
+
+        // The write reply carries what the daemon stored, not an echo of the
+        // request — the same stored-document rule the NOTE argues for
+        // `AgentProfilesSet` — so the fields are part of the contract, not
+        // decoration a rename could drop.
+        let set_ok = DaemonMessage::DelegationSetOk {
+            id: 54,
+            enabled: true,
+            source: DelegationSource::File,
+        };
+        assert_eq!(
+            serde_json::to_value(&set_ok).expect("json"),
+            serde_json::json!({
+                "type": "delegation_set_ok", "id": 54,
+                "enabled": true, "source": "file"
+            })
+        );
+
+        // The push has no id: it answers no request, so it must never be
+        // routed into the client's pending-request table.
+        let changed = DaemonMessage::DelegationChanged {
+            enabled: false,
+            source: DelegationSource::Quarantined,
+        };
+        assert_eq!(
+            serde_json::to_value(&changed).expect("json"),
+            serde_json::json!({
+                "type": "delegation_changed", "enabled": false,
+                "source": "quarantined"
+            })
+        );
+
+        // The audit and rate-limit sides: the read produces no row, the write
+        // does.
+        assert!(!ClientMessage::DelegationGet { id: 1 }.is_state_changing());
+        assert!(ClientMessage::DelegationSet {
+            id: 1,
+            enabled: true
+        }
+        .is_state_changing());
+        assert_eq!(
+            ClientMessage::DelegationGet { id: 1 }.name(),
+            "DelegationGet"
+        );
+        assert_eq!(
+            ClientMessage::DelegationSet {
+                id: 1,
+                enabled: true
+            }
+            .name(),
+            "DelegationSet"
         );
     }
 

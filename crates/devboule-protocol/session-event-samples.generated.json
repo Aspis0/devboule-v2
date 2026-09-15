@@ -13,7 +13,7 @@
     "childSessionId": "s.1.2",
     "displayName": "worker",
     "messageId": "agent-created-1",
-    "preset": "worker",
+    "profile": "worker",
     "provider": "claude",
     "type": "agent_created"
   },
@@ -143,6 +143,11 @@
     "type": "output"
   },
   {
+    "cardId": "",
+    "outcome": "",
+    "type": "permission_answered"
+  },
+  {
     "args": [],
     "createAgent": {
       "caps": {
@@ -156,9 +161,10 @@
         "maxLiveChildren": 3
       },
       "creatorSessionId": "s.1.1",
-      "preset": "worker",
+      "profile": "worker",
       "provider": "claude",
-      "title": "worker"
+      "title": "worker",
+      "tools": "hosted"
     },
     "env": [],
     "options": [],

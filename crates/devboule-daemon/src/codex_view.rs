@@ -9,7 +9,8 @@ use std::time::Instant;
 
 use devboule_protocol::{
     ErrorCode, NoticeSeverity, PermissionOption, SessionEvent, SessionModeStateView,
-    SessionModeView, SessionModel, SessionModelEffort, ToolLocation, TurnUsage, WireError,
+    SessionModeView, SessionModel, SessionModelEffort, ToolLocation, TurnUsage, UnattendedState,
+    WireError,
 };
 use serde_json::Value;
 
@@ -196,6 +197,16 @@ impl CodexState {
             .unwrap_or_else(|_| (String::new(), None))
     }
 
+    /// Whether the handshake's `model/list` brought no models at all. The
+    /// delivery path reads this to refuse an absent vocabulary with its own
+    /// sentence, distinct from "that model id is not among the provider's".
+    pub(crate) fn catalog_is_empty(&self) -> bool {
+        self.catalog
+            .lock()
+            .map(|catalog| catalog.models.is_empty())
+            .unwrap_or(true)
+    }
+
     pub(crate) fn manifest(&self) -> SessionEvent {
         let mode_id = self.mode_id().unwrap_or_else(|| "auto".to_string());
         let catalog = self.catalog.lock().expect("Codex catalog lock");
@@ -224,6 +235,17 @@ impl CodexState {
             .catalog
             .lock()
             .map_err(|_| WireError::new(ErrorCode::Io, "Codex model catalog is unavailable."))?;
+        // Absent vocabulary and unknown id are two different refusals: a
+        // provider that publishes no models cannot deliver any choice, while
+        // a published list that lacks the named id is a typo the human can
+        // fix. Collapsing them sends someone hunting a typo when the provider
+        // simply has no dial.
+        if model_id.is_some() && catalog.models.is_empty() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Codex publishes no models; the profile names one, so the creation is refused",
+            ));
+        }
         let selected = model_id.unwrap_or(catalog.current_model_id.as_str());
         let model = catalog
             .models
@@ -241,6 +263,12 @@ impl CodexState {
             .map(|entry| entry.id.clone())
             .collect::<Vec<_>>();
         if let Some(effort) = effort {
+            if available_efforts.is_empty() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Codex model '{selected}' has no thinking options; the profile names one, so the creation is refused"),
+                ));
+            }
             if !available_efforts.iter().any(|entry| entry == effort) {
                 return Err(WireError::new(
                     ErrorCode::InvalidRequest,
@@ -367,43 +395,141 @@ fn manifest_from_catalog(catalog: &CodexCatalog, mode_id: &str) -> SessionEvent 
             .collect(),
         modes: Some(SessionModeStateView {
             current_mode_id: mode_id.to_string(),
-            available_modes: vec![
-                SessionModeView {
-                    id: "read-only".to_string(),
-                    name: "Read Only".to_string(),
-                    description: Some(
-                        "Read files and run read-only commands; Codex cannot edit files or access the network."
-                            .to_string(),
-                    ),
-                },
-                SessionModeView {
-                    id: "auto".to_string(),
-                    name: "Default Permissions".to_string(),
-                    description: Some(
-                        "Edit files and run commands with Codex's default approval flow."
-                            .to_string(),
-                    ),
-                },
-                SessionModeView {
-                    id: "auto-review".to_string(),
-                    name: "Auto-review".to_string(),
-                    description: Some("Same workspace-write permissions as Default, but eligible `on-request` approvals are routed through the auto-reviewer subagent.".to_string()),
-                },
-                SessionModeView {
-                    id: "full-access".to_string(),
-                    name: "Full Access".to_string(),
-                    description: Some("Edit files, run commands, and access the network without additional prompts.".to_string()),
-                },
-            ],
+            available_modes: CODEX_MODES
+                .iter()
+                .map(|mode| SessionModeView {
+                    id: mode.id.to_string(),
+                    name: mode.name.to_string(),
+                    description: Some(mode.description.to_string()),
+                })
+                .collect(),
         }),
     }
 }
 
+/// The mode the daemon delivers when a create names none — the same default
+/// the turn parameters are seeded from, so the marker and the child cannot
+/// disagree about what an absent mode means.
+pub(crate) const DEFAULT_MODE: &str = "auto";
+
+/// One row of the daemon's own Codex mode vocabulary: the answer the
+/// `unattended` marker derives from it, the presentation the manifest
+/// offers, and the knob the child is actually delivered.
+///
+/// The vocabulary, the marker's dictionary, the presented manifest and the
+/// delivered knob are **one table**, the same table [`validate_mode`] admits
+/// ids from: a mode Codex does not have cannot be validated in, a mode added
+/// here cannot exist without an answer (the `unattended` field is required
+/// by the type, so there is no fall-through to be silent in), cannot be
+/// offered without being presented, and cannot be presented without
+/// delivering the knob written beside its answer. Before this was one table
+/// the presented list was hand-written literals and the knob was a
+/// wildcard-tailed `match`, so a one-line addition to the table alone made
+/// the marker promise `yes` while the child was delivered `on-request` — an
+/// over-promise on a consent surface, compiler-clean (audit R2b-1 §4.1).
+/// This is route-B knowledge and it lives here, in the family that owns
+/// `approvalPolicy`, never in a central table of mode names.
+struct CodexMode {
+    id: &'static str,
+    /// The marker's answer (`unattended_answer`).
+    unattended: UnattendedState,
+    /// The manifest's display name and description.
+    name: &'static str,
+    description: &'static str,
+    /// The delivered knob: the `approvalPolicy` the child is started with,
+    /// the sandbox the turn parameters carry, its thread-level spelling, and
+    /// the optional reviewer that intercepts what would have asked.
+    approval_policy: &'static str,
+    sandbox_policy: SandboxPolicy,
+    thread_sandbox: &'static str,
+    approvals_reviewer: Option<&'static str>,
+}
+
+/// The sandbox objects Codex's app-server takes on `turn/start`. A closed
+/// enum rather than strings so the `to_json` match below is exhaustive: the
+/// permission dimension is a closed table with a test that walks every arm.
+#[derive(Clone, Copy)]
+enum SandboxPolicy {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl SandboxPolicy {
+    fn to_json(self) -> Value {
+        match self {
+            Self::ReadOnly => serde_json::json!({ "type": "readOnly" }),
+            Self::WorkspaceWrite => serde_json::json!({
+                "type": "workspaceWrite",
+                "networkAccess": false,
+                "writableRoots": []
+            }),
+            Self::DangerFullAccess => serde_json::json!({ "type": "dangerFullAccess" }),
+        }
+    }
+}
+
+/// Entry 0 is the miss arm of [`codex_mode`]; the coherence test pins it.
+const CODEX_MODES: &[CodexMode] = &[
+    CodexMode {
+        id: "read-only",
+        unattended: UnattendedState::No,
+        name: "Read Only",
+        description:
+            "Read files and run read-only commands; Codex cannot edit files or access the network.",
+        approval_policy: "on-request",
+        sandbox_policy: SandboxPolicy::ReadOnly,
+        thread_sandbox: "read-only",
+        approvals_reviewer: None,
+    },
+    CodexMode {
+        id: "auto",
+        unattended: UnattendedState::No,
+        name: "Default Permissions",
+        description: "Edit files and run commands with Codex's default approval flow.",
+        approval_policy: "on-request",
+        sandbox_policy: SandboxPolicy::WorkspaceWrite,
+        thread_sandbox: "workspace-write",
+        approvals_reviewer: None,
+    },
+    // The daemon's own peer gate counts this id as one that can pass a
+    // permission moment with nobody answering (`prompt_skipping_mode`), so
+    // `no` — which renders as *nothing* — is the wrongly-benign badge, and
+    // `unknown` is the honest row: a present, softer marker instead of
+    // silence (audit R2b-1 §3.3). It is not `yes` either: a model reviewer
+    // may still hand a moment back to the human, and `approvalPolicy`
+    // stays `on-request`, which the coherence test checks against this
+    // answer. (The preset refusal list's separate test-only
+    // `mode_is_unattended` also counts it, and the two lists are never
+    // merged.)
+    CodexMode {
+        id: "auto-review",
+        unattended: UnattendedState::Unknown,
+        name: "Auto-review",
+        description: "Same workspace-write permissions as Default, but eligible `on-request` approvals are routed through the auto-reviewer subagent.",
+        approval_policy: "on-request",
+        sandbox_policy: SandboxPolicy::WorkspaceWrite,
+        thread_sandbox: "workspace-write",
+        approvals_reviewer: Some("auto_review"),
+    },
+    // The daemon's own knob, spelled in its own turn parameters:
+    // `approvalPolicy: never`. Codex asks nobody, which the broker's
+    // route-A ids alone would never say — the case that proves two values do
+    // not suffice.
+    CodexMode {
+        id: "full-access",
+        unattended: UnattendedState::Yes,
+        name: "Full Access",
+        description: "Edit files, run commands, and access the network without additional prompts.",
+        approval_policy: "never",
+        sandbox_policy: SandboxPolicy::DangerFullAccess,
+        thread_sandbox: "danger-full-access",
+        approvals_reviewer: None,
+    },
+];
+
 pub(crate) fn validate_mode(mode_id: &str) -> Result<(), WireError> {
-    if matches!(
-        mode_id,
-        "read-only" | "auto" | "auto-review" | "full-access"
-    ) {
+    if CODEX_MODES.iter().any(|mode| mode.id == mode_id) {
         Ok(())
     } else {
         Err(WireError::new(
@@ -413,112 +539,73 @@ pub(crate) fn validate_mode(mode_id: &str) -> Result<(), WireError> {
     }
 }
 
+/// The marker's answer for one delivered Codex mode: the table walk above,
+/// with the daemon's own default for a create that named none.
+///
+/// A mode id the table does not carry is a mode the daemon never authored —
+/// it cannot be judged, and the answer is `unknown`, never `no`. The
+/// delivery validation refuses such a mode before a child exists, so a
+/// surviving child should never hit the miss; the miss arm exists so the
+/// derivation itself stays honest if it ever is reached.
+pub(crate) fn unattended_answer(delivered_mode: Option<&str>) -> UnattendedState {
+    let mode_id = delivered_mode.unwrap_or(DEFAULT_MODE);
+    CODEX_MODES
+        .iter()
+        .find(|mode| mode.id == mode_id)
+        .map(|mode| mode.unattended)
+        .unwrap_or(UnattendedState::Unknown)
+}
+
+/// The table row for `mode_id`, or entry 0 — `read-only` — when the id is
+/// not the daemon's.
+///
+/// The miss is unreachable in production: [`validate_mode`] (called from
+/// `codex_client::validate_delivery` before a child exists) refuses every id
+/// this table does not carry, so a lookup here can only miss on a code path
+/// that skipped that validation. It fails **closed** — to the row that asks
+/// the human and cannot write — rather than to the permissive
+/// `on-request`+`workspaceWrite` an unauthored id used to inherit through a
+/// wildcard, which is exactly how a marker and a child would diverge.
+fn codex_mode(mode_id: &str) -> &'static CodexMode {
+    CODEX_MODES
+        .iter()
+        .find(|mode| mode.id == mode_id)
+        .unwrap_or(&CODEX_MODES[0])
+}
+
 pub(crate) fn mode_values(mode_id: &str) -> serde_json::Map<String, Value> {
+    let mode = codex_mode(mode_id);
     let mut values = serde_json::Map::new();
-    match mode_id {
-        "read-only" => {
-            values.insert(
-                "approvalPolicy".to_string(),
-                Value::String("on-request".to_string()),
-            );
-            values.insert(
-                "sandboxPolicy".to_string(),
-                serde_json::json!({ "type": "readOnly" }),
-            );
-        }
-        "full-access" => {
-            values.insert(
-                "approvalPolicy".to_string(),
-                Value::String("never".to_string()),
-            );
-            values.insert(
-                "sandboxPolicy".to_string(),
-                serde_json::json!({ "type": "dangerFullAccess" }),
-            );
-        }
-        "auto-review" => {
-            values.insert(
-                "approvalPolicy".to_string(),
-                Value::String("on-request".to_string()),
-            );
-            values.insert(
-                "sandboxPolicy".to_string(),
-                serde_json::json!({
-                    "type": "workspaceWrite",
-                    "networkAccess": false,
-                    "writableRoots": []
-                }),
-            );
-            values.insert(
-                "approvalsReviewer".to_string(),
-                Value::String("auto_review".to_string()),
-            );
-        }
-        _ => {
-            values.insert(
-                "approvalPolicy".to_string(),
-                Value::String("on-request".to_string()),
-            );
-            values.insert(
-                "sandboxPolicy".to_string(),
-                serde_json::json!({
-                    "type": "workspaceWrite",
-                    "networkAccess": false,
-                    "writableRoots": []
-                }),
-            );
-        }
+    values.insert(
+        "approvalPolicy".to_string(),
+        Value::String(mode.approval_policy.to_string()),
+    );
+    values.insert("sandboxPolicy".to_string(), mode.sandbox_policy.to_json());
+    if let Some(reviewer) = mode.approvals_reviewer {
+        values.insert(
+            "approvalsReviewer".to_string(),
+            Value::String(reviewer.to_string()),
+        );
     }
     values
 }
 
 pub(crate) fn thread_mode_values(mode_id: &str) -> serde_json::Map<String, Value> {
+    let mode = codex_mode(mode_id);
     let mut values = serde_json::Map::new();
-    match mode_id {
-        "read-only" => {
-            values.insert(
-                "approvalPolicy".to_string(),
-                Value::String("on-request".to_string()),
-            );
-            values.insert(
-                "sandbox".to_string(),
-                Value::String("read-only".to_string()),
-            );
-        }
-        "full-access" => {
-            values.insert(
-                "approvalPolicy".to_string(),
-                Value::String("never".to_string()),
-            );
-            values.insert(
-                "sandbox".to_string(),
-                Value::String("danger-full-access".to_string()),
-            );
-        }
-        "auto-review" => {
-            values.insert(
-                "approvalPolicy".to_string(),
-                Value::String("on-request".to_string()),
-            );
-            values.insert(
-                "sandbox".to_string(),
-                Value::String("workspace-write".to_string()),
-            );
-            values.insert(
-                "approvalsReviewer".to_string(),
-                Value::String("auto_review".to_string()),
-            );
-        }
-        _ => {
-            values.insert(
-                "approvalPolicy".to_string(),
-                Value::String("on-request".to_string()),
-            );
-            values.insert(
-                "sandbox".to_string(),
-                Value::String("workspace-write".to_string()),
-            );
-        }
+    values.insert(
+        "approvalPolicy".to_string(),
+        Value::String(mode.approval_policy.to_string()),
+    );
+    values.insert(
+        "sandbox".to_string(),
+        Value::String(mode.thread_sandbox.to_string()),
+    );
+    if let Some(reviewer) = mode.approvals_reviewer {
+        values.insert(
+            "approvalsReviewer".to_string(),
+            Value::String(reviewer.to_string()),
+        );
     }
     values
 }
@@ -954,6 +1041,109 @@ mod tests {
         assert!(super::validate_mode("read-only").is_ok());
     }
 
+    /// The over-promise the unified table makes inexpressible (audit R2b-1
+    /// §4.1): for every row, the presented manifest carries the id, the name
+    /// and the description, and the delivered knob agrees with the marker —
+    /// `never` (Codex asks nobody) only where the marker says `yes`, and any
+    /// other policy wherever the daemon does not claim that certainty, in
+    /// both the turn and the thread form — and the sandbox the child runs in
+    /// is the row's own in both spellings. A new row with a mismatched knob,
+    /// a resurrected hand-written presentation list or a wildcard-tailed
+    /// delivery match goes red here; so does a row edited to deliver full
+    /// access while keeping its marker and its name.
+    #[test]
+    fn every_codex_mode_row_presents_and_delivers_what_its_marker_promises() {
+        let catalog = catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "model-a", "displayName": "Model A", "isDefault": true }]
+        }))
+        .expect("catalog");
+        let SessionEvent::SessionManifest {
+            modes: Some(modes), ..
+        } = super::manifest_from_catalog(&catalog, super::DEFAULT_MODE)
+        else {
+            panic!("the Codex manifest carries modes");
+        };
+        assert_eq!(
+            super::CODEX_MODES[0].id,
+            "read-only",
+            "the delivery lookup's miss arm fails closed to entry 0, so entry 0 \
+             must stay the row that asks the human and cannot write"
+        );
+        for mode in super::CODEX_MODES {
+            let presented = modes
+                .available_modes
+                .iter()
+                .find(|presented| presented.id == mode.id)
+                .unwrap_or_else(|| panic!("the manifest presents `{}`", mode.id));
+            assert_eq!(
+                presented.name, mode.name,
+                "{}: presented under the row's own name",
+                mode.id
+            );
+            assert_eq!(
+                presented.description.as_deref(),
+                Some(mode.description),
+                "{}: presented under the row's own description",
+                mode.id
+            );
+
+            let values = super::mode_values(mode.id);
+            let approval = values["approvalPolicy"]
+                .as_str()
+                .expect("approvalPolicy is a string");
+            assert_eq!(
+                values.get("sandboxPolicy"),
+                Some(&mode.sandbox_policy.to_json()),
+                "{}: the delivered sandbox is the row's",
+                mode.id
+            );
+            assert_eq!(
+                values
+                    .get("approvalsReviewer")
+                    .and_then(serde_json::Value::as_str),
+                mode.approvals_reviewer,
+                "{}: the delivered reviewer is the row's",
+                mode.id
+            );
+            let thread = super::thread_mode_values(mode.id);
+            assert_eq!(
+                thread["approvalPolicy"]
+                    .as_str()
+                    .expect("thread approvalPolicy"),
+                approval,
+                "{}: the thread form delivers the same approval policy",
+                mode.id
+            );
+            assert_eq!(
+                thread["sandbox"].as_str().expect("thread sandbox"),
+                mode.thread_sandbox,
+                "{}: the thread form delivers the row's own sandbox",
+                mode.id
+            );
+            assert_eq!(
+                thread
+                    .get("approvalsReviewer")
+                    .and_then(serde_json::Value::as_str),
+                mode.approvals_reviewer,
+                "{}: the thread form delivers the same reviewer",
+                mode.id
+            );
+            match mode.unattended {
+                devboule_protocol::UnattendedState::Yes => assert_eq!(
+                    approval, "never",
+                    "{}: the marker says yes, so the child must be delivered the never-asks knob",
+                    mode.id
+                ),
+                devboule_protocol::UnattendedState::No
+                | devboule_protocol::UnattendedState::Unknown => assert_ne!(
+                    approval, "never",
+                    "{}: the marker claims no certainty, so the delivered child must still be able to ask",
+                    mode.id
+                ),
+            }
+        }
+    }
+
     #[test]
     fn context_window_stays_with_the_model_that_reported_it() {
         let catalog = catalog_from_response(&serde_json::json!({
@@ -1184,5 +1374,127 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()
         );
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::{catalog_from_response, CodexCatalog, CodexState};
+
+    fn empty_catalog() -> CodexCatalog {
+        CodexCatalog {
+            models: Vec::new(),
+            current_model_id: String::new(),
+            current_effort: None,
+        }
+    }
+
+    fn catalog_with_model(efforts: Vec<&str>) -> CodexCatalog {
+        let frame = serde_json::json!({
+            "data": [{
+                "id": "gpt-5.1",
+                "displayName": "GPT 5.1",
+                "isDefault": true,
+                "supportedReasoningEfforts": efforts
+                    .iter()
+                    .map(|id| serde_json::json!({"reasoningEffort": id}))
+                    .collect::<Vec<_>>(),
+                "defaultReasoningEffort": efforts.first().map(|id| id.to_string()),
+            }]
+        });
+        catalog_from_response(&frame).expect("catalog")
+    }
+
+    /// Absent vocabulary and unknown id are two different refusals: a
+    /// provider that publishes no models gets the absence sentence, an id
+    /// outside a published list the mismatch sentence.
+    #[test]
+    fn a_codex_model_against_an_empty_catalog_is_the_absence_refusal() {
+        let state = CodexState::new("thread".to_string(), empty_catalog(), "auto");
+        let error = state
+            .set_model(Some("gpt-5.1"), None)
+            .expect_err("an empty catalog cannot deliver a model");
+        assert!(
+            error.message.contains("publishes no models"),
+            "the absence sentence: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("is not in model/list"),
+            "the two sentences must stay distinct: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_codex_model_outside_the_catalog_is_the_mismatch_refusal() {
+        let state = CodexState::new(
+            "thread".to_string(),
+            catalog_with_model(vec!["high"]),
+            "auto",
+        );
+        let error = state
+            .set_model(Some("gpt-bogus"), None)
+            .expect_err("an unknown model id must be refused");
+        assert!(
+            error.message.contains("is not in model/list"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+    }
+
+    /// A model with no thinking options at all is the absence sentence; an
+    /// option outside the model's list is the mismatch sentence. The ninth
+    /// catch, on the effort axis.
+    #[test]
+    fn codex_thinking_absence_and_mismatch_are_two_distinct_refusals() {
+        let none = CodexState::new("thread".to_string(), catalog_with_model(vec![]), "auto");
+        let error = none
+            .set_model(Some("gpt-5.1"), Some("high"))
+            .expect_err("a model without efforts must be refused");
+        assert!(
+            error.message.contains("has no thinking options"),
+            "the absence sentence: {}",
+            error.message
+        );
+
+        let some = CodexState::new(
+            "thread".to_string(),
+            catalog_with_model(vec!["high", "low"]),
+            "auto",
+        );
+        let error = some
+            .set_model(Some("gpt-5.1"), Some("bogus"))
+            .expect_err("an unknown effort must be refused");
+        assert!(
+            error.message.contains("is not available for model"),
+            "the mismatch sentence: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("has no thinking options"),
+            "the two sentences must stay distinct: {}",
+            error.message
+        );
+    }
+
+    /// The seeded delivery is what the first turn reads back: model and
+    /// effort verbatim.
+    #[test]
+    fn a_seeded_codex_delivery_is_what_the_first_turn_reads() {
+        let state = CodexState::new(
+            "thread".to_string(),
+            catalog_with_model(vec!["high", "low"]),
+            "auto",
+        );
+        state
+            .set_model(Some("gpt-5.1"), Some("low"))
+            .expect("seeded");
+        let (model, effort) = state.model_and_effort();
+        assert_eq!(model, "gpt-5.1");
+        assert_eq!(effort.as_deref(), Some("low"));
+        assert!(!state.catalog_is_empty(), "the catalog has models");
+        let empty = CodexState::new("thread".to_string(), empty_catalog(), "auto");
+        assert!(empty.catalog_is_empty(), "an empty catalog answers empty");
     }
 }

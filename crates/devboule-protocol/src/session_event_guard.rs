@@ -107,7 +107,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
             child_session_id: "s.1.2".to_string(),
             display_name: "worker".to_string(),
             provider: "claude".to_string(),
-            preset: "worker".to_string(),
+            profile: "worker".to_string(),
         },
         ChildFinished => SessionEvent::ChildFinished {
             message_id: Some("child-finished-1".to_string()),
@@ -168,8 +168,9 @@ fn session_event_samples() -> Vec<SessionEvent> {
             create_agent: Some(crate::CreateAgentCard {
                 creator_session_id: "s.1.1".to_string(),
                 provider: "claude".to_string(),
-                preset: "worker".to_string(),
+                profile: "worker".to_string(),
                 title: "worker".to_string(),
+                tools: "hosted".to_string(),
                 caps: crate::CreateAgentCaps {
                     live_children: 0,
                     max_live_children: 3,
@@ -187,6 +188,12 @@ fn session_event_samples() -> Vec<SessionEvent> {
             selected_option_id: None,
             selected_option_kind: None,
             selected_option_name: None,
+            answered_by: None,
+        },
+        PermissionAnswered => SessionEvent::PermissionAnswered {
+            card_id: String::new(),
+            answered_by: None,
+            outcome: String::new(),
         },
         SessionManifest => SessionEvent::SessionManifest {
             provider_id: None,

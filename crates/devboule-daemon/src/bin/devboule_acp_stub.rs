@@ -399,7 +399,21 @@ fn main() -> io::Result<()> {
                         }
                     })
                 };
-                if let Some(modes) = stub_modes.as_deref() {
+                // The R2a delivery scenario: an agent that declares no model
+                // catalog at all. The daemon's switch shape is then None, and
+                // a profile naming a model must be refused with the absence
+                // sentence instead of being sent and hoped for.
+                if std::env::var_os("DEVBOULE_STUB_NO_MODELS").is_some() {
+                    if let Some(object) = new_session_result.as_object_mut() {
+                        object.remove("models");
+                    }
+                }
+                if std::env::var_os("DEVBOULE_STUB_OMIT_MODES").is_some() {
+                    // The re-audit's P3-5: the daemon's tick guard has a
+                    // sentence for a handshake that declared no modes the
+                    // daemon can judge, and reaching it needs an agent that
+                    // says nothing about modes at all.
+                } else if let Some(modes) = stub_modes.as_deref() {
                     // The stub declares the modes the test asked for (`S5`
                     // block 2's worker cell for this provider), so the daemon's
                     // `has_standard_modes` is true and the child's creation
@@ -421,7 +435,7 @@ fn main() -> io::Result<()> {
                     // EOF on a session whose creation has just been committed.
                     return Ok(());
                 }
-                call_mcp_tools_list_if_configured(&request)?;
+                probe_mcp_tools_on_own_thread(&request);
                 emit_mcp_ready_if_configured(&mut stdout, &request)?;
             }
             "session/load" => {
@@ -498,7 +512,7 @@ fn main() -> io::Result<()> {
                         }
                     }),
                 )?;
-                call_mcp_tools_list_if_configured(&request)?;
+                probe_mcp_tools_on_own_thread(&request);
                 emit_mcp_ready_if_configured(&mut stdout, &request)?;
             }
             "session/set_config_option" => {
@@ -599,6 +613,32 @@ fn main() -> io::Result<()> {
                 }
             }
             "session/set_model" => {
+                if std::env::var_os("DEVBOULE_STUB_DRIBBLE_SET_MODEL").is_some() {
+                    // The re-audit's P2-3 agent: bytes keep arriving forever
+                    // and none of them is a newline, so the pipe is never
+                    // quiet. A read bound consulted only when the pipe is
+                    // empty never fires; one consulted on every iteration
+                    // does. Runs until the refusal teardown kills the child.
+                    loop {
+                        let _ = stdout.write_all(b" ");
+                        let _ = stdout.flush();
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+                if std::env::var_os("DEVBOULE_STUB_IGNORE_SET_MODEL").is_some() {
+                    // The mute agent the re-audit's P2-2 convicts with: the
+                    // switch is taken off the wire and nothing ever comes
+                    // back. Only a deadline on the daemon's read turns this
+                    // into a refusal instead of an eternal wait.
+                    continue;
+                }
+                if std::env::var_os("DEVBOULE_STUB_DIE_BEFORE_SET_MODEL_REPLY").is_some() {
+                    // Dies with the switch on the wire and no answer written:
+                    // the creation-time confirm reads an EOF, and the
+                    // teardown names what died and why from the stderr tail.
+                    eprintln!("stub: dying before the set_model reply, as asked");
+                    return Ok(());
+                }
                 if config_mode && !hybrid_config_options && !hybrid_effort_only && !load_models_push
                 {
                     // Measured on claude-agent-acp 0.76.0: this verb does not
@@ -925,6 +965,22 @@ fn emit_mcp_ready_if_configured(stdout: &mut impl Write, request: &Value) -> io:
     Ok(())
 }
 
+/// Run the MCP probe off the stub's message loop.
+///
+/// A real agent probes from its own connection work, not from inside the
+/// handshake it is still finishing; an inline probe would hold this loop while
+/// the daemon waits for answers to the handshake's later steps.
+fn probe_mcp_tools_on_own_thread(request: &Value) {
+    let request = request.clone();
+    let _ = std::thread::Builder::new()
+        .name("mcp-probe".into())
+        .spawn(move || {
+            if let Err(error) = call_mcp_tools_list_if_configured(&request) {
+                eprintln!("mcp probe failed: {error}");
+            }
+        });
+}
+
 fn call_mcp_tools_list_if_configured(request: &Value) -> io::Result<()> {
     let Some(server) = request
         .pointer("/params/mcpServers")
@@ -1001,7 +1057,18 @@ fn call_mcp_tools_list_if_configured(request: &Value) -> io::Result<()> {
                 .unwrap_or_else(|_| json!({}))}
         })
         .to_string();
-        let response = mcp_post(endpoint, &path, authorization, &call)?;
+        // The probe can land while this session's own startup is still being
+        // committed, and the answer is then "No session with that id." for a
+        // session that plainly exists a moment later. Retry briefly on that
+        // one sentence, so the probe measures the broker rather than the spawn
+        // race, and stop on any other answer.
+        let mut response = mcp_post(endpoint, &path, authorization, &call)?;
+        let mut retries = 0u32;
+        while mcp_body(&response).contains("No session with that id.") && retries < 40 {
+            retries += 1;
+            std::thread::sleep(Duration::from_millis(250));
+            response = mcp_post(endpoint, &path, authorization, &call)?;
+        }
         if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_MCP_CALL_FILE") {
             append_observation(&file, authorization, &mcp_body(&response));
         }

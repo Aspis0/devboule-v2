@@ -159,6 +159,85 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                 tx.execute("ALTER TABLE sessions ADD COLUMN created_by TEXT", [])?;
             }
         }
+        if version < 11 {
+            // What a creation from a profile leaves on its child
+            // (`create-from-profile`). `unattended` is the one column with a
+            // default, and the reason is the same one the v10 pair gives in
+            // reverse: a row that predates this migration was created from no
+            // profile, so `0` is an observed fact about it rather than a guess,
+            // and a row later written by something that omits the column reads
+            // the same way. `profile_id` and `context_id` are nullable, and NULL
+            // means what it says — no profile made this session — while a NULL
+            // `context_id` reads back as the session's own id, which is the rule
+            // the field states.
+            if !session_has_column(&tx, "profile_id")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN profile_id TEXT", [])?;
+            }
+            if !session_has_column(&tx, "context_id")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN context_id TEXT", [])?;
+            }
+            if !session_has_column(&tx, "unattended")? {
+                tx.execute(
+                    "ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+            if !session_has_column(&tx, "labels")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN labels TEXT", [])?;
+            }
+        }
+        if version < 12 {
+            // The `unattended` marker becomes three-valued (R2b). The boolean
+            // column stays exactly as v11 left it — same shape, same `MAX`
+            // ratchet — because a written row's meaning must not be rewritten
+            // by an upgrade; the tri-state travels in its own column, encoded
+            // as the never-downward order `no=0 < unknown=1 < yes=2` (the
+            // encoding `journal.rs::unattended_state_rank` writes and reads).
+            //
+            // `DEFAULT 1` is `unknown`, and it is the whole backfill rule for
+            // the old `false`: an old `0` was derived either by the deleted
+            // provider table or by the profile's feature tick, and neither is
+            // re-trustable as "a human is watching" — that is what `no` (0)
+            // would claim, and **no old row is ever backfilled to it**. Only
+            // an old `1` becomes `yes` (2): that row recorded a profile the
+            // daemon could see had auto-accepted, which is exactly what `yes`
+            // still means.
+            if !session_has_column(&tx, "unattended_state")? {
+                tx.execute(
+                    "ALTER TABLE sessions ADD COLUMN unattended_state INTEGER NOT NULL DEFAULT 1",
+                    [],
+                )?;
+            }
+            let promoted = tx.execute(
+                "UPDATE sessions SET unattended_state = ?1
+                 WHERE unattended = 1 AND unattended_state <> ?1",
+                [super::unattended_state_rank(
+                    devboule_protocol::UnattendedState::Yes,
+                )],
+            )?;
+            if promoted > 0 {
+                // Counts only: no id, no profile, no provider.
+                eprintln!(
+                    "journal v12 migration marked {promoted} unattended rows as `yes`; \
+                     every other existing row reads `unknown`"
+                );
+            }
+            // Every shape the post-commit validation judges is judged **before**
+            // the stamp (audit R2b-1 finding 2): all five columns exist by now —
+            // just added, or pre-existing with a name that collides — and if any
+            // shape is not the one this daemon writes, the open must leave the
+            // file at `user_version` 11. Stamping and committing first would
+            // brick it: this build refuses the shape at the post-commit
+            // validation, and every older build refuses the version at
+            // [`JournalError::FutureSchema`], so no build could ever open the
+            // file again. The call is the post-commit validation itself —
+            // [`validate_profile_columns`] — not a second list kept in step with
+            // it, so the two cannot drift: a file the daemon will refuse is a
+            // file whose `user_version` never moved, because nothing here has
+            // committed and the whole transaction — the `ALTER`s, the promotion,
+            // the stamp — rolls back.
+            validate_profile_columns(&tx)?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -166,6 +245,9 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     // The two slice-5 columns are checked by shape rather than by presence
     // (audit S5B-07) — see [`validate_agent_columns`].
     validate_agent_columns(&conn)?;
+    // The same rule for the five the v11/v12 migrations add — see
+    // [`validate_profile_columns`]..
+    validate_profile_columns(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -209,19 +291,7 @@ fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalEr
 /// v9 shape checks use) rather than being used.
 fn validate_agent_columns(conn: &Connection) -> Result<(), JournalError> {
     for column in ["display_name", "created_by"] {
-        let mut statement = conn.prepare(
-            "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('sessions') \
-             WHERE name = ?1",
-        )?;
-        let shape = statement
-            .query_row([column], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i32>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })
-            .optional()?;
+        let shape = column_shape(conn, column)?;
         let ours = matches!(
             shape,
             Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")
@@ -233,6 +303,93 @@ fn validate_agent_columns(conn: &Connection) -> Result<(), JournalError> {
         }
     }
     Ok(())
+}
+
+/// The columns the v11 and v12 migrations add, by shape for the same reason.
+///
+/// `profile_id`, `context_id` and `labels` are `TEXT`, nullable, no default —
+/// the exact shape the daemon writes. `unattended` is the odd one and is checked
+/// as `INTEGER NOT NULL DEFAULT 0`: it is a three-state column only if one lies,
+/// and this daemon writes `0`/`1` into a column that can never be NULL, so a
+/// hand-made `unattended TEXT` (or a nullable one) is a schema this daemon
+/// cannot read honestly and takes the corrupt-journal path. Beside it,
+/// `unattended_state` is the three-state column — checked as
+/// `INTEGER NOT NULL DEFAULT 1`, the rank of `unknown`, because a row written
+/// by something that omits the tri-state must read as "not established", never
+/// as `no`.
+fn validate_profile_columns(conn: &Connection) -> Result<(), JournalError> {
+    for column in ["profile_id", "context_id", "labels"] {
+        let shape = column_shape(conn, column)?;
+        let ours = matches!(
+            shape,
+            Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")
+        );
+        if !ours {
+            return Err(JournalError::Corrupt(format!(
+                "journal schema has an unexpected sessions.{column} column"
+            )));
+        }
+    }
+    let shape = column_shape(conn, "unattended")?;
+    let ours = matches!(
+        shape,
+        Some((ref kind, 1, Some(ref default)))
+            if kind.eq_ignore_ascii_case("integer") && default == "0"
+    );
+    if !ours {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected sessions.unattended column".to_string(),
+        ));
+    }
+    // The v12 tri-state column, by shape for the same reason: `INTEGER NOT
+    // NULL DEFAULT 1` — `1` is the rank of `unknown`, so a row written by
+    // something that omits the column reads as "not established", never as
+    // `no`. A hand-made `unattended_state TEXT` (or a nullable one, or one
+    // defaulting to `no`) is a schema this daemon cannot read honestly and
+    // takes the corrupt-journal path.
+    if !is_our_unattended_state_shape(column_shape(conn, "unattended_state")?) {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected sessions.unattended_state column".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The one shape `unattended_state` may have: `INTEGER NOT NULL DEFAULT 1`,
+/// the rank of `unknown` — the shape the v12 migration adds. Both the
+/// pre-stamp guard in [`open_connection`] (which calls
+/// [`validate_profile_columns`] inside the transaction, before the stamp)
+/// and the post-commit [`validate_profile_columns`] read this predicate, so
+/// the shape is spelled once and every column the post-commit validation
+/// checks is checked before the stamp.
+fn is_our_unattended_state_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
+    matches!(
+        shape,
+        Some((ref kind, 1, Some(ref default)))
+            if kind.eq_ignore_ascii_case("integer") && default == "1"
+    )
+}
+
+/// One column's `(type, notnull, default)` as SQLite reports it, or `None` when
+/// the table has no such column.
+fn column_shape(
+    conn: &Connection,
+    column: &str,
+) -> Result<Option<(String, i32, Option<String>)>, JournalError> {
+    let mut statement = conn.prepare(
+        "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('sessions') \
+         WHERE name = ?1",
+    )?;
+    let shape = statement
+        .query_row([column], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i32>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .optional()?;
+    Ok(shape)
 }
 
 /// Give every stored permission payload written before v9 the `local` origin it
@@ -1720,6 +1877,302 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
         )
         .expect("the shape the daemon writes");
         validate_agent_columns(&conn).expect("the daemon's own shape is valid");
+    }
+
+    /// The v12 tri-state column is shape-checked too: a `TEXT` (or nullable,
+    /// or defaulting to `no`) `unattended_state` is a schema this daemon never
+    /// wrote and refuses rather than reads.
+    #[test]
+    fn a_sessions_table_with_a_wrongly_typed_unattended_state_is_refused() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 profile_id TEXT,
+                 context_id TEXT,
+                 labels TEXT,
+                 unattended INTEGER NOT NULL DEFAULT 0,
+                 unattended_state TEXT
+             );",
+        )
+        .expect("a sessions table with the wrong tri-state column type");
+        let error = super::validate_profile_columns(&conn).expect_err("the wrong type is refused");
+        assert!(
+            matches!(error, JournalError::Corrupt(_)),
+            "the corrupt-journal path is the one that refuses it: {error}"
+        );
+        assert!(
+            error.to_string().contains("unattended_state"),
+            "the message names the column: {error}"
+        );
+    }
+
+    /// And the shape the daemon actually writes for the tri-state — `INTEGER
+    /// NOT NULL DEFAULT 1`, the rank of `unknown` — is accepted, so the check
+    /// cannot pass by refusing everything.
+    #[test]
+    fn the_tri_state_shape_this_daemon_writes_is_accepted() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 profile_id TEXT,
+                 context_id TEXT,
+                 labels TEXT,
+                 unattended INTEGER NOT NULL DEFAULT 0,
+                 unattended_state INTEGER NOT NULL DEFAULT 1
+             );",
+        )
+        .expect("the shape the daemon writes");
+        super::validate_profile_columns(&conn).expect("the daemon's own shape is valid");
+    }
+
+    /// A v11 journal file: the base schema and every column through v11, so
+    /// the v12 migration starts from the version it will find on disk.
+    /// The four v11 profile columns come from the daemon's own DDL; the
+    /// colliding-shape test below supplies its own through
+    /// [`v11_journal_with_profile_ddl`].
+    fn v11_journal_with_rows(
+        rows: &[(&str, i64, &str)],
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        v11_journal_with_profile_ddl(
+            rows,
+            "ALTER TABLE sessions ADD COLUMN profile_id TEXT;
+             ALTER TABLE sessions ADD COLUMN context_id TEXT;
+             ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN labels TEXT;",
+        )
+    }
+
+    /// A v11 journal file whose four v11 profile columns are built from the
+    /// caller's DDL instead of the daemon's: a v11 file that happens to carry
+    /// a colliding column in any of the four shapes the post-commit validation
+    /// refuses. SQLite's type affinity accepts the standard test rows into the
+    /// wrong-shaped columns, which is exactly the hazard — the data fits, the
+    /// shape lies.
+    fn v11_journal_with_profile_ddl(
+        rows: &[(&str, i64, &str)],
+        profile_ddl: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("v11 journal");
+        conn.execute_batch(SCHEMA_SQL).expect("base schema");
+        conn.execute_batch(V8_DDL).expect("v8 columns and tables");
+        conn.execute_batch(super::PEERS_AUDIT_SQL)
+            .expect("v8 peers and audit tables");
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN origin_kind TEXT NOT NULL DEFAULT 'local';
+             ALTER TABLE sessions ADD COLUMN origin_device TEXT;
+             ALTER TABLE sessions ADD COLUMN origin_role TEXT;
+             ALTER TABLE sessions ADD COLUMN display_name TEXT;
+             ALTER TABLE sessions ADD COLUMN created_by TEXT;",
+        )
+        .expect("v9-v10 columns");
+        conn.execute_batch(profile_ddl)
+            .expect("v11 profile columns");
+        for (id, unattended, profile_id) in rows {
+            conn.execute(
+                "INSERT INTO sessions (
+                    id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                    generation, status, exit_code, closed, last_seq, degraded,
+                    dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes,
+                    unsnapshotted_bytes, reaped, peer_session_id, provider,
+                    origin_kind, origin_device, origin_role,
+                    display_name, created_by, profile_id, context_id, unattended, labels
+                 ) VALUES (?1, 'owner', NULL, 'acp', 'Agent', 1, 2,
+                           1, 'ended', 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, NULL, NULL,
+                           'local', NULL, NULL,
+                           NULL, NULL, ?3, NULL, ?2, '{}')",
+                rusqlite::params![id, unattended, profile_id],
+            )
+            .expect("v11 session row");
+        }
+        conn.pragma_update(None, "user_version", 11)
+            .expect("v11 version");
+        drop(conn);
+        (dir, path)
+    }
+
+    /// The v12 backfill, and the direction it is forbidden to get wrong. An
+    /// old `unattended = 1` recorded a profile the daemon could see had
+    /// auto-accepted, so it reads `yes`; an old `0` was written by the deleted
+    /// provider table or the profile's feature tick, neither of which ever
+    /// distinguished "we knew a human was watching" from "we were not told" —
+    /// so it reads **`unknown`, never `no`**. Backfilling toward `no` would
+    /// manufacture the one certainty the old column never recorded.
+    #[test]
+    fn a_v11_journal_backfills_true_to_yes_and_false_to_unknown_never_no() {
+        let (dir, path) = v11_journal_with_rows(&[
+            ("s.before-tri.asking", 0, "profile-ask"),
+            ("s.before-tri.unattended", 1, "profile-bypass"),
+        ]);
+
+        {
+            let journal = Journal::open(&path).expect("migrate");
+            let rows = journal.list().expect("list");
+            let asking = rows
+                .iter()
+                .find(|row| row.id == "s.before-tri.asking")
+                .expect("the old asking row survived");
+            assert_eq!(
+                asking.unattended_state,
+                devboule_protocol::UnattendedState::Unknown,
+                "an old false is unknown: nobody recorded that a human was watching"
+            );
+            assert_eq!(
+                asking.to_session().unattended,
+                devboule_protocol::UnattendedState::Unknown,
+                "the wire row reads the same"
+            );
+            let unattended = rows
+                .iter()
+                .find(|row| row.id == "s.before-tri.unattended")
+                .expect("the old unattended row survived");
+            assert_eq!(
+                unattended.unattended_state,
+                devboule_protocol::UnattendedState::Yes,
+                "an old true is yes: the profile it recorded had auto-accepted"
+            );
+            journal.shutdown();
+        }
+
+        // The stored ranks, not just the typed reads: the asking row sits at
+        // the `unknown` rank (1) and never at `no` (0).
+        let raw = |id: &str| {
+            Connection::open(&path)
+                .expect("open migrated journal")
+                .query_row(
+                    "SELECT unattended_state FROM sessions WHERE id = ?1",
+                    [id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("stored rank")
+        };
+        assert_eq!(raw("s.before-tri.asking"), 1, "unknown, never no");
+        assert_eq!(raw("s.before-tri.unattended"), 2, "yes");
+
+        // A second open re-runs nothing and moves nothing.
+        {
+            let journal = Journal::open(&path).expect("second open");
+            journal.shutdown();
+        }
+        assert_eq!(raw("s.before-tri.asking"), 1);
+        assert_eq!(raw("s.before-tri.unattended"), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The ordering the pre-stamp guard fixes (audit R2b-1 finding 2): a v11
+    /// file that already carries an `unattended_state` column of the wrong
+    /// shape is refused with `user_version` still **11**. The open returns
+    /// `Err` with or without the guard — the post-commit validation raises
+    /// the same `Corrupt` — so the assertion that proves the ordering is the
+    /// version left on disk: stamp-then-check leaves 12, and the file is then
+    /// openable by no build, old (`FutureSchema`) or new (`Corrupt`).
+    #[test]
+    fn a_v12_migration_does_not_stamp_a_colliding_column() {
+        let (dir, path) = v11_journal_with_rows(&[("s.before-tri.asking", 1, "profile-bypass")]);
+        {
+            let conn = Connection::open(&path).expect("open the v11 journal");
+            conn.execute("ALTER TABLE sessions ADD COLUMN unattended_state TEXT", [])
+                .expect("the stray colliding column");
+        }
+        let error = match Journal::open(&path) {
+            Err(error) => error,
+            Ok(journal) => {
+                journal.shutdown();
+                panic!("the colliding column is refused");
+            }
+        };
+        assert!(
+            matches!(error, JournalError::Corrupt(_)),
+            "the corrupt-journal path is the one that refuses it: {error}"
+        );
+        assert!(
+            error.to_string().contains("unattended_state"),
+            "the message names the column: {error}"
+        );
+        let version: i32 = Connection::open(&path)
+            .expect("open the refused journal")
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(
+            version, 11,
+            "the stamp never commits: the file stays openable by an older build, \
+             and the next open re-attempts the migration"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The guard above covers one column; the post-commit validation checks
+    /// five. Each of the other four v11 shapes below is a file the daemon
+    /// will refuse — and before the guard was widened to call the validation
+    /// itself, each was stamped 12 first: refused, then bricked. The `Err`
+    /// alone proves nothing (the post-commit check raises it either way), so
+    /// every case asserts the tripwire, `PRAGMA user_version == 11`.
+    #[test]
+    fn a_v12_migration_does_not_stamp_any_colliding_v11_column() {
+        // One wrong shape per case, the other three columns exactly as the
+        // daemon writes them — so the refusal names this column and no other.
+        let colliding: &[(&str, &str)] = &[
+            (
+                "profile_id",
+                "ALTER TABLE sessions ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN context_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN labels TEXT;",
+            ),
+            (
+                "context_id",
+                "ALTER TABLE sessions ADD COLUMN profile_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN context_id INTEGER;
+                 ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN labels TEXT;",
+            ),
+            (
+                "unattended",
+                "ALTER TABLE sessions ADD COLUMN profile_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN context_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN unattended TEXT;
+                 ALTER TABLE sessions ADD COLUMN labels TEXT;",
+            ),
+            (
+                "labels",
+                "ALTER TABLE sessions ADD COLUMN profile_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN context_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN labels TEXT NOT NULL DEFAULT 'x';",
+            ),
+        ];
+        for (column, profile_ddl) in colliding {
+            let (dir, path) = v11_journal_with_profile_ddl(
+                &[("s.before-tri.asking", 1, "profile-bypass")],
+                profile_ddl,
+            );
+            let error = match Journal::open(&path) {
+                Err(error) => error,
+                Ok(journal) => {
+                    journal.shutdown();
+                    panic!("the colliding {column} column is refused");
+                }
+            };
+            assert!(
+                matches!(error, JournalError::Corrupt(_)),
+                "{column}: the corrupt-journal path is the one that refuses it: {error}"
+            );
+            assert!(
+                error.to_string().contains(column),
+                "{column}: the message names the column: {error}"
+            );
+            let version: i32 = Connection::open(&path)
+                .expect("open the refused journal")
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .expect("user_version");
+            assert_eq!(
+                version, 11,
+                "{column}: the stamp never commits — refused, not bricked"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     fn stored_trigger(conn: &Connection, name: &str) -> String {

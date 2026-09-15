@@ -187,6 +187,10 @@ pub(crate) struct SessionRuntime {
     mcp_url: Mutex<Option<String>>,
     mcp_readiness: Mutex<McpReadiness>,
     mcp_ready_cvar: Condvar,
+    /// The S1 tools tri-state, beside `mcp_bearer`/`mcp_url`: set at
+    /// registration, flipped by verification (S8), read by roster/result
+    /// paths (S2/S8). Lock discipline only in S1 — no behaviour reads it yet.
+    tools_state: Mutex<crate::mcp_broker::ToolsState>,
     pub(crate) agent_kind: Mutex<Option<SessionKind>>,
     claude_catalog_state: Mutex<crate::claude_catalog::ClaudeCatalogState>,
     /// Attention is deliberately runtime-only. It is a user's current view
@@ -194,6 +198,10 @@ pub(crate) struct SessionRuntime {
     /// survive a daemon restart.
     pub(crate) attention: Mutex<Option<Attention>>,
     attention_hooks: Mutex<Option<AttentionHooks>>,
+    /// The delegated-surfacing observer: called once per parked card, at the
+    /// moment it enters the pending table. Installed by the registry at
+    /// birth, beside the attention hooks; never set by the broker itself.
+    permission_park_hook: Mutex<Option<PermissionParkHook>>,
     /// Duplicated OS process handle. Queried by the shared sweeper; never a
     /// PID, which the OS may reuse after the child dies.
     pub(crate) os_handle: Mutex<Option<ProcessHandle>>,
@@ -217,6 +225,16 @@ pub(crate) struct SessionRuntime {
     /// Provider-side session id (ACP `sessionId`, Claude `system/init`
     /// `session_id`). Stored for resume; not the Devboule session id.
     pub(crate) peer_session_id: Mutex<Option<String>>,
+    /// This session still owes the daemon its **first** prompt
+    /// (`create-from-profile`).
+    ///
+    /// Taken rather than read (`take_first_prompt`): the human's standing
+    /// instructions ride the first prompt exactly once, and two prompts racing
+    /// for it cannot both carry them. `true` for a session the daemon is starting
+    /// and `false` for one built from a replay, because a session that comes back
+    /// with a transcript already had a first prompt — the instructions were on
+    /// it, or it predates them — so a resume never re-injects them.
+    first_prompt_owed: AtomicBool,
 }
 
 struct McpReadiness {
@@ -224,6 +242,10 @@ struct McpReadiness {
     ready: bool,
     failure: Option<String>,
 }
+
+/// The hook type, named once: the closure the registry installs to be told
+/// when a card parks.
+type PermissionParkHook = Arc<dyn Fn(&SessionEvent) + Send + Sync>;
 
 struct AttentionHooks {
     suppressed: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -447,19 +469,42 @@ impl SessionRuntime {
                 failure: None,
             }),
             mcp_ready_cvar: Condvar::new(),
+            tools_state: Mutex::new(crate::mcp_broker::ToolsState::Unavailable),
             agent_kind: Mutex::new(None),
             claude_catalog_state: Mutex::new(
                 crate::claude_catalog::ClaudeCatalogState::Provisional,
             ),
             attention: Mutex::new(None),
             attention_hooks: Mutex::new(None),
+            permission_park_hook: Mutex::new(None),
             os_handle: Mutex::new(None),
             on_os_death: Mutex::new(None),
             os_death_started: AtomicBool::new(false),
             roster_notify: Mutex::new(None),
             finish_notify: Mutex::new(None),
             peer_session_id: Mutex::new(None),
+            // A live session being started: nobody has sent it a prompt yet, so
+            // the first one carries the standing instructions.
+            first_prompt_owed: AtomicBool::new(true),
         }
+    }
+
+    /// Whether *this* caller is the one that owes the session its first prompt.
+    ///
+    /// Exactly one caller can get `true` — the flag is taken, not read — so the
+    /// standing instructions cannot be composed onto two prompts, and a prompt
+    /// that arrives after a failed write does not get a second copy.
+    pub(crate) fn take_first_prompt(&self) -> bool {
+        self.first_prompt_owed.swap(false, Ordering::AcqRel)
+    }
+
+    /// A session being **resumed** owes no first prompt: the generation it
+    /// resumes is mid-conversation, its first prompt already happened there,
+    /// and the standing instructions were either on it or predate them. The
+    /// resume road (`spawn_resumed_session` → `start_spawned_session`) calls
+    /// this; a fresh session keeps the flag `with_journal` set.
+    pub(crate) fn clear_first_prompt_owed(&self) {
+        self.first_prompt_owed.store(false, Ordering::Release);
     }
 
     pub(crate) fn require_mcp(&self) {
@@ -467,6 +512,19 @@ impl SessionRuntime {
             readiness.required = true;
             self.mcp_ready_cvar.notify_all();
         }
+    }
+
+    pub(crate) fn set_tools_state(&self, state: crate::mcp_broker::ToolsState) {
+        if let Ok(mut current) = self.tools_state.lock() {
+            *current = state;
+        }
+    }
+
+    pub(crate) fn tools_state(&self) -> crate::mcp_broker::ToolsState {
+        self.tools_state
+            .lock()
+            .map(|state| *state)
+            .unwrap_or(crate::mcp_broker::ToolsState::Unavailable)
     }
 
     pub(crate) fn set_mcp_bearer(&self, bearer: String) {
@@ -630,6 +688,11 @@ impl SessionRuntime {
         replay: Replay,
     ) -> Arc<Self> {
         let runtime = Arc::new(Self::with_journal(session_id, journal));
+        // A session that comes back with a transcript is not owed a first prompt
+        // (`create-from-profile`): it already had one, and the standing
+        // instructions were either on it or predate them. This is what makes the
+        // injection a session-start rule rather than a resume rule.
+        runtime.clear_first_prompt_owed();
         let mut stream = runtime
             .stream
             .lock()
@@ -711,6 +774,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
                 | SessionEvent::PermissionResolved { .. }
+                | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentCreated { .. }
@@ -1581,14 +1645,14 @@ impl SessionRuntime {
         child_session_id: &str,
         display_name: &str,
         provider: &str,
-        preset: &str,
+        profile: &str,
     ) -> bool {
         self.publish_journaled_agent_event(|generation, seq| SessionEvent::AgentCreated {
             message_id: Some(format!("devboule-agent-created-{generation}-{seq}")),
             child_session_id: child_session_id.to_string(),
             display_name: display_name.to_string(),
             provider: provider.to_string(),
-            preset: preset.to_string(),
+            profile: profile.to_string(),
         })
         .is_some()
     }
@@ -1868,6 +1932,29 @@ impl SessionRuntime {
     ) {
         if let Ok(mut hooks) = self.attention_hooks.lock() {
             *hooks = Some(AttentionHooks { suppressed, notify });
+        }
+    }
+
+    /// Install the delegated-surfacing observer. The registry installs it
+    /// where it installs the attention hooks: one place, at birth, with the
+    /// child's own facts in scope.
+    pub(crate) fn set_permission_park_hook(&self, hook: PermissionParkHook) {
+        if let Ok(mut slot) = self.permission_park_hook.lock() {
+            *slot = Some(hook);
+        }
+    }
+
+    /// Called by the permission broker when a card parks. Best effort and
+    /// silent on a missing hook: a session the registry never dressed (a
+    /// test runtime) simply surfaces nothing.
+    pub(crate) fn notify_permission_park(&self, request: &SessionEvent) {
+        let hook = self
+            .permission_park_hook
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        if let Some(hook) = hook {
+            hook(request);
         }
     }
 
@@ -2155,6 +2242,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
                 | SessionEvent::PermissionResolved { .. }
+                | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentCreated { .. }
@@ -2934,6 +3022,12 @@ mod tests {
                 // neither is what the notice path is about.
                 display_name: None,
                 created_by: None,
+                profile_id: None,
+                context_id: None,
+                // The marker this fixture is silent about: the notice path
+                // reads nothing from it, and `unknown` says exactly that.
+                unattended_state: devboule_protocol::UnattendedState::Unknown,
+                labels: Default::default(),
             })
             .expect("session row");
         let runtime = Arc::new(SessionRuntime::with_journal(
@@ -3013,5 +3107,52 @@ mod tests {
                 if text == "mode note" && *severity == NoticeSeverity::Warning
         )));
         journal.shutdown();
+    }
+    /// The first prompt is owed exactly once per session, and a session built
+    /// from a replay is owed none: the standing instructions are a session-start
+    /// rule, never a resume rule.
+    #[test]
+    fn a_session_owes_its_first_prompt_once_and_a_replay_owes_none() {
+        let runtime = SessionRuntime::new();
+        assert!(
+            runtime.take_first_prompt(),
+            "a session being started owes its first prompt"
+        );
+        assert!(
+            !runtime.take_first_prompt(),
+            "and the flag is taken, not read: a second prompt cannot carry a second copy"
+        );
+
+        let dir = std::env::temp_dir().join(format!(
+            "devboule first prompt {}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+        let mut record = crate::journal::new_session_record(
+            "s.replayed",
+            "owner",
+            None,
+            SessionKind::Acp,
+            "Replayed",
+        );
+        record.status = crate::journal::PersistStatus::Ended;
+        record.closed = false;
+        journal.upsert_blocking(record).expect("the row");
+        let recovered = SessionRuntime::from_replay(
+            "s.replayed".to_string(),
+            Some(Arc::clone(&journal)),
+            journal.replay("s.replayed", 0).expect("replay"),
+        );
+        assert!(
+            !recovered.take_first_prompt(),
+            "a session that comes back with a transcript already had its first prompt"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

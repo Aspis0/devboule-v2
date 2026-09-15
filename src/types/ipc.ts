@@ -140,9 +140,20 @@ export interface CreateAgentCaps {
 export interface CreateAgentCard {
   creatorSessionId: Id;
   provider: string;
-  preset: string;
+  /**
+   * The **name** of the profile the child would be created from: the word the
+   * human ticked. What it resolves to (model, mode, features) is on the card's
+   * description; the child's session row records the profile's stable id
+   * (`Session.profileId`), never this name.
+   */
+  profile: string;
   /** The display name the child would be created with. */
   title: string;
+  /**
+   * The tools state the child will start in (`hosted`/`unavailable`/`unverified`).
+   * The card promises verification; the result and roster report it.
+   */
+  tools: string;
   caps: CreateAgentCaps;
 }
 
@@ -178,6 +189,24 @@ export interface PermissionResolved {
   selectedOptionId?: string;
   selectedOptionKind?: string;
   selectedOptionName?: string;
+  /**
+   * Who answered, when it was not a person: the session id of the creator
+   * that answered its child's card under the delegation switch. Null or
+   * absent means a person.
+   */
+  answeredBy?: Id | null;
+}
+
+/**
+ * The durable record of a resolution, on every resolution — a person's, a
+ * delegated one, an auto-answer and a cancel alike. `answeredBy` is absent
+ * for a human and names the creator session for a delegated answer.
+ */
+export interface PermissionAnswered {
+  type: "permission_answered";
+  cardId: Id;
+  answeredBy?: Id | null;
+  outcome: string;
 }
 
 export interface SessionModelEffort {
@@ -339,6 +368,17 @@ export interface PromptAttachment {
   data: string;
 }
 
+/**
+ * Whether a session can pass a permission moment with no human answering (the
+ * closed wire enum the daemon derives from the session's **delivered** mode).
+ * A mode whose vocabulary is the provider's own — an ACP agent's modes are
+ * three free strings, prose the daemon did not author — is `"unknown"`: the
+ * daemon was not told, and reading that as `"no"` would claim a human is
+ * watching when nobody knows. `"unknown"` renders as its own present marker,
+ * never as nothing and never as `"no"`.
+ */
+export type UnattendedState = "yes" | "no" | "unknown";
+
 export interface Session {
   id: Id;
   workspaceId: Id | null;
@@ -398,6 +438,34 @@ export interface Session {
    * the session, or the row predates the field.
    */
   createdBy?: string;
+  /**
+   * The profile this session was created from, by its **stable id** (protocol
+   * `Session.profileId`). A rename of that profile later leaves this alone, so a
+   * running child never misreports what it was started from; resolve the id
+   * against the stored document for a name to show. Absent for a session a human
+   * started from the provider picker, and for older rows.
+   */
+  profileId?: string;
+  /**
+   * The context this session belongs to: its own id, unless another session
+   * created it, in which case it is that creator's context (protocol
+   * `Session.contextId`). One value for a creator and everything it commissions,
+   * at any depth.
+   */
+  contextId?: Id;
+  /**
+   * Whether this session can pass a permission moment with no human answering
+   * (protocol `Session.unattended`). A fact of the birth: un-ticking or editing
+   * that profile afterwards does not change it, and the daemon ratchets it and
+   * never downgrades it.
+   */
+  unattended?: UnattendedState;
+  /**
+   * The session's labels: the caller's own map plus the four `devboule.` keys
+   * the daemon stamps. For display, and for nothing else — no code decides
+   * anything from a label.
+   */
+  labels?: Record<string, string>;
 }
 
 export type ResumeResult =
@@ -521,6 +589,32 @@ export interface SessionStateSnapshot {
    * shows no created-by badge rather than guessing one.
    */
   createdBy?: Id;
+  /**
+   * The profile this session was created from, by its stable id. Carried on
+   * every push for the same reason as `displayName`: a child created while the
+   * app is open arrives as a push-only row.
+   */
+  profileId?: string;
+  /**
+   * The context this session belongs to (its own id, or its creator's). Carried
+   * on every push, like the name and the creator.
+   */
+  contextId?: Id;
+  /** Whether this session can pass a permission moment with no human answering. */
+  unattended?: UnattendedState;
+  /** The session's labels, stamped by the daemon. */
+  labels?: Record<string, string>;
+  /**
+   * The delegation facts, when this row is an agent-created child. Absent
+   * means NOT an agent-created child — a state of its own, never "off".
+   */
+  delegation?: DelegationState;
+}
+
+/** The delegation ledger for one agent-created child (snapshot only). */
+export interface DelegationState {
+  answered: number;
+  state: "off" | "active" | "unattended";
 }
 
 export type CursorShape = "block" | "underline" | "bar";
@@ -615,7 +709,13 @@ export type SessionEvent =
       childSessionId: Id;
       displayName: string;
       provider: string;
-      preset: string;
+      /**
+       * The **name** of the profile the child was created from, as it was called
+       * at that moment. The child's session row carries the profile's stable id
+       * (`Session.profileId`), because a rename must not make a running child
+       * misreport what it was started from; this is the sentence to show.
+       */
+      profile: string;
     }
   /**
    * A created child finished (protocol `SessionEvent::ChildFinished`). The
@@ -703,6 +803,7 @@ export type SessionEvent =
     }
   | PermissionRequest
   | PermissionResolved
+  | PermissionAnswered
   | SessionManifest
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }

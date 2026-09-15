@@ -17,8 +17,7 @@
 //! propagate one another's policies.
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -88,7 +87,14 @@ impl std::fmt::Display for PolicyError {
 /// - `Some(false)` disables everything else; otherwise the per-tool deny list
 ///   decides.
 pub(crate) fn is_tool_enabled(policy: Option<&ToolPolicyEntry>, name: &str) -> bool {
-    if name == crate::provider_catalog::MCP_ROSTER_TOOL {
+    // Two always-on names, for the same reason: the roster is the only way a
+    // session can see who it may talk to, and the profile list is the only way
+    // it can say what to run (`devboule_create_agent` names a profile and
+    // nothing else). A policy that took either away would leave an agent that
+    // cannot do its job and cannot say why.
+    if name == crate::provider_catalog::MCP_ROSTER_TOOL
+        || name == crate::provider_catalog::MCP_LIST_PROFILES_TOOL
+    {
         return true;
     }
     let Some(policy) = policy else {
@@ -454,52 +460,15 @@ fn now_millis() -> u128 {
 
 /// Serialize the whole store and replace the file with it.
 ///
-/// The write is the MCP config's write (`mcp_broker::write_protected_json`): a
-/// temp file created with `create_new`, its DACL replaced with a
-/// current-user-only one on Windows *before the first byte is written*, then
-/// `sync_all` and a rename over the target. The order is the point: a policy
-/// that decides which tools an agent may call is never on disk under a DACL
-/// weaker than the one it will carry, so the DACL is applied to the temp the
-/// moment the create succeeds and the bytes follow it.
+/// One writer (P2): the bytes go through the shared protected-write primitive
+/// in `crate::atomic` — the same create_new, owner-only mode, Windows DACL
+/// before the first byte, sync and rename the MCP carriers use — so the order
+/// a policy file carries cannot drift from the order a broker secret carries.
+/// The order is the point: a policy that decides which tools an agent may call
+/// is never on disk under a DACL weaker than the one it will carry.
 fn write_policies(path: &Path, policies: &HashMap<String, ToolPolicyEntry>) -> io::Result<()> {
     let bytes = serde_json::to_vec_pretty(policies).map_err(io::Error::other)?;
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "tool policy file has no parent directory",
-        )
-    })?;
-    std::fs::create_dir_all(parent)?;
-    let temp = path.with_extension("tmp");
-    let result = (|| {
-        // The temp name is this writer's own. `create_new` below refuses to
-        // follow a file already at it, and a run that died between the create
-        // and the rename would otherwise leave a temp that no later write can
-        // ever get past. Removing it removes the name, not whatever a symlink
-        // at it points at.
-        let _ = std::fs::remove_file(&temp);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&temp)?;
-        // The policy decides which tools an agent may call, so the temp file
-        // carries the same current-user-only DACL as the MCP config — applied
-        // here, after the create and before the first `write_all`, so no byte of
-        // it is ever on disk under a weaker DACL. `security.rs` owns that call,
-        // so neither writer can drift on what "protected" means. Off Windows
-        // there is no DACL to set.
-        #[cfg(windows)]
-        crate::security::apply_current_user_dacl(&temp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temp, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
+    crate::atomic::write_protected_bytes(path, &bytes)
 }
 
 #[cfg(test)]

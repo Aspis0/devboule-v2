@@ -32,6 +32,11 @@ const JOIN_BUDGET: Duration = Duration::from_millis(500);
 
 pub type EventHandler = Arc<dyn Fn(SessionEventEnvelope) + Send + Sync>;
 pub type SessionStateHandler = Arc<dyn Fn(Vec<SessionStateSnapshot>) + Send + Sync>;
+/// The daemon-pushed delegation switch (`DelegationChanged`): the stored
+/// value and where it came from. Fired for a server-initiated broadcast, so
+/// unlike an RPC reply it carries no request id.
+pub type DelegationChangedHandler =
+    Arc<dyn Fn(bool, devboule_protocol::DelegationSource) + Send + Sync>;
 
 struct PendingSubscription {
     subscription_id: SubscriptionId,
@@ -54,6 +59,7 @@ struct ClientInner {
     #[cfg(feature = "server")]
     default_subscriptions: Mutex<HashMap<String, SubscriptionId>>,
     session_state_subscription: Mutex<Option<SessionStateHandler>>,
+    delegation_subscription: Mutex<Option<DelegationChangedHandler>>,
     stop: AtomicBool,
     hello: DaemonHello,
     server_pid: Option<u32>,
@@ -929,6 +935,87 @@ impl DaemonClient {
         }
     }
 
+    /// What one provider offers — its models and its modes — for the profile
+    /// form. `refresh: false` is a cached read; `refresh: true` re-probes
+    /// now, which briefly starts the provider's process (Claude usually
+    /// costs a file scan; the one process it can start is the native
+    /// version probe, and only while its installed version is unknown).
+    ///
+    /// Refused unless the handshake negotiated `provider_vocabulary`: a
+    /// daemon without the capability predates the query, and asking it would
+    /// fail on a frame it cannot read. That absence is a different fact from
+    /// the query answering `absent`, and this gate is what keeps the two
+    /// apart on the client side.
+    ///
+    /// The reply is the daemon's frame rather than a reshaped value, exactly
+    /// as `agent_profiles_get` hands on the document frame: the caller
+    /// matches `DaemonMessage::ProviderVocabulary` and reads the axes it
+    /// needs.
+    pub fn provider_vocabulary_get(
+        &self,
+        provider: &str,
+        refresh: bool,
+    ) -> Result<DaemonMessage, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::PROVIDER_VOCABULARY)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProviderVocabularyGet {
+            id,
+            provider: provider.to_string(),
+            refresh,
+        })? {
+            reply @ DaemonMessage::ProviderVocabulary { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The delegation switch, straight from the daemon's frame: the stored
+    /// value and where the answer came from (`file`, `default`,
+    /// `quarantined`).
+    ///
+    /// Refused unless the handshake negotiated `permission_delegation`, the
+    /// same gate `agent_profiles_get` applies: a daemon without the capability
+    /// predates the RPC, and asking it would fail on a frame it cannot read.
+    pub fn delegation_get(&self) -> Result<DaemonMessage, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::PERMISSION_DELEGATION)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::DelegationGet { id })? {
+            reply @ DaemonMessage::DelegationState { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Sets the delegation switch. The reply is the daemon's frame carrying
+    /// what was **stored** — not an echo of the argument — so the caller can
+    /// hold the value the daemon actually has, the rule
+    /// `NOTE-a-write-that-does-not-say-what-it-stored.md` argues for. The
+    /// daemon also pushes `DelegationChanged` to every watching connection,
+    /// which is how the other surfaces learn; this reply is the writer's own
+    /// acknowledgement.
+    pub fn delegation_set(&self, enabled: bool) -> Result<DaemonMessage, DaemonError> {
+        self.require_agreed(devboule_protocol::caps::PERMISSION_DELEGATION)?;
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::DelegationSet { id, enabled })? {
+            reply @ DaemonMessage::DelegationSetOk { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Install the handler for the daemon-pushed switch. The setting is
+    /// global and the app reads `DelegationGet` once at mount, so a write
+    /// from any surface — the Settings switch, the roster's take-back,
+    /// another app instance — arrives here, not as a reply to anything this
+    /// process asked.
+    pub fn on_delegation_changed(&self, handler: DelegationChangedHandler) {
+        *self
+            .inner
+            .delegation_subscription
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(handler);
+    }
+
     pub fn journal_usage(&self) -> Result<JournalUsage, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalUsage { id })? {
@@ -1355,6 +1442,7 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
                 #[cfg(feature = "server")]
                 default_subscriptions: Mutex::new(HashMap::new()),
                 session_state_subscription: Mutex::new(None),
+                delegation_subscription: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 hello: daemon_hello,
                 server_pid,
@@ -1439,6 +1527,20 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                 }
             }
             Ok(message) => {
+                // The daemon-pushed switch answers no request, so it never
+                // enters the pending table below; it goes to its handler the
+                // way a session snapshot does.
+                if let DaemonMessage::DelegationChanged { enabled, source } = &message {
+                    let handler = inner
+                        .delegation_subscription
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .clone();
+                    if let Some(handler) = handler {
+                        handler(*enabled, *source);
+                    }
+                    continue;
+                }
                 if let Some(id) = daemon_message_id(&message) {
                     if let DaemonMessage::SessionAttached {
                         subscription_id, ..
@@ -1565,13 +1667,21 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
     match message {
         DaemonMessage::Hello(_)
         | DaemonMessage::Event(_)
-        | DaemonMessage::SubscriptionEvent { .. } => None,
+        | DaemonMessage::SubscriptionEvent { .. }
+        // A server-initiated broadcast, not a reply: it answers no request,
+        // so it must never be matched against the pending table (a reply
+        // answered `None` here is never delivered to its caller). The reader
+        // loop hands it to the delegation handler before this match runs.
+        | DaemonMessage::DelegationChanged { .. } => None,
         DaemonMessage::Error(error) => error.id,
         // Every request-shaped reply carries its id. The device RPCs are
         // listed rather than swept into a wildcard: this match is exhaustive on
         // purpose, so a new reply variant is a compile error here until it is
-        // given a decision.
-        DaemonMessage::Devices { id, .. }
+        // given a decision. `DelegationState`/`DelegationSetOk` are
+        // request-shaped and sit in this arm — putting one in the arm above
+        // would silence the compiler and hang the caller forever.
+        DaemonMessage::ProviderVocabulary { id, .. }
+        | DaemonMessage::Devices { id, .. }
         | DaemonMessage::PairingCode { id, .. }
         | DaemonMessage::PairingPending { id, .. }
         | DaemonMessage::PairingDone { id, .. }
@@ -1581,6 +1691,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::ToolPolicySetOk { id }
         | DaemonMessage::AgentProfiles { id, .. }
         | DaemonMessage::AgentProfilesSetOk { id }
+        | DaemonMessage::DelegationState { id, .. }
+        | DaemonMessage::DelegationSetOk { id, .. }
         | DaemonMessage::Pong { id, .. }
         | DaemonMessage::Status { id, .. }
         | DaemonMessage::Diagnostics { id, .. }

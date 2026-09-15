@@ -427,6 +427,7 @@ impl ConnHandle {
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
                 | SessionEvent::PermissionResolved { .. }
+                | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::AgentCreated { .. }
@@ -2537,6 +2538,7 @@ mod tests {
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
                 SessionEvent::PermissionRequest { .. } => "permission_request",
                 SessionEvent::PermissionResolved { .. } => "permission_resolved",
+                SessionEvent::PermissionAnswered { .. } => "permission_answered",
                 SessionEvent::SessionManifest { .. } => "session_manifest",
                 SessionEvent::SessionNotice { .. } => "session_notice",
                 SessionEvent::AgentReported { .. } => "agent_reported",
@@ -2740,6 +2742,7 @@ mod tests {
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
                 SessionEvent::PermissionRequest { .. } => "permission_request",
                 SessionEvent::PermissionResolved { .. } => "permission_resolved",
+                SessionEvent::PermissionAnswered { .. } => "permission_answered",
                 SessionEvent::SessionManifest { .. } => "session_manifest",
                 SessionEvent::SessionNotice { .. } => "session_notice",
                 SessionEvent::AgentReported { .. } => "agent_reported",

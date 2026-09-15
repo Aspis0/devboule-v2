@@ -134,8 +134,30 @@ impl Harness {
     /// test in this binary, and the battery must not depend on who holds the
     /// file's test lock.
     fn spawn_with_env(extra_env: &[(&str, &str)]) -> Self {
+        Self::spawn_with_env_and_profiles(extra_env, None)
+    }
+
+    /// The same daemon, with a profile document in its runtime directory.
+    ///
+    /// Written **before** the daemon starts: `agent_profiles.rs` reads the file
+    /// once, at startup (`AgentProfilesStore::load`), so a document written after
+    /// the spawn would be a document this daemon never saw. The file name is the
+    /// store's own (`PROFILES_FILE`, `agent-profiles.json`), spelled here because
+    /// the module is private to the crate — and a test that got it wrong would
+    /// fail on its own assertions rather than silently.
+    fn spawn_with_env_and_profiles(
+        extra_env: &[(&str, &str)],
+        profiles: Option<&serde_json::Value>,
+    ) -> Self {
         let dir = unique_dir();
         let paths = RuntimePaths::from_dir(&dir);
+        if let Some(profiles) = profiles {
+            std::fs::write(
+                dir.join("agent-profiles.json"),
+                serde_json::to_vec(profiles).expect("profiles json"),
+            )
+            .expect("the profile document the daemon reads at startup");
+        }
         let child = spawn_daemon_with_env(&daemon_bin(), &paths, extra_env).expect("spawn daemon");
         let harness = Self {
             dir,
@@ -686,6 +708,13 @@ fn acp_startup_failure_includes_agent_stderr() {
         "startup error did not include stderr: {}",
         error
     );
+    // The stub really exited on its own before the teardown: the naming is
+    // the truth here, and this is the direction that keeps the handshake
+    // arm's exit read honest after it moved pre-kill.
+    assert!(
+        error.to_string().contains("provider exited during startup"),
+        "an agent that died during its startup is named as that: {error}"
+    );
 }
 
 #[test]
@@ -719,6 +748,13 @@ fn acp_handshake_failure_ends_the_journal_row_and_records_provider_failure() {
     assert!(
         error.to_string().contains("(-32000)"),
         "create error must carry the numeric JSON-RPC code: {error}"
+    );
+    // The stub answers the error and KEEPS RUNNING: the daemon killed it. A
+    // post-kill exit read would see our own kill and name this an exited
+    // provider — the vacuous check the re-audit flagged (P3-1's sibling).
+    assert!(
+        !error.to_string().contains("provider exited during startup"),
+        "a live agent failing a handshake is not an exited provider: {error}"
     );
 
     // The journal row was upserted before spawn; a failed spawn must end it,
@@ -2905,6 +2941,108 @@ struct Slice5Test {
     client: DaemonClient,
 }
 
+/// One profile, as the Settings form saves it: the stub provider, the model
+/// the stub publishes **but does not start on** (`stub-model-new`; the stub's
+/// own default is `stub-model`), the mode the preset cells used to name
+/// (`default` — the stub declares `ask,default`), the overlay the caller
+/// passes, and ticked for agents.
+///
+/// The saved model differing from the provider's default is load-bearing: an
+/// assertion on the child is what makes the delivery real, and a fixture that
+/// saved the default would pass even if the daemon delivered nothing. `id` is
+/// spelled rather than minted (`profile-<name>`), so a test can assert the id
+/// the session recorded and rename the profile while keeping it.
+fn stub_profile(name: &str, overlay: &[&str]) -> serde_json::Value {
+    stub_profile_with(
+        name,
+        &format!("profile-{name}"),
+        "default",
+        "stub-model-new",
+        serde_json::json!({}),
+        overlay,
+        true,
+    )
+}
+
+/// The same profile with every field a test needs to choose: the mode (a
+/// `bypass`-family mode is what makes a child unattended), the model, the
+/// features, the overlay and whether it is ticked for agents.
+fn stub_profile_with(
+    name: &str,
+    id: &str,
+    mode: &str,
+    model: &str,
+    features: serde_json::Value,
+    overlay: &[&str],
+    enabled: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": name,
+        "note": "the profile the slice-5 battery creates from",
+        "provider": "devboule-acp-stub",
+        "model": model,
+        "modeId": mode,
+        "features": features,
+        "toolOverlay": overlay,
+        "enabledForAgents": enabled,
+    })
+}
+
+/// A document literal as the wire type the client sends.
+fn profile_document(document: &serde_json::Value) -> devboule_protocol::AgentProfilesDocument {
+    serde_json::from_value(document.clone()).expect("the document the settings save")
+}
+
+/// The same document with standing instructions in it.
+fn with_standing_instructions(
+    mut document: serde_json::Value,
+    instructions: &str,
+) -> serde_json::Value {
+    document["standingInstructions"] = serde_json::json!(instructions);
+    document
+}
+
+/// The document the battery's daemon reads at startup: one ticked `worker`
+/// profile, which is what every creation in this file names unless a test says
+/// otherwise. An empty `standingInstructions`, so the first prompt a creation
+/// sends is the preamble and the caller's text, exactly as before this slice.
+fn worker_profile_document() -> serde_json::Value {
+    serde_json::json!({
+        "profiles": [stub_profile("worker", &[])],
+        "standingInstructions": "",
+    })
+}
+
+/// The same, with the `design` profile: the stub's design cell, whose overlay is
+/// what keeps a child from creating or messaging anyone.
+fn design_profile_document() -> serde_json::Value {
+    serde_json::json!({
+        "profiles": [stub_profile(
+            "design",
+            &["devboule_send_message", "devboule_create_agent"],
+        )],
+        "standingInstructions": "",
+    })
+}
+
+/// The same, with a profile naming the provider whose binary cannot exist:
+/// `provider not installed` is reachable only through a profile now.
+fn absent_provider_profile_document() -> serde_json::Value {
+    serde_json::json!({
+        "profiles": [{
+            "id": "profile-nowhere",
+            "name": "nowhere",
+            "note": "names a provider that cannot be installed",
+            "provider": "devboule-absent-probe",
+            "model": "stub-default",
+            "modeId": "default",
+            "enabledForAgents": true,
+        }],
+        "standingInstructions": "",
+    })
+}
+
 /// One observation file's path, as the string the daemon's environment carries.
 fn file_name(dir: &Path, name: &str) -> String {
     dir.join(name).to_string_lossy().into_owned()
@@ -2915,13 +3053,27 @@ impl Slice5Test {
     /// the `devboule_create_agent` call every stub process makes as soon as its
     /// `session/new` handshake has been answered.
     fn new(creation: &serde_json::Value) -> Self {
-        Self::new_with_env(creation, &[])
+        Self::with_profiles(creation, &worker_profile_document(), &[])
+    }
+
+    /// The same daemon, with the `design` profile instead: the one the human
+    /// ticked for a child that must not create or message anyone.
+    fn new_with_design_profile(creation: &serde_json::Value) -> Self {
+        Self::with_profiles(creation, &design_profile_document(), &[])
     }
 
     /// The same daemon, with `extra` added to its environment. The extra values
     /// outlive the call: the harness copies them into the daemon's own
     /// environment, which is where its stub processes read them from.
     fn new_with_env(creation: &serde_json::Value, extra: &[(&str, &str)]) -> Self {
+        Self::with_profiles(creation, &worker_profile_document(), extra)
+    }
+
+    fn with_profiles(
+        creation: &serde_json::Value,
+        profiles: &serde_json::Value,
+        extra: &[(&str, &str)],
+    ) -> Self {
         let dir = unique_dir();
         let argv = serde_json::to_string(&vec![stub_bin().to_string_lossy().into_owned()])
             .expect("stub argv");
@@ -2941,6 +3093,14 @@ impl Slice5Test {
             (
                 "DEVBOULE_ACP_STUB_MODES_FILE",
                 file_name(&dir, "stub modes.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_SET_MODEL_FILE",
+                file_name(&dir, "set model.txt"),
+            ),
+            (
+                "DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE",
+                file_name(&dir, "set model effort.txt"),
             ),
             (
                 "DEVBOULE_ACP_STUB_STDIN_FILE",
@@ -2977,7 +3137,7 @@ impl Slice5Test {
             .map(|(key, value)| (*key, value.as_str()))
             .chain(extra.iter().copied())
             .collect();
-        let harness = Harness::spawn_with_env(&env);
+        let harness = Harness::spawn_with_env_and_profiles(&env, Some(profiles));
         let client = harness.client();
         Self {
             dir,
@@ -3084,6 +3244,22 @@ impl Slice5Test {
         events
     }
 
+    /// Attach to a created child once its own provider has reached the broker.
+    ///
+    /// The child's journal row lists it before the spawn has finished, so an
+    /// attach that lands in that window reads the journal once — a recovered
+    /// transcript — and is never told about the live session's events. The
+    /// child's own `tools/list` observation is the first fact its process
+    /// produces after the handshake completed and the session is live, so it is
+    /// what this waits for; from there the attach replays everything journaled
+    /// and receives the rest live.
+    fn attach_child(&self, child: &devboule_protocol::Session) -> Arc<Mutex<Vec<SessionEvent>>> {
+        let pids = self.wait_for_observations("stub pids.txt", 2);
+        let child_pid = pids[1].trim().to_string();
+        self.wait_for_lines_of("mcp tools.txt", &child_pid, 1);
+        self.attach(child)
+    }
+
     /// The child the creator created, as the daemon's own list reports it.
     fn child_of(&self, creator: &str) -> devboule_protocol::Session {
         let deadline = Instant::now() + Duration::from_secs(45);
@@ -3129,7 +3305,8 @@ struct CreateAgentCardFacts {
     tool_call_id: String,
     title: String,
     provider: String,
-    preset: String,
+    /// The profile the card names: the human's word for what they are approving.
+    profile: String,
     caps: devboule_protocol::CreateAgentCaps,
 }
 
@@ -3150,7 +3327,7 @@ fn wait_for_creation_card(
                     tool_call_id: tool_call_id.clone(),
                     title: card.title.clone(),
                     provider: card.provider.clone(),
-                    preset: card.preset.clone(),
+                    profile: card.profile.clone(),
                     caps: card.caps.clone(),
                 }),
                 _ => None,
@@ -3164,6 +3341,26 @@ fn wait_for_creation_card(
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// The creation card's own text, off the creator's transcript: what the human
+/// read when the decision was made. The R2a assertions hold the card against
+/// the child's wire — a card a human could approve into an existing child
+/// printed only what the child was delivered.
+fn creation_card_description(events: &Mutex<Vec<SessionEvent>>) -> String {
+    events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::PermissionRequest {
+                description: Some(description),
+                create_agent: Some(_),
+                ..
+            } => Some(description.clone()),
+            _ => None,
+        })
+        .expect("the creation card's text")
 }
 
 fn slice5_events(events: &Mutex<Vec<SessionEvent>>) -> Vec<SessionEvent> {
@@ -3257,8 +3454,7 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
     let _lock = lock_tests();
     let test = Slice5Test::new(&serde_json::json!({
         "title": "builder",
-        "provider": "devboule-acp-stub",
-        "preset": "worker",
+        "profile": "worker",
         "initialPrompt": "report your result",
     }));
     let creator = test.creator_session();
@@ -3266,7 +3462,7 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
     let card = test.allow_creation_card(&creator.id, &events);
     assert_eq!(card.title, "builder", "the card names the child");
     assert_eq!(card.provider, "devboule-acp-stub");
-    assert_eq!(card.preset, "worker");
+    assert_eq!(card.profile, "worker");
     assert_eq!(card.caps.depth, 1, "a human's child is depth 1");
     assert_eq!(
         card.caps.live_children, 1,
@@ -3280,6 +3476,33 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
     assert_eq!(child.created_by.as_deref(), Some(creator.id.as_str()));
     assert_eq!(child.kind, SessionKind::Acp);
     assert_eq!(child.provider.as_deref(), Some("devboule-acp-stub"));
+    // `create-from-profile`: the session records the profile's **stable id** and
+    // not its name, belongs to the creator's context, carries the honest marker
+    // — `unknown`, because the stub's `default` mode is a vocabulary the
+    // provider authored and the daemon was never told whether it asks — and
+    // carries the four labels the daemon stamped.
+    assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
+    assert_eq!(child.context_id.as_deref(), Some(creator.id.as_str()));
+    assert_eq!(
+        child.unattended,
+        devboule_protocol::UnattendedState::Unknown
+    );
+    assert_eq!(
+        child.labels.get("devboule.created-by").map(String::as_str),
+        Some(creator.id.as_str())
+    );
+    assert_eq!(
+        child.labels.get("devboule.depth").map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        child.labels.get("devboule.origin").map(String::as_str),
+        Some("local")
+    );
+    assert_eq!(
+        child.labels.get("devboule.profile").map(String::as_str),
+        Some("profile-worker")
+    );
     // The preset cell's mode reached the provider: the stub writes down every
     // `session/set_mode` it is sent. The child's *row* exists before its
     // provider is even spawned (the journal row is the durable boundary), so
@@ -3295,6 +3518,33 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
         switched[0].trim(),
         "default",
         "the worker cell's mode is what the child was switched to"
+    );
+
+    // R2a — what the card printed, the child runs. The fixture deliberately
+    // saves a model the stub does not start on (`stub-model-new`; the stub's
+    // own default is `stub-model`), so an assertion on the child is what
+    // makes the delivery real: a daemon that delivered nothing would be
+    // caught here, because the stub writes down every `session/set_model`
+    // it is sent.
+    let set_model = test.wait_for_observations("set model.txt", 1);
+    assert_eq!(
+        set_model[0].trim(),
+        "stub-model-new",
+        "the child was started on the profile's model, not the provider's default: {set_model:?}"
+    );
+    // And the card named that model and that mode — the human approved what
+    // the child was delivered, by construction.
+    let description = creation_card_description(&events);
+    assert!(
+        description.contains("model stub-model-new, mode default"),
+        "the card names the delivered model and mode: {description}"
+    );
+    // The stub's `default` mode is a vocabulary the provider authored, so the
+    // card asserts neither direction (R2b): it says cannot-establish, which
+    // is honest, and never the plain "No" the old binary card printed.
+    assert!(
+        description.contains("auto accept: Cannot establish"),
+        "a provider-authored mode is not asserted either way: {description}"
     );
 
     wait_for(&events, Duration::from_secs(60), |events| {
@@ -3367,6 +3617,601 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
     );
 }
 
+/// R2a: the thinking option the card named is delivered on the same wire —
+/// the effort the child's `session/set_model` request carried is what the
+/// stub writes down, and the card's thinking line names the value the human
+/// approved.
+#[test]
+fn the_child_is_delivered_the_thinking_option_the_card_named() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["thinkingOptionId"] = serde_json::json!("low");
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "thinker",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    let child = test.child_of(&creator.id);
+    assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
+
+    let description = creation_card_description(&events);
+    assert!(
+        description.contains("thinking low"),
+        "the card names the delivered thinking option: {description}"
+    );
+    let effort = test.wait_for_observations("set model effort.txt", 1);
+    assert_eq!(
+        effort[0].trim(),
+        "low",
+        "the child starts on the thinking option the card named: {effort:?}"
+    );
+}
+
+/// R2a, model axis: a profile naming a model the agent does not publish is
+/// **refused** — the mismatch sentence, not substituted with the agent's
+/// default. The child never exists, and nothing was sent on the wire.
+#[test]
+fn a_profile_naming_a_model_the_agent_does_not_publish_is_refused() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["model"] = serde_json::json!("stub-nope");
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "wrong model",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("stub-nope") && calls[0].contains("is not among the model values"),
+        "the refusal names the id and the agent's declared values: {calls:?}"
+    );
+    assert!(
+        test.observations("set model.txt").is_empty(),
+        "nothing was sent on the wire for a refused delivery"
+    );
+}
+
+/// R2a, absence versus mismatch: an agent that declares **no** model surface
+/// cannot deliver any model at all, so a profile naming one is refused with
+/// the absence sentence — a different answer from an unknown id in a
+/// published list, because there is no list the name could have been a typo
+/// from.
+#[test]
+fn an_agent_that_declares_no_model_surface_refuses_a_profile_with_a_model() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "no models",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        &[("DEVBOULE_STUB_NO_MODELS", "1")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("declares no model or effort switch surface"),
+        "the absence sentence: {calls:?}"
+    );
+    assert!(
+        !calls[0].contains("is not among the model values"),
+        "absence and mismatch are two different refusals: {calls:?}"
+    );
+}
+
+/// R2a, thinking axis: a thinking option outside what the agent declares for
+/// the delivered model is refused with the mismatch sentence.
+#[test]
+fn a_thinking_option_the_agent_does_not_declare_is_refused() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["thinkingOptionId"] = serde_json::json!("bogus");
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "wrong effort",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("bogus") && calls[0].contains("is not among the thinking options"),
+        "the mismatch sentence for the thinking axis: {calls:?}"
+    );
+    assert!(
+        test.observations("set model.txt").is_empty(),
+        "nothing was delivered for a refused thinking option"
+    );
+}
+
+/// R2a F3 — the switch is **confirmed**, not just sent: an agent that
+/// answers the delivered `session/set_model` with an error refuses the
+/// creation. Before the confirm existed, this shape ended with a live child
+/// on the agent's own model, an `AgentError` on a transcript nobody reads at
+/// creation time, and a tool result that had already said the child was
+/// delivered the card's model.
+#[test]
+fn an_agent_that_refuses_the_delivered_model_refuses_the_creation() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "refused model",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        // The stub takes the switch off the wire (it writes `set model.txt`)
+        // and then answers it the way a plan-limited agent does: an error.
+        &[("DEVBOULE_STUB_REJECT_SET_MODEL", "1")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    // The switch went out, and the agent's own refusal came back as the
+    // creation's answer — not as a session id plus a transcript error.
+    let received = test.wait_for_observations("set model.txt", 1);
+    assert_eq!(
+        received[0].trim(),
+        "stub-model-new",
+        "the switch was on the wire: {received:?}"
+    );
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("the agent refused the delivered model"),
+        "the creation carries the refusal: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("unknown model"),
+        "the agent's own words travel with it: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("stub-model-new"),
+        "the refusal names the model the card promised: {calls:?}"
+    );
+    // The agent was ALIVE when the daemon tore it down: naming it an exited
+    // provider would be the lie the pre-kill exit read exists to prevent
+    // (the re-audit's P3-1, the direction the old mutation table missed).
+    assert!(
+        !calls[0].contains("provider exited during startup"),
+        "a live agent that refused is not an exited provider: {calls:?}"
+    );
+
+    // Nothing survives to answer a prompt the card did not describe.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// R2a F5 — the delivery refusal's teardown is the handshake's, including
+/// the three behaviours the old copy dropped: an agent that **dies** with
+/// the switch unanswered is named as a provider that exited during startup,
+/// its last stderr line travels with the message, and the whole banner goes
+/// through the same redaction the handshake failure uses.
+#[test]
+fn an_agent_that_dies_mid_delivery_is_named_as_an_exited_provider() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "dies mid delivery",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        &[("DEVBOULE_STUB_DIE_BEFORE_SET_MODEL_REPLY", "1")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("provider exited during startup"),
+        "the death is named as a startup exit, not a profile refusal: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("Agent stderr"),
+        "the stderr tail travels with the message: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("dying before the set_model reply"),
+        "the provider's own last line is in the tail: {calls:?}"
+    );
+
+    // And nothing survives: the child is gone, and the tool call carries the
+    // refusal instead of a session id.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// R2a, the contradiction — bounded by **authority** (the re-audit's P1):
+/// the pre-card gate refuses only where the daemon owns the tick rule, and
+/// an ACP agent's modes are the agent's own vocabulary, so a ticked profile
+/// naming a non-daemon mode is **not** refused before the card. The client
+/// judges at spawn time, where the delivered mode is the fact: the stub
+/// declares `ask,default` and starts in `ask`, and the daemon's
+/// post-handshake guard refuses the tick over that delivered mode. The
+/// handshake delivers the profile's mode first, so the fact the guard
+/// judges is the mode the child would actually start in.
+///
+/// What the previous shape of this test caught that this one cannot, and
+/// what this one catches back: the old test pinned the pre-card refusal of
+/// an ACP-family creation over a non-daemon mode id — a pin this must not
+/// keep, because that same refusal convicted Codex `full-access` profiles
+/// the Codex client itself accepts. If the too-wide gate returns, this test
+/// goes red from the other direction: the card is never raised (the
+/// `allow_creation_card` below times out) and no delivery ever runs. The
+/// ACP guard's own sentence — unasserted since the old contradiction test
+/// replaced it (the re-audit's P3-5) — is asserted here again, at its real
+/// site.
+#[test]
+fn an_auto_accept_tick_over_the_delivered_asking_mode_is_refused_by_the_delivery() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["features"] = serde_json::json!({"autoAccept": true});
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "contradiction",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+
+    // The card IS raised: the daemon does not claim to know what the
+    // profile's mode means for an agent whose vocabulary it does not own,
+    // so consent is spent on the only judgement that can decide — the
+    // agent's own handshake.
+    test.allow_creation_card(&creator.id, &events);
+
+    // The refusal carries the delivery guard's sentence, naming the mode the
+    // handshake actually DELIVERED: the handshake switches the session to the
+    // profile's mode first, and the guard judges that fact — here the
+    // delivered mode and the profile's spelling coincide, because the switch
+    // succeeded. The stub's starting mode is never named: what is judged is
+    // what the child would start in.
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("which asks the human"),
+        "the refusal names the contradiction: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("mode 'default'"),
+        "the refusal names the delivered mode: {calls:?}"
+    );
+
+    // Nothing survives to answer a prompt the card did not describe.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The P3-5 half a black-box test can pin: a ticked profile whose mode the
+/// agent has no vocabulary for is refused at the handshake, before any
+/// switch is promised — the stub here declares no modes at all
+/// (`DEVBOULE_STUB_OMIT_MODES`), so there is nothing the daemon could ask
+/// the agent about and nothing its guard could judge. The guard's absence
+/// sentence itself ("declared no modes the daemon can judge") sits behind a
+/// path profile creations cannot reach: a profile always names a mode, and a
+/// mode absent from the agent's declarations is refused by the handshake
+/// first — exactly the refusal asserted here. The absence arm stays as the
+/// defensive half of the match for a mode-less delivery no creator can
+/// express today.
+#[test]
+fn a_ticked_profile_over_an_agent_with_no_modes_is_refused_at_the_handshake() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["features"] = serde_json::json!({"autoAccept": true});
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "no modes declared",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[("DEVBOULE_STUB_OMIT_MODES", "1")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("is not available"),
+        "the refusal names the mode the agent has no vocabulary for: {calls:?}"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The re-audit's P2-2: the creation-time confirm carries a deadline. An
+/// agent that takes the switch off the wire and never answers cannot hold
+/// the creation — the child, the reservation and the caller's tool call —
+/// forever: the tool call comes back inside the bound with an `Io` refusal,
+/// and nothing survives.
+#[test]
+fn an_agent_that_ignores_the_model_switch_cannot_hang_the_creation() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "mute on the switch",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        &[
+            ("DEVBOULE_STUB_IGNORE_SET_MODEL", "1"),
+            ("DEVBOULE_ACP_RESPONSE_TIMEOUT_MS", "1000"),
+        ],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("did not answer within"),
+        "the mute agent is named as an unanswered wait, not a hang: {calls:?}"
+    );
+
+    // Nothing survives to answer a prompt the card did not describe.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The re-audit's P2-3, as a test: an agent that keeps the pipe non-empty
+/// without ever writing a newline. A read bound consulted only when the
+/// pipe is quiet never fires against this agent; the bound must hold while
+/// bytes keep coming, and the refusal must name the wait the same way the
+/// mute agent's does.
+#[test]
+fn an_agent_that_dribbles_without_a_newline_cannot_hang_the_creation() {
+    let _lock = lock_tests();
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "dribble on the switch",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &worker_profile_document(),
+        &[
+            ("DEVBOULE_STUB_DRIBBLE_SET_MODEL", "1"),
+            ("DEVBOULE_ACP_RESPONSE_TIMEOUT_MS", "1000"),
+        ],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+
+    let calls = test.wait_for_observations("mcp calls.txt", 1);
+    assert!(
+        calls[0].contains("did not answer within"),
+        "the dribbler is named as an unanswered wait, not a hang: {calls:?}"
+    );
+
+    // Nothing survives to answer a prompt the card did not describe.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let live_child = test
+            .client
+            .sessions_list()
+            .expect("session list")
+            .into_iter()
+            .any(|session| {
+                session.created_by.as_deref() == Some(creator.id.as_str())
+                    && matches!(session.state, devboule_protocol::SessionState::Live { .. })
+            });
+        assert!(
+            !live_child,
+            "no live child was left behind by the refused creation"
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// R2a, the identity the refusal buys: a tick over a mode the daemon's own
+/// broker answers admits the creation, the child starts in that mode, and the
+/// marker on the child is the fact the human ticked for — the delivered mode
+/// and the marker are the same fact.
+#[test]
+fn an_auto_accept_child_starts_in_the_mode_the_tick_demands() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["modeId"] = serde_json::json!("auto_accept");
+    profiles["profiles"][0]["features"] = serde_json::json!({"autoAccept": true});
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "unattended",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        // The stub must declare the mode so the daemon has a real switch to
+        // send; `auto_accept` is one of the ids the daemon's own broker
+        // answers.
+        &[("DEVBOULE_STUB_MODES", "ask,auto_accept")],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    let description = creation_card_description(&events);
+    assert!(
+        description.contains("auto accept: Yes (mode auto_accept)"),
+        "the card names the answering mode: {description}"
+    );
+    let child = test.child_of(&creator.id);
+    assert_eq!(
+        child.unattended,
+        devboule_protocol::UnattendedState::Yes,
+        "the marker and the delivered mode are one fact"
+    );
+    let switched = test.wait_for_observations("set mode.txt", 1);
+    assert_eq!(
+        switched[0].trim(),
+        "auto_accept",
+        "the child was delivered the mode the tick demands: {switched:?}"
+    );
+}
+
+/// R2a, the card's third rule: a feature key the daemon does not interpret is
+/// named as uninterpreted — stored, delivered never, promised never — and the
+/// creation still succeeds, because an uninterpreted key promises nothing.
+#[test]
+fn an_unknown_feature_key_is_named_as_uninterpreted_on_the_card() {
+    let _lock = lock_tests();
+    let mut profiles = worker_profile_document();
+    profiles["profiles"][0]["features"] = serde_json::json!({"sandbox": "gVisor"});
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "feature keeper",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    // The creation succeeds: the key is carried, not refused and not hidden.
+    test.allow_creation_card(&creator.id, &events);
+    let description = creation_card_description(&events);
+    // Feature values render as JSON literals, exactly as the store holds them.
+    assert!(
+        description.contains(
+            "sandbox=\"gVisor\" (not interpreted by this daemon; carried but never delivered)"
+        ),
+        "the card names the uninterpreted feature: {description}"
+    );
+    // An uninterpreted key is not a tick — and the provider-authored mode is
+    // not asserted either way (R2b): the line says cannot-establish.
+    assert!(
+        description.contains("auto accept: Cannot establish"),
+        "an uninterpreted key is not a tick, and the mode is not judged by name: {description}"
+    );
+    let child = test.child_of(&creator.id);
+    assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
+}
+
 /// `S5` block 2's overlay, measured on the child's *own* broker connection:
 /// the design preset hides both tools from `tools/list` and refuses them at
 /// `tools/call`, while the creator keeps all three.
@@ -3376,16 +4221,15 @@ fn an_agent_creates_an_agent_and_the_finish_carries_both_records() {
 #[test]
 fn the_childs_own_connection_sees_the_design_overlay() {
     let _lock = lock_tests();
-    let test = Slice5Test::new(&serde_json::json!({
+    let test = Slice5Test::new_with_design_profile(&serde_json::json!({
         "title": "designer",
-        "provider": "devboule-acp-stub",
-        "preset": "design",
+        "profile": "design",
         "initialPrompt": "report your result",
     }));
     let creator = test.creator_session();
     let events = test.attach(&creator);
     let card = test.allow_creation_card(&creator.id, &events);
-    assert_eq!(card.preset, "design");
+    assert_eq!(card.profile, "design");
 
     let child = test.child_of(&creator.id);
     let pids = test.wait_for_observations("stub pids.txt", 2);
@@ -3396,26 +4240,28 @@ fn the_childs_own_connection_sees_the_design_overlay() {
     let creator_tools = test.wait_for_lines_of("mcp tools.txt", &creator_pid, 1);
     let child_tools = test.wait_for_lines_of("mcp tools.txt", &child_pid, 1);
     let child_calls = test.wait_for_lines_of("mcp calls.txt", &child_pid, 1);
+    // The names are read out of the parsed `tools/list` body rather than
+    // substring-matched against the raw line: the profile list's description
+    // points its reader at `devboule_create_agent` by name, so a description
+    // mentioning a hidden tool is not the tool being served.
+    let creator_names = tool_names(&creator_tools[0]);
+    let child_names = tool_names(&child_tools[0]);
     assert!(
-        creator_tools[0].contains("devboule_create_agent")
-            && creator_tools[0].contains("devboule_send_message"),
-        "the creator keeps both tools: {}",
-        creator_tools[0]
+        creator_names.contains(&"devboule_create_agent".to_string())
+            && creator_names.contains(&"devboule_send_message".to_string()),
+        "the creator keeps both tools: {creator_names:?}"
     );
     assert!(
-        child_tools[0].contains("devboule_list_agents"),
-        "a design child keeps the roster: {}",
-        child_tools[0]
+        child_names.contains(&"devboule_list_agents".to_string()),
+        "a design child keeps the roster: {child_names:?}"
     );
     assert!(
-        !child_tools[0].contains("devboule_create_agent"),
-        "the design overlay hides create_agent from the child's list: {}",
-        child_tools[0]
+        !child_names.contains(&"devboule_create_agent".to_string()),
+        "the design overlay hides create_agent from the child's list: {child_names:?}"
     );
     assert!(
-        !child_tools[0].contains("devboule_send_message"),
-        "and send_message: {}",
-        child_tools[0]
+        !child_names.contains(&"devboule_send_message".to_string()),
+        "and send_message: {child_names:?}"
     );
     assert!(
         child_calls[0].contains("Tool disabled by policy"),
@@ -3569,13 +4415,14 @@ fn daemon_wide_held_creations(test: &Slice5Test, why: &str) -> u32 {
 /// to read the records.
 fn slice5_creator_with_a_creation(
     creation: &serde_json::Value,
+    profiles: &serde_json::Value,
     extra: &[(&str, &str)],
 ) -> (
     Slice5Test,
     devboule_protocol::Session,
     Arc<Mutex<Vec<SessionEvent>>>,
 ) {
-    let test = Slice5Test::new_with_env(creation, extra);
+    let test = Slice5Test::with_profiles(creation, profiles, extra);
     let creator = test.creator_session();
     let events = test.attach(&creator);
     test.allow_creation_card(&creator.id, &events);
@@ -3591,10 +4438,9 @@ fn slice5_creator_with_a_creation(
 #[test]
 fn a_child_that_exits_by_eof_gives_its_slot_back() {
     let _lock = lock_tests();
-    let test = Slice5Test::new(&serde_json::json!({
+    let test = Slice5Test::new_with_design_profile(&serde_json::json!({
         "title": "builder",
-        "provider": "devboule-acp-stub",
-        "preset": "design",
+        "profile": "design",
         "initialPrompt": "report your result",
     }));
     let first = test.creator_session();
@@ -3717,8 +4563,7 @@ fn a_child_parked_on_a_card_tells_its_creator_once_and_finishes_after_the_answer
     let _lock = lock_tests();
     let test = Slice5Test::new(&serde_json::json!({
         "title": "parker",
-        "provider": "devboule-acp-stub",
-        "preset": "worker",
+        "profile": "worker",
         // The stub asks for permission when its prompt mentions permission.
         "initialPrompt": "please request permission",
     }));
@@ -3780,12 +4625,17 @@ fn a_child_parked_on_a_card_tells_its_creator_once_and_finishes_after_the_answer
 #[test]
 fn a_creation_naming_an_uninstalled_provider_is_refused() {
     let _lock = lock_tests();
-    let test = Slice5Test::new(&serde_json::json!({
-        "title": "nowhere",
-        "provider": "devboule-absent-probe",
-        "preset": "worker",
-        "initialPrompt": "report your result",
-    }));
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "nowhere",
+            "profile": "nowhere",
+            "initialPrompt": "report your result",
+        }),
+        // The profile is the only thing that can name a provider now: this one
+        // names the id whose binary cannot exist anywhere.
+        &absent_provider_profile_document(),
+        &[],
+    );
     let creator = test.creator_session();
     let events = test.attach(&creator);
     let calls = test.wait_for_observations("mcp calls.txt", 1);
@@ -3827,12 +4677,12 @@ fn a_child_stopped_with_its_transcript_kept_is_reported_and_gives_its_slot_back(
     let (test, _creator, events) = slice5_creator_with_a_creation(
         &serde_json::json!({
             "title": "stopper",
-            "provider": "devboule-acp-stub",
-            // The design overlay hides `create_agent` from the child, so the
-            // child's own handshake adds no grandchild to the count below.
-            "preset": "design",
+            "profile": "design",
             "initialPrompt": "report your result",
         }),
+        // The design profile: its overlay hides `create_agent` from the child,
+        // so the child's own handshake adds no grandchild to the count below.
+        &design_profile_document(),
         &[],
     );
     let child_id = wait_for_agent_created(&events, "the child", Duration::from_secs(45));
@@ -3840,6 +4690,11 @@ fn a_child_stopped_with_its_transcript_kept_is_reported_and_gives_its_slot_back(
 
     // The stop path: the daemon kills the provider and keeps the transcript.
     // The stop command rides the session's control subscription: attach first.
+    // The child must also be past its own handshake — its provider's probe is
+    // the readiness fact — so this exercises the stop of a live child rather
+    // than the never-started path a too-early kill would take.
+    let child_pids = test.wait_for_observations("stub pids.txt", 2);
+    test.wait_for_lines_of("mcp tools.txt", child_pids[1].trim(), 1);
     attach_control(&test, &child_id);
     test.client.session_stop(&child_id).expect("stop the child");
     let transcript = wait_for_finish(&events, "the stopped child", Duration::from_secs(45));
@@ -3877,8 +4732,7 @@ fn a_provider_that_dies_during_its_own_startup_is_a_failed_creation() {
     let test = Slice5Test::new_with_env(
         &serde_json::json!({
             "title": "stillborn",
-            "provider": "devboule-acp-stub",
-            "preset": "worker",
+            "profile": "worker",
             "initialPrompt": "report your result",
         }),
         &[("DEVBOULE_ACP_STUB_EXIT_AFTER_SESSION_NEW", "2")],
@@ -3962,8 +4816,7 @@ fn a_child_that_dies_on_its_first_prompt_is_reported_and_gives_its_slot_back() {
     let test = Slice5Test::new_with_env(
         &serde_json::json!({
             "title": "prompt-fatal",
-            "provider": "devboule-acp-stub",
-            "preset": "worker",
+            "profile": "worker",
             "initialPrompt": "report your result",
         }),
         &[("DEVBOULE_ACP_STUB_EXIT_ON_PROMPT", "1")],
@@ -4000,4 +4853,608 @@ fn a_child_that_dies_on_its_first_prompt_is_reported_and_gives_its_slot_back() {
         1,
         "the dead child's slot was given back"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `create-from-profile`: standing instructions, the profile a session records,
+// the unattended marker and the context a child inherits.
+// ---------------------------------------------------------------------------
+
+/// The one prompt text a session's transcript shows as the user's own first
+/// message, which is what the daemon wrote to the provider.
+fn first_user_message(events: &Mutex<Vec<SessionEvent>>) -> Option<String> {
+    let events = events.lock().expect("events lock");
+    events.iter().find_map(|event| match event {
+        SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+        _ => None,
+    })
+}
+
+/// Wait for the transcript's first user message, the way every other assertion
+/// in this battery waits: the daemon writes the prompt after the provider
+/// handshake, so a reader that looks the moment the session row exists can be
+/// early, and early is not wrong.
+fn wait_for_user_message(events: &Mutex<Vec<SessionEvent>>, timeout: Duration) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(prompt) = first_user_message(events) {
+            return prompt;
+        }
+        assert!(Instant::now() < deadline, "the prompt never arrived");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The preamble a created child's first prompt carries, spelled here because
+/// `AGENT_PREAMBLE` is private to the daemon crate: this is the wire text, and a
+/// test that read the constant would not notice it changing.
+const PREAMBLE: &str =
+    "You were created by another agent; report your result in your final message.";
+
+/// `S5` §5c rev 10, the created-child route: the human's standing instructions
+/// are prefixed to the **first prompt** of a child an agent creates, in front of
+/// the preset preamble and of the caller's own text, in that order.
+#[test]
+fn the_standing_instructions_reach_a_child_an_agent_creates() {
+    let _lock = lock_tests();
+    let profiles = with_standing_instructions(
+        worker_profile_document(),
+        "Always answer in English and keep the diff small.",
+    );
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "builder",
+            "profile": "worker",
+            "initialPrompt": "report your result",
+        }),
+        &profiles,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    let child = test.child_of(&creator.id);
+
+    // The child's transcript carries the prompt the daemon wrote to its provider
+    // (one value, two destinations: the writer and the journal).
+    let child_events = test.attach_child(&child);
+    let prompt = wait_for_user_message(&child_events, Duration::from_secs(45));
+    assert_eq!(
+        prompt,
+        format!(
+            "Always answer in English and keep the diff small.\n\n{PREAMBLE}\n\nreport your result"
+        ),
+        "standing instructions, then the preamble, then the caller's prompt"
+    );
+}
+
+/// The same rule on the route a human's own session takes: the daemon composes
+/// the standing instructions in front of the first message a client sends,
+/// because a session a person opened has no daemon-composed prompt of its own.
+#[test]
+fn the_standing_instructions_reach_a_session_a_human_opens() {
+    let _lock = lock_tests();
+    let profiles = with_standing_instructions(
+        worker_profile_document(),
+        "Always answer in English and keep the diff small.",
+    );
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "unused",
+            "profile": "worker",
+            "initialPrompt": "Not used: this test's session is a human's own.",
+        }),
+        &profiles,
+        &[],
+    );
+    let session = test.creator_session();
+    let events = test.attach(&session);
+    test.client
+        .session_send(&session.id, "what is the state of the repo?")
+        .expect("send the human's first message");
+    assert_eq!(
+        wait_for_user_message(&events, Duration::from_secs(45)),
+        "Always answer in English and keep the diff small.\n\nwhat is the state of the repo?",
+        "the standing instructions and the human's message, in that order"
+    );
+}
+
+/// The resume road (`session_resume` → `spawn_resumed_session` →
+/// `start_spawned_session`): the session it builds is **mid-conversation**, so
+/// the standing instructions must not be prefixed onto the next prompt the
+/// human sends. A fresh runtime starts owing a first prompt; a resumed session
+/// is not a fresh session — its first prompt happened in the generation being
+/// resumed, and the human's rules arriving a second time, as the user's own
+/// words, is the defect this pins.
+#[test]
+fn a_resumed_session_does_not_re_inject_the_standing_instructions() {
+    let _lock = lock_tests();
+    let profiles = with_standing_instructions(
+        worker_profile_document(),
+        "Always answer in English and keep the diff small.",
+    );
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "unused",
+            "profile": "worker",
+            "initialPrompt": "Not used: this test's session is a human's own.",
+        }),
+        &profiles,
+        &[],
+    );
+    let session = test.creator_session();
+    let events = test.attach(&session);
+    test.client
+        .session_send(&session.id, "first prompt")
+        .expect("send the first prompt");
+    assert_eq!(
+        wait_for_user_message(&events, Duration::from_secs(45)),
+        "Always answer in English and keep the diff small.\n\nfirst prompt",
+        "control: the session's first prompt carries the standing instructions"
+    );
+
+    let pids = test.wait_for_observations("stub pids.txt", 1);
+    let pid: u32 = pids[0].trim().parse().expect("stub pid");
+    test.client
+        .session_stop(&session.id)
+        .expect("stop the session");
+    wait_until_gone(pid);
+
+    let resumed = test
+        .client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect("resume the session");
+    assert!(matches!(
+        resumed,
+        ResumeResult::Resumed { session: ref r } if r.id == session.id
+    ));
+    let after = test.attach(&session);
+    test.client
+        .session_send(&session.id, "second prompt")
+        .expect("send the prompt after the resume");
+
+    // The turn completing is the delivery signal: the provider answered, so
+    // the prompt the daemon wrote it has been journaled and pushed. (The fresh
+    // attach replays the resumed generation, not the pre-resume transcript, so
+    // the first prompt never appears here — the last user message on this
+    // stream is the post-resume one.)
+    wait_for(&after, Duration::from_secs(45), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let prompts: Vec<String> = {
+        let events = after.lock().expect("events lock");
+        events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let post_resume = prompts
+        .last()
+        .expect("the post-resume prompt reaches the transcript");
+    assert_eq!(
+        post_resume, "second prompt",
+        "the prompt a resumed session receives is the caller's own text: \
+         no standing instructions, no separator"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close the resumed session");
+}
+
+/// The tool names one `tools/list` observation carried. The line is
+/// `<pid> <bearer fingerprint> <json body>`, so the names come out of the
+/// parsed body: a description that mentions another tool's name (the profile
+/// list points its reader at the creation tool) must not read as that tool
+/// being served.
+fn tool_names(line: &str) -> Vec<String> {
+    let body = line.splitn(3, ' ').nth(2).unwrap_or(line);
+    let parsed: serde_json::Value = serde_json::from_str(body).expect("the tools/list body");
+    parsed["result"]["tools"]
+        .as_array()
+        .expect("the tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("a tool name").to_string())
+        .collect()
+}
+
+/// The Design host's route: the app composes one long grounded prompt and sends
+/// it as the session's first message, which is the same daemon entry point as
+/// any chat message — so the standing instructions land in front of the Design
+/// instructions, and no Design session can be the exception to the rule.
+#[test]
+fn the_standing_instructions_reach_the_design_host() {
+    let _lock = lock_tests();
+    let profiles = with_standing_instructions(
+        worker_profile_document(),
+        "Always answer in English and keep the diff small.",
+    );
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "unused",
+            "profile": "worker",
+            "initialPrompt": "Not used: this test's session is the Design host.",
+        }),
+        &profiles,
+        &[],
+    );
+    let host = test.creator_session();
+    let events = test.attach(&host);
+    // The shape the app's `groundedPrompt` builds: the work instruction, then
+    // the request, then the doctrine.
+    let grounded = "Work on the requested design change in the active Devboule workspace.\n\
+                    User request: make the header sticky.\n\
+                    Doctrine: change tokens, not components.";
+    test.client
+        .session_send(&host.id, grounded)
+        .expect("send the Design host's first prompt");
+    assert_eq!(
+        wait_for_user_message(&events, Duration::from_secs(45)),
+        format!("Always answer in English and keep the diff small.\n\n{grounded}"),
+        "the Design prompt is the prompt; the instructions go in front of it"
+    );
+}
+
+/// The other half of the same rule: with no standing instructions the first
+/// prompt is exactly what it was before this slice — no separator, no blank
+/// line, nothing.
+#[test]
+fn empty_standing_instructions_leave_the_first_prompt_alone() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new(&serde_json::json!({
+        "title": "builder",
+        "profile": "worker",
+        "initialPrompt": "report your result",
+    }));
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    let child = test.child_of(&creator.id);
+    let child_events = test.attach_child(&child);
+    assert_eq!(
+        wait_for_user_message(&child_events, Duration::from_secs(45)),
+        format!("{PREAMBLE}\n\nreport your result"),
+        "an empty standing-instructions text adds nothing to the child's prompt"
+    );
+
+    // And on a session a human opened, the first prompt is the message itself.
+    // The creator of this test has a child, and the child's finish report is
+    // itself an agent user message on the creator's transcript, so the message
+    // just sent is not the transcript's first — wait for its text.
+    test.client
+        .session_send(&creator.id, "what is the state of the repo?")
+        .expect("send the human's first message");
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let arrived = events.lock().expect("events lock").iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::AgentUserMessage { text, .. }
+                    if text == "what is the state of the repo?"
+            )
+        });
+        if arrived {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the human's message never arrived on the creator's transcript"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The unattended marker is a fact of the child's **birth**: it is decided by
+/// the profile's own mode at the creation, and un-ticking that profile
+/// afterwards leaves the running child as it was — while every new creation is
+/// refused, and the refusal names no profile at all.
+///
+/// Both surfaces the fact lives on are read: the live registry view
+/// (`sessions_list`) *and* the journal row, which is what the name claims —
+/// `sessions_list` alone serves a live child from its in-memory birth
+/// metadata and would pass against the pre-tri-state journal, so the durable
+/// half is asserted against the stored row (audit R2b-1 §8.2).
+#[test]
+fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
+    let _lock = lock_tests();
+    let ticked = serde_json::json!({
+        "profiles": [stub_profile_with(
+            "runner",
+            "profile-runner",
+            "bypass",
+            "stub-model-new",
+            serde_json::json!({}),
+            &[],
+            true,
+        )],
+        "standingInstructions": "",
+    });
+    let test = Slice5Test::with_profiles(
+        &serde_json::json!({
+            "title": "runner-child",
+            "profile": "runner",
+            "initialPrompt": "report your result",
+        }),
+        &ticked,
+        &[],
+    );
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    let child = test.child_of(&creator.id);
+    assert_eq!(child.profile_id.as_deref(), Some("profile-runner"));
+    assert_eq!(
+        child.unattended,
+        devboule_protocol::UnattendedState::Yes,
+        "a profile whose mode auto-answers permission prompts makes an unattended child"
+    );
+
+    // The human un-ticks it. The child is untouched: it did run unattended.
+    let unticked = serde_json::json!({
+        "profiles": [stub_profile_with(
+            "runner",
+            "profile-runner",
+            "bypass",
+            "stub-model-new",
+            serde_json::json!({}),
+            &[],
+            false,
+        )],
+        "standingInstructions": "",
+    });
+    test.client
+        .agent_profiles_set(profile_document(&unticked))
+        .expect("un-tick the profile");
+    let again = test
+        .client
+        .sessions_list()
+        .expect("session list")
+        .into_iter()
+        .find(|session| session.id == child.id)
+        .expect("the child is still listed");
+    assert_eq!(
+        again.unattended,
+        devboule_protocol::UnattendedState::Yes,
+        "the marker is a fact of the birth, not a view of the current settings"
+    );
+
+    // The durable half, the one the name claims: the journal row keeps the
+    // birth marker after the un-tick. `journal_usage` waits for the
+    // asynchronous journal writer, so the read cannot race the write.
+    test.client.journal_usage().expect("flush journal");
+    let stored: i64 = Connection::open(test.harness.paths.journal_file())
+        .expect("open journal")
+        .query_row(
+            "SELECT unattended_state FROM sessions WHERE id = ?1",
+            [child.id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("the child's journal row");
+    assert_eq!(
+        stored, 2,
+        "the stored rank is `yes`: the un-tick rewrote neither the live child \
+         nor the row it was born with"
+    );
+
+    // A new creation is refused, and the sentence names no profile: an agent must
+    // not learn which profiles exist but are forbidden. The refusal arrives on
+    // its own clock — the first creation's own reply may land first or second,
+    // and the two sagas share no happens-before — so this waits for the sentence
+    // itself rather than a position (the file's own convention: order is not
+    // evidence; every assertion names the process it is talking about).
+    let second = test.creator_session();
+    let _ = test.attach(&second);
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let line = loop {
+        let lines = test.observations("mcp calls.txt");
+        if let Some(line) = lines
+            .iter()
+            .find(|line| line.contains("no profile is enabled for agents"))
+        {
+            break line.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the unticked refusal never arrived: {lines:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(
+        !line.contains("runner"),
+        "the refusal must not leak what exists but is forbidden: {line}"
+    );
+}
+
+/// The restart is the one path a durable format exists for (audit R2b-1
+/// §8.3): after the daemon process is replaced, the child's marker is read
+/// back from the journal on **both** post-restart surfaces — the recovered
+/// roster row, and the resumed session whose metadata comes from
+/// `session_metadata_for_resume` copying `record.unattended_state`. A resume
+/// is not a creation, so nothing on the path re-derives: a child born `yes`
+/// comes back `yes` from the row alone.
+#[test]
+fn the_unattended_marker_survives_a_daemon_restart_and_a_resume() {
+    let _test_lock = lock_tests();
+    // The delivery is judged against the modes the agent publishes at the
+    // handshake, so the stub must declare the route-A id the create names.
+    // Process-global like AcpTest's own knobs, and safe under the test lock;
+    // the guard keeps a failure from leaking it into the next test.
+    struct ClearModes;
+    impl Drop for ClearModes {
+        fn drop(&mut self) {
+            std::env::remove_var("DEVBOULE_STUB_MODES");
+        }
+    }
+    std::env::set_var("DEVBOULE_STUB_MODES", "ask,bypass");
+    let _clear = ClearModes;
+    let mut test = AcpTest::new(&[]);
+    // Route A: the daemon's own broker answers this delivered id whatever
+    // the agent's own vocabulary says — the same fact the profile battery's
+    // bypass children carry, reached without a profile.
+    let session = test
+        .client
+        .session_create_with(
+            None,
+            SessionKind::Acp,
+            None,
+            Some("bypass".to_string()),
+            None,
+        )
+        .expect("create an unattended ACP session");
+    assert_eq!(
+        session.unattended,
+        devboule_protocol::UnattendedState::Yes,
+        "the birth marker: the broker answers this id"
+    );
+    // journal_usage waits for the asynchronous journal writer, so the
+    // restart cannot race the birth row still being persisted.
+    test.client.journal_usage().expect("flush journal");
+
+    test.restart();
+
+    let recovered = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("recovered session missing after restart");
+    assert_eq!(
+        recovered.unattended,
+        devboule_protocol::UnattendedState::Yes,
+        "the recovered roster row reads what the birth wrote"
+    );
+
+    // The real resume entry: `session_resume` reads the journal record and
+    // hands it to `session_metadata_for_resume`, whose `unattended` field is
+    // the row's, never a re-derivation.
+    let resumed = test
+        .client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect("resume recovered ACP session");
+    assert!(
+        matches!(&resumed, ResumeResult::Resumed { session }
+            if session.unattended == devboule_protocol::UnattendedState::Yes),
+        "the resumed session keeps the birth marker: {resumed:?}"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close the resumed session");
+}
+
+/// Renaming the profile a child was started from changes nothing about the child:
+/// the session records the profile's stable **id**, and a creation that names the
+/// old name is unknown.
+#[test]
+fn renaming_a_profile_does_not_change_what_a_running_child_was_started_from() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new(&serde_json::json!({
+        "title": "builder",
+        "profile": "worker",
+        "initialPrompt": "report your result",
+    }));
+    let creator = test.creator_session();
+    let events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &events);
+    let child = test.child_of(&creator.id);
+    assert_eq!(child.profile_id.as_deref(), Some("profile-worker"));
+
+    // The human renames the profile they ticked: same id, new name.
+    let mut renamed = worker_profile_document();
+    renamed["profiles"][0]["name"] = serde_json::json!("foreman");
+    test.client
+        .agent_profiles_set(profile_document(&renamed))
+        .expect("rename the profile");
+    let after = test
+        .client
+        .sessions_list()
+        .expect("session list")
+        .into_iter()
+        .find(|session| session.id == child.id)
+        .expect("the child is still listed");
+    assert_eq!(
+        after.profile_id.as_deref(),
+        Some("profile-worker"),
+        "the running child still says which profile made it, not what it is called now"
+    );
+
+    // The name is not a fact about the child either: a creation that names the
+    // name it used to have is refused as unknown.
+    let second = test.creator_session();
+    let _ = test.attach(&second);
+    // Every stub process in this test appends to the one observation file, in
+    // the order its HTTP answer lands — not in the order the test creates
+    // sessions — so the file's line positions say nothing. The sentence is the
+    // fact under test: some creation named the old name after the rename, and
+    // the daemon refused it without naming what still exists.
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let refused = test
+            .observations("mcp calls.txt")
+            .iter()
+            .any(|line| line.contains("unknown profile; call devboule_list_profiles"));
+        if refused {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no creation naming the old name was refused as unknown"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A creator and everything it commissions share one context, at any depth: the
+/// child's child reports the human's session id.
+#[test]
+fn a_grandchild_shares_the_context_of_the_human_session_it_came_from() {
+    let _lock = lock_tests();
+    let test = Slice5Test::new(&serde_json::json!({
+        "title": "builder",
+        "profile": "worker",
+        "initialPrompt": "report your result",
+    }));
+    let creator = test.creator_session();
+    let creator_events = test.attach(&creator);
+    test.allow_creation_card(&creator.id, &creator_events);
+    let child = test.child_of(&creator.id);
+    assert_eq!(child.context_id.as_deref(), Some(creator.id.as_str()));
+
+    // The child's own provider asks for a child of its own (every stub process
+    // makes the call `DEVBOULE_ACP_STUB_MCP_CALL` names), so the card that
+    // arrives on the *child's* session is the grandchild's.
+    let child_events = test.attach_child(&child);
+    let grandchild_card = wait_for_creation_card(&child_events, Duration::from_secs(45));
+    test.client
+        .session_permission_respond(
+            &child.id,
+            &grandchild_card.tool_call_id,
+            PermissionOutcome::AllowOnce,
+        )
+        .expect("allow the grandchild");
+    let grandchild = test.child_of(&child.id);
+    assert_eq!(
+        grandchild.context_id.as_deref(),
+        Some(creator.id.as_str()),
+        "a grandchild shares the context of the session the family came from"
+    );
+    assert_eq!(grandchild.created_by.as_deref(), Some(child.id.as_str()));
 }
