@@ -399,11 +399,10 @@ pub(crate) fn mcp_launch(
     })
 }
 
-/// Spawn Codex (S6 wiring): `mcp` is the broker's launch config when the session
-/// was registered for MCP tools, `None` otherwise. `None` is exactly today's
-/// behaviour — no home dir, no extra env, no handshake assertion — so the closed
-/// Phase-0 gate means zero change until S9 flips it and `session.rs` starts
-/// passing `launch_config` (which is `None` for Codex until then). `Some` builds
+/// Spawn Codex (S6 wiring, S9 live): `mcp` is the broker's launch config when
+/// the session was registered for MCP tools, `None` otherwise. `None` is exactly
+/// the old behaviour — no home dir, no extra env, no handshake assertion — and
+/// stays the road for unregistered sessions. `Some` builds
 /// the per-session `CODEX_HOME` (our `config.toml` naming the broker by env-var
 /// pointer), joins `DEVBOULE_MCP_TOKEN` + `CODEX_HOME` onto the child env (never
 /// argv), and asserts the `initialize` echo names the chosen dir — canonicalised
@@ -422,8 +421,8 @@ pub(super) fn spawn_process(
         .as_deref()
         .unwrap_or(crate::codex_view::DEFAULT_MODE)
         .to_string();
-    // The carrier, only when the broker minted one (S9 lights this up; until
-    // then every Codex spawn takes the `None` road below, byte-identical).
+    // The carrier, only when the broker minted one (S9: registered sessions;
+    // unregistered spawns keep the `None` road below, byte-identical).
     let carrier = match mcp.as_ref() {
         Some(config) => Some(mcp_launch(config, state.sessions.runtime_dir())?),
         None => None,
@@ -1111,6 +1110,10 @@ impl SessionKiller for CodexKiller {
         if let Ok(mut stdin) = self.stdin.lock() {
             *stdin = None;
         }
+        // Grace for a natural exit first — but the home is removed on EVERY
+        // path below, never just the kill path: the old early `return` on a
+        // reaped child skipped the removal and leaked the whole tree (S9 road
+        // test caught it: a child that exits on stdin close left its home).
         let deadline = Instant::now() + KILL_GRACE;
         while Instant::now() < deadline {
             if self
@@ -1121,12 +1124,23 @@ impl SessionKiller for CodexKiller {
                 .flatten()
                 .is_some()
             {
-                return;
+                break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
         if let Ok(mut process) = self.process.lock() {
-            let _ = process.kill();
+            if process.try_wait().ok().flatten().is_none() {
+                let _ = process.kill();
+                // Bounded re-wait so the home goes away only once nobody can
+                // use it; the teardown's job kill follows within milliseconds.
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < deadline {
+                    if process.try_wait().ok().flatten().is_some() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
         }
         if let Some(home) = self.codex_home.as_deref() {
             remove_codex_home(home);
@@ -1907,7 +1921,7 @@ mod tests {
     use devboule_protocol::SessionEvent;
     use devboule_protocol::WireError;
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -3661,6 +3675,218 @@ process.stdin.on("data", (chunk) => {
             .collect();
         assert!(orphans.is_empty(), "no home prepared: {orphans:?}");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A fake child for the live carrier road: handshake answers plus a golden
+    /// `mcpServerStatus/list` after `LIST_DELAY_MS`. The echo is globbed from
+    /// `FAKE_RUNTIME_DIR` — the carrier home is minted inside `spawn_process`,
+    /// so no caller can know its name beforehand and the assertion stays honest.
+    const ROAD_FAKE: &str = r#"
+const fs = require("fs"), path = require("path");
+const runtimeDir = process.env.FAKE_RUNTIME_DIR || "";
+const listDelay = parseInt(process.env.LIST_DELAY_MS || "0", 10);
+function codexHome() {
+  try {
+    const hit = fs.readdirSync(runtimeDir).find((n) => n.startsWith("devboule-codex-home-"));
+    return hit ? path.join(runtimeDir, hit) : "";
+  } catch { return ""; }
+}
+let buf = "";
+process.stdin.on("data", (chunk) => {
+  buf += chunk.toString();
+  let nl;
+  while ((nl = buf.indexOf("\n")) >= 0) {
+    const line = buf.slice(0, nl);
+    buf = buf.slice(nl + 1);
+    if (!line.trim()) continue;
+    let msg;
+    try { msg = JSON.parse(line); } catch { continue; }
+    if (msg.id === undefined || msg.id === null) continue;
+    const reply = (result) => process.stdout.write(JSON.stringify({ id: msg.id, result }) + "\n");
+    if (msg.method === "initialize") reply({ codexHome: codexHome(), userAgent: "fake-road" });
+    else if (msg.method === "model/list") reply({ data: [{ id: "fake-model", isDefault: true }] });
+    else if (msg.method === "thread/start") reply({ thread: { id: "thread-road" } });
+    else if (msg.method === "mcpServerStatus/list") {
+      const golden = { data: [{ name: "devboule", runtimeStatus: null, tools: { t: {} }, toolsError: null }] };
+      if (listDelay > 0) setTimeout(() => reply(golden), listDelay);
+      else reply(golden);
+    }
+  }
+});
+"#;
+
+    #[test]
+    fn codex_live_carrier_road_registers_verifies_and_lists() {
+        // S9 wiring, end to end through production code: broker register (the
+        // flipped gate admits Codex) → carrier → spawn (echo asserted) → bind
+        // (Unverified installed) → detached verify → roster lists the child as
+        // Hosted. The part-2 report's two uncovered lines — the trigger CALL
+        // and the else-bind LINE — are both load-bearing here: without the
+        // bind the word never leaves Unavailable, without the trigger it never
+        // leaves Unverified.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        use crate::mcp_broker::ToolsState;
+        let state = crate::server::ServerState::new("codex-road".to_string());
+        let owner = devboule_protocol::OwnerId::new("local", "road").expect("owner");
+        let id = "s.road.1";
+        let guard = state
+            .mcp
+            .register_with_provider(
+                id,
+                &owner,
+                &devboule_protocol::SessionKind::Codex,
+                Some("codex"),
+                crate::mcp_broker::AgentLineage::root(),
+            )
+            .expect("S9 registers Codex")
+            .expect("a bearer is minted");
+        assert!(state.mcp.is_registered(id));
+        let config = state.mcp.launch_config(id).expect("launch config");
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        let command = crate::session::PtyCommand::new(
+            "node",
+            vec!["-e".to_string(), ROAD_FAKE.to_string()],
+            std::env::temp_dir(),
+            vec![
+                (
+                    "FAKE_RUNTIME_DIR".to_string(),
+                    runtime_dir.to_string_lossy().into_owned(),
+                ),
+                ("LIST_DELAY_MS".to_string(), "1500".to_string()),
+            ],
+        );
+        let spawned = super::spawn_process(
+            &state,
+            command,
+            Some(config),
+            crate::profile_delivery::ProfileDelivery::none(),
+        )
+        .expect("the carrier road spawns with its echo asserted");
+        assert!(
+            spawned.pending_codex_verify.is_some(),
+            "a minted carrier verifies"
+        );
+        let metadata = devboule_protocol::Session {
+            id: id.to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: devboule_protocol::SessionKind::Codex,
+            title: "Road".to_string(),
+            state: devboule_protocol::SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+            provider: Some("codex".to_string()),
+            peer_session_id: None,
+            created_at_ms: 1,
+            origin: devboule_protocol::SessionOrigin::local(),
+            display_name: Some("road".to_string()),
+            created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: devboule_protocol::UnattendedState::No,
+            labels: Default::default(),
+        };
+        crate::session::start_spawned_session(
+            &state,
+            &state.sessions,
+            metadata,
+            owner.clone(),
+            None,
+            None,
+            spawned,
+            Some(guard),
+        )
+        .expect("the road starts");
+        // Unverified first (the else-bind ran), Hosted after the delayed poll
+        // (the trigger ran): order matters, and the delay makes it deterministic.
+        let deadline = Instant::now() + Duration::from_secs(25);
+        let mut saw_unverified = false;
+        let hosted = loop {
+            let entries = state.sessions.live_agent_entries(&owner).expect("roster");
+            if let Some(entry) = entries.iter().find(|entry| entry.session.id == id) {
+                let word = entry.runtime.tools_state();
+                if word == ToolsState::Unverified {
+                    saw_unverified = true;
+                }
+                if word == ToolsState::Hosted {
+                    break true;
+                }
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(
+            saw_unverified,
+            "bind installed Unverified before verify landed"
+        );
+        assert!(hosted, "the detached poll flipped the roster to Hosted");
+        // Teardown removes the home with the session (the killer owns it).
+        let _ = state.sessions.close(id, &owner, &None);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let orphans: Vec<_> = std::fs::read_dir(&runtime_dir)
+                .expect("runtime dir")
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with("devboule-codex-home-"))
+                })
+                .collect();
+            if orphans.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "teardown removes the home: {orphans:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn codex_killer_removes_the_home_even_for_an_exited_child() {
+        // The S9 road-test regression, pinned directly: a child that already
+        // exited when `kill` runs must still lose its home. The old grace-loop
+        // early `return` leaked the whole tree exactly here.
+        let dir =
+            std::env::temp_dir().join(format!("devboule-codex-killer-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let home = dir.join("devboule-codex-home-killed");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::write(home.join("config.toml"), b"stale").expect("config");
+        let mut child = std::process::Command::new("node")
+            .args(["-e", "process.exit(0);"])
+            .spawn()
+            .expect("node exits at once");
+        // Reaped before kill: the grace loop observes the exit on entry.
+        assert!(child.wait().expect("reap").success());
+        let catalog = crate::codex_view::catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "model", "isDefault": true }]
+        }))
+        .expect("catalog");
+        let mut killer = super::CodexKiller {
+            process: Arc::new(Mutex::new(child)),
+            stdin: Arc::new(Mutex::new(None)),
+            next_id: Arc::new(AtomicU64::new(1)),
+            state: Arc::new(crate::codex_view::CodexState::new(
+                "thread-kill".to_string(),
+                catalog,
+                "auto",
+            )),
+            permission_broker: PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            codex_home: Some(home.clone()),
+        };
+        use crate::session::SessionKiller;
+        killer.kill();
+        assert!(!home.exists(), "an exited child still loses its home");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

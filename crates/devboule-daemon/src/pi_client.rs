@@ -750,12 +750,11 @@ pub(super) fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireEr
     Ok(())
 }
 
-/// Spawn pi (S5 wiring): `mcp` is the broker's launch config when the session
-/// was registered for MCP tools, `None` otherwise. `None` is exactly today's
-/// behaviour — permission extension only, no bridge, no broker env — so the
-/// closed Phase-0 gate means zero change until S9 flips it and `session.rs`
-/// starts passing `launch_config` (which is `None` for pi until then). `Some`
-/// writes the bridge beside the permission file, appends the second `-e`, and
+/// Spawn pi (S5 wiring, S9 live): `mcp` is the broker's launch config when the
+/// session was registered for MCP tools, `None` otherwise. `None` is exactly
+/// the old behaviour — permission extension only, no bridge, no broker env —
+/// and stays the road for unregistered sessions (Terminal has no road at all).
+/// `Some` writes the bridge beside the permission file, appends the second `-e`, and
 /// joins `DEVBOULE_MCP_URL` + `DEVBOULE_MCP_TOKEN` onto the child env (never
 /// argv). The bridge announce is required for nothing at spawn: absence when
 /// tools were expected is logged (detected, not discovered) and proceeds —
@@ -774,8 +773,8 @@ pub(super) fn spawn_process(
         .unwrap_or(DEFAULT_MODE)
         .to_string();
     let extension_path = permission_extension_path(state.sessions.runtime_dir());
-    // The carrier, only when the broker minted one (S9 lights this up; until
-    // then every pi spawn takes the `None` road below, byte-identical to S3).
+    // The carrier, only when the broker minted one (S9: registered sessions;
+    // unregistered spawns keep the `None` road below, byte-identical).
     let bridge = match mcp.as_ref() {
         Some(config) => Some(mcp_launch(config, state.sessions.runtime_dir())?),
         None => None,

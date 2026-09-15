@@ -350,19 +350,17 @@ pub(crate) fn agent_set_profile_input_schema() -> serde_json::Value {
 
 /// Which providers can be served the broker's tools, keyed by catalog id.
 ///
-/// The broker registers for the ACP and Claude stream-json session kinds
-/// only; `codex` (app-server) and `pi` (RPC) have no MCP channel, and a
-/// provider absent from this table advertises no tools — the panel then hides
-/// its tool section, because there is nothing there to gate.
-///
-/// S2 deliberate: `pi`/`codex` stay absent here until S9 flips this table in
-/// the same commit as the carrier wiring. Advertising before existence is the
-/// same lie in a different font; the creation card and result carry the honesty
-/// until the roster includes them.
+/// S9: all four session families host carriers now — ACP and Claude as before,
+/// plus `codex` (app-server `CODEX_HOME` carrier, S6) and `pi` (RPC bridge, S5)
+/// with post-spawn verification (S7/S8). A provider absent from this table
+/// advertises no tools — the panel then hides its tool section, because there
+/// is nothing there to gate.
 pub const AGENT_MCP_TOOLS: &[(&str, &[(&str, &str)])] = &[
     ("claude", MCP_BROKER_TOOLS),
+    ("codex", MCP_BROKER_TOOLS),
     ("gemini", MCP_BROKER_TOOLS),
     ("grok", MCP_BROKER_TOOLS),
+    ("pi", MCP_BROKER_TOOLS),
     ("qwen", MCP_BROKER_TOOLS),
 ];
 
@@ -684,13 +682,10 @@ impl ToolOverlay {
 /// A cell is a *promise* about a provider, and the daemon keeps it only where
 /// it can: the mode is applied through the provider's own mode switch, and the
 /// overlay only reaches a provider whose sessions are given an MCP connection
-/// at all. `pi` and `codex` cells are kept deliberately even though the broker
-/// is registered for ACP and Claude sessions only (`session.rs` registers it on
-/// `SessionKind::Acp | SessionKind::Claude`, the same rule that predates this
-/// slice): a child on those providers gets no MCP tools, so its overlay is
-/// inert today, and deleting the cells would silently make those presets
-/// unavailable to a caller that asks for them. When the broker grows a
-/// non-ACP transport, the cell already says what the child must be denied.
+/// at all. S9: all agent families host carriers, so pi/codex deny-cells are
+/// enforced live (a `design` Codex child sees neither the tool it may not call
+/// nor any tool its provider's policy already turned off) — the same rule the
+/// ACP families always had.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(feature = "server")]
 pub(crate) struct AgentPresetCell {
@@ -850,9 +845,9 @@ fn catalog_provider_ids() -> Vec<&'static str> {
 /// The catalog's own spelling of `agent_id`, when it publishes the id or an
 /// alias of it.
 ///
-/// `mcp_catalog_id` answers only for the four MCP-capable providers, which is
-/// exactly the wrong set here: pi and codex host no MCP broker but are two of
-/// the three preset modes. This walks the whole catalog instead.
+/// `mcp_catalog_id` answers only for MCP-capable providers, which is the wrong
+/// set here: a profile may name any installed provider, so this walks the whole
+/// catalog instead.
 #[cfg(any(feature = "server", test))]
 pub(crate) fn catalog_provider_id(agent_id: &str) -> Option<&'static str> {
     KNOWN_AGENTS
@@ -3082,7 +3077,11 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
     /// the lookup does not serve, or the reverse.
     #[test]
     fn the_canonical_id_agrees_with_the_tool_lookup() {
-        for spelling in ["claude", "CLAUDE", "Claude", "grok", "GROK", "Grok"] {
+        // S9: pi and codex are served rows now (carriers S5/S6, verified S7/S8).
+        for spelling in [
+            "claude", "CLAUDE", "Claude", "grok", "GROK", "Grok", "pi", "PI", "Pi", "codex",
+            "CODEX", "Codex",
+        ] {
             let canonical = super::mcp_catalog_id(spelling).expect("a catalog id");
             assert_eq!(
                 super::mcp_catalog_id(canonical),
@@ -3098,7 +3097,7 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         }
         // A name the catalog does not publish is no id and is served no tools:
         // the predicate the policy store admits a row with, on both sides.
-        for unknown in ["claude-acp", "codex", "does-not-exist", ""] {
+        for unknown in ["claude-acp", "does-not-exist", ""] {
             assert_eq!(super::mcp_catalog_id(unknown), None, "{unknown}");
             assert!(super::mcp_tools_for(unknown).is_empty(), "{unknown}");
         }

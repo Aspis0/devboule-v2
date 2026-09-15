@@ -3568,13 +3568,15 @@ impl SessionRegistry {
             .unwrap_or_else(|| session_origin_for(conn_peer));
         let title = match meta.display_name.clone() {
             Some(name) => name,
-            None => match kind {
-                SessionKind::Terminal => "Terminal",
-                SessionKind::Acp | SessionKind::Claude | SessionKind::Pi | SessionKind::Codex => {
-                    "Agent"
+            // S9: agent-ness is one protocol predicate, not a kind list — the
+            // same four kinds `hosts_mcp` serves, spelled once in the protocol.
+            None => {
+                if kind.is_agent() {
+                    "Agent".to_string()
+                } else {
+                    "Terminal".to_string()
                 }
             }
-            .to_string(),
         };
         let mut record = new_session_record(
             id.clone(),
@@ -3649,7 +3651,7 @@ impl SessionRegistry {
             metadata.workspace_id.as_deref(),
             &self.paths,
         );
-        let mcp_session = if matches!(kind, SessionKind::Acp | SessionKind::Claude) {
+        let mcp_session = if crate::mcp_broker::hosts_mcp(&kind) {
             state.mcp.register_with_provider(
                 &metadata.id,
                 owner,
@@ -3939,10 +3941,15 @@ impl SessionRegistry {
             }
             _ => crate::mcp_broker::AgentLineage::root(),
         };
+        // S9 kind-preserving fix: the gate above (`resume_handle`) admits ACP only,
+        // so this IS Acp today — but the kind comes from the record, never from a
+        // literal, so a resumed session re-registers with its own kind rather than
+        // as whatever the last author assumed. Pi/Codex resume stays refused at the
+        // gate (deliberate: family resume is undesigned — see `resume_handle`).
         let mcp_session = match state.mcp.register_with_provider(
             session_id,
             owner,
-            &SessionKind::Acp,
+            &record.kind,
             Some(provider.as_str()),
             lineage,
         ) {
@@ -5496,10 +5503,11 @@ impl SessionRegistry {
                 session.killer.clone_killer(),
                 session.steerer.clone_steerer(),
                 session.metadata.kind.is_agent(),
-                matches!(
-                    session.metadata.kind,
-                    SessionKind::Acp | SessionKind::Claude
-                ),
+                // S9: readiness waits only where the wait rule says so (never
+                // pi/Codex — the S8 never-block default, twin-pinned). The wait
+                // itself no-ops without `require_mcp`, so this flag is uniform
+                // while the guarantee lives in the require gate.
+                crate::mcp_broker::hosts_mcp(&session.metadata.kind),
             )
         };
         // A terminal's writer is a PTY, so an appended line is typed, not
@@ -7155,7 +7163,7 @@ impl SessionRegistry {
             .filter_map(|entry| {
                 let live = entry.as_peer_visible()?;
                 if live.owner.user != owner.user
-                    || !matches!(live.metadata.kind, SessionKind::Acp | SessionKind::Claude)
+                    || !crate::mcp_broker::hosts_mcp(&live.metadata.kind)
                 {
                     return None;
                 }
@@ -8341,9 +8349,9 @@ pub fn spawn_session(
     if metadata.kind == SessionKind::Pi {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        // S5 wiring, S9 lights it: the broker mints nothing for pi until the
-        // Phase-0 gate flips, so this is `None` today and the spawn is
-        // byte-identical to S3 (permission extension only, no bridge, no env).
+        // S9 live: `launch_config` yields `Some` for registered sessions, so pi
+        // children start with the bridge; unregistered spawns keep the old road
+        // (permission extension only, no bridge, no env).
         let spawned = pi_client::spawn_process(
             state,
             command,
@@ -8367,9 +8375,9 @@ pub fn spawn_session(
     if metadata.kind == SessionKind::Codex {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        // S6 wiring, S9 lights it: the broker mints nothing for Codex until the
-        // Phase-0 gate flips, so this is `None` today and the spawn is
-        // byte-identical (no home, no env, no handshake assertion).
+        // S9 live: `launch_config` yields `Some` for registered sessions, so Codex
+        // children start with their home; unregistered spawns keep the old road
+        // (no home, no env, no handshake assertion).
         let spawned = codex_client::spawn_process(
             state,
             command,
@@ -8613,21 +8621,23 @@ fn start_spawned_session(
     // the runtime is what lets the permission broker stamp a card and the peer
     // gate answer `prompt_skipping` without a registry lookup.
     runtime.set_origin(metadata.origin.clone());
-    let mcp_session = if matches!(metadata.kind, SessionKind::Acp | SessionKind::Claude) {
+    // S9: hosting is one predicate; waiting is the narrower rule (S8: never
+    // pi/Codex — the twin tests pin it). Binding is registration-fact-gated
+    // inside `bind_runtime` itself (a lookup that no-ops without a row), so it
+    // runs unconditionally: identical for every road but a minted carrier. The
+    // guard is strict exactly where MCP gates the send path (a lost bearer
+    // there must fail loudly, never leak); elsewhere the create road's
+    // `Option` flows through untouched (tests and unregistered spawns).
+    if crate::mcp_broker::mcp_gates_first_prompt(&metadata.kind) {
         runtime.require_mcp();
-        state.mcp.bind_runtime(&metadata.id, &runtime);
+    }
+    state.mcp.bind_runtime(&metadata.id, &runtime);
+    let mcp_session = if crate::mcp_broker::mcp_gates_first_prompt(&metadata.kind) {
         Some(mcp_session.ok_or_else(|| {
             internal("MCP session registration was lost before provider startup.")
         })?)
     } else {
-        // S8: carriers bind on the registration FACT, not the kind — `bind_runtime`
-        // is a lookup that no-ops without one, so every road but a minted carrier
-        // behaves exactly as before. The `require_mcp` gate above stays
-        // ACP/Claude-only on purpose: requiring would make pi/Codex first prompts
-        // wait on the broker, which S7 forbids. Bearer/url/Unverified install here;
-        // the S7 poll flips to Hosted, prompts never wait.
-        state.mcp.bind_runtime(&metadata.id, &runtime);
-        None
+        mcp_session
     };
     if let Some(peer_session_id) = peer_session_id {
         runtime.set_peer_session_id(peer_session_id);
@@ -9476,6 +9486,25 @@ pub(crate) fn insert_test_live_agent(
     owner: OwnerId,
 ) -> Arc<SessionRuntime> {
     tests::insert_live_agent(registry, id, owner)
+}
+
+/// Test-only live agent of one explicit kind (S9): the door reads origin, not
+/// kind, so a pi/Codex-kind caller must meet exactly the judgment an ACP-kind
+/// caller meets. Delegates to the same helper as the default insert.
+#[cfg(test)]
+pub(crate) fn insert_test_live_agent_with_kind(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    kind: SessionKind,
+) -> Arc<SessionRuntime> {
+    tests::insert_live_agent_with_kind_and_writer(
+        registry,
+        id,
+        owner,
+        kind,
+        Box::new(tests::FailingWriter) as Box<dyn Write + Send>,
+    )
 }
 
 #[cfg(test)]
@@ -14057,7 +14086,7 @@ mod tests {
         }
     }
 
-    struct FailingWriter;
+    pub(super) struct FailingWriter;
 
     impl Write for FailingWriter {
         fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
@@ -14309,6 +14338,36 @@ mod tests {
 
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resume_handle_refuses_non_acp_before_any_registration() {
+        // S9: family resume stays refused at the gate (deliberate — pi/Codex
+        // resume is undesigned), so the record-kind registration below it can
+        // only ever see ACP. A refusal here means no bearer is minted for a
+        // resumed pi/Codex row, ever.
+        let owner = test_owner("S-1-5-21-resume", "process-resume");
+        for (kind, needle) in [
+            (SessionKind::Codex, "do not support resume"),
+            (SessionKind::Pi, "only ACP sessions support"),
+            (SessionKind::Terminal, "only ACP sessions support"),
+        ] {
+            let record = new_session_record("s.resume.1", &owner.user, None, kind, "Old");
+            let error = super::resume_handle(&record, &owner)
+                .expect_err("non-ACP resume is refused before anything is minted");
+            assert!(
+                error.message.contains(needle),
+                "the refusal names the boundary: {}",
+                error.message
+            );
+        }
+        let mut acp = new_session_record("s.resume.2", &owner.user, None, SessionKind::Acp, "Old");
+        acp.provider = Some("grok".to_string());
+        acp.peer_session_id = Some("peer-1".to_string());
+        assert!(
+            super::resume_handle(&acp, &owner).is_ok(),
+            "an ACP row with its persisted handles passes the gate"
+        );
     }
 
     #[test]

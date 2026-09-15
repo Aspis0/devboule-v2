@@ -275,8 +275,9 @@ export function toolPolicyFor(
 
 /**
  * Per-provider tool toggles, under one provider card. Renders nothing when
- * `provider.tools` is empty: the daemon sends the `tools` key only for the
- * four native MCP-capable providers, and an empty list means there is
+ * `provider.tools` is empty: the daemon sends the `tools` key only for
+ * providers whose sessions can host the broker (ACP families plus pi and
+ * Codex since the broker switch-on), and an empty list means there is
  * nothing to toggle. It renders nothing either when the handshake did not
  * negotiate [`TOOL_POLICY_CAPABILITY`], so a daemon that cannot answer
  * `tool_policy_get` is never asked — the section is absent, not broken.

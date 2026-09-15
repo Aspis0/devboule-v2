@@ -1,10 +1,11 @@
 //! The daemon-owned MCP channel for live agent sessions.
 //!
 //! The broker is deliberately small: one loopback HTTP listener, one bearer
-//! token per session, and one read-only tool. Pi is not listed here because
-//! its RPC wire has no MCP concept. Stable agent names are not a protocol
-//! field yet, so the tool returns `name: null` and keeps the existing title as
-//! a separate display-only field.
+//! token per session, and the six broker tools served to every agent family —
+//! ACP and Claude natively, pi through its bridge extension (S5), Codex
+//! through its `CODEX_HOME` carrier (S6), both verified post-spawn (S7/S8).
+//! Stable agent names are not a protocol field yet, so the roster tool returns
+//! `name: null` and keeps the existing title as a separate display-only field.
 //!
 //! Gemini is the only ACP provider in the catalog not measured on this
 //! machine because it is not installed. If it does not call `tools/list`, its
@@ -12,7 +13,7 @@
 //! broker message.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -102,22 +103,22 @@ pub(crate) fn compute_tools_state(
     }
 }
 
-/// The sentence the Phase-0 gate logs when it returns `Ok(None)` (S2).
+/// The sentence the gate logs when it returns `Ok(None)` (S2, kept through S9).
 ///
 /// One function so the log line is pinned by a test: it names the session id,
-/// the kind and provider, and the state `unavailable` with the reason (no MCP
-/// channel for this kind yet; pi/Codex carriers land in S5/S6, S9 flips the
-/// gate). `register_with_provider` emits exactly this string via `eprintln!`.
-/// Unit tests cannot capture `eprintln!` output, so they pin this sentence;
-/// the emission itself is verified by reading the daemon log on a pi/Codex
-/// create (stated adaptation, see report).
+/// the kind and provider, and the state `unavailable` with the reason. Only
+/// Terminal takes this branch now — every agent kind registers — so the
+/// sentence says what is true for it. `register_with_provider` emits exactly
+/// this string via `eprintln!`. Unit tests cannot capture `eprintln!` output,
+/// so they pin this sentence; the emission itself is verified by reading the
+/// daemon log on a Terminal create (stated adaptation, see report).
 pub(crate) fn phase0_gate_log(
     session_id: &str,
     kind: &SessionKind,
     provider_id: Option<&str>,
 ) -> String {
     format!(
-        "mcp broker: session {session_id} kind {kind:?} provider {} tools unavailable: no MCP channel for this kind yet (pi/codex carriers land in S5/S6)",
+        "mcp broker: session {session_id} kind {kind:?} provider {} tools unavailable: this kind hosts no MCP channel",
         provider_id.unwrap_or("<none>"),
     )
 }
@@ -126,6 +127,28 @@ pub(crate) fn phase0_gate_log(
 /// and its first prompt is rejected with that fact. The daemon never waits
 /// forever on an undocumented provider event.
 pub(crate) const MCP_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Who gets a broker (S9): the single predicate every gate site calls. One
+/// function, one answer — when it flips, registration, roster, send-readiness
+/// and startup flip with it, and every future site flips by calling it instead
+/// of spelling kinds. Matches on `SessionKind` (never provider-name strings —
+/// the provider dimension stays open; the catalog owns names).
+pub(crate) fn hosts_mcp(kind: &SessionKind) -> bool {
+    matches!(
+        kind,
+        SessionKind::Acp | SessionKind::Claude | SessionKind::Pi | SessionKind::Codex
+    )
+}
+
+/// Whose first prompt may wait on the broker (S9): ACP/Claude only, deliberately
+/// narrower than `hosts_mcp`. Carriers are best-effort and slow (Codex measured
+/// ~7.4 s against a dead broker); blocking a healthy pi/Codex child's first
+/// prompt on them would make an outage of the broker an outage of the child.
+/// The wait itself no-ops without `require_mcp` (S8 split); the twin
+/// never-block tests pin the rule. NOT a new flag — the S8 default, named.
+pub(crate) fn mcp_gates_first_prompt(kind: &SessionKind) -> bool {
+    matches!(kind, SessionKind::Acp | SessionKind::Claude)
+}
 
 const MCP_PATH: &str = "/mcp";
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
@@ -331,13 +354,10 @@ impl McpBroker {
         provider_id: Option<&str>,
         lineage: AgentLineage,
     ) -> Result<Option<McpSessionGuard>, WireError> {
-        if !matches!(kind, SessionKind::Acp | SessionKind::Claude) {
-            // Phase-0 honest surface (S2): this is the branch that decides and
-            // the only silent one. Name the decision — session id, kind and
-            // provider, state `unavailable` with the reason — outside any
-            // freeze by construction (broker file, not `session.rs`). The pi
-            // bridge (S5) and the Codex carrier (S6) land the carriers; until
-            // S9 flips this gate the sentence below is the honesty.
+        if !hosts_mcp(kind) {
+            // The honest surface (S2), now behind the single predicate (S9):
+            // kinds without a carrier still take `Ok(None)` with the decision
+            // named. Today that is only Terminal.
             eprintln!("{}", phase0_gate_log(session_id, kind, provider_id));
             return Ok(None);
         }
@@ -425,7 +445,6 @@ impl McpBroker {
     /// Whether the broker holds a registration (a minted bearer) for `session_id`.
     /// S8: surfaces report the registration FACT — a Codex/pi child with a minted
     /// carrier reads `Unverified` (establishing), one without reads `Unavailable`.
-    /// Production-identical while the Phase-0 gate is closed (no such rows exist).
     pub(crate) fn is_registered(&self, session_id: &str) -> bool {
         self.sessions
             .lock()
@@ -1296,10 +1315,9 @@ fn created_result(id: &Value, session: &devboule_protocol::Session, registered: 
     // S2 honesty, S8 fact: the result reports verification, the card promised
     // it. `registered` is the broker row — a fresh registered child is not yet
     // verified (its first proof lands after this answer); an unregistered one
-    // (pi/Codex until S9) has no tools at all. Hosted is renderable via
-    // `created_result_for_tools` (pinned by test) and arrives on live paths
-    // when verification flips the runtime. Routed through the S1 single
-    // computation point; kind is carried for the S9 move.
+    // has no tools at all. Hosted is renderable via `created_result_for_tools`
+    // (pinned by test) and arrives on live paths when verification flips the
+    // runtime. Routed through the S1 single computation point.
     let tools = compute_tools_state(&session.kind, registered, false);
     created_result_for_tools(id, session, tools)
 }
@@ -1441,9 +1459,9 @@ fn agent_value(
         .unwrap_or_else(|| session.title.clone());
     let state = crate::session::roster_task_state(session, runtime);
     // S2: every roster entry carries the S1 word, read off the runtime the
-    // broker stored at spawn and flipped on verification. With today's truth
-    // pi/Codex rows are absent from this listing entirely (the `session.rs`
-    // filter stays until S9); the card and result carry the honesty for them.
+    // broker stored at spawn and flipped on verification. S9 lists all agent
+    // kinds; the card and result carry the promise for children too young to
+    // have verified.
     json!({
         "id": session.id,
         "provider": session.provider.clone().or(manifest_provider),
@@ -2341,21 +2359,13 @@ fn creation_card(
 /// One function so the card cannot drift from the catalog: the provider name
 /// is resolved through `provider_catalog::session_kind_for` — the one place a
 /// provider name is consulted — and only the resulting `SessionKind` is
-/// matched (never a provider string here, per the open-provider rule). A
-/// pi/Codex child promises `Unavailable` (today's truth: no carrier until
-/// S5/S6, gate flips in S9); every other family promises `Hosted`, with the
+/// matched (never a provider string here, per the open-provider rule). S9: all
+/// agent families host carriers, so every family promises `Hosted`, with the
 /// description carrying "will be verified at start" per the precedence rule
 /// (the card promises verification, the result/roster report it).
 pub(crate) fn card_tools_for_provider(provider: &str) -> ToolsState {
-    let kind = crate::provider_catalog::session_kind_for(provider);
-    if matches!(
-        kind,
-        devboule_protocol::SessionKind::Pi | devboule_protocol::SessionKind::Codex
-    ) {
-        ToolsState::Unavailable
-    } else {
-        ToolsState::Hosted
-    }
+    let _kind = crate::provider_catalog::session_kind_for(provider);
+    ToolsState::Hosted
 }
 
 /// The card's tools sentence for one promised state (S2). The unavailable
@@ -2554,63 +2564,19 @@ fn send_http(
     stream.write_all(body)
 }
 
-/// The one protected-bytes primitive every carrier writer uses (S4).
-///
-/// House order, shared with the tool-policy writer so the two cannot drift:
-/// temp via `create_new` (with a stale-temp remove first, so a run that died
-/// between create and rename never wedges the name), `0o600` on unix,
-/// `security::apply_current_user_dacl` on Windows **before the first byte**
-/// (a secret is never on disk under a weaker DACL), `write_all`, `sync_all`,
-/// rename, temp removed on failure. Both format wrappers below go through here;
-/// writers cannot drift. This also fixes the old MCP order, which narrowed the
-/// DACL after the bytes but before the rename.
-fn write_protected_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "MCP config has no parent directory",
-        )
-    })?;
-    fs::create_dir_all(parent)?;
-    let temp = path.with_extension("tmp");
-    let result = (|| {
-        // The temp name is this writer's own: remove a leftover first so a run
-        // that died between create and rename never wedges the name (and
-        // `create_new` refuses a file already at it). Removing it removes the
-        // name, not whatever a symlink at it points at.
-        let _ = fs::remove_file(&temp);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&temp)?;
-        // Before the first byte: the secret is never on disk under a weaker
-        // DACL. The helper lives in `security.rs` so this config and the tool
-        // policy cannot drift on what "protected" means; off Windows there
-        // is no DACL.
-        #[cfg(windows)]
-        crate::security::apply_current_user_dacl(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
-}
-
+/// The one protected-bytes primitive every carrier writer uses (S4) now lives
+/// in `crate::atomic` (P2: one writer, all callers). Both format wrappers below
+/// go through it.
 fn write_protected_json(path: &Path, value: &Value) -> io::Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
-    write_protected_bytes(path, &bytes)
+    crate::atomic::write_protected_bytes(path, &bytes)
 }
 
 /// The second wrapper (S4): text carriers (the pi bridge in S5, the Codex TOML
 /// in S6) go through the same primitive. The TOML parse-back before rename
 /// that S6 needs is S6's hook on top of this; this step owns the helper it calls.
 pub(crate) fn write_protected_str(path: &Path, text: &str) -> io::Result<()> {
-    write_protected_bytes(path, text.as_bytes())
+    crate::atomic::write_protected_bytes(path, text.as_bytes())
 }
 
 /// Child-env names for the broker carrier (S5/S6). The names carry no secret
@@ -2738,9 +2704,7 @@ mod tests {
         // The forbidden combination the type exists to name: a pi/Codex
         // session WITH a bearer but WITHOUT verification reads Unverified —
         // never Hosted, never Unavailable. Built through the single
-        // computation point directly because the Phase-0 gate still returns
-        // Ok(None) for pi/Codex (S9 flips it): no bearer can be minted for
-        // them yet, so the combination is constructed, not registered.
+        // computation point directly (registration state as booleans).
         for kind in [
             SessionKind::Acp,
             SessionKind::Claude,
@@ -2804,8 +2768,8 @@ mod tests {
     fn bind_without_registration_is_a_noop() {
         // S8 bind-split safety: `bind_runtime` without a row touches nothing —
         // no bearer, no URL, no state flip. This is what makes the else-branch
-        // bind production-identical while the gate holds. (The registered half
-        // is unreachable until S9 flips the gate; S9 wires its tests.)
+        // bind production-identical without a row. (The registered half is
+        // wired by the S9 road test, which drives a minted carrier live.)
         let state = ServerState::new("mcp-bind-noop".to_string());
         let runtime = Arc::new(crate::session::SessionRuntime::new());
         state.mcp.bind_runtime("s.nobody.9", &runtime);
@@ -2814,9 +2778,9 @@ mod tests {
 
     #[test]
     fn registration_is_a_fact_the_surfaces_read() {
-        // S8: `is_registered` answers the broker row — Acp rows exist, unknown
-        // ids do not, and Codex rows never do while the Phase-0 gate holds
-        // (unit-level half of the end-of-pass OFF check).
+        // S9: the flipped gate admits every agent kind — Acp AND Codex rows
+        // exist; unknown ids do not. (In parts 1–2 this same test pinned the
+        // closed gate with Codex → None; the flip is the pass.)
         let state = ServerState::new("mcp-registered-fact".to_string());
         let owner = owner("mcp-user-reg", "mcp-client-reg");
         assert!(!state.mcp.is_registered("s.nobody.1"));
@@ -2835,58 +2799,100 @@ mod tests {
                 Some("codex"),
                 AgentLineage::root(),
             )
-            .expect("the gate answers");
-        assert!(codex.is_none());
-        assert!(!state.mcp.is_registered("s.codex.1"));
+            .expect("the gate answers")
+            .expect("S9 mints for Codex");
+        assert!(state.mcp.is_registered("s.codex.1"));
+        drop(codex);
+        assert!(
+            !state.mcp.is_registered("s.codex.1"),
+            "dropping the guard revokes the bearer"
+        );
+    }
+
+    /// S9: one predicate, not five spellings. The two-kind MCP line survives in
+    /// exactly one function body (the wait rule) and the four-kind line in
+    /// exactly one (the gate); reintroduce an inline gate anywhere and either
+    /// count goes red. (Needles are concatenated so this very test does not
+    /// match itself.)
+    #[test]
+    fn the_mcp_predicate_is_spelled_exactly_twice() {
+        let two = ["SessionKind::Acp ", "| SessionKind::Claude"].concat();
+        let four_tail = ["| SessionKind::Pi ", "| SessionKind::Codex"].concat();
+        let sources = [include_str!("mcp_broker.rs"), include_str!("session.rs")];
+        let mut narrow = 0;
+        let mut wide = 0;
+        for source in sources {
+            for line in source.lines() {
+                if line.contains(two.as_str()) {
+                    if line.contains(four_tail.as_str()) {
+                        wide += 1;
+                    } else {
+                        narrow += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(wide, 1, "hosts_mcp is the only four-kind MCP spelling");
+        assert_eq!(
+            narrow, 1,
+            "mcp_gates_first_prompt is the only two-kind MCP spelling; gate sites call, never spell"
+        );
     }
 
     #[test]
     fn phase0_gate_names_the_decision_it_makes() {
-        // The guard is still the branch that decides and still the only one
-        // that was silent: pi/Codex take Ok(None). The sentence it logs names
-        // the session id, the kind and provider, and the state `unavailable`
-        // with the reason. `eprintln!` output cannot be captured in a unit
-        // test, so the test pins the sentenced string the guard emits (stated
-        // adaptation); the emission itself is verified by reading the daemon
-        // log on a pi/Codex create.
-        let line = phase0_gate_log("s.pi.1", &SessionKind::Pi, Some("pi"));
-        assert!(line.contains("s.pi.1"), "names the session: {line}");
-        assert!(line.contains("Pi"), "names the kind: {line}");
-        assert!(line.contains("pi"), "names the provider: {line}");
+        // The guard is still the branch that decides. Post-S9 only Terminal
+        // takes `Ok(None)`; every agent kind registers. The sentence it logs
+        // names the session id, the kind and provider, and the state
+        // `unavailable` with the reason. `eprintln!` output cannot be captured
+        // in a unit test, so the test pins the sentenced string the guard
+        // emits (stated adaptation); the emission itself is verified by reading
+        // the daemon log on a Terminal create.
+        let line = phase0_gate_log("s.term.1", &SessionKind::Terminal, None);
+        assert!(line.contains("s.term.1"), "names the session: {line}");
+        assert!(line.contains("Terminal"), "names the kind: {line}");
         assert!(
             line.contains("unavailable"),
             "never renders the unknown as the benign state: {line}"
         );
         let state = ServerState::new("mcp-phase0".to_string());
         let owner = owner("mcp-user-phase0", "mcp-client-phase0");
-        for kind in [SessionKind::Pi, SessionKind::Codex] {
-            let guard = state
-                .mcp
-                .register_with_provider(
-                    "s.phase0.1",
-                    &owner,
-                    &kind,
-                    Some("pi"),
-                    AgentLineage::root(),
-                )
-                .expect("phase-0 gate answers");
-            assert!(
-                guard.is_none(),
-                "today's truth: {kind:?} registers nothing until S9"
-            );
+        let terminal = state
+            .mcp
+            .register_with_provider(
+                "s.phase0.1",
+                &owner,
+                &SessionKind::Terminal,
+                None,
+                AgentLineage::root(),
+            )
+            .expect("the gate answers");
+        assert!(terminal.is_none(), "Terminal hosts no broker, still");
+        for kind in [
+            SessionKind::Acp,
+            SessionKind::Claude,
+            SessionKind::Pi,
+            SessionKind::Codex,
+        ] {
+            assert!(hosts_mcp(&kind), "S9: every agent kind hosts: {kind:?}");
         }
+        assert!(!hosts_mcp(&SessionKind::Terminal));
     }
 
     #[test]
     fn creation_card_promises_tools_honestly_per_provider() {
-        // With today's truth a pi/Codex card reads unavailable with the
-        // no-tools sentence; every other family promises hosted with the
-        // precedence rule's phrase. Forbidden state: an unavailable card
-        // without the sentence (drop the sentence in the fixture → red).
-        assert_eq!(card_tools_for_provider("pi"), ToolsState::Unavailable);
-        assert_eq!(card_tools_for_provider("codex"), ToolsState::Unavailable);
-        assert_eq!(card_tools_for_provider("claude"), ToolsState::Hosted);
-        assert_eq!(card_tools_for_provider("gemini"), ToolsState::Hosted);
+        // S9: every agent family hosts a carrier, so every card promises
+        // Hosted with the precedence rule's phrase. (In parts 1–2 pi/codex
+        // promised Unavailable with the no-tools sentence; the flip retires
+        // that branch — the sentence helpers below stay for result/roster.)
+        // Forbidden state: a card without the verification promise.
+        for provider in ["pi", "codex", "claude", "gemini", "grok", "qwen"] {
+            assert_eq!(
+                card_tools_for_provider(provider),
+                ToolsState::Hosted,
+                "{provider} children host tools"
+            );
+        }
         let unavailable = card_tools_sentence(ToolsState::Unavailable);
         assert!(
             unavailable.contains("without Devboule tools"),
@@ -2974,7 +2980,7 @@ mod tests {
         let path = dir.join("carrier.json");
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("tmp"));
-        write_protected_bytes(&path, b"{\"a\":1}").expect("protected write");
+        crate::atomic::write_protected_bytes(&path, b"{\"a\":1}").expect("protected write");
         assert_eq!(
             std::fs::read(&path).expect("read back").as_slice(),
             b"{\"a\":1}"
@@ -2994,7 +3000,7 @@ mod tests {
         }
         // The temp name is the writer's own: a second write replaces atomically
         // via rename (create_new guards the temp, not the target).
-        write_protected_bytes(&path, b"{}").expect("atomic replace");
+        crate::atomic::write_protected_bytes(&path, b"{}").expect("atomic replace");
         assert_eq!(std::fs::read(&path).expect("read back").as_slice(), b"{}");
         // Missing parent is created, missing grandparent chain included.
         let nested = dir.join("sub").join("deep.txt");
@@ -4565,6 +4571,84 @@ mod tests {
                 .as_str()
                 .is_some_and(|text| text.contains("profile")),
             "past the door, the empty store reads as it does for a local caller: {body}"
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// The door reads origin, never kind (S9): a pi-kind caller meets exactly the
+    /// judgment an ACP-kind caller meets. A peer's pi session without `send` is
+    /// refused the create tool with the policy's sentence and spawns nothing;
+    /// with `send` it passes the door to the same profile check. A local pi
+    /// session passes untouched.
+    #[test]
+    fn a_peer_pi_caller_meets_the_same_door_as_acp() {
+        let state = ServerState::new("mcp-door-pi".to_string());
+        let owner = owner("mcp-door-pi-user", "mcp-door-pi-client");
+        let creator = "s.peer.8".to_string();
+        crate::session::insert_test_live_agent_with_kind(
+            &state.sessions,
+            &creator,
+            owner.clone(),
+            SessionKind::Pi,
+        );
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-pi-door", crate::peer_policy::PeerRole::Client),
+        );
+        state
+            .peer_upsert(peer_row("device-pi-door", &["view", "create_sessions"]))
+            .expect("store a peer");
+        let guard = state
+            .mcp
+            .register_with_provider(
+                &creator,
+                &owner,
+                &SessionKind::Pi,
+                Some("pi"),
+                AgentLineage::root(),
+            )
+            .expect("S9 registers pi")
+            .expect("a bearer is minted");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let refused = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_create_agent","arguments":{"profile":"Solo","title":"Kid","initialPrompt":"hi"}}}"#,
+        );
+        assert_eq!(
+            response_json(&refused).pointer("/error/message"),
+            Some(&json!("capability 'send' was not negotiated")),
+            "a peer's pi session without send is refused like any other kind"
+        );
+        assert_eq!(
+            state
+                .sessions
+                .live_agent_entries(&owner)
+                .expect("roster")
+                .len(),
+            1,
+            "the refused create spawned nothing"
+        );
+        state
+            .peer_upsert(peer_row(
+                "device-pi-door",
+                &["view", "create_sessions", "send"],
+            ))
+            .expect("grant send");
+        let missing = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_create_agent","arguments":{"profile":"Solo","title":"Kid","initialPrompt":"hi"}}}"#,
+        );
+        let body = response_json(&missing);
+        assert_eq!(body["result"]["isError"], true);
+        assert!(
+            body["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("profile")),
+            "past the door, the profile check reads as for a local caller: {body}"
         );
         drop(guard);
         drop(server);

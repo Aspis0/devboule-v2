@@ -602,8 +602,23 @@ pub struct CreateAgentCard {
     /// MCP-capable family reads `hosted` with "will be verified at start" in
     /// the description, never bare "has tools"; a card for pi/codex reads
     /// `unavailable` with the no-tools sentence until S9 flips the gate.
+    ///
+    /// Additive (P1): an older peer's frame without this key decodes to the
+    /// tri-state's not-established value — a daemon that never heard of
+    /// `ToolsState` has established nothing, so absent renders as the unknown,
+    /// never as the benign "no tools".
+    #[serde(default = "default_create_card_tools")]
     pub tools: String,
     pub caps: CreateAgentCaps,
+}
+
+/// The tools word for a card frame that predates it (P1): the tri-state's
+/// not-established value. Lives beside the struct because the protocol crate
+/// owns the wire contract; the daemon's `ToolsState::Unverified.as_str()`
+/// spells the same word, pinned on both sides (daemon walk test + the decode
+/// test below).
+fn default_create_card_tools() -> String {
+    "unverified".to_string()
 }
 
 /// One part of a finish artifact (`S5` decision 10, A2A §3 `Part`).
@@ -1783,6 +1798,50 @@ mod tests {
             error.to_string().contains("origin"),
             "the error must name the missing field: {error}"
         );
+    }
+
+    /// P1: a creation card frame from a daemon that never heard of `ToolsState`
+    /// — no `tools` key — decodes, and lands on the third state, never on the
+    /// benign "no tools". A required field would have failed the decode and
+    /// closed a mixed pair's connection; the addition with the honest default
+    /// does not, which is why this is not a version bump.
+    #[test]
+    fn a_creation_card_without_the_tools_word_decodes_as_unverified() {
+        let frame = serde_json::json!({
+            "creatorSessionId": "s.1.1",
+            "provider": "pi",
+            "profile": "worker",
+            "title": "worker",
+            "caps": {
+                "liveChildren": 0,
+                "maxLiveChildren": 3,
+                "creationsThisHour": 0,
+                "maxCreationsPerHour": 10,
+                "depth": 1,
+                "maxDepth": 2,
+                "liveAgentSessions": 1,
+                "maxLiveAgentSessions": 8,
+            },
+        });
+        let card: super::CreateAgentCard =
+            serde_json::from_value(frame).expect("an old card frame decodes");
+        assert_eq!(
+            card.tools, "unverified",
+            "absent renders as not-established, never as no-tools"
+        );
+        // And the current shape round-trips with its word intact.
+        let current = super::CreateAgentCard {
+            creator_session_id: "s.1.1".to_string(),
+            provider: "claude".to_string(),
+            profile: "worker".to_string(),
+            title: "worker".to_string(),
+            tools: "hosted".to_string(),
+            caps: card.caps.clone(),
+        };
+        let encoded = serde_json::to_value(&current).expect("json");
+        assert_eq!(encoded["tools"], "hosted");
+        let decoded: super::CreateAgentCard = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, current);
     }
 
     #[test]
