@@ -2718,14 +2718,27 @@ impl StderrSource for PiStderr {
                         Ok(0) => return,
                         Ok(length) => {
                             let data = String::from_utf8_lossy(&buffer[..length]).into_owned();
-                            let _ = runtime
-                                .publish_agent_event(SessionEvent::AgentStderr { data }, None);
+                            publish_stderr_line(&runtime, data);
                         }
                         Err(_) => return,
                     }
                 }
             })
     }
+}
+
+/// One stderr chunk to the transcript (broker-4): published through the one
+/// redactor ACP, Claude and Codex already use — a pi child that echoes its
+/// environment must not land the broker token in any observer's transcript.
+/// (Found beside the Codex gap: same defect, same fix. No belt here — the
+/// invalid-configuration marker is Codex's sentence, not pi's.)
+fn publish_stderr_line(runtime: &SessionRuntime, data: String) {
+    let _ = runtime.publish_agent_event(
+        SessionEvent::AgentStderr {
+            data: runtime.redact_mcp_text(&data),
+        },
+        None,
+    );
 }
 
 #[cfg(test)]
@@ -3514,6 +3527,67 @@ export const Type = {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// Attached-runtime helper mirroring ACP's (and Codex's): a runtime with a
+    /// broker plus a subscription whose published events the test can pull.
+    fn attached_runtime(
+        session_id: &str,
+        broker: Arc<super::super::permission_broker::PermissionBroker>,
+    ) -> (
+        Arc<SessionRuntime>,
+        Arc<super::super::event_pull::ConnHandle>,
+    ) {
+        let runtime = SessionRuntime::for_acp(session_id.to_string(), None, Arc::clone(&broker));
+        let conn = super::super::event_pull::ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        (runtime, conn)
+    }
+
+    #[test]
+    fn pi_bearer_is_redacted_from_stderr_before_delivery() {
+        // Broker-4, pi half: same defect as Codex (a bearer in the child env
+        // since S9), same fix, same proof. No belt here — the
+        // invalid-configuration marker is Codex's sentence, not pi's.
+        let broker =
+            super::super::permission_broker::PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let (runtime, conn) = attached_runtime("stderr-redaction-pi", broker);
+        runtime.set_mcp_bearer("opaque-bearer-pi".to_string());
+        runtime.set_mcp_url("http://127.0.0.1:4567/mcp".to_string());
+        super::publish_stderr_line(
+            &runtime,
+            "pi echoed Bearer opaque-bearer-pi at http://127.0.0.1:4567/mcp".to_string(),
+        );
+        let event = conn
+            .pull_events()
+            .into_iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::AgentStderr { data } => Some(data),
+                _ => None,
+            })
+            .expect("stderr event");
+        assert_eq!(event, "pi echoed Bearer [redacted] at [redacted]");
+        // And a clean line passes through verbatim (redaction, not blanking).
+        super::publish_stderr_line(&runtime, "pi did something ordinary".to_string());
+        let clean = conn
+            .pull_events()
+            .into_iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::AgentStderr { data } => Some(data),
+                _ => None,
+            })
+            .expect("second stderr event");
+        assert_eq!(clean, "pi did something ordinary");
     }
 
     #[test]

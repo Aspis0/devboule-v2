@@ -1876,22 +1876,34 @@ impl StderrSource for CodexStderr {
                         Ok(0) => return,
                         Ok(length) => {
                             let data = String::from_utf8_lossy(&buffer[..length]).into_owned();
-                            // S7 belt (never authoritative — the `mcpServerStatus`
-                            // poll is): codex admitting it dropped the config
-                            // means whatever carrier was installed is not in
-                            // force. Unverified either way it is read — the
-                            // marker can only move caution-ward, never benign-ward.
-                            if data.contains("Invalid configuration; using defaults") {
-                                runtime.set_tools_state(crate::mcp_broker::ToolsState::Unverified);
-                            }
-                            let _ = runtime
-                                .publish_agent_event(SessionEvent::AgentStderr { data }, None);
+                            publish_stderr_line(&runtime, data);
                         }
                         Err(_) => return,
                     }
                 }
             })
     }
+}
+
+/// One stderr chunk to the transcript (broker-4): the S7 belt reads the RAW line
+/// (the marker carries no secret), then the line is published through the one
+/// redactor ACP and Claude already use — a child that echoes its environment
+/// must not land a bearer in any observer's transcript. Same shape as ACP's
+/// `publish_stderr_line`, which keeps its own copy (working code, untouched).
+fn publish_stderr_line(runtime: &SessionRuntime, data: String) {
+    // S7 belt (never authoritative — the `mcpServerStatus` poll is): codex
+    // admitting it dropped the config means whatever carrier was installed is
+    // not in force. Unverified either way it is read — the marker can only
+    // move caution-ward, never benign-ward.
+    if data.contains("Invalid configuration; using defaults") {
+        runtime.set_tools_state(crate::mcp_broker::ToolsState::Unverified);
+    }
+    let _ = runtime.publish_agent_event(
+        SessionEvent::AgentStderr {
+            data: runtime.redact_mcp_text(&data),
+        },
+        None,
+    );
 }
 
 #[cfg(test)]
@@ -3887,6 +3899,61 @@ process.stdin.on("data", (chunk) => {
         killer.kill();
         assert!(!home.exists(), "an exited child still loses its home");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Attached-runtime helper mirroring ACP's: a runtime with a broker plus a
+    /// subscription whose published events the test can pull back out.
+    fn attached_runtime(
+        session_id: &str,
+        broker: Arc<PermissionBroker>,
+    ) -> (Arc<SessionRuntime>, Arc<ConnHandle>) {
+        let runtime = SessionRuntime::for_acp(session_id.to_string(), None, Arc::clone(&broker));
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        (runtime, conn)
+    }
+
+    #[test]
+    fn codex_bearer_is_redacted_from_stderr_before_delivery() {
+        // Broker-4: a bearer-shaped secret planted in a Codex stderr line must
+        // not reach any observer's transcript. The belt still reads the raw
+        // marker line in the same call.
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let (runtime, conn) = attached_runtime("stderr-redaction-codex", broker);
+        runtime.set_mcp_bearer("opaque-bearer-codex".to_string());
+        runtime.set_mcp_url("http://127.0.0.1:4567/mcp".to_string());
+        super::publish_stderr_line(
+            &runtime,
+            "codex echoed Bearer opaque-bearer-codex at http://127.0.0.1:4567/mcp".to_string(),
+        );
+        let event = conn
+            .pull_events()
+            .into_iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::AgentStderr { data } => Some(data),
+                _ => None,
+            })
+            .expect("stderr event");
+        assert_eq!(event, "codex echoed Bearer [redacted] at [redacted]");
+        super::publish_stderr_line(
+            &runtime,
+            "ERROR codex_app_server: Invalid configuration; using defaults.".to_string(),
+        );
+        assert_eq!(
+            runtime.tools_state(),
+            crate::mcp_broker::ToolsState::Unverified,
+            "the belt still reads the raw marker"
+        );
     }
 
     #[test]
