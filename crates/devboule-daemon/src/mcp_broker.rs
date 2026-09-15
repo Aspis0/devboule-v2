@@ -900,6 +900,74 @@ fn handle_rpc(
                         })))
                     }
                 }
+            } else if tool_name == Some(crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL) {
+                // Identity is the bearer, never the arguments: the child this
+                // moves must be a live child of the session that called, and
+                // "mine" is something the daemon knows from the registration —
+                // a caller id in the arguments would be a claim, not a fact.
+                let session_arg = message
+                    .pointer("/params/arguments/session")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let profile_arg = message
+                    .pointer("/params/arguments/profile")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let (Some(session_arg), Some(profile_arg)) = (session_arg, profile_arg) else {
+                    return Ok(Some(rpc_error(
+                        id,
+                        -32602,
+                        "session and profile are required",
+                    )));
+                };
+                let result = state.sessions.set_agent_child_profile(
+                    &registration.session_id,
+                    session_arg,
+                    profile_arg,
+                    &|requested| resolve_profile_for_move(&state.agent_profiles, requested),
+                );
+                let identity = state.device_identity();
+                let audit = |outcome_label: &str| {
+                    if let Ok(identity) = identity {
+                        state.audit(AuditRecord {
+                            device_id: identity.device_id.clone(),
+                            role: "local".to_string(),
+                            claimed_origin: None,
+                            action: crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL.to_string(),
+                            session_id: Some(registration.session_id.clone()),
+                            outcome: outcome_label.to_string(),
+                        });
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        audit("ok");
+                        Ok(Some(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{"type": "text", "text": "moved"}],
+                                "structuredContent": {
+                                    "state": "moved",
+                                    "sessionId": session_arg,
+                                    "profile": profile_arg,
+                                },
+                                "isError": false,
+                            },
+                        })))
+                    }
+                    Err(sentence) => {
+                        audit("denied");
+                        Ok(Some(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{"type": "text", "text": sentence}],
+                                "isError": true,
+                            },
+                        })))
+                    }
+                }
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -1022,6 +1090,11 @@ fn enabled_tool_list(
                     "required": ["cardId", "outcome"],
                     "additionalProperties": false,
                 })
+            } else if *name == crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL {
+                // Closed, like the create schema it rhymes with: the child is
+                // named by id or display name, the profile by its name, and
+                // nothing a caller could state as identity is offered at all.
+                crate::provider_catalog::agent_set_profile_input_schema()
             } else {
                 json!({"type": "object", "properties": {}, "additionalProperties": false})
             };
@@ -1427,6 +1500,47 @@ fn resolve_profile(
         // only ever remove a tool the broker serves.
         overlay: crate::provider_catalog::ToolOverlay::from_profile_names(&profile.tool_overlay),
     })
+}
+
+/// The move tool's profile resolution (slice 5b §2 check 3, Pass A): the one
+/// resolver, [`resolve_profile`], plus the third refusal §1.2 demands.
+///
+/// `resolve_profile` is the create surface's resolver and deliberately
+/// conflates unticked with unknown — the list an agent reads is the ticked set
+/// and nothing else, so the sentence that sends the caller back to the list is
+/// the honest one there. The move surface is bound to the three-state
+/// discipline instead: a name the store holds but the human has not ticked is
+/// its own refusal, distinct from a name nobody ever wrote. Only the sentence
+/// is refined: the matching, the ambiguity refusal and the read-now rule all
+/// stay `resolve_profile`'s, so the two surfaces cannot drift into a second
+/// resolver with a second ambiguity answer.
+fn resolve_profile_for_move(
+    store: &crate::agent_profiles::AgentProfilesStore,
+    requested: &str,
+) -> Result<crate::session::ChildProfileFacts, String> {
+    match resolve_profile(store, requested) {
+        Ok(profile) => Ok(crate::session::ChildProfileFacts {
+            profile_id: profile.id,
+            mode_id: profile.mode,
+            model: profile.model,
+            thinking_option_id: profile.thinking_option_id,
+        }),
+        Err(message) => {
+            let wanted = profile_name_key(requested);
+            let unticked = store
+                .document()
+                .profiles
+                .iter()
+                .any(|profile| profile.name == wanted && !profile.enabled_for_agents);
+            if unticked {
+                Err(format!(
+                    "the profile '{wanted}' exists but the human has not enabled it for agents; only a ticked profile can be moved onto"
+                ))
+            } else {
+                Err(message)
+            }
+        }
+    }
 }
 
 /// The per-profile **prediction** the list and the card serve (F6): the same
@@ -2535,19 +2649,24 @@ mod tests {
         // that carries the profile-store vocabulary, because a tool name is a
         // bearer's only channel into the daemon — the store's own RPCs
         // (`AgentProfilesGet`/`AgentProfilesSet`) travel a different surface
-        // and cannot be reached from here. The one exception is
-        // `devboule_list_profiles`, the read-only ticked list the design
-        // deliberately serves; every other `profile` spelling must fail this
-        // assertion, including one-letter neighbours of the allowed names such
-        // as `devboule_agent_profile_get`, which a substring deny on
-        // `agent_profiles`/`set_profile` used to wave through.
+        // and cannot be reached from here. Two deliberate exceptions, each
+        // with its own authority, and nothing else: `devboule_list_profiles`,
+        // the read-only ticked list the design serves; and
+        // `devboule_set_agent_profile`, which reads the store through the same
+        // resolver the create tool uses and writes only a child's own row —
+        // its authority is the `created_by` link, never the name. Every other
+        // `profile` spelling must fail this assertion, including one-letter
+        // neighbours of the allowed names such as `devboule_agent_profile_get`,
+        // which a substring deny on `agent_profiles`/`set_profile` used to
+        // wave through.
         for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
             assert!(
                 name == &crate::provider_catalog::MCP_LIST_PROFILES_TOOL
+                    || name == &crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL
                     || !name.contains("profile"),
                 "the broker's closed table must not reach the profile store: \
-                 {name} carries the profile vocabulary and is not the one \
-                 allowed read-only list tool"
+                 {name} carries the profile vocabulary and is neither of the two \
+                 allowed tools (the read-only list, the created_by-gated move)"
             );
         }
 
@@ -2740,6 +2859,257 @@ mod tests {
         drop(server);
     }
 
+    // -----------------------------------------------------------------------
+    // Pass A: `devboule_set_agent_profile` — a creator moves its own live
+    // child onto a ticked profile (slice 5b §2).
+    // -----------------------------------------------------------------------
+
+    /// The move tool is listed with the closed schema it documents, and the
+    /// arm demands both arguments at the door.
+    #[test]
+    fn the_move_tool_is_listed_with_a_closed_schema_and_demands_both_arguments() {
+        let state = ServerState::new("mcp-move-schema".to_string());
+        let owner = owner("mcp-move-user", "mcp-move-client");
+        let guard = state
+            .mcp
+            .register("session", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        let body = response_json(&response);
+        let schema = body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL)
+            .expect("the move tool is listed")["inputSchema"]
+            .clone();
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["session", "profile"]),
+            "both arguments, required: {schema}"
+        );
+        assert_eq!(schema["additionalProperties"], false, "{schema}");
+        assert_eq!(schema["properties"]["session"]["type"], "string");
+        assert_eq!(schema["properties"]["profile"]["type"], "string");
+
+        // Missing arguments are the caller's mistake, refused at the door.
+        for (id, arguments, why) in [
+            (2, r#"{}"#, "neither argument arrived"),
+            (
+                3,
+                r#"{"session":"child-1"}"#,
+                "a missing profile is the caller's mistake",
+            ),
+            (
+                4,
+                r#"{"profile":"Solo"}"#,
+                "a missing session is the caller's mistake",
+            ),
+        ] {
+            let message = format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"devboule_set_agent_profile","arguments":{arguments}}}}}"#
+            );
+            let response = http_request(&state.mcp.url, Some(&format!("Bearer {token}")), &message);
+            let body = response_json(&response);
+            assert_eq!(body["error"]["code"], -32602, "{why}: {body}");
+            assert_eq!(
+                body["error"]["message"], "session and profile are required",
+                "{why}: {body}"
+            );
+        }
+
+        drop(guard);
+        drop(server);
+    }
+
+    /// §1.2, at the move surface: unknown, ambiguous and unticked are three
+    /// refusals with three sentences — and the tick is read at the moment of
+    /// the call, never from a list cached earlier.
+    #[test]
+    fn the_move_resolver_distinguishes_unknown_ambiguous_and_unticked_and_reads_now() {
+        let store = profile_store(document(
+            vec![
+                profile(
+                    "Solo",
+                    "p-1",
+                    "claude",
+                    "default",
+                    serde_json::json!({}),
+                    &[],
+                    true,
+                ),
+                profile(
+                    "Ticked off",
+                    "p-2",
+                    "claude",
+                    "default",
+                    serde_json::json!({}),
+                    &[],
+                    false,
+                ),
+                profile(
+                    "Dup",
+                    "p-3",
+                    "claude",
+                    "default",
+                    serde_json::json!({}),
+                    &[],
+                    true,
+                ),
+                profile(
+                    "Dup",
+                    "p-4",
+                    "claude",
+                    "default",
+                    serde_json::json!({}),
+                    &[],
+                    true,
+                ),
+            ],
+            "",
+        ));
+        let facts = resolve_profile_for_move(&store, "Solo").expect("ticked");
+        assert_eq!(facts.profile_id, "p-1");
+        assert_eq!(facts.mode_id, "default");
+        assert_eq!(facts.thinking_option_id.as_deref(), Some("high"));
+
+        let error = resolve_profile_for_move(&store, "Ghost").expect_err("unknown");
+        assert!(error.contains("unknown profile"), "{error}");
+
+        let error = resolve_profile_for_move(&store, "Ticked off").expect_err("unticked");
+        assert!(
+            error.contains("has not enabled it for agents"),
+            "unticked is its own sentence, not unknown's: {error}"
+        );
+
+        let error = resolve_profile_for_move(&store, "Dup").expect_err("ambiguous");
+        assert!(error.contains("more than one profile is called"), "{error}");
+
+        // The read-now rule: un-tick Solo and the next ask is refused unticked.
+        // A resolver that cached the ticked list would still answer Ok here.
+        store
+            .set(
+                serde_json::from_value(document(
+                    vec![profile(
+                        "Solo",
+                        "p-1",
+                        "claude",
+                        "default",
+                        serde_json::json!({}),
+                        &[],
+                        false,
+                    )],
+                    "",
+                ))
+                .expect("the document"),
+            )
+            .expect("the un-ticked document is admitted");
+        let error = resolve_profile_for_move(&store, "Solo").expect_err("read at the call");
+        assert!(error.contains("has not enabled it for agents"), "{error}");
+    }
+
+    /// Pass A's audit: a move through the tool names its actor session, and a
+    /// refused move is audited as denied — the answer arm's shape, on the move
+    /// surface.
+    #[test]
+    fn a_move_through_the_tool_is_audited_with_its_actor() {
+        let state = ServerState::new("mcp-move-audit".to_string());
+        let owner = owner("mcp-move-audit-user", "mcp-move-client");
+        state
+            .agent_profiles
+            .set(
+                serde_json::from_value(document(
+                    vec![profile(
+                        "Solo",
+                        "profile-solo",
+                        "claude",
+                        "bypassPermissions",
+                        serde_json::json!({}),
+                        &[],
+                        true,
+                    )],
+                    "",
+                ))
+                .expect("the document"),
+            )
+            .expect("the store admits this document");
+        let creator = "s.mover.1".to_string();
+        let child = "s.mover.1.child".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state.sessions.insert_test_move_child(
+            &child,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["bypassPermissions"],
+            Some("model-a"),
+            false,
+        );
+
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let message = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_set_agent_profile","arguments":{"session":"Worker","profile":"Solo"}}}"#;
+        let response = http_request(&state.mcp.url, Some(&format!("Bearer {token}")), message);
+        let body = response_json(&response);
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        assert_eq!(
+            body["result"]["structuredContent"]["state"], "moved",
+            "{body}"
+        );
+
+        // The refusal side: an unknown profile is refused, the child untouched,
+        // and the refusal is audited as denied.
+        let message = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_set_agent_profile","arguments":{"session":"Worker","profile":"Ghost"}}}"#;
+        let response = http_request(&state.mcp.url, Some(&format!("Bearer {token}")), message);
+        let body = response_json(&response);
+        assert_eq!(body["result"]["isError"], true, "{body}");
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        let connection =
+            rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+        let mut statement = connection
+            .prepare("SELECT action, session_id, outcome FROM audit ORDER BY id")
+            .expect("prepare");
+        let rows: Vec<(String, Option<String>, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query")
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            rows.contains(&(
+                crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL.to_string(),
+                Some(creator.clone()),
+                "ok".to_string()
+            )),
+            "the move names its actor session: {rows:?}"
+        );
+        assert!(
+            rows.contains(&(
+                crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL.to_string(),
+                Some(creator.clone()),
+                "denied".to_string()
+            )),
+            "the refused move is audited as denied: {rows:?}"
+        );
+
+        drop(guard);
+        drop(server);
+    }
+
     #[test]
     fn broker_tools_list_is_the_readiness_authority() {
         let state = ServerState::new("mcp-readiness".to_string());
@@ -2876,9 +3246,10 @@ mod tests {
 
         // And `tools/list` for the same session still reports every tool the
         // session is served: the roster, the profile list this pass adds, the
-        // sender slice 4 added, the creation tool slice 5 adds, and the
-        // delegated permission answer slice 5b adds. Disabling one does not
-        // shrink the other rows, which is the point of this test.
+        // sender slice 4 added, the creation tool slice 5 adds, the delegated
+        // permission answer slice 5b adds, and the profile move Pass A of 5b
+        // adds. Disabling one does not shrink the other rows, which is the
+        // point of this test.
         let listed = http_request(
             &state.mcp.url,
             Some(&format!("Bearer {token}")),
@@ -2889,7 +3260,7 @@ mod tests {
                 .pointer("/result/tools")
                 .and_then(Value::as_array)
                 .map(|tools| tools.len()),
-            Some(5)
+            Some(6)
         );
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);

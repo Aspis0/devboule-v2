@@ -214,6 +214,10 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name.",
     ),
     (
+        MCP_SET_AGENT_PROFILE_TOOL,
+        "Moves one of your own live child sessions onto a profile the human enabled for agents: the child is asked to switch to the profile's mode, then to the profile's model and thinking option, and the profile is recorded on the child. The human is never asked, and the child is never restarted; a provider that refuses the switch refuses the move. Moving onto a profile that runs unattended is permanent - the child's row keeps the marker even if it is moved back.",
+    ),
+    (
         MCP_ANSWER_PERMISSION_TOOL,
         "Answers one pending permission card of one of your own live children, when the human has turned permission delegation on. The card reaches you as an agent_permission_request notice naming its cardId. outcome is allow_once or deny - never anything durable, and never a card that is not your child's. The human still sees the card either way.",
     ),
@@ -232,6 +236,16 @@ pub const MCP_SEND_MESSAGE_TOOL: &str = "devboule_send_message";
 /// stored policy may turn agent creation off for a provider, and turning it off
 /// is the safe direction.
 pub const MCP_CREATE_AGENT_TOOL: &str = "devboule_create_agent";
+/// The move tool (slice 5b §2, Pass A): a creator moves its own live child
+/// onto a named ticked profile.
+///
+/// Served to every MCP-capable provider, subject to the provider tool policy
+/// like `devboule_create_agent`. The name carries "profile" on purpose — it is
+/// the one write-shaped companion to the create tool on this surface — but the
+/// profile store is only ever **read** through the same resolver the create
+/// tool uses; nothing a caller sends reaches the store's own RPCs, and the
+/// authority for the move is the `created_by` link, never the name.
+pub const MCP_SET_AGENT_PROFILE_TOOL: &str = "devboule_set_agent_profile";
 /// The delegated permission answer (`slice 5b`).
 ///
 /// Served to every MCP-capable provider, subject to the provider tool policy
@@ -300,6 +314,36 @@ pub(crate) fn agent_create_input_schema() -> serde_json::Value {
             }
         },
         "required": ["profile", "title", "initialPrompt"],
+        "additionalProperties": false
+    })
+}
+
+/// The `tools/list` input schema of [`MCP_SET_AGENT_PROFILE_TOOL`] (slice 5b
+/// §2).
+///
+/// Closed on purpose, like [`agent_create_input_schema`], and rhyming with the
+/// landed create schema: the profile argument is the profile's **name**, the
+/// same way `devboule_create_agent` names one. There is deliberately no
+/// caller, owner, or creator parameter — identity is imposed by the broker
+/// from the bearer's registration (`registration.session_id`), never stated by
+/// the caller — and no provider, model, mode or feature parameter: a profile
+/// the human wrote and ticked is the only way to say what to run, read at the
+/// moment of the call.
+#[cfg(feature = "server")]
+pub(crate) fn agent_set_profile_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "session": {
+                "type": "string",
+                "description": "The id or display name of one of your own live child sessions."
+            },
+            "profile": {
+                "type": "string",
+                "description": "Name of a profile the human enabled for agents; see devboule_list_profiles."
+            }
+        },
+        "required": ["session", "profile"],
         "additionalProperties": false
     })
 }

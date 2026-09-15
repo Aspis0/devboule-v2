@@ -652,6 +652,15 @@ enum JournalCmd {
         peer_session_id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
+    /// A `devboule_set_agent_profile` move's recording: the child's profile
+    /// column and the `unattended` ratchet, nothing else — see
+    /// [`Journal::set_agent_profile_row`].
+    SetAgentProfile {
+        session_id: String,
+        profile_id: Option<String>,
+        unattended: UnattendedState,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
     StartGeneration {
         session_id: String,
         generation: u64,
@@ -1002,6 +1011,44 @@ impl Journal {
         self.rpc(|reply| JournalCmd::SetPeerSessionId {
             session_id: session_id.to_string(),
             peer_session_id: peer_session_id.to_string(),
+            reply,
+        })
+    }
+
+    /// A `devboule_set_agent_profile` move's recording, and nothing else: the
+    /// child's `profile_id` column and the `unattended` ratchet.
+    ///
+    /// Two columns, two rules, both the row's own:
+    ///
+    /// - `profile_id` is `COALESCE(?, profile_id)` — a move that records a
+    ///   profile overwrites, and one that must record **no** profile change
+    ///   (the partial failure: the mode landed, the model ask was refused)
+    ///   passes `None` and the column stays.
+    /// - Both `unattended` columns move only upward — `MAX`, the same
+    ///   never-downward ratchet `upsert_session` enforces at `unattended = MAX
+    ///   (sessions.unattended, excluded.unattended)` and its tri-state twin. A
+    ///   child that was able to run unattended keeps the marker whatever it is
+    ///   moved onto later; that fact cannot be un-lived.
+    ///
+    /// This is control traffic and waits, like `record_permission`: the tool's
+    /// answer means the row says what the move did. A journal that cannot take
+    /// the write degrades the recording; the asks that already landed cannot
+    /// be undone by refusing to write them down.
+    ///
+    /// A targeted UPDATE rather than an upsert of a rebuilt record: the
+    /// full-row upsert overwrites `status`, `generation`, `last_seq` and
+    /// `created_at_ms` from the record, and a caller holding only wire
+    /// metadata would clobber journal-internal facts with defaults.
+    pub fn set_agent_profile_row(
+        &self,
+        session_id: &str,
+        profile_id: Option<&str>,
+        unattended: UnattendedState,
+    ) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::SetAgentProfile {
+            session_id: session_id.to_string(),
+            profile_id: profile_id.map(str::to_string),
+            unattended,
             reply,
         })
     }
@@ -1621,6 +1668,21 @@ fn journal_loop(
                 let result = set_peer_session_id(&conn, &session_id, &peer_session_id);
                 if let Err(error) = &result {
                     on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::SetAgentProfile {
+                session_id,
+                profile_id,
+                unattended,
+                reply,
+            } => {
+                let result =
+                    set_agent_profile_row(&conn, &session_id, profile_id.as_deref(), unattended);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                } else {
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
                 let _ = reply.send(result);
             }
@@ -2312,8 +2374,11 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
 
 /// The tri-state's integer encoding, in the never-downward order
 /// `no < unknown < yes`: the SQL `MAX` ratchet compares these, so the order
-/// is load-bearing and the numbers are the order.
-fn unattended_state_rank(state: UnattendedState) -> i64 {
+/// is load-bearing and the numbers are the order. `pub(crate)` so the one
+/// in-memory reader that must apply the same ratchet — the live metadata
+/// update after a profile move — compares with the same numbers instead of a
+/// second copy of the order.
+pub(crate) fn unattended_state_rank(state: UnattendedState) -> i64 {
     match state {
         UnattendedState::No => 0,
         UnattendedState::Unknown => 1,
@@ -2610,6 +2675,40 @@ fn set_peer_session_id(
     let n = conn.execute(
         "UPDATE sessions SET peer_session_id = ?1, updated_at_ms = ?2 WHERE id = ?3",
         params![peer_session_id, now_ms() as i64, session_id],
+    )?;
+    if n == 0 {
+        Err(JournalError::SessionNotFound)
+    } else {
+        Ok(())
+    }
+}
+
+/// The row half of a `devboule_set_agent_profile` move — see
+/// [`Journal::set_agent_profile_row`] for the two rules this enforces.
+fn set_agent_profile_row(
+    conn: &Connection,
+    session_id: &str,
+    profile_id: Option<&str>,
+    unattended: UnattendedState,
+) -> Result<(), JournalError> {
+    let n = conn.execute(
+        "UPDATE sessions SET
+            profile_id = COALESCE(?2, profile_id),
+            unattended = MAX(unattended, ?3),
+            unattended_state = MAX(unattended_state, ?4),
+            updated_at_ms = ?5
+         WHERE id = ?1",
+        params![
+            session_id,
+            profile_id,
+            if unattended == UnattendedState::Yes {
+                1
+            } else {
+                0
+            },
+            unattended_state_rank(unattended),
+            now_ms() as i64,
+        ],
     )?;
     if n == 0 {
         Err(JournalError::SessionNotFound)

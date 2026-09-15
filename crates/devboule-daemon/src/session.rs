@@ -2189,6 +2189,22 @@ pub(crate) fn compose_first_prompt(standing: &str, preamble: Option<&str>, promp
     }
 }
 
+/// The profile facts a `devboule_set_agent_profile` move delivers, resolved on
+/// the caller's side at the moment of the move.
+///
+/// Plain data, so the registry never reads the profile store and the broker
+/// never touches a session: the broker resolves the profile (§2 check 3) and
+/// hands over what the move will ask the provider to apply. Resolved *inside*
+/// the move, after the child check, so the refusals keep the spec's order
+/// whatever the caller's convenience.
+#[derive(Debug)]
+pub(crate) struct ChildProfileFacts {
+    pub(crate) profile_id: String,
+    pub(crate) mode_id: String,
+    pub(crate) model: String,
+    pub(crate) thinking_option_id: Option<String>,
+}
+
 impl SessionRegistry {
     pub(crate) fn runtime_dir(&self) -> &std::path::Path {
         &self.paths.dir
@@ -4176,25 +4192,57 @@ impl SessionRegistry {
             })?;
             (entry.owner().user.clone(), entry.to_session().origin)
         };
-        // Locate the broker that holds the card, among the owner's live
-        // sessions. The scan is read-only: locating is not answering, and
-        // every check still runs below.
-        let found = {
+        // Locate the broker that holds the card. The scan is read-only:
+        // locating is not answering, and every check still runs below.
+        //
+        // Owner-scoped, so a card that exists on one of the owner's sessions
+        // but not on a child's stays "found" and the chain's child check
+        // answers it with the not-your-child sentence — a state distinct
+        // from "unknown card" (§1.5's three states). But the id is
+        // provider-chosen and carries no session qualifier, so the holder
+        // that answers must be the caller's own child: a child holder is
+        // preferred over a non-child one, and more than one child holding
+        // the same id is refused ambiguous rather than answered against
+        // whichever session the map yields first.
+        let (found, child_holders) = {
             let map = self
                 .inner
                 .lock()
                 .map_err(|_| "session state is unavailable".to_string())?;
-            map.values()
+            let mut found: Option<std::sync::Arc<permission_broker::PermissionBroker>> = None;
+            let mut found_is_child = false;
+            let mut child_holders: usize = 0;
+            for entry in map
+                .values()
                 .filter(|entry| entry.owner().user == owner_user)
-                .find_map(|entry| {
-                    let broker = entry.runtime().permission_broker()?;
-                    matches!(
-                        broker.peek_delegated(card_id),
-                        permission_broker::DelegatedPeek::Found { .. }
-                    )
-                    .then(|| Arc::clone(&broker))
-                })
+            {
+                let Some(broker) = entry.runtime().permission_broker() else {
+                    continue;
+                };
+                if !matches!(
+                    broker.peek_delegated(card_id),
+                    permission_broker::DelegatedPeek::Found { .. }
+                ) {
+                    continue;
+                }
+                let is_child = entry.as_peer_visible().is_some_and(|live| {
+                    live.metadata.created_by.as_deref() == Some(creator_session_id)
+                });
+                if is_child {
+                    child_holders += 1;
+                }
+                if found.is_none() || (is_child && !found_is_child) {
+                    found = Some(std::sync::Arc::clone(&broker));
+                    found_is_child = is_child;
+                }
+            }
+            (found, child_holders)
         };
+        if child_holders > 1 {
+            return Err(format!(
+                "more than one of your live children holds permission card {card_id}; the cards stay pending for the human"
+            ));
+        }
         // Check 2's closure: the switch, read at the moment the check runs.
         let switch_on = || self.delegation_enabled();
         // Check 3's closure: a resolved card is a row in the ledger replay
@@ -4266,6 +4314,241 @@ impl SessionRegistry {
             }
         }
         Ok(())
+    }
+
+    /// A creator moves its own live child onto a profile (slice 5b §2, Pass
+    /// A), through `devboule_set_agent_profile`.
+    ///
+    /// Identity is imposed — `creator_session_id` is the caller's bearer-mapped
+    /// session, never a tool argument (§0.1) — and the checks run in the
+    /// spec's order, each refusal naming its reason and leaving the child
+    /// untouched:
+    ///
+    /// 1. The caller is registered. The MCP registration guarantees it; a row
+    ///    that has gone is a refusal, not a panic.
+    /// 2. The target resolves **by id or display name among the caller's own
+    ///    live children only** — visible, and `created_by` equals the caller.
+    ///    The caller itself, a sibling, a grandchild, a human-started session
+    ///    and an invented or dead name each get the sentence that case earns
+    ///    without leaking anything a roster does not already show the same
+    ///    owner; a name two live children share is refused ambiguous rather
+    ///    than resolved to one of them.
+    /// 3. The profile is resolved **now** by the caller's closure — the
+    ///    broker's `resolve_profile`, with the unticked refusal §1.2 demands —
+    ///    and never from a list read earlier.
+    /// 4. The mode ask goes through [`Self::set_mode`] on the internal
+    ///    connection (`ConnHandle::with_peer(0, None)`, the `send_message`
+    ///    precedent): the child's **own manifest** must advertise the id, and
+    ///    a provider that cannot switch a live session answers on its own
+    ///    wire. **The child is never restarted.** A manifest nobody has
+    ///    delivered yet is the third state: the daemon cannot say yet, and the
+    ///    refusal withholds.
+    /// 5. Only after the mode landed is the model asked, through
+    ///    [`Self::set_model`]. A refusal there is a **partial** success: the
+    ///    answer reports exactly what landed, records **no** profile change —
+    ///    and the `unattended` ratchet still fires, because the child has in
+    ///    fact been able to run in that mode and that cannot be un-lived.
+    ///
+    /// On a full success the child's row records the profile's stable id and
+    /// the marker is the delivered mode's own judgement — the same
+    /// `peer_policy::unattended_mode` the birth calls, raised (never lowered)
+    /// through the journal's `MAX` ratchet and in the live metadata the
+    /// snapshot serves.
+    pub(crate) fn set_agent_child_profile(
+        &self,
+        creator_session_id: &str,
+        target: &str,
+        profile_name: &str,
+        resolve_profile: &dyn Fn(&str) -> Result<ChildProfileFacts, String>,
+    ) -> Result<(), String> {
+        // Check 1: the caller's row. Its owner scopes the scan below; the
+        // registry is the only place "mine" is a fact.
+        let caller_owner = {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| "session state is unavailable".to_string())?;
+            let entry = map.get(creator_session_id).ok_or_else(|| {
+                "the calling session is not registered on this daemon".to_string()
+            })?;
+            entry.owner().clone()
+        };
+        if target == creator_session_id {
+            return Err("a session is not its own child; name a session you created".to_string());
+        }
+        // The name a child is addressed by, the same one the roster shows:
+        // the display name a creation gave it, or the title beneath it.
+        let display = |session: &Session| {
+            session
+                .display_name
+                .clone()
+                .unwrap_or_else(|| session.title.clone())
+        };
+        // Check 2: resolve among the caller's own live children only. The scan
+        // is read-only; nothing is asked of any provider until a profile and a
+        // mode have both been agreed.
+        let (child_session, child_runtime, child_owner) = {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| "session state is unavailable".to_string())?;
+            let mut matches: Vec<(Session, Arc<SessionRuntime>, OwnerId)> = map
+                .values()
+                .filter(|entry| entry.owner().user == caller_owner.user)
+                .filter_map(|entry| {
+                    let live = entry.as_peer_visible()?;
+                    Some((
+                        live_session_view(live),
+                        Arc::clone(&live.runtime),
+                        entry.owner().clone(),
+                    ))
+                })
+                .filter(|(session, _, _)| session.created_by.as_deref() == Some(creator_session_id))
+                .filter(|(session, _, _)| session.id == target || display(session) == target)
+                .collect();
+            match matches.len() {
+                1 => Ok(matches.pop().expect("exactly one match")),
+                0 => {
+                    // What this owner's own live roster distinguishes is
+                    // distinguished: a live session of theirs that is not the
+                    // caller's child is told what it is. Everything else — an
+                    // invented name, a dead child, a stranger's session — is
+                    // one refusal, because the daemon cannot and must not say
+                    // which.
+                    let not_child = map.values().any(|entry| {
+                        entry.owner().user == caller_owner.user
+                            && entry.as_peer_visible().is_some_and(|live| {
+                                let session = live_session_view(live);
+                                session.created_by.as_deref() != Some(creator_session_id)
+                                    && (session.id == target || display(&session) == target)
+                            })
+                    });
+                    if not_child {
+                        Err(format!(
+                            "'{target}' is not your child; only a session you created can be moved onto a profile"
+                        ))
+                    } else {
+                        Err(format!(
+                            "none of your live children is called '{target}'; devboule_list_agents names them"
+                        ))
+                    }
+                }
+                _ => Err(format!(
+                    "more than one of your live children is called '{target}'; use the session id"
+                )),
+            }
+        }?;
+        // Check 3: the profile, read at the moment of the call — the closure
+        // owns the store and the three refusals §1.2 names.
+        let facts = resolve_profile(profile_name)?;
+        // Check 4's pre-read: a manifest nobody has delivered yet is not "the
+        // mode is unavailable" — it is "the daemon cannot say yet", and the
+        // refusal withholds. A manifest that arrived and names no modes is the
+        // provider's own say-so, and `set_mode`'s sentence for it stands.
+        if child_runtime.session_manifest().is_none() {
+            return Err(format!(
+                "the daemon cannot say yet whether mode '{}' is available on this child: its provider has not reported the session's manifest; ask again once the child is up",
+                facts.mode_id
+            ));
+        }
+        let internal_conn = ConnHandle::with_peer(0, None);
+        self.set_mode(
+            &child_session.id,
+            &child_owner,
+            &facts.mode_id,
+            &internal_conn,
+        )
+        .map_err(|error| error.message)?;
+        // Check 5: the model, only after the mode landed. A child already
+        // running the profile's model with no thinking option to deliver asks
+        // nothing — there is no ask to make — and every other combination is
+        // asserted on the provider's own wire, Claude's effort validation
+        // included where it applies.
+        let current_model = child_runtime
+            .session_manifest()
+            .and_then(|event| match event {
+                SessionEvent::SessionManifest {
+                    current_model_id, ..
+                } => current_model_id,
+                _ => None,
+            });
+        let model_ask_needed = current_model.as_deref() != Some(facts.model.as_str())
+            || facts.thinking_option_id.is_some();
+        if model_ask_needed {
+            if let Err(error) = self.set_model(
+                &child_session.id,
+                &child_owner,
+                Some(&facts.model),
+                facts.thinking_option_id.as_deref(),
+            ) {
+                // The partial state: the mode landed, the model ask did not.
+                // The ratchet still fires — the child has been able to run in
+                // that mode, and that cannot be un-lived — but **no** profile
+                // change is recorded, and the answer says exactly what stands.
+                self.record_child_profile_move(
+                    &child_session.id,
+                    &child_session.kind,
+                    &facts.mode_id,
+                    None,
+                );
+                return Err(format!(
+                    "the mode was switched to '{}', but the model ask was refused: {}. the child runs in mode '{}' on its previous model, and no profile change is recorded",
+                    facts.mode_id, error.message, facts.mode_id
+                ));
+            }
+        }
+        // Full success: record the profile and raise the marker through the
+        // one predicate — the delivered mode's own judgement, the same
+        // function the birth calls.
+        self.record_child_profile_move(
+            &child_session.id,
+            &child_session.kind,
+            &facts.mode_id,
+            Some(&facts.profile_id),
+        );
+        Ok(())
+    }
+
+    /// The recording half of a move: the journal row's `profile_id` and the
+    /// `unattended` ratchet, then the live metadata the snapshot serves,
+    /// raised — never lowered — with the same rank the SQL `MAX` compares.
+    ///
+    /// The asks that already landed cannot be un-lived, so a journal that
+    /// cannot take the write degrades the recording; it never refuses the
+    /// move and never erases the marker.
+    fn record_child_profile_move(
+        &self,
+        child_id: &str,
+        child_kind: &SessionKind,
+        delivered_mode: &str,
+        profile_id: Option<&str>,
+    ) {
+        let marker = crate::peer_policy::unattended_mode(child_kind.clone(), Some(delivered_mode));
+        if let Some(journal) = &self.journal {
+            if let Err(error) = journal.set_agent_profile_row(child_id, profile_id, marker) {
+                eprintln!("agent profile row update failed for {child_id}: {error}");
+            }
+        }
+        if let Ok(mut map) = self.inner.lock() {
+            if let Some(live) = map
+                .get_mut(child_id)
+                .and_then(RegistryEntry::as_peer_visible_mut)
+            {
+                if let Some(profile_id) = profile_id {
+                    live.metadata.profile_id = Some(profile_id.to_string());
+                }
+                if crate::journal::unattended_state_rank(marker)
+                    > crate::journal::unattended_state_rank(live.metadata.unattended)
+                {
+                    live.metadata.unattended = marker;
+                }
+            }
+        }
+        self.invalidate_journal_roster();
+        self.invalidate_state_roster_cache();
+        if let Some((_session, _runtime, owner)) = self.child_view(child_id) {
+            self.notify_session_transition(&owner, child_id);
+        }
     }
 
     #[cfg(test)]
@@ -9101,6 +9384,40 @@ impl SessionRegistry {
             .register(1, permission_broker::permission(card_id), &runtime)
             .expect("the card parks");
     }
+
+    /// Test-only: a live agent child of `creator` with a display name, a
+    /// manifest advertising `available_modes`, a switcher the move's asks land
+    /// on, and the journal row the move's recording updates — the full shape
+    /// `devboule_set_agent_profile` reads and records, so an out-of-module
+    /// test can drive one end to end. `model_fails` aims the switcher's model
+    /// ask at a refusal, for the partial-failure path.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn insert_test_move_child(
+        &self,
+        id: &str,
+        owner: OwnerId,
+        creator: &str,
+        display_name: &str,
+        available_modes: &[&str],
+        current_model: Option<&str>,
+        model_fails: bool,
+    ) -> Arc<SessionRuntime> {
+        let journal = self.journal.as_ref().expect("the registry's journal");
+        let (runtime, _mode_calls, _model_calls, _order) = tests::insert_move_child(
+            self,
+            journal,
+            id,
+            owner,
+            creator,
+            display_name,
+            available_modes,
+            current_model,
+            true,
+            false,
+            model_fails,
+        );
+        runtime
+    }
 }
 
 /// One test-only live agent session with a writer of the caller's choosing.
@@ -9432,6 +9749,753 @@ mod tests {
                 .expect("broker")
                 .pending_len(),
             0
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // Pass A — `devboule_set_agent_profile`: a creator moves its own live
+    // child onto a ticked profile (slice 5b §2).
+    // ------------------------------------------------------------------
+
+    /// A switcher the move tests can watch and aim: both asks counted, in
+    /// order, each side failable on demand.
+    struct MoveSwitcher {
+        order: Arc<Mutex<Vec<&'static str>>>,
+        mode_calls: Arc<AtomicU64>,
+        model_calls: Arc<AtomicU64>,
+        mode_fails: bool,
+        model_fails: bool,
+    }
+
+    impl ModelSwitcher for MoveSwitcher {
+        fn set_model(
+            &self,
+            _model_id: Option<&str>,
+            _effort: Option<&str>,
+        ) -> Result<(), WireError> {
+            self.model_calls.fetch_add(1, Ordering::AcqRel);
+            self.order.lock().expect("order").push("model");
+            if self.model_fails {
+                Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "the provider refused the model".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn set_mode(&self, _mode_id: &str) -> Result<(), WireError> {
+            self.mode_calls.fetch_add(1, Ordering::AcqRel);
+            self.order.lock().expect("order").push("mode");
+            if self.mode_fails {
+                Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "the provider refused the mode".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
+            Box::new(Self {
+                order: Arc::clone(&self.order),
+                mode_calls: Arc::clone(&self.mode_calls),
+                model_calls: Arc::clone(&self.model_calls),
+                mode_fails: self.mode_fails,
+                model_fails: self.model_fails,
+            })
+        }
+    }
+
+    /// A live agent child of `creator`: display name, manifest, an aimable
+    /// switcher, and the journal row a move's recording updates. Without the
+    /// manifest (`advertise_manifest: false`) it is the third state — a child
+    /// the daemon cannot yet judge.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub(super) fn insert_move_child(
+        registry: &SessionRegistry,
+        journal: &Arc<Journal>,
+        id: &str,
+        owner: OwnerId,
+        creator: &str,
+        display_name: &str,
+        available_modes: &[&str],
+        current_model: Option<&str>,
+        advertise_manifest: bool,
+        mode_fails: bool,
+        model_fails: bool,
+    ) -> (
+        Arc<SessionRuntime>,
+        Arc<AtomicU64>,
+        Arc<AtomicU64>,
+        Arc<Mutex<Vec<&'static str>>>,
+    ) {
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            id.to_string(),
+            registry.journal.clone(),
+        ));
+        if advertise_manifest {
+            runtime.store_session_manifest(SessionEvent::SessionManifest {
+                provider_id: Some("test-agent".to_string()),
+                current_model_id: current_model.map(str::to_string),
+                models: Vec::new(),
+                modes: Some(devboule_protocol::SessionModeStateView {
+                    current_mode_id: available_modes
+                        .first()
+                        .map(|mode| (*mode).to_string())
+                        .unwrap_or_default(),
+                    available_modes: available_modes
+                        .iter()
+                        .map(|mode| devboule_protocol::SessionModeView {
+                            id: (*mode).to_string(),
+                            name: (*mode).to_string(),
+                            description: None,
+                        })
+                        .collect(),
+                }),
+            });
+        }
+        let mode_calls = Arc::new(AtomicU64::new(0));
+        let model_calls = Arc::new(AtomicU64::new(0));
+        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let metadata = Session {
+            id: id.to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: SessionKind::Acp,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+            provider: Some("test-agent".to_string()),
+            peer_session_id: None,
+            created_at_ms: 1,
+            origin: SessionOrigin::local(),
+            display_name: Some(display_name.to_string()),
+            created_by: Some(creator.to_string()),
+            profile_id: None,
+            context_id: None,
+            unattended: devboule_protocol::UnattendedState::Unknown,
+            labels: Default::default(),
+        };
+        let session = PtySession {
+            metadata,
+            owner: owner.clone(),
+            process_job: Arc::new(JobObject::new().expect("job")),
+            master: None,
+            killer: Box::new(NoopKiller),
+            steerer: Box::new(UnsupportedSteerer),
+            switcher: Some(Box::new(MoveSwitcher {
+                order: Arc::clone(&order),
+                mode_calls: Arc::clone(&mode_calls),
+                model_calls: Arc::clone(&model_calls),
+                mode_fails,
+                model_fails,
+            })),
+            stderr_handle: None,
+            child_wait: None,
+            writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            image_sink: None,
+            static_image_sink: None,
+            reader_handle: None,
+            coalesce_handle: None,
+            runtime: Arc::clone(&runtime),
+            mcp_session: None,
+            exited: Arc::new(AtomicBool::new(false)),
+            preserve_on_exit: Arc::new(AtomicBool::new(false)),
+        };
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .insert(id.to_string(), RegistryEntry::Live(Box::new(session)));
+        // The birth's row: a move's recording is a targeted UPDATE, so it
+        // lands only on a row that exists — and the birth journals before
+        // spawn, which is what puts one there in production.
+        let mut record = crate::journal::new_session_record(
+            id.to_string(),
+            owner.user.clone(),
+            None,
+            SessionKind::Acp,
+            "Agent",
+        );
+        record.display_name = Some(display_name.to_string());
+        record.created_by = Some(creator.to_string());
+        journal.upsert_blocking(record).expect("birth row");
+        (runtime, mode_calls, model_calls, order)
+    }
+
+    /// The facts one test profile carries.
+    fn move_facts(mode_id: &str, model: &str, profile_id: &str) -> ChildProfileFacts {
+        ChildProfileFacts {
+            profile_id: profile_id.to_string(),
+            mode_id: mode_id.to_string(),
+            model: model.to_string(),
+            thinking_option_id: None,
+        }
+    }
+
+    fn journal_row(journal: &Arc<Journal>, id: &str) -> SessionRecord {
+        journal
+            .list()
+            .expect("journal rows")
+            .into_iter()
+            .find(|record| record.id == id)
+            .expect("the child's row")
+    }
+
+    fn move_live_view(
+        registry: &SessionRegistry,
+        id: &str,
+    ) -> (Option<String>, devboule_protocol::UnattendedState) {
+        let live = registry
+            .inner
+            .lock()
+            .expect("registry")
+            .get(id)
+            .and_then(RegistryEntry::as_peer_visible)
+            .expect("live entry")
+            .metadata
+            .clone();
+        (live.profile_id, live.unattended)
+    }
+
+    /// The happy path, in order: the mode ask lands first, the model ask
+    /// second, and the child's row records the profile and the raised marker —
+    /// the delivered mode's own judgement through the one predicate the birth
+    /// calls.
+    #[test]
+    fn a_move_switches_the_mode_then_the_model_and_records_the_row() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-move-ok", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let (_runtime, mode_calls, model_calls, order) = insert_move_child(
+            &registry,
+            &journal,
+            &child,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["bypass", "ask"],
+            Some("model-a"),
+            true,
+            false,
+            false,
+        );
+        registry
+            .set_agent_child_profile(&creator, "Worker", "Solo", &|name| {
+                if name == "Solo" {
+                    Ok(move_facts("bypass", "model-b", "p-1"))
+                } else {
+                    Err("unknown profile; call devboule_list_profiles".to_string())
+                }
+            })
+            .expect("the move lands");
+        assert_eq!(mode_calls.load(Ordering::Acquire), 1, "the mode is asked");
+        assert_eq!(model_calls.load(Ordering::Acquire), 1, "then the model");
+        assert_eq!(
+            *order.lock().expect("order"),
+            vec!["mode", "model"],
+            "the mode is asked and applied first; the model only after it succeeds"
+        );
+        let record = journal_row(&journal, &child);
+        assert_eq!(record.profile_id.as_deref(), Some("p-1"));
+        assert_eq!(
+            record.unattended_state,
+            devboule_protocol::UnattendedState::Yes,
+            "a child that has run in a broker-answered mode carries the marker"
+        );
+        let (profile_id, unattended) = move_live_view(&registry, &child);
+        assert_eq!(profile_id.as_deref(), Some("p-1"));
+        assert_eq!(unattended, devboule_protocol::UnattendedState::Yes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The link check (A1): a sibling, a grandchild, the caller itself and an
+    /// invented name are each refused with the sentence that case earns — the
+    /// child untouched, and the profile resolver never consulted for a child
+    /// that did not resolve.
+    #[test]
+    fn a_move_refuses_a_target_that_is_not_the_callers_own_live_child() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-move-a1", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let sibling = compose_session_id(&owner.session_token(), "sib").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        let grandchild = compose_session_id(&owner.session_token(), "gch").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        insert_live_agent(&registry, &sibling, owner.clone());
+        {
+            // A sibling the caller's own roster already shows, with a name.
+            let mut map = registry.inner.lock().expect("registry");
+            let live = map
+                .get_mut(&sibling)
+                .and_then(RegistryEntry::as_peer_visible_mut)
+                .expect("sibling entry");
+            live.metadata.display_name = Some("Bystander".to_string());
+        }
+        let (_child_runtime, mode_calls, _model_calls, _order) = insert_move_child(
+            &registry,
+            &journal,
+            &child,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["bypass"],
+            Some("model-a"),
+            true,
+            false,
+            false,
+        );
+        insert_move_child(
+            &registry,
+            &journal,
+            &grandchild,
+            owner.clone(),
+            &child,
+            "Grandkid",
+            &["bypass"],
+            Some("model-a"),
+            true,
+            false,
+            false,
+        );
+        let resolves = Arc::new(AtomicU64::new(0));
+        let resolve = |_name: &str| {
+            resolves.fetch_add(1, Ordering::AcqRel);
+            Ok(move_facts("bypass", "model-b", "p-1"))
+        };
+        let error = registry
+            .set_agent_child_profile(&creator, "Bystander", "Solo", &resolve)
+            .expect_err("a sibling is not the caller's child");
+        assert!(error.contains("not your child"), "{error}");
+        let error = registry
+            .set_agent_child_profile(&creator, "Grandkid", "Solo", &resolve)
+            .expect_err("a grandchild is not the caller's child");
+        assert!(error.contains("not your child"), "{error}");
+        let error = registry
+            .set_agent_child_profile(&creator, &creator, "Solo", &resolve)
+            .expect_err("the caller is not its own child");
+        assert!(error.contains("not its own child"), "{error}");
+        let error = registry
+            .set_agent_child_profile(&creator, "Nobody", "Solo", &resolve)
+            .expect_err("an invented name matches nobody");
+        assert!(error.contains("none of your live children"), "{error}");
+        assert_eq!(
+            resolves.load(Ordering::Acquire),
+            0,
+            "the profile is never consulted for a child that did not resolve"
+        );
+        assert_eq!(
+            mode_calls.load(Ordering::Acquire),
+            0,
+            "the child is untouched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two live children sharing a display name are refused ambiguous —
+    /// neither is moved, and the sentence says to use the id.
+    #[test]
+    fn a_move_refuses_ambiguous_child_names_without_picking_one() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-move-twins", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let twin_a = compose_session_id(&owner.session_token(), "twa").expect("id");
+        let twin_b = compose_session_id(&owner.session_token(), "twb").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let (_runtime_a, mode_calls, _model_calls_a, _order_a) = insert_move_child(
+            &registry,
+            &journal,
+            &twin_a,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["bypass"],
+            Some("model-a"),
+            true,
+            false,
+            false,
+        );
+        insert_move_child(
+            &registry,
+            &journal,
+            &twin_b,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["bypass"],
+            Some("model-a"),
+            true,
+            false,
+            false,
+        );
+        let error = registry
+            .set_agent_child_profile(&creator, "Worker", "Solo", &|_name| {
+                Ok(move_facts("bypass", "model-b", "p-1"))
+            })
+            .expect_err("two children share the name");
+        assert!(
+            error.contains("more than one of your live children"),
+            "{error}"
+        );
+        assert_eq!(
+            mode_calls.load(Ordering::Acquire),
+            0,
+            "neither twin is asked: ambiguous refuses without picking"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §1.2's third state at the mode ask: a child whose manifest has not
+    /// arrived cannot be judged, and the refusal says so — it never renders
+    /// the unknown as "the mode is unavailable".
+    #[test]
+    fn a_child_whose_manifest_has_not_arrived_is_a_cannot_say_yet_refusal() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-move-absent", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let (_runtime, mode_calls, _model_calls, _order) = insert_move_child(
+            &registry,
+            &journal,
+            &child,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &[],
+            Some("model-a"),
+            false,
+            false,
+            false,
+        );
+        let error = registry
+            .set_agent_child_profile(&creator, "Worker", "Solo", &|_name| {
+                Ok(move_facts("bypass", "model-b", "p-1"))
+            })
+            .expect_err("no manifest, no judgement");
+        assert!(error.contains("cannot say yet"), "{error}");
+        assert_eq!(
+            mode_calls.load(Ordering::Acquire),
+            0,
+            "the child is untouched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The provider dimension: the child's **own manifest** decides what is
+    /// available. A mode it does not advertise is refused before any ask, with
+    /// the child untouched and nothing recorded.
+    #[test]
+    fn a_mode_the_child_does_not_advertise_is_refused_before_any_ask() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-move-modes", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let (_runtime, mode_calls, _model_calls, _order) = insert_move_child(
+            &registry,
+            &journal,
+            &child,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["ask"],
+            Some("model-a"),
+            true,
+            false,
+            false,
+        );
+        let error = registry
+            .set_agent_child_profile(&creator, "Worker", "Solo", &|_name| {
+                Ok(move_facts("bypass", "model-b", "p-1"))
+            })
+            .expect_err("the manifest does not advertise bypass");
+        assert!(error.contains("'bypass' is not available"), "{error}");
+        assert_eq!(mode_calls.load(Ordering::Acquire), 0);
+        let record = journal_row(&journal, &child);
+        assert_eq!(record.profile_id, None, "nothing is recorded");
+        assert_eq!(
+            record.unattended_state,
+            devboule_protocol::UnattendedState::Unknown,
+            "and the marker does not move"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A4: a provider that refuses the mode on its own wire refuses the move;
+    /// the child is untouched, nothing is recorded, and there is no restart
+    /// fallback to hide behind.
+    #[test]
+    fn a_provider_that_refuses_the_mode_refuses_the_move_without_a_restart() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-move-a4", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let (_runtime, mode_calls, model_calls, _order) = insert_move_child(
+            &registry,
+            &journal,
+            &child,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["bypass"],
+            Some("model-a"),
+            true,
+            true,
+            false,
+        );
+        let error = registry
+            .set_agent_child_profile(&creator, "Worker", "Solo", &|_name| {
+                Ok(move_facts("bypass", "model-b", "p-1"))
+            })
+            .expect_err("the provider refused the mode");
+        assert!(error.contains("the provider refused the mode"), "{error}");
+        assert_eq!(mode_calls.load(Ordering::Acquire), 1, "the ask happened");
+        assert_eq!(
+            model_calls.load(Ordering::Acquire),
+            0,
+            "and the model is never asked after a refused mode"
+        );
+        let record = journal_row(&journal, &child);
+        assert_eq!(record.profile_id, None, "nothing is recorded");
+        assert_eq!(
+            record.unattended_state,
+            devboule_protocol::UnattendedState::Unknown,
+            "and no ratchet: the mode never landed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A8: the partial state. The mode landed, the model ask was refused: the
+    /// answer reports exactly that, the row records no profile change — and
+    /// the ratchet still fires, because the child has in fact been able to run
+    /// in that mode and that cannot be un-lived.
+    #[test]
+    fn a_model_refusal_after_a_landed_mode_reports_the_partial_state_and_still_ratchets() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-move-a8", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let (_runtime, mode_calls, model_calls, _order) = insert_move_child(
+            &registry,
+            &journal,
+            &child,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["bypass"],
+            Some("model-a"),
+            true,
+            false,
+            true,
+        );
+        let error = registry
+            .set_agent_child_profile(&creator, "Worker", "Solo", &|_name| {
+                Ok(move_facts("bypass", "model-b", "p-1"))
+            })
+            .expect_err("the model ask is refused");
+        assert!(
+            error.contains("mode was switched to 'bypass'")
+                && error.contains("no profile change is recorded"),
+            "the answer reports exactly the partial state: {error}"
+        );
+        assert_eq!(mode_calls.load(Ordering::Acquire), 1);
+        assert_eq!(model_calls.load(Ordering::Acquire), 1);
+        let record = journal_row(&journal, &child);
+        assert_eq!(record.profile_id, None, "no profile change is recorded");
+        assert_eq!(
+            record.unattended_state,
+            devboule_protocol::UnattendedState::Yes,
+            "and the ratchet still fires: the mode landed and cannot be un-lived"
+        );
+        let (profile_id, unattended) = move_live_view(&registry, &child);
+        assert_eq!(profile_id, None);
+        assert_eq!(unattended, devboule_protocol::UnattendedState::Yes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A6/A7: the marker ratchets upward and is the delivered mode's own
+    /// judgement through the shared predicate — moving back never clears it,
+    /// and a mode the daemon cannot judge reads `unknown`, never a certainty
+    /// in either direction.
+    #[test]
+    fn the_marker_ratchets_upward_and_reads_the_delivered_mode() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-move-ratchet", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let (_runtime, _mode_calls, _model_calls, _order) = insert_move_child(
+            &registry,
+            &journal,
+            &child,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["bypass", "deep-work"],
+            Some("model-a"),
+            true,
+            false,
+            false,
+        );
+        let resolve = |name: &str| match name {
+            "Solo" => Ok(move_facts("bypass", "model-b", "p-yes")),
+            "Deep" => Ok(move_facts("deep-work", "model-a", "p-unknown")),
+            other => Err(format!("unknown profile ({other})")),
+        };
+        registry
+            .set_agent_child_profile(&creator, "Worker", "Solo", &resolve)
+            .expect("the move onto the auto-answering mode lands");
+        assert_eq!(
+            journal_row(&journal, &child).unattended_state,
+            devboule_protocol::UnattendedState::Yes
+        );
+        registry
+            .set_agent_child_profile(&creator, "Worker", "Deep", &resolve)
+            .expect("the move onto the unjudgeable mode lands");
+        let record = journal_row(&journal, &child);
+        assert_eq!(record.profile_id.as_deref(), Some("p-unknown"));
+        assert_eq!(
+            record.unattended_state,
+            devboule_protocol::UnattendedState::Yes,
+            "moving back never clears the marker: the child ran unattended and that cannot be un-lived"
+        );
+
+        // A child born `no` (its metadata carries the lowest rank), moved onto
+        // the unjudgeable mode: the shared predicate answers `unknown` — an
+        // absence of knowledge — so the live marker RAISES to `unknown`. A
+        // table that answered `no` here would leave it at `no`, which is how
+        // the A7 mutant was caught: the journal row cannot distinguish (the
+        // MAX ratchet hides the predicate's answer under the old value), the
+        // live metadata can.
+        let fresh = compose_session_id(&owner.session_token(), "ch2").expect("id");
+        insert_move_child(
+            &registry,
+            &journal,
+            &fresh,
+            owner.clone(),
+            &creator,
+            "Fresh",
+            &["deep-work"],
+            Some("model-a"),
+            true,
+            false,
+            false,
+        );
+        {
+            let mut map = registry.inner.lock().expect("registry");
+            let live = map
+                .get_mut(&fresh)
+                .and_then(RegistryEntry::as_peer_visible_mut)
+                .expect("fresh entry");
+            live.metadata.unattended = devboule_protocol::UnattendedState::No;
+        }
+        registry
+            .set_agent_child_profile(&creator, "Fresh", "Deep", &resolve)
+            .expect("the fresh move lands");
+        let record = journal_row(&journal, &fresh);
+        assert_eq!(record.profile_id.as_deref(), Some("p-unknown"));
+        let (_profile_id, fresh_unattended) = move_live_view(&registry, &fresh);
+        assert_eq!(
+            fresh_unattended,
+            devboule_protocol::UnattendedState::Unknown,
+            "an unauthored mode is an absence of knowledge, never a no"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The card id is provider-chosen and carries no session qualifier: two
+    /// live children of one creator holding the same id must refuse ambiguous
+    /// and leave BOTH cards pending — the answer must not land on whichever
+    /// child the registry yields first.
+    #[test]
+    fn a_card_id_held_by_two_children_is_ambiguous_and_leaves_both_pending() {
+        let (dir, registry, _journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-card-dup", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child_a = compose_session_id(&owner.session_token(), "cha").expect("id");
+        let child_b = compose_session_id(&owner.session_token(), "chb").expect("id");
+        let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+        registry.attach_delegation(Arc::clone(&store));
+        store.set(true).expect("set on");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let runtime_a = insert_child(&registry, &child_a, owner.clone(), &creator);
+        let runtime_b = insert_child(&registry, &child_b, owner.clone(), &creator);
+        park_card(&registry, &runtime_a, "card-dup");
+        park_card(&registry, &runtime_b, "card-dup");
+
+        let error = answer(
+            &registry,
+            &creator,
+            "card-dup",
+            PermissionOutcome::AllowOnce,
+            vec![],
+        )
+        .expect_err("two children hold the same card id");
+        assert!(
+            error.contains("more than one of your live children"),
+            "{error}"
+        );
+        for (name, runtime) in [("a", &runtime_a), ("b", &runtime_b)] {
+            assert_eq!(
+                runtime.permission_broker().expect("broker").pending_len(),
+                1,
+                "child {name}'s card stays pending for the human"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A card parked on the owner's own NON-child session cannot shadow the
+    /// caller's real child: the scan resolves among the caller's own children
+    /// only, the real card resolves, and the non-child's card is untouched.
+    #[test]
+    fn a_non_child_holding_the_same_card_id_cannot_shadow_the_real_child() {
+        let (dir, registry, _journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-card-shadow", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        let bystander = compose_session_id(&owner.session_token(), "bye").expect("id");
+        let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+        registry.attach_delegation(Arc::clone(&store));
+        store.set(true).expect("set on");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let child_runtime = insert_child(&registry, &child, owner.clone(), &creator);
+        let bystander_runtime = insert_live_agent(&registry, &bystander, owner.clone());
+        park_card(&registry, &bystander_runtime, "card-shadow");
+        park_card(&registry, &child_runtime, "card-shadow");
+
+        answer(
+            &registry,
+            &creator,
+            "card-shadow",
+            PermissionOutcome::Deny,
+            vec![],
+        )
+        .expect("the caller's own child's card resolves");
+        assert_eq!(
+            child_runtime
+                .permission_broker()
+                .expect("broker")
+                .pending_len(),
+            0,
+            "the real child's card is the one that resolved"
+        );
+        assert_eq!(
+            bystander_runtime
+                .permission_broker()
+                .expect("broker")
+                .pending_len(),
+            1,
+            "the non-child's card is untouched: it stays pending for the human"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
