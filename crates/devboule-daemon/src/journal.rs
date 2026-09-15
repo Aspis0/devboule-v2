@@ -3758,6 +3758,96 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The same rename, one struct over: a creation card rides inside a
+    /// `permission_request` row as a nested required object, so a card
+    /// journalled before `d5c72a3` spelled `preset` — and without the alias
+    /// the whole permission row fails to decode and is dropped with no
+    /// counter, taking the human's record of the card with it. The bytes are
+    /// what a pre-rename daemon wrote: `preset` word, and no `tools` (a later
+    /// addition, rescued by its `#[serde(default)]`).
+    #[test]
+    fn a_preset_spelled_creation_card_hydrates_on_replay() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.p.card"))
+            .expect("upsert");
+        let current = SessionEvent::PermissionRequest {
+            tool_call_id: "devboule-create-1".to_string(),
+            title: "Create an agent: Poster (design)".to_string(),
+            description: None,
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            options: vec![devboule_protocol::PermissionOption {
+                option_id: "allow".to_string(),
+                name: "Allow".to_string(),
+                kind: "allow_once".to_string(),
+            }],
+            origin: devboule_protocol::SessionOrigin::local(),
+            create_agent: Some(devboule_protocol::CreateAgentCard {
+                creator_session_id: "s.p.card".to_string(),
+                provider: "claude".to_string(),
+                profile: "design".to_string(),
+                title: "Poster".to_string(),
+                tools: "unverified".to_string(),
+                caps: devboule_protocol::CreateAgentCaps {
+                    live_children: 1,
+                    max_live_children: 3,
+                    creations_this_hour: 1,
+                    max_creations_per_hour: 20,
+                    depth: 1,
+                    max_depth: 3,
+                    live_agent_sessions: 1,
+                    max_live_agent_sessions: 8,
+                },
+            }),
+        };
+        // The rename, applied to the serialized frame: exactly the bytes an
+        // older daemon journalled, before `profile` existed and before `tools`
+        // did.
+        let mut legacy = serde_json::to_value(&current).expect("serialize current event");
+        let card = legacy
+            .get_mut("createAgent")
+            .and_then(|card| card.as_object_mut())
+            .expect("createAgent object");
+        let profile = card.remove("profile").expect("profile key");
+        card.insert("preset".to_string(), profile);
+        card.remove("tools");
+        let record = EventRecord {
+            session_id: "s.p.card".to_string(),
+            generation: 1,
+            seq: 1,
+            kind: EventKind::AgentReport,
+            ts_ms: now_ms(),
+            payload: serde_json::to_vec(&legacy).expect("legacy payload"),
+        };
+        journal.append_blocking(record).expect("append");
+        let replay = journal.replay("s.p.card", 0).expect("replay");
+        let hydrated = replay
+            .events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::PermissionRequest {
+                    create_agent: Some(card),
+                    ..
+                } => Some(card.clone()),
+                _ => None,
+            })
+            .expect("the legacy creation card must hydrate, not vanish");
+        assert_eq!(
+            hydrated.profile, "design",
+            "the preset value survives under `profile`, untranslated"
+        );
+        assert_eq!(
+            hydrated.tools, "unverified",
+            "the absent tools word decodes as the not-established default"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn acp_envelopes_do_not_leave_unsnapshotted_bytes_stuck() {
         let (dir, path) = tmp_journal();

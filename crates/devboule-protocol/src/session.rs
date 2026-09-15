@@ -593,6 +593,13 @@ pub struct CreateAgentCard {
     /// the human's sentence, and the name is the word the human ticked. What the
     /// profile resolves to is on the card's description; the child's session row
     /// records the profile's stable id, not this.
+    ///
+    /// The field was named `preset` until `d5c72a3` renamed it, and creation
+    /// cards are journalled — the alias keeps a card journaled under the old
+    /// word hydrating on replay instead of dropping the whole permission row,
+    /// the same repair the `AgentCreated` sibling carries for the same rename:
+    /// the journal keeps saying what it actually said.
+    #[serde(alias = "preset")]
     pub profile: String,
     /// The display name the child would be created with.
     pub title: String,
