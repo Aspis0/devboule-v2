@@ -149,6 +149,11 @@ export interface CreateAgentCard {
   profile: string;
   /** The display name the child would be created with. */
   title: string;
+  /**
+   * The tools state the child will start in (`hosted`/`unavailable`/`unverified`).
+   * The card promises verification; the result and roster report it.
+   */
+  tools: string;
   caps: CreateAgentCaps;
 }
 

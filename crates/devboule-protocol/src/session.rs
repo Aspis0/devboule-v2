@@ -596,6 +596,13 @@ pub struct CreateAgentCard {
     pub profile: String,
     /// The display name the child would be created with.
     pub title: String,
+    /// The tools state the child will start in, as the S1 wire word
+    /// (`hosted`/`unavailable`/`unverified`). The card promises verification;
+    /// the result and roster report it (S2/S8 precedence rule): a card for an
+    /// MCP-capable family reads `hosted` with "will be verified at start" in
+    /// the description, never bare "has tools"; a card for pi/codex reads
+    /// `unavailable` with the no-tools sentence until S9 flips the gate.
+    pub tools: String,
     pub caps: CreateAgentCaps,
 }
 

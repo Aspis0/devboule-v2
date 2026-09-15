@@ -163,7 +163,8 @@
       "creatorSessionId": "s.1.1",
       "profile": "worker",
       "provider": "claude",
-      "title": "worker"
+      "title": "worker",
+      "tools": "hosted"
     },
     "env": [],
     "options": [],

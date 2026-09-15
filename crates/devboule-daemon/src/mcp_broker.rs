@@ -33,6 +33,95 @@ use crate::provider_catalog::ToolOverlay;
 use crate::server::ServerState;
 
 pub(crate) const MCP_SERVER_NAME: &str = "devboule";
+/// Whether a session hosts the daemon's MCP tools, for every surface a person reads.
+///
+/// A tri-state on purpose: "we have not established whether this session has
+/// tools" (`Unverified`) is not "it has none" (`Unavailable`). On any surface
+/// a person reads, the unknown never renders as the benign state.
+///
+/// The wire carries plain strings (`as_str` / `tools_state_from_str`) so no
+/// protocol change is needed for the type itself; the broker keeps the reason
+/// alongside where it needs one, the wire never sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolsState {
+    Hosted,
+    Unavailable,
+    Unverified,
+}
+
+impl ToolsState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ToolsState::Hosted => "hosted",
+            ToolsState::Unavailable => "unavailable",
+            ToolsState::Unverified => "unverified",
+        }
+    }
+}
+
+/// Parse half of the S1 closed-table walk. No non-test consumer yet: S8's roster
+/// parse reads it (a stored word back to the variant). Kept beside `as_str` so
+/// the two directions cannot drift; the walk test pins both today.
+#[allow(dead_code)]
+pub(crate) fn tools_state_from_str(value: &str) -> Option<ToolsState> {
+    match value {
+        "hosted" => Some(ToolsState::Hosted),
+        "unavailable" => Some(ToolsState::Unavailable),
+        "unverified" => Some(ToolsState::Unverified),
+        _ => None,
+    }
+}
+
+/// The single computation point for [`ToolsState`]: no other file computes the
+/// state; surfaces call this function.
+///
+/// `registered` is whether the broker holds a registration (a minted bearer)
+/// for the session; `verified` is whether the carrier has proven itself since
+/// (an authenticated `tools/list` for ACP/Claude today, the pi announce plus
+/// in-child round-trip and the Codex poll from S8 tomorrow). `kind` is carried
+/// for the S9 `hosts_mcp()` wiring and does not change today's answer:
+/// registration is the fact, and a session with a bearer but without
+/// verification reads `Unverified` for every kind — never `Hosted`, never
+/// `Unavailable` — while a session with no registration reads `Unavailable`.
+/// The door is origin-based, not kind-based, so kind never enters the match
+/// beyond the unused binding the S9 move will read.
+///
+/// Provider dimension stays open: this matches on no provider name, only on
+/// the two booleans every family shares.
+pub(crate) fn compute_tools_state(
+    _kind: &SessionKind,
+    registered: bool,
+    verified: bool,
+) -> ToolsState {
+    if !registered {
+        ToolsState::Unavailable
+    } else if verified {
+        ToolsState::Hosted
+    } else {
+        ToolsState::Unverified
+    }
+}
+
+/// The sentence the Phase-0 gate logs when it returns `Ok(None)` (S2).
+///
+/// One function so the log line is pinned by a test: it names the session id,
+/// the kind and provider, and the state `unavailable` with the reason (no MCP
+/// channel for this kind yet; pi/Codex carriers land in S5/S6, S9 flips the
+/// gate). `register_with_provider` emits exactly this string via `eprintln!`.
+/// Unit tests cannot capture `eprintln!` output, so they pin this sentence;
+/// the emission itself is verified by reading the daemon log on a pi/Codex
+/// create (stated adaptation, see report).
+pub(crate) fn phase0_gate_log(
+    session_id: &str,
+    kind: &SessionKind,
+    provider_id: Option<&str>,
+) -> String {
+    format!(
+        "mcp broker: session {session_id} kind {kind:?} provider {} tools unavailable: no MCP channel for this kind yet (pi/codex carriers land in S5/S6)",
+        provider_id.unwrap_or("<none>"),
+    )
+}
+
 /// A provider that never emits its MCP-ready signal gets a finite failure,
 /// and its first prompt is rejected with that fact. The daemon never waits
 /// forever on an undocumented provider event.
@@ -49,10 +138,30 @@ const CONFIG_PREFIX: &str = "devboule-mcp-";
 
 /// Launch data is kept out of `PtyCommand` so provider command tests cannot
 /// accidentally serialize a bearer into a debug value or a normal log.
+///
+/// S4 hygiene: the struct stays bearer+url (+ the Claude path it already had).
+/// No `pi_*`/`codex_*` named fields ever land here — family knowledge lives in
+/// the client modules, which expose `mcp_launch(&McpLaunchConfig, &runtime_dir)
+/// -> Result<McpProviderConfig>` (S5/S6; the provider-trait seam verbatim), and
+/// the shared spawn path applies the returned additions without naming a family.
 pub(crate) struct McpLaunchConfig {
     pub(crate) url: String,
     bearer: String,
     pub(crate) claude_config_path: Option<PathBuf>,
+}
+
+/// What one family's `mcp_launch` returns (S4 seam): opaque additions the shared
+/// spawn path applies verbatim. No family names here — `owned_paths`/`owned_dirs`
+/// are our files/dirs to revoke and sweep, `env_additions` never contain a secret
+/// value's name confusion (the names `DEVBOULE_MCP_TOKEN`/`DEVBOULE_MCP_URL` carry
+/// no secret bytes themselves), and argv additions never carry the token (S5/S6
+/// assert argv token-free).
+#[derive(Default)]
+pub(crate) struct McpProviderConfig {
+    pub(crate) env_additions: Vec<(String, String)>,
+    pub(crate) arg_additions: Vec<String>,
+    pub(crate) owned_paths: Vec<PathBuf>,
+    pub(crate) owned_dirs: Vec<PathBuf>,
 }
 
 impl McpLaunchConfig {
@@ -79,6 +188,13 @@ impl McpLaunchConfig {
 
     pub(crate) fn redact_text(&self, text: &str) -> String {
         redact_broker_text(text, Some(&self.url), Some(&self.bearer))
+    }
+
+    /// The bearer for child **env** (`DEVBOULE_MCP_TOKEN` in S5/S6). Never argv
+    /// (`ARCHITETTURA.md` §15.5 rule); S5/S6 own the argv token-free assertion
+    /// and this step owns the helper it calls.
+    pub(crate) fn bearer(&self) -> &str {
+        &self.bearer
     }
 }
 
@@ -216,6 +332,13 @@ impl McpBroker {
         lineage: AgentLineage,
     ) -> Result<Option<McpSessionGuard>, WireError> {
         if !matches!(kind, SessionKind::Acp | SessionKind::Claude) {
+            // Phase-0 honest surface (S2): this is the branch that decides and
+            // the only silent one. Name the decision — session id, kind and
+            // provider, state `unavailable` with the reason — outside any
+            // freeze by construction (broker file, not `session.rs`). The pi
+            // bridge (S5) and the Codex carrier (S6) land the carriers; until
+            // S9 flips this gate the sentence below is the honesty.
+            eprintln!("{}", phase0_gate_log(session_id, kind, provider_id));
             return Ok(None);
         }
         if self.stop.load(Ordering::Acquire) {
@@ -329,12 +452,18 @@ impl McpBroker {
             registration.runtime = Some(Arc::downgrade(runtime));
             runtime.set_mcp_bearer(registration.bearer.clone());
             runtime.set_mcp_url(self.url.clone());
+            // S2 stores the S1 state on the runtime at spawn: registered but
+            // not yet verified. The flip to Hosted lands in `mark_broker_ready`
+            // below on the first authenticated `tools/list` (the ACP/Claude half
+            // of the S8 flip; the pi/Codex half stays S8).
+            runtime.set_tools_state(ToolsState::Unverified);
             Some(registration.broker_ready.load(Ordering::Acquire))
         });
         if self.stop.load(Ordering::Acquire) {
             runtime.fail_mcp("The MCP broker stopped before this session connected.");
         } else if broker_ready == Some(true) {
             runtime.mark_mcp_ready();
+            runtime.set_tools_state(ToolsState::Hosted);
         }
     }
 
@@ -342,6 +471,7 @@ impl McpBroker {
         registration.broker_ready.store(true, Ordering::Release);
         if let Some(runtime) = registration.runtime.as_ref().and_then(Weak::upgrade) {
             runtime.mark_mcp_ready();
+            runtime.set_tools_state(ToolsState::Hosted);
         }
     }
 
@@ -1152,6 +1282,43 @@ fn handle_rpc(
 /// `Session::context_id` states (a session with no creator is its own context),
 /// applied for a client that reads a frame from a daemon older than this field.
 fn created_result(id: &Value, session: &devboule_protocol::Session) -> Value {
+    // S2 honesty: the result reports verification, the card promised it. A fresh
+    // ACP/Claude child is registered but not yet verified (its first
+    // authenticated `tools/list` lands after this answer); a pi/Codex child has
+    // no registration at all until S9. Hosted is renderable via
+    // `created_result_for_tools` (pinned by test) and arrives on live paths in
+    // S8 when verification flips the runtime. Routed through the S1 single
+    // computation point: kind is carried for the S9 move, registration is the
+    // fact (pi/Codex unregistered today), verification still ahead.
+    let kind = &session.kind;
+    let registered = !matches!(
+        kind,
+        devboule_protocol::SessionKind::Pi | devboule_protocol::SessionKind::Codex
+    );
+    let tools = compute_tools_state(kind, registered, false);
+    created_result_for_tools(id, session, tools)
+}
+
+/// The result body for one explicit tools state (S2 test hook): the `tools`
+/// word rides `structuredContent`, and `unavailable`/`unverified` add the one
+/// model-readable sentence. `hosted` adds none — the tools themselves are the
+/// proof. The forbidden state is a result claiming `hosted` for a session with
+/// no bearer; the test pins it by calling this with `Hosted` for a kind that
+/// `created_result` would never produce.
+fn created_result_for_tools(
+    id: &Value,
+    session: &devboule_protocol::Session,
+    tools: ToolsState,
+) -> Value {
+    let tools_sentence = match tools {
+        ToolsState::Hosted => "",
+        ToolsState::Unavailable => {
+            " This session starts without Devboule tools: it cannot create, message or list agents."
+        }
+        ToolsState::Unverified => {
+            " This session's tools are unverified: they will be verified at start."
+        }
+    };
     let display_name = session
         .display_name
         .clone()
@@ -1164,13 +1331,14 @@ fn created_result(id: &Value, session: &devboule_protocol::Session) -> Value {
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "content": [{"type": "text", "text": format!("submitted {}", session.id)}],
+            "content": [{"type": "text", "text": format!("submitted {}{}", session.id, tools_sentence)}],
             "structuredContent": {
                 "sessionId": session.id,
                 "taskId": session.id,
                 "contextId": context_id,
                 "displayName": display_name,
                 "state": devboule_protocol::AgentTaskState::Submitted.as_str(),
+                "tools": tools.as_str(),
             },
             "isError": false,
         },
@@ -1267,6 +1435,10 @@ fn agent_value(
         .clone()
         .unwrap_or_else(|| session.title.clone());
     let state = crate::session::roster_task_state(session, runtime);
+    // S2: every roster entry carries the S1 word, read off the runtime the
+    // broker stored at spawn and flipped on verification. With today's truth
+    // pi/Codex rows are absent from this listing entirely (the `session.rs`
+    // filter stays until S9); the card and result carry the honesty for them.
     json!({
         "id": session.id,
         "provider": session.provider.clone().or(manifest_provider),
@@ -1276,6 +1448,7 @@ fn agent_value(
         "title": session.title,
         "createdBy": session.created_by,
         "depth": depth,
+        "tools": runtime.tools_state().as_str(),
     })
 }
 
@@ -2102,11 +2275,16 @@ fn creation_card(
             .collect::<Vec<_>>()
             .join(", ")
     };
+    // S2 honesty: the card promises verification (precedence rule). The tools
+    // state comes from the one function above; the sentence is glued to the
+    // description and the word rides the payload.
+    let card_tools = card_tools_for_provider(&profile.provider);
+    let tools_sentence = card_tools_sentence(card_tools);
     SessionEvent::PermissionRequest {
         tool_call_id: creation_permission_id(),
         title: format!("Create an agent: {} ({})", request.title, profile.name),
         description: Some(format!(
-            "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}. Labels: {labels}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.",
+            "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}. Labels: {labels}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.{tools_sentence}",
             caps.live_children,
             caps.max_live_children,
             caps.creations_this_hour,
@@ -2121,6 +2299,7 @@ fn creation_card(
             model = profile.model,
             mode = profile.mode,
             auto = auto,
+            tools_sentence = tools_sentence,
         )),
         command: None,
         args: None,
@@ -2146,8 +2325,44 @@ fn creation_card(
             provider: profile.provider.clone(),
             profile: profile.name.clone(),
             title: request.title.clone(),
+            tools: card_tools.as_str().to_string(),
             caps,
         }),
+    }
+}
+
+/// The tools state a creation card promises, from the profile's provider (S2).
+///
+/// One function so the card cannot drift from the catalog: the provider name
+/// is resolved through `provider_catalog::session_kind_for` — the one place a
+/// provider name is consulted — and only the resulting `SessionKind` is
+/// matched (never a provider string here, per the open-provider rule). A
+/// pi/Codex child promises `Unavailable` (today's truth: no carrier until
+/// S5/S6, gate flips in S9); every other family promises `Hosted`, with the
+/// description carrying "will be verified at start" per the precedence rule
+/// (the card promises verification, the result/roster report it).
+pub(crate) fn card_tools_for_provider(provider: &str) -> ToolsState {
+    let kind = crate::provider_catalog::session_kind_for(provider);
+    if matches!(
+        kind,
+        devboule_protocol::SessionKind::Pi | devboule_protocol::SessionKind::Codex
+    ) {
+        ToolsState::Unavailable
+    } else {
+        ToolsState::Hosted
+    }
+}
+
+/// The card's tools sentence for one promised state (S2). The unavailable
+/// sentence is the plan's words; the hosted sentence keeps the precedence
+/// rule's required phrase.
+pub(crate) fn card_tools_sentence(state: ToolsState) -> &'static str {
+    match state {
+        ToolsState::Unavailable => {
+            " The child will start without Devboule tools: it cannot create, message or list agents."
+        }
+        ToolsState::Hosted => " The child will host Devboule tools and will be verified at start.",
+        ToolsState::Unverified => " The child's tools are unverified and will be verified at start.",
     }
 }
 
@@ -2334,7 +2549,17 @@ fn send_http(
     stream.write_all(body)
 }
 
-fn write_protected_json(path: &Path, value: &Value) -> io::Result<()> {
+/// The one protected-bytes primitive every carrier writer uses (S4).
+///
+/// House order, shared with the tool-policy writer so the two cannot drift:
+/// temp via `create_new` (with a stale-temp remove first, so a run that died
+/// between create and rename never wedges the name), `0o600` on unix,
+/// `security::apply_current_user_dacl` on Windows **before the first byte**
+/// (a secret is never on disk under a weaker DACL), `write_all`, `sync_all`,
+/// rename, temp removed on failure. Both format wrappers below go through here;
+/// writers cannot drift. This also fixes the old MCP order, which narrowed the
+/// DACL after the bytes but before the rename.
+fn write_protected_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2343,21 +2568,26 @@ fn write_protected_json(path: &Path, value: &Value) -> io::Result<()> {
     })?;
     fs::create_dir_all(parent)?;
     let temp = path.with_extension("tmp");
-    let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
     let result = (|| {
+        // The temp name is this writer's own: remove a leftover first so a run
+        // that died between create and rename never wedges the name (and
+        // `create_new` refuses a file already at it). Removing it removes the
+        // name, not whatever a symlink at it points at.
+        let _ = fs::remove_file(&temp);
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut file = options.open(&temp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        drop(file);
-        // The DACL is narrowed on the temp file, before the rename: the helper
-        // lives in `security.rs` so this config and the tool policy cannot
-        // drift on what "protected" means; off Windows there is no DACL.
+        // Before the first byte: the secret is never on disk under a weaker
+        // DACL. The helper lives in `security.rs` so this config and the tool
+        // policy cannot drift on what "protected" means; off Windows there
+        // is no DACL.
         #[cfg(windows)]
         crate::security::apply_current_user_dacl(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
         fs::rename(&temp, path)
     })();
     if result.is_err() {
@@ -2365,6 +2595,24 @@ fn write_protected_json(path: &Path, value: &Value) -> io::Result<()> {
     }
     result
 }
+
+fn write_protected_json(path: &Path, value: &Value) -> io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
+    write_protected_bytes(path, &bytes)
+}
+
+/// The second wrapper (S4): text carriers (the pi bridge in S5, the Codex TOML
+/// in S6) go through the same primitive. The TOML parse-back before rename
+/// that S6 needs is S6's hook on top of this; this step owns the helper it calls.
+pub(crate) fn write_protected_str(path: &Path, text: &str) -> io::Result<()> {
+    write_protected_bytes(path, text.as_bytes())
+}
+
+/// Child-env names for the broker carrier (S5/S6). The names carry no secret
+/// bytes themselves (pinned by the S4 redaction test); the token travels only
+/// as the env *value*, never argv (`ARCHITETTURA.md` §15.5 rule).
+pub(crate) const MCP_TOKEN_ENV: &str = "DEVBOULE_MCP_TOKEN";
+pub(crate) const MCP_URL_ENV: &str = "DEVBOULE_MCP_URL";
 
 fn cleanup_stale_configs(runtime_dir: &Path) -> io::Result<()> {
     let Ok(entries) = fs::read_dir(runtime_dir) else {
@@ -2376,8 +2624,21 @@ fn cleanup_stale_configs(runtime_dir: &Path) -> io::Result<()> {
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| {
-                name.starts_with(CONFIG_PREFIX)
-                    && (name.ends_with(".json") || name.ends_with(".tmp"))
+                // Our carriers, by our names: the Claude config plus the pi
+                // permission/bridge files S5 writes beside it (and their temps).
+                // These are the daemon's own file names, not provider dispatch —
+                // no behaviour branches on them — so listing them here keeps the
+                // provider dimension open while orphans from a dead daemon (or a
+                // crashed spawn) cannot accumulate. At daemon start no live session
+                // exists, so every match is an orphan by construction. Never match
+                // by content, and never sweep a tree we do not own (the Codex home
+                // dir in S6 gets its own owned-dir removal for the same reason).
+                (name.starts_with(CONFIG_PREFIX)
+                    && (name.ends_with(".json") || name.ends_with(".tmp")))
+                    || (name.starts_with("devboule-pi-permissions-")
+                        && (name.ends_with(".ts") || name.ends_with(".tmp")))
+                    || (name.starts_with("devboule-pi-bridge-")
+                        && (name.ends_with(".ts") || name.ends_with(".tmp")))
             });
         if stale {
             let _ = fs::remove_file(path);
@@ -2440,6 +2701,497 @@ mod tests {
     use crate::provider_catalog::{MCP_CREATE_AGENT_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL};
     use std::net::Shutdown;
     use std::sync::mpsc;
+
+    #[test]
+    fn tools_state_tri_state_and_single_computation_point() {
+        // Closed-table walk: three variants, three distinct wire strings,
+        // each string parsing back to exactly one variant.
+        let states = [
+            ToolsState::Hosted,
+            ToolsState::Unavailable,
+            ToolsState::Unverified,
+        ];
+        let words: Vec<&str> = states.iter().map(|state| state.as_str()).collect();
+        assert_eq!(words.len(), 3);
+        assert!(words.iter().all(|word| !word.is_empty()));
+        let mut sorted = words.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 3, "each ToolsState must serialise distinctly");
+        for state in states {
+            assert_eq!(tools_state_from_str(state.as_str()), Some(state));
+        }
+        assert_eq!(tools_state_from_str(""), None);
+        assert_eq!(tools_state_from_str("HOSTED"), None);
+        // The forbidden combination the type exists to name: a pi/Codex
+        // session WITH a bearer but WITHOUT verification reads Unverified —
+        // never Hosted, never Unavailable. Built through the single
+        // computation point directly because the Phase-0 gate still returns
+        // Ok(None) for pi/Codex (S9 flips it): no bearer can be minted for
+        // them yet, so the combination is constructed, not registered.
+        for kind in [
+            SessionKind::Acp,
+            SessionKind::Claude,
+            SessionKind::Pi,
+            SessionKind::Codex,
+        ] {
+            assert_eq!(
+                compute_tools_state(&kind, true, false),
+                ToolsState::Unverified,
+                "registered-but-unverified must be Unverified for {kind:?}"
+            );
+            assert_eq!(
+                compute_tools_state(&kind, true, true),
+                ToolsState::Hosted,
+                "registered-and-verified must be Hosted for {kind:?}"
+            );
+            // The inverse forbidden state: no registration and no bearer
+            // reads Unavailable, never Unverified.
+            assert_eq!(
+                compute_tools_state(&kind, false, false),
+                ToolsState::Unavailable,
+                "unregistered must be Unavailable for {kind:?}"
+            );
+            assert_eq!(
+                compute_tools_state(&kind, false, true),
+                ToolsState::Unavailable,
+                "verification without registration is still Unavailable for {kind:?}"
+            );
+        }
+        // Storage starts unknown-as-absent: a fresh runtime reads
+        // Unavailable until registration flips it (S8).
+        let runtime = crate::session::SessionRuntime::new();
+        assert_eq!(runtime.tools_state(), ToolsState::Unavailable);
+        runtime.set_tools_state(ToolsState::Unverified);
+        assert_eq!(runtime.tools_state(), ToolsState::Unverified);
+    }
+
+    fn s2_session(kind: devboule_protocol::SessionKind) -> devboule_protocol::Session {
+        devboule_protocol::Session {
+            id: "s.s2.1".to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind,
+            title: "Agent".to_string(),
+            provider: None,
+            peer_session_id: None,
+            state: devboule_protocol::SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+            created_at_ms: 1,
+            origin: devboule_protocol::SessionOrigin::local(),
+            display_name: Some("builder".to_string()),
+            created_by: Some("s.s2.0".to_string()),
+            profile_id: None,
+            context_id: Some("s.s2.0".to_string()),
+            unattended: devboule_protocol::UnattendedState::No,
+            labels: Default::default(),
+        }
+    }
+
+    #[test]
+    fn phase0_gate_names_the_decision_it_makes() {
+        // The guard is still the branch that decides and still the only one
+        // that was silent: pi/Codex take Ok(None). The sentence it logs names
+        // the session id, the kind and provider, and the state `unavailable`
+        // with the reason. `eprintln!` output cannot be captured in a unit
+        // test, so the test pins the sentenced string the guard emits (stated
+        // adaptation); the emission itself is verified by reading the daemon
+        // log on a pi/Codex create.
+        let line = phase0_gate_log("s.pi.1", &SessionKind::Pi, Some("pi"));
+        assert!(line.contains("s.pi.1"), "names the session: {line}");
+        assert!(line.contains("Pi"), "names the kind: {line}");
+        assert!(line.contains("pi"), "names the provider: {line}");
+        assert!(
+            line.contains("unavailable"),
+            "never renders the unknown as the benign state: {line}"
+        );
+        let state = ServerState::new("mcp-phase0".to_string());
+        let owner = owner("mcp-user-phase0", "mcp-client-phase0");
+        for kind in [SessionKind::Pi, SessionKind::Codex] {
+            let guard = state
+                .mcp
+                .register_with_provider(
+                    "s.phase0.1",
+                    &owner,
+                    &kind,
+                    Some("pi"),
+                    AgentLineage::root(),
+                )
+                .expect("phase-0 gate answers");
+            assert!(
+                guard.is_none(),
+                "today's truth: {kind:?} registers nothing until S9"
+            );
+        }
+    }
+
+    #[test]
+    fn creation_card_promises_tools_honestly_per_provider() {
+        // With today's truth a pi/Codex card reads unavailable with the
+        // no-tools sentence; every other family promises hosted with the
+        // precedence rule's phrase. Forbidden state: an unavailable card
+        // without the sentence (drop the sentence in the fixture → red).
+        assert_eq!(card_tools_for_provider("pi"), ToolsState::Unavailable);
+        assert_eq!(card_tools_for_provider("codex"), ToolsState::Unavailable);
+        assert_eq!(card_tools_for_provider("claude"), ToolsState::Hosted);
+        assert_eq!(card_tools_for_provider("gemini"), ToolsState::Hosted);
+        let unavailable = card_tools_sentence(ToolsState::Unavailable);
+        assert!(
+            unavailable.contains("without Devboule tools"),
+            "pi/Codex card carries the no-tools sentence"
+        );
+        assert!(
+            unavailable.contains("cannot create, message or list agents"),
+            "the sentence states the consequence: {unavailable}"
+        );
+        let hosted = card_tools_sentence(ToolsState::Hosted);
+        assert!(
+            hosted.contains("will be verified at start"),
+            "card promises verification, never bare has-tools: {hosted}"
+        );
+        assert!(
+            !hosted.contains("without Devboule tools"),
+            "hosted card never carries the no-tools sentence: {hosted}"
+        );
+    }
+
+    #[test]
+    fn creation_result_reports_verification_per_state() {
+        // Result-shape test across the three states: the `tools` word rides
+        // every result, and unavailable/unverified add the model-readable
+        // sentence while hosted adds none. Forbidden state: a result claiming
+        // hosted for a session with no bearer (call `_for_tools` with Hosted
+        // for a Pi-kind session — the wrapper below would never produce it).
+        let id = json!(7);
+        for (state, word, sentence) in [
+            (ToolsState::Hosted, "hosted", None),
+            (ToolsState::Unverified, "unverified", Some("unverified")),
+            (
+                ToolsState::Unavailable,
+                "unavailable",
+                Some("without Devboule tools"),
+            ),
+        ] {
+            let session = s2_session(SessionKind::Acp);
+            let result = created_result_for_tools(&id, &session, state);
+            let structured = &result["result"]["structuredContent"];
+            assert_eq!(
+                structured["tools"], word,
+                "every result carries the tools word"
+            );
+            let text = result["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            match sentence {
+                Some(needle) => assert!(
+                    text.contains(needle),
+                    "{word} result carries its sentence: {text}"
+                ),
+                None => assert!(
+                    !text.contains("without Devboule tools") && !text.contains("unverified"),
+                    "hosted result adds no tools sentence: {text}"
+                ),
+            }
+        }
+        // The wrapper today's truth wires: pi/Codex → unavailable, ACP/Claude
+        // fresh → unverified (registered, first tools/list still ahead).
+        let pi = created_result(&id, &s2_session(SessionKind::Pi));
+        assert_eq!(pi["result"]["structuredContent"]["tools"], "unavailable");
+        let acp = created_result(&id, &s2_session(SessionKind::Acp));
+        assert_eq!(acp["result"]["structuredContent"]["tools"], "unverified");
+    }
+
+    #[test]
+    fn protected_bytes_write_is_mode_narrow_and_atomic() {
+        // S4 DACL-order test: the primitive creates narrow and stays narrow.
+        // On unix the assertion is the 0o600 mode bit; on Windows the DACL call
+        // runs before the first byte (code inspection) and the test pins content
+        // + cleanup. Mutation: drop the 0o600 mode (unix) → this test red.
+        let dir = std::env::temp_dir().join(format!("devboule-s4-write-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("carrier.json");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("tmp"));
+        write_protected_bytes(&path, b"{\"a\":1}").expect("protected write");
+        assert_eq!(
+            std::fs::read(&path).expect("read back").as_slice(),
+            b"{\"a\":1}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "carrier files are owner-only (actual {mode:o})"
+            );
+        }
+        // The temp name is the writer's own: a second write replaces atomically
+        // via rename (create_new guards the temp, not the target).
+        write_protected_bytes(&path, b"{}").expect("atomic replace");
+        assert_eq!(std::fs::read(&path).expect("read back").as_slice(), b"{}");
+        // Missing parent is created, missing grandparent chain included.
+        let nested = dir.join("sub").join("deep.txt");
+        write_protected_str(&nested, "hello").expect("nested write");
+        assert_eq!(std::fs::read_to_string(&nested).expect("read"), "hello");
+        // JSON wrapper round-trips through the same primitive.
+        let json_path = dir.join("roundtrip.json");
+        write_protected_json(&json_path, &json!({"x": [1, 2]})).expect("json write");
+        let back: Value =
+            serde_json::from_slice(&std::fs::read(&json_path).expect("read")).expect("parse");
+        assert_eq!(back, json!({"x": [1, 2]}));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sweep_removes_owned_carriers_and_keeps_strangers() {
+        // S4 sweep test: stale Claude configs, pi permission/bridge files and
+        // their temps go; a non-matching file stays. Forbidden state: an orphan
+        // bridge file surviving teardown (leave it → red).
+        let dir = std::env::temp_dir().join(format!("devboule-s4-sweep-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        for name in [
+            "devboule-mcp-abc.json",
+            "devboule-mcp-abc.tmp",
+            "devboule-pi-permissions-7.ts",
+            "devboule-pi-permissions-7.tmp",
+            "devboule-pi-bridge-9.ts",
+            "devboule-pi-bridge-9.tmp",
+        ] {
+            std::fs::write(dir.join(name), b"orphan").expect("plant orphan");
+        }
+        std::fs::write(dir.join("notes.txt"), b"mine").expect("plant stranger");
+        std::fs::write(dir.join("devboule-mcp-abc.json.bak"), b"bak").expect("plant bak");
+        cleanup_stale_configs(&dir).expect("sweep");
+        for name in [
+            "devboule-mcp-abc.json",
+            "devboule-mcp-abc.tmp",
+            "devboule-pi-permissions-7.ts",
+            "devboule-pi-permissions-7.tmp",
+            "devboule-pi-bridge-9.ts",
+            "devboule-pi-bridge-9.tmp",
+        ] {
+            assert!(!dir.join(name).exists(), "orphan {name} is swept");
+        }
+        assert!(dir.join("notes.txt").exists(), "strangers are kept");
+        assert!(
+            dir.join("devboule-mcp-abc.json.bak").exists(),
+            ".bak is not our temp suffix and is kept"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn redaction_covers_bearer_and_url_but_not_env_names() {
+        // S4 redaction test: bearer+url vanish from errors/logs for the new
+        // carriers too; env names (`DEVBOULE_MCP_TOKEN`, `DEVBOULE_MCP_URL`)
+        // carry no secret bytes themselves and pass through.
+        let config = McpLaunchConfig {
+            url: "http://127.0.0.1:4567/mcp".to_string(),
+            bearer: "secret-bearer-xyz".to_string(),
+            claude_config_path: None,
+        };
+        let error = format!(
+            "bridge dial {} with Bearer {} failed",
+            config.url,
+            config.bearer()
+        );
+        let redacted = config.redact_text(&error);
+        assert!(
+            !redacted.contains("secret-bearer-xyz"),
+            "bearer redacted: {redacted}"
+        );
+        assert!(!redacted.contains("4567"), "endpoint redacted: {redacted}");
+        let argv = "pi --mode rpc -e bridge.ts with DEVBOULE_MCP_TOKEN and DEVBOULE_MCP_URL";
+        assert_eq!(config.redact_text(argv), argv, "env names are not secrets");
+    }
+
+    #[test]
+    fn roster_entries_carry_the_tools_word() {
+        // Roster test with mixed states: every entry carries `tools`.
+        // Forbidden state: one entry with the field dropped (remove the field
+        // in the fixture → red).
+        for state in [
+            ToolsState::Hosted,
+            ToolsState::Unavailable,
+            ToolsState::Unverified,
+        ] {
+            let runtime = crate::session::SessionRuntime::new();
+            runtime.set_tools_state(state);
+            let value = agent_value(&s2_session(SessionKind::Acp), &runtime, 1);
+            assert_eq!(
+                value["tools"],
+                state.as_str(),
+                "every roster entry carries its tools word"
+            );
+        }
+    }
+
+    #[test]
+    fn pi_bridge_fetch_hygiene_against_the_real_broker() {
+        // S5/Q1 measurement: the bridge's exact header set against the REAL broker,
+        // raw bytes. Dual Accept takes the JSON branch (not SSE framing); the
+        // `notifications/initialized` second call is 202-empty (success without a
+        // result — never parsed, never failed); RPC errors ride HTTP 200 (a `res.ok`
+        // branch would read refusals as success); chunked is refused; no bearer is
+        // 401. The Node-`fetch`-sends-`Content-Length` half is spike-measured +
+        // template-pinned (string bodies); this pins the broker half it speaks to.
+        use std::net::Shutdown;
+        fn raw_post(url: &str, headers: &[(&str, &str)], body: &str) -> String {
+            let endpoint = url
+                .strip_prefix("http://")
+                .expect("loopback URL")
+                .split('/')
+                .next()
+                .expect("loopback endpoint")
+                .to_string();
+            let mut stream = TcpStream::connect(endpoint).expect("MCP listener");
+            let mut request = format!(
+                "POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n",
+                body.len()
+            );
+            for (name, value) in headers {
+                request.push_str(&format!("{name}: {value}\r\n"));
+            }
+            request.push_str(&format!("\r\n{body}"));
+            stream.write_all(request.as_bytes()).expect("MCP request");
+            stream.shutdown(Shutdown::Write).expect("request shutdown");
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).expect("MCP response");
+            String::from_utf8(response).expect("HTTP response")
+        }
+        fn split_response(response: &str) -> (&str, &str) {
+            response.split_once("\r\n\r\n").expect("HTTP response body")
+        }
+        let state = ServerState::new("mcp-bridge-hygiene".to_string());
+        let owner = owner("mcp-user-hygiene", "mcp-client-hygiene");
+        let _guard = state
+            .mcp
+            .register("hygiene", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("hygiene").expect("token");
+        // The door resolves callers from the registry row: give the session one
+        // (a local row, like a person-started session), or every `tools/call`
+        // below is refused as `Absent` before anything is touched.
+        crate::session::insert_test_live_agent(&state.sessions, "hygiene", owner.clone());
+        let server = state.mcp.start(&state).expect("MCP server");
+        let url = state.mcp.url.clone();
+        let bearer = format!("Bearer {token}");
+        // The bridge's exact header set: JSON body, dual Accept, Bearer.
+        let headers_ref: Vec<(&str, &str)> = vec![
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json, text/event-stream"),
+            ("Authorization", bearer.as_str()),
+        ];
+        // initialize → 200 JSON (raw body opens with `{`: the JSON branch, not
+        // SSE framing — the Q1 dual-Accept verdict).
+        let init = raw_post(
+            &url,
+            &headers_ref,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"devboule-pi-bridge","version":"1"}}}"#,
+        );
+        let (head, body) = split_response(&init);
+        assert!(
+            head.starts_with("HTTP/1.1 200"),
+            "initialize status: {head}"
+        );
+        assert!(head.contains("application/json"), "JSON branch: {head}");
+        assert!(body.starts_with('{'), "raw JSON body, no event framing");
+        let reply: Value = serde_json::from_str(body).expect("initialize reply");
+        assert_eq!(reply["result"]["serverInfo"]["name"], "devboule");
+        // notifications/initialized → 202 with an empty body: success with no
+        // result. The bridge's `mcpNotify` never parses it.
+        let notified = raw_post(
+            &url,
+            &headers_ref,
+            r#"{"jsonrpc":"2.0","id":2,"method":"notifications/initialized"}"#,
+        );
+        let (head, body) = split_response(&notified);
+        assert!(
+            head.starts_with("HTTP/1.1 202"),
+            "notification status: {head}"
+        );
+        assert!(body.is_empty(), "202 carries no body");
+        // tools/list over the same headers → the six tools as JSON.
+        let listed = raw_post(
+            &url,
+            &headers_ref,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#,
+        );
+        let (head, body) = split_response(&listed);
+        assert!(head.starts_with("HTTP/1.1 200"), "list status: {head}");
+        let reply: Value = serde_json::from_str(body).expect("list reply");
+        let names: Vec<&str> = reply["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert_eq!(names.len(), crate::provider_catalog::MCP_BROKER_TOOLS.len());
+        for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+            assert!(names.contains(name), "broker serves {name}");
+        }
+        // The trap the bridge avoids: SSE-only Accept gets one-event framing.
+        let sse_headers: Vec<(&str, &str)> = vec![
+            ("Content-Type", "application/json"),
+            ("Accept", "text/event-stream"),
+            ("Authorization", &bearer),
+        ];
+        let sse = raw_post(
+            &url,
+            &sse_headers,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#,
+        );
+        let (head, body) = split_response(&sse);
+        assert!(head.starts_with("HTTP/1.1 200"), "sse status: {head}");
+        assert!(
+            body.starts_with("event: message\ndata: "),
+            "SSE-only gets event framing the bridge avoids by sending dual Accept"
+        );
+        // RPC errors ride HTTP 200: an unknown tool is a 200 with an error
+        // payload, never an HTTP error — a `res.ok` branch reads it as success.
+        let unknown = raw_post(
+            &url,
+            &headers_ref,
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"no_such_tool","arguments":{}}}"#,
+        );
+        let (head, body) = split_response(&unknown);
+        assert!(head.starts_with("HTTP/1.1 200"), "rpc error status: {head}");
+        let reply: Value = serde_json::from_str(body).expect("error reply");
+        assert_eq!(
+            reply["error"]["code"],
+            serde_json::json!(-32601),
+            "rpc error code"
+        );
+        // A served call answers a result on the same 200.
+        let roster = raw_post(
+            &url,
+            &headers_ref,
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"devboule_list_agents","arguments":{}}}"#,
+        );
+        let (head, body) = split_response(&roster);
+        assert!(head.starts_with("HTTP/1.1 200"), "call status: {head}");
+        let reply: Value = serde_json::from_str(body).expect("call reply");
+        assert!(reply["result"]["structuredContent"]["agents"].is_array());
+        // No bearer is 401 before anything is touched.
+        let bare: Vec<(&str, &str)> = vec![
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json, text/event-stream"),
+        ];
+        let denied = raw_post(
+            &url,
+            &bare,
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#,
+        );
+        assert!(denied.starts_with("HTTP/1.1 401"), "bearer required");
+        drop(server);
+    }
 
     fn owner(user: &str, client: &str) -> OwnerId {
         OwnerId::new(user, client).expect("owner")
@@ -3642,8 +4394,11 @@ mod tests {
         drop(server);
     }
 
-    /// Creation is the `create_sessions` act: past the door the profile check
-    /// reads exactly what a local caller reads.
+    /// Creation is the `create_sessions` act **plus** the `send` the mandatory
+    /// initial prompt performs: past the door the profile check reads exactly
+    /// what a local caller reads, and a device that may create but may not talk
+    /// is refused with the policy's own sentence before anything is spawned —
+    /// the live row count proves no child was created-then-refused.
     #[test]
     fn a_peer_create_is_the_create_act() {
         let state = ServerState::new("mcp-p0-create".to_string());
@@ -3676,11 +4431,39 @@ mod tests {
         state
             .peer_upsert(peer_row("device-p0-create", &["view", "create_sessions"]))
             .expect("grant create");
+        // The re-audit's row: `create_sessions` without `send` is refused the
+        // whole tool — the initial prompt always sends — with the policy's own
+        // sentence, and the refusal lands at the door, before anything is
+        // spawned: the roster still holds only the creator.
+        let sendless = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_create_agent","arguments":{"profile":"Solo","title":"Kid","initialPrompt":"hi"}}}"#,
+        );
+        assert_eq!(
+            response_json(&sendless).pointer("/error/message"),
+            Some(&json!("capability 'send' was not negotiated"))
+        );
+        assert_eq!(
+            state
+                .sessions
+                .live_agent_entries(&owner)
+                .expect("roster")
+                .len(),
+            1,
+            "the refused create spawned nothing"
+        );
+        state
+            .peer_upsert(peer_row(
+                "device-p0-create",
+                &["view", "create_sessions", "send"],
+            ))
+            .expect("grant send");
         // Past the door, the profile check reads as it does for a local caller.
         let missing = http_request(
             &state.mcp.url,
             Some(&format!("Bearer {token}")),
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_create_agent","arguments":{"profile":"Solo","title":"Kid","initialPrompt":"hi"}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"devboule_create_agent","arguments":{"profile":"Solo","title":"Kid","initialPrompt":"hi"}}}"#,
         );
         let body = response_json(&missing);
         assert_eq!(body["result"]["isError"], true);

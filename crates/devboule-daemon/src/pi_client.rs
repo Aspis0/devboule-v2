@@ -70,6 +70,51 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: "bash",
         requires_confirmation: true,
     },
+    // The broker tools are daemon-decided (S3): the set is not "read only" —
+    // `devboule_send_message` and `devboule_create_agent` are not reads — so
+    // the rendered name states the fact (`unmediated`). Each joins with its
+    // own reason; the names come from the catalog constants so a rename
+    // breaks the build instead of silently unmediating nothing.
+    // Roster: a read of the caller's own bearer roster (the bearer is the
+    // identity, never a tool argument).
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_ROSTER_TOOL,
+        requires_confirmation: false,
+    },
+    // Profile list: the ticked subset the human enabled for agents; without it
+    // `devboule_create_agent` (which names a profile and nothing else) is
+    // undiscoverable.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_LIST_PROFILES_TOOL,
+        requires_confirmation: false,
+    },
+    // Send: a routed message into a live session, not a local mutation; the
+    // broker judges peer callers at the origin door before anything is touched.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_SEND_MESSAGE_TOOL,
+        requires_confirmation: false,
+    },
+    // Create: consented by the broker's own card (`creation_card`), which carries
+    // the profile facts; a generic confirm here would be a second card with none
+    // of them.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_CREATE_AGENT_TOOL,
+        requires_confirmation: false,
+    },
+    // Move: applies a ticked profile to one of the caller's own live children;
+    // authority is the `created_by` link plus the tick, both broker-checked.
+    // A generic confirm would re-ask without those facts.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL,
+        requires_confirmation: false,
+    },
+    // Answer: answers one pending card of one of the caller's own children under
+    // the delegation switch; the broker enforces one-shot ownership and the human
+    // still sees the card either way.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -82,8 +127,8 @@ const PERMISSION_EXTENSION_TEMPLATE: &str = r#"export default function (pi) {
   // subagent tools or processes launched by bash, including a nested pi -p.
   // User extensions remain enabled and may also register a tool_call hook.
   pi.on("tool_call", async (event, ctx) => {
-    const readOnly = new Set(__READ_ONLY_TOOLS__);
-    if (readOnly.has(event.toolName)) return;
+    const unmediated = new Set(__UNMEDIATED_TOOLS__);
+    if (unmediated.has(event.toolName)) return;
     const input = event.input ?? {};
     const args = Object.entries(input).map(([key, value]) =>
       `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`
@@ -107,13 +152,333 @@ const PERMISSION_EXTENSION_TEMPLATE: &str = r#"export default function (pi) {
 "#;
 
 fn permission_extension() -> String {
-    let read_only = PI_TOOL_POLICIES
+    let unmediated = PI_TOOL_POLICIES
         .iter()
-        .filter(|tool| is_read_only_tool(tool.name))
+        .filter(|tool| is_unmediated_tool(tool.name))
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    let read_only = serde_json::to_string(&read_only).expect("Pi tool policy is serializable");
-    PERMISSION_EXTENSION_TEMPLATE.replace("__READ_ONLY_TOOLS__", &read_only)
+    let unmediated = serde_json::to_string(&unmediated).expect("Pi tool policy is serializable");
+    PERMISSION_EXTENSION_TEMPLATE.replace("__UNMEDIATED_TOOLS__", &unmediated)
+}
+
+static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
+/// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
+/// `pi.registerTool` per broker tool (six today), closed schemas matching the
+/// broker's `tools/list` documents, descriptions verbatim from
+/// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
+/// catalog edit without a bridge edit fails).
+///
+/// Measured against pi 0.85.1 (spike): two `-e` load with permission-first order,
+/// `registerTool` round-trips stub bytes to the model, the stub logs
+/// `Authorization: Bearer <env token>` on `initialize` + `tools/call`, argv is
+/// token-free. Identity by environment (`DEVBOULE_MCP_URL`/`DEVBOULE_MCP_TOKEN`),
+/// never argv. The bridge announces `devboule-mcp-bridge` on `session_start`
+/// exactly like the permission channel; when the session is expected to host
+/// tools the announce is required independent of ask/bypass (absence =
+/// `Unverified` in S8, detected not discovered — no rpc tool enumeration exists).
+///
+/// Fetch hygiene (all four, RECON + spike): string bodies (undici sends
+/// `Content-Length`, never chunked — the broker refuses chunked); dual
+/// `Accept: application/json, text/event-stream` (takes the broker's JSON branch);
+/// `result`/`error` parsed, never HTTP status (RPC errors ride HTTP 200); `202`
+/// with an empty body is success without a result (never parsed, never failed).
+/// Timeout + error text (spike S3b/S3a): every MCP fetch races a named
+/// `AbortSignal.timeout`, and failures re-throw with the broker URL + cause,
+/// never bare `fetch failed`.
+const BRIDGE_EXTENSION_TEMPLATE: &str = r#"import { Type } from "typebox";
+
+// The Devboule MCP bridge: the daemon's broker tools as first-class pi tools.
+// Identity by environment, never argv. Timeouts and error text are load-bearing:
+// a wedged broker must end the tool (never hang the turn) with a sentence that
+// names the broker URL and the cause.
+const MCP_URL = process.env.DEVBOULE_MCP_URL ?? "";
+const MCP_TOKEN = process.env.DEVBOULE_MCP_TOKEN ?? "";
+const MCP_TIMEOUT_MS = 30000;
+
+let nextRequestId = 1;
+
+function bridgeError(method, cause) {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new Error(`devboule broker unreachable at ${MCP_URL || "<no broker url>"}: ${method}: ${detail}`);
+}
+
+function withTimeout(signal) {
+  const bound = AbortSignal.timeout(MCP_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, bound]) : bound;
+}
+
+async function mcpRequest(method, params, signal) {
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: nextRequestId++,
+    method,
+    ...(params === undefined ? {} : { params }),
+  });
+  let response;
+  try {
+    response = await fetch(MCP_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${MCP_TOKEN}`,
+      },
+      body,
+      signal: withTimeout(signal),
+    });
+  } catch (cause) {
+    throw bridgeError(method, cause);
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    throw bridgeError(method, `HTTP ${response.status}: ${text.slice(0, 300)}`);
+  }
+  // 202 with an empty body is success with no result: do not parse, do not fail.
+  if (response.status === 202 && text.length === 0) return undefined;
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    // Or an SSE stream: take the first data: line that parses as our reply.
+    for (const line of text.split("\n")) {
+      if (line.startsWith("data:")) {
+        try {
+          payload = JSON.parse(line.slice(5).trim());
+          break;
+        } catch {
+          /* keep scanning */
+        }
+      }
+    }
+  }
+  // RPC errors ride HTTP 200: parse result/error, never the status.
+  if (payload && payload.error) {
+    throw new Error(`MCP ${method} error ${payload.error.code}: ${payload.error.message}`);
+  }
+  return payload?.result;
+}
+
+async function mcpNotify(method, params, signal) {
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: nextRequestId++,
+    method,
+    ...(params === undefined ? {} : { params }),
+  });
+  try {
+    await fetch(MCP_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${MCP_TOKEN}`,
+      },
+      body,
+      signal: withTimeout(signal),
+    });
+  } catch (cause) {
+    throw bridgeError(method, cause);
+  }
+}
+
+async function brokerSession(signal) {
+  await mcpRequest("initialize", {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "devboule-pi-bridge", version: "1" },
+  }, signal);
+  await mcpNotify("notifications/initialized", {}, signal);
+}
+
+export default function (pi) {
+  pi.on("session_start", async (_event, ctx) => {
+    ctx.ui.notify("devboule-mcp-bridge", "info");
+  });
+
+  pi.registerTool({
+    name: "devboule_list_agents",
+    label: "List Devboule agents",
+    description: `Lists live Devboule agent sessions known by the daemon, with their display name, the session that created them, their lifecycle state and their creation depth.`,
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_toolCallId, _params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_list_agents", arguments: {} }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_list_profiles",
+    label: "List Devboule profiles",
+    description: `Lists the agent profiles the human enabled for agents, in the human's own order, with the note that says when to use each one. Call this before devboule_create_agent. Each profile's unattended field is a prediction: "yes" means a session created from it approves its own permission prompts, "no" means it asks the human, "unknown" means Devboule cannot promise either way - the child may stop on its first permission card.`,
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_toolCallId, _params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_list_profiles", arguments: {} }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_send_message",
+    label: "Send Devboule message",
+    description: `Sends a message to one live Devboule agent session.`,
+    parameters: Type.Object(
+      {
+        to_agent: Type.String(),
+        text: Type.String(),
+      },
+      { required: ["to_agent", "text"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_send_message", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_create_agent",
+    label: "Create Devboule agent",
+    description: `Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name.`,
+    parameters: Type.Object(
+      {
+        profile: Type.String({ description: "Name of a profile the human enabled for agents; see devboule_list_profiles." }),
+        title: Type.String({ description: "The child's display name, 1 to 60 characters." }),
+        labels: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Optional labels for the child: string to string." })),
+        workspaceId: Type.Optional(Type.String()),
+        cwd: Type.Optional(Type.String()),
+        initialPrompt: Type.String({ description: "The child's first prompt, at most 32 KiB." }),
+        notifyOnFinish: Type.Optional(Type.Boolean()),
+      },
+      { required: ["profile", "title", "initialPrompt"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_create_agent", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_set_agent_profile",
+    label: "Move Devboule agent onto profile",
+    description: `Moves one of your own live child sessions onto a profile the human enabled for agents: the child is asked to switch to the profile's mode, then to the profile's model and thinking option, and the profile is recorded on the child. The human is never asked, and the child is never restarted; a provider that refuses the switch refuses the move. Moving onto a profile that runs unattended is permanent - the child's row keeps the marker even if it is moved back.`,
+    parameters: Type.Object(
+      {
+        session: Type.String({ description: "The id or display name of one of your own live child sessions." }),
+        profile: Type.String({ description: "Name of a profile the human enabled for agents; see devboule_list_profiles." }),
+      },
+      { required: ["session", "profile"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_set_agent_profile", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_answer_permission",
+    label: "Answer Devboule permission",
+    description: `Answers one pending permission card of one of your own live children, when the human has turned permission delegation on. The card reaches you as an agent_permission_request notice naming its cardId. outcome is allow_once or deny - never anything durable, and never a card that is not your child's. The human still sees the card either way.`,
+    parameters: Type.Object(
+      {
+        cardId: Type.String(),
+        outcome: Type.Union([Type.Literal("allow_once"), Type.Literal("deny")]),
+      },
+      { required: ["cardId", "outcome"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_answer_permission", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+}
+"#;
+
+/// The bridge source (S5 test hook): static today — identity travels by env at
+/// runtime, so every session's bytes are identical and only the file name is
+/// per-session. A single function so the S5 walking test drives the exact
+/// string `write_bridge_extension` persists.
+fn bridge_extension() -> String {
+    BRIDGE_EXTENSION_TEMPLATE.to_string()
+}
+
+pub(crate) fn write_bridge_extension(path: &std::path::Path) -> io::Result<()> {
+    if !path.parent().is_some_and(std::path::Path::is_dir) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Pi bridge extension parent directory does not exist",
+        ));
+    }
+    crate::mcp_broker::write_protected_str(path, &bridge_extension())
+}
+
+fn bridge_extension_path(runtime_dir: &Path) -> PathBuf {
+    let serial = BRIDGE_EXTENSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    runtime_dir.join(format!("devboule-pi-bridge-{serial}.ts"))
+}
+
+fn remove_bridge_extension(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path) {
+        if error.kind() != io::ErrorKind::NotFound {
+            eprintln!(
+                "could not remove Pi bridge extension {}: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// The bridge announce (S5/S8 seam): the `session_start` notify the bridge sends,
+/// the only out-of-band readiness signal (no rpc tool enumeration exists —
+/// spike-measured). S8 uses it plus the in-child `tools/list` round-trip;
+/// S5 logs its absence when tools were expected and proceeds (never blocks).
+fn is_bridge_notify(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("extension_ui_request")
+        && value.get("method").and_then(Value::as_str) == Some("notify")
+        && value.get("message").and_then(Value::as_str) == Some("devboule-mcp-bridge")
+}
+
+/// The pi carrier seam (S4 shape, S5 body): from the launch config the broker
+/// minted, the env the child needs and the owned bridge file. `arg_additions`
+/// stays empty on purpose — the `-e` injection understands `--` and `--mode`
+/// placement (`spawn_args`), so a verbatim argv splice from shared code would
+/// break it; the bridge path travels as `owned_paths[0]` instead.
+///
+/// Token travels as child **env**, never argv. Until the provider trait lands
+/// this is a free function with the trait's exact signature, so adoption is a move.
+pub(crate) fn mcp_launch(
+    config: &crate::mcp_broker::McpLaunchConfig,
+    runtime_dir: &Path,
+) -> Result<crate::mcp_broker::McpProviderConfig, WireError> {
+    let bridge_path = bridge_extension_path(runtime_dir);
+    write_bridge_extension(&bridge_path).map_err(|error| {
+        remove_bridge_extension(&bridge_path);
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not write the Pi bridge extension: {error}"),
+        )
+    })?;
+    Ok(crate::mcp_broker::McpProviderConfig {
+        env_additions: vec![
+            (
+                crate::mcp_broker::MCP_URL_ENV.to_string(),
+                config.url.clone(),
+            ),
+            (
+                crate::mcp_broker::MCP_TOKEN_ENV.to_string(),
+                config.bearer().to_string(),
+            ),
+        ],
+        arg_additions: Vec::new(),
+        owned_paths: vec![bridge_path],
+        owned_dirs: Vec::new(),
+    })
 }
 
 pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireError> {
@@ -201,7 +566,18 @@ fn validate_pi_args(args: &[String]) -> Result<(), WireError> {
     Ok(())
 }
 
-fn spawn_args(command: &PtyCommand, extension_path: &Path) -> Result<Vec<String>, WireError> {
+/// The pi argv (S5): `--mode rpc` injected when the caller did not name it,
+/// then our `-e` extensions — permission first, bridge second (the spike's
+/// measured order; no ordering effects observed). Caller `-e`/`--extension`
+/// forms and `--` handling are preserved: everything splices before `--`.
+/// `bridge_path` is `None` until the broker mints a launch config (S9); with
+/// `None` the argv is exactly the S3 shape (permission only) — zero behaviour
+/// change while the gate is closed.
+fn spawn_args(
+    command: &PtyCommand,
+    permission_path: &Path,
+    bridge_path: Option<&Path>,
+) -> Result<Vec<String>, WireError> {
     validate_pi_args(&command.args)?;
     let mut args = command.args.clone();
     let option_end = |args: &[String]| {
@@ -220,14 +596,16 @@ fn spawn_args(command: &PtyCommand, extension_path: &Path) -> Result<Vec<String>
         let index = option_end(&args);
         args.splice(index..index, ["--mode".to_string(), "rpc".to_string()]);
     }
+    let mut extensions = vec![
+        "-e".to_string(),
+        permission_path.to_string_lossy().into_owned(),
+    ];
+    if let Some(bridge) = bridge_path {
+        extensions.push("-e".to_string());
+        extensions.push(bridge.to_string_lossy().into_owned());
+    }
     let index = option_end(&args);
-    args.splice(
-        index..index,
-        [
-            "-e".to_string(),
-            extension_path.to_string_lossy().into_owned(),
-        ],
-    );
+    args.splice(index..index, extensions);
     Ok(args)
 }
 
@@ -363,9 +741,21 @@ pub(super) fn validate_delivery(delivery: &ProfileDelivery) -> Result<(), WireEr
     Ok(())
 }
 
+/// Spawn pi (S5 wiring): `mcp` is the broker's launch config when the session
+/// was registered for MCP tools, `None` otherwise. `None` is exactly today's
+/// behaviour — permission extension only, no bridge, no broker env — so the
+/// closed Phase-0 gate means zero change until S9 flips it and `session.rs`
+/// starts passing `launch_config` (which is `None` for pi until then). `Some`
+/// writes the bridge beside the permission file, appends the second `-e`, and
+/// joins `DEVBOULE_MCP_URL` + `DEVBOULE_MCP_TOKEN` onto the child env (never
+/// argv). The bridge announce is required for nothing at spawn: absence when
+/// tools were expected is logged (detected, not discovered) and proceeds —
+/// S8 marks it `Unverified`. First-class tools, never a proxy; the adapter's
+/// generic proxy + second permission system stays the documented fallback only.
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
+    mcp: Option<crate::mcp_broker::McpLaunchConfig>,
     delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
     validate_delivery(&delivery)?;
@@ -375,9 +765,34 @@ pub(super) fn spawn_process(
         .unwrap_or(DEFAULT_MODE)
         .to_string();
     let extension_path = permission_extension_path(state.sessions.runtime_dir());
-    let args = spawn_args(&command, &extension_path)?;
+    // The carrier, only when the broker minted one (S9 lights this up; until
+    // then every pi spawn takes the `None` road below, byte-identical to S3).
+    let bridge = match mcp.as_ref() {
+        Some(config) => Some(mcp_launch(config, state.sessions.runtime_dir())?),
+        None => None,
+    };
+    let bridge_path: Option<PathBuf> = bridge
+        .as_ref()
+        .and_then(|carrier| carrier.owned_paths.first().cloned());
+    // S4 seam invariants, pinned loudly: pi carries no verbatim argv additions
+    // (the `-e` splice understands `--`/`--mode` placement, so shared code must
+    // never splice argv for it) and no owned dirs (one bridge file; S6 fills the
+    // dir half for Codex). A carrier violating either fails here, not in the child.
+    if let Some(carrier) = bridge.as_ref() {
+        assert!(
+            carrier.arg_additions.is_empty() && carrier.owned_dirs.is_empty(),
+            "pi carrier is env + one bridge file, nothing else"
+        );
+    }
+    let remove_bridge = |bridge_path: &Option<PathBuf>| {
+        if let Some(path) = bridge_path {
+            remove_bridge_extension(path);
+        }
+    };
+    let args = spawn_args(&command, &extension_path, bridge_path.as_deref())?;
     if let Err(error) = write_permission_extension(&extension_path) {
         remove_permission_extension(&extension_path);
+        remove_bridge(&bridge_path);
         return Err(WireError::new(
             ErrorCode::Io,
             format!("Could not write the Pi permission extension: {error}"),
@@ -394,6 +809,13 @@ pub(super) fn spawn_process(
     for (key, value) in &command.env {
         process.env(key, value);
     }
+    // The carrier env, only when the broker minted one: URL + token as child
+    // env (never argv — the argv token-free assertion in S5 tests pins this).
+    if let Some(carrier) = bridge.as_ref() {
+        for (key, value) in &carrier.env_additions {
+            process.env(key, value);
+        }
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -403,6 +825,7 @@ pub(super) fn spawn_process(
         Ok(child) => child,
         Err(error) => {
             remove_permission_extension(&extension_path);
+            remove_bridge(&bridge_path);
             return Err(WireError::new(
                 ErrorCode::Io,
                 format!("Could not start Pi {}: {error}", command.program),
@@ -416,6 +839,7 @@ pub(super) fn spawn_process(
         let process_job = JobObject::new().map_err(|error| {
             terminate_process(&mut child);
             remove_permission_extension(&extension_path);
+            remove_bridge(&bridge_path);
             WireError::new(
                 ErrorCode::Io,
                 format!("Could not create the Pi process job: {error}"),
@@ -429,6 +853,7 @@ pub(super) fn spawn_process(
         {
             terminate_process(&mut child);
             remove_permission_extension(&extension_path);
+            remove_bridge(&bridge_path);
             return Err(WireError::new(
                 ErrorCode::Io,
                 format!("Could not contain the Pi process: {error}"),
@@ -448,6 +873,7 @@ pub(super) fn spawn_process(
     let process_job = JobObject::new().map_err(|error| {
         terminate_process(&mut child);
         remove_permission_extension(&extension_path);
+        remove_bridge(&bridge_path);
         WireError::new(
             ErrorCode::Io,
             format!("Could not create the Pi process job: {error}"),
@@ -459,16 +885,19 @@ pub(super) fn spawn_process(
     let stdin = child.stdin.take().ok_or_else(|| {
         terminate_process(&mut child);
         remove_permission_extension(&extension_path);
+        remove_bridge(&bridge_path);
         WireError::new(ErrorCode::Io, "Pi did not provide stdin.")
     })?;
     let stdout = child.stdout.take().ok_or_else(|| {
         terminate_process(&mut child);
         remove_permission_extension(&extension_path);
+        remove_bridge(&bridge_path);
         WireError::new(ErrorCode::Io, "Pi did not provide stdout.")
     })?;
     let stderr = child.stderr.take().ok_or_else(|| {
         terminate_process(&mut child);
         remove_permission_extension(&extension_path);
+        remove_bridge(&bridge_path);
         WireError::new(ErrorCode::Io, "Pi did not provide stderr.")
     })?;
     let process = Arc::new(Mutex::new(child));
@@ -479,6 +908,7 @@ pub(super) fn spawn_process(
         Err(error) => {
             terminate_shared_process(&process);
             remove_permission_extension(&extension_path);
+            remove_bridge(&bridge_path);
             drop(process_job);
             return Err(WireError::new(
                 ErrorCode::Io,
@@ -491,6 +921,7 @@ pub(super) fn spawn_process(
         Err(error) => {
             terminate_shared_process(&process);
             remove_permission_extension(&extension_path);
+            remove_bridge(&bridge_path);
             drop(process_job);
             return Err(error);
         }
@@ -500,9 +931,21 @@ pub(super) fn spawn_process(
     let permission_extension_active = Arc::new(AtomicBool::new(
         handshake.deferred.iter().any(is_ready_notify),
     ));
+    // S5/S8 seam: the bridge announce is the only out-of-band readiness signal.
+    // Absence when tools were expected is detected, not discovered — one honest
+    // line — and the spawn proceeds: S8 marks it `Unverified`, and prompts never
+    // wait. (Contrast the permission gate below, which refuses: a missing
+    // permission gate is unsafe, a missing bridge is merely tool-less.)
+    let bridge_active = handshake.deferred.iter().any(is_bridge_notify);
+    if bridge.is_some() && !bridge_active {
+        eprintln!(
+            "pi bridge expected but its announce is absent: the child starts without Devboule tools (unverified)"
+        );
+    }
     if mode_id == "ask" && !permission_extension_active.load(Ordering::Acquire) {
         terminate_shared_process(&process);
         remove_permission_extension(&extension_path);
+        remove_bridge(&bridge_path);
         drop(process_job);
         // A provider failure, not a profile refusal: the extension the
         // daemon injected never announced itself, which says something about
@@ -530,6 +973,7 @@ pub(super) fn spawn_process(
         permission_broker: Arc::clone(&permission_broker),
         cancelled: Arc::new(AtomicBool::new(false)),
         extension_path: extension_path.clone(),
+        bridge_path: bridge_path.clone(),
     };
     let reader_dispatch = PiReader::new(
         handshake.deferred,
@@ -545,6 +989,7 @@ pub(super) fn spawn_process(
     let stderr_source = PiStderr::start(stderr).map_err(|error| {
         terminate_shared_process(&process);
         remove_permission_extension(&extension_path);
+        remove_bridge(&bridge_path);
         WireError::new(ErrorCode::Io, format!("Could not drain Pi stderr: {error}"))
     })?;
     // The static prompt route reads the live model from the same catalog the
@@ -1373,6 +1818,7 @@ struct PiKiller {
     permission_broker: Arc<PermissionBroker>,
     cancelled: Arc<AtomicBool>,
     extension_path: PathBuf,
+    bridge_path: Option<PathBuf>,
 }
 
 impl PiKiller {
@@ -1406,6 +1852,9 @@ impl SessionKiller for PiKiller {
             *stdin = None;
         }
         remove_permission_extension(&self.extension_path);
+        if let Some(bridge) = self.bridge_path.as_deref() {
+            remove_bridge_extension(bridge);
+        }
     }
 
     fn clone_killer(&self) -> Box<dyn SessionKiller> {
@@ -1416,6 +1865,7 @@ impl SessionKiller for PiKiller {
             permission_broker: Arc::clone(&self.permission_broker),
             cancelled: Arc::clone(&self.cancelled),
             extension_path: self.extension_path.clone(),
+            bridge_path: self.bridge_path.clone(),
         })
     }
 }
@@ -2126,7 +2576,13 @@ impl ReaderDispatch for PiReader {
     }
 }
 
-fn is_read_only_tool(name: &str) -> bool {
+/// Whether pi calls `name` without raising a human confirm (S3).
+///
+/// Not "read only": the set holds reads (`read`, the roster) and writes
+/// (`devboule_send_message`, `devboule_create_agent`) alike. What unites them
+/// is that the daemon decides — the broker's own card, roster or door — so the
+/// generic human gate must not fire. `write`/`bash` stay confirm-requiring.
+fn is_unmediated_tool(name: &str) -> bool {
     PI_TOOL_POLICIES
         .iter()
         .any(|tool| tool.name == name && !tool.requires_confirmation)
@@ -2266,11 +2722,11 @@ impl StderrSource for PiStderr {
 #[cfg(test)]
 mod tests {
     use super::{
-        carried_pi_mime_types, is_ready_notify, perform_handshake, permission_extension_path,
-        permission_request_from_ui, pi_control_frame, pi_delivery, pi_image_entry,
-        pi_permission_sender, pi_prompt_frame, pi_steer_fields, plan_pi_prompt, spawn_args,
-        thinking_level_allowed, write_permission_extension, PiCatalog, PiControl, PiReader,
-        PiStaticPrompt, PiStdout, PiSteerer, PiSwitcher,
+        bridge_extension, carried_pi_mime_types, is_bridge_notify, is_ready_notify, mcp_launch,
+        perform_handshake, permission_extension_path, permission_request_from_ui, pi_control_frame,
+        pi_delivery, pi_image_entry, pi_permission_sender, pi_prompt_frame, pi_steer_fields,
+        plan_pi_prompt, spawn_args, thinking_level_allowed, write_permission_extension, PiCatalog,
+        PiControl, PiReader, PiStaticPrompt, PiStdout, PiSteerer, PiSwitcher,
     };
     use crate::acp_view::PromptCapabilityState;
     use crate::attachment_store::AttachmentStore;
@@ -2419,7 +2875,7 @@ mod tests {
             Vec::new(),
         );
         let path = Path::new(r"C:\runtime\devboule-pi-permissions.ts");
-        let args = spawn_args(&command, path).expect("Pi args");
+        let args = spawn_args(&command, path, None).expect("Pi args");
         let mode = args.iter().position(|arg| arg == "--mode").expect("mode");
         let extension = args.iter().position(|arg| arg == "-e").expect("extension");
         assert!(mode < extension);
@@ -2442,7 +2898,7 @@ mod tests {
             Vec::new(),
         );
         let path = Path::new("permission.ts");
-        let args = spawn_args(&command, path).expect("caller extensions are valid");
+        let args = spawn_args(&command, path, None).expect("caller extensions are valid");
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--extension".to_string(), "first.ts".to_string()]));
@@ -2465,7 +2921,7 @@ mod tests {
                 std::env::current_dir().expect("cwd"),
                 Vec::new(),
             );
-            spawn_args(&command, Path::new("permission.ts"))
+            spawn_args(&command, Path::new("permission.ts"), None)
                 .expect_err("non-rpc mode must be rejected");
         }
         for supplied in [
@@ -2480,7 +2936,7 @@ mod tests {
                 std::env::current_dir().expect("cwd"),
                 Vec::new(),
             );
-            spawn_args(&command, Path::new("permission.ts"))
+            spawn_args(&command, Path::new("permission.ts"), None)
                 .expect("rpc mode and caller extensions are valid");
         }
     }
@@ -2674,6 +3130,358 @@ mod tests {
         assert!(
             output.status.success(),
             "Pi permission extension behavior failed (exit={}): {}{}",
+            output
+                .status
+                .code()
+                .map_or_else(|| "no exit code".to_string(), |code| code.to_string()),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn pi_broker_tools_are_unmediated_and_walked() {
+        // S3 walking test: every tool the broker serves is classified exactly
+        // once by the same constants the extension renders — unmediated with a
+        // reason (all six today), never silently inheriting either answer. A
+        // seventh broker tool with no row here fails the first assertion; a
+        // `devboule_*` name missing from the unmediated set fails the second.
+        for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+            assert!(
+                super::is_unmediated_tool(name),
+                "broker tool {name} must be unmediated (daemon-decided)"
+            );
+        }
+        // The rendered set states the fact: the new identifier is present and
+        // the old read-only name survives nowhere.
+        let rendered = super::permission_extension();
+        assert!(
+            rendered.contains("unmediated"),
+            "the extension renders the unmediated set"
+        );
+        assert!(
+            !rendered.contains("__UNMEDIATED_TOOLS__"),
+            "the placeholder is substituted, not left verbatim"
+        );
+        assert!(
+            !rendered.contains("readOnly") && !rendered.contains("__READ_ONLY_TOOLS__"),
+            "the false read-only name survives nowhere"
+        );
+        // The gate itself is unchanged: writes still ask, reads still pass.
+        assert!(!super::is_unmediated_tool("write"));
+        assert!(!super::is_unmediated_tool("bash"));
+        assert!(!super::is_unmediated_tool("tool-futuro"));
+        for name in ["read", "grep", "find", "ls"] {
+            assert!(super::is_unmediated_tool(name), "{name} stays unmediated");
+        }
+        // Every rendered name is a known one: nothing unmediated by accident.
+        let start = rendered.find('[').expect("rendered tool list");
+        let end = rendered[start..].find(']').expect("rendered tool list end") + start;
+        let list: Vec<String> =
+            serde_json::from_str(&rendered[start..=end]).expect("rendered list is JSON");
+        for name in &list {
+            let known_pi = super::PI_TOOL_POLICIES.iter().any(|tool| tool.name == name);
+            assert!(known_pi, "rendered {name} comes from the policy table");
+        }
+        for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+            assert!(
+                list.iter().any(|rendered| rendered == name),
+                "broker tool {name} reaches the rendered extension"
+            );
+        }
+    }
+
+    #[test]
+    fn pi_bridge_template_serves_the_broker_tools() {
+        // S5 walking test for the bridge: every served tool's name and verbatim
+        // description reaches the exact string `write_bridge_extension` persists —
+        // a seventh tool, or a catalog rewording without a bridge edit, fails.
+        // Hygiene markers ride the same test: dual Accept, named timeout, bridge
+        // announce, env-identity Bearer, result/error + 202 handling.
+        let template = bridge_extension();
+        assert!(template.contains("import { Type }"), "typebox builders");
+        for (name, description) in crate::provider_catalog::MCP_BROKER_TOOLS {
+            assert!(
+                template.contains(name),
+                "bridge registers broker tool {name}"
+            );
+            assert!(
+                template.contains(description),
+                "bridge carries the catalog description for {name}"
+            );
+        }
+        assert!(
+            template.contains("Accept\": \"application/json, text/event-stream\"")
+                || template.contains("Accept: \"application/json, text/event-stream\""),
+            "dual Accept takes the broker JSON branch"
+        );
+        assert!(
+            template.contains("MCP_TIMEOUT_MS") && template.contains("AbortSignal.timeout"),
+            "every MCP fetch races the named timeout (spike S3b hung 80 s without one)"
+        );
+        assert!(
+            template.contains("devboule-mcp-bridge"),
+            "bridge announce rides session_start like the permission channel"
+        );
+        assert!(
+            template.contains("process.env.DEVBOULE_MCP_URL")
+                && template.contains("process.env.DEVBOULE_MCP_TOKEN"),
+            "identity by environment"
+        );
+        assert!(
+            template.contains("Authorization: `Bearer ${MCP_TOKEN}`")
+                || template.contains("Authorization\": `Bearer ${MCP_TOKEN}`"),
+            "Bearer flies on every request (spike S5)"
+        );
+        assert!(
+            template.contains("payload.error") || template.contains("payload && payload.error"),
+            "RPC errors ride HTTP 200: parse result/error, never the status"
+        );
+        assert!(
+            template.contains("202"),
+            "202-empty is success without a result (never parsed, never failed)"
+        );
+        assert!(
+            template.contains("devboule broker unreachable at"),
+            "failures name the broker URL + cause, never bare fetch failed"
+        );
+        assert!(
+            !template.contains("SPIKE_DUMP") && !template.contains("getSystemPrompt"),
+            "no spike instrumentation ships"
+        );
+        assert!(
+            !template.contains("process.argv"),
+            "argv never carries identity"
+        );
+    }
+
+    #[test]
+    fn pi_bridge_announce_is_detected_not_discovered() {
+        // No rpc tool enumeration exists (spike-measured): the notify is the only
+        // out-of-band readiness signal. S8 consumes this plus the in-child round-trip.
+        let bridge = serde_json::json!({
+            "type": "extension_ui_request",
+            "method": "notify",
+            "message": "devboule-mcp-bridge",
+        });
+        assert!(is_bridge_notify(&bridge));
+        let permission = serde_json::json!({
+            "type": "extension_ui_request",
+            "method": "notify",
+            "message": "devboule-permission-channel",
+        });
+        assert!(!is_bridge_notify(&permission));
+        assert!(is_ready_notify(&permission));
+        assert!(!is_ready_notify(&bridge));
+        assert!(!is_bridge_notify(&serde_json::json!({"type": "session"})));
+    }
+
+    #[test]
+    fn pi_spawn_args_put_the_bridge_second_and_keep_callers() {
+        // S5 argv shape: permission first, bridge second (the spike's measured
+        // order), everything before `--`, caller forms preserved, token-free.
+        let command = PtyCommand::new(
+            "pi",
+            vec!["--extension".to_string(), "first.ts".to_string()],
+            std::env::current_dir().expect("cwd"),
+            Vec::new(),
+        );
+        let permission = Path::new(r"C:\runtime\devboule-pi-permissions-1.ts");
+        let bridge = Path::new(r"C:\runtime\devboule-pi-bridge-2.ts");
+        let args = spawn_args(&command, permission, Some(bridge)).expect("bridge args");
+        let dashes: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| *arg == "-e")
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(dashes.len(), 2, "permission -e plus bridge -e: {args:?}");
+        assert_eq!(args[dashes[0] + 1], permission.to_string_lossy());
+        assert_eq!(args[dashes[1] + 1], bridge.to_string_lossy());
+        assert!(dashes[0] < dashes[1], "permission first, bridge second");
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--extension".to_string(), "first.ts".to_string()]));
+        // Token-free argv: the bearer travels as env, never here.
+        for arg in &args {
+            assert!(!arg.contains("secret-bearer"), "no secret in argv: {arg}");
+        }
+        // And `None` stays the S3 shape: exactly one -e.
+        let plain = spawn_args(&command, permission, None).expect("plain args");
+        assert_eq!(plain.iter().filter(|arg| *arg == "-e").count(), 1);
+    }
+
+    #[test]
+    fn pi_mcp_launch_separates_env_from_argv() {
+        // S4 seam body: env carries URL + token values, argv carries nothing,
+        // the bridge file exists with the served names, owned_paths names it.
+        let dir =
+            std::env::temp_dir().join(format!("devboule-pi-mcp-launch-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let config = crate::mcp_broker::McpLaunchConfig::for_test(
+            "http://127.0.0.1:4321/mcp",
+            "secret-bearer-launch",
+        );
+        let carrier = mcp_launch(&config, &dir).expect("carrier");
+        assert!(carrier.arg_additions.is_empty(), "no verbatim argv splice");
+        assert!(carrier.owned_dirs.is_empty(), "pi owns no dirs");
+        let env: std::collections::HashMap<_, _> = carrier.env_additions.iter().cloned().collect();
+        assert_eq!(
+            env.get(crate::mcp_broker::MCP_URL_ENV).map(String::as_str),
+            Some("http://127.0.0.1:4321/mcp")
+        );
+        assert_eq!(
+            env.get(crate::mcp_broker::MCP_TOKEN_ENV)
+                .map(String::as_str),
+            Some("secret-bearer-launch")
+        );
+        assert_eq!(carrier.owned_paths.len(), 1);
+        let bridge = std::fs::read_to_string(&carrier.owned_paths[0]).expect("bridge file");
+        for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+            assert!(bridge.contains(name), "persisted bridge serves {name}");
+        }
+        assert!(
+            !bridge.contains("secret-bearer-launch"),
+            "no secret on disk"
+        );
+        let name = carrier.owned_paths[0]
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            name.starts_with("devboule-pi-bridge-") && name.ends_with(".ts"),
+            "owned bridge name the S4 sweep covers: {name}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pi_bridge_drives_the_broker_shape_through_a_stub_pi() {
+        // S5 executable analogue of spike S2/S3/S5 (which measured against the
+        // real pi binary + stub broker/model): the persisted bridge file loads in
+        // node against a stubbed `pi` object and a stubbed `fetch`, proving the
+        // registerTool wiring, the Bearer + dual-Accept + string-body shape, the
+        // URL-naming failure text, the RPC-error-on-200 parse, and the closed
+        // schemas — without a pi binary or a socket.
+        if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+            eprintln!("{reason}");
+            return;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("devboule-pi-bridge-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("bridge.mjs"), bridge_extension()).expect("bridge file");
+        // A minimal `typebox` stub: the bridge only needs the builders to record
+        // their arguments; the assertions below read the recorded schemas back.
+        // (The real pi resolves its bundled typebox; spelling is identical.)
+        let stub_dir = dir.join("node_modules").join("typebox");
+        let _ = std::fs::create_dir_all(&stub_dir);
+        std::fs::write(
+            stub_dir.join("package.json"),
+            r#"{"name":"typebox","version":"0.0.0-test","type":"module","main":"index.js"}"#,
+        )
+        .expect("stub package");
+        std::fs::write(
+            stub_dir.join("index.js"),
+            r#"
+export const Type = {
+  Object: (properties, opts = {}) => ({ type: "object", properties, ...opts }),
+  String: (opts = {}) => ({ type: "string", ...opts }),
+  Boolean: (opts = {}) => ({ type: "boolean", ...opts }),
+  Optional: (inner) => ({ ...inner, optional: true }),
+  Record: (k, v, opts = {}) => ({ type: "object", record: true, ...opts }),
+  Union: (anyOf) => ({ anyOf }),
+  Literal: (value) => ({ const: value }),
+};
+"#,
+        )
+        .expect("stub index");
+        let script = r#"
+(async () => {
+  const path = require("path");
+  const { pathToFileURL } = require("url");
+  const tmp = process.argv[1];
+  const calls = [];
+  let behavior = "ok";
+  global.fetch = async (url, opts) => {
+    calls.push({ url, headers: opts.headers, body: opts.body });
+    if (behavior === "refused") {
+      const error = new Error("fetch failed");
+      error.cause = { code: "ECONNREFUSED" };
+      throw error;
+    }
+    if (behavior === "rpc-error") {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Unknown tool" } }) };
+    }
+    const req = JSON.parse(opts.body);
+    if (req.method === "notifications/initialized") {
+      return { ok: true, status: 202, text: async () => "" };
+    }
+    if (req.method === "initialize") {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "devboule", version: "1" } } }) };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { content: [{ type: "text", text: "STUB-OK" }], structuredContent: {} } }) };
+  };
+  const tools = {};
+  const handlers = {};
+  const notifies = [];
+  const pi = {
+    on(name, handler) { handlers[name] = handler; },
+    registerTool(definition) { tools[definition.name] = definition; },
+  };
+  const extension = await import(pathToFileURL(path.join(tmp, "bridge.mjs")).href);
+  extension.default(pi);
+  await handlers.session_start({}, { ui: { notify: (message, kind) => notifies.push([message, kind]) } });
+  if (!notifies.some(([message]) => message === "devboule-mcp-bridge")) process.exit(11);
+  for (const name of ["devboule_list_agents", "devboule_list_profiles", "devboule_send_message", "devboule_create_agent", "devboule_set_agent_profile", "devboule_answer_permission"]) {
+    if (!tools[name]) { console.error("missing tool " + name); process.exit(12); }
+  }
+  const result = await tools.devboule_list_agents.execute("t1", {}, undefined);
+  const last = calls[calls.length - 1];
+  if (last.headers.Authorization !== `Bearer ${process.env.DEVBOULE_MCP_TOKEN}`) process.exit(13);
+  if (last.headers.Accept !== "application/json, text/event-stream") process.exit(14);
+  if (typeof last.body !== "string") process.exit(15);
+  if (last.url !== process.env.DEVBOULE_MCP_URL) process.exit(16);
+  if (!JSON.stringify(result).includes("STUB-OK")) process.exit(17);
+  behavior = "refused";
+  try {
+    await tools.devboule_list_agents.execute("t2", {}, undefined);
+    process.exit(18);
+  } catch (error) {
+    const text = String(error && error.message ? error.message : error);
+    if (!text.includes(process.env.DEVBOULE_MCP_URL) || text === "fetch failed") process.exit(19);
+  }
+  behavior = "rpc-error";
+  try {
+    await tools.devboule_list_agents.execute("t3", {}, undefined);
+    process.exit(20);
+  } catch (error) {
+    if (!String(error && error.message ? error.message : error).includes("Unknown tool")) process.exit(21);
+  }
+  const create = tools.devboule_create_agent.parameters;
+  if (create.additionalProperties !== false) process.exit(22);
+  for (const key of ["profile", "title", "initialPrompt"]) {
+    if (!(create.required || []).includes(key)) process.exit(23);
+  }
+  const outcome = (((tools.devboule_answer_permission.parameters || {}).properties || {}).outcome || {});
+  const values = outcome.anyOf ? outcome.anyOf.map((entry) => entry.const) : outcome.enum;
+  if (!values || !values.includes("allow_once") || !values.includes("deny")) process.exit(24);
+})().catch((error) => { console.error(error); process.exit(3); });
+"#;
+        let output = std::process::Command::new("node")
+            .args(["-e", script, &dir.to_string_lossy()])
+            .env("DEVBOULE_MCP_URL", "http://127.0.0.1:4321/mcp")
+            .env("DEVBOULE_MCP_TOKEN", "stub-token-bridge")
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap_or_else(|error| {
+                panic!("{}", node_unavailable("Pi bridge behavior test", &error))
+            });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            output.status.success(),
+            "pi bridge behavior failed (exit={}): {}{}",
             output
                 .status
                 .code()
@@ -3906,6 +4714,7 @@ process.stdin.on("data", (chunk) => {
                         "devboule-pi-lifecycle-ext-{}.ts",
                         std::process::id()
                     )),
+                    bridge_path: None,
                 }),
                 switcher: Some(Box::new(switcher)),
                 child: Box::new(StdioWaitableChild {
@@ -4347,7 +5156,7 @@ process.stdin.on("data", (chunk) => {
                 Some("low"),
                 &serde_json::Map::new(),
             );
-            let spawned = spawn_process(&state, command, delivery)
+            let spawned = spawn_process(&state, command, None, delivery)
                 .expect("spawn_process assembles the child and the delivery hook");
             let session_id = "pifelifecyclespawn1".to_string();
             start_spawned_session(

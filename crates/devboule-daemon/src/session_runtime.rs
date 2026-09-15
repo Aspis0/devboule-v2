@@ -187,6 +187,10 @@ pub(crate) struct SessionRuntime {
     mcp_url: Mutex<Option<String>>,
     mcp_readiness: Mutex<McpReadiness>,
     mcp_ready_cvar: Condvar,
+    /// The S1 tools tri-state, beside `mcp_bearer`/`mcp_url`: set at
+    /// registration, flipped by verification (S8), read by roster/result
+    /// paths (S2/S8). Lock discipline only in S1 — no behaviour reads it yet.
+    tools_state: Mutex<crate::mcp_broker::ToolsState>,
     pub(crate) agent_kind: Mutex<Option<SessionKind>>,
     claude_catalog_state: Mutex<crate::claude_catalog::ClaudeCatalogState>,
     /// Attention is deliberately runtime-only. It is a user's current view
@@ -465,6 +469,7 @@ impl SessionRuntime {
                 failure: None,
             }),
             mcp_ready_cvar: Condvar::new(),
+            tools_state: Mutex::new(crate::mcp_broker::ToolsState::Unavailable),
             agent_kind: Mutex::new(None),
             claude_catalog_state: Mutex::new(
                 crate::claude_catalog::ClaudeCatalogState::Provisional,
@@ -507,6 +512,19 @@ impl SessionRuntime {
             readiness.required = true;
             self.mcp_ready_cvar.notify_all();
         }
+    }
+
+    pub(crate) fn set_tools_state(&self, state: crate::mcp_broker::ToolsState) {
+        if let Ok(mut current) = self.tools_state.lock() {
+            *current = state;
+        }
+    }
+
+    pub(crate) fn tools_state(&self) -> crate::mcp_broker::ToolsState {
+        self.tools_state
+            .lock()
+            .map(|state| *state)
+            .unwrap_or(crate::mcp_broker::ToolsState::Unavailable)
     }
 
     pub(crate) fn set_mcp_bearer(&self, bearer: String) {

@@ -394,9 +394,15 @@ pub enum McpToolWire {
 ///   undiscoverable (its own error sends the caller to the list).
 /// - Send (`devboule_send_message`) puts text into a session: `AgentMessageSend`,
 ///   the act `send` names (`SessionSend` is the same capability).
-/// - Create (`devboule_create_agent`) makes a session on the caller's device:
-///   `SessionCreate`. The placeholder kind never decides: that arm reads only
-///   the capability set.
+/// - Create (`devboule_create_agent`) makes a session on the caller's device
+///   **and** sends the mandatory `initialPrompt` as that child's first turn
+///   (`session.rs::create_session_for_agent`, the same send path
+///   `agent_message_send` serves): `SessionCreate` plus `AgentMessageSend`,
+///   always. The prompt is not optional — creating through this tool always
+///   sends — so a device with `create_sessions` but without `send` is refused
+///   the whole tool (first `Deny` wins): *you may create agents, you may not
+///   talk to them* means no agent through this tool at all. The placeholder
+///   kind never decides: that arm reads only the capability set.
 /// - Answer (`devboule_answer_permission`) answers a permission moment:
 ///   `SessionPermissionRespond`.
 /// - Move (`devboule_set_agent_profile`) applies a profile, which declares a
@@ -428,15 +434,26 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             idempotency_key: None,
         }]))
     } else if tool == MCP_CREATE_AGENT_TOOL {
-        Some(McpToolWire::Judged(vec![ClientMessage::SessionCreate {
-            id: 0,
-            workspace_id: None,
-            kind: SessionKind::Claude,
-            provider: None,
-            mode: None,
-            display_name: None,
-            idempotency_key: None,
-        }]))
+        Some(McpToolWire::Judged(vec![
+            ClientMessage::SessionCreate {
+                id: 0,
+                workspace_id: None,
+                kind: SessionKind::Claude,
+                provider: None,
+                mode: None,
+                display_name: None,
+                idempotency_key: None,
+            },
+            // The mandatory initial prompt: the same send `devboule_send_message`
+            // declares (placeholders: no arm reads a field, only the variant).
+            ClientMessage::AgentMessageSend {
+                id: 0,
+                from_session: String::new(),
+                to_session: String::new(),
+                text: String::new(),
+                idempotency_key: None,
+            },
+        ]))
     } else if tool == MCP_ANSWER_PERMISSION_TOOL {
         Some(McpToolWire::Judged(vec![
             ClientMessage::SessionPermissionRespond {
@@ -1144,8 +1161,30 @@ pub(crate) mod tests {
                 mcp_tool_denial(role, &none, MCP_CREATE_AGENT_TOOL),
                 Some(CAP_CREATE_SESSIONS)
             );
+            // The create row understated its tool until the re-audit caught it:
+            // the tool always sends the mandatory initial prompt, so
+            // `create_sessions` without `send` is refused with the policy's own
+            // `send` sentence — and `send` without `create_sessions` still meets
+            // the create half first.
             assert_eq!(
                 mcp_tool_denial(role, &caps(&[CAP_CREATE_SESSIONS]), MCP_CREATE_AGENT_TOOL),
+                Some(CAP_SEND)
+            );
+            assert_eq!(
+                mcp_tool_denial(
+                    role,
+                    &caps(&[CAP_VIEW, CAP_CREATE_SESSIONS]),
+                    MCP_CREATE_AGENT_TOOL
+                ),
+                Some(CAP_SEND),
+                "{role:?} that may create but may not talk creates nothing through this tool"
+            );
+            assert_eq!(
+                mcp_tool_denial(
+                    role,
+                    &caps(&[CAP_CREATE_SESSIONS, CAP_SEND]),
+                    MCP_CREATE_AGENT_TOOL
+                ),
                 None
             );
             assert_eq!(

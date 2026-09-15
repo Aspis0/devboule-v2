@@ -8334,10 +8334,18 @@ pub fn spawn_session(
     if metadata.kind == SessionKind::Pi {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        let spawned =
-            pi_client::spawn_process(state, command, delivery.clone()).map_err(|error| {
-                map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-            })?;
+        // S5 wiring, S9 lights it: the broker mints nothing for pi until the
+        // Phase-0 gate flips, so this is `None` today and the spawn is
+        // byte-identical to S3 (permission extension only, no bridge, no env).
+        let spawned = pi_client::spawn_process(
+            state,
+            command,
+            state.mcp.launch_config(&metadata.id),
+            delivery.clone(),
+        )
+        .map_err(|error| {
+            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+        })?;
         return start_spawned_session(
             state,
             registry,

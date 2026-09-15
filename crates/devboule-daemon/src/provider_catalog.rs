@@ -354,6 +354,11 @@ pub(crate) fn agent_set_profile_input_schema() -> serde_json::Value {
 /// only; `codex` (app-server) and `pi` (RPC) have no MCP channel, and a
 /// provider absent from this table advertises no tools — the panel then hides
 /// its tool section, because there is nothing there to gate.
+///
+/// S2 deliberate: `pi`/`codex` stay absent here until S9 flips this table in
+/// the same commit as the carrier wiring. Advertising before existence is the
+/// same lie in a different font; the creation card and result carry the honesty
+/// until the roster includes them.
 pub const AGENT_MCP_TOOLS: &[(&str, &[(&str, &str)])] = &[
     ("claude", MCP_BROKER_TOOLS),
     ("gemini", MCP_BROKER_TOOLS),

@@ -170,6 +170,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
                 provider: "claude".to_string(),
                 profile: "worker".to_string(),
                 title: "worker".to_string(),
+                tools: "hosted".to_string(),
                 caps: crate::CreateAgentCaps {
                     live_children: 0,
                     max_live_children: 3,
