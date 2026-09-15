@@ -591,21 +591,13 @@ describe("bridge wire-key convention", () => {
       Object.entries(COMMAND_ARG_KEYS).map(([command, keys]) => [command, [...keys]]),
     );
     const actual = parseRustCommandArguments();
-    // Commands whose Rust Tauri command does not exist yet: the slice 5b app
-    // half landed against the frozen spec while the daemon half is built in
-    // another worktree (`SPEC-slice-5b-delegation.md` §3, Pass B) — the same
-    // stub-before-landing shape `provider_vocabulary_get` had, except that
-    // pass owned both sides, and this one may not touch src-tauri. When the
-    // daemon pass adds `#[tauri::command]` fns for these names, DELETE this
-    // list; the guard is then whole again, and a command added here without
-    // a Rust twin fails this test as before.
-    const PENDING_RUST_COMMANDS: ReadonlySet<string> = new Set([
-      "delegation_get",
-      "delegation_set",
-    ]);
-    const missing = Object.keys(expected)
-      .filter((command) => actual[command] === undefined)
-      .filter((command) => !PENDING_RUST_COMMANDS.has(command));
+    // The list of Rust commands that did not exist yet (`delegation_get`,
+    // `delegation_set`) is deleted, per its own deletion condition: both
+    // commands exist now (`backend/delegation.rs`), so the guard is whole
+    // again — a command added here without a Rust twin fails this test as
+    // before. The same pass replaced the `provider_vocabulary_get` stub with
+    // the real forward.
+    const missing = Object.keys(expected).filter((command) => actual[command] === undefined);
     const extra = Object.keys(actual).filter((command) => expected[command] === undefined);
     const mismatched = Object.keys(expected)
       .filter((command) => actual[command] !== undefined)
