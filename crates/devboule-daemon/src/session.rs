@@ -9507,6 +9507,26 @@ pub(crate) fn insert_test_live_agent_with_kind(
     )
 }
 
+/// One test-only live agent whose delivered bytes a test can read back: the
+/// shape the broker-level attribution tests observe the envelope through.
+#[cfg(test)]
+pub(crate) fn insert_test_live_agent_with_recording_writer(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    kind: SessionKind,
+) -> Arc<Mutex<Vec<u8>>> {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    tests::insert_live_agent_with_kind_and_writer(
+        registry,
+        id,
+        owner,
+        kind,
+        Box::new(tests::RecordingWriter(Arc::clone(&received))),
+    );
+    received
+}
+
 #[cfg(test)]
 impl SessionRegistry {
     /// One test-only live agent session that is `creator`'s child, with a
@@ -14101,7 +14121,7 @@ mod tests {
         }
     }
 
-    struct RecordingWriter(Arc<Mutex<Vec<u8>>>);
+    pub(super) struct RecordingWriter(pub(super) Arc<Mutex<Vec<u8>>>);
 
     impl Write for RecordingWriter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

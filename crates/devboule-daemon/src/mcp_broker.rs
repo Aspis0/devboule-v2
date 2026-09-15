@@ -942,6 +942,65 @@ fn mcp_peer_door(caller: &McpCaller, tool_name: Option<&str>, id: &Value) -> Opt
     }
 }
 
+/// The connection a tool body acts through: the caller's own identity, not
+/// this machine's. A door-allowed peer must have the act performed and judged
+/// exactly as the same act over the wire would be — the delivery attributes
+/// the message to the true origin (S4-05), the steer-refusal branch reads the
+/// caller for its interrupt authority (S4-01), and the ownership checks apply
+/// the peer's own scope (a `Daemon`-role device reaches only the sessions of
+/// its own origin, §8 R2). A `Local` caller keeps the unmarked connection,
+/// byte-identical to before. `Unknown`/`Absent` never reach a body — the door
+/// refuses them — and keep it too.
+///
+/// `paired_by_user` and the transport binding come from the peer's row: the
+/// ownership check for a `Client`-role device compares against the user that
+/// ran the pairing, and the binding is the facts recorded at pairing time.
+/// Dispatch reads no field of the binding — the handshake owned it — so a
+/// row-sourced copy is the truthful thing to carry, not a fresh measurement.
+fn caller_conn(state: &ServerState, caller: &McpCaller) -> Arc<crate::session::ConnHandle> {
+    match caller {
+        McpCaller::Peer {
+            device_id,
+            role,
+            caps,
+        } => {
+            let record = state.peer_get(device_id).ok().flatten();
+            let binding = crate::peer_policy::TransportBinding {
+                kind: record
+                    .as_ref()
+                    .map(|record| record.binding_kind.clone())
+                    .unwrap_or_default(),
+                stable_id: record
+                    .as_ref()
+                    .and_then(|record| record.binding_stable_id.clone())
+                    .unwrap_or_default(),
+                node_name: record
+                    .as_ref()
+                    .and_then(|record| record.binding_node_name.clone())
+                    .unwrap_or_default(),
+                login_name: record
+                    .as_ref()
+                    .and_then(|record| record.binding_login_name.clone())
+                    .unwrap_or_default(),
+            };
+            crate::session::ConnHandle::with_peer_caps(
+                0,
+                None,
+                Some(crate::peer_policy::ConnPeer::Remote {
+                    device_id: device_id.clone(),
+                    role: *role,
+                    paired_by_user: record.and_then(|record| record.paired_by_user),
+                    binding,
+                }),
+                caps.clone(),
+            )
+        }
+        McpCaller::Local | McpCaller::Unknown | McpCaller::Absent => {
+            crate::session::ConnHandle::with_peer(0, None)
+        }
+    }
+}
+
 /// The audit identity for one tool call. A peer-origin caller names its device
 /// and role, never `"local"`; an unestablishable origin names `"unknown"`,
 /// never the benign one. Local callers keep exactly what they had: this
@@ -1078,7 +1137,7 @@ fn handle_rpc(
                 let Some(target) = target else {
                     return Ok(Some(rpc_error(id, -32602, "target agent not found")));
                 };
-                let internal_conn = crate::session::ConnHandle::with_peer(0, None);
+                let internal_conn = caller_conn(state, &caller);
                 match state.sessions.agent_message_send(
                     &registration.session_id,
                     &target.session.id,
@@ -4488,6 +4547,115 @@ mod tests {
         assert_eq!(
             response_json(&missing).pointer("/error/message"),
             Some(&json!("target agent not found"))
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// F4 (MAX RECALL, authority): the tool's act is performed AS the caller.
+    /// The send used to act through an unmarked connection, so a peer's
+    /// delivery read `local` to the receiving agent (S4-05) and carried the
+    /// steer-refusal interrupt authority the wire denies every peer (S4-01).
+    /// The connection now carries the caller's resolved identity: the envelope
+    /// arrives naming the device, exactly as the wire's own S4-05 test pins.
+    #[test]
+    fn a_peer_tool_send_is_attributed_to_the_peer() {
+        let state = ServerState::new("mcp-f4-send".to_string());
+        let owner = owner("S-1-5-21-f4-user", "mcp-f4-client");
+        let creator = "s.peer.7".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-f4-send", crate::peer_policy::PeerRole::Client),
+        );
+        let received = crate::session::insert_test_live_agent_with_recording_writer(
+            &state.sessions,
+            "s.f4.target",
+            owner.clone(),
+            SessionKind::Pi,
+        );
+        let mut row = peer_row("device-f4-send", &["view", "send"]);
+        row.paired_by_user = Some("S-1-5-21-f4-user".to_string());
+        state.peer_upsert(row).expect("store a peer");
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let reply = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_send_message","arguments":{"to_agent":"s.f4.target","text":"hello from the peer"}}}"#,
+        );
+        let body = response_json(&reply);
+        assert_eq!(
+            body.pointer("/result/isError"),
+            Some(&json!(false)),
+            "a paired client-role device may message its own user's agents: {body}"
+        );
+        let envelope = String::from_utf8(received.lock().expect("received").clone())
+            .expect("the envelope is utf8");
+        assert!(
+            envelope.contains("origin: peer:device-f4-send"),
+            "the delivery must name the device, not this machine: {envelope}"
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// The same identity, judged with the wire's own scope (§8 R2): a
+    /// `Daemon`-role device's reach is the sessions of its own origin, so its
+    /// agent cannot put a message in front of a session it did not create —
+    /// including this machine's own. The old unmarked connection passed this
+    /// call and misattributed it; now the scope check sees the device.
+    #[test]
+    fn a_daemon_role_tool_send_beyond_its_origin_is_refused() {
+        let state = ServerState::new("mcp-f4-scope".to_string());
+        let owner = owner("S-1-5-21-f4d-user", "mcp-f4d-client");
+        let creator = "s.peer.8".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-f4-scope", crate::peer_policy::PeerRole::Daemon),
+        );
+        let received = crate::session::insert_test_live_agent_with_recording_writer(
+            &state.sessions,
+            "s.f4d.local",
+            owner.clone(),
+            SessionKind::Pi,
+        );
+        let mut row = peer_row("device-f4-scope", &["view", "send"]);
+        row.paired_by_user = Some("S-1-5-21-f4d-user".to_string());
+        state.peer_upsert(row).expect("store a peer");
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let reply = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_send_message","arguments":{"to_agent":"s.f4d.local","text":"hello from outside my scope"}}}"#,
+        );
+        let body = response_json(&reply);
+        assert_eq!(
+            body.pointer("/result/isError"),
+            Some(&json!(true)),
+            "a daemon-role device cannot reach a session outside its origin: {body}"
+        );
+        assert!(
+            body.pointer("/result/content/0/text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("not authorized")),
+            "the refusal is the ownership sentence: {body}"
+        );
+        assert!(
+            received.lock().expect("received").is_empty(),
+            "the refused delivery must deliver nothing"
         );
         drop(guard);
         drop(server);
