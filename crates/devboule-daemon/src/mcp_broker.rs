@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use crate::journal::AuditRecord;
 use devboule_protocol::{
-    CreateAgentCard, OwnerId, PermissionOption, PermissionOutcome, SessionEvent, SessionKind,
-    SessionOrigin, ToolPolicyEntry, WireError,
+    CreateAgentCard, OwnerId, PeerRole, PermissionOption, PermissionOutcome, SessionEvent,
+    SessionKind, SessionOrigin, SessionOriginKind, ToolPolicyEntry, WireError,
 };
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -692,6 +692,133 @@ fn handle_connection(
     }
 }
 
+/// Who is calling through this bearer, resolved once per `tools/call` from the
+/// registry row for `registration.session_id` — never from the loopback
+/// connection, which is this machine's own by construction and lies about a
+/// peer's child by design (see `session.rs::caller_origin`).
+///
+/// `Local` is the person at this machine's own agent: the door allows without
+/// consulting the policy, so local behaviour and sentences are byte-identical.
+/// `Peer` carries the device, the role it was paired as, and that device's
+/// current capability set (fail-closed: a missing, unreadable or revoked row
+/// holds nothing). `Unknown` is a stored origin the daemon cannot establish —
+/// an `Unknown` row, or a peer-shaped row without a device or a role — and the
+/// door refuses it hard: unlike absence it never resolves. `Absent` is no
+/// readable row at all, and the door refuses it with the pre-existing retryable
+/// absence sentence: an agent's first call can land before its own commit, and
+/// a reaped session's in-flight calls outlive its row, and in both cases the
+/// ecosystem already retries exactly that sentence. Absent is still a refusal —
+/// on a consent surface the unknown never renders as the benign one — but it
+/// is a transient refusal, not a verdict.
+#[derive(Debug)]
+enum McpCaller {
+    Local,
+    Peer {
+        device_id: String,
+        role: PeerRole,
+        caps: Vec<String>,
+    },
+    Unknown,
+    Absent,
+}
+
+fn resolve_mcp_caller(state: &ServerState, caller_session_id: &str) -> McpCaller {
+    let Some(origin) = state.sessions.caller_origin(caller_session_id) else {
+        return McpCaller::Absent;
+    };
+    match origin.kind {
+        SessionOriginKind::Local => McpCaller::Local,
+        SessionOriginKind::Peer => match (origin.device_id, origin.role) {
+            (Some(device_id), Some(role)) => {
+                let caps = state.peer_caps(&device_id);
+                McpCaller::Peer {
+                    device_id,
+                    role,
+                    caps,
+                }
+            }
+            _ => McpCaller::Unknown,
+        },
+        SessionOriginKind::Unknown => McpCaller::Unknown,
+    }
+}
+
+/// The tool door: judge what this call performs with the same `peer_allows`
+/// function the wire dispatcher uses, on the wire equivalents the closed table
+/// (`peer_policy::mcp_tool_wire`) names. The first `Deny` wins and nothing is
+/// touched; the refusal carries the policy's own sentence, rendered as the wire
+/// renders it.
+///
+/// Returns the reply to send when the call is refused before touching anything.
+/// `None` means allowed (local callers always; peers whose device holds every
+/// capability the tool's equivalents name; the explicitly unjudged list tool;
+/// unknown tool names, which fall through to the broker's own `Unknown tool`
+/// arm that touches nothing). Every `Some` is a refusal, never the benign
+/// reading: the unknown-origin case hard, the absent-row case with the
+/// retryable absence sentence.
+fn mcp_peer_door(caller: &McpCaller, tool_name: Option<&str>, id: &Value) -> Option<Value> {
+    let tool = tool_name?;
+    match caller {
+        McpCaller::Local => None,
+        McpCaller::Peer { role, caps, .. } => {
+            crate::peer_policy::mcp_tool_denial(*role, caps, tool).map(|reason| {
+                rpc_error(
+                    id.clone(),
+                    -32601,
+                    &crate::peer_policy::capability_refusal_message(reason),
+                )
+            })
+        }
+        McpCaller::Unknown => Some(rpc_error(
+            id.clone(),
+            -32601,
+            "the calling session's origin is unknown; the call is refused",
+        )),
+        // No readable row: refuse, retryably, with the sentence every caller
+        // already retries — the arms below used to answer absence themselves
+        // (create with "No session with that id.", the roster with whatever it
+        // could list), and the stub's retry loop recognises exactly this one.
+        McpCaller::Absent => Some(rpc_error(id.clone(), -32601, "No session with that id.")),
+    }
+}
+
+/// The audit identity for one tool call. A peer-origin caller names its device
+/// and role, never `"local"`; an unestablishable origin names `"unknown"`,
+/// never the benign one. Local callers keep exactly what they had: this
+/// device's id with `"local"`.
+fn audit_mcp_tool(
+    state: &ServerState,
+    caller: &McpCaller,
+    action: &str,
+    session_id: &str,
+    outcome: &str,
+) {
+    let (device_id, role) = match caller {
+        McpCaller::Local => match state.device_identity() {
+            Ok(identity) => (identity.device_id.clone(), "local".to_string()),
+            Err(_) => return,
+        },
+        McpCaller::Peer {
+            device_id, role, ..
+        } => (device_id.clone(), role.as_str().to_string()),
+        // Who called cannot be established; the audit says so rather than the
+        // benign thing. Both absences share the label: the refusal message the
+        // caller saw already distinguishes the transient one.
+        McpCaller::Unknown | McpCaller::Absent => match state.device_identity() {
+            Ok(identity) => (identity.device_id.clone(), "unknown".to_string()),
+            Err(_) => return,
+        },
+    };
+    state.audit(AuditRecord {
+        device_id,
+        role,
+        claimed_origin: None,
+        action: action.to_string(),
+        session_id: Some(session_id.to_string()),
+        outcome: outcome.to_string(),
+    });
+}
+
 fn handle_rpc(
     state: &Arc<ServerState>,
     broker: &McpBroker,
@@ -740,6 +867,17 @@ fn handle_rpc(
         }
         "tools/call" => {
             let tool_name = message.pointer("/params/name").and_then(Value::as_str);
+            // The origin door runs before every other guard: who is calling is
+            // resolved once from the registry row, and a peer is judged with the
+            // same `peer_allows` the wire dispatcher uses before anything is
+            // touched. Local callers pass through untouched.
+            let caller = resolve_mcp_caller(state, &registration.session_id);
+            if let Some(refusal) = mcp_peer_door(&caller, tool_name, &id) {
+                if let Some(tool) = tool_name {
+                    audit_mcp_tool(state, &caller, tool, &registration.session_id, "denied");
+                }
+                return Ok(Some(refusal));
+            }
             // The policy guard runs before the name check, so a disabled tool
             // is refused for the reason that actually applies and an
             // unserved name cannot be probed past the policy.
@@ -862,18 +1000,16 @@ fn handle_rpc(
                     outcome,
                     &|device_id| state.peer_caps(device_id),
                 );
-                let identity = state.device_identity();
+                // The audit names who called: the caller's device and role for a
+                // peer (`resolve_mcp_caller` above), never `"local"` for one.
                 let audit = |outcome_label: &str| {
-                    if let Ok(identity) = identity {
-                        state.audit(AuditRecord {
-                            device_id: identity.device_id.clone(),
-                            role: "local".to_string(),
-                            claimed_origin: None,
-                            action: crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL.to_string(),
-                            session_id: Some(registration.session_id.clone()),
-                            outcome: outcome_label.to_string(),
-                        });
-                    }
+                    audit_mcp_tool(
+                        state,
+                        &caller,
+                        crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL,
+                        &registration.session_id,
+                        outcome_label,
+                    );
                 };
                 match result {
                     Ok(()) => {
@@ -926,18 +1062,16 @@ fn handle_rpc(
                     profile_arg,
                     &|requested| resolve_profile_for_move(&state.agent_profiles, requested),
                 );
-                let identity = state.device_identity();
+                // The audit names who called: the caller's device and role for a
+                // peer (`resolve_mcp_caller` above), never `"local"` for one.
                 let audit = |outcome_label: &str| {
-                    if let Ok(identity) = identity {
-                        state.audit(AuditRecord {
-                            device_id: identity.device_id.clone(),
-                            role: "local".to_string(),
-                            claimed_origin: None,
-                            action: crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL.to_string(),
-                            session_id: Some(registration.session_id.clone()),
-                            outcome: outcome_label.to_string(),
-                        });
-                    }
+                    audit_mcp_tool(
+                        state,
+                        &caller,
+                        crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL,
+                        &registration.session_id,
+                        outcome_label,
+                    );
                 };
                 match result {
                     Ok(()) => {
@@ -2637,6 +2771,9 @@ mod tests {
     fn a_bearers_tool_name_cannot_reach_the_agent_profile_store() {
         let state = ServerState::new("mcp-agent-profiles".to_string());
         let owner = owner("mcp-profile-user", "mcp-profile-client");
+        // The caller is a live local session: the tool door resolves every
+        // bearer to its registry row, and a rowless registration is refused.
+        crate::session::insert_test_live_agent(&state.sessions, "session", owner.clone());
         let guard = state
             .mcp
             .register("session", &owner, &SessionKind::Acp)
@@ -2720,6 +2857,9 @@ mod tests {
     fn the_answer_tool_offers_allow_once_or_deny_and_nothing_else() {
         let state = ServerState::new("mcp-answer-c8".to_string());
         let owner = owner("mcp-answer-user", "mcp-answer-client");
+        // The caller is a live local session: the tool door resolves every
+        // bearer to its registry row, and a rowless registration is refused.
+        crate::session::insert_test_live_agent(&state.sessions, "session", owner.clone());
         let guard = state
             .mcp
             .register("session", &owner, &SessionKind::Acp)
@@ -2870,6 +3010,9 @@ mod tests {
     fn the_move_tool_is_listed_with_a_closed_schema_and_demands_both_arguments() {
         let state = ServerState::new("mcp-move-schema".to_string());
         let owner = owner("mcp-move-user", "mcp-move-client");
+        // The caller is a live local session: the tool door resolves every
+        // bearer to its registry row, and a rowless registration is refused.
+        crate::session::insert_test_live_agent(&state.sessions, "session", owner.clone());
         let guard = state
             .mcp
             .register("session", &owner, &SessionKind::Acp)
@@ -3110,6 +3253,479 @@ mod tests {
         drop(server);
     }
 
+    // ------------------------------------------------------------------
+    // P0 — the broker asks where its caller came from, once, at the door.
+    // ------------------------------------------------------------------
+
+    /// A `peers` row the door's capability reads can see.
+    fn peer_row(device_id: &str, caps: &[&str]) -> crate::journal::PeerRecord {
+        crate::journal::PeerRecord {
+            device_id: device_id.to_string(),
+            display_name: "Peer".to_string(),
+            role: "client".to_string(),
+            public_key: vec![7u8; 32],
+            paired_by_user: None,
+            binding_kind: "tailnet".to_string(),
+            binding_stable_id: Some("npeer".to_string()),
+            binding_node_name: None,
+            binding_login_name: None,
+            address: "100.64.0.2:47831".to_string(),
+            paired_at: 1,
+            revoked_at: None,
+            caps: caps.iter().map(|cap| cap.to_string()).collect(),
+        }
+    }
+
+    /// The door is a no-op for the person at this machine: every served tool
+    /// passes, and unknown names fall through to the broker's own arm. This is
+    /// the local case that must not regress — same behaviour, same sentences.
+    #[test]
+    fn local_callers_pass_the_door_for_every_tool() {
+        let caller = McpCaller::Local;
+        for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+            assert!(
+                mcp_peer_door(&caller, Some(name), &json!(1)).is_none(),
+                "{name}: a local caller is never judged"
+            );
+        }
+        assert!(mcp_peer_door(&caller, Some("devboule_no_such_tool"), &json!(1)).is_none());
+        assert!(mcp_peer_door(&caller, None, &json!(1)).is_none());
+    }
+
+    /// A bearer with no readable row is refused, but retryably: an agent's first
+    /// call can land before its own commit, and a reaped session's in-flight
+    /// calls outlive its row, and the ecosystem retries exactly this sentence.
+    /// Still a refusal — never the local person's answer. (This is why the older
+    /// tests above register their callers as live local sessions first.)
+    #[test]
+    fn a_caller_without_a_row_is_refused_as_absent() {
+        let state = ServerState::new("mcp-p0-norow".to_string());
+        let owner = owner("mcp-p0-norow-user", "mcp-p0-norow-client");
+        let guard = state
+            .mcp
+            .register("ghost", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("ghost").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_list_agents"}}"#,
+        );
+        let body = response_json(&response);
+        assert_eq!(body.pointer("/error/code"), Some(&json!(-32601)));
+        assert_eq!(
+            body.pointer("/error/message"),
+            Some(&json!("No session with that id.")),
+            "absent is a refusal, and a retryable one: {body}"
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// A stored `Unknown` origin is not an absence: it never resolves, so the
+    /// refusal is hard rather than retryable.
+    #[test]
+    fn a_caller_with_an_unknown_origin_is_refused_hard() {
+        let state = ServerState::new("mcp-p0-unknown".to_string());
+        let owner = owner("mcp-p0-unknown-user", "mcp-p0-unknown-client");
+        let creator = "s.unknown.1".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state
+            .sessions
+            .set_test_origin(&creator, SessionOrigin::unknown());
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_list_agents"}}"#,
+        );
+        let body = response_json(&response);
+        assert_eq!(body.pointer("/error/code"), Some(&json!(-32601)));
+        assert!(
+            body.pointer("/error/message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("origin is unknown")),
+            "a stored unknown never renders as the benign one: {body}"
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// A peer-origin caller is refused the profile move with the policy's own
+    /// model sentence — even holding every capability — and the child is
+    /// untouched: the door returns before the move's checks run, so no mode
+    /// ask lands, no model ask lands, and no profile change is recorded.
+    #[test]
+    fn a_peer_caller_is_refused_the_model_half_with_the_policy_sentence() {
+        let state = ServerState::new("mcp-p0-peer-model".to_string());
+        let owner = owner("mcp-p0-model-user", "mcp-p0-model-client");
+        state
+            .agent_profiles
+            .set(
+                serde_json::from_value(document(
+                    vec![profile(
+                        "Solo",
+                        "profile-solo",
+                        "claude",
+                        "bypassPermissions",
+                        serde_json::json!({}),
+                        &[],
+                        true,
+                    )],
+                    "",
+                ))
+                .expect("the document"),
+            )
+            .expect("the store admits this document");
+        let creator = "s.peer.1".to_string();
+        let child = "s.peer.1.child".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state.sessions.insert_test_move_child(
+            &child,
+            owner.clone(),
+            &creator,
+            "Worker",
+            &["bypassPermissions"],
+            Some("model-a"),
+            false,
+        );
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-p0", crate::peer_policy::PeerRole::Client),
+        );
+        state
+            .peer_upsert(peer_row(
+                "device-p0",
+                &["view", "send", "answer_permissions", "create_sessions"],
+            ))
+            .expect("store a peer");
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_set_agent_profile","arguments":{"session":"Worker","profile":"Solo"}}}"#,
+        );
+        let body = response_json(&response);
+        assert_eq!(body.pointer("/error/code"), Some(&json!(-32601)));
+        assert_eq!(
+            body.pointer("/error/message"),
+            Some(&json!("capability 'session.set_model' was not negotiated")),
+            "the policy's own sentence: {body}"
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// Without `send` the same call is refused one half earlier, with that
+    /// half's own sentence: the two refusals must not read the same.
+    #[test]
+    fn a_peer_without_send_is_refused_the_mode_half_first() {
+        let state = ServerState::new("mcp-p0-peer-mode".to_string());
+        let owner = owner("mcp-p0-mode-user", "mcp-p0-mode-client");
+        let creator = "s.peer.2".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-p0-mode", crate::peer_policy::PeerRole::Client),
+        );
+        state
+            .peer_upsert(peer_row("device-p0-mode", &["view"]))
+            .expect("store a peer");
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_set_agent_profile","arguments":{"session":"Worker","profile":"Solo"}}}"#,
+        );
+        let body = response_json(&response);
+        assert_eq!(
+            body.pointer("/error/message"),
+            Some(&json!("capability 'send' was not negotiated")),
+            "the mode half fires first: {body}"
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// The audit row for a peer-origin caller names the device, not `"local"`.
+    #[test]
+    fn a_peer_denial_is_audited_under_the_device_not_local() {
+        let state = ServerState::new("mcp-p0-audit".to_string());
+        let owner = owner("mcp-p0-audit-user", "mcp-p0-audit-client");
+        let store = Arc::clone(&state.delegation);
+        store.set(true).expect("set on");
+        let creator = "s.peer.3".to_string();
+        let child = "s.peer.3.child".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state
+            .sessions
+            .insert_test_child(&child, owner.clone(), &creator);
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-p0-audit", crate::peer_policy::PeerRole::Client),
+        );
+        // No `answer_permissions` on the row: the door refuses.
+        state
+            .peer_upsert(peer_row("device-p0-audit", &["view"]))
+            .expect("store a peer");
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let runtime = Arc::new(crate::session::SessionRuntime::new());
+        runtime.require_mcp();
+        state.mcp.bind_runtime(&creator, &runtime);
+        state.sessions.test_park_card(&child, "card-p0");
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_answer_permission","arguments":{"cardId":"card-p0","outcome":"deny"}}}"#,
+        );
+        let body = response_json(&response);
+        assert_eq!(body.pointer("/error/code"), Some(&json!(-32601)));
+        assert!(
+            body.pointer("/error/message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("answer_permissions")),
+            "{body}"
+        );
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        let connection =
+            rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+        let mut statement = connection
+            .prepare("SELECT device_id, role, action, session_id, outcome FROM audit ORDER BY id")
+            .expect("prepare");
+        let rows: Vec<(String, String, String, Option<String>, String)> = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .expect("query")
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            rows.contains(&(
+                "device-p0-audit".to_string(),
+                "client".to_string(),
+                crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL.to_string(),
+                Some(creator.clone()),
+                "denied".to_string()
+            )),
+            "the log names the device, never local: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|(_, role, action, _, _)| role == "local"
+                && action == crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL),
+            "no peer denial is ever recorded as local: {rows:?}"
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// The roster is the `view` act: a peer without it is refused, a peer with
+    /// it is answered — and past the door the behaviour is the local behaviour.
+    #[test]
+    fn a_peer_roster_is_the_view_act() {
+        let state = ServerState::new("mcp-p0-roster".to_string());
+        let owner = owner("mcp-p0-roster-user", "mcp-p0-roster-client");
+        let creator = "s.peer.4".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-p0-roster", crate::peer_policy::PeerRole::Client),
+        );
+        state
+            .peer_upsert(peer_row("device-p0-roster", &[]))
+            .expect("store a peer");
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let refused = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_list_agents"}}"#,
+        );
+        assert_eq!(
+            response_json(&refused).pointer("/error/message"),
+            Some(&json!("capability 'view' was not negotiated"))
+        );
+        state
+            .peer_upsert(peer_row("device-p0-roster", &["view"]))
+            .expect("grant view");
+        let allowed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_list_agents"}}"#,
+        );
+        assert_eq!(response_json(&allowed)["result"]["isError"], false);
+        drop(guard);
+        drop(server);
+    }
+
+    /// The sender is the `send` act: past a refused door the next check reads
+    /// exactly what a local caller reads.
+    #[test]
+    fn a_peer_send_is_the_send_act() {
+        let state = ServerState::new("mcp-p0-send".to_string());
+        let owner = owner("mcp-p0-send-user", "mcp-p0-send-client");
+        let creator = "s.peer.5".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-p0-send", crate::peer_policy::PeerRole::Client),
+        );
+        state
+            .peer_upsert(peer_row("device-p0-send", &["view"]))
+            .expect("store a peer");
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let refused = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_send_message","arguments":{"to_agent":"nobody","text":"hi"}}}"#,
+        );
+        assert_eq!(
+            response_json(&refused).pointer("/error/message"),
+            Some(&json!("capability 'send' was not negotiated"))
+        );
+        state
+            .peer_upsert(peer_row("device-p0-send", &["view", "send"]))
+            .expect("grant send");
+        // Past the door, the missing target reads as it does for a local caller.
+        let missing = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_send_message","arguments":{"to_agent":"nobody","text":"hi"}}}"#,
+        );
+        assert_eq!(
+            response_json(&missing).pointer("/error/message"),
+            Some(&json!("target agent not found"))
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// Creation is the `create_sessions` act: past the door the profile check
+    /// reads exactly what a local caller reads.
+    #[test]
+    fn a_peer_create_is_the_create_act() {
+        let state = ServerState::new("mcp-p0-create".to_string());
+        let owner = owner("mcp-p0-create-user", "mcp-p0-create-client");
+        let creator = "s.peer.6".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-p0-create", crate::peer_policy::PeerRole::Client),
+        );
+        state
+            .peer_upsert(peer_row("device-p0-create", &["view"]))
+            .expect("store a peer");
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let refused = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_create_agent","arguments":{"profile":"Solo","title":"Kid","initialPrompt":"hi"}}}"#,
+        );
+        assert_eq!(
+            response_json(&refused).pointer("/error/message"),
+            Some(&json!("capability 'create_sessions' was not negotiated"))
+        );
+        state
+            .peer_upsert(peer_row("device-p0-create", &["view", "create_sessions"]))
+            .expect("grant create");
+        // Past the door, the profile check reads as it does for a local caller.
+        let missing = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_create_agent","arguments":{"profile":"Solo","title":"Kid","initialPrompt":"hi"}}}"#,
+        );
+        let body = response_json(&missing);
+        assert_eq!(body["result"]["isError"], true);
+        assert!(
+            body["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("profile")),
+            "past the door, the empty store reads as it does for a local caller: {body}"
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    /// The ticked list performs nothing judged: a peer holding nothing reads it.
+    #[test]
+    fn a_peer_reads_the_ticked_list_holding_nothing() {
+        let state = ServerState::new("mcp-p0-list".to_string());
+        let owner = owner("mcp-p0-list-user", "mcp-p0-list-client");
+        let creator = "s.peer.7".to_string();
+        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        state.sessions.set_test_origin(
+            &creator,
+            SessionOrigin::peer("device-p0-list", crate::peer_policy::PeerRole::Client),
+        );
+        state
+            .peer_upsert(peer_row("device-p0-list", &[]))
+            .expect("store a peer");
+        let guard = state
+            .mcp
+            .register(&creator, &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token(&creator).expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_list_profiles"}}"#,
+        );
+        let body = response_json(&response);
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        drop(guard);
+        drop(server);
+    }
+
     #[test]
     fn broker_tools_list_is_the_readiness_authority() {
         let state = ServerState::new("mcp-readiness".to_string());
@@ -3192,6 +3808,9 @@ mod tests {
     fn a_disabled_tool_is_refused_at_call_time_and_the_roster_still_answers() {
         let state = ServerState::new("mcp-tool-policy-call".to_string());
         let owner = owner("mcp-policy-user", "mcp-policy-client");
+        // The caller is a live local session: the tool door resolves every
+        // bearer to its registry row, and a rowless registration is refused.
+        crate::session::insert_test_live_agent(&state.sessions, "policy-session", owner.clone());
         let guard = state
             .mcp
             .register_with_provider(
@@ -3348,6 +3967,9 @@ mod tests {
             .register("unnamed-session", &owner, &SessionKind::Acp)
             .expect("registration")
             .expect("MCP guard");
+        // The caller is a live local session: the tool door resolves every
+        // bearer to its registry row, and a rowless registration is refused.
+        crate::session::insert_test_live_agent(&state.sessions, "unnamed-session", owner.clone());
         state
             .tool_policy
             .set("claude", Some(true), vec!["some_future_tool".to_string()])
@@ -3412,6 +4034,9 @@ mod tests {
     fn the_provider_registered_path_applies_that_policy() {
         let state = ServerState::new("mcp-tool-policy-gated".to_string());
         let owner = owner("mcp-policy-gated-user", "mcp-policy-gated-client");
+        // The caller is a live local session: the tool door resolves every
+        // bearer to its registry row, and a rowless registration is refused.
+        crate::session::insert_test_live_agent(&state.sessions, "gated-session", owner.clone());
         let guard = state
             .mcp
             .register_with_provider(

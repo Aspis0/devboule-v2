@@ -5248,19 +5248,31 @@ fn a_child_born_unattended_stays_unattended_after_its_profile_is_un_ticked() {
     );
 
     // A new creation is refused, and the sentence names no profile: an agent must
-    // not learn which profiles exist but are forbidden.
+    // not learn which profiles exist but are forbidden. The refusal arrives on
+    // its own clock — the first creation's own reply may land first or second,
+    // and the two sagas share no happens-before — so this waits for the sentence
+    // itself rather than a position (the file's own convention: order is not
+    // evidence; every assertion names the process it is talking about).
     let second = test.creator_session();
     let _ = test.attach(&second);
-    let calls = test.wait_for_observations("mcp calls.txt", 2);
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let line = loop {
+        let lines = test.observations("mcp calls.txt");
+        if let Some(line) = lines
+            .iter()
+            .find(|line| line.contains("no profile is enabled for agents"))
+        {
+            break line.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the unticked refusal never arrived: {lines:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert!(
-        calls[1].contains("no profile is enabled for agents"),
-        "the refusal is the sentence §2 names: {}",
-        calls[1]
-    );
-    assert!(
-        !calls[1].contains("runner"),
-        "the refusal must not leak what exists but is forbidden: {}",
-        calls[1]
+        !line.contains("runner"),
+        "the refusal must not leak what exists but is forbidden: {line}"
     );
 }
 

@@ -2016,18 +2016,37 @@ impl AgentCreator {
     ///
     /// A local creator is this daemon's own person: allowed. A peer's creator is
     /// a session that device already created, so its child is a session on that
-    /// device and the same capability gate applies to it. The lookup is
-    /// fail-closed — an unknown, unreadable or revoked device holds nothing —
-    /// and an origin the daemon cannot read is not a licence either.
+    /// device and the same capability gate applies to it — judged with the same
+    /// `peer_allows` function the dispatcher and the broker door use, on the same
+    /// wire message the door names for this tool (`SessionCreate`; that arm reads
+    /// only the capability set, so the placeholder kind never decides). The lookup
+    /// is fail-closed — an unknown, unreadable or revoked device holds nothing —
+    /// and an origin the daemon cannot read (peer-shaped without device or role)
+    /// is not a licence either.
     pub(crate) fn may_create_sessions(&self, state: &crate::server::ServerState) -> bool {
         match self.origin.kind {
             SessionOriginKind::Local => true,
-            SessionOriginKind::Peer => self.origin.device_id.as_deref().is_some_and(|device| {
-                state
-                    .peer_caps(device)
-                    .iter()
-                    .any(|cap| cap == crate::peer_policy::CAP_CREATE_SESSIONS)
-            }),
+            SessionOriginKind::Peer => {
+                let (Some(device), Some(role)) =
+                    (self.origin.device_id.as_deref(), self.origin.role)
+                else {
+                    return false;
+                };
+                let caps = state.peer_caps(device);
+                let request = devboule_protocol::ClientMessage::SessionCreate {
+                    id: 0,
+                    workspace_id: None,
+                    kind: SessionKind::Claude,
+                    provider: None,
+                    mode: None,
+                    display_name: None,
+                    idempotency_key: None,
+                };
+                matches!(
+                    crate::peer_policy::peer_allows(role, &caps, &request),
+                    crate::peer_policy::PeerDecision::Allow
+                )
+            }
             SessionOriginKind::Unknown => false,
         }
     }
@@ -4276,20 +4295,39 @@ impl SessionRegistry {
             Ok(())
         };
         // Check 5's closure: a creator whose stored origin is a paired
-        // device answers only when that device holds `answer_permissions` —
-        // the same capability the human path's peer gate requires. A local
-        // creator is the person at this machine's own agent.
+        // device answers only what the peer gate allows — judged with the same
+        // `peer_allows` function the dispatcher uses, on the same wire message
+        // the broker door names for this tool (`SessionPermissionRespond`), never
+        // a copy of its conclusions. A local creator is the person at this
+        // machine's own agent. A peer-shaped row without a device or role is
+        // an unknown, and the unknown never renders as the benign one.
         let caps_check = |_: &str| -> Result<(), String> {
             if creator_origin.kind == SessionOriginKind::Peer {
-                let device_id = creator_origin.device_id.as_deref().unwrap_or_default();
-                if !device_caps(device_id)
-                    .iter()
-                    .any(|cap| cap == crate::peer_policy::CAP_ANSWER_PERMISSIONS)
-                {
+                let (Some(device_id), Some(role)) =
+                    (creator_origin.device_id.as_deref(), creator_origin.role)
+                else {
                     return Err(
-                        "your device does not hold answer_permissions; the card stays pending"
+                        "the calling session's origin is unknown; the card stays pending"
                             .to_string(),
                     );
+                };
+                let caps = device_caps(device_id);
+                let request = devboule_protocol::ClientMessage::SessionPermissionRespond {
+                    id: 0,
+                    session_id: String::new(),
+                    subscription_id: 0,
+                    request_id: String::new(),
+                    outcome: devboule_protocol::PermissionOutcome::Deny,
+                    option_id: None,
+                    idempotency_key: None,
+                };
+                if let crate::peer_policy::PeerDecision::Deny(reason) =
+                    crate::peer_policy::peer_allows(role, &caps, &request)
+                {
+                    return Err(format!(
+                        "{}; the card stays pending",
+                        crate::peer_policy::capability_refusal_message(reason)
+                    ));
                 }
             }
             Ok(())
@@ -7193,6 +7231,33 @@ impl SessionRegistry {
         Some((kind, entry.runtime().current_mode_id()))
     }
 
+    /// The stored origin of the session behind `session_id`, for the MCP tool
+    /// door (`mcp_broker.rs`). Read from the registry row, never from the
+    /// loopback connection the broker holds: that socket is this machine's own
+    /// by construction, so reading it would label a peer's child as local.
+    ///
+    /// `None` is every way there is no readable row — absent, or a poisoned
+    /// lock — and the door refuses it with the pre-existing retryable absence
+    /// sentence, never as the local person. Absence is transient by construction:
+    /// an agent's first call can land before its own commit (the stub documents
+    /// the race and retries exactly that sentence), and a reaped session's
+    /// in-flight calls outlive its row; in both cases the row a retry finds a
+    /// moment later is judged normally. A stored `Unknown` origin reads back as
+    /// itself (`Some`), and is refused hard at the door: unlike absence it never
+    /// resolves.
+    ///
+    /// This deliberately reads through the delivery window (`Configuring`): the
+    /// window hides a session from its *targets* (`peer_entry` refuses it, so no
+    /// peer path can act on a half-born session), but the caller's own origin
+    /// was written at the create before the journal row and is already a fact.
+    /// Refusing a configuring caller would turn a transient local birth into a
+    /// refusal for the session's own first tool calls.
+    pub(crate) fn caller_origin(&self, session_id: &str) -> Option<SessionOrigin> {
+        let map = self.inner.lock().ok()?;
+        let entry = map.get(session_id)?;
+        Some(entry.metadata().origin.clone())
+    }
+
     /// Whether `conn_peer` may reach `session_id` at all — asked *before* any
     /// question about what that session is (`session_mode_guard`, H6).
     ///
@@ -9375,6 +9440,17 @@ impl SessionRegistry {
         runtime
     }
 
+    /// Test-only: overwrite one live row's stored origin, so an out-of-module
+    /// test can drive the tool door as a peer's agent.
+    pub(crate) fn set_test_origin(&self, session_id: &str, origin: SessionOrigin) {
+        let mut map = self.inner.lock().expect("registry");
+        let live = map
+            .get_mut(session_id)
+            .and_then(RegistryEntry::as_peer_visible_mut)
+            .expect("live entry");
+        live.metadata.origin = origin;
+    }
+
     /// Test-only: park one permission card on a live session's broker, so an
     /// out-of-module test can answer one.
     pub(crate) fn test_park_card(&self, session_id: &str, card_id: &str) {
@@ -9721,6 +9797,150 @@ mod tests {
             vec!["view".to_string(), "answer_permissions".to_string()],
         )
         .expect("with the capability, the answer lands");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The P0 door's instance in the session layer refuses with the policy's own
+    /// sentence, rendered as the wire renders it — not the hand-written copy
+    /// that used to live here.
+    #[test]
+    fn a_peer_answer_refusal_is_the_policy_sentence() {
+        let (dir, registry, _journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-del-policy-sentence", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+        registry.attach_delegation(Arc::clone(&store));
+        store.set(true).expect("set on");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let child_runtime = insert_child(&registry, &child, owner.clone(), &creator);
+        {
+            let mut map = registry.inner.lock().expect("registry");
+            let live = map
+                .get_mut(&creator)
+                .and_then(RegistryEntry::as_peer_visible_mut)
+                .expect("creator entry");
+            live.metadata.origin = SessionOrigin::peer("device-policy", PeerRole::Client);
+        }
+        park_card(&registry, &child_runtime, "card-1");
+        let error = answer(
+            &registry,
+            &creator,
+            "card-1",
+            PermissionOutcome::AllowOnce,
+            vec!["view".to_string()],
+        )
+        .expect_err("the device holds no answer_permissions");
+        assert_eq!(
+            error, "capability 'answer_permissions' was not negotiated; the card stays pending",
+            "the policy's own sentence, plus what happens to the card: {error}"
+        );
+        assert_eq!(
+            child_runtime
+                .permission_broker()
+                .expect("broker")
+                .pending_len(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Fail-safe at the session layer: a peer-shaped row that names no device
+    /// (or no role) is an unknown, and the unknown is refused — never treated
+    /// as the local person.
+    #[test]
+    fn a_peer_shaped_row_without_a_device_is_refused() {
+        let (dir, registry, _journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-del-undevice", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+        let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+        registry.attach_delegation(Arc::clone(&store));
+        store.set(true).expect("set on");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let child_runtime = insert_child(&registry, &child, owner.clone(), &creator);
+        {
+            let mut map = registry.inner.lock().expect("registry");
+            let live = map
+                .get_mut(&creator)
+                .and_then(RegistryEntry::as_peer_visible_mut)
+                .expect("creator entry");
+            live.metadata.origin = SessionOrigin {
+                kind: SessionOriginKind::Peer,
+                device_id: None,
+                role: None,
+            };
+        }
+        park_card(&registry, &child_runtime, "card-1");
+        let error = answer(
+            &registry,
+            &creator,
+            "card-1",
+            PermissionOutcome::AllowOnce,
+            vec![
+                "view".to_string(),
+                "answer_permissions".to_string(),
+                "send".to_string(),
+                "create_sessions".to_string(),
+            ],
+        )
+        .expect_err("a device nobody named holds nothing");
+        assert!(error.contains("unknown"), "{error}");
+        assert_eq!(
+            child_runtime
+                .permission_broker()
+                .expect("broker")
+                .pending_len(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The door's reader: absent rows (and an unreadable lock) are `None`, live
+    /// local rows are `Some(local)`, and a stored `Unknown` reads back as itself.
+    /// (Peer rows read back as themselves; the C5 tests above pin that half.)
+    #[test]
+    fn caller_origin_is_none_without_a_row_and_local_for_a_local_row() {
+        let (dir, registry, _journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-origin-reader", "proc-1");
+        assert_eq!(registry.caller_origin("s.nobody.1"), None);
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        assert_eq!(
+            registry.caller_origin(&creator),
+            Some(SessionOrigin::local())
+        );
+        // A stored `Unknown` is a fact, not an absence: it reads back as itself
+        // so the door refuses it hard rather than retryably.
+        {
+            let mut map = registry.inner.lock().expect("registry");
+            let live = map
+                .get_mut(&creator)
+                .and_then(RegistryEntry::as_peer_visible_mut)
+                .expect("creator entry");
+            live.metadata.origin = SessionOrigin::unknown();
+        }
+        assert_eq!(
+            registry.caller_origin(&creator),
+            Some(SessionOrigin::unknown())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Fail-safe: a poisoned lock reads as no row — refused, never local.
+    #[test]
+    fn caller_origin_is_none_when_the_lock_is_poisoned() {
+        let (dir, registry, _journal) = tmp_delete_registry();
+        let owner = test_owner("s5b-origin-poison", "proc-1");
+        let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+        insert_live_agent(&registry, &creator, owner.clone());
+        let inner = Arc::clone(&registry.inner);
+        let _ = std::thread::spawn(move || {
+            let _guard = inner.lock().unwrap();
+            panic!("poison the registry lock");
+        })
+        .join();
+        assert_eq!(registry.caller_origin(&creator), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

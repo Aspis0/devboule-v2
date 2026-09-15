@@ -358,6 +358,142 @@ pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
     prompt_skipping_mode(kind, mode_id).then_some(PROMPT_SKIPPING_REFUSED)
 }
 
+/// What one MCP broker tool performs, in the wire vocabulary this policy judges.
+///
+/// `Judged(requests)` — the tool performs these wire acts on the caller's behalf,
+/// and the door judges each with [`peer_allows`] (first `Deny` wins). The request
+/// fields are placeholders: no `peer_allows` arm reads a field, only the variant
+/// and the capability set, so the decision cannot depend on them.
+///
+/// `Unjudged(reason)` — the tool performs nothing the policy judges, and the
+/// reason says why. The only such tool is the ticked-profile list (below).
+///
+/// `None` (from [`mcp_tool_wire`]) is an unknown tool name — not served by the
+/// broker. The door lets it through to the broker's own `Unknown tool` arm,
+/// which touches nothing; the closed-table test fails for any *served* name
+/// without an arm here, so adding a tool without deciding its row is a red test.
+#[derive(Debug)]
+#[allow(dead_code)] // `Unjudged.0` is read by the closed-table test, not by prod code.
+pub enum McpToolWire {
+    Judged(Vec<ClientMessage>),
+    Unjudged(&'static str),
+}
+
+/// The permission table for the MCP tool door: every served tool's wire
+/// equivalent, in one closed place beside the policy it reuses.
+///
+/// - Roster (`devboule_list_agents`) reads the owner's live agents: the wire
+///   read `SessionsList`, the act `view` names.
+/// - Profile list (`devboule_list_profiles`) is `Unjudged`: it serves only the
+///   ticked subset (name, note, provider, model, mode, unattended prediction)
+///   the human enabled for agents to consume — not the full document
+///   `AgentProfilesGet` returns (unticked profiles, stable ids, tool overlays,
+///   standing instructions), which stays denied to every peer and no tool serves.
+///   The tick is the human's authorisation to disclose to agents, including a
+///   peer's agents that may create; without the list `create_agent` is
+///   undiscoverable (its own error sends the caller to the list).
+/// - Send (`devboule_send_message`) puts text into a session: `AgentMessageSend`,
+///   the act `send` names (`SessionSend` is the same capability).
+/// - Create (`devboule_create_agent`) makes a session on the caller's device:
+///   `SessionCreate`. The placeholder kind never decides: that arm reads only
+///   the capability set.
+/// - Answer (`devboule_answer_permission`) answers a permission moment:
+///   `SessionPermissionRespond`.
+/// - Move (`devboule_set_agent_profile`) applies a profile, which declares a
+///   mode *and* a model: `SessionSetMode` plus `SessionSetModel`. Both, always —
+///   the model-skip when the child already runs the profile's model is a
+///   runtime optimisation, not a permission fact, and permission must not depend
+///   on it (tomorrow's profile edit would silently widen a peer's grant).
+///   Since the model half is denied to every peer, a peer never applies a profile;
+///   a peer with `send` may still change modes over the wire `SessionSetMode`.
+pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
+    use crate::provider_catalog::{
+        MCP_ANSWER_PERMISSION_TOOL, MCP_CREATE_AGENT_TOOL, MCP_LIST_PROFILES_TOOL, MCP_ROSTER_TOOL,
+        MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL,
+    };
+    if tool == MCP_ROSTER_TOOL {
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
+            id: 0,
+        }]))
+    } else if tool == MCP_LIST_PROFILES_TOOL {
+        Some(McpToolWire::Unjudged(
+            "the ticked subset the human enabled for agents; the full-document read stays denied and unserved",
+        ))
+    } else if tool == MCP_SEND_MESSAGE_TOOL {
+        Some(McpToolWire::Judged(vec![ClientMessage::AgentMessageSend {
+            id: 0,
+            from_session: String::new(),
+            to_session: String::new(),
+            text: String::new(),
+            idempotency_key: None,
+        }]))
+    } else if tool == MCP_CREATE_AGENT_TOOL {
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionCreate {
+            id: 0,
+            workspace_id: None,
+            kind: SessionKind::Claude,
+            provider: None,
+            mode: None,
+            display_name: None,
+            idempotency_key: None,
+        }]))
+    } else if tool == MCP_ANSWER_PERMISSION_TOOL {
+        Some(McpToolWire::Judged(vec![
+            ClientMessage::SessionPermissionRespond {
+                id: 0,
+                session_id: String::new(),
+                subscription_id: 0,
+                request_id: String::new(),
+                outcome: devboule_protocol::PermissionOutcome::Deny,
+                option_id: None,
+                idempotency_key: None,
+            },
+        ]))
+    } else if tool == MCP_SET_AGENT_PROFILE_TOOL {
+        Some(McpToolWire::Judged(vec![
+            ClientMessage::SessionSetMode {
+                id: 0,
+                session_id: String::new(),
+                mode_id: String::new(),
+            },
+            ClientMessage::SessionSetModel {
+                id: 0,
+                session_id: String::new(),
+                model_id: None,
+                effort: None,
+            },
+        ]))
+    } else {
+        None
+    }
+}
+
+/// Judge one tool call for a peer with the same function the dispatcher uses:
+/// the policy's first `Deny` payload, or `None` when the tool is allowed.
+///
+/// `Unjudged` tools and unknown tool names both allow here: the former perform
+/// nothing judged, the latter fall through to the broker's own `Unknown tool`
+/// refusal, which touches nothing.
+pub fn mcp_tool_denial(role: PeerRole, caps: &[String], tool: &str) -> Option<&'static str> {
+    let judged = match mcp_tool_wire(tool)? {
+        McpToolWire::Judged(requests) => requests,
+        McpToolWire::Unjudged(_) => return None,
+    };
+    for request in &judged {
+        if let PeerDecision::Deny(reason) = peer_allows(role, caps, request) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
+/// Render a policy `Deny` payload the way the wire renders it
+/// (`server.rs::capability_not_supported`): the tool refuses with the policy's
+/// own sentence, not a paraphrase of it.
+pub fn capability_refusal_message(reason: &str) -> String {
+    format!("capability '{reason}' was not negotiated")
+}
+
 /// What the transport resolved about a peer at connection time. Kept beside
 /// the pinned key because the key is the credential and this is the *network*
 /// check that must also hold (`DESIGN-remote-agents.md` §8 R10: nothing may
@@ -934,6 +1070,130 @@ pub(crate) mod tests {
 
     fn allow() -> PeerDecision {
         PeerDecision::Allow
+    }
+
+    /// The P0 tool door's closed table: every tool the broker serves has an arm
+    /// in `mcp_tool_wire` — judged, or explicitly unjudged with its reason.
+    /// Removing one arm makes this red: the served list (`MCP_BROKER_TOOLS`) is
+    /// the same source the broker's `tools/list` reads, so a tool cannot be
+    /// served and unjudged at once.
+    #[test]
+    fn the_mcp_tool_table_covers_every_served_tool() {
+        use crate::provider_catalog::MCP_BROKER_TOOLS;
+        let mut names: Vec<&str> = Vec::new();
+        for (name, _) in MCP_BROKER_TOOLS {
+            names.push(name);
+            match mcp_tool_wire(name) {
+                Some(McpToolWire::Judged(requests)) => assert!(
+                    !requests.is_empty(),
+                    "{name}: a judged tool names at least one wire act"
+                ),
+                Some(McpToolWire::Unjudged(reason)) => {
+                    assert!(!reason.is_empty(), "{name}: an unjudged tool says why")
+                }
+                None => panic!("{name}: served by the broker but missing from the door table"),
+            }
+        }
+        // The table the brief convicted on, pinned by name so a rename fails
+        // loudly instead of silently unjudging a tool.
+        for expected in [
+            crate::provider_catalog::MCP_ROSTER_TOOL,
+            crate::provider_catalog::MCP_LIST_PROFILES_TOOL,
+            crate::provider_catalog::MCP_SEND_MESSAGE_TOOL,
+            crate::provider_catalog::MCP_CREATE_AGENT_TOOL,
+            crate::provider_catalog::MCP_SET_AGENT_PROFILE_TOOL,
+            crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL,
+        ] {
+            assert!(names.contains(&expected), "{expected} is served");
+        }
+    }
+
+    /// The door judges with `peer_allows`, per tool, for both roles: the role
+    /// never decides (the capability set does), the denials name the policy's
+    /// own payloads, and the move tool's two halves deny with two different
+    /// sentences — the mode half under `send`, the model half always.
+    #[test]
+    fn the_mcp_door_denies_with_the_policy_own_sentences() {
+        use crate::provider_catalog::*;
+        let none: Vec<String> = Vec::new();
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            assert_eq!(
+                mcp_tool_denial(role, &none, MCP_ROSTER_TOOL),
+                Some(CAP_VIEW)
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_ROSTER_TOOL),
+                None
+            );
+            // The ticked list performs nothing judged: allowed even holding
+            // nothing, for both roles.
+            assert_eq!(mcp_tool_denial(role, &none, MCP_LIST_PROFILES_TOOL), None);
+            assert_eq!(
+                mcp_tool_denial(role, &all_caps(), MCP_LIST_PROFILES_TOOL),
+                None
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &none, MCP_SEND_MESSAGE_TOOL),
+                Some(CAP_SEND)
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_SEND]), MCP_SEND_MESSAGE_TOOL),
+                None
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &none, MCP_CREATE_AGENT_TOOL),
+                Some(CAP_CREATE_SESSIONS)
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_CREATE_SESSIONS]), MCP_CREATE_AGENT_TOOL),
+                None
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &none, MCP_ANSWER_PERMISSION_TOOL),
+                Some(CAP_ANSWER_PERMISSIONS)
+            );
+            assert_eq!(
+                mcp_tool_denial(
+                    role,
+                    &caps(&[CAP_ANSWER_PERMISSIONS]),
+                    MCP_ANSWER_PERMISSION_TOOL
+                ),
+                None
+            );
+            // The move tool, both halves: without `send` the mode half fires
+            // first; with `send` the mode half allows and the model half —
+            // denied to every peer, whatever it holds — refuses instead.
+            assert_eq!(
+                mcp_tool_denial(role, &none, MCP_SET_AGENT_PROFILE_TOOL),
+                Some(CAP_SEND)
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_SEND]), MCP_SET_AGENT_PROFILE_TOOL),
+                Some("session.set_model")
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &all_caps(), MCP_SET_AGENT_PROFILE_TOOL),
+                Some("session.set_model"),
+                "{role:?} holding everything is still refused the model half"
+            );
+            // An unserved name is not the door's refusal: the broker's own
+            // `Unknown tool` arm answers it without touching anything.
+            assert_eq!(mcp_tool_denial(role, &none, "devboule_no_such_tool"), None);
+        }
+    }
+
+    /// The wire sentence the door renders a `Deny` payload with is the wire's
+    /// own (`server.rs::capability_not_supported`), not a paraphrase.
+    #[test]
+    fn the_capability_sentence_is_the_wire_sentence() {
+        assert_eq!(
+            capability_refusal_message("session.set_model"),
+            "capability 'session.set_model' was not negotiated"
+        );
+        assert_eq!(
+            capability_refusal_message(CAP_SEND),
+            "capability 'send' was not negotiated"
+        );
     }
 
     /// A row for an act no capability names: refused to every set, and the
