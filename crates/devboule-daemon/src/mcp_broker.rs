@@ -1177,6 +1177,7 @@ fn handle_rpc(
                     Ok(request) => Ok(Some(create_agent(
                         state,
                         broker,
+                        &caller,
                         registration,
                         &id,
                         request,
@@ -2009,6 +2010,7 @@ fn list_profiles(store: &crate::agent_profiles::AgentProfilesStore, id: &Value) 
 fn create_agent(
     state: &Arc<ServerState>,
     _broker: &McpBroker,
+    caller: &McpCaller,
     registration: &RegisteredSession,
     id: &Value,
     request: AgentCreateRequest,
@@ -2178,6 +2180,7 @@ fn create_agent(
         {
             return tool_error(id, "permission refused");
         }
+        let self_answer_note = self_answer_note(state, caller);
         let card = creation_card(
             &creator_id,
             creator.name(),
@@ -2185,6 +2188,7 @@ fn create_agent(
             &profile,
             &labels,
             &ticket,
+            self_answer_note.as_deref(),
         );
         let authorized = state
             .sessions
@@ -2284,6 +2288,37 @@ fn auto_accept_line(answer: devboule_protocol::UnattendedState, mode_id: &str) -
     }
 }
 
+/// The one consent-surface fact the composition adds (F1, decided): a peer
+/// holding `answer_permissions` may answer its own creation card, and a human
+/// reading the card must see that the asking device is also a potential
+/// answerer. Paseo's model is the reference — its `create_agent_request`
+/// needs the capability pair and shows no card at all, the grant IS the
+/// consent — so this is not a gate to add but a fact to state on the card we
+/// keep as the human's courtesy surface.
+fn self_answer_note(state: &ServerState, caller: &McpCaller) -> Option<String> {
+    let McpCaller::Peer {
+        device_id, caps, ..
+    } = caller
+    else {
+        return None;
+    };
+    if !caps
+        .iter()
+        .any(|cap| cap == crate::peer_policy::CAP_ANSWER_PERMISSIONS)
+    {
+        return None;
+    }
+    let name = state
+        .peer_get(device_id.as_str())
+        .ok()
+        .flatten()
+        .map(|record| record.display_name)
+        .unwrap_or_else(|| device_id.clone());
+    Some(format!(
+        "The asking device '{name}' holds answer_permissions and may answer this card itself."
+    ))
+}
+
 /// The creation card (`S5` decisions 4 and 5; `create-from-profile`).
 ///
 /// An ordinary [`SessionEvent::PermissionRequest`] with the `create_agent`
@@ -2311,6 +2346,7 @@ fn creation_card(
     profile: &ResolvedProfile,
     labels: &std::collections::BTreeMap<String, String>,
     ticket: &crate::session::AgentCreationTicket<'_>,
+    self_answer_note: Option<&str>,
 ) -> SessionEvent {
     let caps = ticket.caps().clone();
     // `Auto accept: Yes` is the one phrase that has to be readable at a glance:
@@ -2362,11 +2398,22 @@ fn creation_card(
     // description and the word rides the payload.
     let card_tools = card_tools_for_provider(&profile.provider);
     let tools_sentence = card_tools_sentence(card_tools);
+    // The consent surface names its own composition (F1, decided): a paired
+    // device holding `answer_permissions` may answer this card itself, and a
+    // human reading it must be able to see that the asking device is also a
+    // potential answerer. Paseo's model is the reference: its
+    // `create_agent_request` needs the capability pair and shows no card at
+    // all - the grant IS the consent. Ours keeps the card as the human's
+    // courtesy surface and states the fact on it.
+    let self_answer = match self_answer_note {
+        Some(note) => format!(" {note}"),
+        None => String::new(),
+    };
     SessionEvent::PermissionRequest {
         tool_call_id: creation_permission_id(),
         title: format!("Create an agent: {} ({})", request.title, profile.name),
         description: Some(format!(
-            "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}. Labels: {labels}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.{tools_sentence}",
+            "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}. Labels: {labels}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.{tools_sentence}{self_answer}",
             caps.live_children,
             caps.max_live_children,
             caps.creations_this_hour,
@@ -4744,6 +4791,41 @@ mod tests {
         drop(server);
     }
 
+    /// F1 (MAX RECALL, authority), the decided composition stated on the
+    /// consent surface: a peer holding `answer_permissions` may answer its own
+    /// creation card, so the card names that device. Without the cap — and for
+    /// every local caller — the card says nothing about answering.
+    #[test]
+    fn a_creation_card_names_a_device_that_may_answer_it() {
+        let state = ServerState::new("mcp-f1-note".to_string());
+        let mut row = peer_row("device-f1-note", &["view", "answer_permissions"]);
+        row.display_name = "Phone".to_string();
+        row.paired_by_user = Some("S-1-5-21-f1".to_string());
+        state.peer_upsert(row).expect("store a peer");
+        let holder = McpCaller::Peer {
+            device_id: "device-f1-note".to_string(),
+            role: crate::peer_policy::PeerRole::Client,
+            caps: vec!["view".to_string(), "answer_permissions".to_string()],
+        };
+        let note = self_answer_note(&state, &holder)
+            .expect("a device holding answer_permissions gets the note");
+        assert!(note.contains("Phone"), "the note names the device: {note}");
+        assert!(
+            note.contains("answer_permissions"),
+            "the note names the grant: {note}"
+        );
+        let plain = McpCaller::Peer {
+            device_id: "device-f1-note".to_string(),
+            role: crate::peer_policy::PeerRole::Client,
+            caps: vec!["view".to_string()],
+        };
+        assert!(
+            self_answer_note(&state, &plain).is_none(),
+            "no note without the cap"
+        );
+        assert!(self_answer_note(&state, &McpCaller::Local).is_none());
+    }
+
     /// The door reads origin, never kind (S9): a pi-kind caller meets exactly the
     /// judgment an ACP-kind caller meets. A peer's pi session without `send` is
     /// refused the create tool with the policy's sentence and spawns nothing;
@@ -5957,7 +6039,14 @@ mod tests {
 
         // The re-sent frame: same id, same payload, stale profile. It is
         // answered with the first child, and creates nothing.
-        let answer = create_agent(&state, &state.mcp, &registration, &id, request);
+        let answer = create_agent(
+            &state,
+            &state.mcp,
+            &McpCaller::Local,
+            &registration,
+            &id,
+            request,
+        );
         assert_eq!(
             answer["result"]["structuredContent"]["sessionId"], "s.child.1",
             "the retry answers the first call's session: {answer}"
@@ -5967,7 +6056,14 @@ mod tests {
         // the sentence the empty ticked list earns.
         let new_id = serde_json::json!(8);
         let new_request = AgentCreateRequest::parse(&arguments).expect("the request parses");
-        let refusal = create_agent(&state, &state.mcp, &registration, &new_id, new_request);
+        let refusal = create_agent(
+            &state,
+            &state.mcp,
+            &McpCaller::Local,
+            &registration,
+            &new_id,
+            new_request,
+        );
         assert_eq!(
             refusal["result"]["content"][0]["text"], "no profile is enabled for agents",
             "a new call still meets the profile check: {refusal}"
