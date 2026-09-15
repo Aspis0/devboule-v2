@@ -422,6 +422,17 @@ impl McpBroker {
         })
     }
 
+    /// Whether the broker holds a registration (a minted bearer) for `session_id`.
+    /// S8: surfaces report the registration FACT — a Codex/pi child with a minted
+    /// carrier reads `Unverified` (establishing), one without reads `Unavailable`.
+    /// Production-identical while the Phase-0 gate is closed (no such rows exist).
+    pub(crate) fn is_registered(&self, session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .ok()
+            .is_some_and(|sessions| sessions.by_session.contains_key(session_id))
+    }
+
     /// How deep the session behind this id is (`S5` decision 5). An id with no
     /// registration is depth 0: nothing an agent created.
     pub(crate) fn depth_of(&self, session_id: &str) -> u32 {
@@ -1281,21 +1292,15 @@ fn handle_rpc(
 /// name one family without any bookkeeping of their own. The fallback is the rule
 /// `Session::context_id` states (a session with no creator is its own context),
 /// applied for a client that reads a frame from a daemon older than this field.
-fn created_result(id: &Value, session: &devboule_protocol::Session) -> Value {
-    // S2 honesty: the result reports verification, the card promised it. A fresh
-    // ACP/Claude child is registered but not yet verified (its first
-    // authenticated `tools/list` lands after this answer); a pi/Codex child has
-    // no registration at all until S9. Hosted is renderable via
-    // `created_result_for_tools` (pinned by test) and arrives on live paths in
-    // S8 when verification flips the runtime. Routed through the S1 single
-    // computation point: kind is carried for the S9 move, registration is the
-    // fact (pi/Codex unregistered today), verification still ahead.
-    let kind = &session.kind;
-    let registered = !matches!(
-        kind,
-        devboule_protocol::SessionKind::Pi | devboule_protocol::SessionKind::Codex
-    );
-    let tools = compute_tools_state(kind, registered, false);
+fn created_result(id: &Value, session: &devboule_protocol::Session, registered: bool) -> Value {
+    // S2 honesty, S8 fact: the result reports verification, the card promised
+    // it. `registered` is the broker row — a fresh registered child is not yet
+    // verified (its first proof lands after this answer); an unregistered one
+    // (pi/Codex until S9) has no tools at all. Hosted is renderable via
+    // `created_result_for_tools` (pinned by test) and arrives on live paths
+    // when verification flips the runtime. Routed through the S1 single
+    // computation point; kind is carried for the S9 move.
+    let tools = compute_tools_state(&session.kind, registered, false);
     created_result_for_tools(id, session, tools)
 }
 
@@ -1982,7 +1987,7 @@ fn create_agent(
             if let Some(hold) = hold.as_mut() {
                 hold.commit();
             }
-            return created_result(id, &existing);
+            return created_result(id, &existing, state.mcp.is_registered(&existing.id));
         }
     }
     let profile = match resolve_profile(&state.agent_profiles, &request.profile) {
@@ -2166,7 +2171,7 @@ fn create_agent(
             if let Some(hold) = hold.as_mut() {
                 hold.commit();
             }
-            created_result(id, &session)
+            created_result(id, &session, state.mcp.is_registered(&session.id))
         }
         // Every refusal above and this failure release the reservation
         // through the ticket's own `Drop` (audit S5B-02): one release path,
@@ -2620,26 +2625,33 @@ fn cleanup_stale_configs(runtime_dir: &Path) -> io::Result<()> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let stale = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| {
-                // Our carriers, by our names: the Claude config plus the pi
-                // permission/bridge files S5 writes beside it (and their temps).
-                // These are the daemon's own file names, not provider dispatch —
-                // no behaviour branches on them — so listing them here keeps the
-                // provider dimension open while orphans from a dead daemon (or a
-                // crashed spawn) cannot accumulate. At daemon start no live session
-                // exists, so every match is an orphan by construction. Never match
-                // by content, and never sweep a tree we do not own (the Codex home
-                // dir in S6 gets its own owned-dir removal for the same reason).
-                (name.starts_with(CONFIG_PREFIX)
-                    && (name.ends_with(".json") || name.ends_with(".tmp")))
-                    || (name.starts_with("devboule-pi-permissions-")
-                        && (name.ends_with(".ts") || name.ends_with(".tmp")))
-                    || (name.starts_with("devboule-pi-bridge-")
-                        && (name.ends_with(".ts") || name.ends_with(".tmp")))
-            });
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        // Owned Codex homes (S6): whole trees by our name alone — never by
+        // content, never outside our names — so a crashed spawn's goals, sqlite
+        // and `installation_id` cannot accumulate. At daemon start no live
+        // session exists, so every match is an orphan by construction.
+        if name.starts_with("devboule-codex-home-") {
+            let _ = fs::remove_dir_all(&path);
+            continue;
+        }
+        let stale = {
+            // Our carriers, by our names: the Claude config plus the pi
+            // permission/bridge files S5 writes beside it (and their temps).
+            // These are the daemon's own file names, not provider dispatch —
+            // no behaviour branches on them — so listing them here keeps the
+            // provider dimension open while orphans from a dead daemon (or a
+            // crashed spawn) cannot accumulate. At daemon start no live session
+            // exists, so every match is an orphan by construction. Never match
+            // by content, and never sweep a tree we do not own (the Codex home
+            // dir in S6 gets its own owned-dir removal for the same reason).
+            (name.starts_with(CONFIG_PREFIX) && (name.ends_with(".json") || name.ends_with(".tmp")))
+                || (name.starts_with("devboule-pi-permissions-")
+                    && (name.ends_with(".ts") || name.ends_with(".tmp")))
+                || (name.starts_with("devboule-pi-bridge-")
+                    && (name.ends_with(".ts") || name.ends_with(".tmp")))
+        };
         if stale {
             let _ = fs::remove_file(path);
         }
@@ -2789,6 +2801,46 @@ mod tests {
     }
 
     #[test]
+    fn bind_without_registration_is_a_noop() {
+        // S8 bind-split safety: `bind_runtime` without a row touches nothing —
+        // no bearer, no URL, no state flip. This is what makes the else-branch
+        // bind production-identical while the gate holds. (The registered half
+        // is unreachable until S9 flips the gate; S9 wires its tests.)
+        let state = ServerState::new("mcp-bind-noop".to_string());
+        let runtime = Arc::new(crate::session::SessionRuntime::new());
+        state.mcp.bind_runtime("s.nobody.9", &runtime);
+        assert_eq!(runtime.tools_state(), ToolsState::Unavailable);
+    }
+
+    #[test]
+    fn registration_is_a_fact_the_surfaces_read() {
+        // S8: `is_registered` answers the broker row — Acp rows exist, unknown
+        // ids do not, and Codex rows never do while the Phase-0 gate holds
+        // (unit-level half of the end-of-pass OFF check).
+        let state = ServerState::new("mcp-registered-fact".to_string());
+        let owner = owner("mcp-user-reg", "mcp-client-reg");
+        assert!(!state.mcp.is_registered("s.nobody.1"));
+        let _guard = state
+            .mcp
+            .register("s.reg.1", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        assert!(state.mcp.is_registered("s.reg.1"));
+        let codex = state
+            .mcp
+            .register_with_provider(
+                "s.codex.1",
+                &owner,
+                &SessionKind::Codex,
+                Some("codex"),
+                AgentLineage::root(),
+            )
+            .expect("the gate answers");
+        assert!(codex.is_none());
+        assert!(!state.mcp.is_registered("s.codex.1"));
+    }
+
+    #[test]
     fn phase0_gate_names_the_decision_it_makes() {
         // The guard is still the branch that decides and still the only one
         // that was silent: pi/Codex take Ok(None). The sentence it logs names
@@ -2894,11 +2946,20 @@ mod tests {
                 ),
             }
         }
-        // The wrapper today's truth wires: pi/Codex → unavailable, ACP/Claude
-        // fresh → unverified (registered, first tools/list still ahead).
-        let pi = created_result(&id, &s2_session(SessionKind::Pi));
-        assert_eq!(pi["result"]["structuredContent"]["tools"], "unavailable");
-        let acp = created_result(&id, &s2_session(SessionKind::Acp));
+        // S8: the wrapper reads the registration FACT, not the kind — a Codex
+        // child with a minted carrier reads unverified (establishing), one
+        // without reads unavailable. Production-identical while the gate holds.
+        let unregistered = created_result(&id, &s2_session(SessionKind::Codex), false);
+        assert_eq!(
+            unregistered["result"]["structuredContent"]["tools"],
+            "unavailable"
+        );
+        let registered = created_result(&id, &s2_session(SessionKind::Codex), true);
+        assert_eq!(
+            registered["result"]["structuredContent"]["tools"],
+            "unverified"
+        );
+        let acp = created_result(&id, &s2_session(SessionKind::Acp), true);
         assert_eq!(acp["result"]["structuredContent"]["tools"], "unverified");
     }
 
@@ -2950,9 +3011,11 @@ mod tests {
 
     #[test]
     fn sweep_removes_owned_carriers_and_keeps_strangers() {
-        // S4 sweep test: stale Claude configs, pi permission/bridge files and
-        // their temps go; a non-matching file stays. Forbidden state: an orphan
-        // bridge file surviving teardown (leave it → red).
+        // S4 sweep test, S6-extended: stale Claude configs, pi permission/bridge
+        // files and their temps go, plus whole owned Codex home trees (S6); a
+        // non-matching file — and a non-matching dir — stay. Forbidden states:
+        // an orphan bridge file surviving teardown, an orphan home tree
+        // surviving it (leave either → red).
         let dir = std::env::temp_dir().join(format!("devboule-s4-sweep-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         for name in [
@@ -2965,7 +3028,12 @@ mod tests {
         ] {
             std::fs::write(dir.join(name), b"orphan").expect("plant orphan");
         }
+        let home = dir.join("devboule-codex-home-9");
+        std::fs::create_dir_all(home.join("state")).expect("plant orphan home tree");
+        std::fs::write(home.join("config.toml"), b"orphan").expect("plant orphan config");
+        std::fs::write(home.join("state").join("sqlite"), b"orphan").expect("plant orphan state");
         std::fs::write(dir.join("notes.txt"), b"mine").expect("plant stranger");
+        std::fs::create_dir_all(dir.join("someone-elses-dir")).expect("plant stranger dir");
         std::fs::write(dir.join("devboule-mcp-abc.json.bak"), b"bak").expect("plant bak");
         cleanup_stale_configs(&dir).expect("sweep");
         for name in [
@@ -2979,6 +3047,14 @@ mod tests {
             assert!(!dir.join(name).exists(), "orphan {name} is swept");
         }
         assert!(dir.join("notes.txt").exists(), "strangers are kept");
+        assert!(
+            dir.join("someone-elses-dir").is_dir(),
+            "stranger dirs are kept"
+        );
+        assert!(
+            !dir.join("devboule-codex-home-9").exists(),
+            "orphan Codex home trees are swept"
+        );
         assert!(
             dir.join("devboule-mcp-abc.json.bak").exists(),
             ".bak is not our temp suffix and is kept"
@@ -3009,26 +3085,43 @@ mod tests {
         assert!(!redacted.contains("4567"), "endpoint redacted: {redacted}");
         let argv = "pi --mode rpc -e bridge.ts with DEVBOULE_MCP_TOKEN and DEVBOULE_MCP_URL";
         assert_eq!(config.redact_text(argv), argv, "env names are not secrets");
+        // S8: the same cover for Codex carrier errors (home path + names pass,
+        // secrets do not).
+        let codex_error = format!(
+            "Could not prepare the Codex home: dial {} with Bearer {} (CODEX_HOME set)",
+            config.url,
+            config.bearer()
+        );
+        let redacted = config.redact_text(&codex_error);
+        assert!(
+            !redacted.contains("secret-bearer-xyz"),
+            "bearer redacted: {redacted}"
+        );
+        assert!(!redacted.contains("4567"), "endpoint redacted: {redacted}");
+        assert!(redacted.contains("CODEX_HOME"), "names pass through");
     }
 
     #[test]
     fn roster_entries_carry_the_tools_word() {
-        // Roster test with mixed states: every entry carries `tools`.
+        // Roster test with mixed states (and, since S8, mixed kinds — the word
+        // is kind-blind by construction): every entry carries `tools`.
         // Forbidden state: one entry with the field dropped (remove the field
         // in the fixture → red).
-        for state in [
-            ToolsState::Hosted,
-            ToolsState::Unavailable,
-            ToolsState::Unverified,
-        ] {
-            let runtime = crate::session::SessionRuntime::new();
-            runtime.set_tools_state(state);
-            let value = agent_value(&s2_session(SessionKind::Acp), &runtime, 1);
-            assert_eq!(
-                value["tools"],
-                state.as_str(),
-                "every roster entry carries its tools word"
-            );
+        for kind in [SessionKind::Acp, SessionKind::Codex] {
+            for state in [
+                ToolsState::Hosted,
+                ToolsState::Unavailable,
+                ToolsState::Unverified,
+            ] {
+                let runtime = crate::session::SessionRuntime::new();
+                runtime.set_tools_state(state);
+                let value = agent_value(&s2_session(kind.clone()), &runtime, 1);
+                assert_eq!(
+                    value["tools"],
+                    state.as_str(),
+                    "every roster entry carries its tools word"
+                );
+            }
         }
     }
 
@@ -5750,7 +5843,7 @@ mod tests {
             unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
         };
-        let result = created_result(&json!(7), &session);
+        let result = created_result(&json!(7), &session, true);
         let content = &result["result"]["structuredContent"];
         assert_eq!(content["sessionId"], "s.parent.2");
         assert_eq!(

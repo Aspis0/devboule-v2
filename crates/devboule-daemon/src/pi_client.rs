@@ -295,6 +295,15 @@ async function brokerSession(signal) {
 export default function (pi) {
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.notify("devboule-mcp-bridge", "info");
+    // In-band proof for the daemon's verification (S8): an authenticated
+    // tools/list from this child's bearer is what flips it Hosted broker-side.
+    // Best-effort — a failure here breaks nothing; the announce already fired
+    // and the state stays Unverified until a later list lands.
+    try {
+      await mcpRequest("tools/list", {}, undefined);
+    } catch (_ignored) {
+      /* verification stays Unverified */
+    }
   });
 
   pi.registerTool({
@@ -1040,6 +1049,7 @@ pub(super) fn spawn_process(
         peer_session_id: handshake.peer_session_id,
         agent_version: None,
         pending_delivery,
+        pending_codex_verify: None,
     })
 }
 
@@ -3224,6 +3234,10 @@ mod tests {
             "bridge announce rides session_start like the permission channel"
         );
         assert!(
+            template.contains("mcpRequest(\"tools/list\", {}, undefined)"),
+            "session_start proves in-band with an authenticated tools/list (S8 producer)"
+        );
+        assert!(
             template.contains("process.env.DEVBOULE_MCP_URL")
                 && template.contains("process.env.DEVBOULE_MCP_TOKEN"),
             "identity by environment"
@@ -3437,6 +3451,12 @@ export const Type = {
   for (const name of ["devboule_list_agents", "devboule_list_profiles", "devboule_send_message", "devboule_create_agent", "devboule_set_agent_profile", "devboule_answer_permission"]) {
     if (!tools[name]) { console.error("missing tool " + name); process.exit(12); }
   }
+  // S8 producer: session_start proves in-band with an authenticated tools/list.
+  const listCalls = calls.filter((call) => {
+    try { return JSON.parse(call.body).method === "tools/list"; } catch { return false; }
+  });
+  if (listCalls.length < 1) process.exit(25);
+  if (listCalls[0].headers.Authorization !== `Bearer ${process.env.DEVBOULE_MCP_TOKEN}`) process.exit(26);
   const result = await tools.devboule_list_agents.execute("t1", {}, undefined);
   const last = calls[calls.length - 1];
   if (last.headers.Authorization !== `Bearer ${process.env.DEVBOULE_MCP_TOKEN}`) process.exit(13);
@@ -3467,6 +3487,12 @@ export const Type = {
   const outcome = (((tools.devboule_answer_permission.parameters || {}).properties || {}).outcome || {});
   const values = outcome.anyOf ? outcome.anyOf.map((entry) => entry.const) : outcome.enum;
   if (!values || !values.includes("allow_once") || !values.includes("deny")) process.exit(24);
+  // S8 tolerance: a failed startup list breaks nothing — the announce fired and
+  // later calls still work. Refused broker, second startup, must resolve.
+  behavior = "refused";
+  const notified = notifies.length;
+  await handlers.session_start({}, { ui: { notify: (message, kind) => notifies.push([message, kind]) } });
+  if (notifies.length !== notified + 1) process.exit(27);
 })().catch((error) => { console.error(error); process.exit(3); });
 "#;
         let output = std::process::Command::new("node")
@@ -4742,6 +4768,7 @@ process.stdin.on("data", (chunk) => {
                 peer_session_id: None,
                 agent_version: None,
                 pending_delivery,
+                pending_codex_verify: None,
             }
         }
 

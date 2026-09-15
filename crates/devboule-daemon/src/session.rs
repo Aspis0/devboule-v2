@@ -374,6 +374,13 @@ struct SpawnedSession {
     /// creation before any prompt can reach it. Every other client delivers
     /// inside its own `spawn_process` and passes `None`.
     pending_delivery: Option<Box<dyn FnOnce() -> Result<(), WireError> + Send>>,
+    /// A Codex MCP verification to run detached once the session reader is
+    /// live (S7/S8). The startup never waits for it and no outcome is fatal:
+    /// [`start_spawned_session`] spawns one thread that polls
+    /// `mcpServerStatus/list` and flips the runtime's `ToolsState`. Present
+    /// only when a carrier was installed (`Some` road); `None` — today's only
+    /// road — changes nothing.
+    pending_codex_verify: Option<codex_client::CodexVerifyBundle>,
 }
 
 struct PtyKiller {
@@ -8360,10 +8367,18 @@ pub fn spawn_session(
     if metadata.kind == SessionKind::Codex {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        let spawned =
-            codex_client::spawn_process(state, command, delivery.clone()).map_err(|error| {
-                map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-            })?;
+        // S6 wiring, S9 lights it: the broker mints nothing for Codex until the
+        // Phase-0 gate flips, so this is `None` today and the spawn is
+        // byte-identical (no home, no env, no handshake assertion).
+        let spawned = codex_client::spawn_process(
+            state,
+            command,
+            state.mcp.launch_config(&metadata.id),
+            delivery.clone(),
+        )
+        .map_err(|error| {
+            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+        })?;
         return start_spawned_session(
             state,
             registry,
@@ -8505,6 +8520,7 @@ pub fn spawn_session(
         peer_session_id: None,
         agent_version: None,
         pending_delivery: None,
+        pending_codex_verify: None,
     };
     start_spawned_session(
         state,
@@ -8573,6 +8589,7 @@ fn start_spawned_session(
         peer_session_id,
         agent_version,
         pending_delivery,
+        pending_codex_verify,
     } = spawned;
     if let (Some(provider_id), Some(version)) = (&metadata.provider, agent_version.as_deref()) {
         state.record_provider_version(provider_id, version);
@@ -8603,6 +8620,13 @@ fn start_spawned_session(
             internal("MCP session registration was lost before provider startup.")
         })?)
     } else {
+        // S8: carriers bind on the registration FACT, not the kind — `bind_runtime`
+        // is a lookup that no-ops without one, so every road but a minted carrier
+        // behaves exactly as before. The `require_mcp` gate above stays
+        // ACP/Claude-only on purpose: requiring would make pi/Codex first prompts
+        // wait on the broker, which S7 forbids. Bearer/url/Unverified install here;
+        // the S7 poll flips to Hosted, prompts never wait.
+        state.mcp.bind_runtime(&metadata.id, &runtime);
         None
     };
     if let Some(peer_session_id) = peer_session_id {
@@ -8867,6 +8891,12 @@ fn start_spawned_session(
             map.insert(id.clone(), RegistryEntry::Live(session));
         }
     }
+    // S8 trigger: a Codex carrier verification runs detached — never blocking
+    // this thread, never fatal whatever it answers. The reader above is live,
+    // so the poll's answer has a deliverer; the flip lands whenever it lands
+    // and the first prompt proceeds meanwhile. `None` on every road but the
+    // carrier road (today: all of them).
+    spawn_codex_verify_thread(pending_codex_verify, &runtime, &id);
     // A child can die before the create transition is published. Mark that
     // exit as covered by this first snapshot; the second check catches an
     // exit racing the publication without allowing the wait thread to report
@@ -8880,6 +8910,29 @@ fn start_spawned_session(
         registry.notify_session_transition(&owner, &id);
     }
     Ok(())
+}
+
+/// S8 trigger body, one function so the test drives the real code: run a Codex
+/// carrier verification detached and flip the runtime whenever it lands. `None`
+/// is a no-op (today's only road). Detached, never blocking, never fatal — the
+/// first prompt proceeds whatever the poll answers, and a late answer still
+/// flips the roster (S8) whenever it arrives.
+pub(crate) fn spawn_codex_verify_thread(
+    bundle: Option<codex_client::CodexVerifyBundle>,
+    runtime: &Arc<SessionRuntime>,
+    session_id: &str,
+) {
+    let Some(bundle) = bundle else {
+        return;
+    };
+    let verify_runtime = Arc::clone(runtime);
+    let verify_id = session_id.to_string();
+    let _ = std::thread::Builder::new()
+        .name(format!("codex-verify-{verify_id}"))
+        .spawn(move || {
+            let state = codex_client::verify_codex_mcp(&bundle);
+            verify_runtime.set_tools_state(state);
+        });
 }
 
 fn reader_loop(
@@ -14226,6 +14279,32 @@ mod tests {
         registry
             .send("pi-no-mcp-wait", "first prompt", &owner, &conn)
             .expect("Pi prompt should not have an MCP gate");
+        assert_eq!(&*received.lock().expect("received"), b"first prompt");
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn codex_first_prompt_does_not_wait_for_mcp() {
+        // S8 twin of the pi rule above: no road calls `require_mcp` for Codex
+        // (the S8 bind split keeps `require` ACP/Claude-only), so the send-path
+        // gate every prompt crosses is open by construction, verified or not.
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-codex", "process-codex");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_kind_and_writer(
+            &registry,
+            "codex-no-mcp-wait",
+            owner.clone(),
+            SessionKind::Codex,
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, "codex-no-mcp-wait", 33);
+
+        registry
+            .send("codex-no-mcp-wait", "first prompt", &owner, &conn)
+            .expect("Codex prompt should not have an MCP gate");
         assert_eq!(&*received.lock().expect("received"), b"first prompt");
 
         journal.shutdown();

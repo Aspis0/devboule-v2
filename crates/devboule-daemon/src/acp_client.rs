@@ -883,6 +883,7 @@ fn spawn_process_with_load(
         // The delivery was applied inside `spawn_process`, before this value
         // existed; nothing is left for the session reader to answer.
         pending_delivery: None,
+        pending_codex_verify: None,
     })
 }
 
