@@ -562,6 +562,121 @@
   font-style: italic;
 }
 
+/* The delegation pills sit in the origin badge's slot. Three tones, three
+   truths, never collapsed into one another:
+
+   - `-unattended` is the loud one: the attention pill's severity palette and
+     a filled ground, because a child that can run without asking must stay
+     visible after the excitement of creation has passed — it is a fact of the
+     child's birth, not of the current switch.
+   - `-unknown` is the softer marker that must nonetheless be PRESENT: dashed
+     and italic like the unknown-origin badge, since both name a fact the app
+     holds but could not establish. It never renders as nothing.
+   - `-active` is the quiet ledger line: who answers for this child, and how
+     many of its cards have been answered so far. */
+.workspace-tab-delegation {
+  max-width: 20ch;
+  overflow: hidden;
+  padding: 1px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-tab-delegation-unattended {
+  border-color: var(--ochre);
+  background: var(--surface);
+  color: var(--ochre-deep);
+  font-weight: 700;
+}
+
+.workspace-tab-delegation-unknown {
+  border-style: dashed;
+  color: var(--silence);
+  background: transparent;
+  font-style: italic;
+}
+
+/* The take-back is a sibling of its tab, never a control inside it (a button
+   cannot answer inside another button). It sits tight to the row it belongs
+   to and disappears with it: qualifying rows only, while the one switch is
+   on. Its accessible name carries the global scope — this takes back the
+   power everywhere, not on this row. */
+.workspace-tab-takeback {
+  padding: 2px 8px;
+  border: 1px solid var(--terracotta);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--terracotta-deep);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.workspace-tab-takeback:hover {
+  background: var(--terracotta-pressed);
+  color: var(--surface);
+}
+
+/* The parsed `agent_permission_request` envelope: the relayed sentence, and
+   the child's excerpt in a quoted block of its own — the block's whole point
+   is that its styling does NOT claim "the daemon said this", and neither does
+   the item's label any more: the app cannot verify the sender. */
+.workspace-chat-permission-request {
+  max-width: 90%;
+}
+
+/* The sentence interpolates daemon-supplied strings; wrapping keeps an
+   unbroken multi-kilobyte field inside the pane (the app also bounds those
+   fields in code — this is the belt to that brace). */
+.workspace-chat-permission-request .workspace-chat-copy {
+  margin-top: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.workspace-chat-label-unverified {
+  color: var(--silence);
+  font-style: italic;
+}
+
+.workspace-chat-child-said {
+  margin: 6px 0 0 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--purple-deep);
+  background: var(--surface-muted);
+}
+
+.workspace-chat-child-said figcaption {
+  font-size: 10px;
+  font-weight: 700;
+  font-style: italic;
+  color: var(--purple-deep);
+}
+
+.workspace-chat-child-said blockquote {
+  margin: 2px 0 0 0;
+  font-style: italic;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The frame the daemon's own contract broke: the excerpt's closer never came,
+   so the block ran to the envelope's end. The reader is told, not left to
+   wonder why the quote never seems to stop. */
+.workspace-chat-child-said-note {
+  margin: 4px 0 0 0;
+  color: var(--purple-deep);
+  font-size: 10px;
+  font-style: italic;
+}
+
 .workspace-session-add {
   width: 25px;
   height: 25px;

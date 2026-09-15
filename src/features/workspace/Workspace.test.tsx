@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DaemonStatus, PermissionRequest, Session } from "../../types/ipc";
+import type { DaemonStatus, PermissionRequest, PermissionResolved, Session } from "../../types/ipc";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   // The recovery confirmation dialog; each test that needs a specific answer
@@ -47,6 +47,11 @@ vi.mock("../../lib/tauri", () => ({
   })),
   sessionsWatch: vi.fn(async () => undefined),
   sessionsUnwatch: vi.fn(async () => undefined),
+  // The delegation pair: the shared controller binds them at module load, so
+  // the mock must name them even though the tests below inject their own
+  // controller.
+  delegationGet: vi.fn(async () => ({ enabled: false, source: "default" })),
+  delegationSet: vi.fn(async () => undefined),
   // The session badge's name map: one read per daemon connection. Individual
   // tests override the reply; the default has one paired device to name.
   devicesList: vi.fn(async () => ({ selfInfo: undefined, peers: [], pending: [] })),
@@ -83,7 +88,7 @@ vi.mock("./AgentChatSurface", () => ({
       subscriptionId: number,
       request: PermissionRequest,
     ) => void;
-    onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
+    onPermissionResolved?: (sessionId: string, resolution: PermissionResolved) => void;
   }) => (
     <div data-testid="agent-chat-surface">
       {sessionId}
@@ -146,7 +151,62 @@ vi.mock("./AgentChatSurface", () => ({
       <button
         type="button"
         data-testid="emit-permission-resolved"
-        onClick={() => onPermissionResolved?.(sessionId, "tool-a")}
+        onClick={() =>
+          onPermissionResolved?.(sessionId, { type: "permission_resolved", toolCallId: "tool-a" })
+        }
+      />
+      <button
+        type="button"
+        data-testid="emit-permission-resolved-creator-allow-always"
+        onClick={() =>
+          onPermissionResolved?.(sessionId, {
+            type: "permission_resolved",
+            toolCallId: "tool-a",
+            answeredBy: "s.creator.1",
+            selectedOptionId: "allow-always",
+            selectedOptionKind: "allow_always",
+            selectedOptionName: "Allow always",
+          })
+        }
+      />
+      <button
+        type="button"
+        data-testid="emit-permission-resolved-silent"
+        onClick={() =>
+          onPermissionResolved?.(sessionId, {
+            type: "permission_resolved",
+            toolCallId: "tool-a",
+            answeredBy: null,
+          })
+        }
+      />
+      <button
+        type="button"
+        data-testid="emit-permission-resolved-creator-allowed"
+        onClick={() =>
+          onPermissionResolved?.(sessionId, {
+            type: "permission_resolved",
+            toolCallId: "tool-a",
+            answeredBy: "s.creator.1",
+            selectedOptionId: "allow",
+            selectedOptionKind: "allow_once",
+            selectedOptionName: "Allow once",
+          })
+        }
+      />
+      <button
+        type="button"
+        data-testid="emit-permission-resolved-creator-denied"
+        onClick={() =>
+          onPermissionResolved?.(sessionId, {
+            type: "permission_resolved",
+            toolCallId: "tool-a",
+            answeredBy: "s.creator.1",
+            selectedOptionId: "deny",
+            selectedOptionKind: "reject_once",
+            selectedOptionName: "Deny",
+          })
+        }
       />
       <button
         type="button"
@@ -182,6 +242,7 @@ import {
   sessionCreate,
   sessionDelete,
   sessionPermissionRespond,
+  createSessionStateChannel,
   sessionsList,
   sessionsWatch,
 } from "../../lib/tauri";
@@ -193,6 +254,8 @@ import type {
   Workspace as IpcWorkspace,
 } from "../../types/ipc";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
+import { createDelegationController } from "../../lib/delegation";
+import type { SessionStateSnapshot } from "../../types/ipc";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 
 const terminal = (
@@ -1746,7 +1809,11 @@ describe("Workspace sessions", () => {
     expect(env).toContain("DB_GATE=SAFE & echo PWNED");
   });
 
-  it("drops the card when the backend resolves the permission without a UI click", async () => {
+  it("keeps a card the backend resolved without a UI click, unnamed — it does not vanish as if you answered", async () => {
+    // Rewritten by the fix pass. The old test pinned the deletion: a
+    // resolution with no `answeredBy` removed the card as if a person had
+    // answered it. The wire's silence is not a person — the card stays,
+    // unnamed, and only the human's Clear removes it.
     root = createRoot(container);
     await act(async () => {
       root.render(<Workspace />);
@@ -1767,8 +1834,65 @@ describe("Workspace sessions", () => {
     expect(container.querySelector(".permission-card")).not.toBeNull();
 
     await act(async () => resolved.click());
-    expect(container.querySelector(".permission-card")).toBeNull();
+    const card = container.querySelector(".permission-card");
+    expect(card).not.toBeNull();
+    expect(card?.querySelector(".permission-card-label")?.textContent).toBe(
+      "Answered — by whom and with what outcome, the daemon did not say",
+    );
     expect(sessionPermissionRespond).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a waiting card behind a resolved one instead of hiding it (re-audit F6)", async () => {
+    // Two cards queued for one session; the head is resolved from outside.
+    // The head-find handed the panel's slot to the RESOLVED card — whose
+    // only control is Clear — so the waiting card's Allow/Deny were
+    // unreachable and nothing said a second card existed. The slot belongs
+    // to the card that needs the human; the resolved one keeps its place
+    // behind it and takes the slot back once the waiting one is answered.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    const emitB = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-b]");
+    if (emitA === null || emitB === null) throw new Error("permission emitters did not render");
+    await act(async () => emitA.click());
+    await act(async () => emitB.click());
+    expect(container.querySelector(".permission-card")?.textContent).toContain("cmd.exe");
+
+    const resolved = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved]",
+    );
+    if (resolved === null) throw new Error("resolved emitter did not render");
+    await act(async () => resolved.click());
+
+    const waiting = container.querySelector(".permission-card");
+    if (waiting === null) throw new Error("waiting card did not render behind the resolved one");
+    expect(waiting.textContent).toContain("ping.exe");
+    expect(waiting.textContent).not.toContain("cmd.exe");
+    const allow = waiting.querySelector<HTMLButtonElement>(".permission-card-primary-action");
+    if (allow === null) throw new Error("waiting card's allow control did not render");
+    expect(allow.disabled).toBe(false);
+
+    // Answering B hands the slot back to the resolved A: it never vanished,
+    // and Clear — not Allow — is its control now.
+    await act(async () => allow.click());
+    await act(async () => undefined);
+    const answered = container.querySelector(".permission-card");
+    expect(answered).not.toBeNull();
+    expect(answered?.textContent).toContain("cmd.exe");
+    expect(answered?.querySelector(".permission-card-label")?.textContent).toBe(
+      "Answered — by whom and with what outcome, the daemon did not say",
+    );
+    expect(answered?.querySelector(".permission-card-dismiss-action")?.textContent).toBe("Clear");
+    expect(answered?.querySelector(".permission-card-primary-action")).toBeNull();
   });
 
   it("keeps the other session's card when two sessions share a toolCallId", async () => {
@@ -2450,5 +2574,482 @@ describe("Workspace sessions", () => {
     expect(provenance?.textContent).toBe("Device: Xiaomi 14 · Role: client");
     // The card must never fall back to the raw device id.
     expect(provenance?.textContent).not.toContain("device-phone");
+  });
+});
+
+describe("delegation on the roster", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  /** Pushes a roster through the same channel the app watches. */
+  async function pushRoster(snapshots: SessionStateSnapshot[]) {
+    const listener = vi.mocked(createSessionStateChannel).mock.calls[0]?.[0] as
+      | ((snapshots: SessionStateSnapshot[]) => void)
+      | undefined;
+    await act(async () => listener?.(snapshots));
+  }
+
+  // The ledger arm in isolation: the marker arm (unattended: "yes") is pinned
+  // separately in workspaceSessions.test.ts, so this fixture no longer carries
+  // both and can no longer hide which one produced the pill.
+  const unattendedChild: SessionStateSnapshot = {
+    id: "child-unattended",
+    workspaceId: "workspace-1",
+    kind: "acp",
+    title: "night worker",
+    state: { type: "live", generation: 1 },
+    elapsedMs: 0,
+    createdBy: "session-1",
+    displayName: "night worker",
+    delegation: { answered: 2, state: "unattended" },
+  };
+
+  const activeChild: SessionStateSnapshot = {
+    id: "child-active",
+    workspaceId: "workspace-1",
+    kind: "acp",
+    title: "day worker",
+    state: { type: "live", generation: 1 },
+    elapsedMs: 0,
+    createdBy: "session-1",
+    displayName: "day worker",
+    delegation: { answered: 0, state: "active" },
+  };
+
+  function enabledController() {
+    return createDelegationController({
+      get: vi.fn(async () => ({ enabled: true, source: "file" as const })),
+      set: vi.fn(async () => undefined),
+    });
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(createSessionStateChannel).mockClear();
+    // The take-back is capability-gated like every delegation RPC, so this
+    // describe's daemon advertises it.
+    vi.mocked(daemonStatus).mockResolvedValue({
+      ...daemonConnected,
+      capabilities: [...daemonConnected.capabilities, "permission_delegation"],
+    });
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("keeps the loud pill after the switch turns off, takes the write on the active row, and drops only the take-back", async () => {
+    // The take-back lives on the ACTIVE row only: on an unattended row the
+    // click could not do what the button promises (the child keeps its born
+    // ability), so the control is not offered there at all.
+    const set = vi.fn(async () => undefined);
+    const delegation = createDelegationController({
+      get: vi.fn(async () => ({ enabled: true, source: "file" as const })),
+      set,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace delegation={delegation} />);
+    });
+    await act(async () => undefined);
+
+    await pushRoster([unattendedChild, activeChild]);
+    await act(async () => undefined);
+
+    const loud = container.querySelector(".workspace-tab-delegation-unattended");
+    expect(loud).not.toBeNull();
+    expect(loud?.textContent).toBe("runs unattended \u00b7 created in an auto-accepting profile");
+    // The take-back sits beside the row it can act on, and its accessible
+    // name declares the global scope.
+    const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
+    expect(takeBack).not.toBeNull();
+    expect(takeBack?.getAttribute("aria-label")).toBe(
+      "Take back \u2014 stops every agent from answering for its children",
+    );
+    // ...and on the unattended row there is none, even with the switch on
+    // (the take-back renders as the tab's next sibling when it exists).
+    const unattendedTab = Array.from(container.querySelectorAll(".workspace-session-tab")).find(
+      (tab) => tab.textContent?.includes("night worker"),
+    );
+    expect(unattendedTab?.nextElementSibling?.classList.contains("workspace-tab-takeback")).toBe(
+      false,
+    );
+
+    // The human takes the power back from the active row.
+    if (takeBack === null) throw new Error("take-back did not render");
+    await act(async () => takeBack.click());
+    await act(async () => undefined);
+
+    // The take-back is a WRITE: the injected controller's set must have been
+    // asked for `false` — not merely mirrored optimistically in the store.
+    expect(set).toHaveBeenCalledWith(false);
+    expect(delegation.getState().enabled).toBe(false);
+    // The pill is a fact of the child's birth: it does NOT disappear or
+    // change because the live switch did. Deriving it from the setting is
+    // the named red mutation.
+    const loudAfter = container.querySelector(".workspace-tab-delegation-unattended");
+    expect(loudAfter).not.toBeNull();
+    expect(loudAfter?.textContent).toBe(
+      "runs unattended \u00b7 created in an auto-accepting profile",
+    );
+    // A control that cannot act is gone.
+    expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
+    // And it closed nothing: the child's row is still in the strip.
+    const strip = Array.from(container.querySelectorAll(".workspace-session-tab")).find((tab) =>
+      tab.textContent?.includes("night worker"),
+    );
+    expect(strip).not.toBeUndefined();
+  });
+
+  it("reports a refused take-back on the roster surface, where the click happened", async () => {
+    // Audit 3 F4: the refusal's sentence existed only on the Settings tab —
+    // the roster's button vanished and came back with no word on the surface
+    // the human clicked. The re-read the refusal schedules is held back so
+    // the sentence's standing time is under the test's hand.
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce({ enabled: true, source: "file" })
+      .mockImplementation(() => new Promise(() => undefined));
+    const delegation = createDelegationController({
+      get,
+      set: vi.fn(async () => {
+        throw new Error("the store refused the take-back");
+      }),
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace delegation={delegation} />);
+    });
+    await act(async () => undefined);
+    await pushRoster([activeChild]);
+    await act(async () => undefined);
+
+    const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
+    if (takeBack === null) throw new Error("take-back did not render");
+    await act(async () => takeBack.click());
+    await act(async () => undefined);
+
+    const alerts = Array.from(container.querySelectorAll('[role="alert"]')).map(
+      (element) => element.textContent ?? "",
+    );
+    expect(alerts.some((text) => text.includes("the store refused the take-back"))).toBe(true);
+  });
+
+  it("offers the take-back while the delegation answer is unknown, and the click still writes", async () => {
+    // Audit 3 F2 with F5: the control that stops delegation must not be
+    // gated on the panel's belief — a failed read leaves the app knowing
+    // nothing, and that is exactly when a human may need to act. The write
+    // needs no stored answer: `false` can only reduce what the daemon
+    // exercises (see `setEnabled` in `lib/delegation.ts`).
+    const set = vi.fn(async () => undefined);
+    const delegation = createDelegationController({
+      get: vi.fn(async () => {
+        throw new Error("the daemon is unreachable");
+      }),
+      set,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace delegation={delegation} />);
+    });
+    await act(async () => undefined);
+    await pushRoster([activeChild]);
+    await act(async () => undefined);
+
+    // Unknown is not off: the control stands on the active row.
+    const takeBack = container.querySelector<HTMLButtonElement>(".workspace-tab-takeback");
+    expect(takeBack).not.toBeNull();
+    if (takeBack === null) throw new Error("take-back did not render");
+    await act(async () => takeBack.click());
+    await act(async () => undefined);
+    expect(set).toHaveBeenCalledWith(false);
+    expect(delegation.getState().enabled).toBe(false);
+    // The daemon took the take-back: the store now holds a definite off, and
+    // the control leaves with the belief it no longer needs to correct.
+    expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
+  });
+
+  it("re-reads the switch when the daemon restarts, and the take-back follows the fresh answer", async () => {
+    // Audit 3 F2: nothing re-read the setting after the first load, so a
+    // daemon restart that reloads `delegation.json` left the roster's belief
+    // stale forever — here the restart is even invisible to the poll (no
+    // disconnected gap): only the instance id changes. The controller must
+    // re-ask, and the row's control must follow the fresh answer.
+    vi.useFakeTimers();
+    try {
+      const statusFor = (instanceId: string): DaemonStatus => ({
+        state: "connected",
+        pid: 42,
+        instanceId,
+        protocolVersion: 1,
+        clients: 1,
+        capabilities: [...daemonConnected.capabilities, "permission_delegation"],
+        message: null,
+      });
+      const answers: DaemonStatus[] = [statusFor("daemon-a"), statusFor("daemon-b")];
+      vi.mocked(daemonStatus).mockImplementation(() => {
+        const next = answers.shift();
+        return Promise.resolve(next ?? statusFor("daemon-b"));
+      });
+      const get = vi
+        .fn()
+        .mockResolvedValueOnce({ enabled: false, source: "file" })
+        .mockResolvedValueOnce({ enabled: true, source: "file" });
+      const delegation = createDelegationController({ get, set: vi.fn(async () => undefined) });
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace delegation={delegation} />);
+      });
+      await act(async () => undefined);
+      await pushRoster([activeChild]);
+      await act(async () => undefined);
+
+      // The first daemon holds off: no take-back, honestly.
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
+
+      // The restart: a new instance, same capabilities, no gap observed.
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      await act(async () => undefined);
+
+      // The roster re-asked its new daemon — which holds ON, a human having
+      // flipped delegation.json while the old one was down — and the control
+      // that answers it is back.
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(container.querySelector(".workspace-tab-takeback")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders no delegation pill and no take-back on a human-started session", async () => {
+    const delegation = enabledController();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace delegation={delegation} />);
+    });
+    await act(async () => undefined);
+    await pushRoster([
+      {
+        id: "session-1",
+        workspaceId: "workspace-1",
+        kind: "terminal",
+        title: "shell one",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+      },
+    ]);
+    await act(async () => undefined);
+
+    expect(container.querySelector(".workspace-tab-delegation")).toBeNull();
+    expect(container.querySelector(".workspace-tab-takeback")).toBeNull();
+  });
+
+  it("renders the quiet answering pill with the answered count from the push", async () => {
+    const delegation = enabledController();
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace delegation={delegation} />);
+    });
+    await act(async () => undefined);
+    await pushRoster([
+      {
+        ...unattendedChild,
+        id: "child-active",
+        displayName: "day worker",
+        delegation: { answered: 3, state: "active" },
+        unattended: "no",
+      },
+    ]);
+    await act(async () => undefined);
+
+    const pill = container.querySelector(".workspace-tab-delegation-active");
+    expect(pill?.textContent).toBe("answers to its creator \u00b7 answered \u00d73");
+  });
+
+  it("shows a creator-answered card resolving with its attribution instead of vanishing", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([]);
+    // The child is created through the add flow; the daemon stamps its
+    // creator on it, so the mock's created session carries the same
+    // `createdBy` the emitted `answeredBy` will claim.
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...acpSession("session-created", "agent two"),
+      createdBy: "s.creator.1",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    if (emit === null) throw new Error("permission emitter did not render");
+    await act(async () => emit.click());
+    expect(container.querySelector(".permission-card")).not.toBeNull();
+
+    const creatorResolved = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved-creator-denied]",
+    );
+    if (creatorResolved === null) throw new Error("creator resolution emitter did not render");
+    await act(async () => creatorResolved.click());
+
+    // Rendered output, not the event: the card stays, carrying who answered
+    // and what they chose.
+    const card = container.querySelector(".permission-card");
+    expect(card).not.toBeNull();
+    expect(card?.querySelector(".permission-card-label")?.textContent).toBe(
+      "Denied by its creator \u2014 the turn continues without it",
+    );
+  });
+
+  it("carries an allowed creator answer with the same honesty", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([]);
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...acpSession("session-created", "agent two"),
+      createdBy: "s.creator.1",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    if (emit === null) throw new Error("permission emitter did not render");
+    await act(async () => emit.click());
+
+    const creatorResolved = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved-creator-allowed]",
+    );
+    if (creatorResolved === null) throw new Error("creator resolution emitter did not render");
+    await act(async () => creatorResolved.click());
+
+    const card = container.querySelector(".permission-card");
+    expect(card).not.toBeNull();
+    expect(card?.querySelector(".permission-card-label")?.textContent).toBe(
+      "Allowed by its creator \u00b7 running",
+    );
+  });
+
+  it("renders allow_always as ALLOWED by its creator — never as a denial", async () => {
+    // The daemon's auto-accept path prefers allow_once and falls back to
+    // allow_always, so a delegated answer is exactly where allow_always
+    // arrives; the old two-way branch rendered it, and an absent kind, as
+    // "Denied by its creator".
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...acpSession("session-created", "agent two"),
+      createdBy: "s.creator.1",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    if (emit === null) throw new Error("permission emitter did not render");
+    await act(async () => emit.click());
+
+    const allowAlways = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved-creator-allow-always]",
+    );
+    if (allowAlways === null) throw new Error("allow-always emitter did not render");
+    await act(async () => allowAlways.click());
+
+    const card = container.querySelector(".permission-card");
+    expect(card).not.toBeNull();
+    const label = card?.querySelector(".permission-card-label")?.textContent ?? "";
+    expect(label).toBe("Allowed by its creator \u00b7 running");
+    expect(label).not.toContain("Denied");
+  });
+
+  it("keeps a fully unnamed resolution on screen as its own state instead of deleting the card", async () => {
+    // answeredBy null (the daemon said nobody): the old path deleted the card
+    // as if a person had answered it. Silence is not a person.
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...acpSession("session-created", "agent two"),
+      createdBy: "s.creator.1",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    if (emit === null) throw new Error("permission emitter did not render");
+    await act(async () => emit.click());
+
+    const silent = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved-silent]",
+    );
+    if (silent === null) throw new Error("silent resolution emitter did not render");
+    await act(async () => silent.click());
+
+    const card = container.querySelector(".permission-card");
+    expect(card).not.toBeNull();
+    expect(card?.querySelector(".permission-card-label")?.textContent).toBe(
+      "Answered \u2014 by whom and with what outcome, the daemon did not say",
+    );
+  });
+
+  it("clears a resolved card: the queue does not fill with answered cards that cannot leave", async () => {
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...acpSession("session-created", "agent two"),
+      createdBy: "s.creator.1",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    if (emit === null) throw new Error("permission emitter did not render");
+    await act(async () => emit.click());
+
+    const creatorResolved = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved-creator-denied]",
+    );
+    if (creatorResolved === null) throw new Error("creator resolution emitter did not render");
+    await act(async () => creatorResolved.click());
+    expect(container.querySelector(".permission-card")).not.toBeNull();
+
+    const clear = container.querySelector<HTMLButtonElement>(".permission-card-dismiss-action");
+    if (clear === null) throw new Error("clear control did not render");
+    await act(async () => clear.click());
+
+    // The one removal a resolved card offers, and after it the queue holds
+    // nothing for this session.
+    expect(container.querySelector(".permission-card")).toBeNull();
   });
 });

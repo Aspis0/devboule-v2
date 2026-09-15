@@ -98,6 +98,12 @@
   background: var(--danger);
 }
 
+/* An answered card whose outcome the daemon did not name: it is not a denial
+   and must not wear one's colour, so the dot goes neutral. */
+.permission-card-unclaimed {
+  background: var(--silence);
+}
+
 .permission-card-context {
   min-width: 0;
   margin-left: auto;

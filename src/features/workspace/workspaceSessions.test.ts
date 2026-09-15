@@ -6,15 +6,21 @@ import type {
   SessionKind,
   SessionOriginKind,
   SessionStateSnapshot,
+  UnattendedState,
   Workspace,
 } from "../../types/ipc";
 import {
+  DELEGATION_UNKNOWN_BADGE_LABEL,
+  UNATTENDED_BADGE_LABEL,
+  UNATTENDED_UNKNOWN_BADGE_LABEL,
   chatCapableProviders,
   createWorkspaceSessionController,
   peerDeviceNames,
   requiresConsent,
   sessionCreateFromProvider,
   sessionCreatorBadge,
+  sessionDelegationBadges,
+  sessionDelegationTakeBack,
   sessionDisplayNames,
   sessionOriginBadge,
   sessionOriginUnknown,
@@ -745,6 +751,20 @@ describe("session title", () => {
     };
     expect(sessionTitle(recovered)).toBe("Agent s.4242.7");
   });
+
+  it("bounds the id fallback by grapheme clusters, never a halved scalar", () => {
+    // Audit 3 F10: the title's id fallback was the last unit-based cut of a
+    // daemon-generated id — the same cut the `created by` badge 100 lines
+    // below cites as its reason for bounding. Nine rockets (18 UTF-16 units)
+    // fall past the 8-unit limit either way; the slice halves four of them
+    // into U+FFFD in the strip, the cluster bound shortens whole glyphs.
+    const astralId = "🚀".repeat(9);
+    expect(sessionTitle({ ...liveSession(astralId, "  "), kind: "acp" })).toBe(
+      `Agent ${"🚀".repeat(8)}…`,
+    );
+    // ASCII within the bound is untouched, exactly as the slice left it.
+    expect(sessionTitle({ ...liveSession("s.4242.7", "  "), kind: "acp" })).toBe("Agent s.4242.7");
+  });
 });
 
 describe("session identity badges", () => {
@@ -766,6 +786,15 @@ describe("session identity badges", () => {
 
   it("falls back to the creator's short id prefix when the roster has not named it", () => {
     expect(sessionCreatorBadge(child("s.4242.1"), new Map())).toBe("created by s.4242.1");
+  });
+
+  it("bounds the creator's id fallback by grapheme clusters, never a halved scalar", () => {
+    // Audit 3 F10: the badge's fallback was bound but untested — nine
+    // rockets pass the 8-unit limit either way, and only the cluster bound
+    // keeps whole glyphs (the unit slice rendered four U+FFFD beside the
+    // creator's name). This is the test that makes the bound's removal red.
+    const astral = "🚀".repeat(9);
+    expect(sessionCreatorBadge(child(astral), new Map())).toBe(`created by ${"🚀".repeat(8)}…`);
   });
 
   it("shows no creator badge on a session a person started", () => {
@@ -814,5 +843,605 @@ describe("session identity badges", () => {
     expect(pushed?.displayName).toBe("worker");
     expect(pushed?.createdBy).toBe("s.4242.1");
     release();
+  });
+});
+
+describe("session delegation badges", () => {
+  it("shows nothing for a session that is not an agent-created child", () => {
+    expect(sessionDelegationBadges(liveSession("human-1"))).toEqual([]);
+  });
+
+  it("shows nothing for an explicit no on both axes — pinned apart from the absent fixture above", () => {
+    // The test above carries NEITHER field (the absent case); this one passes
+    // the definite "no" values, so "silent because absent" and "silent
+    // because no" are two pinned facts instead of one fixture's default.
+    expect(
+      sessionDelegationBadges({
+        ...liveSession("human-1b"),
+        delegation: { answered: 0, state: "off" },
+        unattended: "no",
+      }),
+    ).toEqual([]);
+  });
+
+  it("shows nothing delegation-specific for a child nobody answers for", () => {
+    expect(
+      sessionDelegationBadges({
+        ...liveSession("child-1"),
+        delegation: { answered: 0, state: "off" },
+        unattended: "no",
+      }),
+    ).toEqual([]);
+  });
+
+  it("names the creator's answering on an active child", () => {
+    expect(
+      sessionDelegationBadges({
+        ...liveSession("child-2"),
+        delegation: { answered: 0, state: "active" },
+      }),
+    ).toEqual([{ tone: "active", label: "answers to its creator" }]);
+  });
+
+  it("joins the answered count to the active pill once a card has been answered", () => {
+    expect(
+      sessionDelegationBadges({
+        ...liveSession("child-3"),
+        delegation: { answered: 3, state: "active" },
+      }),
+    ).toEqual([{ tone: "active", label: "answers to its creator · answered ×3" }]);
+  });
+
+  it("renders the loud unattended pill straight from the ledger", () => {
+    expect(
+      sessionDelegationBadges({
+        ...liveSession("child-4"),
+        delegation: { answered: 1, state: "unattended" },
+        unattended: "yes",
+      }),
+    ).toEqual([{ tone: "unattended", label: UNATTENDED_BADGE_LABEL }]);
+  });
+
+  it("keeps the loud pill a birth fact: a row with unattended yes and no push yet still shows it", () => {
+    // The list carries the tri-state before any push carries the ledger; the
+    // pill must not wait for the push to tell the truth it already knows.
+    expect(sessionDelegationBadges({ ...liveSession("child-5"), unattended: "yes" })).toEqual([
+      { tone: "unattended", label: UNATTENDED_BADGE_LABEL },
+    ]);
+  });
+
+  it("renders unknown as its own softer, present marker — never as nothing", () => {
+    expect(
+      sessionDelegationBadges({
+        ...liveSession("child-6"),
+        delegation: { answered: 0, state: "off" },
+        unattended: "unknown",
+      }),
+    ).toEqual([{ tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL }]);
+  });
+
+  it("renders unknown additively beside the answering pill", () => {
+    const badges = sessionDelegationBadges({
+      ...liveSession("child-7"),
+      delegation: { answered: 2, state: "active" },
+      unattended: "unknown",
+    });
+    expect(badges).toEqual([
+      { tone: "active", label: "answers to its creator · answered ×2" },
+      { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
+    ]);
+  });
+
+  it("renders the ledger's own unknown marker for the app-minted unknown state", () => {
+    expect(
+      sessionDelegationBadges({
+        ...liveSession("child-11"),
+        delegation: { answered: 0, state: "unknown" },
+      }),
+    ).toEqual([{ tone: "unknown", label: DELEGATION_UNKNOWN_BADGE_LABEL }]);
+  });
+
+  it("renders a FIFTH wire state as the visible unknown badge — never as nothing", () => {
+    // The daemon's vocabulary can grow before this build learns it; the cast
+    // builds the value TypeScript cannot predict, and the badge table must
+    // still give it a present, softer pill instead of a human-started row's
+    // silence.
+    const fifthState = "pending" as unknown as "off" | "active" | "unattended" | "unknown";
+    expect(
+      sessionDelegationBadges({
+        ...liveSession("child-12"),
+        delegation: { answered: 0, state: fifthState },
+      }),
+    ).toEqual([{ tone: "unknown", label: DELEGATION_UNKNOWN_BADGE_LABEL }]);
+  });
+
+  it("renders an out-of-union tri-state as the visible unknown marker — never as nothing", () => {
+    // Re-audit F4: the tri-state rode the same push as the ledger and was
+    // left as a `===` chain, so a value this build cannot read fell out of
+    // the chain into the silence that reads as a human-started row — the
+    // benign state, exactly the direction a warning must never fall. The
+    // cast builds what the compiler refuses to.
+    const outOfUnion = "unspecified" as unknown as UnattendedState;
+    // No ledger yet: the marker stands alone, as `unknown`'s does.
+    expect(sessionDelegationBadges({ ...liveSession("child-15"), unattended: outOfUnion })).toEqual(
+      [{ tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL }],
+    );
+    // With a ledger: the unreadable value takes the additive unknown pill
+    // exactly as `unknown` does, beside the state's own badge.
+    expect(
+      sessionDelegationBadges({
+        ...liveSession("child-16"),
+        delegation: { answered: 0, state: "active" },
+        unattended: outOfUnion,
+      }),
+    ).toEqual([
+      { tone: "active", label: "answers to its creator" },
+      { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
+    ]);
+  });
+
+  it("offers the take-back on the one row where flipping the setting ends an answering relationship", () => {
+    expect(
+      sessionDelegationTakeBack({
+        ...liveSession("child-8"),
+        delegation: { answered: 0, state: "active" },
+      }),
+    ).toBe(true);
+  });
+
+  it("offers the take-back on no unattended row: the click cannot take back a birth fact", () => {
+    // The child was born able to run without asking and KEEPS that ability
+    // after delegation is off, so the button's own promise ("stops every
+    // agent from answering for its children") is empty here — and a control
+    // that cannot act is noise beside the loud pill.
+    expect(
+      sessionDelegationTakeBack({
+        ...liveSession("child-9"),
+        delegation: { answered: 0, state: "unattended" },
+      }),
+    ).toBe(false);
+  });
+
+  it("offers the take-back nowhere else: not on humans, not on answered-off or unknown children", () => {
+    expect(sessionDelegationTakeBack(liveSession("human-2"))).toBe(false);
+    expect(
+      sessionDelegationTakeBack({
+        ...liveSession("child-10"),
+        delegation: { answered: 4, state: "off" },
+      }),
+    ).toBe(false);
+    expect(
+      sessionDelegationTakeBack({
+        ...liveSession("child-13"),
+        delegation: { answered: 0, state: "unknown" },
+      }),
+    ).toBe(false);
+    // A fifth wire value cannot earn the control either.
+    const fifthState = "pending" as unknown as "off" | "active" | "unattended" | "unknown";
+    expect(
+      sessionDelegationTakeBack({
+        ...liveSession("child-14"),
+        delegation: { answered: 0, state: fifthState },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("delegation facts ride the roster push", () => {
+  const childSnapshot = (
+    answered: number,
+    state: "off" | "active" | "unattended",
+  ): SessionStateSnapshot => ({
+    id: "child-push",
+    workspaceId: null,
+    kind: "acp",
+    title: "worker",
+    state: { type: "live", generation: 1 },
+    elapsedMs: 0,
+    delegation: { answered, state },
+    unattended: state === "unattended" ? "yes" : "no",
+  });
+
+  it("updates the answered count on every push instead of caching a stale one", async () => {
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("child-push")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+
+    watched.listener?.([childSnapshot(1, "active")]);
+    const row = controller.getState().sessions[0];
+    expect(sessionDelegationBadges(row)).toEqual([
+      { tone: "active", label: "answers to its creator · answered ×1" },
+    ]);
+
+    watched.listener?.([childSnapshot(3, "active")]);
+    const rowAfter = controller.getState().sessions[0];
+    expect(sessionDelegationBadges(rowAfter)).toEqual([
+      { tone: "active", label: "answers to its creator · answered ×3" },
+    ]);
+    release();
+  });
+
+  it("lets a push that omits the unattended marker keep the birth fact the row already knows", async () => {
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("child-push")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    watched.listener?.([childSnapshot(0, "unattended")]);
+    watched.listener?.([
+      // The daemon carries the marker for every child; a push without it must
+      // not un-see what earlier pushes established.
+      {
+        id: "child-push",
+        workspaceId: null,
+        kind: "acp",
+        title: "worker",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        delegation: { answered: 0, state: "unattended" },
+      },
+    ]);
+    const row = controller.getState().sessions[0];
+    expect(row.unattended).toBe("yes");
+    expect(sessionDelegationBadges(row)).toEqual([
+      { tone: "unattended", label: UNATTENDED_BADGE_LABEL },
+    ]);
+    release();
+  });
+
+  it("keeps the last described ledger when a push stops carrying it, and an explicit off clears it", async () => {
+    // A push that SAYS "off" is the retraction, and it clears the pill. A
+    // push that says NOTHING is not a retraction: the row it leaves
+    // undescribed stays what earlier pushes said it was, because the ledger's
+    // own absence reads "not a child" — and a child does not stop being one
+    // between pushes. (Rewritten by the fix pass: the old test pinned the
+    // erasure, which let an omitting push render a known child as a
+    // human-started row — audit P2.12.)
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("child-push")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    watched.listener?.([childSnapshot(0, "active")]);
+    expect(controller.getState().sessions[0].delegation).toEqual({ answered: 0, state: "active" });
+    watched.listener?.([
+      {
+        id: "child-push",
+        workspaceId: null,
+        kind: "acp",
+        title: "worker",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+      },
+    ]);
+    expect(controller.getState().sessions[0].delegation).toEqual({ answered: 0, state: "active" });
+    // An explicit off is the only thing that clears it.
+    watched.listener?.([childSnapshot(0, "off")]);
+    expect(controller.getState().sessions[0].delegation).toEqual({ answered: 0, state: "off" });
+    release();
+  });
+
+  it("mints the unknown ledger for a child a push describes without ever describing its delegation", async () => {
+    // A child known from `createdBy` with no ledger anywhere must not render
+    // the benign absence of a human-started row: the honest third state is
+    // "this is a child; no push has said who answers".
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("child-mint")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    watched.listener?.([
+      {
+        id: "child-mint",
+        workspaceId: null,
+        kind: "acp",
+        title: "worker",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        createdBy: "s.parent.1",
+      },
+    ]);
+    const row = controller.getState().sessions[0];
+    expect(row.createdBy).toBe("s.parent.1");
+    expect(row.delegation).toEqual({ answered: 0, state: "unknown" });
+    expect(sessionDelegationBadges(row)).toEqual([
+      { tone: "unknown", label: DELEGATION_UNKNOWN_BADGE_LABEL },
+    ]);
+    release();
+  });
+
+  it("ratchets the unattended marker: a push claiming no over a known yes cannot downgrade it", async () => {
+    // The marker is a fact of the session's birth and never downgraded — the
+    // downgrade direction is the one that removes a warning.
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("child-ratchet")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    watched.listener?.([childSnapshot(0, "unattended")]);
+    expect(controller.getState().sessions[0].unattended).toBe("yes");
+    watched.listener?.([childSnapshot(0, "off")]); // carries unattended: "no"
+    expect(controller.getState().sessions[0].unattended).toBe("yes");
+    expect(sessionDelegationBadges(controller.getState().sessions[0])).toEqual([
+      { tone: "unattended", label: UNATTENDED_BADGE_LABEL },
+    ]);
+    release();
+  });
+
+  it("ratchets the tri-state: a push claiming no over a known unknown cannot downgrade it either", async () => {
+    // Re-audit F8: the ratchet covered `yes` only, so the softer warning —
+    // "may run without asking — cannot establish" — was erasable by a later
+    // push saying `no`. `unknown` warns, and the downgrade direction is the
+    // one that removes a warning; only a louder value may replace it.
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("child-ratchet-unknown")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    const unknownPush: SessionStateSnapshot = {
+      id: "child-ratchet-unknown",
+      workspaceId: null,
+      kind: "acp",
+      title: "worker",
+      state: { type: "live", generation: 1 },
+      elapsedMs: 0,
+      unattended: "unknown",
+    };
+    watched.listener?.([unknownPush]);
+    expect(controller.getState().sessions[0].unattended).toBe("unknown");
+    watched.listener?.([{ ...unknownPush, unattended: "no" }]);
+    expect(controller.getState().sessions[0].unattended).toBe("unknown");
+    expect(sessionDelegationBadges(controller.getState().sessions[0])).toEqual([
+      { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
+    ]);
+    release();
+  });
+
+  it("ranks an out-of-union tri-state WITH the unreadable: a later no cannot erase it either", async () => {
+    // Audit 3 F7: the rank table's fallback is what keeps a value this build
+    // cannot read ranked with `unknown` — precisely so the benign `no`
+    // cannot overwrite it. With that fallback gone, the unreadable marker
+    // (the visible pill a person reads when they come back) silently becomes
+    // an ordinary row. The cast builds the value the compiler refuses to.
+    const outOfUnion = "unspecified" as unknown as UnattendedState;
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("child-ratchet-fifth")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    watched.listener?.([
+      {
+        id: "child-ratchet-fifth",
+        workspaceId: null,
+        kind: "acp",
+        title: "worker",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        unattended: outOfUnion,
+      },
+    ]);
+    expect(controller.getState().sessions[0].unattended).toBe(outOfUnion);
+    watched.listener?.([
+      {
+        id: "child-ratchet-fifth",
+        workspaceId: null,
+        kind: "acp",
+        title: "worker",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        unattended: "no",
+      },
+    ]);
+    // The unreadable marker is a warning the app cannot read; only a value
+    // that warns at least as loudly may replace it, and `no` does not.
+    expect(controller.getState().sessions[0].unattended).toBe(outOfUnion);
+    expect(sessionDelegationBadges(controller.getState().sessions[0])).toEqual([
+      { tone: "unknown", label: UNATTENDED_UNKNOWN_BADGE_LABEL },
+    ]);
+    release();
+  });
+
+  it("ratchets on the list path too: a refresh that omits the tri-state cannot unbirth it", async () => {
+    // Audit 3 F6: the ratchet's tests covered the push path only, and the
+    // list path's call was one mutation from dropping the birth fact — a
+    // refresh whose list omits `unattended` would erase the loud pill an
+    // earlier push had landed, in the strip, silently.
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      // The list names no tri-state at all — the omission the carry exists
+      // for. Same id as the pushed row, so the refresh merges against it.
+      list: vi.fn(async () => [liveSession("child-push")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    watched.listener?.([childSnapshot(0, "unattended")]);
+    expect(controller.getState().sessions[0].unattended).toBe("yes");
+    await controller.refresh();
+    const row = controller.getState().sessions[0];
+    expect(row.unattended).toBe("yes");
+    expect(sessionDelegationBadges(row)).toEqual([
+      { tone: "unattended", label: UNATTENDED_BADGE_LABEL },
+    ]);
+    release();
+  });
+
+  it("does not leave the strip loading when a create invalidates the refresh that was in flight", async () => {
+    // Audit 3 F12: refresh() published `loading: true`, then a create()
+    // bumped the generation; when the list finally answered, the superseded
+    // refresh bailed WITHOUT clearing the flag — the strip kept saying
+    // "Loading sessions…" until the next push or refresh.
+    let releaseList!: () => void;
+    const gatedList = new Promise<Session[]>((resolve) => {
+      releaseList = () => resolve([liveSession("child-slow-list")]);
+    });
+    const controller = createWorkspaceSessionController({
+      list: vi
+        .fn<() => Promise<Session[]>>()
+        .mockImplementationOnce(() => gatedList)
+        .mockResolvedValue([]),
+      create: vi.fn(async () => liveSession("terminal-created")),
+    });
+    const slow = controller.refresh();
+    // The create invalidates the in-flight refresh the moment it starts.
+    const created = controller.create();
+    releaseList();
+    await Promise.all([slow, created]);
+    expect(controller.getState().loading).toBe(false);
+    expect(controller.getState().creating).toBe(false);
+  });
+
+  it("mints and carries on the list path too: refresh() does not erase a known child", async () => {
+    // Re-audit F5: the known-child mint and the ledger carry lived only on
+    // the push path. `refresh()` runs on every session exit and every daemon
+    // reconnect, and it published the listed rows verbatim — re-rendering a
+    // child the app KNOWS about (its creator is on the row) as a
+    // human-started row until the next push arrived.
+    const watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [{ ...liveSession("child-refresh"), createdBy: "s.parent.1" }]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    // The list names the creator and carries no ledger: the mint applies on
+    // the list path exactly as on the push path.
+    expect(controller.getState().sessions[0].createdBy).toBe("s.parent.1");
+    expect(controller.getState().sessions[0].delegation).toEqual({ answered: 0, state: "unknown" });
+    // A push describes the ledger; then a list stops carrying it. The carry
+    // rules are the push's, so the described ledger survives the refresh.
+    watched.listener?.([
+      {
+        id: "child-refresh",
+        workspaceId: null,
+        kind: "acp",
+        title: "worker",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        createdBy: "s.parent.1",
+        delegation: { answered: 0, state: "active" },
+        unattended: "no",
+      },
+    ]);
+    expect(controller.getState().sessions[0].delegation).toEqual({ answered: 0, state: "active" });
+    await controller.refresh();
+    const row = controller.getState().sessions[0];
+    expect(row.createdBy).toBe("s.parent.1");
+    expect(row.delegation).toEqual({ answered: 0, state: "active" });
+    expect(sessionDelegationBadges(row)).toEqual([
+      { tone: "active", label: "answers to its creator" },
+    ]);
+    release();
+  });
+
+  it("mints when a list LEARNS the creator between refreshes, the row having been human until then", async () => {
+    // The forbidden state the merge branch owes its mint to: the first list
+    // names no creator (the row renders as a human-started one, correctly),
+    // and the NEXT list arrives with the creator and still no ledger. That
+    // row is now a known child with no described ledger — the mint is the
+    // honest render, on the merge path like everywhere else.
+    const controller = createWorkspaceSessionController({
+      list: vi
+        .fn()
+        .mockResolvedValueOnce([liveSession("child-learns")])
+        .mockResolvedValueOnce([{ ...liveSession("child-learns"), createdBy: "s.parent.1" }]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+    });
+    await controller.refresh();
+    expect(controller.getState().sessions[0].delegation).toBeUndefined();
+    await controller.refresh();
+    const row = controller.getState().sessions[0];
+    expect(row.createdBy).toBe("s.parent.1");
+    expect(row.delegation).toEqual({ answered: 0, state: "unknown" });
+    expect(sessionDelegationBadges(row)).toEqual([
+      { tone: "unknown", label: DELEGATION_UNKNOWN_BADGE_LABEL },
+    ]);
   });
 });

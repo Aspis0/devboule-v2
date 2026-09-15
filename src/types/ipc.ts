@@ -190,9 +190,15 @@ export interface PermissionResolved {
   selectedOptionKind?: string;
   selectedOptionName?: string;
   /**
-   * Who answered, when it was not a person: the session id of the creator
-   * that answered its child's card under the delegation switch. Null or
-   * absent means a person.
+   * Who answered the card, when the daemon says so: the session id of the
+   * agent that answered through delegated permission answering — the same
+   * string the daemon journals in `PermissionAnswered.answered_by`. `null` and
+   * absent mean the daemon DID NOT SAY who answered — they are not an
+   * attribution, and they never mean "a person answered": reading the wire's
+   * silence as a named human is exactly the collapse this field exists to
+   * prevent. The card renders an unnamed-answer state for them, and the
+   * outcome word (`selectedOptionKind`) is attributed separately from the
+   * answerer.
    */
   answeredBy?: Id | null;
 }
@@ -454,10 +460,20 @@ export interface Session {
    */
   contextId?: Id;
   /**
-   * Whether this session can pass a permission moment with no human answering
-   * (protocol `Session.unattended`). A fact of the birth: un-ticking or editing
-   * that profile afterwards does not change it, and the daemon ratchets it and
-   * never downgrades it.
+   * Whether this session can pass a permission moment with no person
+   * answering — a fact of its birth, from the profile that created it
+   * (`DESIGN-what-unattended-means.md`). The three values are distinct on
+   * purpose and never collapse: `yes` — the daemon knows the delivered mode
+   * asks nobody; `no` — it knows the mode asks; `unknown` — the mode's
+   * vocabulary is the agent's own prose, and deriving a permission fact from
+   * prose is a defect, so the daemon says so instead of guessing. It replaces
+   * the collapsed boolean the audit found (`bool` + `#[serde(default)]`
+   * reporting "asks" about a child that asks nobody): `unknown` must render
+   * as its own, present marker — never as `no`, never as nothing.
+   *
+   * Absent means the daemon has not said — a session a person started, or a
+   * row older than the field. Absent is not `no`, and the row renders nothing
+   * for it rather than guessing.
    */
   unattended?: UnattendedState;
   /**
@@ -466,6 +482,16 @@ export interface Session {
    * anything from a label.
    */
   labels?: Record<string, string>;
+  /**
+   * Mirror of the roster snapshot's `delegation`; the frontend only renders
+   * it. The wire's `Session` (what `sessions_list` answers) never carries the
+   * field — it is written onto this record only by the roster push merge
+   * (`applySnapshot` in `workspaceSessions.ts`), so absent here means "no push
+   * has described this row yet" as well as "not an agent-created child", and
+   * the row renders nothing for it either way. It is never read as "delegation
+   * is off".
+   */
+  delegation?: DelegationState;
 }
 
 export type ResumeResult =
@@ -600,21 +626,72 @@ export interface SessionStateSnapshot {
    * on every push, like the name and the creator.
    */
   contextId?: Id;
-  /** Whether this session can pass a permission moment with no human answering. */
+  /**
+   * The unattended marker, in the same three values as `Session.unattended`,
+   * carried on every push for a child. Same absent rule: absent means the
+   * daemon has not said, never `no`.
+   */
   unattended?: UnattendedState;
   /** The session's labels, stamped by the daemon. */
   labels?: Record<string, string>;
   /**
-   * The delegation facts, when this row is an agent-created child. Absent
-   * means NOT an agent-created child — a state of its own, never "off".
+   * The delegation ledger for one agent-created child, carried on every push
+   * so the row's answered count never goes stale behind a cached one.
+   *
+   * **Absent means this session is not an agent-created child — never
+   * "delegation is off."** A badge rendered for an absent field is the
+   * absent-into-none collapse wearing a roster badge: a human-started session
+   * would read as a child nobody answers for. Present, `state` says who
+   * answers the child's permission cards: `"active"` — its creator does while
+   * the setting is on; `"off"` — nobody does; `"unattended"` — the child was
+   * created in an auto-accepting profile and asks nobody at all, which is a
+   * fact of its birth and outlives every later flip of the setting (the daemon
+   * reads it from its journal, never from the live setting). `answered` counts
+   * the child's cards answered by anyone, human answers included; attribution
+   * lives on the card, the count on the row.
+   *
+   * When a push violates that contract — it omits the ledger for a row the app
+   * already knows is a child — the app does not render the benign absence: the
+   * merge in `applySnapshot` carries the last described ledger, or mints
+   * `state: "unknown"` for a child never described. See `workspaceSessions.ts`.
    */
   delegation?: DelegationState;
 }
 
-/** The delegation ledger for one agent-created child (snapshot only). */
+/**
+ * Whether an agent-created child asks a person before it acts. Daemon-side it
+ * is the roster's `Option<DelegationState>`; the four render cases live in
+ * `sessionDelegationBadge` (`workspaceSessions.ts`).
+ */
 export interface DelegationState {
+  /** Cards of this child answered by anyone — human answers included. */
   answered: number;
-  state: "off" | "active" | "unattended";
+  /**
+   * Closed on the daemon's three states plus one app-minted sentinel:
+   * `"unknown"` is never sent by the daemon — the app mints it when a child
+   * the roster already knows is left undescribed by a push, or when a push
+   * carries a state value this build cannot read. It renders as its own,
+   * present marker; it must never collapse into `"off"`, which is the benign
+   * case it most resembles. See `sessionDelegationBadges`.
+   */
+  state: "off" | "active" | "unattended" | "unknown";
+}
+
+/**
+ * Where the delegation switch's stored answer came from, in the daemon's own
+ * words for the three cases. They are three different facts and the panel must
+ * keep them three sentences: `file` — a human wrote `delegation.json`, so the
+ * value is deliberate; `default` — no file exists yet, which reads "never
+ * configured", not "off"; `quarantined` — the file existed and was damaged, so
+ * the daemon quarantined it and reads off. A damaged file is neither
+ * never-configured nor deliberately off, and reporting either is a lie.
+ */
+export type DelegationSourceState = "file" | "default" | "quarantined";
+
+/** The `delegation_get` reply: the stored answer plus where it came from. */
+export interface DelegationReply {
+  enabled: boolean;
+  source: DelegationSourceState;
 }
 
 export type CursorShape = "block" | "underline" | "bar";
@@ -999,6 +1076,58 @@ export interface AgentProfilesDocument {
 /** The `AgentProfilesGet` reply: the stored document, order preserved. */
 export interface AgentProfilesReply {
   document: AgentProfilesDocument;
+}
+
+/**
+ * The three-valued answer to "what does this provider offer". The three are
+ * distinct wire values on purpose and must never collapse: `present` — a
+ * source answered with a list; `none` — the source can answer and answered
+ * "I have none"; `absent` — no source could answer (the agent declared no
+ * model shape, the probe failed, the provider is not installed). "The
+ * provider published nothing" and "nobody could ask" are different facts.
+ */
+export type VocabularyState = "present" | "none" | "absent";
+
+/**
+ * Who authored a `present` vocabulary list: the provider's own answer on its
+ * wire, or the daemon's own mapping (Claude's, Codex's and pi's modes are the
+ * launcher's vocabulary — the provider cannot report them). Set only when
+ * `state` is `"present"`.
+ */
+export type VocabularyOrigin = "provider" | "daemon";
+
+/** The models axis of a `ProviderVocabulary` reply. Items are the live manifest's shape, reused. */
+export interface VocabularyModels {
+  state: VocabularyState;
+  origin?: VocabularyOrigin | null;
+  /** Empty unless `state` is `"present"`: a `present` with no items is a collapsed absence, never sent. */
+  items: SessionModel[];
+}
+
+/** The modes axis of a `ProviderVocabulary` reply. Same shape discipline as `VocabularyModels`. */
+export interface VocabularyModes {
+  state: VocabularyState;
+  origin?: VocabularyOrigin | null;
+  /** Empty unless `state` is `"present"`. */
+  items: SessionModeView[];
+}
+
+/**
+ * The `provider_vocabulary_get` reply: what one provider offers, so Settings →
+ * Agents can author a profile without inventing vocabulary. Mirrors
+ * `DaemonMessage::ProviderVocabulary` minus its request id. Wire shape and the
+ * three-state behaviour are specified by
+ * `reports/remote-agents/SPEC-provider-vocabulary-query.md` §4-§6.
+ */
+export interface ProviderVocabulary {
+  /** The canonical provider id the reply answers for. */
+  provider: string;
+  models: VocabularyModels;
+  modes: VocabularyModes;
+  /** How THIS reply was produced: a cached read (`"cache"`) or a fresh probe (`"probe"`). */
+  source: "cache" | "probe";
+  /** When the cache entry was filled; null for probe replies, which are fresh by definition. */
+  probedAtMs?: number | null;
 }
 
 /** Result of `provider_update`: the daemon ran `npm install -g <package>@latest` to completion. */

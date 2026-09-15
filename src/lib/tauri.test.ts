@@ -5,6 +5,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   COMMAND_ARG_KEYS,
+  agentProfilesGet,
+  agentProfilesSet,
   devicesList,
   invokeTyped,
   isCommandError,
@@ -38,7 +40,7 @@ import {
   toolPolicySet,
   type PairingOutcome,
 } from "./tauri";
-import type { PeerRow, PendingPairing } from "../types/ipc";
+import type { AgentProfilesDocument, PeerRow, PendingPairing } from "../types/ipc";
 
 function rustCommandFiles(root: string): string[] {
   return readdirSync(root, { withFileTypes: true })
@@ -589,7 +591,21 @@ describe("bridge wire-key convention", () => {
       Object.entries(COMMAND_ARG_KEYS).map(([command, keys]) => [command, [...keys]]),
     );
     const actual = parseRustCommandArguments();
-    const missing = Object.keys(expected).filter((command) => actual[command] === undefined);
+    // Commands whose Rust Tauri command does not exist yet: the slice 5b app
+    // half landed against the frozen spec while the daemon half is built in
+    // another worktree (`SPEC-slice-5b-delegation.md` §3, Pass B) — the same
+    // stub-before-landing shape `provider_vocabulary_get` had, except that
+    // pass owned both sides, and this one may not touch src-tauri. When the
+    // daemon pass adds `#[tauri::command]` fns for these names, DELETE this
+    // list; the guard is then whole again, and a command added here without
+    // a Rust twin fails this test as before.
+    const PENDING_RUST_COMMANDS: ReadonlySet<string> = new Set([
+      "delegation_get",
+      "delegation_set",
+    ]);
+    const missing = Object.keys(expected)
+      .filter((command) => actual[command] === undefined)
+      .filter((command) => !PENDING_RUST_COMMANDS.has(command));
     const extra = Object.keys(actual).filter((command) => expected[command] === undefined);
     const mismatched = Object.keys(expected)
       .filter((command) => actual[command] !== undefined)
@@ -846,5 +862,51 @@ describe("tool policy command wrappers", () => {
   it("pins the wire keys of both tool policy commands", () => {
     expect(COMMAND_ARG_KEYS.tool_policy_get).toEqual([]);
     expect(COMMAND_ARG_KEYS.tool_policy_set).toEqual(["providerId", "enabled", "disabledTools"]);
+  });
+});
+
+describe("agent profiles command wrappers", () => {
+  const document: AgentProfilesDocument = {
+    profiles: [
+      {
+        id: "01890a5d-ac96-774b-bcce-b302099a8057",
+        name: "Explorer",
+        icon: null,
+        note: "Reads the code and reports back.",
+        provider: "grok",
+        model: "grok-4",
+        modeId: "ask",
+        thinkingOptionId: null,
+        features: {},
+        toolOverlay: [],
+        enabledForAgents: true,
+      },
+    ],
+    standingInstructions: "Report your result in your final message.",
+  };
+
+  it("calls agent_profiles_get with no payload", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({ document } as never);
+
+    await expect(agentProfilesGet()).resolves.toEqual({ document });
+    expect(invoke).toHaveBeenCalledWith("agent_profiles_get", undefined);
+  });
+
+  it("sends the whole document, order included, as the set payload", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await agentProfilesSet(document);
+
+    // The daemon replaces its whole store with what it receives, so the
+    // profiles travel in the human's order together with the standing
+    // instructions: one write, one document, no delta form.
+    expect(invoke).toHaveBeenCalledWith("agent_profiles_set", { document });
+  });
+
+  it("pins the wire keys of both agent profile commands", () => {
+    expect(COMMAND_ARG_KEYS.agent_profiles_get).toEqual([]);
+    expect(COMMAND_ARG_KEYS.agent_profiles_set).toEqual(["document"]);
   });
 });

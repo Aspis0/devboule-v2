@@ -1,10 +1,13 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   ActiveTurnBehavior,
+  AgentProfilesDocument,
+  AgentProfilesReply,
   Cap,
   CommandError,
   DaemonDiagnostics,
   DaemonStatus,
+  DelegationReply,
   DevicesReply,
   FileTab,
   Id,
@@ -27,6 +30,7 @@ import type {
   Project,
   ProviderCatalog,
   ProviderUpdateOutcome,
+  ProviderVocabulary,
   PromptAttachment,
   ResumeResult,
   Session,
@@ -174,6 +178,11 @@ export type CommandArgs = {
   peer_set_caps: { deviceId: string; caps: readonly Cap[] };
   tool_policy_get: undefined;
   tool_policy_set: { providerId: string; enabled: boolean | null; disabledTools: string[] };
+  agent_profiles_get: undefined;
+  agent_profiles_set: { document: AgentProfilesDocument };
+  provider_vocabulary_get: { provider: string; refresh: boolean };
+  delegation_get: undefined;
+  delegation_set: { enabled: boolean };
 };
 
 type CommandResults = {
@@ -252,6 +261,42 @@ type CommandResults = {
   tool_policy_get: ToolPolicyReply;
   /** The daemon answers `ToolPolicySetOk`; the set itself is the proof. */
   tool_policy_set: void;
+  /**
+   * The whole stored document — the ordered profile list plus the standing
+   * instructions, in the human's order. An empty document is the honest
+   * first run AND the failure mode of a quarantined file: agents create
+   * nothing, never "the last good list".
+   */
+  agent_profiles_get: AgentProfilesReply;
+  /** The daemon answers `AgentProfilesSetOk` after validating and persisting. */
+  agent_profiles_set: void;
+  /**
+   * What one provider offers — models and modes — as the profile form needs
+   * it. The three-valued `present`/`none`/`absent` states are the point:
+   * "the provider published nothing" and "nobody could ask" stay different
+   * answers all the way to the screen.
+   *
+   * Today's Rust stub, though, is `Result<(), CommandError>`
+   * (`backend/provider_vocabulary.rs`): until the daemon pass replaces its
+   * body it refuses every request, so the success channel carries nothing —
+   * never a `ProviderVocabulary`. The wrapper annotates the spec's reply
+   * shape for its callers across one boundary cast; when the daemon half
+   * lands, widen the Rust return and THIS entry together and the cast goes.
+   */
+  provider_vocabulary_get: void;
+  /**
+   * The stored delegation answer plus where it came from. There is NO Rust
+   * command for this name in this tree — not even a refusing stub: the
+   * daemon half of slice 5b is being built on the daemon branch and lands at
+   * the merge, where the real reply type and THIS entry are widened together
+   * and the boundary cast in `delegationGet` goes. Until then it is the
+   * capability gate (`permission_delegation`, advertised by no daemon in
+   * this tree) that keeps the invoke unreachable — there is no local refusal
+   * to fall back on.
+   */
+  delegation_get: void;
+  /** The daemon answers `DelegationSetOk`; the store's own get proves it. */
+  delegation_set: void;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -339,6 +384,11 @@ export const COMMAND_ARG_KEYS = {
   peer_set_caps: ["deviceId", "caps"],
   tool_policy_get: [],
   tool_policy_set: ["providerId", "enabled", "disabledTools"],
+  agent_profiles_get: [],
+  agent_profiles_set: ["document"],
+  provider_vocabulary_get: ["provider", "refresh"],
+  delegation_get: [],
+  delegation_set: ["enabled"],
 } as const satisfies {
   [K in CommandName]: readonly (CommandArgs[K] extends undefined
     ? never
@@ -756,3 +806,69 @@ export const toolPolicySet = (
   enabled: boolean | null,
   disabledTools: string[],
 ) => invokeTyped("tool_policy_set", { providerId, enabled, disabledTools });
+
+/**
+ * The whole stored agent-profile document — the ordered profile list plus the
+ * standing instructions — as the daemon holds it right now. The order is the
+ * human's and is exactly what `devboule_list_profiles` serves an agent.
+ */
+export const agentProfilesGet = () => invokeTyped("agent_profiles_get");
+/**
+ * Replaces the whole document: profiles (order included) and the standing
+ * instructions travel together, so one write cannot leave the two halves
+ * disagreeing. The daemon validates before it persists and refuses rather
+ * than truncates — a profile over a cap or instructions over 8 KiB reject
+ * the request with the size named, and nothing on either side is clipped.
+ */
+export const agentProfilesSet = (document: AgentProfilesDocument) =>
+  invokeTyped("agent_profiles_set", { document });
+/**
+ * Asks what one provider offers — its models and modes — so Settings → Agents
+ * can author a profile from the provider's own vocabulary instead of free
+ * text. `refresh: false` is a cached read; `refresh: true` re-probes now,
+ * which briefly starts the provider's process (Claude costs a file scan
+ * instead). The reply's `present`/`none`/`absent` states are specified by
+ * `reports/remote-agents/SPEC-provider-vocabulary-query.md` §4-§6.
+ *
+ * THE DAEMON SIDE IS SPECIFIED BUT NOT YET IMPLEMENTED: the wire shape is
+ * frozen by that spec and another pass builds it against the same contract.
+ * Until it ships, the Rust stub (`Result<(), _>`) refuses every request —
+ * which is why the caller gates on the handshake advertising
+ * `provider_vocabulary` and falls back to free text when it does not. The
+ * promise below therefore resolves today only through the one boundary cast
+ * the CommandResults entry documents: the success type is the spec's
+ * contract, and the daemon pass makes it true.
+ */
+export const providerVocabularyGet = (provider: string, refresh: boolean) =>
+  invokeTyped("provider_vocabulary_get", {
+    provider,
+    refresh,
+  }) as unknown as Promise<ProviderVocabulary>;
+
+/**
+ * The stored answer of the delegation switch — may an agent answer its
+ * children's permission cards — plus `source`, which says where that answer
+ * came from (`"file"`: a human wrote it; `"default"`: never configured;
+ * `"quarantined"`: the settings file was damaged). The three are different
+ * facts and the panel keeps them three sentences.
+ *
+ * THE DAEMON SIDE IS SPECIFIED BUT NOT YET IMPLEMENTED (`SPEC-slice-5b-delegation.md`
+ * §3, Pass B): the wire shape is frozen there and another pass builds it
+ * against the same contract. Unlike `provider_vocabulary_get`, there is no
+ * Rust command for this name in this tree at all — the Rust side lives on
+ * the daemon branch and lands at the merge — so until then nothing local
+ * refuses this request; it is simply never sent, because every caller gates
+ * on the handshake advertising `permission_delegation`. The promise below
+ * resolves today only through the one boundary cast the CommandResults entry
+ * documents.
+ */
+export const delegationGet = () =>
+  invokeTyped("delegation_get") as unknown as Promise<DelegationReply>;
+/**
+ * Turns delegated answering on or off for every agent — the one switch, so
+ * the write is global and both entry points (the Agents panel's switch and a
+ * roster row's take-back) go through this one wrapper. The daemon persists
+ * `{ enabled }` and refuses nothing else: there is no per-child variant, by
+ * the committente's own refusal of a two-level setting.
+ */
+export const delegationSet = (enabled: boolean) => invokeTyped("delegation_set", { enabled });

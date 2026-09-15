@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { boundByGraphemes } from "../lib/graphemeBound";
 import { reasonFromCause, sessionPermissionRespond } from "../lib/tauri";
 import type { DaemonConnectionState, PermissionRequest, SessionOrigin } from "../types/ipc";
 import "./PermissionCard.css";
@@ -11,6 +12,138 @@ export const PERMISSION_LABELS: Record<PermissionState, string> = {
   allowed: "Allowed once · running",
   denied: "Denied — the turn continues without it",
 };
+
+/**
+ * The resolved labels when the answer provably came from the child's creator —
+ * delegated answering where the daemon's `answeredBy` matches the child's own
+ * `createdBy`. Both outcomes carry the attribution, and the wording says "its
+ * creator" because that identity was CHECKED, not assumed: the card sits on
+ * the child's surface, and the app compares the answerer with the creator the
+ * roster names before it prints the word. A denial by an agent is exactly the
+ * event a human reviewing the roster needs to see happened, so it must not
+ * render as an unattributed one.
+ */
+export const PERMISSION_CREATOR_LABELS: Record<"allowed" | "denied", string> = {
+  allowed: "Allowed by its creator · running",
+  denied: "Denied by its creator — the turn continues without it",
+};
+
+/**
+ * The labels when a session answered but the creator check does not pass —
+ * either the answerer is a different session, or the app does not know this
+ * child's creator and cannot verify the claim. Naming the answerer is the
+ * honest rendering; "its creator" is not, because nobody checked. The head of
+ * the id stands in for the whole UUID (the roster's own creator-badge rule);
+ * the full id stays on the label's `title`.
+ */
+export const PERMISSION_ANSWERER_LABELS: Record<"allowed" | "denied", (who: string) => string> = {
+  allowed: (who) => `Allowed by session ${who} · running`,
+  denied: (who) => `Denied by session ${who} — the turn continues without it`,
+};
+
+/**
+ * The labels when the daemon did not say who answered. Silence is not a
+ * person: rendering "a person answered" off an absent field is the exact
+ * collapse this card exists to prevent, so the unnamed answer is its own
+ * visible state — and the human can clear the card once they have read it.
+ */
+export const PERMISSION_UNNAMED_LABELS: Record<"allowed" | "denied", string> = {
+  allowed: "Allowed — the daemon did not say who answered · running",
+  denied: "Denied — the daemon did not say who answered — the turn continues without it",
+};
+
+/**
+ * The labels when the daemon did not say WHAT was chosen: `selectedOptionKind`
+ * was absent, or a value this build does not know. The card states that an
+ * answer happened and refuses to invent the decision — "denied" was exactly
+ * what an `allow_always` used to render as, and a consent surface may not
+ * guess in either direction.
+ */
+export const PERMISSION_UNCLAIMED_LABELS = {
+  named: (who: string) => `Answered by session ${who} — allowed or denied, the daemon did not say`,
+  unnamed: "Answered — by whom and with what outcome, the daemon did not say",
+};
+
+/**
+ * The three states an outside answer's attribution can be in: `creator`
+ * (answerer === the child's `createdBy`), `other` (a named session that is
+ * not the creator, or a creator the roster does not know), `unnamed` (the
+ * daemon said nothing). The outcome is a separate axis — a resolution can
+ * name the answerer and still not name the decision.
+ */
+type ResolutionAttribution = "creator" | "other" | "unnamed";
+
+/**
+ * The decision the daemon's selected option kind maps to, walked as a table
+ * over the closed permission vocabulary — the same mapping the daemon's
+ * broker owns (`allow_once | allow_always → Allow`, `reject_once |
+ * reject_always → Deny`). Keyed by the raw wire string, so an unknown or
+ * absent kind misses the table and yields `undefined`: the caller renders an
+ * unclaimed answer, never a guessed decision. THIS TABLE IS THE FORK POINT —
+ * when the daemon's vocabulary grows, this is the line that must grow with
+ * it, and the outcome test walks every row plus the unknown one.
+ */
+export const OUTCOME_BY_OPTION_KIND: Record<string, "allowed" | "denied"> = {
+  allow_once: "allowed",
+  allow_always: "allowed",
+  reject_once: "denied",
+  reject_always: "denied",
+};
+
+/** The outcome a resolution claims, or null when the kind named none. */
+export function resolutionOutcome(
+  selectedOptionKind: string | undefined | null,
+): "allowed" | "denied" | null {
+  if (selectedOptionKind === undefined || selectedOptionKind === null) return null;
+  return OUTCOME_BY_OPTION_KIND[selectedOptionKind] ?? null;
+}
+
+/** How much of an answerer's session id the attribution line shows. */
+export const PERMISSION_ANSWERER_ID_LIMIT = 8;
+
+/** The head of an answerer's session id, the roster's creator-badge rule.
+ * Bounded by grapheme clusters — a unit-based cut halves an astral scalar
+ * and renders U+FFFD (re-audit F12). */
+export function shortenAnswererId(answeredBy: string): string {
+  return boundByGraphemes(answeredBy, PERMISSION_ANSWERER_ID_LIMIT);
+}
+
+/**
+ * The resolved label, from a table the render walks — never a chain of
+ * `===`. The attribution axis decides WHO may be claimed; the outcome axis
+ * decides WHAT is claimed; when the outcome is null (an unknown or absent
+ * option kind) the card claims no decision at all and says so.
+ */
+const RESOLVED_LABELS: Record<
+  ResolutionAttribution,
+  Record<"allowed" | "denied", (who: string) => string>
+> = {
+  creator: {
+    allowed: () => PERMISSION_CREATOR_LABELS.allowed,
+    denied: () => PERMISSION_CREATOR_LABELS.denied,
+  },
+  other: {
+    allowed: (who) => PERMISSION_ANSWERER_LABELS.allowed(who),
+    denied: (who) => PERMISSION_ANSWERER_LABELS.denied(who),
+  },
+  unnamed: {
+    allowed: () => PERMISSION_UNNAMED_LABELS.allowed,
+    denied: () => PERMISSION_UNNAMED_LABELS.denied,
+  },
+};
+
+export function resolvedCardLabel(
+  attribution: ResolutionAttribution,
+  outcome: "allowed" | "denied" | null,
+  who: string | null,
+): string {
+  if (outcome === null) {
+    return who === null
+      ? PERMISSION_UNCLAIMED_LABELS.unnamed
+      : PERMISSION_UNCLAIMED_LABELS.named(who);
+  }
+  return RESOLVED_LABELS[attribution][outcome](who ?? "");
+}
 
 /**
  * Human words for the tool an agent asks with.
@@ -187,6 +320,25 @@ export interface PermissionCardProps {
    * only the id and prints its head instead of the whole UUID.
    */
   deviceNames?: ReadonlyMap<string, string>;
+  /**
+   * An outside answer that arrived while this card was waiting: its creator
+   * resolved it through delegated answering. The card stays on screen and
+   * renders the attributed label — it does not vanish, and the person does
+   * not answer it again. Null keeps the card answerable, as before.
+   *
+   * `outcome` is null when the daemon did not say what was chosen (absent or
+   * unknown `selectedOptionKind`) — the card claims no decision. `answeredBy`
+   * is null when the daemon did not say who — the card claims no answerer,
+   * and "a person answered" is never read into the silence.
+   */
+  resolution?: { outcome: "allowed" | "denied" | null; answeredBy: string | null } | null;
+  /**
+   * The session id that created THIS session, as the roster carries it — the
+   * only fact "answered by its creator" can be checked against. Absent or
+   * null means the roster does not know the creator, so a named answerer can
+   * never earn the creator label, only the named-session one.
+   */
+  creatorId?: string | null;
   onRespond?: (outcome: "allow_once" | "deny") => Promise<void>;
   onResolved?: (sessionId: string, toolCallId: string) => void;
 }
@@ -201,6 +353,8 @@ export function PermissionCard({
   toolTitle = null,
   origin,
   deviceNames,
+  resolution = null,
+  creatorId = null,
   onRespond,
   onResolved,
 }: PermissionCardProps) {
@@ -236,9 +390,30 @@ export function PermissionCard({
   const daemonReachable = daemonState === "connected";
   const allowSupported = request.options.some((option) => option.kind === "allow_once");
   const denySupported = request.options.some((option) => option.kind === "reject_once");
+  // The creator answered elsewhere: the card resolves with the attribution
+  // on it, an answerer the label can name, and a way to clear it once read.
+  // The dot keeps the outcome's colour so the state is readable at the same
+  // glance as the words — except when no outcome was claimed, where the dot
+  // goes neutral: an answered card with no claimed decision is not a denial
+  // and must not wear one's colour.
+  const resolvedByCreator = resolution !== null;
+  const attribution: ResolutionAttribution =
+    resolution === null || resolution.answeredBy === null
+      ? "unnamed"
+      : creatorId !== null && resolution.answeredBy === creatorId
+        ? "creator"
+        : "other";
+  const answererHead =
+    resolution?.answeredBy === null || resolution?.answeredBy === undefined
+      ? null
+      : shortenAnswererId(resolution.answeredBy);
+  const cardLabel = resolvedByCreator
+    ? resolvedCardLabel(attribution, resolution.outcome, answererHead)
+    : PERMISSION_LABELS[permission];
+  const cardTone = resolvedByCreator ? (resolution.outcome ?? "unclaimed") : permission;
 
   const respond = async (outcome: "allow_once" | "deny") => {
-    if (submittingRef.current || permission !== "waiting") return;
+    if (resolvedByCreator || submittingRef.current || permission !== "waiting") return;
     const generation = generationRef.current;
     submittingRef.current = true;
     setPermission("submitting");
@@ -264,7 +439,7 @@ export function PermissionCard({
           print something that reads as it. */}
       {provenance !== null ? <div className="permission-card-origin">{provenance}</div> : null}
       <div className="permission-card-heading">
-        <span className={`permission-card-dot permission-card-${permission}`} />
+        <span className={`permission-card-dot permission-card-${cardTone}`} />
         <span className="permission-card-action">{subject.action}</span>
         {request.cwd ? <span className="permission-card-context">{request.cwd}</span> : null}
       </div>
@@ -295,23 +470,45 @@ export function PermissionCard({
         </div>
       ) : null}
       <div className="permission-card-actions">
-        <span className="permission-card-label">{PERMISSION_LABELS[permission]}</span>
-        <button
-          type="button"
-          className="permission-card-secondary-action permission-card-deny-action"
-          onClick={() => void respond("deny")}
-          disabled={permission !== "waiting" || !daemonReachable || !denySupported}
+        <span
+          className="permission-card-label"
+          title={resolution?.answeredBy != null ? resolution.answeredBy : undefined}
         >
-          Deny
-        </button>
-        <button
-          type="button"
-          className="permission-card-primary-action"
-          onClick={() => void respond("allow_once")}
-          disabled={permission !== "waiting" || !daemonReachable || !allowSupported}
-        >
-          Allow once
-        </button>
+          {cardLabel}
+        </span>
+        {resolvedByCreator ? (
+          <button
+            type="button"
+            className="permission-card-secondary-action permission-card-dismiss-action"
+            // The one control a resolved card keeps: without it, an outside
+            // answer sits in the queue for the life of the app — nothing else
+            // can remove it, and two hundred answered cards are two hundred
+            // permanent fixtures.
+            aria-label="Clear this answered card"
+            onClick={() => onResolved?.(sessionId, request.toolCallId)}
+          >
+            Clear
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="permission-card-secondary-action permission-card-deny-action"
+              onClick={() => void respond("deny")}
+              disabled={permission !== "waiting" || !daemonReachable || !denySupported}
+            >
+              Deny
+            </button>
+            <button
+              type="button"
+              className="permission-card-primary-action"
+              onClick={() => void respond("allow_once")}
+              disabled={permission !== "waiting" || !daemonReachable || !allowSupported}
+            >
+              Allow once
+            </button>
+          </>
+        )}
       </div>
       {error ? <div role="alert">{error}</div> : null}
     </div>

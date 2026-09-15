@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { TerminalSurface } from "../terminal/TerminalSurface";
@@ -11,8 +19,14 @@ import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./wor
 import { useWorkspaceProjects } from "./workspaceProjects";
 import { useProviderConsent } from "./useProviderConsent";
 import {
+  DELEGATION_CAPABILITY,
+  delegationController,
+  type DelegationController,
+} from "../../lib/delegation";
+import {
   PermissionCard as WorkspacePermissionCard,
   formatPermissionCommand,
+  resolutionOutcome,
 } from "../../components/PermissionCard";
 import {
   chatCapableProviders,
@@ -21,6 +35,8 @@ import {
   sessionAttentionLabel,
   sessionCreateFromProvider,
   sessionCreatorBadge,
+  sessionDelegationBadges,
+  sessionDelegationTakeBack,
   sessionDisplayNames,
   sessionDotTone,
   sessionOriginBadge,
@@ -29,7 +45,14 @@ import {
   sessionTitle,
   useWorkspaceSessions,
 } from "./workspaceSessions";
-import type { DaemonStatus, PermissionRequest, ProviderInfo, Session } from "../../types/ipc";
+import type {
+  DaemonStatus,
+  PermissionRequest,
+  PermissionResolved,
+  ProviderInfo,
+  Session,
+} from "../../types/ipc";
+import type { DelegationBadge } from "./workspaceSessions";
 import { isAgentKind } from "../../types/ipc";
 import { daemonRestart, devicesList, providersList, reasonFromCause } from "../../lib/tauri";
 import "./Workspace.css";
@@ -66,11 +89,54 @@ function daemonLabel(status: DaemonStatus): string {
 
 export { WorkspacePermissionCard, formatPermissionCommand };
 
-interface WorkspaceProps {
-  sidePanelRegistry?: readonly SidePanelEntry[];
+/**
+ * One badge list per roster row, cached by row identity: the strip maps over
+ * it on every render of the workspace (including every keystroke and daemon
+ * status tick), and the rows themselves only change when a push replaces
+ * them. Without the cache each render allocated fresh arrays and objects per
+ * row for the same answer. The cache can hold a stale list only if a row
+ * object were ever mutated in place — Session rows are replaced, never
+ * edited — and the entries are tiny.
+ */
+const delegationBadgeCache = new WeakMap<Session, DelegationBadge[]>();
+function cachedDelegationBadges(session: Session): DelegationBadge[] {
+  const cached = delegationBadgeCache.get(session);
+  if (cached !== undefined) return cached;
+  const badges = sessionDelegationBadges(session);
+  delegationBadgeCache.set(session, badges);
+  return badges;
 }
 
-export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: WorkspaceProps = {}) {
+interface WorkspaceProps {
+  sidePanelRegistry?: readonly SidePanelEntry[];
+  /**
+   * The delegation switch's controller, injectable for tests like the panel
+   * registry. Defaults to the app's one shared instance: the take-back below
+   * and the Settings → Agents switch are two entry points to the same
+   * setting, and a value one flipped is what the other must read.
+   */
+  delegation?: DelegationController;
+}
+
+/**
+ * One attribution an outside answer carried. Both fields are honest-or-null:
+ * `answeredBy` is null when the daemon did not say who — silence is never
+ * read as "a person answered" — and `outcome` is null when the daemon did not
+ * say what was chosen (absent `selectedOptionKind`, or a kind this build does
+ * not know: `allow_always` was exactly the value the old two-way branch
+ * rendered as a denial). A resolution is set for EVERY outside answer; the
+ * card stays to show it and carries the one control that can clear it.
+ */
+interface QueueResolution {
+  outcome: "allowed" | "denied" | null;
+  answeredBy: string | null;
+}
+
+export function Workspace({
+  sidePanelRegistry = SIDE_PANEL_REGISTRY,
+  delegation: delegationControllerProp,
+}: WorkspaceProps = {}) {
+  const delegation = delegationControllerProp ?? delegationController;
   const {
     visibleProjects,
     loading: projectsLoading,
@@ -105,7 +171,13 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   const [appBuild, setAppBuild] = useState(41);
   const [prLabel, setPrLabel] = useState("Open #412 on GitHub");
   const [permissionQueue, setPermissionQueue] = useState<
-    Array<{ sessionId: string; subscriptionId: number; request: PermissionRequest }>
+    Array<{
+      sessionId: string;
+      subscriptionId: number;
+      request: PermissionRequest;
+      /** Set when an agent answered this card elsewhere; the card stays to say so. */
+      resolution?: QueueResolution;
+    }>
   >([]);
   // Device id to display name, for the tab badge that names a peer session's
   // device. One read per daemon connection: the names come from pairing and do
@@ -137,10 +209,10 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     SIDE_PANEL_REGISTRY[0];
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
   // The names the roster carries, for the badge that resolves a child's
-  // `createdBy` back to the session that created it. Derived per render like
-  // `selectedSession` above: the roster is a handful of rows, and the map is a
-  // projection of the same array the tab strip is already mapping over.
-  const sessionNames = sessionDisplayNames(sessions);
+  // `createdBy` back to the session that created it. Memoized on the roster:
+  // the map is a projection of the same array the tab strip maps over, and
+  // rebuilding it on unrelated renders bought nothing.
+  const sessionNames = useMemo(() => sessionDisplayNames(sessions), [sessions]);
   // The recovery decision is a small external store: it holds the episode, the
   // roster answer, and the attempt-failed note, which only change from pushed
   // updates. Both pushes happen in effects below — no ref is read during render.
@@ -399,15 +471,84 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     },
     [],
   );
-  const handlePermissionResolved = useCallback((sessionId: string, toolCallId: string) => {
+  // A card the human answered through this app's own card: it leaves the
+  // queue, exactly as it always did.
+  const dismissResolvedPermission = useCallback((sessionId: string, toolCallId: string) => {
     setPermissionQueue((queue) =>
       queue.filter(
         (item) => !(item.sessionId === sessionId && item.request.toolCallId === toolCallId),
       ),
     );
   }, []);
+  // A card resolved from somewhere else. The card NEVER leaves on the strength
+  // of this event alone, and the event's silence is never read as "a person
+  // answered": the daemon naming nobody leaves the answer unnamed, on screen,
+  // with its outcome claimed only if the option kind named one. A denial by an
+  // agent is exactly the event a human reviewing the roster needs to see
+  // happened — and a card vanishing as if they had answered it themselves is
+  // the one rendering a consent surface may not do with an unnamed answer.
+  const handlePermissionResolved = useCallback(
+    (sessionId: string, resolution: PermissionResolved) => {
+      setPermissionQueue((queue) => {
+        const index = queue.findIndex(
+          (item) =>
+            item.sessionId === sessionId &&
+            item.request.toolCallId === resolution.toolCallId &&
+            item.resolution === undefined,
+        );
+        if (index === -1) return queue;
+        const answeredBy = resolution.answeredBy?.trim() || null;
+        const outcome = resolutionOutcome(resolution.selectedOptionKind);
+        const next = [...queue];
+        next[index] = { ...next[index], resolution: { outcome, answeredBy } };
+        return next;
+      });
+    },
+    [],
+  );
+  // The take-back and the child rows read the one switch. Fetched here — not
+  // only in Settings — so the roster's control is right even if Settings was
+  // never opened. Capability-gated like every delegation RPC: a daemon that
+  // never advertised `permission_delegation` is never asked.
+  //
+  // The read is keyed on the daemon's IDENTITY, not just this component's
+  // mount (audit 3, F2): a daemon restart — even one the 2 s poll never saw
+  // as a gap — changes `instanceId`, and every reconnect transitions
+  // `state`. Either way the store's answer is re-asked, because a connection
+  // that dropped and returned means every cached answer is a guess, and the
+  // `delegation.json` the app's own `source: "file"` sentence advertises
+  // moves the daemon's value with no app-side event.
+  const delegationState = useSyncExternalStore(delegation.subscribe, delegation.getState);
+  const delegationSupported = daemon.capabilities.includes(DELEGATION_CAPABILITY);
+  useEffect(() => {
+    if (!delegationSupported || daemon.state !== "connected") return;
+    void delegation.load();
+  }, [delegation, delegationSupported, daemon.state, daemon.instanceId]);
+  // The honest gate for the control that stops delegation (audit 3, F2): it
+  // is hidden only when the store POSITIVELY holds `false` — a value it can
+  // hold only from a daemon answer or an accepted write, never from silence —
+  // and it stays visible in the unknown state (`null`), where hiding it would
+  // let a stale belief withdraw the one control that corrects it. The write
+  // itself is the honest action from unknown: `false` needs no stored answer
+  // (see `setEnabled` in `lib/delegation.ts`), so the click acts instead of
+  // decorating a maybe.
+  const takeBackAvailable = delegationSupported && delegationState.enabled !== false;
+  const takeBack = useCallback(() => {
+    void delegation.setEnabled(false);
+  }, [delegation]);
+  // The panel's slot is for the card that needs the human: the first
+  // UNRESOLVED card of the session. A resolved card at the head must not
+  // hide a waiting one behind it (re-audit F6) — a resolved card offers only
+  // Clear, so find-on-head made the waiting card's Allow/Deny unreachable
+  // and said nothing about a second card existing. When nothing waits, the
+  // resolved card stays on screen: it never vanishes on the strength of the
+  // resolution event alone, and Clear is its removal path.
   const selectedPermission =
-    permissionQueue.find((item) => item.sessionId === selectedSessionId) ?? null;
+    permissionQueue.find(
+      (item) => item.sessionId === selectedSessionId && item.resolution === undefined,
+    ) ??
+    permissionQueue.find((item) => item.sessionId === selectedSessionId) ??
+    null;
   const sessionStatusText = sessionsError
     ? sessionsError
     : sessionCreating
@@ -723,49 +864,87 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
             // the attention pill below already names. See
             // `workspaceSessions.ts` for the measurement before re-adding one.
             const creatorBadge = sessionCreatorBadge(session, sessionNames);
+            // The delegation ledger, in pills: nothing for a session that is
+            // not an agent-created child, the loud unattended pill for one that
+            // asks nobody, the quiet answering pill for one whose creator
+            // answers, the softer cannot-establish marker where the daemon
+            // honestly could not.
+            const delegationBadges = cachedDelegationBadges(session);
+            // The take-back lives on the row that can act, beside its pill:
+            // qualifying rows only, while the one switch is on.
+            const rowTakeBack = takeBackAvailable && sessionDelegationTakeBack(session);
             return (
-              <button
-                type="button"
-                role="tab"
-                id={`workspace-session-tab-${session.id}`}
-                aria-selected={selectedSessionId === session.id}
-                aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
-                className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
-                key={session.id}
-                onClick={() => selectSession(session.id)}
-              >
-                <span
-                  className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
-                />
-                <span className="workspace-tab-label">{sessionTitle(session)}</span>
-                {originBadge !== null ? (
+              <Fragment key={session.id}>
+                <button
+                  type="button"
+                  role="tab"
+                  id={`workspace-session-tab-${session.id}`}
+                  aria-selected={selectedSessionId === session.id}
+                  aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
+                  className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
+                  onClick={() => selectSession(session.id)}
+                >
                   <span
-                    className={
-                      originUnknown
-                        ? "workspace-session-origin-badge workspace-session-origin-badge-unknown"
-                        : "workspace-session-origin-badge"
-                    }
-                    title={originBadge}
+                    className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
+                  />
+                  <span className="workspace-tab-label">{sessionTitle(session)}</span>
+                  {originBadge !== null ? (
+                    <span
+                      className={
+                        originUnknown
+                          ? "workspace-session-origin-badge workspace-session-origin-badge-unknown"
+                          : "workspace-session-origin-badge"
+                      }
+                      title={originBadge}
+                    >
+                      {originBadge}
+                    </span>
+                  ) : null}
+                  {creatorBadge !== null ? (
+                    <span className="workspace-session-origin-badge" title={creatorBadge}>
+                      {creatorBadge}
+                    </span>
+                  ) : null}
+                  {delegationBadges.map((badge) => (
+                    <span
+                      // Tone alone is not unique: two unknown-tone markers
+                      // (a delegation ledger the daemon could not describe
+                      // beside an unattended mode it could not establish)
+                      // are exactly the row the honesty rules can produce.
+                      key={`${badge.tone}:${badge.label}`}
+                      className={`workspace-tab-delegation workspace-tab-delegation-${badge.tone}`}
+                      title={badge.label}
+                    >
+                      {badge.label}
+                    </span>
+                  ))}
+                  <span className="workspace-tab-meta">
+                    {sessionStateLabel(session.state, session.elapsedMs)}
+                  </span>
+                  {session.attention ? (
+                    <span
+                      className={`workspace-tab-attention workspace-attention-${session.attention.reason}`}
+                    >
+                      {sessionAttentionLabel(session.attention.reason)}
+                    </span>
+                  ) : null}
+                </button>
+                {rowTakeBack ? (
+                  <button
+                    type="button"
+                    className="workspace-tab-takeback"
+                    // A sibling of its tab, never a control inside one: the
+                    // tab is a button, and a button cannot answer inside
+                    // another. Global scope is the control's whole honesty —
+                    // it takes back the power everywhere, not on this row.
+                    aria-label="Take back — stops every agent from answering for its children"
+                    title="Take back — stops every agent from answering for its children"
+                    onClick={takeBack}
                   >
-                    {originBadge}
-                  </span>
+                    Take back
+                  </button>
                 ) : null}
-                {creatorBadge !== null ? (
-                  <span className="workspace-session-origin-badge" title={creatorBadge}>
-                    {creatorBadge}
-                  </span>
-                ) : null}
-                <span className="workspace-tab-meta">
-                  {sessionStateLabel(session.state, session.elapsedMs)}
-                </span>
-                {session.attention ? (
-                  <span
-                    className={`workspace-tab-attention workspace-attention-${session.attention.reason}`}
-                  >
-                    {sessionAttentionLabel(session.attention.reason)}
-                  </span>
-                ) : null}
-              </button>
+              </Fragment>
             );
           })}
           <div
@@ -803,6 +982,18 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
           </div>
         ) : null}
 
+        {delegationState.error !== null ? (
+          // The refusal (or failed read) reported where the delegation control
+          // lives — the roster row's take-back included — never only on the
+          // Settings tab (audit 3, F4: a refused consent control may not be
+          // silent on the surface it was clicked on). No dismiss button: the
+          // sentence is the store's standing answer, and the next successful
+          // read or write clears it.
+          <div className="workspace-session-error" role="alert">
+            <span className="workspace-session-error-text">{delegationState.error}</span>
+          </div>
+        ) : null}
+
         {selectedSessionId !== null ? (
           <>
             {selectedSession != null && isAgentKind(selectedSession.kind) ? (
@@ -825,7 +1016,9 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                       daemonState={daemon.state}
                       origin={selectedSession?.origin}
                       deviceNames={peerNames}
-                      onResolved={handlePermissionResolved}
+                      resolution={selectedPermission.resolution ?? null}
+                      creatorId={selectedSession?.createdBy ?? null}
+                      onResolved={dismissResolvedPermission}
                     />
                   ) : undefined
                 }

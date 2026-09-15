@@ -983,3 +983,190 @@
   gap: 9px;
   padding: 5px 0;
 }
+
+/* Settings → Agents: the daemon's agent-profile store. The list order is a
+   feature, the tick is the consent, and the off state is a closed door. */
+.agent-profiles-intro {
+  margin: 0;
+  color: var(--silence);
+  font-size: 11px;
+}
+
+.agent-profiles-off {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+}
+
+.agent-profiles-off p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.agent-profile-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-profile-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 13px;
+  padding: 11px 13px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.agent-profile-order {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-profile-order .settings-device-action {
+  height: 22px;
+  padding: 0 8px;
+}
+
+.agent-profile-main {
+  display: grid;
+  flex: 1 1 260px;
+  gap: 3px;
+}
+
+.agent-profile-meta {
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.agent-profile-note {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.agent-profile-note-label {
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.agent-profile-note-empty {
+  color: var(--silence);
+  font-style: italic;
+}
+
+.agent-profile-tick {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.agent-profile-tick > span {
+  display: grid;
+  gap: 2px;
+}
+
+.agent-profile-tick-note {
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.agent-inline-editor {
+  flex-basis: 100%;
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.agent-profiles textarea {
+  padding: 7px 9px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.agent-byte-counter {
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+}
+
+.agent-standing {
+  display: grid;
+  gap: 7px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-standing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* The delegation switch, beside the profiles: the section reuses the profile
+   tick's voice. Its three `source` sentences must stay visually distinct
+   states, so the source line renders as its own status paragraph under the
+   row rather than as a note inside the label. */
+.agent-delegation {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+}
+
+.agent-delegation-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.agent-delegation-row > span {
+  display: grid;
+  gap: 2px;
+}
+
+.agent-delegation-source {
+  margin: 0;
+}
+
+/* The switch with no value (the first read in flight, or a rejected write
+   whose re-read failed too): the control itself must look unknown, not look
+   off (audit 3, F5). `indeterminate` paints the dash; the dashed outline and
+   the silence colour are the treatment the roster's unknown pill wears, so
+   "this app cannot name this value" reads the same way on both surfaces. */
+.agent-delegation-switch-unknown {
+  outline: 1px dashed var(--silence);
+  outline-offset: 2px;
+  opacity: 0.8;
+}
+
+.agent-delegation-unavailable {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  color: var(--silence);
+  font-size: 11px;
+}

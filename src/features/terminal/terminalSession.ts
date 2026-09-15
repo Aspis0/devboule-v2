@@ -5,6 +5,7 @@ import type {
   SessionEvent,
   SessionSnapshot,
   PermissionRequest,
+  PermissionResolved,
   UnverifiableTranscriptIntegrity,
 } from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
@@ -49,7 +50,8 @@ export interface TerminalSessionDeps {
   onCtrlCArmed: (armed: boolean) => void;
   onExited?: (code: number | null) => void;
   onPermissionRequest?: (request: PermissionRequest, subscriptionId: number) => void;
-  onPermissionResolved?: (toolCallId: string) => void;
+  /** The whole resolution event, so the host can read `answeredBy` off it. */
+  onPermissionResolved?: (resolution: PermissionResolved) => void;
   setTimeout?: (callback: () => void, milliseconds: number) => number;
   clearTimeout?: (id: number) => void;
   scheduleFrame?: (callback: () => void) => number;
@@ -453,7 +455,15 @@ export class TerminalSession {
         else this.deps.onPermissionRequest?.(event, this.subscriptionId);
         break;
       case "permission_resolved":
-        this.deps.onPermissionResolved?.(event.toolCallId);
+        this.deps.onPermissionResolved?.(event);
+        break;
+      case "permission_answered":
+        // The durable record of every card resolution — a person's, a
+        // delegated one, an auto-answer and a cancel alike. The app renders a
+        // child's answered count from the roster push that carries it
+        // (`DelegationState.answered`), not from this stream, so the terminal
+        // view has nothing to show for it. Listed rather than defaulted so a
+        // new daemon event still lands in the `never` guard below.
         break;
       case "session_manifest":
         break;
