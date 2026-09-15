@@ -503,7 +503,6 @@ fn wait_for_operation(
         unsafe {
             let _ = windows_sys::Win32::System::IO::CancelIoEx(handle, overlapped);
         }
-        let mut transferred = 0u32;
         // The deadline fired while a read may have been completing in the
         // same instant: CancelIoEx races the transfer, and whichever way the
         // race resolves, bytes the kernel moved into `buffer` are off the
@@ -513,8 +512,8 @@ fn wait_for_operation(
         // read owns its bytes, so they are returned to the caller; the
         // deadline is re-checked before the next chunk is requested, so a
         // genuinely idle pipe still times out bounded.
-        let ok = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
-        if ok != 0 && transferred > 0 {
+        let (completed, transferred) = harvest_completion(handle, overlapped);
+        if completed && transferred > 0 {
             return Ok(Some(transferred));
         }
         let aborted =
@@ -529,16 +528,36 @@ fn wait_for_operation(
         unsafe {
             let _ = windows_sys::Win32::System::IO::CancelIoEx(handle, overlapped);
         }
-        let mut transferred = 0u32;
-        let _ = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
+        // The bytes this harvest reports are deliberately dropped: this branch
+        // returns `Err`, and every consumer of that `Err` tears the connection
+        // down — the server's `read_client_requests` ends the reader thread
+        // and the dispatch loop breaks or returns, the client's
+        // `client_read_loop` fails the connection, and the tailscale one-shot
+        // fails its request — so no reader survives to be parked by a split
+        // frame. The harvest still runs, through the one harvest below rather
+        // than a third copy, because the overlapped slot must be reaped and
+        // because three harvests written three times is how one of them stayed
+        // wrong for months.
+        let _ = harvest_completion(handle, overlapped);
         return Err(error);
     }
-    let mut transferred = 0u32;
-    let ok = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
-    if ok == 0 {
+    let (completed, transferred) = harvest_completion(handle, overlapped);
+    if !completed {
         return Err(io::Error::last_os_error());
     }
     Ok(Some(transferred))
+}
+
+/// The one place an overlapped completion is harvested: `(succeeded,
+/// transferred)` from a waiting `GetOverlappedResult`. All three waits above
+/// — the timeout race, the wait failure, the success — read their branch from
+/// this one call, so the harvest cannot be written a fourth time and drift
+/// again.
+#[cfg(windows)]
+fn harvest_completion(handle: HANDLE, overlapped: &OVERLAPPED) -> (bool, u32) {
+    let mut transferred = 0u32;
+    let ok = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
+    (ok != 0, transferred)
 }
 
 #[cfg(windows)]

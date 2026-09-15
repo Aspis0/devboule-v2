@@ -1042,12 +1042,15 @@ mod tests {
     }
 
     /// The over-promise the unified table makes inexpressible (audit R2b-1
-    /// §4.1): for every row, the presented manifest carries the id, and the
-    /// delivered knob agrees with the marker — `never` (Codex asks nobody)
-    /// only where the marker says `yes`, and any other policy wherever the
-    /// daemon does not claim that certainty, in both the turn and the thread
-    /// form. A new row with a mismatched knob, or a resurrected hand-written
-    /// presentation list or wildcard-tailed delivery match, goes red here.
+    /// §4.1): for every row, the presented manifest carries the id, the name
+    /// and the description, and the delivered knob agrees with the marker —
+    /// `never` (Codex asks nobody) only where the marker says `yes`, and any
+    /// other policy wherever the daemon does not claim that certainty, in
+    /// both the turn and the thread form — and the sandbox the child runs in
+    /// is the row's own in both spellings. A new row with a mismatched knob,
+    /// a resurrected hand-written presentation list or a wildcard-tailed
+    /// delivery match goes red here; so does a row edited to deliver full
+    /// access while keeping its marker and its name.
     #[test]
     fn every_codex_mode_row_presents_and_delivers_what_its_marker_promises() {
         let catalog = catalog_from_response(&serde_json::json!({
@@ -1077,11 +1080,23 @@ mod tests {
                 "{}: presented under the row's own name",
                 mode.id
             );
+            assert_eq!(
+                presented.description.as_deref(),
+                Some(mode.description),
+                "{}: presented under the row's own description",
+                mode.id
+            );
 
             let values = super::mode_values(mode.id);
             let approval = values["approvalPolicy"]
                 .as_str()
                 .expect("approvalPolicy is a string");
+            assert_eq!(
+                values.get("sandboxPolicy"),
+                Some(&mode.sandbox_policy.to_json()),
+                "{}: the delivered sandbox is the row's",
+                mode.id
+            );
             assert_eq!(
                 values
                     .get("approvalsReviewer")
@@ -1097,6 +1112,12 @@ mod tests {
                     .expect("thread approvalPolicy"),
                 approval,
                 "{}: the thread form delivers the same approval policy",
+                mode.id
+            );
+            assert_eq!(
+                thread["sandbox"].as_str().expect("thread sandbox"),
+                mode.thread_sandbox,
+                "{}: the thread form delivers the row's own sandbox",
                 mode.id
             );
             assert_eq!(

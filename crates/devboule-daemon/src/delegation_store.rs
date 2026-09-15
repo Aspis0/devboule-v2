@@ -35,8 +35,10 @@
 //! stashed in any longer-lived value. A cached OFF hides the control that
 //! stops delegation; a cached ON answers a card after the human turned the
 //! switch off — the second is exactly the authority the switch exists to
-//! withhold. At this commit the only readers are the `DelegationGet` and
-//! `DelegationSet` dispatch arms in `server.rs`; the
+//! withhold. At this commit the readers are the `DelegationGet` and
+//! `DelegationSet` dispatch arms in `server.rs` and the three registry reads
+//! in `session.rs` (`delegation_enabled`, at the delegated answer, the
+//! parked-card surfacing, and the snapshot builder); the
 //! `nothing_reads_the_switch_outside_the_two_requests` test below pins that
 //! until the delegated-answer pass inherits this cadence.
 

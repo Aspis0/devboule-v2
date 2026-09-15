@@ -153,13 +153,18 @@ pub(super) fn resolve_command(paths: &RuntimePaths) -> Result<PtyCommand, WireEr
 /// Whether a Codex child in this mode answers its own permission prompts —
 /// the fact an `autoAccept` delivery demands of the delivered mode. Two
 /// routes, never a provider-name table: the daemon's broker answers the
-/// provider-agnostic ids it owns (`mode_is_auto_answered`), and `full-access`
-/// is this client's own knob, whose approval policy is `never` — the provider
-/// never asks anybody, so the child runs alone however the broker feels. The
-/// other modes keep `on-request`, so the human may be asked and a profile
-/// that ticked `autoAccept` on one is a contradiction.
+/// provider-agnostic ids it owns (`mode_is_auto_answered`), and Codex's own
+/// knob is read from the row that owns it — the `CodexMode` table's
+/// `unattended: Yes` answer, the same fact the marker derives — so a new
+/// `Yes` row is answered here without this predicate learning its name.
+/// `full-access` is that knob today, with approval policy `never`: the
+/// provider never asks anybody, so the child runs alone however the broker
+/// feels. The other modes keep `on-request`, so the human may be asked and
+/// a profile that ticked `autoAccept` on one is a contradiction.
 fn mode_answers_own_prompts(mode_id: &str) -> bool {
-    crate::provider_catalog::mode_is_auto_answered(mode_id) || mode_id == "full-access"
+    crate::provider_catalog::mode_is_auto_answered(mode_id)
+        || crate::codex_view::unattended_answer(Some(mode_id))
+            == devboule_protocol::UnattendedState::Yes
 }
 
 /// The tick half of [`validate_delivery`] as one predicate, shared with the
@@ -2464,6 +2469,7 @@ mod delivery_tests {
         validate_delivery, CodexState, ProfileDelivery,
     };
     use crate::codex_view::catalog_from_response;
+    use devboule_protocol::SessionEvent;
     use std::sync::Arc;
 
     fn catalog() -> crate::codex_view::CodexCatalog {
@@ -2539,6 +2545,39 @@ mod delivery_tests {
             !mode_answers_own_prompts("auto-review"),
             "eligible is not all: on-request requests may still reach the human"
         );
+    }
+
+    /// The predicate reads the row, not a name it spells itself: walked over
+    /// every mode the manifest presents, it agrees with the table's own
+    /// `unattended` answer. A new `Yes` row added to `CODEX_MODES` is
+    /// answered here the moment it exists — the old `mode_id ==
+    /// "full-access"` shape would go red on exactly that row, refusing a
+    /// pair with a rationale false about it.
+    #[test]
+    fn auto_answer_agrees_with_the_table_on_every_presented_row() {
+        let state = Arc::new(CodexState::new("thread".to_string(), catalog(), "auto"));
+        let SessionEvent::SessionManifest {
+            modes: Some(modes), ..
+        } = state.manifest()
+        else {
+            panic!("the Codex manifest carries modes");
+        };
+        assert!(
+            modes
+                .available_modes
+                .iter()
+                .any(|mode| mode.id == "full-access"),
+            "the walked table still carries the Yes row this pins"
+        );
+        for mode in &modes.available_modes {
+            assert_eq!(
+                mode_answers_own_prompts(&mode.id),
+                crate::codex_view::unattended_answer(Some(mode.id.as_str()))
+                    == devboule_protocol::UnattendedState::Yes,
+                "{}: the predicate answers what the row's marker says",
+                mode.id
+            );
+        }
     }
 
     /// The contradiction is refused at creation: a tick over a mode that

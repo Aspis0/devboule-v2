@@ -222,23 +222,21 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                      every other existing row reads `unknown`"
                 );
             }
-            // The shape is judged **before** the stamp (audit R2b-1 finding 2):
-            // the column exists by now — just added, or pre-existing with a
-            // name that collides — and if its shape is not the one this daemon
-            // writes, the open must leave the file at `user_version` 11.
-            // Stamping and committing first would brick it: this build refuses
-            // the shape at the post-commit validation, and every older build
-            // refuses the version at [`JournalError::FutureSchema`], so no
-            // build could ever open the file again. The refusal is the same
-            // `Corrupt` the post-commit check raises; the decisive difference
-            // is the version left on disk, because nothing here has committed
-            // and the whole transaction — the `ALTER`, the promotion, the
-            // stamp — rolls back.
-            if !is_our_unattended_state_shape(column_shape(&tx, "unattended_state")?) {
-                return Err(JournalError::Corrupt(
-                    "journal schema has an unexpected sessions.unattended_state column".to_string(),
-                ));
-            }
+            // Every shape the post-commit validation judges is judged **before**
+            // the stamp (audit R2b-1 finding 2): all five columns exist by now —
+            // just added, or pre-existing with a name that collides — and if any
+            // shape is not the one this daemon writes, the open must leave the
+            // file at `user_version` 11. Stamping and committing first would
+            // brick it: this build refuses the shape at the post-commit
+            // validation, and every older build refuses the version at
+            // [`JournalError::FutureSchema`], so no build could ever open the
+            // file again. The call is the post-commit validation itself —
+            // [`validate_profile_columns`] — not a second list kept in step with
+            // it, so the two cannot drift: a file the daemon will refuse is a
+            // file whose `user_version` never moved, because nothing here has
+            // committed and the whole transaction — the `ALTER`s, the promotion,
+            // the stamp — rolls back.
+            validate_profile_columns(&tx)?;
         }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
@@ -247,8 +245,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     // The two slice-5 columns are checked by shape rather than by presence
     // (audit S5B-07) — see [`validate_agent_columns`].
     validate_agent_columns(&conn)?;
-    // The same rule for the four the v11 migration adds — see
-    // [`validate_profile_columns`].
+    // The same rule for the five the v11/v12 migrations add — see
+    // [`validate_profile_columns`]..
     validate_profile_columns(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
@@ -358,10 +356,12 @@ fn validate_profile_columns(conn: &Connection) -> Result<(), JournalError> {
 }
 
 /// The one shape `unattended_state` may have: `INTEGER NOT NULL DEFAULT 1`,
-/// the rank of `unknown` — the shape the v12 migration adds and
-/// [`validate_profile_columns`] enforces after the fact, and the shape the
-/// pre-stamp guard in [`open_connection`] demands before the version stamp
-/// commits. Both checks spell it here, together, so they cannot drift.
+/// the rank of `unknown` — the shape the v12 migration adds. Both the
+/// pre-stamp guard in [`open_connection`] (which calls
+/// [`validate_profile_columns`] inside the transaction, before the stamp)
+/// and the post-commit [`validate_profile_columns`] read this predicate, so
+/// the shape is spelled once and every column the post-commit validation
+/// checks is checked before the stamp.
 fn is_our_unattended_state_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
     matches!(
         shape,
@@ -1929,8 +1929,30 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
 
     /// A v11 journal file: the base schema and every column through v11, so
     /// the v12 migration starts from the version it will find on disk.
+    /// The four v11 profile columns come from the daemon's own DDL; the
+    /// colliding-shape test below supplies its own through
+    /// [`v11_journal_with_profile_ddl`].
     fn v11_journal_with_rows(
         rows: &[(&str, i64, &str)],
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        v11_journal_with_profile_ddl(
+            rows,
+            "ALTER TABLE sessions ADD COLUMN profile_id TEXT;
+             ALTER TABLE sessions ADD COLUMN context_id TEXT;
+             ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN labels TEXT;",
+        )
+    }
+
+    /// A v11 journal file whose four v11 profile columns are built from the
+    /// caller's DDL instead of the daemon's: a v11 file that happens to carry
+    /// a colliding column in any of the four shapes the post-commit validation
+    /// refuses. SQLite's type affinity accepts the standard test rows into the
+    /// wrong-shaped columns, which is exactly the hazard — the data fits, the
+    /// shape lies.
+    fn v11_journal_with_profile_ddl(
+        rows: &[(&str, i64, &str)],
+        profile_ddl: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
         let (dir, path) = tmp_journal();
         let conn = Connection::open(&path).expect("v11 journal");
@@ -1943,13 +1965,11 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
              ALTER TABLE sessions ADD COLUMN origin_device TEXT;
              ALTER TABLE sessions ADD COLUMN origin_role TEXT;
              ALTER TABLE sessions ADD COLUMN display_name TEXT;
-             ALTER TABLE sessions ADD COLUMN created_by TEXT;
-             ALTER TABLE sessions ADD COLUMN profile_id TEXT;
-             ALTER TABLE sessions ADD COLUMN context_id TEXT;
-             ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE sessions ADD COLUMN labels TEXT;",
+             ALTER TABLE sessions ADD COLUMN created_by TEXT;",
         )
-        .expect("v9-v11 columns");
+        .expect("v9-v10 columns");
+        conn.execute_batch(profile_ddl)
+            .expect("v11 profile columns");
         for (id, unattended, profile_id) in rows {
             conn.execute(
                 "INSERT INTO sessions (
@@ -2081,6 +2101,78 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
              and the next open re-attempts the migration"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The guard above covers one column; the post-commit validation checks
+    /// five. Each of the other four v11 shapes below is a file the daemon
+    /// will refuse — and before the guard was widened to call the validation
+    /// itself, each was stamped 12 first: refused, then bricked. The `Err`
+    /// alone proves nothing (the post-commit check raises it either way), so
+    /// every case asserts the tripwire, `PRAGMA user_version == 11`.
+    #[test]
+    fn a_v12_migration_does_not_stamp_any_colliding_v11_column() {
+        // One wrong shape per case, the other three columns exactly as the
+        // daemon writes them — so the refusal names this column and no other.
+        let colliding: &[(&str, &str)] = &[
+            (
+                "profile_id",
+                "ALTER TABLE sessions ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN context_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN labels TEXT;",
+            ),
+            (
+                "context_id",
+                "ALTER TABLE sessions ADD COLUMN profile_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN context_id INTEGER;
+                 ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN labels TEXT;",
+            ),
+            (
+                "unattended",
+                "ALTER TABLE sessions ADD COLUMN profile_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN context_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN unattended TEXT;
+                 ALTER TABLE sessions ADD COLUMN labels TEXT;",
+            ),
+            (
+                "labels",
+                "ALTER TABLE sessions ADD COLUMN profile_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN context_id TEXT;
+                 ALTER TABLE sessions ADD COLUMN unattended INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN labels TEXT NOT NULL DEFAULT 'x';",
+            ),
+        ];
+        for (column, profile_ddl) in colliding {
+            let (dir, path) = v11_journal_with_profile_ddl(
+                &[("s.before-tri.asking", 1, "profile-bypass")],
+                profile_ddl,
+            );
+            let error = match Journal::open(&path) {
+                Err(error) => error,
+                Ok(journal) => {
+                    journal.shutdown();
+                    panic!("the colliding {column} column is refused");
+                }
+            };
+            assert!(
+                matches!(error, JournalError::Corrupt(_)),
+                "{column}: the corrupt-journal path is the one that refuses it: {error}"
+            );
+            assert!(
+                error.to_string().contains(column),
+                "{column}: the message names the column: {error}"
+            );
+            let version: i32 = Connection::open(&path)
+                .expect("open the refused journal")
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .expect("user_version");
+            assert_eq!(
+                version, 11,
+                "{column}: the stamp never commits — refused, not bricked"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     fn stored_trigger(conn: &Connection, name: &str) -> String {
