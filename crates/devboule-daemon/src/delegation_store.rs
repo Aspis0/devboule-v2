@@ -534,7 +534,15 @@ mod tests {
     #[test]
     fn nothing_reads_the_switch_outside_the_two_requests() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let allowed: &[&str] = &["server.rs", "session.rs", "delegation_store.rs", "lib.rs"];
+        let allowed: &[&str] = &[
+            "server.rs",
+            "session.rs",
+            // the session test module's own file: same readers, moved out of
+            // `session.rs` by the pass-1 test split (no new reader)
+            "session_tests.rs",
+            "delegation_store.rs",
+            "lib.rs",
+        ];
         let mut offenders: Vec<String> = Vec::new();
         let mut server_lines: Vec<String> = Vec::new();
         let mut session_lines: Vec<String> = Vec::new();
