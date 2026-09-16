@@ -68,7 +68,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -201,6 +201,51 @@ pub const SESSION_SILENCE_THRESHOLD: Duration = Duration::from_secs(300);
 pub const SESSION_OS_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Per-daemon-process entropy, drawn once per process, mixed into every
+/// minted session id's unique component.
+///
+/// Why not seed the counter from the journal instead: rows can be deleted
+/// and trimmed, and an id outlives its row — a deleted session's attachments,
+/// peer references and artefacts still carry it — so "no row holds this id"
+/// does not mean "no id ever meant this". A fresh process cannot reproduce
+/// another process's nonce, which is the property the unique component
+/// needs; the counter keeps ids short and ordered within one life.
+static SESSION_NONCE: OnceLock<u64> = OnceLock::new();
+
+fn session_nonce() -> u64 {
+    *SESSION_NONCE.get_or_init(draw_session_nonce)
+}
+
+fn draw_session_nonce() -> u64 {
+    let mut bytes = [0u8; 8];
+    if getrandom::fill(&mut bytes).is_ok() {
+        return u64::from_le_bytes(bytes);
+    }
+    // The OS entropy source refused. Degrade to time and pid rather than
+    // refuse sessions over eight bytes: still per-process, weaker only
+    // against a clock set backwards between restarts.
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ (u64::from(std::process::id()) << 32)
+}
+
+/// The unique half of a session id: the process's nonce and the counter.
+/// The nonce is what a restart changes, so ids from two lives of the daemon
+/// cannot meet even when both counters start over.
+fn session_unique(process_nonce: u64, counter: u64) -> String {
+    format!("{counter:08x}-{process_nonce:016x}")
+}
+
+/// The unique component of every session id this process mints.
+fn mint_session_unique() -> String {
+    session_unique(
+        session_nonce(),
+        SESSION_COUNTER.fetch_add(1, Ordering::Relaxed),
+    )
+}
 
 /// The transport-specific ACP module supplies these three small adapters;
 /// the registry, runtime, coalescer, journal and attachment code stay shared.
@@ -3584,11 +3629,8 @@ impl SessionRegistry {
         };
         let id = match meta.session_id.clone() {
             Some(id) => id,
-            None => {
-                let unique = format!("{:08x}", SESSION_COUNTER.fetch_add(1, Ordering::Relaxed));
-                compose_session_id(&owner.session_token(), &unique)
-                    .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?
-            }
+            None => compose_session_id(&owner.session_token(), &mint_session_unique())
+                .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?,
         };
         let (kind, provider, provenance) =
             Self::resolve_session_provider(kind, provider, env_provider);
@@ -3710,6 +3752,20 @@ impl SessionRegistry {
             unattended: unattended_state,
             labels: meta.labels.clone(),
         };
+        // The birth door: the row is created, not upserted, so an id the
+        // journal already holds refuses the create loudly instead of merging
+        // two sessions into one row — whichever road supplied the id, minted
+        // or caller-provided. It runs before anything registers against the
+        // id, and blocking, so the answer reaches the caller: a create that
+        // cannot own its id fails here, before a child exists. Journaling
+        // before spawn also keeps the old guarantee — a short-lived command
+        // (cmd /c echo) can EOF and enqueue MarkEnded before spawn returns,
+        // and the journal thread must then see a live session, not a missing
+        // one (recovered-as-killed on reopen).
+        if let Some(journal) = &self.journal {
+            journal.create_session(record).map_err(WireError::from)?;
+            self.invalidate_journal_roster();
+        }
         crate::agent_env::inject_session_env(
             &mut command,
             &metadata.id,
@@ -3717,7 +3773,7 @@ impl SessionRegistry {
             &self.paths,
         );
         let mcp_session = if crate::mcp_broker::hosts_mcp(&kind) {
-            state.mcp.register_with_provider(
+            match state.mcp.register_with_provider(
                 &metadata.id,
                 owner,
                 &kind,
@@ -3726,18 +3782,23 @@ impl SessionRegistry {
                     depth: meta.depth,
                     overlay: meta.overlay.clone(),
                 },
-            )?
+            ) {
+                Ok(mcp) => mcp,
+                Err(error) => {
+                    // The row was born above, so this path — like the spawn
+                    // failure below — must end it synchronously, or a daemon
+                    // death in this window resurrects it as a phantom
+                    // recovered session.
+                    if let Some(journal) = &self.journal {
+                        let _ = journal.mark_ended_blocking(&id, record_generation, None);
+                        self.invalidate_journal_roster();
+                    }
+                    return Err(error);
+                }
+            }
         } else {
             None
         };
-        // Journal the row BEFORE spawn. A short-lived command (cmd /c echo)
-        // can EOF and enqueue MarkEnded before this function would otherwise
-        // reach try_upsert, and the journal thread would then see a missing
-        // session and leave status=live — recovered-as-killed on reopen.
-        if let Some(journal) = &self.journal {
-            journal.try_upsert(record);
-            self.invalidate_journal_roster();
-        }
         // An agent's child is a creation that has not committed yet (audit-2
         // §2): its end can arrive before the link exists, so the end is parked
         // for the commit rather than run against a link that is not there.

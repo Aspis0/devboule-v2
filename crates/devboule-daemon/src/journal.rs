@@ -114,13 +114,25 @@ impl Default for JournalLimits {
 
 #[derive(Debug)]
 pub enum JournalError {
-    FutureSchema { found: i32, supported: i32 },
+    FutureSchema {
+        found: i32,
+        supported: i32,
+    },
     Corrupt(String),
     Unavailable(String),
     SessionNotFound,
+    /// A session row already holds this id and a birth was aimed at it.
+    /// Two sessions on one row cannot be told apart afterwards, so the
+    /// birth stops instead of averaging the two.
+    SessionExists {
+        id: String,
+    },
     LiveSession,
     InvalidRequest(String),
-    Checksum { session_id: String, seq: u64 },
+    Checksum {
+        session_id: String,
+        seq: u64,
+    },
     Timeout,
     Stopped,
 }
@@ -135,6 +147,10 @@ impl fmt::Display for JournalError {
             Self::Corrupt(message) => write!(formatter, "journal is corrupt: {message}"),
             Self::Unavailable(message) => write!(formatter, "journal is unavailable: {message}"),
             Self::SessionNotFound => write!(formatter, "No session with that id."),
+            Self::SessionExists { id } => write!(
+                formatter,
+                "session id {id} already names a journalled session; refusing to write a second session onto it"
+            ),
             Self::LiveSession => write!(formatter, "Close the session before deleting it."),
             Self::InvalidRequest(message) => write!(formatter, "{message}"),
             Self::Checksum { session_id, seq } => {
@@ -155,6 +171,7 @@ impl From<JournalError> for WireError {
     fn from(error: JournalError) -> Self {
         let code = match error {
             JournalError::SessionNotFound => ErrorCode::SessionNotFound,
+            JournalError::SessionExists { .. } => ErrorCode::InvalidRequest,
             JournalError::LiveSession => ErrorCode::InvalidRequest,
             JournalError::InvalidRequest(_) => ErrorCode::InvalidRequest,
             _ => ErrorCode::Journal,
@@ -622,6 +639,10 @@ impl JournalStats {
 
 enum JournalCmd {
     Upsert(SessionRecord),
+    CreateSession {
+        record: SessionRecord,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
     Append(EventRecord),
     Permission {
         record: PermissionRecord,
@@ -872,12 +893,6 @@ impl Journal {
     /// without querying SQLite on every live-session transition.
     pub(crate) fn session_set_revision(&self) -> u64 {
         self.session_set_revision.load(Ordering::Acquire)
-    }
-
-    /// Never blocks. On a full queue or a dead writer the session is marked
-    /// degraded and the PTY path continues.
-    pub fn try_upsert(&self, record: SessionRecord) {
-        self.try_send(JournalCmd::Upsert(record));
     }
 
     /// Returns false if the queue was full or the writer is dead. The PTY
@@ -1334,6 +1349,15 @@ impl Journal {
         self.flush()
     }
 
+    /// The birth door: the one way a session row is created. An id the
+    /// journal already holds is refused instead of merged, and the answer
+    /// reaches the caller — a create that cannot own its id fails loudly
+    /// here, before anything spawns against it.
+    pub fn create_session(&self, record: SessionRecord) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::CreateSession { record, reply })?;
+        self.flush()
+    }
+
     fn send_cmd(&self, cmd: JournalCmd, wait: Duration) -> Result<(), JournalError> {
         self.send_cmd_until(cmd, Instant::now() + wait)
     }
@@ -1553,6 +1577,9 @@ fn journal_loop(
                     retention_state.session_set_changed();
                     session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
+            }
+            JournalCmd::CreateSession { record, reply } => {
+                let _ = reply.send(create_session_row(&conn, &record));
             }
             JournalCmd::Append(record) => {
                 let is_output = matches!(record.kind, EventKind::Output | EventKind::AcpEnvelope);
@@ -2289,53 +2316,82 @@ fn on_write_error(error: &JournalError) {
     eprintln!("journal write failed: {error}");
 }
 
+/// The session row's insert — the column list and its 30 bindings — shared
+/// by the birth insert and the update-or-insert upsert, so neither can grow
+/// a column the other does not write.
+const SESSION_INSERT: &str = "INSERT INTO sessions (
+    id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+    generation, status, exit_code, closed, last_seq, degraded,
+    dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
+    reaped, peer_session_id, provider, origin_kind, origin_device, origin_role,
+    display_name, created_by, profile_id, context_id, unattended, unattended_state, labels
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)";
+
+/// The upsert's conflict clause: an existing id is *updated*, with the
+/// never-downward ratchets and the birth-fact protections below.
+const SESSION_UPSERT_CLAUSE: &str = "
+    ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        updated_at_ms = excluded.updated_at_ms,
+        generation = excluded.generation,
+        status = excluded.status,
+        exit_code = excluded.exit_code,
+        closed = excluded.closed,
+        last_seq = excluded.last_seq,
+        degraded = MAX(sessions.degraded, excluded.degraded),
+        dropped_frames = MAX(sessions.dropped_frames, excluded.dropped_frames),
+        dropped_bytes = MAX(sessions.dropped_bytes, excluded.dropped_bytes),
+        trimmed_bytes = MAX(sessions.trimmed_bytes, excluded.trimmed_bytes),
+        reaped = MAX(sessions.reaped, excluded.reaped),
+        peer_session_id = COALESCE(excluded.peer_session_id, sessions.peer_session_id),
+        provider = COALESCE(excluded.provider, sessions.provider),
+        origin_kind = COALESCE(excluded.origin_kind, sessions.origin_kind),
+        origin_device = COALESCE(excluded.origin_device, sessions.origin_device),
+        origin_role = COALESCE(excluded.origin_role, sessions.origin_role),
+        display_name = COALESCE(excluded.display_name, sessions.display_name),
+        created_by = COALESCE(excluded.created_by, sessions.created_by),
+        profile_id = COALESCE(excluded.profile_id, sessions.profile_id),
+        context_id = COALESCE(excluded.context_id, sessions.context_id),
+        -- Unattended is a fact of the birth and only ever goes one way: a
+        -- later write that says `0` (a resume rebuilt from a row that
+        -- predates the marker, an ordinary end) must not erase what the
+        -- creation recorded.
+        unattended = MAX(sessions.unattended, excluded.unattended),
+        -- The tri-state the marker actually travels in ratchets under the
+        -- same never-downward rule, ordered `no < unknown < yes`: a row
+        -- may move up that order and never down, because the asymmetry
+        -- says a session that ran alone and does not show is worse than
+        -- one that shows and did not need to.
+        unattended_state = MAX(sessions.unattended_state, excluded.unattended_state),
+        -- Same rule: labels are written once, at the creation. A later
+        -- upsert with an empty map (the common one, every end marker)
+        -- must not erase them.
+        labels = COALESCE(NULLIF(excluded.labels, '{}'), sessions.labels)";
+
 fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), JournalError> {
+    write_session_row(conn, record, true)
+}
+
+/// The birth door's write: a plain INSERT, so an id the journal already
+/// holds is a primary-key refusal, never a merge. The create road is the
+/// only caller; every other session write updates a row that exists.
+fn create_session_row(conn: &Connection, record: &SessionRecord) -> Result<(), JournalError> {
+    write_session_row(conn, record, false)
+}
+
+fn write_session_row(
+    conn: &Connection,
+    record: &SessionRecord,
+    upsert: bool,
+) -> Result<(), JournalError> {
     let labels = labels_json(&record.labels);
+    let sql = if upsert {
+        format!("{SESSION_INSERT}{SESSION_UPSERT_CLAUSE}")
+    } else {
+        SESSION_INSERT.to_string()
+    };
     conn.execute(
-        "INSERT INTO sessions (
-            id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
-            generation, status, exit_code, closed, last_seq, degraded,
-            dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
-            reaped, peer_session_id, provider, origin_kind, origin_device, origin_role,
-            display_name, created_by, profile_id, context_id, unattended, unattended_state, labels
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
-        ON CONFLICT(id) DO UPDATE SET
-            title = excluded.title,
-            updated_at_ms = excluded.updated_at_ms,
-            generation = excluded.generation,
-            status = excluded.status,
-            exit_code = excluded.exit_code,
-            closed = excluded.closed,
-            last_seq = excluded.last_seq,
-            degraded = MAX(sessions.degraded, excluded.degraded),
-            dropped_frames = MAX(sessions.dropped_frames, excluded.dropped_frames),
-            dropped_bytes = MAX(sessions.dropped_bytes, excluded.dropped_bytes),
-            trimmed_bytes = MAX(sessions.trimmed_bytes, excluded.trimmed_bytes),
-            reaped = MAX(sessions.reaped, excluded.reaped),
-            peer_session_id = COALESCE(excluded.peer_session_id, sessions.peer_session_id),
-            provider = COALESCE(excluded.provider, sessions.provider),
-            origin_kind = COALESCE(excluded.origin_kind, sessions.origin_kind),
-            origin_device = COALESCE(excluded.origin_device, sessions.origin_device),
-            origin_role = COALESCE(excluded.origin_role, sessions.origin_role),
-            display_name = COALESCE(excluded.display_name, sessions.display_name),
-            created_by = COALESCE(excluded.created_by, sessions.created_by),
-            profile_id = COALESCE(excluded.profile_id, sessions.profile_id),
-            context_id = COALESCE(excluded.context_id, sessions.context_id),
-            -- Unattended is a fact of the birth and only ever goes one way: a
-            -- later write that says `0` (a resume rebuilt from a row that
-            -- predates the marker, an ordinary end) must not erase what the
-            -- creation recorded.
-            unattended = MAX(sessions.unattended, excluded.unattended),
-            -- The tri-state the marker actually travels in ratchets under the
-            -- same never-downward rule, ordered `no < unknown < yes`: a row
-            -- may move up that order and never down, because the asymmetry
-            -- says a session that ran alone and does not show is worse than
-            -- one that shows and did not need to.
-            unattended_state = MAX(sessions.unattended_state, excluded.unattended_state),
-            -- Same rule: labels are written once, at the creation. A later
-            -- upsert with an empty map (the common one, every end marker)
-            -- must not erase them.
-            labels = COALESCE(NULLIF(excluded.labels, '{}'), sessions.labels)",
+        &sql,
         params![
             record.id,
             record.owner,
@@ -2364,12 +2420,36 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             record.created_by,
             record.profile_id,
             record.context_id,
-            if record.unattended_state == UnattendedState::Yes { 1 } else { 0 },
+            if record.unattended_state == UnattendedState::Yes {
+                1
+            } else {
+                0
+            },
             unattended_state_rank(record.unattended_state),
             labels,
         ],
-    )?;
+    )
+    .map_err(|error| {
+        if session_id_taken(&error) {
+            JournalError::SessionExists {
+                id: record.id.clone(),
+            }
+        } else {
+            error.into()
+        }
+    })?;
     Ok(())
+}
+
+/// The one constraint the sessions table puts on `id` is its primary key,
+/// so a constraint failure naming that column is a held id, nothing else.
+fn session_id_taken(error: &rusqlite::Error) -> bool {
+    let rusqlite::Error::SqliteFailure(_, message) = error else {
+        return false;
+    };
+    message
+        .as_deref()
+        .is_some_and(|message| message.contains("sessions.id"))
 }
 
 /// The tri-state's integer encoding, in the never-downward order
@@ -4688,6 +4768,107 @@ mod tests {
             .expect("yes row columns");
         assert_eq!(state_rank, 2, "the tri-state stayed at yes");
         assert_eq!(boolean, 1, "the boolean column kept the yes birth");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A birth aimed at an id the journal already holds is refused, and the
+    /// held row survives untouched: the refusal replaces the merge that made
+    /// one row describe two sessions while neither's frames could be written.
+    #[test]
+    fn creating_a_session_on_a_held_id_is_refused_and_the_held_row_survives() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let mut held = sample_session("s.process-1234.00000001");
+        held.kind = SessionKind::Acp;
+        held.created_at_ms = 1_000;
+        held.provider = Some("claude".to_string());
+        journal.create_session(held).expect("the first birth lands");
+        for seq in 1..=2 {
+            journal
+                .append_blocking(output_record("s.process-1234.00000001", 1, seq, b"frame"))
+                .expect("event lands");
+        }
+
+        let mut second = sample_session("s.process-1234.00000001");
+        second.kind = SessionKind::Terminal;
+        second.provider = Some("fieldtest-grok".to_string());
+        second.created_at_ms = 2_000;
+        let refused = journal
+            .create_session(second)
+            .expect_err("a held id must refuse a second birth");
+        assert!(
+            matches!(refused, JournalError::SessionExists { .. }),
+            "the refusal must name the collision: {refused:?}"
+        );
+
+        let listing = journal.list().expect("list");
+        let rows: Vec<&SessionRecord> = listing
+            .iter()
+            .filter(|record| record.id == "s.process-1234.00000001")
+            .collect();
+        let [row] = rows.as_slice() else {
+            panic!("exactly one row must hold the id, found {}", rows.len())
+        };
+        assert_eq!(row.kind, SessionKind::Acp, "kind stays the first session's");
+        assert_eq!(row.created_at_ms, 1_000);
+        assert_eq!(row.provider.as_deref(), Some("claude"));
+        assert_eq!(
+            row.last_seq, 2,
+            "the refusal leaves the first session's stream in place"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fix must not orphan anything recorded before it existed: an id in
+    /// the old counter-only shape still births, resolves, resumes and replays.
+    /// Green before the fix by design — it guards behaviour that must not
+    /// change; its teeth are proven by mutation in the report.
+    #[test]
+    fn ids_in_the_old_shape_still_resolve_resume_and_replay() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let old = sample_session("s.process-1234.00000001");
+        journal
+            .create_session(old)
+            .expect("an old-shape id is still birthable");
+        for seq in 1..=3 {
+            journal
+                .append_blocking(output_record(
+                    "s.process-1234.00000001",
+                    1,
+                    seq,
+                    b"old frame",
+                ))
+                .expect("event lands");
+        }
+        let found = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|record| record.id == "s.process-1234.00000001");
+        assert!(found.is_some(), "the old-shape row must resolve");
+        // Replay derives view events from raw frames, so the count is not
+        // ours to pin; the appended frames themselves must come back.
+        let replay = journal
+            .replay("s.process-1234.00000001", 0)
+            .expect("replay");
+        for seq in [1, 2, 3] {
+            assert!(
+                replay.event_seqs.contains(&seq),
+                "appended frame {seq} must still replay: {:?}",
+                replay.event_seqs
+            );
+        }
+        // The journal half of resume: the generation bumps on the held row.
+        journal
+            .start_generation("s.process-1234.00000001", 2)
+            .expect("resume generation");
+        // The attachment half: the id is still a folder name the store serves.
+        let store = crate::attachment_store::AttachmentStore::new(&dir);
+        assert!(
+            store.session("s.process-1234.00000001").is_some(),
+            "the old-shape id must still resolve for attachments"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

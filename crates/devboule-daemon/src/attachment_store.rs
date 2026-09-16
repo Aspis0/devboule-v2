@@ -241,8 +241,9 @@ const RESERVED_DEVICE_NAMES: [&str; 22] = [
 ///   folder twice, and closing either session would delete the other's files.
 ///   Every id the daemon mints is lower-case — `compose_session_id` fills the
 ///   middle segment from a `process-<pid>`/`app-<pid>`/`client`/`daemon` token
-///   and the last from `format!("{:08x}", counter)` — so this refuses nothing
-///   the daemon composes, which is asserted rather than assumed in
+///   and the last from the counter and the process nonce
+///   (`format!("{counter:08x}-{nonce:016x}")`, `session.rs`) — so this refuses
+///   nothing the daemon composes, which is asserted rather than assumed in
 ///   `every_id_the_daemon_composes_is_a_folder_name`. Folding the name to lower
 ///   case instead would be the same mistake from the other side: it merges two
 ///   distinct sessions into one folder on a case-sensitive filesystem, and the
@@ -3296,10 +3297,10 @@ mod tests {
     /// A rule that closes a hole by refusing the normal case is worse than the
     /// hole, so "the normal case" is not a shape this file gets to imagine. The
     /// ids below come from the two functions that mint them
-    /// ([`devboule_protocol::compose_session_id`] with the counter
-    /// `session.rs` formats, `format!("{counter:08x}")`, and the M2 in-process
-    /// form `session-{pid}-{n}`); a hand-written `s.a.1` would prove nothing
-    /// about either.
+    /// ([`devboule_protocol::compose_session_id`] with the unique component
+    /// `session.rs` formats, `format!("{counter:08x}-{nonce:016x}")`, and the
+    /// M2 in-process form `session-{pid}-{n}`); a hand-written `s.a.1` would
+    /// prove nothing about either.
     ///
     /// The second half pins the assumption the `.`/`..` clause rests on: the
     /// protocol accepts both, so the store is the only thing between them and a
@@ -3329,8 +3330,9 @@ mod tests {
         let mut minted = Vec::new();
         for (user, client) in owners {
             let owner = OwnerId::new(user, client).expect("owner");
-            for counter in [0u32, 1, 0xffff_ffff] {
-                let id = compose_session_id(&owner.session_token(), &format!("{counter:08x}"))
+            for (counter, nonce) in [(0u32, 0u64), (1, 0x9f2c_1a7b_3e5d_6048), (0xffff_ffff, 1)] {
+                let unique = format!("{counter:08x}-{nonce:016x}");
+                let id = compose_session_id(&owner.session_token(), &unique)
                     .expect("the daemon mints this");
                 minted.push(id);
             }
@@ -3350,23 +3352,31 @@ mod tests {
         // The spellings, written out so the shapes are readable without running
         // anything: `session_token` is the client label cut to sixteen
         // characters of `[A-Za-z0-9_-]`, `p`-prefixed for a remote owner, and
-        // `client` when nothing survives the filter.
+        // `client` when nothing survives the filter. The unique is the mint's
+        // counter-plus-nonce shape with a fixed nonce.
         let compose = |user: &str, client: &str| {
             let owner = OwnerId::new(user, client).expect("owner");
-            compose_session_id(&owner.session_token(), "00000001").expect("the daemon mints this")
+            compose_session_id(&owner.session_token(), "00000001-9f2c1a7b3e5d6048")
+                .expect("the daemon mints this")
         };
         assert_eq!(
             compose("S-1-5-21-1-2-3-1001", "process-1234"),
-            "s.process-1234.00000001"
+            "s.process-1234.00000001-9f2c1a7b3e5d6048"
         );
-        assert_eq!(compose("peer_dev-1", "daemon"), "s.pdaemon.00000001");
-        assert_eq!(compose("S-1-5-21-1", "...."), "s.client.00000001");
+        assert_eq!(
+            compose("peer_dev-1", "daemon"),
+            "s.pdaemon.00000001-9f2c1a7b3e5d6048"
+        );
+        assert_eq!(
+            compose("S-1-5-21-1", "...."),
+            "s.client.00000001-9f2c1a7b3e5d6048"
+        );
         assert_eq!(
             compose(
                 "S-1-5-21-1",
                 "a-client-label-that-is-far-too-long-for-the-token"
             ),
-            "s.a-client-label-t.00000001"
+            "s.a-client-label-t.00000001-9f2c1a7b3e5d6048"
         );
 
         // Not assumed: this is why the clause above exists.

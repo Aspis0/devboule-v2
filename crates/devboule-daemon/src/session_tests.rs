@@ -11554,3 +11554,41 @@ fn empty_standing_instructions_change_no_prompt_at_all() {
         "an empty text adds nothing to the glue the preamble already had"
     );
 }
+
+/// An id minted by one daemon process must be impossible for a later daemon
+/// process to mint again. A restart hands the new process a fresh nonce while
+/// the counter starts over; the property is that the same counter position in
+/// two lives of the daemon cannot produce the same id. The id's shape is
+/// asserted nowhere here.
+#[test]
+fn session_ids_from_two_daemon_lives_differ_at_the_same_counter_position() {
+    let first = session_unique(0x9f2c_1a7b_3e5d_6048, 1);
+    let second = session_unique(0x1b4d_9e2f_7a6c_05d3, 1);
+    assert_ne!(
+        first, second,
+        "two daemon lives minted the same id at counter 1"
+    );
+}
+
+/// The unique component stays inside `compose_session_id`'s budget — at most
+/// 32 characters of its closed alphabet — and the daemon's own mint hands it
+/// exactly that: 8 hex of counter, one dash, 16 hex of nonce.
+#[test]
+fn the_minted_unique_stays_within_the_session_id_budget() {
+    let unique = session_unique(u64::MAX, 1);
+    assert!(
+        unique.len() <= 32,
+        "{unique} exceeds the 32-character budget"
+    );
+    let composed = compose_session_id("process-1234", &unique).expect("within the id rules");
+    assert!(composed.starts_with("s.process-1234."));
+
+    let minted = mint_session_unique();
+    assert_eq!(minted.len(), 25, "{minted}");
+    assert!(
+        minted
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'),
+        "{minted} left the lower-case hex-and-dash alphabet"
+    );
+}
