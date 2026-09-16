@@ -15,11 +15,24 @@ use serde_json::Value;
 use crate::tool_paths::relativize_tool_path;
 use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
 
-/// Stateful mapper: stream-json emits `stream_event` deltas and then a
-/// consolidated `assistant` message. Track streamed length per content block
-/// so the consolidated text is forwarded only as the unstreamed remainder.
+/// The streamed text of one content block. `kind` is the block type as the
+/// stream declared it (`content_block_start`, or the delta flavour); a
+/// final-envelope block finds its stream block by this declared type plus the
+/// accumulated text being a prefix of the envelope text.
+#[derive(Default)]
+struct StreamedBlock {
+    text: String,
+    kind: Option<String>,
+}
+
+/// Stateful mapper: stream-json emits `stream_event` deltas and then
+/// consolidated `assistant` messages — in the field one envelope per content
+/// block, each with a single-block `content` array. Track streamed text per
+/// stream block so an envelope block is matched to the stream block it belongs
+/// to by declared type and streamed prefix, and forwarded only as the
+/// unstreamed remainder.
 pub(crate) struct ClaudeView {
-    streamed: HashMap<(Option<String>, u64), usize>,
+    streamed: HashMap<(Option<String>, u64), StreamedBlock>,
     current_message_ids: HashMap<Option<String>, String>,
     current_model: Option<String>,
     last_manifest_model: Option<String>,
@@ -150,6 +163,17 @@ impl ClaudeView {
                 );
                 Vec::new()
             }
+            Some("content_block_start") => {
+                let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
+                if let Some(kind) = event
+                    .get("content_block")
+                    .and_then(|block| block.get("type"))
+                    .and_then(Value::as_str)
+                {
+                    self.note_stream_block(parent_tool_use_id.as_deref(), index, kind);
+                }
+                Vec::new()
+            }
             Some("content_block_delta") => {
                 let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let delta = match event.get("delta") {
@@ -162,7 +186,7 @@ impl ClaudeView {
                         if text.is_empty() {
                             return Vec::new();
                         }
-                        self.add_streamed(parent_tool_use_id.as_deref(), index, text.len());
+                        self.add_streamed(parent_tool_use_id.as_deref(), index, "text", text);
                         vec![SessionEvent::AgentMessage {
                             message_id: self.current_message_id(parent_tool_use_id.as_deref()),
                             text: text.to_string(),
@@ -179,7 +203,7 @@ impl ClaudeView {
                         if text.is_empty() {
                             return Vec::new();
                         }
-                        self.add_streamed(parent_tool_use_id.as_deref(), index, text.len());
+                        self.add_streamed(parent_tool_use_id.as_deref(), index, "thinking", text);
                         vec![SessionEvent::AgentThought {
                             message_id: self.current_message_id(parent_tool_use_id.as_deref()),
                             text: text.to_string(),
@@ -241,13 +265,12 @@ impl ClaudeView {
         let Some(content) = message.get("content").and_then(Value::as_array) else {
             return events;
         };
-        for (index, block) in content.iter().enumerate() {
-            let index = index as u64;
+        for block in content.iter() {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
                     if let Some(text) =
-                        self.take_remainder(parent_tool_use_id.as_deref(), index, text)
+                        self.block_remainder(parent_tool_use_id.as_deref(), "text", text)
                     {
                         events.push(SessionEvent::AgentMessage {
                             message_id: self.current_message_id(parent_tool_use_id.as_deref()),
@@ -260,7 +283,7 @@ impl ClaudeView {
                 Some("thinking") => {
                     let text = block.get("thinking").and_then(Value::as_str).unwrap_or("");
                     if let Some(text) =
-                        self.take_remainder(parent_tool_use_id.as_deref(), index, text)
+                        self.block_remainder(parent_tool_use_id.as_deref(), "thinking", text)
                     {
                         events.push(SessionEvent::AgentThought {
                             message_id: self.current_message_id(parent_tool_use_id.as_deref()),
@@ -417,34 +440,64 @@ impl ClaudeView {
             .cloned()
     }
 
-    fn add_streamed(&mut self, parent_tool_use_id: Option<&str>, index: u64, added: usize) {
-        *self
+    fn note_stream_block(&mut self, parent_tool_use_id: Option<&str>, index: u64, kind: &str) {
+        let block = self
             .streamed
             .entry((parent_tool_use_id.map(str::to_string), index))
-            .or_insert(0) += added;
+            .or_default();
+        block.kind = Some(kind.to_string());
     }
 
-    fn take_remainder(
+    fn add_streamed(
         &mut self,
         parent_tool_use_id: Option<&str>,
         index: u64,
+        kind: &str,
+        fragment: &str,
+    ) {
+        let block = self
+            .streamed
+            .entry((parent_tool_use_id.map(str::to_string), index))
+            .or_default();
+        block.kind = Some(kind.to_string());
+        block.text.push_str(fragment);
+    }
+
+    /// The part of one text-like block of a final `assistant` envelope the
+    /// stream has not emitted yet. The envelope block's stream identity is the
+    /// same-kind stream block whose accumulated streamed text is the longest
+    /// prefix of the envelope text — `content` array position is not the
+    /// block's identity, and the envelope may carry one block or all of them.
+    fn block_remainder(
+        &mut self,
+        parent_tool_use_id: Option<&str>,
+        kind: &str,
         full: &str,
     ) -> Option<String> {
-        let key = (parent_tool_use_id.map(str::to_string), index);
-        let streamed = self.streamed.get(&key).copied().unwrap_or(0);
-        let emit = if streamed == 0 {
-            full.to_string()
-        } else if full.len() >= streamed && full.is_char_boundary(streamed) {
-            full[streamed..].to_string()
-        } else {
-            full.to_string()
+        let matched = self
+            .streamed
+            .iter_mut()
+            .filter(|((stream, _), block)| {
+                stream.as_deref() == parent_tool_use_id
+                    && block.kind.as_deref() == Some(kind)
+                    && full.starts_with(block.text.as_str())
+            })
+            .max_by_key(|((_, _), block)| block.text.len());
+        let Some((_, block)) = matched else {
+            // No stream block of this kind was streamed into a prefix of this
+            // text: the envelope carries the only copy.
+            return (!full.is_empty()).then(|| full.to_string());
         };
-        self.streamed.insert(key, full.len().max(streamed));
-        if emit.is_empty() {
-            None
-        } else {
-            Some(emit)
+        let streamed_len = block.text.len();
+        // The envelope text supersedes the accumulation and never shrinks it,
+        // so a re-delivery of the same block keeps matching. Bounded by one
+        // copy of the current message's text per stream: the retains on
+        // message-id change and task end drop it.
+        if full.len() > streamed_len {
+            block.text = full.to_string();
         }
+        let emit = full[streamed_len..].to_string();
+        (!emit.is_empty()).then_some(emit)
     }
 }
 
@@ -1118,6 +1171,118 @@ mod tests {
                 spawn_depth: None,
             }]
         );
+    }
+
+    /// Feed envelopes in order, collecting the assistant text and thought
+    /// fragments the view emits.
+    fn fed_texts(envelopes: &[Value]) -> (Vec<String>, Vec<String>) {
+        let mut mapper = view();
+        let mut texts = Vec::new();
+        let mut thoughts = Vec::new();
+        for envelope in envelopes {
+            for event in mapper.ingest(envelope) {
+                match event {
+                    SessionEvent::AgentMessage { text, .. } => texts.push(text),
+                    SessionEvent::AgentThought { text, .. } => thoughts.push(text),
+                    _ => {}
+                }
+            }
+        }
+        (texts, thoughts)
+    }
+
+    // Shape of reports/remote-agents/EVIDENCE-claude-double-text.jsonl
+    // (field test, 2026-09-16): Claude emits one `assistant` envelope per
+    // content block, each carrying a single-block `content` array, so every
+    // block after the first sits at array position 0 while its stream index
+    // is higher. The signature is abbreviated; the sequence is verbatim.
+    fn thinking_then_answer_turn() -> Vec<Value> {
+        vec![
+            json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_double", "model": "claude-haiku-4-5"}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 50}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}}}),
+            json!({"type": "assistant", "message": {"model": "claude-haiku-4-5", "id": "msg_double", "role": "assistant", "content": [{"type": "thinking", "thinking": "", "signature": "sig"}]}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "CHILD"}}}),
+            json!({"type": "assistant", "message": {"model": "claude-haiku-4-5", "id": "msg_double", "role": "assistant", "content": [{"type": "text", "text": "CHILD"}]}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 1}}),
+        ]
+    }
+
+    #[test]
+    fn one_assistant_envelope_per_block_after_thinking_emits_the_answer_once() {
+        let (texts, thoughts) = fed_texts(&thinking_then_answer_turn());
+        assert_eq!(texts, ["CHILD"], "the answer must be emitted exactly once");
+        assert!(
+            thoughts.is_empty(),
+            "empty thinking must not become a thought"
+        );
+    }
+
+    #[test]
+    fn single_text_block_streamed_then_confirmed_emits_once() {
+        // The pre-existing shape: one text block at stream index 0, streamed,
+        // then a final envelope whose only block repeats the same text.
+        let (texts, thoughts) = fed_texts(&[
+            json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_pong", "model": "claude-opus-5"}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "PONG"}}}),
+            json!({"type": "assistant", "message": {"model": "claude-opus-5", "id": "msg_pong", "role": "assistant", "content": [{"type": "text", "text": "PONG"}]}}),
+        ]);
+        assert_eq!(texts, ["PONG"]);
+        assert!(thoughts.is_empty());
+    }
+
+    #[test]
+    fn one_assistant_envelope_carrying_all_blocks_emits_the_answer_once() {
+        // The shape the positional mapping assumed: both blocks streamed, then
+        // a single final envelope whose `content` array carries them together.
+        let (texts, thoughts) = fed_texts(&[
+            json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_all", "model": "claude-haiku-4-5"}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "hmm", "estimated_tokens": 1}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "CHILD"}}}),
+            json!({"type": "assistant", "message": {"model": "claude-haiku-4-5", "id": "msg_all", "role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+                {"type": "text", "text": "CHILD"}
+            ]}}),
+        ]);
+        assert_eq!(texts, ["CHILD"]);
+        assert_eq!(thoughts, ["hmm"]);
+    }
+
+    #[test]
+    fn two_same_type_blocks_in_separate_envelopes_emit_both_whole() {
+        // The Anthropic API permits more than one text block per message. When
+        // the producer delivers them in separate envelopes, ordinal matching
+        // would claim the lowest stream index twice and slice the second text.
+        let (texts, thoughts) = fed_texts(&[
+            json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_two_texts", "model": "claude-opus-5"}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "CHILD"}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 3, "content_block": {"type": "text", "text": ""}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 3, "delta": {"type": "text_delta", "text": "SECOND"}}}),
+            json!({"type": "assistant", "message": {"model": "claude-opus-5", "id": "msg_two_texts", "role": "assistant", "content": [{"type": "text", "text": "CHILD"}]}}),
+            json!({"type": "assistant", "message": {"model": "claude-opus-5", "id": "msg_two_texts", "role": "assistant", "content": [{"type": "text", "text": "SECOND"}]}}),
+        ]);
+        assert_eq!(texts, ["CHILD", "SECOND"]);
+        assert!(thoughts.is_empty());
+    }
+
+    #[test]
+    fn same_block_redelivered_in_two_envelopes_emits_once() {
+        let (texts, thoughts) = fed_texts(&[
+            json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_redelivery", "model": "claude-opus-5"}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}}),
+            json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "CHILD"}}}),
+            json!({"type": "assistant", "message": {"model": "claude-opus-5", "id": "msg_redelivery", "role": "assistant", "content": [{"type": "text", "text": "CHILD"}]}}),
+            json!({"type": "assistant", "message": {"model": "claude-opus-5", "id": "msg_redelivery", "role": "assistant", "content": [{"type": "text", "text": "CHILD"}]}}),
+        ]);
+        assert_eq!(texts, ["CHILD"]);
+        assert!(thoughts.is_empty());
     }
 
     #[test]
