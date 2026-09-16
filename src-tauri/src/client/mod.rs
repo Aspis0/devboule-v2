@@ -23,6 +23,10 @@ use tauri::State;
 
 use crate::backend::error::CommandError;
 
+mod crash_loop;
+
+use crash_loop::{CrashLoopBrake, HEALTHY_CONNECTED};
+
 const PING_PERIOD: Duration = Duration::from_secs(2);
 const JOIN_BUDGET: Duration = Duration::from_millis(1500);
 const ROSTER_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1336,31 +1340,66 @@ enum SupervisorLoopExit {
     Stopped,
 }
 
-fn run_supervisor_loop<C, Connect, Connected, Sleep>(
+fn run_supervisor_loop<C, Connect, Connected, Sleep, Now>(
     stop: &AtomicBool,
     mut connect: Connect,
     mut connected: Connected,
     mut sleep: Sleep,
+    now: Now,
 ) -> SupervisorLoopExit
 where
     Connect: FnMut() -> Result<C, String>,
     Connected: FnMut(C) -> StatusLoopExit,
-    Sleep: FnMut() -> bool,
+    Sleep: FnMut(Duration) -> bool,
+    Now: Fn() -> Instant,
 {
+    let mut brake = CrashLoopBrake::default();
     loop {
         if stop.load(Ordering::SeqCst) {
             return SupervisorLoopExit::Stopped;
         }
         match connect() {
-            Ok(connection) => match connected(connection) {
-                // A lost connection is the normal handoff back to the
-                // reconnect path. Only a deliberate stop terminates the
-                // supervisor itself.
-                StatusLoopExit::ConnectionLost => continue,
-                StatusLoopExit::Stopped => return SupervisorLoopExit::Stopped,
-            },
+            Ok(connection) => {
+                // Timed from here, not from before `connect`: healthy means the
+                // *connected phase* lasted, which is what the brake documents.
+                // Starting the clock before the connect would count a slow
+                // spawn as service and reset the brake on a daemon that died
+                // the instant it finished handshaking.
+                let connected_at = now();
+                let outcome = connected(connection);
+                let served = now().saturating_duration_since(connected_at);
+                match outcome {
+                    // A loss after a genuinely healthy connection is the
+                    // normal handoff back to the reconnect path: reset the
+                    // brake and retry as fast as ever. A loss soon after the
+                    // spawn is a crash-loop symptom: the first few stay fast,
+                    // then the brake delays, ceilinged. Only a deliberate
+                    // stop terminates the supervisor itself.
+                    StatusLoopExit::ConnectionLost => {
+                        if served >= HEALTHY_CONNECTED {
+                            brake.reset();
+                            continue;
+                        }
+                        brake.observe_fast_failure();
+                        match brake.backoff_delay() {
+                            None => continue,
+                            Some(delay) => {
+                                if !sleep(delay) {
+                                    return SupervisorLoopExit::Stopped;
+                                }
+                            }
+                        }
+                    }
+                    StatusLoopExit::Stopped => return SupervisorLoopExit::Stopped,
+                }
+            }
             Err(_) => {
-                if !sleep() {
+                // A refused connect is a fast failure too: the spawn died
+                // before serving anyone. The flat period stands until the
+                // brake's tolerance is used up.
+                brake.observe_fast_failure();
+                let delay = brake.backoff_delay().unwrap_or(PING_PERIOD);
+                if !sleep(delay) {
                     return SupervisorLoopExit::Stopped;
                 }
             }
@@ -1479,7 +1518,23 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                 StatusLoopExit::Stopped
             }
         },
-        || sleep_interruptible(&stop, PING_PERIOD),
+        // The delay names the brake's verdict: at or under the flat period
+        // the loop is the reconnect path it always was; above it, the daemon
+        // is crash-looping and the status says so instead of silently
+        // spinning between "connecting" flashes.
+        |delay| {
+            if delay > PING_PERIOD {
+                set_status(
+                    &inner.status,
+                    UiDaemonStatus::error(format!(
+                        "the daemon keeps stopping right after starting; retrying in {}s",
+                        delay.as_secs()
+                    )),
+                );
+            }
+            sleep_interruptible(&stop, delay)
+        },
+        Instant::now,
     );
 }
 
@@ -2309,12 +2364,234 @@ mod tests {
                     StatusLoopExit::Stopped
                 }
             },
-            || true,
+            |_: Duration| true,
+            Instant::now,
         );
 
         assert_eq!(outcome, SupervisorLoopExit::Stopped);
         assert_eq!(connect_attempts, 2);
         assert_eq!(connected_runs, 2);
+    }
+
+    /// A clock the test advances by a whole number of seconds per call, so
+    /// "served time" is deterministic and nothing sleeps in real time.
+    struct FakeClock {
+        step_seconds: std::cell::Cell<u64>,
+        elapsed_seconds: std::cell::Cell<u64>,
+    }
+
+    impl FakeClock {
+        fn now(&self) -> Instant {
+            self.elapsed_seconds
+                .set(self.elapsed_seconds.get() + self.step_seconds.get());
+            // A real instant carries a fake offset: two reads differ by
+            // exactly the steps taken, which is all the loop can see, and
+            // nothing sleeps in real time.
+            Instant::now() + Duration::from_secs(self.elapsed_seconds.get())
+        }
+    }
+
+    /// Healthy means the **connected phase** lasted, not the attempt. A slow
+    /// spawn followed by an instant death is still a crash loop, and timing
+    /// from before `connect` would count the spawn as service, reset the
+    /// brake every round and spin forever. The fake connect below burns one
+    /// clock step; with the timer started before it, `served` would be two
+    /// steps (12s >= HEALTHY_CONNECTED) and no delay would ever appear.
+    #[test]
+    fn a_slow_spawn_that_dies_instantly_is_not_a_healthy_connection() {
+        let stop = AtomicBool::new(false);
+        let clock = FakeClock {
+            step_seconds: std::cell::Cell::new(6),
+            elapsed_seconds: std::cell::Cell::new(0),
+        };
+        let mut connected_rounds = 0;
+        let mut delays: Vec<Duration> = Vec::new();
+        let outcome = run_supervisor_loop(
+            &stop,
+            || {
+                // The spawn takes time: the clock moves while connecting.
+                let _ = clock.now();
+                Ok(())
+            },
+            |_| {
+                connected_rounds += 1;
+                if connected_rounds >= 40 {
+                    StatusLoopExit::Stopped
+                } else {
+                    StatusLoopExit::ConnectionLost
+                }
+            },
+            |delay| {
+                delays.push(delay);
+                delays.len() < 2
+            },
+            || clock.now(),
+        );
+
+        assert_eq!(outcome, SupervisorLoopExit::Stopped);
+        assert_eq!(
+            delays,
+            vec![Duration::from_secs(2), Duration::from_secs(4)],
+            "the brake engages: a 6s connected phase is not healthy, however slow the spawn was"
+        );
+    }
+
+    /// M-a's target: losses that come soon after each spawn are a crash loop,
+    /// and the delay between attempts grows — three fast retries first, then
+    /// exponential, ceilinged (M-d's loop-level half: never above
+    /// `MAX_BACKOFF`).
+    #[test]
+    fn a_crash_loop_backs_off_across_repeated_immediate_losses() {
+        let stop = AtomicBool::new(false);
+        let clock = FakeClock {
+            step_seconds: std::cell::Cell::new(1),
+            elapsed_seconds: std::cell::Cell::new(0),
+        };
+        let mut connect_attempts = 0;
+        let mut connected_rounds = 0;
+        let mut delays: Vec<Duration> = Vec::new();
+        let outcome = run_supervisor_loop(
+            &stop,
+            || {
+                connect_attempts += 1;
+                Ok(connect_attempts)
+            },
+            |_| {
+                connected_rounds += 1;
+                // The cap only exists so a broken brake (one that never
+                // sleeps) cannot spin this test forever; the green run exits
+                // long before it.
+                if connected_rounds >= 40 {
+                    StatusLoopExit::Stopped
+                } else {
+                    StatusLoopExit::ConnectionLost
+                }
+            },
+            |delay| {
+                delays.push(delay);
+                delays.len() < 8
+            },
+            || clock.now(),
+        );
+
+        assert_eq!(outcome, SupervisorLoopExit::Stopped);
+        assert_eq!(
+            delays,
+            vec![
+                Duration::from_secs(2),
+                Duration::from_secs(4),
+                Duration::from_secs(8),
+                Duration::from_secs(16),
+                Duration::from_secs(32),
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+            ],
+            "three fast retries, then exponential, ceilinged at MAX_BACKOFF"
+        );
+        assert_eq!(connect_attempts, 11);
+    }
+
+    /// M-b's target: a connection that served at least `HEALTHY_CONNECTED`
+    /// is a genuinely healthy one — it resets the brake, so the losses after
+    /// it get the fast path again and the schedule restarts at the base
+    /// instead of continuing to climb.
+    #[test]
+    fn a_healthy_connection_restores_the_fast_path() {
+        let stop = AtomicBool::new(false);
+        let clock = FakeClock {
+            step_seconds: std::cell::Cell::new(1),
+            elapsed_seconds: std::cell::Cell::new(0),
+        };
+        let mut connect_attempts = 0;
+        let mut connected_rounds = 0;
+        let mut delays: Vec<Duration> = Vec::new();
+        let outcome = run_supervisor_loop(
+            &stop,
+            || {
+                connect_attempts += 1;
+                Ok(connect_attempts)
+            },
+            |_| {
+                connected_rounds += 1;
+                // Round five is the healthy one: the clock's step is raised
+                // so the connected phase served well over `HEALTHY_CONNECTED`.
+                // Round ten is the deliberate stop that ends the loop.
+                clock
+                    .step_seconds
+                    .set(if connected_rounds == 5 { 10 } else { 1 });
+                if connected_rounds == 10 {
+                    StatusLoopExit::Stopped
+                } else {
+                    StatusLoopExit::ConnectionLost
+                }
+            },
+            |delay| {
+                delays.push(delay);
+                true
+            },
+            || clock.now(),
+        );
+
+        // Four fast failures: three free, the fourth sleeps at the base.
+        // Round five is healthy and resets; the next three losses are free
+        // again and the fifth sleeps at the base — restarted, not continued.
+        assert_eq!(outcome, SupervisorLoopExit::Stopped);
+        assert_eq!(connected_rounds, 10, "round ten is the deliberate stop");
+        assert_eq!(
+            delays,
+            vec![Duration::from_secs(2), Duration::from_secs(2)],
+            "a healthy connection restores the fast path and the base delay"
+        );
+    }
+
+    /// M-c's target: a backoff that ignored `stop` would make shutdown wait
+    /// out the whole delay. The sleep closure answering `false` — what
+    /// `sleep_interruptible` returns when `stop` is set — must exit the loop
+    /// promptly, with no further connect attempt.
+    #[test]
+    fn stopping_mid_backoff_exits_without_another_connect() {
+        let stop = AtomicBool::new(false);
+        let clock = FakeClock {
+            step_seconds: std::cell::Cell::new(1),
+            elapsed_seconds: std::cell::Cell::new(0),
+        };
+        let mut connect_attempts = 0;
+        let mut connected_rounds = 0;
+        let mut sleep_calls = 0;
+        let outcome = run_supervisor_loop(
+            &stop,
+            || {
+                connect_attempts += 1;
+                Ok(connect_attempts)
+            },
+            |_| {
+                connected_rounds += 1;
+                // The cap only exists so a backoff that ignores `stop`
+                // cannot spin this test forever; the green run exits long
+                // before it.
+                if connected_rounds >= 40 {
+                    StatusLoopExit::Stopped
+                } else {
+                    StatusLoopExit::ConnectionLost
+                }
+            },
+            |_| {
+                sleep_calls += 1;
+                false
+            },
+            || clock.now(),
+        );
+
+        assert_eq!(outcome, SupervisorLoopExit::Stopped);
+        assert_eq!(
+            connect_attempts, 4,
+            "the interrupted backoff reconnects nothing"
+        );
+        assert_eq!(
+            sleep_calls, 1,
+            "the first backed-off sleep is the last wait"
+        );
     }
 
     #[test]
