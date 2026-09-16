@@ -1738,6 +1738,22 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
+  it("acquires a fresh session when the previous run's view has gone", async () => {
+    // E3: an `error` handle's view is gone — the reuse policy predates the
+    // split and treated `error` as "agent-reported failure, still usable".
+    // The run after a gone view must acquire a live session, not ride it.
+    const host = createAgentHost();
+    const { run: doomed } = await startRun(host);
+    channelHarness.active?.({ type: "exit", code: 1 });
+    await expect(doomed).rejects.toThrow("The agent stopped before finishing this turn.");
+    const createsBefore = mocks.sessionCreate.mock.calls.length;
+
+    await startRun(host);
+
+    expect(mocks.sessionCreate.mock.calls.length).toBe(createsBefore + 1);
+    await disposeAgentHost(host);
+  });
+
   it("uses AgentSession's error when the agent exits during a turn", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);

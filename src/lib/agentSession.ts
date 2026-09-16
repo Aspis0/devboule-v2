@@ -268,7 +268,7 @@ export class AgentSession {
       this.subscriptionId = subscriptionId;
       this.attached = true;
       if (!this.disposed) {
-        this.update({ status: "idle" });
+        this.setStatus("idle");
         this.deliverPendingPermissionRequests();
       }
     } catch (error) {
@@ -320,7 +320,7 @@ export class AgentSession {
     // the daemon starts a new one, and so does the transcript.
     const joinsRunningTurn = activeTurnBehavior === "steer" && this.turnOpen;
     if (!joinsRunningTurn) this.beginTurn();
-    this.update({ status: "running", streaming: true });
+    this.setStatus("running", { streaming: true });
     try {
       await this.deps.invoke("session_send", {
         id: this.deps.sessionId,
@@ -343,13 +343,14 @@ export class AgentSession {
       return true;
     } catch (error) {
       // The daemon names its failures: a capability or validity refusal is
-      // raised inside a live send path and only codes naming death end the
-      // session (see `FATAL_SEND_CODES`).
-      if (sendFailureKillsSession(error)) {
-        this.failSession(`Could not send the message: ${eventError(error)}`);
-      } else {
-        this.failTurn(`Could not send the message: ${eventError(error)}`);
-      }
+      // raised inside a live send path and only codes naming a gone view end
+      // the session (see `FATAL_SEND_CODES`). A refused steer was joining a
+      // turn the daemon is still running — record the sentence and leave the
+      // turn alone; ending it would split the answer when the chunks resume.
+      const detail = `Could not send the message: ${eventError(error)}`;
+      if (sendFailureKillsSession(error)) this.failSession(detail);
+      else if (joinsRunningTurn) this.noteError(detail);
+      else this.failTurn(detail);
       return false;
     }
   }
@@ -532,8 +533,7 @@ export class AgentSession {
       case "agent_finished":
         this.turnOpen = false;
         this.closeActiveBlocks();
-        this.update({
-          status: "idle",
+        this.setStatus("idle", {
           streaming: false,
           lastFinished: {
             stopReason: event.stopReason,
@@ -630,7 +630,7 @@ export class AgentSession {
         if (this.turnOpen) {
           this.failSession("The agent stopped before finishing this turn.");
         } else {
-          this.update({ status: "closed", streaming: false });
+          this.setStatus("closed", { streaming: false });
         }
         return;
       case "recovered":
@@ -1104,14 +1104,9 @@ export class AgentSession {
   }
 
   private failWithStatus(status: AgentStatus, message: string): void {
-    // The latch: a terminal status is never lowered. `error` and `closed`
-    // mean no event about this session can arrive any more, so a later
-    // turn-level failure records its sentence but must not re-enable input.
-    const terminal = this.state.status === "error" || this.state.status === "closed";
     this.turnOpen = false;
     this.closeActiveBlocks();
-    this.update({
-      status: terminal ? this.state.status : status,
+    this.setStatus(status, {
       streaming: false,
       items: [
         ...this.state.items,
@@ -1131,8 +1126,34 @@ export class AgentSession {
     });
   }
 
-  private update(patch: Partial<AgentSessionState>): void {
+  /**
+   * The only writer of `status`. A terminal status latches — laterally as
+   * well: `error` and `closed` both mean the view is gone and both disable
+   * input, so a rewrite between them would add no information while
+   * relabelling the outcome the user was already shown. The first terminal
+   * verdict wins. `update()` refuses `status` at compile time, so a new
+   * writer cannot bypass this rule by forgetting it. `rest` merges in the
+   * same notification, so compound transitions stay atomic for listeners
+   * that read several fields.
+   */
+  private setStatus(next: AgentStatus, rest?: Omit<Partial<AgentSessionState>, "status">): void {
+    const terminal = this.state.status === "error" || this.state.status === "closed";
+    this.state = {
+      ...this.state,
+      ...rest,
+      ...(terminal ? {} : { status: next }),
+    };
+    this.notify();
+  }
+
+  private update(patch: Omit<Partial<AgentSessionState>, "status">): void {
     this.state = { ...this.state, ...patch };
+    // A listener may dispose or unsubscribe during notification; a snapshot prevents that
+    // mutation from skipping listeners that were already subscribed for this update.
+    for (const listener of [...this.listeners]) listener();
+  }
+
+  private notify(): void {
     // A listener may dispose or unsubscribe during notification; a snapshot prevents that
     // mutation from skipping listeners that were already subscribed for this update.
     for (const listener of [...this.listeners]) listener();

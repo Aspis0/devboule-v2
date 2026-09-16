@@ -938,6 +938,56 @@ describe("ACP agent session", () => {
     expect(state.streaming).toBe(true);
   });
 
+  it("holds a fatal status when a late agent_finished arrives", async () => {
+    // E1: a queued `exit` latches the status at `error`; a stale
+    // `agent_finished` arriving after it must not lower the session back to
+    // `idle` — that re-enables input on a view no event can speak for.
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("Keep going");
+    harness.emit({ type: "exit", code: 1 });
+    expect(harness.session.getState().status).toBe("error");
+
+    harness.emit({ type: "agent_finished", stopReason: "end_turn" });
+
+    expect(harness.session.getState().status).toBe("error");
+    expect(harness.session.getState().streaming).toBe(false);
+  });
+
+  it("leaves the joined turn running when a steer is refused", async () => {
+    // E2: the daemon's turn keeps running when a steer is refused, so the
+    // sentence is recorded and the turn is left alone. Ending it made the
+    // next chunk open a fresh turn and split the answer mid-sentence.
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("Start the task");
+    harness.emit({ type: "agent_user_message", messageId: "user-1", text: "Start the task" });
+    harness.emit({ type: "agent_message", messageId: "answer-1", text: "Work" });
+
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_send") {
+        return Promise.reject({ code: "unauthorized", message: "steer refused" });
+      }
+      return undefined;
+    });
+    await expect(harness.session.send("Turn left", [], "steer")).resolves.toBe(false);
+
+    const state = harness.session.getState();
+    expect(state.items.at(-1)).toMatchObject({
+      role: "error",
+      text: "Could not send the message: steer refused",
+    });
+    expect(state.streaming).toBe(true);
+    expect(state.status).toBe("running");
+
+    harness.emit({ type: "agent_message", messageId: "answer-1", text: "ing" });
+    const assistant = harness.session
+      .getState()
+      .items.filter((item) => item.role === "assistant")
+      .map((item) => (item.role === "assistant" ? item.text : ""));
+    expect(assistant).toEqual(["Working"]);
+  });
+
   it("treats a send failure that is not a CommandError as turn-level — death has its own events", async () => {
     // An unrecognised failure must not guess death: if the session really
     // died, its own exit or recovered event arrives within moments and

@@ -72,6 +72,17 @@ interface SessionRequest extends SessionTarget {
   promise: Promise<AgentSessionHandle>;
 }
 
+/**
+ * Whether the handle's view of its session is still live. Under
+ * AgentSession's vocabulary, `error` and `closed` are both terminal — the
+ * view is gone and the status has latched — so a run, deposit, or settings
+ * change that kept either would ride a session that can no longer speak.
+ */
+function sessionViewLive(handle: AgentSessionHandle): boolean {
+  const status = handle.controller.getState().status;
+  return status === "idle" || status === "running";
+}
+
 interface ActiveRun {
   session: AgentSessionHandle;
   sessionId: string;
@@ -1240,23 +1251,25 @@ export function createAgentHost(): DesignHost {
   ): Promise<AgentSessionHandle> => {
     if (disposed) throw new Error("The design surface is no longer available.");
     const target: SessionTarget = { provider, workspace };
-    if (sessionHandle !== null && !sessionHandle.closed) {
-      if (
-        sessionOwner !== null &&
-        sameSessionTarget(sessionOwner, target) &&
-        sessionHandle.controller.getState().status !== "closed"
-      ) {
-        // An "error" is an agent-reported failure, not a dead session; keep it reusable.
-        return sessionHandle;
-      }
-      await closeSession(sessionHandle);
-    }
-    if (sessionTeardownPromise !== null) await sessionTeardownPromise;
+    // An in-flight open is awaited before any keep-or-close decision: while
+    // it runs the handle's status is still `initializing`, which says nothing
+    // about whether the view will be live.
     if (sessionRequest !== null) {
       if (sameSessionTarget(sessionRequest, target)) return sessionRequest.promise;
       // A provider selection superseded this request. Its openSession callback
       // will close any session id that arrives after this point.
       sessionRequest = null;
+    }
+    if (sessionTeardownPromise !== null) await sessionTeardownPromise;
+    if (sessionHandle !== null && !sessionHandle.closed) {
+      if (
+        sessionOwner !== null &&
+        sameSessionTarget(sessionOwner, target) &&
+        sessionViewLive(sessionHandle)
+      ) {
+        return sessionHandle;
+      }
+      await closeSession(sessionHandle);
     }
     let request: SessionRequest;
     const pending = openSession(target, () => !disposed && sessionRequest === request);
@@ -1689,7 +1702,7 @@ export function createAgentHost(): DesignHost {
         sameSessionTarget(sessionOwner, target) &&
         sessionHandle !== null &&
         !sessionHandle.closed &&
-        sessionHandle.controller.getState().status !== "closed"
+        sessionViewLive(sessionHandle)
       ) {
         selectedProvider = provider;
         return;
@@ -1708,7 +1721,7 @@ export function createAgentHost(): DesignHost {
         sameSessionTarget(sessionOwner, target) &&
         sessionHandle !== null &&
         !sessionHandle.closed &&
-        sessionHandle.controller.getState().status !== "closed"
+        sessionViewLive(sessionHandle)
       ) {
         selectedWorkspace = workspace;
         return;
@@ -1740,7 +1753,7 @@ export function createAgentHost(): DesignHost {
         sameSessionTarget(sessionOwner, target) &&
         sessionHandle !== null &&
         !sessionHandle.closed &&
-        sessionHandle.controller.getState().status !== "closed"
+        sessionViewLive(sessionHandle)
       ) {
         return;
       }
