@@ -346,6 +346,33 @@ function modelOptionDescription(model: SessionModel): string | undefined {
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
+/** Bytes the way the terminal banner prints them (1000-based). */
+function humanSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  const rounded =
+    unit === 0
+      ? Math.round(value).toString()
+      : value >= 10
+        ? Math.round(value).toString()
+        : value.toFixed(1);
+  return `${rounded} ${units[unit]}`;
+}
+
+/**
+ * The journal-loss notice: pinned for the rest of the session's life, because
+ * the transcript on disk stays incomplete no matter what happens next.
+ */
+function journalLossCopy(loss: { frames: number; bytes: number }): string {
+  const frame = loss.frames === 1 ? "frame" : "frames";
+  return `This conversation is not being saved: the daemon could not write ${loss.frames} ${frame} (${humanSize(loss.bytes)}) of it to disk.`;
+}
+
 function usageCopy(state: AgentSessionState): string | null {
   const finished = state.lastFinished;
   if (finished === null) return null;
@@ -645,6 +672,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     manifest: null,
     pendingSwitch: null,
     pendingModeId: null,
+    journalLoss: null,
   });
   const conversationRef = useRef<HTMLDivElement>(null);
 
@@ -757,6 +785,15 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         {finishCopy !== null ? <div className="workspace-chat-finish">{finishCopy}</div> : null}
         {auxiliary}
       </div>
+      {state.journalLoss !== null ? (
+        <div
+          className="workspace-journal-banner"
+          role="status"
+          data-testid="journal-degraded-banner"
+        >
+          {journalLossCopy(state.journalLoss)}
+        </div>
+      ) : null}
       <WorkspaceComposer
         streaming={state.streaming && !osGone}
         disabled={composerDisabled}

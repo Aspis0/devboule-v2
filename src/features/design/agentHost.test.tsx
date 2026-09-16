@@ -63,6 +63,13 @@ vi.mock("../../lib/tauri", () => ({
   oracleFiles: mocks.oracleFiles,
   oracleStatus: mocks.oracleStatus,
   reasonFromCause: mocks.reasonFromCause,
+  isCommandError: (error: unknown): boolean =>
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    "message" in error &&
+    typeof (error as { code: unknown }).code === "string" &&
+    typeof (error as { message: unknown }).message === "string",
   projectsList: mocks.projectsList,
   workspacesList: mocks.workspacesList,
   sessionCreate: mocks.sessionCreate,
@@ -124,6 +131,7 @@ import {
   invokeAgentCommand,
   normalizeFolderOption,
   resolveFolderGrounding,
+  sendRejectionDetail,
   stripFencedHtml,
   AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
@@ -2765,6 +2773,7 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
+          journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Final</div>");
       });
@@ -2788,6 +2797,7 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
+          journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
       });
@@ -2817,6 +2827,7 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
+          journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
       });
@@ -2846,6 +2857,7 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
+          journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Second</div>");
       });
@@ -2892,6 +2904,7 @@ describe("ACP design host", () => {
         manifest: null,
         pendingSwitch: null,
         pendingModeId: null,
+        journalLoss: null,
       });
 
       it("drops permission-request items entirely — the excerpt has no row in the design transcript", () => {
@@ -3749,5 +3762,37 @@ describe("design disclosure removal", () => {
     await act(async () => undefined);
     expect(container.querySelector(".design-demo-disclosure")).toBeNull();
     await act(async () => root.unmount());
+  });
+});
+
+describe("sendRejectionDetail", () => {
+  const stateWithErrors = (texts: readonly string[]): AgentSessionState => ({
+    items: texts.map((text, index) => ({ id: `e-${index}`, role: "error" as const, text })),
+    status: "idle",
+    streaming: false,
+    availableCommands: [],
+    subagents: [],
+    subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
+    lastFinished: null,
+    manifest: null,
+    pendingSwitch: null,
+    pendingModeId: null,
+    journalLoss: null,
+  });
+
+  it("quotes the refusal this send appended to the transcript", () => {
+    expect(
+      sendRejectionDetail(
+        stateWithErrors([]),
+        stateWithErrors(["Could not send the message: This session does not accept attachments."]),
+      ),
+    ).toBe("Could not send the message: This session does not accept attachments.");
+  });
+
+  it("keeps an earlier turn's error out of a send that never ran", () => {
+    // The stale item sat in the transcript before the send started; a send
+    // that returns false without appending anything must not borrow it.
+    const stale = stateWithErrors(["Could not send the message: send failed"]);
+    expect(sendRejectionDetail(stale, stale)).toBe("Could not send the message.");
   });
 });

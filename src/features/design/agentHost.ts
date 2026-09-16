@@ -775,6 +775,21 @@ function lastErrorText(state: AgentSessionState): string {
   return "The agent session did not answer.";
 }
 
+/**
+ * Why a run's send failed, for the run's rejection. The transcript is only
+ * quoted when the send produced its own error item — a send that returned
+ * false without one never ran, and an older turn's sentence would send the
+ * reader to a failure long past. Error items only ever append, so the
+ * counts over `before` and `after` tell them apart.
+ */
+export function sendRejectionDetail(before: AgentSessionState, after: AgentSessionState): string {
+  const errorItems = (state: AgentSessionState): number =>
+    state.items.reduce((count, item) => (item.role === "error" ? count + 1 : count), 0);
+  return errorItems(after) > errorItems(before)
+    ? lastErrorText(after)
+    : "Could not send the message.";
+}
+
 export function invokeAgentCommand<T>(
   command: string,
   args: Record<string, unknown> = {},
@@ -1484,6 +1499,7 @@ export function createAgentHost(): DesignHost {
     lastRunTranscriptStart = runStart;
     // Subscribe only after send() so a prior turn cannot settle this run.
     const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
+    const stateBeforeSend = handle.controller.getState();
     const sendPromise = handle.controller.send(
       groundedPrompt(prompt, oracleResults, composedDoctrine, promptGrounded, outputMode),
       // Only the files that ride in the frame: a document's pages were deposited
@@ -1554,7 +1570,11 @@ export function createAgentHost(): DesignHost {
     void sendPromise
       .then((sent) => {
         if (!sent && !settleFromState())
-          settleRun(run, "reject", new Error("Could not send the message."));
+          settleRun(
+            run,
+            "reject",
+            new Error(sendRejectionDetail(stateBeforeSend, handle.controller.getState())),
+          );
       })
       .catch((cause: unknown) => {
         settleRun(run, "reject", sessionError("Could not send the message", cause));

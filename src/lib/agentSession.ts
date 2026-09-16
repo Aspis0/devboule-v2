@@ -1,5 +1,6 @@
 import type {
   ActiveTurnBehavior,
+  ErrorCode,
   PermissionRequest,
   PermissionResolved,
   PromptAttachment,
@@ -9,6 +10,7 @@ import type {
 } from "../types/ipc";
 import { recordChildFinishedHistory } from "../features/design/childFinishedHistory";
 import type { AttachmentReference, SessionChannel } from "./tauri";
+import { isCommandError } from "./tauri";
 import { eventTypeName } from "./eventTypeName";
 import { parseAgentPermissionRequest } from "./agentPermissionRequest";
 
@@ -91,6 +93,12 @@ export interface AgentSessionState {
   pendingSwitch: { modelId?: string; effort?: string; at: number } | null;
   /** A mode switch shown optimistically until the next manifest confirms it. */
   pendingModeId: string | null;
+  /**
+   * Journal writes are failing for this session: the transcript on disk is
+   * missing at least the frames counted here. Worst-known totals, never
+   * cleared — what the journal dropped does not come back.
+   */
+  journalLoss: { frames: number; bytes: number } | null;
 }
 
 export interface AgentSessionDeps {
@@ -128,6 +136,7 @@ const INITIAL_STATE: AgentSessionState = {
   manifest: null,
   pendingSwitch: null,
   pendingModeId: null,
+  journalLoss: null,
 };
 
 const SWITCH_CONFIRM_TIMEOUT_MS = 15_000;
@@ -142,6 +151,28 @@ function eventError(error: unknown): string {
     if (typeof message === "string" && message.trim()) return message;
   }
   return "The agent session did not answer.";
+}
+
+/**
+ * Send-refusal codes that name a dead session rather than a refused message.
+ * Everything else — a named refusal on a live session (invalid_request,
+ * capability_not_supported, confinement), an unrecognised code, or an error
+ * that is not a CommandError at all — is turn-level: death has its own
+ * events (`exit`, `recovered`) that arrive on their own, so guessing death
+ * from a refusal is the only direction that can manufacture a dead session
+ * no event will ever contradict.
+ */
+const FATAL_SEND_CODES: ReadonlySet<ErrorCode> = new Set([
+  "session_not_found",
+  "session_generation_mismatch",
+  "shutting_down",
+  "protocol_version_mismatch",
+  "io",
+  "unauthorized",
+]);
+
+function sendFailureKillsSession(error: unknown): boolean {
+  return isCommandError(error) && FATAL_SEND_CODES.has(error.code);
 }
 
 function itemParentage(
@@ -228,7 +259,7 @@ export class AgentSession {
         this.deliverPendingPermissionRequests();
       }
     } catch (error) {
-      this.fail(`Could not attach the agent session: ${eventError(error)}`);
+      this.failSession(`Could not attach the agent session: ${eventError(error)}`);
     }
 
     if (this.disposed && this.subscriptionId !== null) await this.detach();
@@ -298,7 +329,14 @@ export class AgentSession {
       });
       return true;
     } catch (error) {
-      this.fail(`Could not send the message: ${eventError(error)}`);
+      // The daemon names its failures: a capability or validity refusal is
+      // raised inside a live send path and only codes naming death end the
+      // session (see `FATAL_SEND_CODES`).
+      if (sendFailureKillsSession(error)) {
+        this.failSession(`Could not send the message: ${eventError(error)}`);
+      } else {
+        this.failTurn(`Could not send the message: ${eventError(error)}`);
+      }
       return false;
     }
   }
@@ -350,7 +388,10 @@ export class AgentSession {
    * Hot-switch the model or its thinking effort within the fixed provider.
    * The invoke response is not a confirmation — the runtime confirms through
    * a later session_manifest event, so this only marks the switch as pending
-   * and reports a rejected call through the chat error path, like send().
+   * and reports a rejected call through the chat error path. Every refusal
+   * here is turn-level, unconditionally: a refusal code names a refused
+   * call, and for the codes that name death, the session's own `exit` or
+   * `recovered` event is what must disable input — never a guess.
    */
   async setModel(modelId?: string, effort?: string): Promise<void> {
     if (this.disposed || !this.started || !this.attached) return;
@@ -366,7 +407,7 @@ export class AgentSession {
       });
     } catch (error) {
       this.update({ pendingSwitch: null });
-      this.fail(`Could not switch the model: ${eventError(error)}`);
+      this.failTurn(`Could not switch the model: ${eventError(error)}`);
       return;
     }
     if (this.disposed || this.state.pendingSwitch === null) {
@@ -402,7 +443,7 @@ export class AgentSession {
     } catch (error) {
       if (requestId !== this.modeRequest) return;
       this.update({ pendingModeId: null });
-      this.fail(`Could not switch the mode: ${eventError(error)}`);
+      this.failTurn(`Could not switch the mode: ${eventError(error)}`);
       return;
     }
     if (this.disposed || this.state.pendingModeId === null || requestId !== this.modeRequest) {
@@ -499,7 +540,7 @@ export class AgentSession {
         this.reconcileBackgroundTasks(event.tasks);
         return;
       case "agent_error":
-        this.fail(event.message || "The agent reported an unknown error.");
+        this.failTurn(event.message || "The agent reported an unknown error.");
         return;
       case "available_commands":
         this.update({ availableCommands: event.commands });
@@ -570,25 +611,27 @@ export class AgentSession {
       case "exit":
         this.stopRunningSubagents();
         if (this.turnOpen) {
-          this.fail("The agent stopped before finishing this turn.");
+          this.failSession("The agent stopped before finishing this turn.");
         } else {
           this.update({ status: "closed", streaming: false });
         }
         return;
       case "recovered":
         this.stopRunningSubagents();
-        this.fail("This agent session is no longer available.");
+        this.failSession("This agent session is no longer available.");
         return;
       case "output":
       case "agent_stderr":
       case "silent":
-      case "journal_degraded":
       case "sessions_snapshot":
       case "snapshot":
       case "agent_reported":
       // Journaled for audit and not emitted to observers; the transcript gains
       // steer rendering in slice 4b.
       case "steered":
+        return;
+      case "journal_degraded":
+        this.recordJournalLoss(event.droppedFrames, event.droppedBytes);
         return;
       case "agent_created":
         // A created child, recorded on its creator's transcript. Listed so it is
@@ -639,7 +682,11 @@ export class AgentSession {
         // this app, not the sentence below; that sentence is reachable only if
         // something hands this method an object that is not a daemon event.
         const unknownEvent: never = event;
-        this.fail(`The daemon sent an unknown session event type: ${eventTypeName(unknownEvent)}.`);
+        // The stream delivered something this build cannot interpret; the
+        // conservative reading is that the session's view is not trustworthy.
+        this.failSession(
+          `The daemon sent an unknown session event type: ${eventTypeName(unknownEvent)}.`,
+        );
         return;
       }
     }
@@ -1006,16 +1053,45 @@ export class AgentSession {
     this.activeRole = null;
   }
 
-  private fail(message: string): void {
+  /**
+   * The turn failed but the session lives: the agent reported an error, or a
+   * model/mode switch was refused. The error lands in the transcript and the
+   * user can type again.
+   */
+  private failTurn(message: string): void {
+    this.failWithStatus("idle", message);
+  }
+
+  /**
+   * The session itself is gone: the attach failed, the agent process exited,
+   * or the session was recovered by another client. The error lands in the
+   * transcript and input stays disabled.
+   */
+  private failSession(message: string): void {
+    this.failWithStatus("error", message);
+  }
+
+  private failWithStatus(status: AgentStatus, message: string): void {
     this.turnOpen = false;
     this.closeActiveBlocks();
     this.update({
-      status: "error",
+      status,
       streaming: false,
       items: [
         ...this.state.items,
         { id: `error-${this.nextItemId++}`, role: "error", text: message },
       ],
+    });
+  }
+
+  /** Worst-known journal loss: a smaller later report cannot un-drop frames. */
+  private recordJournalLoss(frames: number, bytes: number): void {
+    const previous = this.state.journalLoss;
+    this.update({
+      journalLoss: {
+        frames: Math.max(previous?.frames ?? 0, frames),
+        bytes: Math.max(previous?.bytes ?? 0, bytes),
+      },
     });
   }
 

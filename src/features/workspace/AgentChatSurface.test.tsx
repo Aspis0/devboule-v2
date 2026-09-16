@@ -115,6 +115,13 @@ vi.mock("../../lib/tauri", () => ({
   sessionInterrupt: vi.fn(async () => undefined),
   sessionSetModel: vi.fn(async () => undefined),
   sessionSetMode: vi.fn(async () => undefined),
+  isCommandError: (error: unknown): boolean =>
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    "message" in error &&
+    typeof (error as { code: unknown }).code === "string" &&
+    typeof (error as { message: unknown }).message === "string",
 }));
 
 import {
@@ -1295,6 +1302,221 @@ describe("AgentChatSurface", () => {
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(true);
+  });
+
+  it("keeps the composer usable when a turn-level agent error arrives", async () => {
+    // Field test (Grok 402): one refused turn must not read as a dead session.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="err-agent" title="Agent" observedState={LIVE_OBSERVED} />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_error", message: "402 Payment Required" });
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "402 Payment Required",
+    );
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(false);
+    expect(container.textContent).not.toContain("This session is no longer available.");
+  });
+
+  it("keeps the composer usable when the send is refused with invalid_request", async () => {
+    // The daemon refuses an attachment on a session that does not take them
+    // with exactly this sentence — a refused message, not a dead session.
+    (sessionSend as unknown as Mock).mockRejectedValueOnce({
+      code: "invalid_request",
+      message: "This session does not accept attachments.",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="refused-send" title="Agent" observedState={LIVE_OBSERVED} />,
+      );
+    });
+    await act(async () => undefined);
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "look at this");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Could not send the message: This session does not accept attachments.",
+    );
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(false);
+    expect(container.textContent).not.toContain("This session is no longer available.");
+  });
+
+  it("disables the composer when the send is refused with session_not_found", async () => {
+    (sessionSend as unknown as Mock).mockRejectedValueOnce({
+      code: "session_not_found",
+      message: "no such session",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="dead-send" title="Agent" observedState={LIVE_OBSERVED} />,
+      );
+    });
+    await act(async () => undefined);
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "hello");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "This session is no longer available.",
+    );
+  });
+
+  it("disables the composer when the attach itself fails", async () => {
+    (sessionAttach as unknown as Mock).mockRejectedValueOnce(new Error("no such session"));
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="gone-attach" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("Could not attach the agent session: no such session");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "This session is no longer available.",
+    );
+  });
+
+  it("disables the composer when the agent exits before finishing the turn", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="gone-exit" title="Agent" observedState={LIVE_OBSERVED} />,
+      );
+    });
+    await act(async () => undefined);
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Long task");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+
+    await act(async () => {
+      channelHarness.active?.({ type: "exit", code: 1 });
+    });
+
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "This session is no longer available.",
+    );
+  });
+
+  it("disables the composer when the session was recovered by another client", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="gone-recovered" title="Agent" observedState={LIVE_OBSERVED} />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "recovered",
+        integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+      });
+    });
+
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "This session is no longer available.",
+    );
+  });
+
+  it("keeps one persistent notice when journal writes degrade, naming the loss", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="journal-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "journal_degraded",
+        droppedFrames: 15,
+        droppedBytes: 61286,
+      });
+    });
+
+    const banner = container.querySelector('[data-testid="journal-degraded-banner"]');
+    expect(banner).not.toBeNull();
+    expect(banner?.textContent).toContain("not being saved");
+    expect(banner?.textContent).toContain("15 frames");
+    expect(banner?.textContent).toContain("61 KB");
+  });
+
+  it("updates the one journal notice instead of stacking a second", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="journal-agent-2" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "journal_degraded",
+        droppedFrames: 15,
+        droppedBytes: 61286,
+      });
+      channelHarness.active?.({
+        type: "journal_degraded",
+        droppedFrames: 20,
+        droppedBytes: 8000,
+      });
+    });
+
+    const banners = container.querySelectorAll('[data-testid="journal-degraded-banner"]');
+    expect(banners).toHaveLength(1);
+    expect(banners[0]?.textContent).toContain("20 frames");
+    expect(banners[0]?.textContent).not.toContain("15 frames");
+    expect(banners[0]?.textContent).toContain("61 KB");
   });
 
   it("shows Silent for N from a silent sessions_watch snapshot", async () => {

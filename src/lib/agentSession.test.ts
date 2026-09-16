@@ -761,6 +761,88 @@ describe("ACP agent session", () => {
     expect(harness.session.getState().streaming).toBe(false);
   });
 
+  it("returns the session to a usable state when the agent reports an error", async () => {
+    // Field test (Grok 402): the provider refused one turn while the child
+    // process stayed alive and idle, and the next send still reached the
+    // wire. The error belongs in the transcript; the session is not gone.
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("Run the task");
+
+    harness.emit({ type: "agent_error", message: "402 Payment Required" });
+
+    const state = harness.session.getState();
+    expect(state.items.at(-1)).toMatchObject({ role: "error", text: "402 Payment Required" });
+    expect(state.streaming).toBe(false);
+    expect(state.status).toBe("idle");
+    await expect(harness.session.send("Top up and try again")).resolves.toBe(true);
+  });
+
+  it("keeps the session usable when the send is refused as invalid_request", async () => {
+    // The daemon raises invalid_request inside a live send path — attaching a
+    // file to a session that does not take attachments is refused with
+    // exactly this sentence while the session itself stays fine. A refused
+    // message is not a dead session.
+    const harness = makeHarness();
+    await harness.session.start();
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_send") {
+        return Promise.reject({
+          code: "invalid_request",
+          message: "This session does not accept attachments.",
+        });
+      }
+      return undefined;
+    });
+
+    await expect(
+      harness.session.send("look", [{ name: "a.png", mimeType: "image/png", data: "AA" }]),
+    ).resolves.toBe(false);
+
+    const state = harness.session.getState();
+    expect(state.items.at(-1)).toMatchObject({
+      role: "error",
+      text: "Could not send the message: This session does not accept attachments.",
+    });
+    expect(state.status).toBe("idle");
+    await expect(harness.session.send("plain text then")).resolves.toBe(true);
+  });
+
+  it("ends the session when the send is refused as session_not_found", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_send") {
+        return Promise.reject({ code: "session_not_found", message: "no such session" });
+      }
+      return undefined;
+    });
+
+    await expect(harness.session.send("hello")).resolves.toBe(false);
+
+    expect(harness.session.getState().status).toBe("error");
+    expect(harness.session.getState().items.at(-1)).toMatchObject({
+      role: "error",
+      text: "Could not send the message: no such session",
+    });
+  });
+
+  it("treats a send failure that is not a CommandError as turn-level — death has its own events", async () => {
+    // An unrecognised failure must not guess death: if the session really
+    // died, its own exit or recovered event arrives within moments and
+    // disables input; a guessed death could not be contradicted by anything.
+    const harness = makeHarness();
+    await harness.session.start();
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_send") return Promise.reject(new Error("bridge went away"));
+      return undefined;
+    });
+
+    await expect(harness.session.send("hello")).resolves.toBe(false);
+
+    expect(harness.session.getState().status).toBe("idle");
+  });
+
   it("stops spinning when the agent exits before agent_finished", async () => {
     const harness = makeHarness();
     await harness.session.start();
@@ -775,6 +857,64 @@ describe("ACP agent session", () => {
       role: "error",
       text: "The agent stopped before finishing this turn.",
     });
+  });
+
+  it("ends the session when the attach itself fails", async () => {
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "session_attach") throw new Error("no such session");
+      return undefined;
+    }) as unknown as AgentSessionDeps["invoke"];
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke,
+      createChannel: () => ({}) as AgentChannel,
+    });
+
+    await session.start();
+
+    expect(session.getState().status).toBe("error");
+    expect(session.getState().items.at(-1)).toMatchObject({
+      role: "error",
+      text: "Could not attach the agent session: no such session",
+    });
+  });
+
+  it("ends the session when it was recovered by another client", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("Keep going");
+
+    harness.emit({
+      type: "recovered",
+      integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+    });
+
+    expect(harness.session.getState().status).toBe("error");
+    expect(harness.session.getState().items.at(-1)).toMatchObject({
+      role: "error",
+      text: "This agent session is no longer available.",
+    });
+  });
+
+  it("records a journal degradation with the dropped frames and bytes", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: "journal_degraded", droppedFrames: 15, droppedBytes: 61286 });
+
+    expect(harness.session.getState().journalLoss).toEqual({ frames: 15, bytes: 61286 });
+  });
+
+  it("keeps one worst-known journal loss instead of a log of repeated degradations", async () => {
+    // A smaller later report cannot un-drop what the journal already lost, so
+    // the state is the worst known loss — one value, never a stack.
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: "journal_degraded", droppedFrames: 15, droppedBytes: 61286 });
+    harness.emit({ type: "journal_degraded", droppedFrames: 20, droppedBytes: 8000 });
+
+    expect(harness.session.getState().journalLoss).toEqual({ frames: 20, bytes: 61286 });
   });
 
   it("stores the session manifest from the live event", async () => {
@@ -1163,6 +1303,8 @@ describe("ACP agent session", () => {
       text: "Could not switch the model: model not found",
     });
     expect(harness.session.getState().pendingSwitch).toBeNull();
+    // A refused switch is not a dead session: the composer must stay usable.
+    expect(harness.session.getState().status).toBe("idle");
   });
 
   it("keeps the chosen mode optimistically until a manifest confirms it", async () => {
@@ -1222,6 +1364,8 @@ describe("ACP agent session", () => {
       text: "Could not switch the mode: mode refused",
     });
     expect(harness.session.getState().pendingModeId).toBeNull();
+    // A refused switch is not a dead session: the composer must stay usable.
+    expect(harness.session.getState().status).toBe("idle");
   });
 
   it("does not let a stale mode rejection revert a newer selection", async () => {

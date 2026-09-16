@@ -380,6 +380,7 @@ function agentState(manifest: AgentSessionState["manifest"]): AgentSessionState 
     manifest,
     pendingSwitch: null,
     pendingModeId: null,
+    journalLoss: null,
   };
 }
 

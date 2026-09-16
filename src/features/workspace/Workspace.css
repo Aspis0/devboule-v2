@@ -835,6 +835,16 @@
   font-size: 10px;
 }
 
+/* The agent chat's pinned journal-loss notice (same voice as the terminal's). */
+.workspace-journal-banner {
+  flex: none;
+  padding: 7px 14px;
+  color: var(--danger-deep);
+  background: transparent;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+}
+
 .workspace-conversation {
   display: flex;
   flex: 1;
