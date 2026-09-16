@@ -2962,6 +2962,45 @@ fn resume_preserves_the_original_created_at_ms() {
 }
 
 #[test]
+fn resume_metadata_kind_follows_the_resolved_provider() {
+    // Pass 2c: the stamped kind is derived from the provider the resume
+    // resolved, not a constant. The ACP case stamps `Acp` (today's answer,
+    // unchanged); a Claude provider id stamps `Claude` — before the move a
+    // future Claude resume would have been journalled as an ACP session.
+    // (Assert the property — the stamp is derived — not the public road,
+    // which `resume_handle` refuses for non-ACP by design.)
+    //
+    // The record's own kind is `Acp` in BOTH rows, deliberately: that is what
+    // makes this test able to tell the three candidate sources apart. A
+    // constant `Acp`, or a stamp read off `record.kind`, both answer `Acp` for
+    // the claude row and go red here; only the provider lookup answers
+    // `Claude`. The function never reads `record.kind`, so the mismatched
+    // fixture is not a forbidden state, it is the discriminator.
+    let command = PtyCommand::new("cmd.exe", Vec::new(), std::env::temp_dir(), Vec::new());
+    for (provider_id, kind) in [
+        ("grok".to_string(), SessionKind::Acp),
+        ("claude".to_string(), SessionKind::Claude),
+    ] {
+        let record = new_session_record(
+            "s.client.1",
+            "S-1-5-21-1",
+            Some("w.1".to_string()),
+            SessionKind::Acp,
+            "Agent",
+        );
+        let session = session_metadata_for_resume(
+            "s.client.1",
+            record,
+            &command,
+            provider_id,
+            "peer-1".to_string(),
+            2,
+        );
+        assert_eq!(session.kind, kind);
+    }
+}
+
+#[test]
 fn workspace_lookup_reports_journal_failure_not_a_missing_workspace() {
     let (dir, registry, journal) = tmp_delete_registry();
     journal.shutdown();

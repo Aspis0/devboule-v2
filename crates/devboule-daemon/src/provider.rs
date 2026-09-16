@@ -183,11 +183,19 @@ pub(crate) trait Provider: Send + Sync {
     fn image_delivery(&self) -> super::ImageDelivery;
 
     /// Whether sessions of this family can host the daemon's MCP broker.
-    /// Delegated to the broker's single-source predicate until pass 2c
-    /// re-homes it.
-    fn hosts_mcp(&self) -> bool {
-        crate::mcp_broker::hosts_mcp(&self.wire_kind())
-    }
+    /// Answered per impl since pass 2c: every agent family hosts, a
+    /// terminal hosts nothing. The broker's `hosts_mcp` predicate reads
+    /// this through the registry, so these impls are the single source.
+    fn hosts_mcp(&self) -> bool;
+
+    /// Whether this family's first prompt may wait on the broker.
+    /// Deliberately narrower than `hosts_mcp` (ACP/Claude only): carriers
+    /// are best-effort and slow (Codex measured ~7.4 s against a dead
+    /// broker); blocking a healthy pi/Codex child's first prompt on them
+    /// would make an outage of the broker an outage of the child. The
+    /// broker's `mcp_gates_first_prompt` reads this through the registry,
+    /// and the twin never-block tests pin the rule.
+    fn mcp_gates_first_prompt(&self) -> bool;
 
     /// Build this family's MCP carrier from the broker's launch config. Pi
     /// and Codex own real carriers (bridge file / per-session home); the ACP
@@ -199,13 +207,22 @@ pub(crate) trait Provider: Send + Sync {
         runtime_dir: &Path,
     ) -> Result<McpProviderConfig, WireError>;
 
-    /// Whether this family's sessions support resume. Today's road refuses
-    /// resume for everything but ACP; the refusal site converts in pass 2c.
+    /// Whether this family's sessions support resume. Resume is ACP-only;
+    /// the refusal site (`resume_handle`) asks this.
     fn resumable(&self) -> bool;
 
-    /// Whether a successful spawn of this family measures provider health.
-    /// Today's raw match (ACP/Pi/Codex yes, Claude failures only) stays in
-    /// `session.rs` until pass 2b/2c; this is the fact it will consult.
+    /// The wording of this family's resume refusal. NOT a second source of
+    /// the decision — the fact stays `resumable()`; this method is only its
+    /// explanation, so the yes/no is never expressible in two places. The
+    /// default is the generic sentence; Codex overrides it with its own.
+    fn resume_refusal(&self) -> &'static str {
+        "only ACP sessions support this resume path"
+    }
+
+    /// Whether a successful spawn of this family measures provider health
+    /// (ACP/Pi/Codex yes; Claude records failures only). The create path's
+    /// success arm asks this; the failure arm judges the error, not the
+    /// family, and stays a free function (`spawn_failure_is_provider_health`).
     fn spawn_measures_health(&self) -> bool;
 
     /// The vocabulary axes this family can answer a vocabulary query with.
@@ -327,7 +344,11 @@ impl Provider for AcpProvider {
     }
 
     fn hosts_mcp(&self) -> bool {
-        crate::mcp_broker::hosts_mcp(&self.wire_kind())
+        true
+    }
+
+    fn mcp_gates_first_prompt(&self) -> bool {
+        true
     }
 
     fn mcp_launch(
@@ -342,12 +363,13 @@ impl Provider for AcpProvider {
     }
 
     fn resumable(&self) -> bool {
-        // Resume is ACP-only today (`resume_handle` refuses the rest); the
-        // refusal site converts in pass 2c.
+        // The one family the resume gate admits (`resume_handle` asks this).
         true
     }
 
     fn spawn_measures_health(&self) -> bool {
+        // A completed handshake proves the provider started and accepted a
+        // session, so it measures provider health.
         true
     }
 
@@ -441,6 +463,14 @@ impl Provider for ClaudeProvider {
         super::claude_client::claude_delivery()
     }
 
+    fn hosts_mcp(&self) -> bool {
+        true
+    }
+
+    fn mcp_gates_first_prompt(&self) -> bool {
+        true
+    }
+
     fn mcp_launch(
         &self,
         _config: &McpLaunchConfig,
@@ -458,8 +488,8 @@ impl Provider for ClaudeProvider {
     }
 
     fn spawn_measures_health(&self) -> bool {
-        // Claude records spawn failures only (the raw match this fact
-        // belongs to still sits in `session.rs` until 2b/2c).
+        // A process spawn proves nothing about the provider, so Claude
+        // records failures only (at the create path's failure arm).
         false
     }
 
@@ -545,6 +575,16 @@ impl Provider for PiProvider {
         super::ImageDelivery::PathLine
     }
 
+    fn hosts_mcp(&self) -> bool {
+        true
+    }
+
+    fn mcp_gates_first_prompt(&self) -> bool {
+        // A best-effort carrier: slow against a dead broker, so a healthy
+        // pi child's first prompt never blocks on it.
+        false
+    }
+
     fn mcp_launch(
         &self,
         config: &McpLaunchConfig,
@@ -554,8 +594,8 @@ impl Provider for PiProvider {
     }
 
     fn resumable(&self) -> bool {
-        // Deliberate: pi resume is undesigned (`resume_handle`'s refusal
-        // comment); the conversion of that site is pass 2c's.
+        // Deliberate, not accidental: pi can resume on its own wire, but the
+        // end-to-end design is not done (`resume_handle`'s refusal comment).
         false
     }
 
@@ -638,6 +678,16 @@ impl Provider for CodexProvider {
         super::codex_client::codex_delivery()
     }
 
+    fn hosts_mcp(&self) -> bool {
+        true
+    }
+
+    fn mcp_gates_first_prompt(&self) -> bool {
+        // A best-effort carrier (measured ~7.4 s against a dead broker): a
+        // healthy Codex child's first prompt never blocks on it.
+        false
+    }
+
     fn mcp_launch(
         &self,
         config: &McpLaunchConfig,
@@ -647,9 +697,14 @@ impl Provider for CodexProvider {
     }
 
     fn resumable(&self) -> bool {
-        // "app-server sessions do not support resume" — the refusal lives at
-        // the resume site until pass 2c.
         false
+    }
+
+    fn resume_refusal(&self) -> &'static str {
+        // The family's own sentence, preserved verbatim from the resume
+        // site: collapsing it into the generic message would be a
+        // wire-visible behaviour change.
+        "Codex app-server sessions do not support resume"
     }
 
     fn spawn_measures_health(&self) -> bool {
@@ -737,6 +792,14 @@ impl Provider for TerminalProvider {
 
     fn image_delivery(&self) -> super::ImageDelivery {
         super::ImageDelivery::PathLine
+    }
+
+    fn hosts_mcp(&self) -> bool {
+        false
+    }
+
+    fn mcp_gates_first_prompt(&self) -> bool {
+        false
     }
 
     fn mcp_launch(
@@ -975,4 +1038,34 @@ impl ProviderRegistry {
 pub(crate) fn catalog_registry() -> &'static ProviderRegistry {
     static CATALOG_REGISTRY: OnceLock<ProviderRegistry> = OnceLock::new();
     CATALOG_REGISTRY.get_or_init(ProviderRegistry::catalog_default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pass 2c: whose spawn success measures provider health is a per-family
+    /// fact living in the impls, read by the create path's success arm
+    /// through the registry. A completed handshake proves the provider
+    /// started and accepted a session; a bare process spawn proves nothing,
+    /// so Claude records failures only. Pins all five answers — without this
+    /// walk the move has no test that can go red.
+    #[test]
+    fn spawn_measures_health_is_a_per_family_fact() {
+        for (kind, measures) in [
+            (SessionKind::Acp, true),
+            (SessionKind::Pi, true),
+            (SessionKind::Codex, true),
+            (SessionKind::Claude, false),
+            (SessionKind::Terminal, false),
+        ] {
+            assert_eq!(
+                catalog_registry()
+                    .provider_for_kind(&kind)
+                    .spawn_measures_health(),
+                measures,
+                "spawn_measures_health for {kind:?}"
+            );
+        }
+    }
 }

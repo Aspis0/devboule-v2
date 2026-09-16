@@ -131,13 +131,14 @@ pub(crate) const MCP_READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Who gets a broker (S9): the single predicate every gate site calls. One
 /// function, one answer — when it flips, registration, roster, send-readiness
 /// and startup flip with it, and every future site flips by calling it instead
-/// of spelling kinds. Matches on `SessionKind` (never provider-name strings —
-/// the provider dimension stays open; the catalog owns names).
+/// of spelling kinds. The answer lives in the provider impls
+/// (`Provider::hosts_mcp`); this shim keeps the signature the gate sites have
+/// always read, now answered through the registry. Never provider-name
+/// strings — the provider dimension stays open; the catalog owns names.
 pub(crate) fn hosts_mcp(kind: &SessionKind) -> bool {
-    matches!(
-        kind,
-        SessionKind::Acp | SessionKind::Claude | SessionKind::Pi | SessionKind::Codex
-    )
+    crate::session::catalog_registry()
+        .provider_for_kind(kind)
+        .hosts_mcp()
 }
 
 /// Whose first prompt may wait on the broker (S9): ACP/Claude only, deliberately
@@ -146,8 +147,13 @@ pub(crate) fn hosts_mcp(kind: &SessionKind) -> bool {
 /// prompt on them would make an outage of the broker an outage of the child.
 /// The wait itself no-ops without `require_mcp` (S8 split); the twin
 /// never-block tests pin the rule. NOT a new flag — the S8 default, named.
+/// The answer lives in the provider impls (`Provider::mcp_gates_first_prompt`);
+/// this shim keeps the signature the gate sites have always read, now answered
+/// through the registry.
 pub(crate) fn mcp_gates_first_prompt(kind: &SessionKind) -> bool {
-    matches!(kind, SessionKind::Acp | SessionKind::Claude)
+    crate::session::catalog_registry()
+        .provider_for_kind(kind)
+        .mcp_gates_first_prompt()
 }
 
 const MCP_PATH: &str = "/mcp";
@@ -2915,16 +2921,23 @@ mod tests {
         );
     }
 
-    /// S9: one predicate, not five spellings. The two-kind MCP line survives in
-    /// exactly one function body (the wait rule) and the four-kind line in
-    /// exactly one (the gate); reintroduce an inline gate anywhere and either
-    /// count goes red. (Needles are concatenated so this very test does not
-    /// match itself.)
+    /// Pass 2c: nobody spells the MCP question as a list of kinds any more,
+    /// anywhere. The answers live in the provider impls (`Provider::hosts_mcp`,
+    /// `Provider::mcp_gates_first_prompt`) and the broker's two predicates are
+    /// shims answering through the registry; the zero counts below pin that no
+    /// file reintroduces an inline kind gate, and the walk pins the exact
+    /// answers through the shim (shim -> registry -> impl), including the
+    /// deliberate narrowness: pi/Codex host but never block a first prompt.
+    /// (Needles are concatenated so this very test does not match itself.)
     #[test]
-    fn the_mcp_predicate_is_spelled_exactly_twice() {
+    fn mcp_predicates_are_provider_facts_not_kind_lists() {
         let two = ["SessionKind::Acp ", "| SessionKind::Claude"].concat();
         let four_tail = ["| SessionKind::Pi ", "| SessionKind::Codex"].concat();
-        let sources = [include_str!("mcp_broker.rs"), include_str!("session.rs")];
+        let sources = [
+            include_str!("mcp_broker.rs"),
+            include_str!("session.rs"),
+            include_str!("provider.rs"),
+        ];
         let mut narrow = 0;
         let mut wide = 0;
         for source in sources {
@@ -2938,11 +2951,25 @@ mod tests {
                 }
             }
         }
-        assert_eq!(wide, 1, "hosts_mcp is the only four-kind MCP spelling");
+        assert_eq!(wide, 0, "no file spells the four-kind MCP gate any more");
         assert_eq!(
-            narrow, 1,
-            "mcp_gates_first_prompt is the only two-kind MCP spelling; gate sites call, never spell"
+            narrow, 0,
+            "no file spells the two-kind wait rule any more; gate sites call, never spell"
         );
+        for (kind, hosts, gates) in [
+            (SessionKind::Acp, true, true),
+            (SessionKind::Claude, true, true),
+            (SessionKind::Pi, true, false),
+            (SessionKind::Codex, true, false),
+            (SessionKind::Terminal, false, false),
+        ] {
+            assert_eq!(hosts_mcp(&kind), hosts, "hosts_mcp for {kind:?}");
+            assert_eq!(
+                mcp_gates_first_prompt(&kind),
+                gates,
+                "mcp_gates_first_prompt for {kind:?}"
+            );
+        }
     }
 
     #[test]

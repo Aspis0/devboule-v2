@@ -475,7 +475,13 @@ fn session_metadata_for_resume(
         cwd: Some(crate::workspace::display_path(
             &command.cwd.to_string_lossy(),
         )),
-        kind: SessionKind::Acp,
+        // The stamp follows the provider the resume resolved, not a
+        // constant: an ACP provider id resolves to the ACP impl (kind `Acp`,
+        // today's answer unchanged), but a future family's resume would
+        // otherwise have been journalled as an ACP session.
+        kind: provider::catalog_registry()
+            .provider_for(&provider)
+            .wire_kind(),
         title: record.title,
         provider: Some(provider),
         peer_session_id: Some(peer_session_id),
@@ -3736,14 +3742,13 @@ impl SessionRegistry {
             delivery,
         ) {
             Ok(()) => {
-                // A completed ACP handshake proves the provider started and
-                // accepted a session, so it measures provider health. A
-                // claude process spawn proves nothing about the provider,
-                // so claude only records failures (below).
-                if matches!(
-                    kind,
-                    SessionKind::Acp | SessionKind::Pi | SessionKind::Codex
-                ) {
+                // Whose spawn success measures provider health is the impls'
+                // `spawn_measures_health`, read through the registry; the
+                // per-family reasons live there.
+                if provider::catalog_registry()
+                    .provider_for_kind(&kind)
+                    .spawn_measures_health()
+                {
                     if let Some(provider_id) = &metadata.provider {
                         state.record_provider_health(provider_id, Ok(()));
                     }
@@ -9132,15 +9137,13 @@ fn resume_handle(
     if record.owner != owner.user {
         return Err(unauthorized());
     }
-    if record.kind == SessionKind::Codex {
-        return Err(cannot_resume(
-            "Codex app-server sessions do not support resume",
-        ));
-    }
-    // Pi can resume on its own wire, but this slice deliberately keeps the
-    // persisted resume handle ACP-only until Pi resume is designed end to end.
-    if record.kind != SessionKind::Acp {
-        return Err(cannot_resume("only ACP sessions support this resume path"));
+    // Pi can resume on its own wire, but the end-to-end design is not done:
+    // family resume stays refused deliberately, not by accident. The fact is
+    // the impls' `resumable()`; `resume_refusal()` is only the wording of
+    // the refusal, so the decision is never expressible in two places.
+    let family = provider::catalog_registry().provider_for_kind(&record.kind);
+    if !family.resumable() {
+        return Err(cannot_resume(family.resume_refusal()));
     }
     let provider = record
         .provider
