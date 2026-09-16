@@ -138,6 +138,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               className="workspace-secondary-action workspace-send-action"
               aria-label="Stop the current turn"
               onClick={onStop}
+              disabled={disabled}
             >
               Stop
             </button>

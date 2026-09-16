@@ -1350,11 +1350,6 @@ export function createAgentHost(): DesignHost {
     const settleFromState = (): void => {
       if (settled) return;
       const state = handle.controller.getState();
-      if (state.lastTurnError !== null) {
-        // The routing turn failed; fall back without waiting for the deadline.
-        settle(fallback());
-        return;
-      }
       if (state.lastFinished !== null) {
         const reply = state.items
           .slice(itemStart)
@@ -1537,12 +1532,6 @@ export function createAgentHost(): DesignHost {
       // promise alive if event ordering ever exposes agent_finished before the answer.
       if (pendingPermissions.some((entry) => entry.sessionId === run.sessionId)) return false;
       const state = handle.controller.getState();
-      if (state.lastTurnError !== null) {
-        // A failed turn beats a stale finish: agent_error ends the turn badly
-        // even when a late agent_finished follows it.
-        settleRun(run, "reject", new Error(state.lastTurnError));
-        return true;
-      }
       if (state.lastFinished !== null) {
         const baseResult = resultFor(run.prompt, run.toolObservations);
         // Provenance is reported for every mode: the ordered branch is where

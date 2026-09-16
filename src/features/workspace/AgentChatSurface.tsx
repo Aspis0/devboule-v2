@@ -49,8 +49,8 @@ interface AgentChatSurfaceProps {
   auxiliary?: ReactNode;
   observedState?: SessionState | null;
   elapsedMs?: number | null;
-  /** The daemon connection's state; input is disabled while it cannot carry sends. */
-  daemonState?: DaemonConnectionState;
+  /** The daemon connection's state; input is disabled while it cannot carry sends. Required so an omission is compile-visible. */
+  daemonState: DaemonConnectionState;
   onPermissionRequest?: (
     sessionId: string,
     subscriptionId: SubscriptionId,
@@ -138,9 +138,6 @@ function toolbarStatus(
   }
   if (agent.status === "error") return { copy: "Needs attention", tone: "terracotta" };
   if (agent.status === "closed") return { copy: "Finished", tone: "terracotta" };
-  // A turn-level failure leaves the status idle; the pill is the only
-  // failure signal in the session list, so it must not read as healthy.
-  if (agent.lastTurnError !== null) return { copy: "Needs attention", tone: "terracotta" };
   if (agent.status === "running") return { copy: "Working…", tone: "green" };
   if (type === "live") return { copy: "Live", tone: "green" };
   return { copy: "Connecting…", tone: "border" };
@@ -678,7 +675,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     subagents: [],
     subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
     lastFinished: null,
-    lastTurnError: null,
     manifest: null,
     pendingSwitch: null,
     pendingModeId: null,
@@ -746,11 +742,12 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const pendingCopy = manifest === null ? null : pendingTargetCopy(manifest, state.pendingSwitch);
   const osGone =
     observedType(observedState) === "ended" || observedType(observedState) === "recovered";
-  // The daemon connection is a global fact with its own channel; the three
-  // states mean sends cannot reach the daemon now. `connecting` is
-  // transitional and self-corrects, so it keeps the composer usable.
-  const daemonGone =
-    daemonState !== undefined && daemonState !== "connected" && daemonState !== "connecting";
+  // The daemon connection is a global fact with its own channel. Every
+  // non-connected state gates input: the supervisor clears the client the
+  // moment the connection drops, and `connecting` is the top of each
+  // reconnect attempt — a window with no client, in which every send is
+  // guaranteed to fail.
+  const daemonGone = daemonState !== undefined && daemonState !== "connected";
   const { copy: statusLabel, tone: statusDot } = toolbarStatus(observedState, elapsedMs, state);
   // `AgentSession` replaces the items array on every update (copy-on-write),
   // so this memo recomputes whenever the transcript changes and can never

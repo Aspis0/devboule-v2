@@ -82,20 +82,17 @@ export interface AgentFinished {
 
 export interface AgentSessionState {
   items: AgentChatItem[];
-  status: AgentStatus;
+  /**
+   * Readonly so the only possible write is through `setStatus`, which owns
+   * the latch; `Partial<AgentSessionState>` keeps the modifier, so no patch
+   * type can smuggle a write around it.
+   */
+  readonly status: AgentStatus;
   streaming: boolean;
   availableCommands: Array<{ name: string; description: string; hint?: string }>;
   subagents: AgentSubagent[];
   subagentStatusCounts: AgentSubagentStatusCounts;
   lastFinished: AgentFinished | null;
-  /**
-   * The sentence from the current turn's failure, if it failed — the
-   * symmetric signal to `lastFinished`: set by a turn-level failure, cleared
-   * in `beginTurn` so it is scoped to the current turn and a previous
-   * turn's failure cannot settle the next one. A refused switch or steer
-   * (`noteError`) does not end the turn and must not set it.
-   */
-  lastTurnError: string | null;
   manifest: SessionManifest | null;
   /** A model/effort switch sent to the daemon that no manifest confirmed yet. */
   pendingSwitch: { modelId?: string; effort?: string; at: number } | null;
@@ -108,6 +105,14 @@ export interface AgentSessionState {
    */
   journalLoss: { frames: number; bytes: number } | null;
 }
+
+/**
+ * A state patch that cannot carry `status`: the field is omitted from the
+ * type and forbidden as `never`, so both `update({ status })` and
+ * `update(wholeState)` fail to compile. Status moves only through
+ * `setStatus`, which owns the latch.
+ */
+type AgentSessionPatch = Omit<Partial<AgentSessionState>, "status"> & { status?: never };
 
 export interface AgentSessionDeps {
   sessionId: string;
@@ -141,7 +146,6 @@ const INITIAL_STATE: AgentSessionState = {
   subagents: [],
   subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
   lastFinished: null,
-  lastTurnError: null,
   manifest: null,
   pendingSwitch: null,
   pendingModeId: null,
@@ -561,12 +565,12 @@ export class AgentSession {
         this.reconcileBackgroundTasks(event.tasks);
         return;
       case "agent_error":
-        // A real turn failure. The daemon also announces a replaced
-        // generation through this event ("Session generation was replaced;
-        // reattach to continue observing") — a gone view that arrives as a
-        // turn-level failure. That sentence must not be sniffed here; the
-        // daemon is being given a code that names the case instead.
-        this.failTurn(event.message || "The agent reported an unknown error.");
+        // A notification, not a turn ending: the daemon publishes it for one
+        // malformed output line and returns to its read loop, and the turn
+        // outcome is recorded from agent_finished/exit instead. So the
+        // sentence lands in the transcript and the turn stays open — ending
+        // it here rejected paid-for runs and lost preflight replies.
+        this.noteError(event.message || "The agent reported an unknown error.");
         return;
       case "available_commands":
         this.update({ availableCommands: event.commands });
@@ -833,7 +837,7 @@ export class AgentSession {
     this.turn += 1;
     this.turnOpen = true;
     this.closeActiveBlocks();
-    this.update({ lastFinished: null, lastTurnError: null });
+    this.update({ lastFinished: null });
   }
 
   private ensureTurn(): void {
@@ -1095,17 +1099,15 @@ export class AgentSession {
   }
 
   /**
-   * The turn ended badly but the session lives: the agent reported an error,
-   * or a send was refused. The status returns to `idle` — unless it is
-   * already terminal, which the latch in `setStatus` holds — and the
-   * failure is signalled for run waiters.
+   * The turn ended badly but the session lives: a send was refused. The
+   * status returns to `idle` — unless it is already terminal, which the
+   * latch in `setStatus` holds — and the turn is closed.
    */
   private failTurn(message: string): void {
     this.turnOpen = false;
     this.closeActiveBlocks();
     this.setStatus("idle", {
       streaming: false,
-      lastTurnError: message,
       items: [
         ...this.state.items,
         { id: `error-${this.nextItemId++}`, role: "error", text: message },
@@ -1142,30 +1144,33 @@ export class AgentSession {
   }
 
   /**
-   * The only writer of `status`. A terminal status latches — laterally as
-   * well: `error` and `closed` both mean the view is gone and both disable
-   * input, so a rewrite between them would add no information while
-   * relabelling the outcome the user was already shown. The first terminal
-   * verdict wins. `update()` refuses `status` at compile time, so a new
-   * writer cannot bypass this rule by forgetting it. `rest` merges in the
-   * same notification, so compound transitions stay atomic for listeners
-   * that read several fields.
+   * The only writer of `status`. Terminal states latch, but not laterally —
+   * the consumer renders them differently (`error` reads "Needs attention",
+   * `closed` reads "Finished"), so: `error` is final, because a failure is
+   * never relabelled as a clean finish; `closed` may be superseded by
+   * `error`, because a takeover revealed after a clean exit is real new
+   * information. `update()` forbids `status` at compile time — including a
+   * whole-state spread, whose `status` property is `never` here — and the
+   * runtime strips one that arrives anyway. `rest` merges in the same
+   * notification, so compound transitions stay atomic for listeners that
+   * read several fields.
    */
-  private setStatus(next: AgentStatus, rest?: Omit<Partial<AgentSessionState>, "status">): void {
-    const terminal = this.state.status === "error" || this.state.status === "closed";
+  private setStatus(next: AgentStatus, rest?: AgentSessionPatch): void {
+    const from = this.state.status;
+    const latched = from === "error" || (from === "closed" && next !== "error");
+    const { status: _discarded, ...safeRest } = rest ?? {};
     this.state = {
       ...this.state,
-      ...rest,
-      ...(terminal ? {} : { status: next }),
+      ...safeRest,
+      ...(latched ? {} : { status: next }),
     };
     this.notify();
   }
 
-  private update(patch: Omit<Partial<AgentSessionState>, "status">): void {
-    this.state = { ...this.state, ...patch };
-    // A listener may dispose or unsubscribe during notification; a snapshot prevents that
-    // mutation from skipping listeners that were already subscribed for this update.
-    for (const listener of [...this.listeners]) listener();
+  private update(patch: AgentSessionPatch): void {
+    const { status: _notWritableHere, ...rest } = patch;
+    this.state = { ...this.state, ...rest };
+    this.notify();
   }
 
   private notify(): void {

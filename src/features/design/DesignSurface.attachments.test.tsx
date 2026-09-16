@@ -291,7 +291,15 @@ beforeEach(() => {
   settingsMocks.loadWorkspace.mockResolvedValue(null);
   settingsMocks.loadStoredWorkspace.mockResolvedValue(null);
   settingsMocks.loadOutput.mockResolvedValue("page");
-  providerMocks.daemonStatus.mockResolvedValue({ capabilities: [] });
+  providerMocks.daemonStatus.mockResolvedValue({
+    state: "connected",
+    pid: 42,
+    instanceId: "daemon-test",
+    protocolVersion: 1,
+    clients: 1,
+    capabilities: [],
+    message: null,
+  });
   providerMocks.list.mockResolvedValue({ providers: [], unreadableDirs: 0 });
   providerMocks.projectsList.mockResolvedValue([]);
   providerMocks.workspacesList.mockResolvedValue([]);

@@ -758,7 +758,9 @@ describe("ACP agent session", () => {
       role: "error",
       text: "The ACP transport closed.",
     });
-    expect(harness.session.getState().streaming).toBe(false);
+    // The daemon returns to its read loop after an agent_error, so the turn
+    // keeps streaming — the sentence is a note, not an ending.
+    expect(harness.session.getState().streaming).toBe(true);
   });
 
   it("returns the session to a usable state when the agent reports an error", async () => {
@@ -773,9 +775,10 @@ describe("ACP agent session", () => {
 
     const state = harness.session.getState();
     expect(state.items.at(-1)).toMatchObject({ role: "error", text: "402 Payment Required" });
-    expect(state.streaming).toBe(false);
-    expect(state.status).toBe("idle");
-    await expect(harness.session.send("Top up and try again")).resolves.toBe(true);
+    // The turn is still open — the agent keeps working — and a running turn
+    // is exactly the state in which the composer may steer it.
+    expect(state.status).toBe("running");
+    await expect(harness.session.send("Top up and try again", [], "steer")).resolves.toBe(true);
   });
 
   it("keeps the session usable when the send is refused as invalid_request", async () => {
@@ -988,29 +991,6 @@ describe("ACP agent session", () => {
     expect(assistant).toEqual(["Working"]);
   });
 
-  it("keeps a per-turn failure signal for waiters, scoped to the current turn", async () => {
-    // G1: `lastFinished` signals a turn that ended well; nothing signalled
-    // one that ended badly, so host waiters hung on `agent_error`. The
-    // signal is symmetric: set by a turn failure, cleared where
-    // `lastFinished` is cleared, untouched by `noteError`.
-    const harness = makeHarness();
-    await harness.session.start();
-
-    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
-      if (command === "session_set_model") return Promise.reject(new Error("refused"));
-      return undefined;
-    });
-    await harness.session.setModel("grok-4.7");
-    expect(harness.session.getState().lastTurnError).toBeNull();
-
-    await harness.session.send("Keep going");
-    harness.emit({ type: "agent_error", message: "The ACP transport closed." });
-    expect(harness.session.getState().lastTurnError).toBe("The ACP transport closed.");
-
-    await harness.session.send("Next turn");
-    expect(harness.session.getState().lastTurnError).toBeNull();
-  });
-
   it("treats a send failure that is not a CommandError as turn-level — death has its own events", async () => {
     // An unrecognised failure must not guess death: if the session really
     // died, its own exit or recovered event arrives within moments and
@@ -1101,6 +1081,42 @@ describe("ACP agent session", () => {
     harness.emit({ type: "journal_degraded", droppedFrames: 20, droppedBytes: 8000 });
 
     expect(harness.session.getState().journalLoss).toEqual({ frames: 20, bytes: 61286 });
+  });
+
+  it("supersedes a clean finish when the session is later recovered", async () => {
+    // H6: `closed` renders "Finished" and `error` renders "Needs attention" —
+    // materially different. A clean exit that is later revealed to be a
+    // takeover (`recovered`) must supersede the finish, or the session reads
+    // "Finished" forever.
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({ type: "exit", code: 0 });
+    expect(harness.session.getState().status).toBe("closed");
+
+    harness.emit({
+      type: "recovered",
+      integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+    });
+
+    expect(harness.session.getState().status).toBe("error");
+    expect(harness.session.getState().items.at(-1)).toMatchObject({
+      role: "error",
+      text: "This agent session is no longer available.",
+    });
+  });
+
+  it("never relabels a failure as a clean finish", async () => {
+    // H6, the other direction: a session whose turn ended in failure must
+    // keep "Needs attention" even when the process later exits cleanly.
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("Keep going");
+    harness.emit({ type: "exit", code: 1 });
+    expect(harness.session.getState().status).toBe("error");
+
+    harness.emit({ type: "exit", code: 0 });
+
+    expect(harness.session.getState().status).toBe("error");
   });
 
   it("stores the session manifest from the live event", async () => {

@@ -420,7 +420,15 @@ beforeEach(() => {
   settingsMocks.loadStoredWorkspace.mockResolvedValue(null);
   settingsMocks.saveWorkspace.mockResolvedValue(true);
   providerMocks.list.mockResolvedValue({ providers: [], unreadableDirs: 0 });
-  providerMocks.daemonStatus.mockResolvedValue({ capabilities: [] });
+  providerMocks.daemonStatus.mockResolvedValue({
+    state: "connected",
+    pid: 42,
+    instanceId: "daemon-test",
+    protocolVersion: 1,
+    clients: 1,
+    capabilities: [],
+    message: null,
+  });
   providerMocks.projectsList.mockResolvedValue([]);
   providerMocks.workspacesList.mockResolvedValue([]);
 });

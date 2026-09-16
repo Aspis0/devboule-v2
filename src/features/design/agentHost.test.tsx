@@ -329,7 +329,16 @@ beforeEach(() => {
 
   mocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
   mocks.surfaceSettingsSet.mockResolvedValue(undefined);
-  mocks.daemonStatus.mockResolvedValue({ capabilities: [] });
+  // The H4 generate gate reads `state`; the default is a connected daemon.
+  mocks.daemonStatus.mockResolvedValue({
+    state: "connected",
+    pid: 42,
+    instanceId: "daemon-test",
+    protocolVersion: 1,
+    clients: 1,
+    capabilities: [],
+    message: null,
+  });
 
   mocks.oracleAsk.mockResolvedValue({
     query: "Update the design",
@@ -1754,38 +1763,63 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("rejects the run when the agent reports a turn failure", async () => {
-    // G1: `agent_error` leaves the status idle, so neither waiter knew the
-    // turn had ended — the run hung until the abort signal. The red below is
-    // that hang, made visible by the still-pending sentinel.
+  it("does not end the run when the agent reports an error mid-turn", async () => {
+    // H1: agent_error is a notification — the daemon publishes it for one
+    // malformed output line and returns to its read loop. The turn stays
+    // open, so the run must not settle; it settles when the turn finishes.
     const host = createAgentHost();
     const { run } = await startRun(host);
-    channelHarness.active?.({ type: "agent_error", message: "The ACP transport closed." });
+    channelHarness.active?.({ type: "agent_error", message: "Malformed ACP output was skipped" });
 
-    const verdict = await Promise.race([
-      run.then(
-        () => "resolved",
-        (error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`,
-      ),
-      new Promise<string>((resolve) => setTimeout(() => resolve("still pending"), 250)),
-    ]);
-    expect(verdict).toBe("rejected: The ACP transport closed.");
+    // Deterministic still-pending probe: the settlement, if any, happens in
+    // the synchronous notification, so a microtask flush is enough to see it.
+    const probe = { settled: false };
+    void run.then(
+      () => {
+        probe.settled = true;
+      },
+      () => {
+        probe.settled = true;
+      },
+    );
+    for (let index = 0; index < 24; index += 1) await Promise.resolve();
+    expect(probe.settled).toBe(false);
+
+    // The turn then finishes normally and the run resolves.
+    finishRun();
+    await expect(run).resolves.toMatchObject(QUIET_RESULT);
     await disposeAgentHost(host);
   });
 
-  it("settles the skill preflight when its routing turn fails", async () => {
-    // G1, preflight side: a failed routing turn must fall back immediately,
-    // not sit on the 8-second deadline.
+  it("keeps the routing turn open across an agent_error and honors its reply", async () => {
+    // H1, preflight side: a skipped line must not fall the skill choice back
+    // before the routing reply exists. The turn finishes, the reply is read,
+    // and the agent's own choice is honored.
+    const index = builtInSkillIndex();
+    const selected = index.find((entry) => entry.slug !== AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0]);
+    if (selected === undefined) throw new Error("Built-in skills missing");
+
     const host = createAgentHost();
     const { run } = await startRun(host, { skillMode: "auto" });
-    channelHarness.active?.({ type: "agent_error", message: "routing failed" });
+    channelHarness.active?.({
+      type: "agent_error",
+      message: "Malformed ACP output was skipped",
+    });
 
-    for (let index = 0; index < 24; index += 1) await Promise.resolve();
-    expect(mocks.sessionSend.mock.calls.length).toBe(2);
-
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: `I choose ${selected.slug}, unknown-future-section.`,
+    });
     finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+
+    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[2] as string;
+    expect(generationPrompt).toContain(`## ${selected.title}`);
+    finishRun();
+
     const result = await run;
-    expect(result.skillSelectionFallback).toBe(true);
+    expect(result.skillSelectionFallback).toBe(false);
     await disposeAgentHost(host);
   });
 
@@ -2854,7 +2888,6 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
-          lastTurnError: null,
           journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Final</div>");
@@ -2879,7 +2912,6 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
-          lastTurnError: null,
           journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
@@ -2910,7 +2942,6 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
-          lastTurnError: null,
           journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
@@ -2941,7 +2972,6 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
-          lastTurnError: null,
           journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Second</div>");
@@ -2989,7 +3019,6 @@ describe("ACP design host", () => {
         manifest: null,
         pendingSwitch: null,
         pendingModeId: null,
-        lastTurnError: null,
         journalLoss: null,
       });
 
@@ -3860,7 +3889,6 @@ describe("sendRejectionDetail", () => {
     subagents: [],
     subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
     lastFinished: null,
-    lastTurnError: null,
     manifest: null,
     pendingSwitch: null,
     pendingModeId: null,

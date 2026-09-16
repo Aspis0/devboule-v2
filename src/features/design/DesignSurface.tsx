@@ -127,6 +127,7 @@ import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type {
+  DaemonConnectionState,
   Project,
   ProviderInfo,
   Session,
@@ -401,7 +402,7 @@ interface AssistantProps extends DesignSkillViewProps {
   pendingPermission: PendingPermission | null;
   permissionNotice: string | null;
   capabilities: readonly string[];
-  daemonConnected: boolean;
+  daemonState: DaemonConnectionState;
   draft: string;
   draftPlaceholder: string;
   sendLabel: string;
@@ -2690,7 +2691,7 @@ const DesignAssistant = memo(function DesignAssistant({
   pendingPermission,
   permissionNotice,
   capabilities,
-  daemonConnected,
+  daemonState,
   draft,
   draftPlaceholder,
   sendLabel,
@@ -2720,6 +2721,7 @@ const DesignAssistant = memo(function DesignAssistant({
   onCraftOpen,
   onCraftReadMore,
 }: AssistantProps) {
+  const daemonGone = daemonState !== "connected";
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   // Drag state is tracked with a depth counter, not a boolean: dragenter and
@@ -3090,7 +3092,7 @@ const DesignAssistant = memo(function DesignAssistant({
               request={pendingPermission.request}
               toolTitle={permissionToolTitle}
               capabilities={capabilities}
-              daemonState={daemonConnected ? "connected" : "disconnected"}
+              daemonState={daemonState}
               onRespond={onPermissionRespond}
             />
           ) : permissionNotice !== null ? (
@@ -3216,7 +3218,8 @@ const DesignAssistant = memo(function DesignAssistant({
                 className="design-generate-button"
                 type="button"
                 onClick={onSend}
-                disabled={busy || !draft.trim()}
+                disabled={busy || daemonGone || !draft.trim()}
+                title={daemonGone ? "The agent daemon is not connected." : undefined}
               >
                 {sendLabel}
               </button>
@@ -3579,7 +3582,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     daemon.state === "connected"
       ? (lastKnownDaemonCapabilities ?? daemon.capabilities)
       : (lastKnownDaemonCapabilities ?? ["typed_permissions"]);
-  const daemonConnected = daemon.state === "connected";
+  const daemonGone = daemon.state !== "connected";
   const messages = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.messages : EMPTY_DESIGN_MESSAGES,
   );
@@ -5245,9 +5248,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
 
   const send = useCallback(() => {
     const text = draft.trim();
-    if (!text || busy) return;
+    if (!text || busy || daemonGone) return;
     startGeneration(text);
-  }, [busy, draft, startGeneration]);
+  }, [busy, draft, daemonGone, startGeneration]);
 
   const visualCheck = useCallback(() => {
     startGeneration("Run a visual check on the canvas.");
@@ -5545,7 +5548,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           pendingPermission={pendingPermission}
           permissionNotice={permissionNotice}
           capabilities={permissionCapabilities}
-          daemonConnected={daemonConnected}
+          daemonState={daemon.state}
           draft={draft}
           draftPlaceholder={
             // The document default's placeholder names a fixture layer. The context that

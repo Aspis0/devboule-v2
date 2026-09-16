@@ -380,7 +380,6 @@ function agentState(manifest: AgentSessionState["manifest"]): AgentSessionState 
     manifest,
     pendingSwitch: null,
     pendingModeId: null,
-    lastTurnError: null,
     journalLoss: null,
   };
 }
@@ -463,6 +462,45 @@ afterEach(() => {
 });
 
 describe("DesignSurface host capabilities", () => {
+  it("gates Generate while the daemon cannot carry sends", async () => {
+    // H4: Design is the primary prompt surface; a send during a non-connected
+    // window is guaranteed to fail, so the action is gated on the real state
+    // — not on a boolean that flattens `connecting` into `disconnected`.
+    providerMocks.daemonStatus.mockResolvedValue({
+      state: "connecting",
+      pid: 42,
+      instanceId: "daemon-test",
+      protocolVersion: 1,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    });
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const host = createHost({ generate });
+    const { container } = await renderDesign(host);
+    await act(async () => undefined);
+    await fillDraft(container, "Create the final card.");
+
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    expect(send.disabled).toBe(true);
+    expect(send.title).toContain("daemon");
+    await act(async () => send.click());
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("keeps Generate usable when the daemon is connected", async () => {
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const host = createHost({ generate });
+    const { container } = await renderDesign(host);
+    await act(async () => undefined);
+    await fillDraft(container, "Create the final card.");
+
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    expect(send.disabled).toBe(false);
+  });
+
   it("renders Design permissions and sends Allow once and Deny to the host", async () => {
     providerMocks.daemonStatus.mockResolvedValue({
       state: "connected",
