@@ -3025,6 +3025,76 @@ fn resume_metadata_kind_is_the_records_own_kind_not_the_provider_string() {
     assert_eq!(session.kind, SessionKind::Pi);
 }
 
+/// The write-side twin of the test above: the `kind=acp, provider=codex` row
+/// that test survives being *read* must never be *born*. The one road that
+/// writes it is `DEVBOULE_ACP_PROVIDER_ID`, which reaches the row's provider
+/// without passing the registry — the override tests all named
+/// `devboule-acp-stub`, which is why the suite never saw the poison. The id
+/// here is `codex`, the native family the MAX RECALL audit caught: `claude`
+/// and `pi` are stripped from a create's own provider field, and a requested
+/// `codex` remaps the whole create to the Codex family, so the env road is
+/// the only way a native id reaches the stamp untouched.
+#[test]
+fn the_acp_command_override_cannot_journal_a_native_provider_id() {
+    let state = ServerState::new("acp-native-id-strip".to_string());
+    let owner = test_owner("S-1-5-21-acp-strip", "acp-native-strip");
+    std::env::set_var(
+        "DEVBOULE_ACP_COMMAND",
+        r#"["definitely-not-a-real-program-xyz"]"#,
+    );
+    std::env::set_var("DEVBOULE_ACP_PROVIDER_ID", "codex");
+    let created = state.sessions.create_with_provider_env(
+        &state,
+        &owner,
+        None,
+        SessionKind::Acp,
+        None,
+        crate::profile_delivery::ProfileDelivery::none(),
+        None,
+        &None,
+        None,
+        &SessionCreateMeta::default(),
+    );
+    std::env::remove_var("DEVBOULE_ACP_COMMAND");
+    std::env::remove_var("DEVBOULE_ACP_PROVIDER_ID");
+    // Whatever the create answered, no row it may have written may name one
+    // family in its kind and another in its provider. The family a provider
+    // string names is the create road's own derivation
+    // (`session_kind_for`), deliberately not the guard's own enumeration.
+    let rows = state
+        .sessions
+        .journal
+        .as_ref()
+        .expect("the test state has a journal")
+        .list()
+        .expect("journal rows");
+    for row in rows
+        .iter()
+        .filter(|row| matches!(row.kind, SessionKind::Acp))
+    {
+        let named_family = row
+            .provider
+            .as_deref()
+            .map(crate::provider_catalog::session_kind_for);
+        assert_eq!(
+            named_family,
+            Some(row.kind.clone()),
+            "row {} journals kind {:?} beside provider {:?}: the write side accepted \
+             the pair the read side was fixed to survive",
+            row.id,
+            row.kind,
+            row.provider
+        );
+    }
+    // And when the create is refused, the refusal names the override id —
+    // not the spawn accident this fixture's command would otherwise die of.
+    let error = created.expect_err("the override create must not journal a native id");
+    assert!(
+        error.message.contains("DEVBOULE_ACP_PROVIDER_ID"),
+        "the refusal names the override id, not a downstream failure: {error:?}"
+    );
+}
+
 #[test]
 fn workspace_lookup_reports_journal_failure_not_a_missing_workspace() {
     let (dir, registry, journal) = tmp_delete_registry();

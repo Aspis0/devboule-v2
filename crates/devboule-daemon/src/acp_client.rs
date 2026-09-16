@@ -446,6 +446,33 @@ impl PermissionBroker {
     }
 }
 
+/// The id paired with [`COMMAND_ENV`] becomes a journal row's `provider` on a
+/// session whose `kind` is ACP, so it must not name a native family. The ids
+/// are the impls' own ([`native_family_ids`]), compared the way the id's
+/// readers compare them — case-insensitively. Refused rather than stripped: a
+/// direct command has no catalog row to fall back to, so dropping the id
+/// would leave the session this variable exists to identify unnamed on its
+/// next resume, hiding the misconfiguration instead of reporting it.
+fn refuse_native_override_id(id: Option<&str>) -> Result<(), WireError> {
+    let Some(id) = id else {
+        return Ok(());
+    };
+    match crate::session::native_family_ids()
+        .iter()
+        .find(|native| native.eq_ignore_ascii_case(id))
+    {
+        None => Ok(()),
+        Some(native) => Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "{COMMAND_PROVIDER_ENV}={id} names the native provider '{native}'; the \
+                 {COMMAND_ENV} override runs on the ACP road and cannot claim another \
+                 family's identity. Run the command under its own provider id instead."
+            ),
+        )),
+    }
+}
+
 /// Resolve a direct executable plus argument vector. The JSON-array override
 /// is intentional: it has no shell grammar and therefore remains correct for
 /// executable paths containing spaces.
@@ -461,6 +488,7 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
             let provider_id = std::env::var(COMMAND_PROVIDER_ENV)
                 .ok()
                 .filter(|id| !id.trim().is_empty());
+            refuse_native_override_id(provider_id.as_deref())?;
             let argv = serde_json::from_str(&argv).map_err(|error| {
                 WireError::new(
                     ErrorCode::InvalidRequest,
