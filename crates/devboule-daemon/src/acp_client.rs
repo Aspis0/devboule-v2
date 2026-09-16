@@ -2367,11 +2367,17 @@ fn read_response_envelope(
 
 /// Format a JSON-RPC error object for a user-facing message. Agents embed
 /// structured payloads in the error object (qwen carries `authMethods`);
-/// the string `message` field is what belongs in a chat banner. Without a
-/// string message the code is reported bare — the object itself is never
+/// the string `message` fields are what belong in a chat banner — `data`'s
+/// first, because a provider that writes one puts its diagnosis there and
+/// leaves only the JSON-RPC category in the envelope (grok's balance
+/// exhaustion rode under `-32603 Internal error`). Without a string
+/// message the code is reported bare — the object itself is never
 /// serialized into the text.
 fn acp_request_error_message(error: &serde_json::Value) -> String {
-    let message = error.get("message").and_then(serde_json::Value::as_str);
+    let message = error
+        .pointer("/data/message")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| error.get("message").and_then(serde_json::Value::as_str));
     match (
         error.get("code").and_then(serde_json::Value::as_i64),
         message,
@@ -3968,6 +3974,58 @@ mod tests {
             "structured error data must not reach a user-facing banner: {text}"
         );
         assert!(text.contains("(-32000)"), "code must stay visible: {text}");
+    }
+
+    #[test]
+    fn request_error_data_message_carries_the_provider_diagnosis() {
+        let error = serde_json::json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": {
+                "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted"
+            }
+        });
+        let text = acp_request_error_message(&error);
+        assert_eq!(
+            text,
+            "ACP request failed (-32603): API error (status 402 Payment Required): Grok Build usage balance exhausted"
+        );
+    }
+
+    #[test]
+    fn request_error_data_message_surfaces_without_the_payload() {
+        let error = serde_json::json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": {
+                "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",
+                "token": "sk-LEAK"
+            }
+        });
+        let text = acp_request_error_message(&error);
+        assert!(
+            text.contains("402 Payment Required"),
+            "the diagnosis in data.message must reach the banner: {text}"
+        );
+        assert!(
+            !text.contains("sk-LEAK"),
+            "the rest of the payload must not reach the banner: {text}"
+        );
+        assert!(text.contains("(-32603)"), "code must stay visible: {text}");
+    }
+
+    #[test]
+    fn request_error_data_message_must_be_a_string_to_surface() {
+        let error = serde_json::json!({
+            "code": -32603,
+            "data": {"message": {"token": "sk-LEAK"}}
+        });
+        let text = acp_request_error_message(&error);
+        assert!(
+            !text.contains("sk-LEAK"),
+            "a non-string data.message is payload, not diagnosis: {text}"
+        );
+        assert!(text.contains("(-32603)"), "code must stay visible: {text}");
     }
 
     #[test]
