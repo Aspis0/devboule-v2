@@ -83,6 +83,8 @@ mod tool_paths;
 mod tool_policy;
 mod transport;
 #[cfg(feature = "server")]
+mod user_providers;
+#[cfg(feature = "server")]
 mod wire_json;
 #[cfg(feature = "server")]
 mod workspace;

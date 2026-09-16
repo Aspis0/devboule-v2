@@ -391,7 +391,7 @@ fn check_profile(
             "'{provider}' is not a provider the catalog publishes"
         ));
     };
-    profile.provider = canonical.to_string();
+    profile.provider = canonical;
 
     check_required_field(&mut profile.model, "model", position)?;
     check_required_field(&mut profile.mode_id, "mode id", position)?;
@@ -835,6 +835,41 @@ mod tests {
         alias.provider = "claude-code".to_string();
         store.set(document(vec![alias])).expect("an alias resolves");
         assert_eq!(store.document().profiles[0].provider, "claude");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pass 2e step 3: a profile naming a live user provider is accepted and
+    /// canonicalised through the same door as a built-in — the lookup now
+    /// walks the registry snapshot's published ids, so what it accepts is
+    /// exactly what can spawn. The row goes live through the real seam with
+    /// the rows lock held across the test, and adds only an id no other test
+    /// names; every built-in answer is unchanged while it is live.
+    #[test]
+    fn a_profile_naming_a_live_user_provider_is_accepted_like_a_builtin() {
+        let rows = crate::user_providers::parse_providers_document(
+            br#"{"profile-row-agent": {"extends": "acp", "command": ["/bin/prow"]}}"#,
+            &crate::session::native_family_ids(),
+        )
+        .expect("a valid row");
+        let gate = crate::user_providers::lock_rows_state();
+        crate::session::apply_user_rows(rows);
+
+        let dir = temp_dir();
+        let store = AgentProfilesStore::load(&dir);
+        let mut named = profile("p-1", "On a user row");
+        // Case differs from the row's own spelling: the catalog's walk is
+        // case-insensitive, and what is stored is the row's own spelling.
+        named.provider = "Profile-Row-Agent".to_string();
+        store
+            .set(document(vec![named]))
+            .expect("a live user provider is a provider like a built-in");
+        assert_eq!(store.document().profiles[0].provider, "profile-row-agent");
+
+        // Back the rows out while still holding the lock, so the live
+        // snapshot the rest of the suite sees is the builtins-only one.
+        crate::session::apply_user_rows(std::collections::BTreeMap::new());
+        drop(gate);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -452,7 +452,7 @@ pub(crate) fn mode_is_unattended(provider: &str, mode_id: &str) -> bool {
     if mode_is_auto_answered(mode_id) {
         return true;
     }
-    match catalog_provider_id(provider) {
+    match catalog_provider_id(provider).as_deref() {
         Some("codex") => CODEX_UNATTENDED.contains(&mode_id),
         Some("claude") => CLAUDE_UNATTENDED.contains(&mode_id),
         _ => false,
@@ -841,7 +841,9 @@ pub(crate) fn catalog_provider_rows() -> impl Iterator<Item = &'static KnownAgen
 }
 
 /// The provider ids the catalog publishes, in catalog order, test-only rows
-/// included because a debug daemon serves them.
+/// included because a debug daemon serves them. Ids only — the set a user row
+/// may not take is [`catalog_reserved_names`], which is these **and** the
+/// aliases.
 #[cfg(test)]
 fn catalog_provider_ids() -> Vec<&'static str> {
     KNOWN_AGENTS
@@ -854,15 +856,58 @@ fn catalog_provider_ids() -> Vec<&'static str> {
         .collect()
 }
 
+/// Every name the catalog answers to — ids **and** aliases — which is the set
+/// a user row may not take. Ids alone is the wrong set: several names are
+/// alias-only (`claude-code`, `grok-build`, `qwen-code`, and the debug rows),
+/// and a row taking one of those would be refused by nobody while
+/// [`catalog_provider_id`] still canonicalised it to the built-in — one name
+/// with two answers, because `acp_client::resolve_named` consults the user
+/// rows *before* the catalog walk. The shadow the refusal exists to prevent
+/// arrives through the door the refusal did not cover.
+#[cfg(feature = "server")]
+pub(crate) fn catalog_reserved_names() -> Vec<&'static str> {
+    KNOWN_AGENTS
+        .iter()
+        // Same reason as [`catalog_provider_ids`]: a debug daemon serves the
+        // test-only rows, so their names are reserved in a debug build too.
+        .chain(TEST_ONLY_AGENTS.iter())
+        .flat_map(|agent| std::iter::once(agent.id).chain(agent.aliases.iter().copied()))
+        .collect()
+}
+
 /// The catalog's own spelling of `agent_id`, when it publishes the id or an
-/// alias of it.
+/// alias of it — now owned, because the catalogue is no longer compile-time
+/// closed: a user row that is live in the registry snapshot canonicalises
+/// like any other provider id.
+///
+/// The walk is the snapshot's **published** ids — the entries, i.e. rows
+/// that bind an implementation and can spawn — never the raw `user_rows`
+/// alone: a profile cannot name a provider nothing can spawn (pass 2e's
+/// ordering rule, enforced here and pinned by
+/// `a_profile_lookup_answers_for_rows_that_bind_an_implementation_only` in
+/// `provider.rs`'s tests). Built-in ids and aliases answer first, exactly as
+/// before this pass; a live user row answers only where nothing matched
+/// before.
 ///
 /// `mcp_catalog_id` answers only for MCP-capable providers, which is the wrong
 /// set here: a profile may name any installed provider, so this walks the whole
 /// catalog instead.
-#[cfg(any(feature = "server", test))]
-pub(crate) fn catalog_provider_id(agent_id: &str) -> Option<&'static str> {
-    KNOWN_AGENTS
+#[cfg(feature = "server")]
+pub(crate) fn catalog_provider_id(agent_id: &str) -> Option<String> {
+    catalog_provider_id_for(&crate::session::catalog_registry(), agent_id)
+}
+
+/// The lookup against one snapshot: the built-ins' ids and aliases first
+/// (the static walk, unchanged), then the snapshot's published ids. Takes
+/// the whole snapshot — and answers from `published_ids` alone — so the
+/// ordering rule above is testable on a local registry where a row is
+/// declared but does not bind an implementation.
+#[cfg(feature = "server")]
+pub(crate) fn catalog_provider_id_for(
+    registry: &crate::session::ProviderRegistry,
+    agent_id: &str,
+) -> Option<String> {
+    if let Some(agent) = KNOWN_AGENTS
         .iter()
         // The test-only rows are part of the catalog a *debug* daemon serves
         // ([`TEST_ONLY_AGENTS`] is empty in a release build), and a preset cell
@@ -877,7 +922,13 @@ pub(crate) fn catalog_provider_id(agent_id: &str) -> Option<&'static str> {
                     .iter()
                     .any(|alias| alias.eq_ignore_ascii_case(agent_id))
         })
-        .map(|agent| agent.id)
+    {
+        return Some(agent.id.to_string());
+    }
+    registry
+        .published_ids()
+        .find(|id| id.eq_ignore_ascii_case(agent_id))
+        .map(|id| id.to_string())
 }
 
 /// The preset with this id, or `None`. Case-sensitive: a preset id is our own
@@ -911,7 +962,7 @@ pub(crate) fn resolve_agent_preset(
     if let Some(cell) = preset
         .cells
         .iter()
-        .find(|cell| cell.provider == provider)
+        .find(|cell| cell.provider == provider.as_str())
         .cloned()
     {
         return Ok((preset, cell));
@@ -920,7 +971,7 @@ pub(crate) fn resolve_agent_preset(
     // release table above never names them (`S5` e2e). The seam is one function
     // so its surface is one thing to audit.
     #[cfg(debug_assertions)]
-    if let Some(cell) = test_only_cell(preset.id, provider) {
+    if let Some(cell) = test_only_cell(preset.id, &provider) {
         return Ok((preset, cell));
     }
     Err("no non-bypass mode for provider".to_string())

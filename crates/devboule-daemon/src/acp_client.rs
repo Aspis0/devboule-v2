@@ -521,6 +521,27 @@ pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand
             return Ok(command);
         }
     }
+    // A user row is the named road's own source: its command and env are
+    // explicit, so it resolves here, before the PATH/CDN walk — a provider
+    // the user declared must not depend on either. The row comes from the
+    // live registry snapshot, the same one the profile lookup answers from,
+    // so a row that resolves here is exactly a row that was validated and
+    // swapped in (pass 2e step 2: the rows ride the same road as a catalog
+    // row; nothing here learns a new name).
+    if let Some(row) = crate::session::catalog_registry().user_row_for(id) {
+        // Validation refuses a row without a command, so this arm is
+        // unreachable for a live row; it refuses instead of unwrapping
+        // because a data path must not panic the daemon.
+        let Some(mut argv) = row.command else {
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Provider '{id}' has no command to spawn."),
+            ));
+        };
+        let program = argv.remove(0);
+        let env: Vec<(String, String)> = row.env.unwrap_or_default().into_iter().collect();
+        return Ok(PtyCommand::new(program, argv, cwd, env).with_provider_id(id.to_string()));
+    }
     let Some(agent) = crate::provider_catalog::find_in_catalog(
         id,
         &crate::registry::CdnRegistryFetch,
@@ -3806,6 +3827,46 @@ mod tests {
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    /// Pass 2e step 2: a user row resolves through the same named road a
+    /// catalog row rides, to its own argv and env — the row's command is
+    /// explicit, so it resolves before the PATH/CDN walk, and the command is
+    /// stamped with the id the create named.
+    ///
+    /// The rows go in through the real seam (`apply_user_rows`) and the rows
+    /// lock is held across the resolution so a concurrent production refresh
+    /// cannot swap them out under the test. While they are live the snapshot
+    /// answers only one id no other test names; every built-in answer is
+    /// exactly what it was.
+    #[test]
+    fn a_user_row_resolves_to_its_own_command_and_env() {
+        let document = br#"{"row-agent": {"extends": "acp",
+            "command": ["/usr/local/bin/row-agent", "--serve"],
+            "env": {"ROW_KEY": "row-value"}}}"#;
+        let rows = crate::user_providers::parse_providers_document(
+            document,
+            &crate::session::native_family_ids(),
+        )
+        .expect("a valid row document");
+
+        let gate = crate::user_providers::lock_rows_state();
+        crate::session::apply_user_rows(rows);
+        let paths = crate::paths::RuntimePaths::from_dir("row-agent-test");
+        let command = super::resolve_named("row-agent", &paths)
+            .expect("the row resolves through the named road");
+        assert_eq!(command.program, "/usr/local/bin/row-agent");
+        assert_eq!(command.args, vec!["--serve".to_string()]);
+        assert_eq!(
+            command.env,
+            vec![("ROW_KEY".to_string(), "row-value".to_string())]
+        );
+        assert_eq!(command.provider_id.as_deref(), Some("row-agent"));
+
+        // Back the rows out while still holding the lock, so the live
+        // snapshot the rest of the suite sees is the builtins-only one.
+        crate::session::apply_user_rows(std::collections::BTreeMap::new());
+        drop(gate);
+    }
 
     #[test]
     fn mcp_status_is_parsed_as_a_hint_and_failure_is_reported() {

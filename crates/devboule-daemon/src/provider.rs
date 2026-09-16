@@ -31,6 +31,7 @@
 //!   consent gate guards (the gate itself stays catalog policy in
 //!   `session.rs`, per the design's §3.3.5).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
@@ -1078,6 +1079,12 @@ fn open_pty_session(
 /// provider the catalog learns about needs no new code to spawn.
 pub(crate) struct ProviderRegistry {
     entries: Vec<(Arc<str>, Arc<dyn Provider>)>,
+    /// The user rows this snapshot was built from, carried beside `entries`
+    /// so one swap can never tear a row's declaration from its registry
+    /// entry. The profile lookup answers from `entries` — ids that bind an
+    /// implementation, i.e. rows that can spawn — never from here alone
+    /// (pass 2e step 3's ordering rule).
+    user_rows: BTreeMap<Arc<str>, crate::user_providers::UserProviderRow>,
 }
 
 impl ProviderRegistry {
@@ -1100,7 +1107,63 @@ impl ProviderRegistry {
                 (Arc::from(agent.id), provider)
             })
             .collect();
-        Self { entries }
+        Self {
+            entries,
+            user_rows: BTreeMap::new(),
+        }
+    }
+
+    /// The whole next registry with `rows` joined to the catalog's
+    /// enumeration, every row bound to the ACP implementation — the one
+    /// family that needs no per-provider code, which is what makes the
+    /// provider dimension open. Called by [`apply_user_rows`], which swaps
+    /// only when the rows differ from the live snapshot's.
+    fn with_user_rows(
+        mut self,
+        rows: BTreeMap<String, crate::user_providers::UserProviderRow>,
+    ) -> Self {
+        for (id, row) in rows {
+            let id: Arc<str> = Arc::from(id.as_str());
+            self.entries
+                .push((id.clone(), Arc::new(AcpProvider) as Arc<dyn Provider>));
+            self.user_rows.insert(id, row);
+        }
+        self
+    }
+
+    /// Does this snapshot already carry exactly these user rows? The
+    /// compare behind the refresh's deep-equal early return: an unchanged
+    /// document swaps nothing, so a boundary costs a read and a compare,
+    /// not a swap.
+    fn user_rows_equivalent(
+        &self,
+        rows: &BTreeMap<String, crate::user_providers::UserProviderRow>,
+    ) -> bool {
+        self.user_rows.len() == rows.len()
+            && self
+                .user_rows
+                .iter()
+                .zip(rows.iter())
+                .all(|((live_id, live_row), (id, row))| &**live_id == id && live_row == row)
+    }
+
+    /// The user row a live snapshot carries for `id`, matched the way the
+    /// catalog matches names — case-insensitively — and cloned out, so the
+    /// caller holds the row however later swaps behave.
+    pub(crate) fn user_row_for(&self, id: &str) -> Option<crate::user_providers::UserProviderRow> {
+        self.user_rows
+            .iter()
+            .find(|(live_id, _)| live_id.eq_ignore_ascii_case(id))
+            .map(|(_, row)| row.clone())
+    }
+
+    /// The ids this snapshot publishes — the entries, i.e. rows that bind an
+    /// implementation and can spawn. The one source the profile lookup may
+    /// answer from; `user_rows` alone never publishes an id (pass 2e step
+    /// 3's ordering rule: a profile cannot name a provider nothing can
+    /// spawn).
+    pub(crate) fn published_ids(&self) -> impl Iterator<Item = &Arc<str>> {
+        self.entries.iter().map(|(id, _)| id)
     }
 
     /// The provider a create's id names. An id the catalog does not publish
@@ -1166,6 +1229,38 @@ pub(crate) fn swap_catalog_registry(next: ProviderRegistry) -> Arc<ProviderRegis
     std::mem::replace(&mut *current, next)
 }
 
+/// The ids the native families bind by, from the impls' own `id()` — the
+/// closed set `user_providers` validates `extends` against without spelling
+/// a catalog row's name.
+pub(crate) fn native_family_ids() -> Vec<String> {
+    let natives: [Arc<dyn Provider>; 3] = [
+        Arc::new(ClaudeProvider),
+        Arc::new(CodexProvider),
+        Arc::new(PiProvider),
+    ];
+    natives
+        .iter()
+        .map(|provider| provider.id().to_string())
+        .collect()
+}
+
+/// Apply one validated user-rows document to the live registry: when the
+/// rows differ from the live snapshot's, build the *whole* next registry
+/// (builtins + rows, every row bound to `AcpProvider`) and swap it in one
+/// step through [`swap_catalog_registry`]; when they do not, swap nothing —
+/// an unchanged document costs a compare, not a swap, and a refused or
+/// unreadable document never reaches here (the live registry is never
+/// emptied by a bad read; `user_providers::refresh_user_rows` owns that
+/// rule).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn apply_user_rows(rows: BTreeMap<String, crate::user_providers::UserProviderRow>) {
+    if catalog_registry().user_rows_equivalent(&rows) {
+        return;
+    }
+    let next = ProviderRegistry::catalog_default().with_user_rows(rows);
+    swap_catalog_registry(next);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1181,6 +1276,7 @@ mod tests {
         assert_eq!(full.provider_for(native_id).id(), native_id);
         let empty = ProviderRegistry {
             entries: Vec::new(),
+            user_rows: BTreeMap::new(),
         };
         assert_eq!(
             empty.provider_for(native_id).id(),
@@ -1200,9 +1296,19 @@ mod tests {
     /// stamp and the vocabulary reply, among others. Swapping an equal
     /// registry keeps the seam observable through snapshot *identity* while
     /// leaving every concurrent reader the same answers it would have had.
+    ///
+    /// It holds the rows lock for the same reason, and pass 2e-2 is what made
+    /// that necessary: identity is only observable if nothing else swaps
+    /// between the read and the swap. Without the lock this test and the two
+    /// that put user rows live would break each other both ways — a foreign
+    /// swap in the window makes `replaced` some other snapshot, and this
+    /// test's builtins-only replacement would drop their rows mid-assertion.
+    /// **The lock is the serialisation point for every swap of the live
+    /// registry, not only for the rows file**; anything that swaps takes it.
     #[test]
     fn the_swap_seam_replaces_the_live_snapshot() {
         let native_id = ClaudeProvider.id();
+        let _gate = crate::user_providers::lock_rows_state();
         let before = catalog_registry();
         let replaced = swap_catalog_registry(ProviderRegistry::catalog_default());
         let after = catalog_registry();
@@ -1219,6 +1325,48 @@ mod tests {
             after.provider_for(native_id).id(),
             native_id,
             "and the replacement resolves what it should"
+        );
+    }
+
+    /// Pass 2e step 3, and the ordering rule the design states for it: the
+    /// profile lookup answers for rows that bind an implementation — rows
+    /// that can spawn — never for a row that is merely declared. A snapshot
+    /// whose row sits in `user_rows` with no registry entry is the exact
+    /// shape "lookup widened before the rows can spawn" would publish, and
+    /// the lookup refuses it: a profile cannot name a provider nothing can
+    /// spawn. (M2-e2-e's target — widening the walk to the declared rows —
+    /// turns the first assert red.) Local registries only; no global state.
+    #[test]
+    fn a_profile_lookup_answers_for_rows_that_bind_an_implementation_only() {
+        let rows = crate::user_providers::parse_providers_document(
+            br#"{"declared-agent": {"extends": "acp", "command": ["/bin/declared"]}}"#,
+            &native_family_ids(),
+        )
+        .expect("a valid row");
+
+        let mut declared_only = ProviderRegistry::catalog_default();
+        let id: Arc<str> = Arc::from("declared-agent");
+        declared_only
+            .user_rows
+            .insert(id, rows["declared-agent"].clone());
+        assert_eq!(
+            crate::provider_catalog::catalog_provider_id_for(&declared_only, "declared-agent"),
+            None,
+            "a profile cannot name a provider nothing can spawn"
+        );
+
+        // When the row does bind an implementation, the same lookup
+        // publishes it, case-insensitively like the built-ins.
+        let bound = ProviderRegistry::catalog_default().with_user_rows(rows);
+        assert_eq!(
+            crate::provider_catalog::catalog_provider_id_for(&bound, "Declared-Agent"),
+            Some("declared-agent".to_string()),
+            "a live row canonicalises like any other provider id"
+        );
+        // And the built-ins answer first, exactly as before this pass.
+        assert_eq!(
+            crate::provider_catalog::catalog_provider_id_for(&bound, ClaudeProvider.id()),
+            Some(ClaudeProvider.id().to_string()),
         );
     }
 

@@ -136,7 +136,7 @@ mod provider;
 /// `peer_policy::unattended_mode` reads it from there without this module
 /// growing any judgement of its own.
 pub(crate) use pi_client::unattended_answer as pi_unattended_answer;
-pub(crate) use provider::catalog_registry;
+pub(crate) use provider::{apply_user_rows, catalog_registry, native_family_ids, ProviderRegistry};
 #[path = "session_types.rs"]
 mod session_types;
 #[path = "shell_command.rs"]
@@ -3551,6 +3551,12 @@ impl SessionRegistry {
         env_provider: Option<&str>,
         meta: &SessionCreateMeta,
     ) -> Result<Session, WireError> {
+        // The create road is the boundary that answers "which providers
+        // exist": the file is read here (and at resume) so an edit takes
+        // effect on the next creation rather than at the next restart — the
+        // liveness rule the profile store states for itself. A read that
+        // finds nothing to change swaps nothing.
+        crate::user_providers::refresh_user_rows(self.runtime_dir());
         let workspace_id_ref = workspace_id.as_deref();
         let workspace_cwd = workspace_id_ref
             .map(|workspace_id| self.workspace_cwd(workspace_id))
@@ -3881,6 +3887,10 @@ impl SessionRegistry {
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<Session, WireError> {
+        // The resume road answers "which providers exist" too: the row a
+        // session was created under must still resolve here, so the file is
+        // refreshed at the boundary like the create road's.
+        crate::user_providers::refresh_user_rows(self.runtime_dir());
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;

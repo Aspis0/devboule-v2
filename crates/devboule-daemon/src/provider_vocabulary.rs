@@ -248,13 +248,13 @@ pub(crate) fn provider_vocabulary_reply(
         );
     };
 
-    let facts = discovery_facts(state, canonical);
+    let facts = discovery_facts(state, &canonical);
     let now_ms = crate::server::unix_millis();
     if !refresh {
-        if let Some(entry) = state.provider_vocabulary.get(canonical, &facts, now_ms) {
+        if let Some(entry) = state.provider_vocabulary.get(&canonical, &facts, now_ms) {
             return vocabulary_reply(
                 id,
-                canonical,
+                &canonical,
                 entry.models,
                 entry.modes,
                 VocabularySource::Cache,
@@ -273,12 +273,12 @@ pub(crate) fn provider_vocabulary_reply(
         .probes
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let (models, modes) = crate::session::catalog_registry()
-        .provider_for(canonical)
+        .provider_for(&canonical)
         .vocabulary(state);
     state
         .provider_vocabulary
-        .store(canonical, facts, now_ms, models.clone(), modes.clone());
-    vocabulary_reply(id, canonical, models, modes, VocabularySource::Probe, None)
+        .store(&canonical, facts, now_ms, models.clone(), modes.clone());
+    vocabulary_reply(id, &canonical, models, modes, VocabularySource::Probe, None)
 }
 
 fn vocabulary_reply(
@@ -499,7 +499,7 @@ mod tests {
         let facts: (Option<String>, Option<String>) = (None, None);
         let now = crate::server::unix_millis();
         state.provider_vocabulary.store(
-            provider,
+            &provider,
             facts.clone(),
             now,
             absent_axes().0,
@@ -507,15 +507,15 @@ mod tests {
         );
         assert!(state
             .provider_vocabulary
-            .get(provider, &facts, now)
+            .get(&provider, &facts, now)
             .is_some());
         assert!(state
             .provider_vocabulary
-            .get(provider, &facts, now + VOCABULARY_CACHE_TTL_MS - 1)
+            .get(&provider, &facts, now + VOCABULARY_CACHE_TTL_MS - 1)
             .is_some());
         assert!(state
             .provider_vocabulary
-            .get(provider, &facts, now + VOCABULARY_CACHE_TTL_MS)
+            .get(&provider, &facts, now + VOCABULARY_CACHE_TTL_MS)
             .is_none());
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(state);
