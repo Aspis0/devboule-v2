@@ -55,7 +55,7 @@ use super::{ProviderProvenance, SpawnedSession};
 /// epistemics sibling of `prompt_skipping_mode`: same home, different
 /// question, never merged into one predicate.
 ///
-/// `allow(dead_code)` until pass 2b converts `unattended_mode`'s call site —
+/// `allow(dead_code)` until pass 2d converts `unattended_mode`'s call site —
 /// the mapping exists so that conversion is a caller swap, not a redesign.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +73,33 @@ impl From<UnattendedState> for UnattendedAnswer {
             UnattendedState::Unknown => Self::CannotEstablish,
         }
     }
+}
+
+impl From<UnattendedAnswer> for UnattendedState {
+    fn from(answer: UnattendedAnswer) -> Self {
+        match answer {
+            UnattendedAnswer::Yes => Self::Yes,
+            UnattendedAnswer::No => Self::No,
+            UnattendedAnswer::CannotEstablish => Self::Unknown,
+        }
+    }
+}
+
+/// Route A of the `unattended` marker, shared by the four agent impls: the
+/// daemon's own broker answers the delivered mode itself, whatever family
+/// the child belongs to. Route B — the daemon authored the knob — is the
+/// per-impl `dictionary` each family passes. A terminal never reaches this
+/// helper: it has no permission mechanism, so no mode id can make route A
+/// true for it, and its impl answers `No` without consulting anything.
+fn agent_unattended_mode(
+    delivered_mode: Option<&str>,
+    dictionary: impl FnOnce(Option<&str>) -> UnattendedState,
+) -> UnattendedAnswer {
+    let delivered_mode = delivered_mode.filter(|mode| !mode.is_empty());
+    if delivered_mode.is_some_and(crate::provider_catalog::mode_is_auto_answered) {
+        return UnattendedAnswer::Yes;
+    }
+    dictionary(delivered_mode).into()
 }
 
 /// One provider family, at class level: the facts a create needs before any
@@ -226,12 +253,12 @@ pub(crate) trait Provider: Send + Sync {
     fn spawn_measures_health(&self) -> bool;
 
     /// The vocabulary axes this family can answer a vocabulary query with.
-    /// Delegated to the selector the vocabulary pass landed (one `"claude"`
-    /// arm, everything else absent) — the seam its own comment commissions
-    /// this trait to absorb; the cache/request layer stays on `ServerState`.
-    fn vocabulary(&self, state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
-        crate::provider_vocabulary::probe_axes(state, self.id())
-    }
+    /// Answered per impl since pass 2d: Claude's disk scrape
+    /// (`provider_vocabulary::claude_axes`), every other family `absent`
+    /// (`provider_vocabulary::absent_axes`). The query's cache/request layer
+    /// stays on `ServerState`; the reply asks this through the registry, so
+    /// these impls are the single source.
+    fn vocabulary(&self, state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes);
 
     /// Validate what a profile delivery asks this family to impose. The
     /// refusals are the client's own (`validate_delivery` free functions,
@@ -245,12 +272,16 @@ pub(crate) trait Provider: Send + Sync {
     ) -> Result<(), WireError>;
 
     /// The `unattended` marker's answer for a mode delivered to this family.
-    /// Delegated to `peer_policy::unattended_mode` — the route-A guard, the
-    /// per-family dictionaries and the terminal `No` exactly as landed — so
-    /// the re-homing in pass 2b moves one caller, not the rule.
-    fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer {
-        crate::peer_policy::unattended_mode(self.wire_kind(), delivered_mode).into()
-    }
+    /// Answered per impl since pass 2d; the epistemics sibling of
+    /// `prompt_skipping_mode` — same home, different question, never merged
+    /// into one predicate. Route A (the daemon answers itself) is the shared
+    /// helper every agent impl calls; route B (the daemon authored the knob)
+    /// is each family's own dictionary; an unauthored id answers
+    /// `CannotEstablish`, never `No`. `peer_policy::unattended_mode` keeps
+    /// its signature and answers through the registry, so the birth marker,
+    /// the child road, the profile prediction and the tests read one source:
+    /// these impls.
+    fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer;
 }
 
 /// The ACP family: the fallthrough implementation. Every provider the catalog
@@ -373,6 +404,13 @@ impl Provider for AcpProvider {
         true
     }
 
+    fn vocabulary(&self, _state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
+        // No source could answer yet: `absent` is a wire value, never an
+        // empty `present` and never `none` — the app renders it as a
+        // free-text field with the sentence that says why.
+        crate::provider_vocabulary::absent_axes()
+    }
+
     fn validate_delivery(
         &self,
         _state: &Arc<ServerState>,
@@ -382,6 +420,13 @@ impl Provider for AcpProvider {
         // only the agent can say whether a mode or model it defined exists,
         // so there is nothing to refuse before the child speaks.
         Ok(())
+    }
+
+    fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer {
+        // An ACP agent's modes are prose the agent authored; no table here
+        // judges them, so outside the route-A ids the answer is
+        // `CannotEstablish`.
+        agent_unattended_mode(delivered_mode, |_| UnattendedState::Unknown)
     }
 }
 
@@ -493,12 +538,26 @@ impl Provider for ClaudeProvider {
         false
     }
 
+    fn vocabulary(&self, state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
+        // Claude costs (almost) no process: the catalog derivation reads the
+        // CLI's files on disk. The one process a read can start is the
+        // native version probe, inside `claude_models`, and only while the
+        // installed version is still unknown. Both axes are `present`.
+        crate::provider_vocabulary::claude_axes(state)
+    }
+
     fn validate_delivery(
         &self,
         state: &Arc<ServerState>,
         spec: &ProfileDelivery,
     ) -> Result<(), WireError> {
         super::claude_client::validate_delivery(&state.claude_models(), spec)
+    }
+
+    fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer {
+        // Route B is the launcher's own mode table — the vocabulary the
+        // daemon delivers and therefore knows.
+        agent_unattended_mode(delivered_mode, crate::claude_view::unattended_answer)
     }
 }
 
@@ -603,12 +662,25 @@ impl Provider for PiProvider {
         true
     }
 
+    fn vocabulary(&self, _state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
+        // No source could answer yet: `absent` is a wire value, never an
+        // empty `present` and never `none` — the app renders it as a
+        // free-text field with the sentence that says why.
+        crate::provider_vocabulary::absent_axes()
+    }
+
     fn validate_delivery(
         &self,
         _state: &Arc<ServerState>,
         spec: &ProfileDelivery,
     ) -> Result<(), WireError> {
         super::pi_client::validate_delivery(spec)
+    }
+
+    fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer {
+        // Route B is the family's own mode table — the vocabulary the
+        // daemon delivers and therefore knows.
+        agent_unattended_mode(delivered_mode, crate::session::pi_unattended_answer)
     }
 }
 
@@ -711,12 +783,25 @@ impl Provider for CodexProvider {
         true
     }
 
+    fn vocabulary(&self, _state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
+        // No source could answer yet: `absent` is a wire value, never an
+        // empty `present` and never `none` — the app renders it as a
+        // free-text field with the sentence that says why.
+        crate::provider_vocabulary::absent_axes()
+    }
+
     fn validate_delivery(
         &self,
         _state: &Arc<ServerState>,
         spec: &ProfileDelivery,
     ) -> Result<(), WireError> {
         super::codex_client::validate_delivery(spec)
+    }
+
+    fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer {
+        // Route B is the family's own mode table — the vocabulary the
+        // daemon delivers and therefore knows.
+        agent_unattended_mode(delivered_mode, crate::codex_view::unattended_answer)
     }
 }
 
@@ -819,6 +904,13 @@ impl Provider for TerminalProvider {
         false
     }
 
+    fn vocabulary(&self, _state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
+        // No source could answer yet: `absent` is a wire value, never an
+        // empty `present` and never `none` — the app renders it as a
+        // free-text field with the sentence that says why.
+        crate::provider_vocabulary::absent_axes()
+    }
+
     fn validate_delivery(
         &self,
         _state: &Arc<ServerState>,
@@ -827,6 +919,12 @@ impl Provider for TerminalProvider {
         // A terminal receives no profile delivery (a create that resolved no
         // profile delivers nothing, and terminals resolve no profiles).
         Ok(())
+    }
+
+    fn unattended_mode(&self, _delivered_mode: Option<&str>) -> UnattendedAnswer {
+        // A terminal has no permission mechanism at all: no mode id —
+        // including a route-A id — can make one exist.
+        UnattendedAnswer::No
     }
 }
 

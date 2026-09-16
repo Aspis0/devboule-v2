@@ -16,12 +16,12 @@
 //!
 //! Two rules govern this module (`BRIEF-provider-vocabulary-daemon.md`):
 //!
-//! - **The provider dimension is open.** The only provider name here is the
-//!   selector's `"claude"` arm, and it exists so pass 2 can absorb the
-//!   selector into `Provider::vocabulary()` and move the per-family probes
-//!   unchanged. Nothing enumerates a provider's mode names: Claude's modes
-//!   come from `claude_view::mode_state`, the list the live manifest
-//!   already serves.
+//! - **The provider dimension is open.** No provider name lives here: the
+//!   per-family probes are `Provider::vocabulary()` impls (Claude's disk
+//!   scrape in `claude_axes`, every other family `absent_axes`), selected
+//!   through the registry by catalog id. Nothing enumerates a provider's
+//!   mode names: Claude's modes come from `claude_view::mode_state`, the
+//!   list the live manifest already serves.
 //! - **The permission dimension is closed.** This query is Client-only with
 //!   one explicit `Deny` arm in `peer_allows`; nothing here is reachable
 //!   from an MCP tool.
@@ -263,7 +263,18 @@ pub(crate) fn provider_vocabulary_reply(
         }
     }
 
-    let (models, modes) = probe_axes(state, canonical);
+    // The probe counter lives here, at the entry point, around the single
+    // provider call — exactly once per probe, in one place. Never inside
+    // the impls: five copies would be five chances to double-count, and the
+    // cache tests assert a cached read probes zero times.
+    #[cfg(test)]
+    state
+        .provider_vocabulary
+        .probes
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let (models, modes) = crate::session::catalog_registry()
+        .provider_for(canonical)
+        .vocabulary(state);
     state
         .provider_vocabulary
         .store(canonical, facts, now_ms, models.clone(), modes.clone());
@@ -288,40 +299,6 @@ fn vocabulary_reply(
     }
 }
 
-/// The per-family probe, selected by catalog id. This selector is the seam
-/// the provider-trait refactor's pass 2 absorbs into `Provider::vocabulary()`
-/// and deletes; pass 2's spawn probes land here, one function per client
-/// module, and move unchanged. A probe that cannot answer is the `absent`
-/// state, not an error — `Err` is reserved for cannot-even-try, and this
-/// pass has no `Err` arm at all.
-///
-/// `pub(crate)` for the provider trait's `vocabulary` delegation
-/// (`provider.rs`): the impl resolves its family and asks this selector with
-/// its own id, keeping this function the one probe home until the selector
-/// itself is absorbed.
-pub(crate) fn probe_axes(
-    state: &Arc<ServerState>,
-    canonical: &str,
-) -> (VocabularyModels, VocabularyModes) {
-    #[cfg(test)]
-    state
-        .provider_vocabulary
-        .probes
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    match canonical {
-        // Claude costs (almost) no process: the catalog derivation reads the
-        // CLI's files on disk. The one process a read can start is the
-        // native version probe, inside `claude_models`, and only while the
-        // installed version is still unknown. Both axes are `present`.
-        "claude" => claude_axes(state),
-        // Every other provider answers `absent` in this pass: no source could
-        // answer. That is a wire value, never an empty `present` and never
-        // `none` — the app renders it as a free-text field with the sentence
-        // that says why, which is what makes the form completable today.
-        _ => absent_axes(),
-    }
-}
-
 /// Claude's vocabulary, and the origin honesty the form repeats to a human:
 ///
 /// - Models are `provider`-origin when extraction from the CLI bundle worked
@@ -331,7 +308,7 @@ pub(crate) fn probe_axes(
 /// - Modes are always `daemon`-origin. Claude's wire has no mode concept at
 ///   all; the four-plus-one modes are the launcher's `--permission-mode`
 ///   values, and saying `provider` there would be a lie the form repeats.
-fn claude_axes(state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
+pub(crate) fn claude_axes(state: &Arc<ServerState>) -> (VocabularyModels, VocabularyModes) {
     let models = claude_models_axis(state.claude_models());
     // The current mode is a live-session fact and belongs to the manifest;
     // the vocabulary carries only the available list, so the "current" id
@@ -362,7 +339,7 @@ fn claude_models_axis(snapshot: crate::claude_catalog::ClaudeCatalogSnapshot) ->
 
 /// The `absent` answer: items empty, origin omitted — both, in both
 /// directions, exactly as the biconditional requires.
-fn absent_axes() -> (VocabularyModels, VocabularyModes) {
+pub(crate) fn absent_axes() -> (VocabularyModels, VocabularyModes) {
     (
         VocabularyModels::new(VocabularyState::Absent, None, Vec::new())
             .expect("an absent axis carries no origin"),

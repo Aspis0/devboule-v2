@@ -271,21 +271,24 @@ pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
 ///
 /// This is the sibling of [`prompt_skipping_mode`] — in the same home, keyed
 /// the same way, and **never merged with it**: a mode can skip prompts for a
-/// peer and still be un-establishable for this marker. The two differ in
-/// shape where their knowledge differs:
+/// peer and still be un-establishable for this marker. The answers are
+/// per-family facts and live in the provider impls (pass 2d); this shim is
+/// the same signature the birth marker, the child road, the profile
+/// prediction and the tests have always read, now answered through the
+/// registry. The rule, unchanged, in the shape the impls carry it:
 ///
 /// - **Route A — the daemon answers itself.** A delivered mode carrying one
 ///   of the provider-agnostic ids `provider_catalog::mode_is_auto_answered`
 ///   lists is answered by the daemon's own broker, whatever *agent* family
-///   the session belongs to; the shared helper below is the one list, and
-///   every arm's dictionary sits behind it. A terminal is **not** an agent
-///   family: the broker's auto-answer call sites cover the agent clients
-///   only, and a terminal has no permission mechanism at all, so there is no
-///   permission moment for anything to answer and no mode id — including a
-///   route-A id — can make one exist. The kind match below, not this list,
-///   decides a terminal, and it says `no` (audit R2b-1 §3.1: a terminal
-///   created with `mode: "bypass"` used to answer `yes` because this check
-///   ran first).
+///   the session belongs to; the shared helper in `provider.rs` is the one
+///   list, and every agent impl's dictionary sits behind it. A terminal is
+///   **not** an agent family: the broker's auto-answer call sites cover the
+///   agent clients only, and a terminal has no permission mechanism at all,
+///   so there is no permission moment for anything to answer and no mode id
+///   — including a route-A id — can make one exist. The Terminal impl, not
+///   this list, decides a terminal, and it says `no` (audit R2b-1 §3.1: a
+///   terminal created with `mode: "bypass"` used to answer `yes` because
+///   the old check ran first).
 /// - **Route B — the daemon authored the knob.** For Claude, Codex and Pi
 ///   the dictionary is the client family's own mode table
 ///   (`claude_view::unattended_answer`, `codex_view::unattended_answer`,
@@ -296,44 +299,28 @@ pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
 ///   watching" is the lie in its most dangerous direction.
 /// - **Cannot establish.** An ACP agent's modes are `{id, name, description}`
 ///   prose the agent authored; no table here judges them. Outside the three
-///   route-A ids the answer is `unknown`. The same arm covers what nobody
+///   route-A ids the answer is `unknown`. The same answer covers what nobody
 ///   said: an absent or empty delivered mode is `unknown` for a family the
 ///   daemon does not set a mode for, and a terminal — which has no
 ///   permission mechanism at all, and never had one to be told about —
 ///   carries `no`, exactly what the collapsed `bool` this marker replaces
 ///   recorded for it. A user-defined provider's child from a config file
-///   lands in this arm because `session_kind_for(provider)` — the one
+///   lands on the ACP answer because `session_kind_for(provider)` — the one
 ///   provider-name match on this path, read at the birth before this
 ///   function is consulted — maps every name that is not one of the three
-///   authored families to [`SessionKind::Acp`], whose arm is `unknown`: no
+///   authored families to [`SessionKind::Acp`], whose impl is `unknown`: no
 ///   name beyond the three is ever *interpreted*, and an unrecognised one
 ///   fails toward the honest answer, not toward `no`.
 pub fn unattended_mode(
     kind: SessionKind,
     delivered_mode: Option<&str>,
 ) -> devboule_protocol::UnattendedState {
-    use devboule_protocol::UnattendedState;
-    let delivered_mode = delivered_mode.filter(|mode| !mode.is_empty());
-    // Route A before the kind match, but never for a terminal: `Yes` claims
-    // the daemon's own broker will answer this child's permission moments,
-    // and a terminal has none to answer — no mode id delivered to it can
-    // make the claim true, so the one-condition gate keeps the kind match's
-    // `no` the rule for it instead of a fall-through an id could outrank.
-    if kind != SessionKind::Terminal
-        && delivered_mode.is_some_and(crate::provider_catalog::mode_is_auto_answered)
-    {
-        return UnattendedState::Yes;
-    }
-    match kind {
-        SessionKind::Claude => crate::claude_view::unattended_answer(delivered_mode),
-        SessionKind::Codex => crate::codex_view::unattended_answer(delivered_mode),
-        // `pi_client` is `session`'s submodule; the dictionary is re-exported
-        // beside the module declarations there, the way `session_runtime`'s
-        // types are.
-        SessionKind::Pi => crate::session::pi_unattended_answer(delivered_mode),
-        SessionKind::Acp => UnattendedState::Unknown,
-        SessionKind::Terminal => UnattendedState::No,
-    }
+    // The per-family answers moved into the impls; this keeps the signature
+    // the callers have always read.
+    crate::session::catalog_registry()
+        .provider_for_kind(&kind)
+        .unattended_mode(delivered_mode)
+        .into()
 }
 
 /// §8b A5/R3, the whole rule: why a paired device may not choose `mode_id` for
