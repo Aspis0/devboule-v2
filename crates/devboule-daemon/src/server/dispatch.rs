@@ -1,0 +1,260 @@
+//! Dispatch — pass-3a split of `server.rs`: `dispatch` (whose first
+//! statement is the peer gate) and the routing skeleton of
+//! `dispatch_immediate` (the store domains moved to `stores.rs`; the
+//! vocabulary arm stays a routing call). No body changes.
+
+use super::*;
+
+/// The eighth argument is whether the `devices` capability was negotiated.
+/// `session_send` in this file already declines a parameter object for the
+/// same reason: one call shape, one place to read.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn dispatch(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    request: ClientMessage,
+    conn: &Arc<ConnHandle>,
+    sessions_ok: bool,
+    journal_ok: bool,
+    typed_permissions_ok: bool,
+    devices_ok: bool,
+) -> Option<DaemonMessage> {
+    // The peer gate is the first statement: nothing below (not the provider
+    // spawns, not the readiness check) runs for a remote connection before
+    // its request has a decision (`DESIGN-remote-agents.md` §8b A1). The
+    // capability set is consulted first of all: it is the whole permission
+    // model for a paired device (A9/A11), and a request it does not open is
+    // refused before anything looks at what the request would do.
+    if let Some(ConnPeer::Remote { role, .. }) = &conn.conn_peer {
+        match peer_allows(*role, &conn.peer_caps, &request) {
+            PeerDecision::Deny(reason) => {
+                audit_peer_request(state, &conn.conn_peer, &request, "denied");
+                return Some(capability_not_supported(request.request_id(), reason));
+            }
+            PeerDecision::Allow => {
+                // The refusals that come before the mode policy, in the order
+                // they need: attachments first (they are refused before the
+                // idempotency fingerprint decodes anything, H4), then the
+                // ownership question for a request that names a session, so the
+                // policy lookups below never answer "that session exists, and
+                // it is this kind" to a peer that may not reach it (H6).
+                if let Some(reply) =
+                    peer_refusal_before_mode(state, owner, &request, &conn.conn_peer)
+                {
+                    audit_peer_request(state, &conn.conn_peer, &request, "denied");
+                    return Some(reply);
+                }
+                // §8b A4/A5/R3: an allowed request that would run a session
+                // without asking this machine's user is refused here, and
+                // recorded as such — a paired device asking for unattended
+                // execution is a different event in the trail from a device
+                // asking for something it may not have.
+                if let Some(reason) = peer_mode_refusal(state, &request) {
+                    audit_peer_request(state, &conn.conn_peer, &request, reason);
+                    return Some(mode_refused(request.request_id(), reason));
+                }
+                // Only state-changing requests audit on success. An allowed
+                // read must never write a row: a `Ping` loop would fill the
+                // disk (muse M1).
+                if request.is_state_changing() {
+                    audit_peer_request(state, &conn.conn_peer, &request, "ok");
+                }
+            }
+        }
+    }
+    // A remote peer's session list is a projection, not the local list, and it
+    // is derived from the *connection* rather than from the `owner` this call
+    // was handed: a caller that passes something else cannot widen the
+    // projection. A `Client` sees the sessions of the user it was paired by
+    // (what `handle_client` computes for every other request too, §8b A3); a
+    // `Daemon` sees the sessions its own device created (§8 R2); the local pipe
+    // sees its own list. In all three cases the registry's single owner-user
+    // filter is the whole rule.
+    if let Some(ConnPeer::Remote { .. }) = &conn.conn_peer {
+        if let ClientMessage::SessionsList { id } = &request {
+            let projected = session_list_owner(&conn.conn_peer, owner);
+            return Some(match state.sessions.list(&projected) {
+                Ok(sessions) => DaemonMessage::Sessions { id: *id, sessions },
+                Err(error) => DaemonMessage::Error(error.with_id(*id)),
+            });
+        }
+    }
+    if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
+        let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
+        if let Some(id) = request.request_id() {
+            error = error.with_id(id);
+        }
+        return Some(DaemonMessage::Error(error));
+    }
+    if let ClientMessage::ProvidersRefresh { id } = request {
+        let worker_state = Arc::clone(state);
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let spawn = std::thread::Builder::new()
+            .name("daemon-providers-refresh".to_string())
+            .spawn(move || {
+                let reply = providers_reply(&worker_state, id, true);
+                outbound.enqueue_reply(reply);
+            });
+        if spawn.is_err() {
+            failure_outbound.enqueue_reply(DaemonMessage::Error(
+                WireError::new(ErrorCode::Io, "could not start provider refresh").with_id(id),
+            ));
+        }
+        return None;
+    }
+    // Deliberately do not serialize concurrent updates: this pipe is single-user,
+    // the frontend runs one npm update at a time, and npm's global lockfile
+    // serializes racers. Revisit if the daemon becomes multi-client.
+    if let ClientMessage::ProviderUpdate { id, provider_id } = request {
+        let worker_state = Arc::clone(state);
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let spawn = std::thread::Builder::new()
+            .name("daemon-provider-update".to_string())
+            .spawn(move || {
+                let reply = provider_update_reply(&worker_state, id, &provider_id);
+                outbound.enqueue_reply(reply);
+            });
+        if spawn.is_err() {
+            failure_outbound.enqueue_reply(DaemonMessage::Error(
+                WireError::new(ErrorCode::Io, "could not start provider update").with_id(id),
+            ));
+        }
+        return None;
+    }
+    Some(dispatch_immediate(
+        state,
+        owner,
+        request,
+        conn,
+        sessions_ok,
+        journal_ok,
+        typed_permissions_ok,
+        devices_ok,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn dispatch_immediate(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    request: ClientMessage,
+    conn: &Arc<ConnHandle>,
+    sessions_ok: bool,
+    journal_ok: bool,
+    typed_permissions_ok: bool,
+    devices_ok: bool,
+) -> DaemonMessage {
+    if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
+        return DaemonMessage::Error({
+            let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
+            if let Some(id) = request.request_id() {
+                error = error.with_id(id);
+            }
+            error
+        });
+    }
+    match request {
+        ClientMessage::Hello(_) => DaemonMessage::Error(WireError::new(
+            ErrorCode::InvalidRequest,
+            "hello already completed",
+        )),
+        ClientMessage::SessionPermissionRespond { .. } if !typed_permissions_ok => {
+            capability_not_supported(request.request_id(), caps::TYPED_PERMISSIONS)
+        }
+        ClientMessage::Ping { id } => DaemonMessage::Pong {
+            id,
+            ts_ms: unix_millis(),
+        },
+        ClientMessage::Status { id } => state.status_body(id),
+        ClientMessage::DaemonDiagnostics { id } => diagnostics_reply(state, id, owner),
+        ClientMessage::Shutdown { id } => {
+            // The reply is the app's last chance to know the journal is on
+            // disk. Flush before accepting so a follow-up kill/restart cannot
+            // race the shutdown path.
+            state.sessions.flush_journal();
+            DaemonMessage::Shutdown { id, accepted: true }
+        }
+        ClientMessage::JournalUsage { .. }
+        | ClientMessage::JournalRetentionGet { .. }
+        | ClientMessage::JournalRetentionSet { .. }
+        | ClientMessage::SessionDelete { .. }
+        | ClientMessage::ProjectsList { .. }
+        | ClientMessage::ProjectAdd { .. }
+        | ClientMessage::WorkspacesList { .. }
+        | ClientMessage::WorkspaceCreate { .. }
+        | ClientMessage::WorkspaceDelete { .. } => {
+            if !journal_ok {
+                return capability_not_supported(request.request_id(), caps::JOURNAL);
+            }
+            dispatch_journal(state, owner, request)
+        }
+        ClientMessage::SessionCreate { .. }
+        | ClientMessage::SessionAttach { .. }
+        | ClientMessage::SessionDetach { .. }
+        | ClientMessage::SessionClaim { .. }
+        | ClientMessage::SessionClose { .. }
+        | ClientMessage::SessionStop { .. }
+        | ClientMessage::SessionSend { .. }
+        | ClientMessage::AgentMessageSend { .. }
+        | ClientMessage::SessionDeposit { .. }
+        | ClientMessage::SessionResize { .. }
+        | ClientMessage::SessionInterrupt { .. }
+        | ClientMessage::SessionSetModel { .. }
+        | ClientMessage::SessionSetMode { .. }
+        | ClientMessage::SessionPermissionRespond { .. }
+        | ClientMessage::SessionsList { .. }
+        | ClientMessage::SessionsWatch { .. }
+        | ClientMessage::SessionsUnwatch { .. }
+        | ClientMessage::SessionsPresence { .. }
+        | ClientMessage::SessionResume { .. }
+        | ClientMessage::SessionReportAgent { .. } => {
+            if !sessions_ok {
+                return capability_not_supported(request.request_id(), caps::SESSIONS);
+            }
+            dispatch_session(state, owner, request, conn, typed_permissions_ok)
+        }
+        ClientMessage::ProvidersList { id } => providers_reply(state, id, false),
+        ClientMessage::ToolPolicyGet { id } => tool_policy_get(state, id),
+        ClientMessage::ToolPolicySet {
+            id,
+            provider_id,
+            enabled,
+            disabled_tools,
+        } => tool_policy_set(state, id, provider_id, enabled, disabled_tools),
+        ClientMessage::AgentProfilesGet { id } => agent_profiles_get(state, id),
+        ClientMessage::AgentProfilesSet { id, document } => agent_profiles_set(state, id, document),
+        ClientMessage::DelegationGet { id } => delegation_get(state, id),
+        ClientMessage::DelegationSet { id, enabled } => delegation_set(state, id, enabled),
+        ClientMessage::ProviderVocabularyGet {
+            id,
+            provider,
+            refresh,
+        } => crate::provider_vocabulary::provider_vocabulary_reply(state, id, &provider, refresh),
+        ClientMessage::DevicesList { .. }
+        | ClientMessage::PairingStart { .. }
+        | ClientMessage::PairingComplete { .. }
+        | ClientMessage::PairingConfirm { .. }
+        | ClientMessage::PeerRevoke { .. }
+        | ClientMessage::PeerSetCaps { .. } => {
+            if !devices_ok {
+                return capability_not_supported(request.request_id(), caps::DEVICES);
+            }
+            dispatch_devices(state, conn, request)
+        }
+        ClientMessage::ProvidersRefresh { .. } => {
+            unreachable!("ProvidersRefresh is dispatched by the async wrapper")
+        }
+        ClientMessage::ProviderUpdate { .. } => {
+            unreachable!("ProviderUpdate is dispatched by the async wrapper")
+        }
+        ClientMessage::Invoke { id, method, .. } => DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::Unimplemented,
+                format!("this daemon is not a plugin backend; invoke '{method}' is refused"),
+            )
+            .with_id(id),
+        ),
+    }
+}

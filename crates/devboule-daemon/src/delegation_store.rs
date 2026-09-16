@@ -546,15 +546,12 @@ mod tests {
         let mut offenders: Vec<String> = Vec::new();
         let mut server_lines: Vec<String> = Vec::new();
         let mut session_lines: Vec<String> = Vec::new();
-        for entry in std::fs::read_dir(&src).expect("read the crate's src") {
-            let entry = entry.expect("entry");
-            let name = entry.file_name();
-            let name = name.to_str().expect("source file name");
-            if !name.ends_with(".rs") {
-                continue;
-            }
-            let body = std::fs::read(entry.path()).expect("read source");
-            let body = String::from_utf8(body).expect("utf-8 source");
+        // One file's touches, attributed to the module it belongs to.
+        // `name` is the whitelist key: files under `server/` count as
+        // `server.rs` — the pass-3a domain split moved the two dispatch
+        // arms there without adding a reader (same justification as the
+        // pass-1 `session_tests.rs` entry above).
+        let mut visit = |name: &str, body: &str| {
             for line in body.lines() {
                 // Any receiver: `state.delegation`, `self.delegation`, or a
                 // store handle under another name — the call shape is the
@@ -575,6 +572,26 @@ mod tests {
                     offenders.push(format!("{name}: {line}"));
                 }
             }
+        };
+        for entry in std::fs::read_dir(&src).expect("read the crate's src") {
+            let entry = entry.expect("entry");
+            let name = entry.file_name();
+            let name = name.to_str().expect("source file name");
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            let body = std::fs::read(entry.path()).expect("read source");
+            let body = String::from_utf8(body).expect("utf-8 source");
+            visit(name, &body);
+        }
+        for entry in std::fs::read_dir(src.join("server")).expect("read the server module") {
+            let entry = entry.expect("entry");
+            if !entry.file_name().to_str().expect("name").ends_with(".rs") {
+                continue;
+            }
+            let body = std::fs::read(entry.path()).expect("read source");
+            let body = String::from_utf8(body).expect("utf-8 source");
+            visit("server.rs", &body);
         }
         assert!(
             offenders.is_empty(),
