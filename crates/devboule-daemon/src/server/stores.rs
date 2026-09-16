@@ -7,7 +7,11 @@
 
 use super::*;
 
-pub(super) fn tool_policy_get(state: &Arc<ServerState>, id: u64) -> DaemonMessage {
+pub(super) fn tool_policy_get(
+    state: &Arc<ServerState>,
+    id: u64,
+    _passed: &GatePassed,
+) -> DaemonMessage {
     DaemonMessage::ToolPolicy {
         id,
         policies: state.tool_policy.entries(),
@@ -20,6 +24,7 @@ pub(super) fn tool_policy_set(
     provider_id: String,
     enabled: Option<bool>,
     disabled_tools: Vec<String>,
+    _passed: &GatePassed,
 ) -> DaemonMessage {
     match state.tool_policy.set(&provider_id, enabled, disabled_tools) {
         Ok(()) => DaemonMessage::ToolPolicySetOk { id },
@@ -43,7 +48,11 @@ pub(super) fn tool_policy_set(
     }
 }
 
-pub(super) fn agent_profiles_get(state: &Arc<ServerState>, id: u64) -> DaemonMessage {
+pub(super) fn agent_profiles_get(
+    state: &Arc<ServerState>,
+    id: u64,
+    _passed: &GatePassed,
+) -> DaemonMessage {
     DaemonMessage::AgentProfiles {
         id,
         document: state.agent_profiles.document(),
@@ -54,6 +63,7 @@ pub(super) fn agent_profiles_set(
     state: &Arc<ServerState>,
     id: u64,
     document: devboule_protocol::AgentProfilesDocument,
+    _passed: &GatePassed,
 ) -> DaemonMessage {
     match state.agent_profiles.set(document) {
         Ok(()) => DaemonMessage::AgentProfilesSetOk { id },
@@ -77,7 +87,11 @@ pub(super) fn agent_profiles_set(
     }
 }
 
-pub(super) fn delegation_get(state: &Arc<ServerState>, id: u64) -> DaemonMessage {
+pub(super) fn delegation_get(
+    state: &Arc<ServerState>,
+    id: u64,
+    _passed: &GatePassed,
+) -> DaemonMessage {
     // The one read: the store answers with the switch and where the
     // answer came from, and nothing else in the daemon consults it
     // (the nothing-reads-it test holds that line).
@@ -89,7 +103,12 @@ pub(super) fn delegation_get(state: &Arc<ServerState>, id: u64) -> DaemonMessage
     }
 }
 
-pub(super) fn delegation_set(state: &Arc<ServerState>, id: u64, enabled: bool) -> DaemonMessage {
+pub(super) fn delegation_set(
+    state: &Arc<ServerState>,
+    id: u64,
+    enabled: bool,
+    _passed: &GatePassed,
+) -> DaemonMessage {
     // The reply carries what the daemon stored, not an echo of the
     // request (`NOTE-a-write-that-does-not-say-what-it-stored.md`),
     // and every session-watching connection is pushed the same pair:

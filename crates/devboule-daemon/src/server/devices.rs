@@ -10,6 +10,7 @@ pub(super) fn dispatch_devices(
     state: &Arc<ServerState>,
     conn: &Arc<ConnHandle>,
     request: ClientMessage,
+    _passed: &GatePassed,
 ) -> DaemonMessage {
     match request {
         ClientMessage::DevicesList { id } => match devices_reply(state, &conn.conn_peer) {

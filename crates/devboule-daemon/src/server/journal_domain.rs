@@ -7,6 +7,7 @@ pub(super) fn dispatch_journal(
     state: &Arc<ServerState>,
     owner: &OwnerId,
     request: ClientMessage,
+    _passed: &GatePassed,
 ) -> DaemonMessage {
     match request {
         ClientMessage::JournalUsage { id } => match state.sessions.journal_usage() {

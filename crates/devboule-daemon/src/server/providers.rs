@@ -143,6 +143,11 @@ fn wire_provider(
     }
 }
 
+/// Not gate-token'd: the caller is the provider-update worker `dispatch`
+/// spawns **after** the gate, and a `&GatePassed` cannot cross that thread
+/// boundary. Making the token `Clone` to get it there would make it
+/// storable and re-usable for a later request, which is worse than this
+/// function staying reachable only from `dispatch.rs`.
 pub(super) fn provider_update_reply(
     state: &Arc<ServerState>,
     id: u64,

@@ -10,6 +10,7 @@ pub(super) fn dispatch_session(
     request: ClientMessage,
     conn: &Arc<ConnHandle>,
     typed_permissions_ok: bool,
+    _passed: &GatePassed,
 ) -> DaemonMessage {
     match request {
         ClientMessage::SessionCreate {

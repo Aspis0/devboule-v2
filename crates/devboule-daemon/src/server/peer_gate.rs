@@ -5,6 +5,86 @@
 
 use super::*;
 
+/// Proof that a request reached a domain handler **through the gate**.
+///
+/// The field is `()` and it is private to this module, so no code outside
+/// `peer_gate.rs` can construct one — not the sibling domain children, not
+/// the parent, not a test. `run_gate` below is the only place a `GatePassed`
+/// comes into existence, which is what turns "the gate is the only door"
+/// from a convention the next edit can break into a compile error.
+///
+/// It proves exactly one thing: this request passed the decision point. It is
+/// **not** an authorisation — the authorisation is the gate's own refusals,
+/// which are unchanged. A handler holding this token still enforces
+/// everything it enforced before.
+pub(super) struct GatePassed(());
+
+/// The peer gate, lifted out of `dispatch` verbatim in pass 3b.
+///
+/// Nothing below the gate (not the provider spawns, not the readiness check)
+/// runs for a remote connection before its request has a decision
+/// (`DESIGN-remote-agents.md` §8b A1). The capability set is consulted first
+/// of all: it is the whole permission model for a paired device (A9/A11), and
+/// a request it does not open is refused before anything looks at what the
+/// request would do.
+///
+/// A local connection has no peer to judge, so it reaches the end and takes a
+/// token too: "local, therefore allowed" is still a decision, and it is still
+/// made here. That is what keeps this function the single door rather than
+/// the remote-only half of one.
+/// The refusal is boxed: `DaemonMessage` is 416 bytes and clippy's
+/// `result_large_err` is right that every caller would carry it. The box
+/// is paid only on the refusal path, which already writes an audit row;
+/// the allowed path returns a zero-sized token.
+pub(super) fn run_gate(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    request: &ClientMessage,
+    conn: &Arc<ConnHandle>,
+) -> Result<GatePassed, Box<DaemonMessage>> {
+    if let Some(ConnPeer::Remote { role, .. }) = &conn.conn_peer {
+        match peer_allows(*role, &conn.peer_caps, request) {
+            PeerDecision::Deny(reason) => {
+                audit_peer_request(state, &conn.conn_peer, request, "denied");
+                return Err(Box::new(capability_not_supported(
+                    request.request_id(),
+                    reason,
+                )));
+            }
+            PeerDecision::Allow => {
+                // The refusals that come before the mode policy, in the order
+                // they need: attachments first (they are refused before the
+                // idempotency fingerprint decodes anything, H4), then the
+                // ownership question for a request that names a session, so the
+                // policy lookups below never answer "that session exists, and
+                // it is this kind" to a peer that may not reach it (H6).
+                if let Some(reply) =
+                    peer_refusal_before_mode(state, owner, request, &conn.conn_peer)
+                {
+                    audit_peer_request(state, &conn.conn_peer, request, "denied");
+                    return Err(Box::new(reply));
+                }
+                // §8b A4/A5/R3: an allowed request that would run a session
+                // without asking this machine's user is refused here, and
+                // recorded as such — a paired device asking for unattended
+                // execution is a different event in the trail from a device
+                // asking for something it may not have.
+                if let Some(reason) = peer_mode_refusal(state, request) {
+                    audit_peer_request(state, &conn.conn_peer, request, reason);
+                    return Err(Box::new(mode_refused(request.request_id(), reason)));
+                }
+                // Only state-changing requests audit on success. An allowed
+                // read must never write a row: a `Ping` loop would fill the
+                // disk (muse M1).
+                if request.is_state_changing() {
+                    audit_peer_request(state, &conn.conn_peer, request, "ok");
+                }
+            }
+        }
+    }
+    Ok(GatePassed(()))
+}
+
 pub(super) fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage {
     let mut error = WireError::new(
         ErrorCode::CapabilityNotSupported,

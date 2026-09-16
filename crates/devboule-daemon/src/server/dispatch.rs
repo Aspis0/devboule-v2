@@ -19,49 +19,15 @@ pub(super) fn dispatch(
     typed_permissions_ok: bool,
     devices_ok: bool,
 ) -> Option<DaemonMessage> {
-    // The peer gate is the first statement: nothing below (not the provider
-    // spawns, not the readiness check) runs for a remote connection before
-    // its request has a decision (`DESIGN-remote-agents.md` §8b A1). The
-    // capability set is consulted first of all: it is the whole permission
-    // model for a paired device (A9/A11), and a request it does not open is
-    // refused before anything looks at what the request would do.
-    if let Some(ConnPeer::Remote { role, .. }) = &conn.conn_peer {
-        match peer_allows(*role, &conn.peer_caps, &request) {
-            PeerDecision::Deny(reason) => {
-                audit_peer_request(state, &conn.conn_peer, &request, "denied");
-                return Some(capability_not_supported(request.request_id(), reason));
-            }
-            PeerDecision::Allow => {
-                // The refusals that come before the mode policy, in the order
-                // they need: attachments first (they are refused before the
-                // idempotency fingerprint decodes anything, H4), then the
-                // ownership question for a request that names a session, so the
-                // policy lookups below never answer "that session exists, and
-                // it is this kind" to a peer that may not reach it (H6).
-                if let Some(reply) =
-                    peer_refusal_before_mode(state, owner, &request, &conn.conn_peer)
-                {
-                    audit_peer_request(state, &conn.conn_peer, &request, "denied");
-                    return Some(reply);
-                }
-                // §8b A4/A5/R3: an allowed request that would run a session
-                // without asking this machine's user is refused here, and
-                // recorded as such — a paired device asking for unattended
-                // execution is a different event in the trail from a device
-                // asking for something it may not have.
-                if let Some(reason) = peer_mode_refusal(state, &request) {
-                    audit_peer_request(state, &conn.conn_peer, &request, reason);
-                    return Some(mode_refused(request.request_id(), reason));
-                }
-                // Only state-changing requests audit on success. An allowed
-                // read must never write a row: a `Ping` loop would fill the
-                // disk (muse M1).
-                if request.is_state_changing() {
-                    audit_peer_request(state, &conn.conn_peer, &request, "ok");
-                }
-            }
-        }
-    }
+    // The peer gate is the first statement, and `run_gate` is the only place
+    // a `GatePassed` can be minted (its field is private to `peer_gate.rs`).
+    // Every domain handler below requires one, so an edit that routes a
+    // request past this line does not compile — the property stops being a
+    // convention the next change can break.
+    let passed = match run_gate(state, owner, &request, conn) {
+        Ok(passed) => passed,
+        Err(reply) => return Some(*reply),
+    };
     // A remote peer's session list is a projection, not the local list, and it
     // is derived from the *connection* rather than from the `owner` this call
     // was handed: a caller that passes something else cannot widen the
@@ -132,6 +98,7 @@ pub(super) fn dispatch(
         journal_ok,
         typed_permissions_ok,
         devices_ok,
+        &passed,
     ))
 }
 
@@ -145,6 +112,7 @@ pub(super) fn dispatch_immediate(
     journal_ok: bool,
     typed_permissions_ok: bool,
     devices_ok: bool,
+    passed: &GatePassed,
 ) -> DaemonMessage {
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
         return DaemonMessage::Error({
@@ -188,7 +156,7 @@ pub(super) fn dispatch_immediate(
             if !journal_ok {
                 return capability_not_supported(request.request_id(), caps::JOURNAL);
             }
-            dispatch_journal(state, owner, request)
+            dispatch_journal(state, owner, request, passed)
         }
         ClientMessage::SessionCreate { .. }
         | ClientMessage::SessionAttach { .. }
@@ -213,20 +181,22 @@ pub(super) fn dispatch_immediate(
             if !sessions_ok {
                 return capability_not_supported(request.request_id(), caps::SESSIONS);
             }
-            dispatch_session(state, owner, request, conn, typed_permissions_ok)
+            dispatch_session(state, owner, request, conn, typed_permissions_ok, passed)
         }
         ClientMessage::ProvidersList { id } => providers_reply(state, id, false),
-        ClientMessage::ToolPolicyGet { id } => tool_policy_get(state, id),
+        ClientMessage::ToolPolicyGet { id } => tool_policy_get(state, id, passed),
         ClientMessage::ToolPolicySet {
             id,
             provider_id,
             enabled,
             disabled_tools,
-        } => tool_policy_set(state, id, provider_id, enabled, disabled_tools),
-        ClientMessage::AgentProfilesGet { id } => agent_profiles_get(state, id),
-        ClientMessage::AgentProfilesSet { id, document } => agent_profiles_set(state, id, document),
-        ClientMessage::DelegationGet { id } => delegation_get(state, id),
-        ClientMessage::DelegationSet { id, enabled } => delegation_set(state, id, enabled),
+        } => tool_policy_set(state, id, provider_id, enabled, disabled_tools, passed),
+        ClientMessage::AgentProfilesGet { id } => agent_profiles_get(state, id, passed),
+        ClientMessage::AgentProfilesSet { id, document } => {
+            agent_profiles_set(state, id, document, passed)
+        }
+        ClientMessage::DelegationGet { id } => delegation_get(state, id, passed),
+        ClientMessage::DelegationSet { id, enabled } => delegation_set(state, id, enabled, passed),
         ClientMessage::ProviderVocabularyGet {
             id,
             provider,
@@ -241,7 +211,7 @@ pub(super) fn dispatch_immediate(
             if !devices_ok {
                 return capability_not_supported(request.request_id(), caps::DEVICES);
             }
-            dispatch_devices(state, conn, request)
+            dispatch_devices(state, conn, request, passed)
         }
         ClientMessage::ProvidersRefresh { .. } => {
             unreachable!("ProvidersRefresh is dispatched by the async wrapper")
