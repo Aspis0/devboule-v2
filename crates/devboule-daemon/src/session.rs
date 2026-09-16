@@ -126,8 +126,9 @@ mod event_pull;
 mod pi_client;
 /// The class-level provider seam: the `Provider` trait, one implementation
 /// per family, and the registry the spawn road resolves through. Declared
-/// from here like the other children; the spawn road is its only caller
-/// until pass 2b/2c convert the rest.
+/// from here like the other children; since pass 2b the mode lists live in
+/// the impls, and `peer_policy`'s mode functions read them through the
+/// registry — so the registry lookup is re-exported for that caller.
 #[path = "provider.rs"]
 mod provider;
 /// Pi's mode dictionary, re-exported for the `unattended` derivation: the
@@ -135,6 +136,7 @@ mod provider;
 /// `peer_policy::unattended_mode` reads it from there without this module
 /// growing any judgement of its own.
 pub(crate) use pi_client::unattended_answer as pi_unattended_answer;
+pub(crate) use provider::catalog_registry;
 #[path = "session_types.rs"]
 mod session_types;
 #[path = "shell_command.rs"]
@@ -348,7 +350,7 @@ struct PtySession {
     preserve_on_exit: Arc<AtomicBool>,
 }
 
-struct SpawnedSession {
+pub(crate) struct SpawnedSession {
     process_job: JobObject,
     master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     killer: Box<dyn SessionKiller>,
@@ -2121,7 +2123,7 @@ pub(crate) struct AgentCreation {
 /// or from `DEVBOULE_AGENT_PROVIDER`. Consent for npx wrappers requires
 /// the request; the env override cannot supply it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ProviderProvenance {
+pub(crate) enum ProviderProvenance {
     Request,
     Env,
 }

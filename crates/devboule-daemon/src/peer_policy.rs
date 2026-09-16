@@ -257,13 +257,12 @@ fn with_capability(caps: &[String], capability: &'static str) -> PeerDecision {
 ///   apply with the agent's own mode list. Do not use this function alone to
 ///   decide whether a remote-origin ACP session may be driven.
 pub fn prompt_skipping_mode(kind: SessionKind, mode_id: &str) -> bool {
-    match kind {
-        SessionKind::Claude => matches!(mode_id, "acceptEdits" | "auto" | "bypassPermissions"),
-        SessionKind::Codex => matches!(mode_id, "auto-review" | "full-access"),
-        SessionKind::Pi => mode_id == "bypass",
-        SessionKind::Acp => false,
-        SessionKind::Terminal => false,
-    }
+    // The lists are per-family facts and live in the provider impls (pass
+    // 2b); this shim is the same signature the peer gate and the walking
+    // tests have always read, now answered through the registry.
+    crate::session::catalog_registry()
+        .provider_for_kind(&kind)
+        .prompt_skipping_mode(mode_id)
 }
 
 /// The `unattended` marker for one session: the honest answer to "can this
@@ -352,10 +351,13 @@ pub fn unattended_mode(
 ///
 /// The reasons are the two audit labels, so the trail says which rule fired.
 pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
-    if kind == SessionKind::Acp {
+    let provider = crate::session::catalog_registry().provider_for_kind(&kind);
+    if provider.modes_unvetted() {
         return Some(ACP_MODES_UNVETTED_REFUSED);
     }
-    prompt_skipping_mode(kind, mode_id).then_some(PROMPT_SKIPPING_REFUSED)
+    provider
+        .prompt_skipping_mode(mode_id)
+        .then_some(PROMPT_SKIPPING_REFUSED)
 }
 
 /// What one MCP broker tool performs, in the wire vocabulary this policy judges.

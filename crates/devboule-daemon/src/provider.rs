@@ -165,12 +165,11 @@ pub(crate) trait Provider: Send + Sync {
     /// a terminal has no modes at all.
     fn validate_mode(&self, mode_id: &str) -> Result<(), WireError>;
 
-    /// Whether this mode skips permission prompts for a peer. Delegated to
-    /// the `peer_policy` lists — the same function the peer gate reads — so
-    /// the lists stay single-sourced until pass 2b moves them.
-    fn prompt_skipping_mode(&self, mode_id: &str) -> bool {
-        crate::peer_policy::prompt_skipping_mode(self.wire_kind(), mode_id)
-    }
+    /// Whether this mode skips permission prompts for a peer. The lists are
+    /// per-family facts and live here since pass 2b — `peer_policy`'s mode
+    /// functions read them through the registry, so the walking tests and
+    /// the peer gate answer from one source: these impls.
+    fn prompt_skipping_mode(&self, mode_id: &str) -> bool;
 
     /// Whether this family's modes are defined at run time by the agent and
     /// therefore unvetted by the daemon: the peer gate's fail-closed ACP arm.
@@ -314,6 +313,11 @@ impl Provider for AcpProvider {
     fn modes_unvetted(&self) -> bool {
         true
     }
+    fn prompt_skipping_mode(&self, _mode_id: &str) -> bool {
+        // Peer-authored vocabulary: this function cannot answer for ACP
+        // modes, and the peer gate's refusal comes from `modes_unvetted`.
+        false
+    }
 
     fn image_delivery(&self) -> super::ImageDelivery {
         // Before the handshake speaks, nothing is negotiated: the same
@@ -429,6 +433,9 @@ impl Provider for ClaudeProvider {
     fn modes_unvetted(&self) -> bool {
         false
     }
+    fn prompt_skipping_mode(&self, mode_id: &str) -> bool {
+        matches!(mode_id, "acceptEdits" | "auto" | "bypassPermissions")
+    }
 
     fn image_delivery(&self) -> super::ImageDelivery {
         super::claude_client::claude_delivery()
@@ -527,6 +534,9 @@ impl Provider for PiProvider {
     fn modes_unvetted(&self) -> bool {
         false
     }
+    fn prompt_skipping_mode(&self, mode_id: &str) -> bool {
+        mode_id == "bypass"
+    }
 
     fn image_delivery(&self) -> super::ImageDelivery {
         // The true delivery is per-model (`pi_delivery(catalog, model)`),
@@ -616,6 +626,12 @@ impl Provider for CodexProvider {
 
     fn modes_unvetted(&self) -> bool {
         false
+    }
+    fn prompt_skipping_mode(&self, mode_id: &str) -> bool {
+        // `auto` is deliberately absent: it still prompts (`on-request` +
+        // workspaceWrite), so a peer may set it. Only the never-ask modes
+        // are prompt-skipping.
+        matches!(mode_id, "auto-review" | "full-access")
     }
 
     fn image_delivery(&self) -> super::ImageDelivery {
@@ -713,6 +729,9 @@ impl Provider for TerminalProvider {
     }
 
     fn modes_unvetted(&self) -> bool {
+        false
+    }
+    fn prompt_skipping_mode(&self, _mode_id: &str) -> bool {
         false
     }
 
