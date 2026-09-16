@@ -88,6 +88,14 @@ export interface AgentSessionState {
   subagents: AgentSubagent[];
   subagentStatusCounts: AgentSubagentStatusCounts;
   lastFinished: AgentFinished | null;
+  /**
+   * The sentence from the current turn's failure, if it failed — the
+   * symmetric signal to `lastFinished`: set by a turn-level failure, cleared
+   * in `beginTurn` so it is scoped to the current turn and a previous
+   * turn's failure cannot settle the next one. A refused switch or steer
+   * (`noteError`) does not end the turn and must not set it.
+   */
+  lastTurnError: string | null;
   manifest: SessionManifest | null;
   /** A model/effort switch sent to the daemon that no manifest confirmed yet. */
   pendingSwitch: { modelId?: string; effort?: string; at: number } | null;
@@ -133,6 +141,7 @@ const INITIAL_STATE: AgentSessionState = {
   subagents: [],
   subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
   lastFinished: null,
+  lastTurnError: null,
   manifest: null,
   pendingSwitch: null,
   pendingModeId: null,
@@ -824,7 +833,7 @@ export class AgentSession {
     this.turn += 1;
     this.turnOpen = true;
     this.closeActiveBlocks();
-    this.update({ lastFinished: null });
+    this.update({ lastFinished: null, lastTurnError: null });
   }
 
   private ensureTurn(): void {
@@ -1086,12 +1095,22 @@ export class AgentSession {
   }
 
   /**
-   * The turn ended badly but the session lives: the agent reported an error.
-   * The status returns to `idle` — unless it is already terminal, which the
-   * latch in `failWithStatus` holds.
+   * The turn ended badly but the session lives: the agent reported an error,
+   * or a send was refused. The status returns to `idle` — unless it is
+   * already terminal, which the latch in `setStatus` holds — and the
+   * failure is signalled for run waiters.
    */
   private failTurn(message: string): void {
-    this.failWithStatus("idle", message);
+    this.turnOpen = false;
+    this.closeActiveBlocks();
+    this.setStatus("idle", {
+      streaming: false,
+      lastTurnError: message,
+      items: [
+        ...this.state.items,
+        { id: `error-${this.nextItemId++}`, role: "error", text: message },
+      ],
+    });
   }
 
   /**
@@ -1100,13 +1119,9 @@ export class AgentSession {
    * latches at `error` and input stays disabled.
    */
   private failSession(message: string): void {
-    this.failWithStatus("error", message);
-  }
-
-  private failWithStatus(status: AgentStatus, message: string): void {
     this.turnOpen = false;
     this.closeActiveBlocks();
-    this.setStatus(status, {
+    this.setStatus("error", {
       streaming: false,
       items: [
         ...this.state.items,

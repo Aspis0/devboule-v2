@@ -73,14 +73,15 @@ interface SessionRequest extends SessionTarget {
 }
 
 /**
- * Whether the handle's view of its session is still live. Under
- * AgentSession's vocabulary, `error` and `closed` are both terminal — the
- * view is gone and the status has latched — so a run, deposit, or settings
- * change that kept either would ride a session that can no longer speak.
+ * Whether the handle's view of its session is still live. A view is live
+ * unless its status is terminal — `error` and `closed` under AgentSession's
+ * vocabulary. `initializing` is deliberately live: the handle publishes
+ * before `start()` resolves, so it is the view's own start-up, not a verdict
+ * about it.
  */
 function sessionViewLive(handle: AgentSessionHandle): boolean {
   const status = handle.controller.getState().status;
-  return status === "idle" || status === "running";
+  return status !== "error" && status !== "closed";
 }
 
 interface ActiveRun {
@@ -1349,6 +1350,11 @@ export function createAgentHost(): DesignHost {
     const settleFromState = (): void => {
       if (settled) return;
       const state = handle.controller.getState();
+      if (state.lastTurnError !== null) {
+        // The routing turn failed; fall back without waiting for the deadline.
+        settle(fallback());
+        return;
+      }
       if (state.lastFinished !== null) {
         const reply = state.items
           .slice(itemStart)
@@ -1531,6 +1537,12 @@ export function createAgentHost(): DesignHost {
       // promise alive if event ordering ever exposes agent_finished before the answer.
       if (pendingPermissions.some((entry) => entry.sessionId === run.sessionId)) return false;
       const state = handle.controller.getState();
+      if (state.lastTurnError !== null) {
+        // A failed turn beats a stale finish: agent_error ends the turn badly
+        // even when a late agent_finished follows it.
+        settleRun(run, "reject", new Error(state.lastTurnError));
+        return true;
+      }
       if (state.lastFinished !== null) {
         const baseResult = resultFor(run.prompt, run.toolObservations);
         // Provenance is reported for every mode: the ordered branch is where

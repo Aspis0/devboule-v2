@@ -988,6 +988,29 @@ describe("ACP agent session", () => {
     expect(assistant).toEqual(["Working"]);
   });
 
+  it("keeps a per-turn failure signal for waiters, scoped to the current turn", async () => {
+    // G1: `lastFinished` signals a turn that ended well; nothing signalled
+    // one that ended badly, so host waiters hung on `agent_error`. The
+    // signal is symmetric: set by a turn failure, cleared where
+    // `lastFinished` is cleared, untouched by `noteError`.
+    const harness = makeHarness();
+    await harness.session.start();
+
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_set_model") return Promise.reject(new Error("refused"));
+      return undefined;
+    });
+    await harness.session.setModel("grok-4.7");
+    expect(harness.session.getState().lastTurnError).toBeNull();
+
+    await harness.session.send("Keep going");
+    harness.emit({ type: "agent_error", message: "The ACP transport closed." });
+    expect(harness.session.getState().lastTurnError).toBe("The ACP transport closed.");
+
+    await harness.session.send("Next turn");
+    expect(harness.session.getState().lastTurnError).toBeNull();
+  });
+
   it("treats a send failure that is not a CommandError as turn-level — death has its own events", async () => {
     // An unrecognised failure must not guess death: if the session really
     // died, its own exit or recovered event arrives within moments and

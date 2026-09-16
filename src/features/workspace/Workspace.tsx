@@ -1005,6 +1005,7 @@ export function Workspace({
                 cwd={selectedSession.cwd}
                 observedState={selectedSession.state}
                 elapsedMs={selectedSession.elapsedMs}
+                daemonState={daemon.state}
                 auxiliary={
                   selectedPermission !== null ? (
                     <WorkspacePermissionCard

@@ -1328,6 +1328,69 @@ describe("AgentChatSurface", () => {
     expect(container.textContent).not.toContain("This session is no longer available.");
   });
 
+  it("keeps the composer usable while the daemon reports connected", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="daemon-connected" title="Agent" daemonState="connected" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+    });
+
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(false);
+  });
+
+  it("disables the composer while the daemon connection is gone", async () => {
+    // G3: a dead daemon makes every send fail at the io boundary; the
+    // composer must say so instead of inviting messages into the void.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="daemon-gone" title="Agent" daemonState="disconnected" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+    });
+
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "The agent daemon is not connected.",
+    );
+  });
+
+  it("shows Needs attention after a turn-level failure", async () => {
+    // G4: the session list reads only this pill; a failed turn must not
+    // present as a healthy live session.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="pill-agent" title="Agent" observedState={LIVE_OBSERVED} />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_error", message: "402 Payment Required" });
+    });
+
+    expect(container.querySelector(".workspace-agent-status")?.textContent).toBe("Needs attention");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(false);
+  });
+
   it("keeps the composer usable when the send is refused with invalid_request", async () => {
     // The daemon refuses an attachment on a session that does not take them
     // with exactly this sentence — a refused message, not a dead session.

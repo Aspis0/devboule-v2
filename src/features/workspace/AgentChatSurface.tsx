@@ -12,6 +12,7 @@ import {
 } from "../../lib/tauri";
 import type {
   ActiveTurnBehavior,
+  DaemonConnectionState,
   PermissionRequest,
   PermissionResolved,
   PromptAttachment,
@@ -48,6 +49,8 @@ interface AgentChatSurfaceProps {
   auxiliary?: ReactNode;
   observedState?: SessionState | null;
   elapsedMs?: number | null;
+  /** The daemon connection's state; input is disabled while it cannot carry sends. */
+  daemonState?: DaemonConnectionState;
   onPermissionRequest?: (
     sessionId: string,
     subscriptionId: SubscriptionId,
@@ -135,6 +138,9 @@ function toolbarStatus(
   }
   if (agent.status === "error") return { copy: "Needs attention", tone: "terracotta" };
   if (agent.status === "closed") return { copy: "Finished", tone: "terracotta" };
+  // A turn-level failure leaves the status idle; the pill is the only
+  // failure signal in the session list, so it must not read as healthy.
+  if (agent.lastTurnError !== null) return { copy: "Needs attention", tone: "terracotta" };
   if (agent.status === "running") return { copy: "Working…", tone: "green" };
   if (type === "live") return { copy: "Live", tone: "green" };
   return { copy: "Connecting…", tone: "border" };
@@ -658,6 +664,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   auxiliary,
   observedState = null,
   elapsedMs = null,
+  daemonState,
   onPermissionRequest,
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
@@ -671,6 +678,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     subagents: [],
     subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
     lastFinished: null,
+    lastTurnError: null,
     manifest: null,
     pendingSwitch: null,
     pendingModeId: null,
@@ -738,14 +746,21 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const pendingCopy = manifest === null ? null : pendingTargetCopy(manifest, state.pendingSwitch);
   const osGone =
     observedType(observedState) === "ended" || observedType(observedState) === "recovered";
+  // The daemon connection is a global fact with its own channel; the three
+  // states mean sends cannot reach the daemon now. `connecting` is
+  // transitional and self-corrects, so it keeps the composer usable.
+  const daemonGone =
+    daemonState !== undefined && daemonState !== "connected" && daemonState !== "connecting";
   const { copy: statusLabel, tone: statusDot } = toolbarStatus(observedState, elapsedMs, state);
   // `AgentSession` replaces the items array on every update (copy-on-write),
   // so this memo recomputes whenever the transcript changes and can never
   // go stale; it only skips work on re-renders with identical items.
   const entries = useMemo(() => groupToolCalls(state.items), [state.items]);
-  const composerDisabled = osGone || (state.status !== "idle" && state.status !== "running");
-  const disabledReason =
-    state.status === "initializing" && !osGone
+  const composerDisabled =
+    osGone || daemonGone || (state.status !== "idle" && state.status !== "running");
+  const disabledReason = daemonGone
+    ? "The agent daemon is not connected."
+    : state.status === "initializing" && !osGone
       ? "Connecting to the agent…"
       : "This session is no longer available.";
   return (

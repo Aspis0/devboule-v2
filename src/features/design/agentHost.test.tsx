@@ -1754,6 +1754,71 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
+  it("rejects the run when the agent reports a turn failure", async () => {
+    // G1: `agent_error` leaves the status idle, so neither waiter knew the
+    // turn had ended — the run hung until the abort signal. The red below is
+    // that hang, made visible by the still-pending sentinel.
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    channelHarness.active?.({ type: "agent_error", message: "The ACP transport closed." });
+
+    const verdict = await Promise.race([
+      run.then(
+        () => "resolved",
+        (error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve("still pending"), 250)),
+    ]);
+    expect(verdict).toBe("rejected: The ACP transport closed.");
+    await disposeAgentHost(host);
+  });
+
+  it("settles the skill preflight when its routing turn fails", async () => {
+    // G1, preflight side: a failed routing turn must fall back immediately,
+    // not sit on the 8-second deadline.
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+    channelHarness.active?.({ type: "agent_error", message: "routing failed" });
+
+    for (let index = 0; index < 24; index += 1) await Promise.resolve();
+    expect(mocks.sessionSend.mock.calls.length).toBe(2);
+
+    finishRun();
+    const result = await run;
+    expect(result.skillSelectionFallback).toBe(true);
+    await disposeAgentHost(host);
+  });
+
+  it("keeps the starting session when the same provider preference is set again", async () => {
+    // G2: the handle is published while start() is still in flight, so its
+    // status is `initializing` — not terminal, and never a reason to close.
+    const provider: ProviderInfo = {
+      id: "grok",
+      executable: "grok",
+      acpAvailable: true,
+      authentication: "unknown",
+      protocol: "acp",
+      origin: "user-binary",
+    };
+    let releaseAttach: () => void = () => undefined;
+    mocks.sessionAttach.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          releaseAttach = () => resolve(41);
+        }),
+    );
+    const host = createAgentHost();
+    host.selectProvider?.(provider);
+    for (let index = 0; index < 24; index += 1) await Promise.resolve();
+
+    host.setProviderPreference?.(provider);
+    expect(mocks.sessionClose).not.toHaveBeenCalled();
+
+    releaseAttach();
+    for (let index = 0; index < 24; index += 1) await Promise.resolve();
+    await disposeAgentHost(host);
+  });
+
   it("uses AgentSession's error when the agent exits during a turn", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);
@@ -2789,6 +2854,7 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
+          lastTurnError: null,
           journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Final</div>");
@@ -2813,6 +2879,7 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
+          lastTurnError: null,
           journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
@@ -2843,6 +2910,7 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
+          lastTurnError: null,
           journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
@@ -2873,6 +2941,7 @@ describe("ACP design host", () => {
           manifest: null,
           pendingSwitch: null,
           pendingModeId: null,
+          lastTurnError: null,
           journalLoss: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Second</div>");
@@ -2920,6 +2989,7 @@ describe("ACP design host", () => {
         manifest: null,
         pendingSwitch: null,
         pendingModeId: null,
+        lastTurnError: null,
         journalLoss: null,
       });
 
@@ -3790,6 +3860,7 @@ describe("sendRejectionDetail", () => {
     subagents: [],
     subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
     lastFinished: null,
+    lastTurnError: null,
     manifest: null,
     pendingSwitch: null,
     pendingModeId: null,
