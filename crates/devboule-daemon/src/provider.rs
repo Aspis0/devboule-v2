@@ -32,7 +32,7 @@
 //!   `session.rs`, per the design's §3.3.5).
 
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use devboule_protocol::{
     ErrorCode, SessionKind, UnattendedState, VocabularyModels, VocabularyModes, WireError,
@@ -1077,7 +1077,7 @@ fn open_pty_session(
 /// claims is an ACP provider, which is what makes the dimension open: a
 /// provider the catalog learns about needs no new code to spawn.
 pub(crate) struct ProviderRegistry {
-    entries: Vec<(&'static str, Arc<dyn Provider>)>,
+    entries: Vec<(Arc<str>, Arc<dyn Provider>)>,
 }
 
 impl ProviderRegistry {
@@ -1097,7 +1097,7 @@ impl ProviderRegistry {
                     .find(|candidate| candidate.id() == agent.id)
                     .cloned()
                     .unwrap_or_else(|| Arc::new(AcpProvider) as Arc<dyn Provider>);
-                (agent.id, provider)
+                (Arc::from(agent.id), provider)
             })
             .collect();
         Self { entries }
@@ -1111,7 +1111,7 @@ impl ProviderRegistry {
     pub(crate) fn provider_for(&self, provider_id: &str) -> Arc<dyn Provider> {
         self.entries
             .iter()
-            .find(|(id, _)| *id == provider_id)
+            .find(|(id, _)| **id == *provider_id)
             .map(|(_, provider)| Arc::clone(provider))
             .unwrap_or_else(|| Arc::new(AcpProvider))
     }
@@ -1130,17 +1130,97 @@ impl ProviderRegistry {
     }
 }
 
-/// The registry the spawn road reads: built once from the catalog's
-/// enumeration. The catalog is compile-time closed until pass 2 step 6, so
-/// the registry is immutable for the process's life.
-pub(crate) fn catalog_registry() -> &'static ProviderRegistry {
-    static CATALOG_REGISTRY: OnceLock<ProviderRegistry> = OnceLock::new();
-    CATALOG_REGISTRY.get_or_init(ProviderRegistry::catalog_default)
+/// The registry cell: one whole-registry snapshot behind a lock, initialised
+/// on first use from the catalog's enumeration. Readers clone the snapshot
+/// out; [`swap_catalog_registry`] replaces it whole.
+static CATALOG_REGISTRY: OnceLock<RwLock<Arc<ProviderRegistry>>> = OnceLock::new();
+
+fn catalog_cell() -> &'static RwLock<Arc<ProviderRegistry>> {
+    CATALOG_REGISTRY.get_or_init(|| RwLock::new(Arc::new(ProviderRegistry::catalog_default())))
+}
+
+/// The registry the spawn road reads: a snapshot of the catalogue bound to
+/// the family implementations, taken at the instant of the call. The
+/// snapshot is an owned `Arc` and stays valid no matter what later swaps
+/// do; a reader never observes a half-swapped registry, because a swap
+/// replaces the whole snapshot in one step (see [`swap_catalog_registry`]).
+pub(crate) fn catalog_registry() -> Arc<ProviderRegistry> {
+    Arc::clone(&catalog_cell().read().unwrap())
+}
+
+/// Replace the registry snapshot wholesale, returning the snapshot it
+/// replaced. The caller builds the *whole* next registry before calling:
+/// this function's only work is one `Arc` store under the write lock, so
+/// nothing inside the swap can fail — a build that errors, or never
+/// happens, swaps nothing, and every `catalog_registry()` reader sees
+/// either the previous snapshot or `next`, never a mixture (Paseo's
+/// prepare → apply → commit around `mutable-provider-config-owner.ts`: the
+/// registry is never left half-swapped). Nothing in production swaps yet:
+/// pass 2e step 2's user rows enter through here, and until then only
+/// tests call it. Dead in non-test builds until then — the attribute is the
+/// machine form of the sentence above.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn swap_catalog_registry(next: ProviderRegistry) -> Arc<ProviderRegistry> {
+    let next = Arc::new(next);
+    let mut current = catalog_cell().write().unwrap();
+    std::mem::replace(&mut *current, next)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M2-e1, half one — the fallthrough is a property of the registry
+    /// itself, so it is tested on a local one and touches no global state:
+    /// an id no row publishes resolves to ACP, the open dimension's rule.
+    #[test]
+    fn a_registry_with_no_rows_falls_through_to_acp() {
+        // The id comes from the impl, never spelled: the catalog owns names.
+        let native_id = ClaudeProvider.id();
+        let full = ProviderRegistry::catalog_default();
+        assert_eq!(full.provider_for(native_id).id(), native_id);
+        let empty = ProviderRegistry {
+            entries: Vec::new(),
+        };
+        assert_eq!(
+            empty.provider_for(native_id).id(),
+            AcpProvider.id(),
+            "a registry with no rows resolves every id to ACP"
+        );
+    }
+
+    /// M2-e1, half two — the swap seam is live: it replaces the snapshot the
+    /// whole process reads and hands back the one it replaced.
+    ///
+    /// It swaps in an **equivalent** registry, deliberately, and never a
+    /// degraded one. This test shares the process-wide cell with every other
+    /// test in the binary, and the suite runs in parallel: a window in which
+    /// the live catalogue resolved nothing would make any concurrent test that
+    /// resolves a provider id fail at random — `provider_for` is on the resume
+    /// stamp and the vocabulary reply, among others. Swapping an equal
+    /// registry keeps the seam observable through snapshot *identity* while
+    /// leaving every concurrent reader the same answers it would have had.
+    #[test]
+    fn the_swap_seam_replaces_the_live_snapshot() {
+        let native_id = ClaudeProvider.id();
+        let before = catalog_registry();
+        let replaced = swap_catalog_registry(ProviderRegistry::catalog_default());
+        let after = catalog_registry();
+
+        assert!(
+            Arc::ptr_eq(&before, &replaced),
+            "the seam hands back exactly the snapshot it replaced"
+        );
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "the live snapshot is the new one: a seam that swapped nothing fails here"
+        );
+        assert_eq!(
+            after.provider_for(native_id).id(),
+            native_id,
+            "and the replacement resolves what it should"
+        );
+    }
 
     /// Pass 2c: whose spawn success measures provider health is a per-family
     /// fact living in the impls, read by the create path's success arm
