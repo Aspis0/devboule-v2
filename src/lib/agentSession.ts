@@ -154,21 +154,34 @@ function eventError(error: unknown): string {
 }
 
 /**
- * Send-refusal codes that name a dead session rather than a refused message.
- * Everything else — a named refusal on a live session (invalid_request,
- * capability_not_supported, confinement), an unrecognised code, or an error
- * that is not a CommandError at all — is turn-level: death has its own
- * events (`exit`, `recovered`) that arrive on their own, so guessing death
- * from a refusal is the only direction that can manufacture a dead session
- * no event will ever contradict.
+ * Send-refusal codes that mean *our view of the session is gone*: whatever
+ * happened on the far side, no event about this session will reach us again,
+ * because events travel through the attachment we lost. The status must
+ * latch — nothing can correct it later. Per entry, the producer:
+ *
+ * - `session_not_found` — the daemon holds no such session (unknown or
+ *   deleted id); raised by the session commands.
+ * - `session_generation_mismatch` — the session's generation moved on
+ *   without us. No send raises it today, but it names exactly the gone-view
+ *   case the daemon should be using; kept fatal on our side for when it does.
+ * - `shutting_down` — the daemon is going away; the connection and every
+ *   view on it go with it.
+ * - `protocol_version_mismatch` — the bridge and the daemon cannot speak to
+ *   each other; the view cannot be delivered through the connection.
+ *
+ * Deliberately absent: `io` (carries DaemonError::TimedOut — a send that
+ * timed out after the client's 30s may still have been delivered) and
+ * `unauthorized` (a refused steer on a paired device — a live-session
+ * refusal). `invalid_request` is ambiguous at the daemon today: process-gone
+ * and observer-detachment ride it alongside genuine validity refusals, so it
+ * stays turn-level here while the daemon is given codes that name a gone
+ * view; those belong in this set when they land.
  */
 const FATAL_SEND_CODES: ReadonlySet<ErrorCode> = new Set([
   "session_not_found",
   "session_generation_mismatch",
   "shutting_down",
   "protocol_version_mismatch",
-  "io",
-  "unauthorized",
 ]);
 
 function sendFailureKillsSession(error: unknown): boolean {
@@ -388,10 +401,9 @@ export class AgentSession {
    * Hot-switch the model or its thinking effort within the fixed provider.
    * The invoke response is not a confirmation — the runtime confirms through
    * a later session_manifest event, so this only marks the switch as pending
-   * and reports a rejected call through the chat error path. Every refusal
-   * here is turn-level, unconditionally: a refusal code names a refused
-   * call, and for the codes that name death, the session's own `exit` or
-   * `recovered` event is what must disable input — never a guess.
+   * and reports a refused call through `noteError`: the sentence lands in
+   * the transcript and nothing else changes, because a refused switch can
+   * land mid-turn and must not collapse the turn.
    */
   async setModel(modelId?: string, effort?: string): Promise<void> {
     if (this.disposed || !this.started || !this.attached) return;
@@ -407,7 +419,7 @@ export class AgentSession {
       });
     } catch (error) {
       this.update({ pendingSwitch: null });
-      this.failTurn(`Could not switch the model: ${eventError(error)}`);
+      this.noteError(`Could not switch the model: ${eventError(error)}`);
       return;
     }
     if (this.disposed || this.state.pendingSwitch === null) {
@@ -443,7 +455,7 @@ export class AgentSession {
     } catch (error) {
       if (requestId !== this.modeRequest) return;
       this.update({ pendingModeId: null });
-      this.failTurn(`Could not switch the mode: ${eventError(error)}`);
+      this.noteError(`Could not switch the mode: ${eventError(error)}`);
       return;
     }
     if (this.disposed || this.state.pendingModeId === null || requestId !== this.modeRequest) {
@@ -540,6 +552,11 @@ export class AgentSession {
         this.reconcileBackgroundTasks(event.tasks);
         return;
       case "agent_error":
+        // A real turn failure. The daemon also announces a replaced
+        // generation through this event ("Session generation was replaced;
+        // reattach to continue observing") — a gone view that arrives as a
+        // turn-level failure. That sentence must not be sniffed here; the
+        // daemon is being given a code that names the case instead.
         this.failTurn(event.message || "The agent reported an unknown error.");
         return;
       case "available_commands":
@@ -1054,28 +1071,47 @@ export class AgentSession {
   }
 
   /**
-   * The turn failed but the session lives: the agent reported an error, or a
-   * model/mode switch was refused. The error lands in the transcript and the
-   * user can type again.
+   * A refused call on a live session: the sentence is recorded and nothing
+   * else changes — not the status, not the turn, not the stream. This is for
+   * refused model and mode switches, which can land mid-turn; collapsing the
+   * turn here would hide the Stop button while the agent keeps working.
+   */
+  private noteError(message: string): void {
+    this.update({
+      items: [
+        ...this.state.items,
+        { id: `error-${this.nextItemId++}`, role: "error", text: message },
+      ],
+    });
+  }
+
+  /**
+   * The turn ended badly but the session lives: the agent reported an error.
+   * The status returns to `idle` — unless it is already terminal, which the
+   * latch in `failWithStatus` holds.
    */
   private failTurn(message: string): void {
     this.failWithStatus("idle", message);
   }
 
   /**
-   * The session itself is gone: the attach failed, the agent process exited,
-   * or the session was recovered by another client. The error lands in the
-   * transcript and input stays disabled.
+   * Our view of the session is gone: the attach failed, the agent process
+   * exited, or the session was recovered by another client. The status
+   * latches at `error` and input stays disabled.
    */
   private failSession(message: string): void {
     this.failWithStatus("error", message);
   }
 
   private failWithStatus(status: AgentStatus, message: string): void {
+    // The latch: a terminal status is never lowered. `error` and `closed`
+    // mean no event about this session can arrive any more, so a later
+    // turn-level failure records its sentence but must not re-enable input.
+    const terminal = this.state.status === "error" || this.state.status === "closed";
     this.turnOpen = false;
     this.closeActiveBlocks();
     this.update({
-      status,
+      status: terminal ? this.state.status : status,
       streaming: false,
       items: [
         ...this.state.items,

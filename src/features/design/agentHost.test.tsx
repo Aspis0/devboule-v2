@@ -3790,9 +3790,15 @@ describe("sendRejectionDetail", () => {
   });
 
   it("keeps an earlier turn's error out of a send that never ran", () => {
-    // The stale item sat in the transcript before the send started; a send
-    // that returns false without appending anything must not borrow it.
-    const stale = stateWithErrors(["Could not send the message: send failed"]);
-    expect(sendRejectionDetail(stale, stale)).toBe("Could not send the message.");
+    // The stale item sat in the transcript before the send started, and the
+    // send's window appended only an assistant row. An implementation that
+    // counted items instead of error items would quote the stale sentence
+    // here — this before/after pair is what catches that.
+    const before = stateWithErrors(["Could not send the message: send failed"]);
+    const after: AgentSessionState = {
+      ...before,
+      items: [...before.items, { id: "a-1", role: "assistant", text: "Working", messageId: "m-1" }],
+    };
+    expect(sendRejectionDetail(before, after)).toBe("Could not send the message.");
   });
 });

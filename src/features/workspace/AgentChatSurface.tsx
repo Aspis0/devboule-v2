@@ -370,7 +370,9 @@ function humanSize(bytes: number): string {
  */
 function journalLossCopy(loss: { frames: number; bytes: number }): string {
   const frame = loss.frames === 1 ? "frame" : "frames";
-  return `This conversation is not being saved: the daemon could not write ${loss.frames} ${frame} (${humanSize(loss.bytes)}) of it to disk.`;
+  // Frames and bytes are worst-known per field independently; the sentence
+  // must not join them into one measured loss that never occurred.
+  return `This conversation is not being saved: at least ${loss.frames} ${frame} and at least ${humanSize(loss.bytes)} of it could not be written to disk.`;
 }
 
 function usageCopy(state: AgentSessionState): string | null {
@@ -822,6 +824,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                 chipTestId="mode-chip"
                 optionTestId={(id) => `mode-option-${id}`}
                 dotFor={modeDotClass}
+                disabled={composerDisabled}
               />
             ) : null}
             {manifest !== null && manifest.models.length > 1 ? (
@@ -836,6 +839,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                 onSelect={(modelId) => void sessionRef.current?.setModel(modelId)}
                 chipTestId="model-chip"
                 optionTestId={(id) => `model-option-${id}`}
+                disabled={composerDisabled}
               />
             ) : stripModel !== null ? (
               <span className="workspace-picker-static">{stripModel.name}</span>
@@ -857,6 +861,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
                 }}
                 chipTestId="effort-chip"
                 optionTestId={(id) => `effort-option-${id}`}
+                disabled={composerDisabled}
               />
             ) : null}
           </>

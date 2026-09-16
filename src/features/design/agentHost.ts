@@ -776,11 +776,13 @@ function lastErrorText(state: AgentSessionState): string {
 }
 
 /**
- * Why a run's send failed, for the run's rejection. The transcript is only
- * quoted when the send produced its own error item — a send that returned
- * false without one never ran, and an older turn's sentence would send the
- * reader to a failure long past. Error items only ever append, so the
- * counts over `before` and `after` tell them apart.
+ * Why a run's send failed, for the run's rejection. Quoted from the
+ * transcript only when an error item arrived during the send's window —
+ * usually this send's own refusal, though a session event landing in the
+ * same window could be the newest sentence. A send that returned false
+ * without any new error item never ran, and an older turn's sentence would
+ * send the reader to a failure long past. Error items only ever append, so
+ * the counts over `before` and `after` tell the windows apart.
  */
 export function sendRejectionDetail(before: AgentSessionState, after: AgentSessionState): string {
   const errorItems = (state: AgentSessionState): number =>

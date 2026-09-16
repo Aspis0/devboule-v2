@@ -1363,6 +1363,9 @@ describe("AgentChatSurface", () => {
     expect(container.textContent).not.toContain("This session is no longer available.");
   });
 
+  // Pins pre-existing behaviour: the old unconditional fail() disabled the
+  // composer in all four "gone" cases below too, so reverting the split
+  // cannot fail them — they guard against a turn-level misclassification.
   it("disables the composer when the send is refused with session_not_found", async () => {
     (sessionSend as unknown as Mock).mockRejectedValueOnce({
       code: "session_not_found",
@@ -1395,6 +1398,7 @@ describe("AgentChatSurface", () => {
     );
   });
 
+  // Pins pre-existing behaviour (see the note above the session_not_found test).
   it("disables the composer when the attach itself fails", async () => {
     (sessionAttach as unknown as Mock).mockRejectedValueOnce(new Error("no such session"));
     root = createRoot(container);
@@ -1413,6 +1417,7 @@ describe("AgentChatSurface", () => {
     );
   });
 
+  // Pins pre-existing behaviour (see the note above the session_not_found test).
   it("disables the composer when the agent exits before finishing the turn", async () => {
     root = createRoot(container);
     await act(async () => {
@@ -1445,6 +1450,7 @@ describe("AgentChatSurface", () => {
     );
   });
 
+  // Pins pre-existing behaviour (see the note above the session_not_found test).
   it("disables the composer when the session was recovered by another client", async () => {
     root = createRoot(container);
     await act(async () => {
@@ -1470,6 +1476,100 @@ describe("AgentChatSurface", () => {
     );
   });
 
+  it("keeps the pickers unclickable on a terminal session", async () => {
+    // D1: the composer's controls render unconditionally, so the model chip
+    // stayed live after `exit` ended the session — and a switch refused on
+    // the dead view lowered the status back to a typeable one.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="dead-chips" title="Agent" observedState={LIVE_OBSERVED} />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          { modelId: "grok-4.6", name: "Grok 4.6" },
+          { modelId: "grok-4.7", name: "Grok 4.7" },
+        ],
+      });
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Long task");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+
+    await act(async () => {
+      channelHarness.active?.({ type: "exit", code: 1 });
+    });
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="model-chip"]');
+    if (chip === null) throw new Error("model chip did not render");
+    await act(async () => chip.click());
+
+    expect(container.querySelector('[aria-label="Model"]')).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+  });
+
+  it("keeps the Stop button when a switch is refused mid-turn", async () => {
+    // D3: a refused switch is not a turn failure — collapsing the turn hid
+    // the Stop button while the agent kept working.
+    (sessionSetModel as unknown as Mock).mockRejectedValueOnce(new Error("provider refused"));
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          sessionId="refused-midturn"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          { modelId: "grok-4.6", name: "Grok 4.6" },
+          { modelId: "grok-4.7", name: "Grok 4.7" },
+        ],
+      });
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Long task");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+    expect(container.querySelector('button[aria-label="Stop the current turn"]')).not.toBeNull();
+
+    await pickFromChip("model", "grok-4.7");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Could not switch the model: provider refused",
+    );
+
+    expect(container.querySelector('button[aria-label="Stop the current turn"]')).not.toBeNull();
+  });
+
   it("keeps one persistent notice when journal writes degrade, naming the loss", async () => {
     root = createRoot(container);
     await act(async () => {
@@ -1488,8 +1588,10 @@ describe("AgentChatSurface", () => {
     const banner = container.querySelector('[data-testid="journal-degraded-banner"]');
     expect(banner).not.toBeNull();
     expect(banner?.textContent).toContain("not being saved");
-    expect(banner?.textContent).toContain("15 frames");
-    expect(banner?.textContent).toContain("61 KB");
+    // Each number is its own worst-known bound; the sentence must not join
+    // them into one measured loss.
+    expect(banner?.textContent).toContain("at least 15 frames");
+    expect(banner?.textContent).toContain("at least 61 KB");
   });
 
   it("updates the one journal notice instead of stacking a second", async () => {
@@ -1514,9 +1616,9 @@ describe("AgentChatSurface", () => {
 
     const banners = container.querySelectorAll('[data-testid="journal-degraded-banner"]');
     expect(banners).toHaveLength(1);
-    expect(banners[0]?.textContent).toContain("20 frames");
+    expect(banners[0]?.textContent).toContain("at least 20 frames");
     expect(banners[0]?.textContent).not.toContain("15 frames");
-    expect(banners[0]?.textContent).toContain("61 KB");
+    expect(banners[0]?.textContent).toContain("at least 61 KB");
   });
 
   it("shows Silent for N from a silent sessions_watch snapshot", async () => {

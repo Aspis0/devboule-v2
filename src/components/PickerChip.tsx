@@ -49,6 +49,8 @@ interface PickerChipProps {
   chipTestId: string;
   optionTestId: (id: string) => string;
   dotFor?: (id: string) => string;
+  /** Terminal-session guard: the chip must be unclickable, not merely styled. */
+  disabled?: boolean;
 }
 
 /** One chip + listbox picker shared by the mode, model, and effort controls. */
@@ -60,6 +62,7 @@ export function PickerChip({
   chipTestId,
   optionTestId,
   dotFor,
+  disabled = false,
 }: PickerChipProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -109,7 +112,11 @@ export function PickerChip({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
-        onClick={() => setOpen((value) => !value)}
+        disabled={disabled}
+        onClick={() => {
+          if (disabled) return;
+          setOpen((value) => !value);
+        }}
       >
         {current !== null && dotFor !== undefined ? (
           <span className={dotFor(current.id)} aria-hidden="true" />

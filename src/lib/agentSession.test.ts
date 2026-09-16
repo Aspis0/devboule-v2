@@ -808,6 +808,9 @@ describe("ACP agent session", () => {
     await expect(harness.session.send("plain text then")).resolves.toBe(true);
   });
 
+  // Pins the fatal classification, not the fail/failSession split: a single
+  // unconditional fail() also ended the session here, so reverting the split
+  // cannot fail this test — only a turn-level misclassification can.
   it("ends the session when the send is refused as session_not_found", async () => {
     const harness = makeHarness();
     await harness.session.start();
@@ -825,6 +828,114 @@ describe("ACP agent session", () => {
       role: "error",
       text: "Could not send the message: no such session",
     });
+  });
+
+  it("stays usable when the send times out — io establishes nothing about delivery", async () => {
+    // DaemonError::TimedOut maps to io (backend/error.rs:54): the client gave
+    // up waiting after 30s, and a timed-out send may even have been
+    // delivered. Refusing the message is not the view dying.
+    const harness = makeHarness();
+    await harness.session.start();
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_send") {
+        return Promise.reject({ code: "io", message: "timed out" });
+      }
+      return undefined;
+    });
+
+    await expect(harness.session.send("hello")).resolves.toBe(false);
+
+    expect(harness.session.getState().status).toBe("idle");
+    expect(harness.session.getState().items.at(-1)).toMatchObject({
+      role: "error",
+      text: "Could not send the message: timed out",
+    });
+    await expect(harness.session.send("try again")).resolves.toBe(true);
+  });
+
+  it("stays usable when the send is refused as unauthorized — a refused steer is a live-session refusal", async () => {
+    // The daemon raises unauthorized for a refused steer on a paired device
+    // (session.rs:5710): a refused message, not a gone view.
+    const harness = makeHarness();
+    await harness.session.start();
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_send") {
+        return Promise.reject({ code: "unauthorized", message: "steer refused" });
+      }
+      return undefined;
+    });
+
+    await expect(harness.session.send("turn left")).resolves.toBe(false);
+
+    expect(harness.session.getState().status).toBe("idle");
+  });
+
+  it("ends the session when the send is refused as session_generation_mismatch", async () => {
+    // No send raises this today, but it names exactly the gone-view case the
+    // daemon should be using instead of riding invalid_request, so it stays
+    // fatal on our side.
+    const harness = makeHarness();
+    await harness.session.start();
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_send") {
+        return Promise.reject({ code: "session_generation_mismatch", message: "generation moved" });
+      }
+      return undefined;
+    });
+
+    await expect(harness.session.send("hello")).resolves.toBe(false);
+
+    expect(harness.session.getState().status).toBe("error");
+  });
+
+  it("keeps a terminal session terminal when a switch is refused after the view died", async () => {
+    // D1: exit ends the session, but the pickers stay live (the composer
+    // renders its controls unconditionally), and a switch refused after the
+    // fatal failure used to lower `error` back to `idle` — re-enabling input
+    // on a session no event will ever speak for again.
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("Keep going");
+    harness.emit({ type: "exit", code: 1 });
+
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_set_model") {
+        return Promise.reject({ code: "session_not_found", message: "no such session" });
+      }
+      return undefined;
+    });
+    await harness.session.setModel("grok-4.7");
+
+    const state = harness.session.getState();
+    expect(state.status).toBe("error");
+    expect(state.items.at(-1)).toMatchObject({
+      role: "error",
+      text: "Could not switch the model: no such session",
+    });
+  });
+
+  it("does not collapse a running turn when a switch is refused", async () => {
+    // D3: a refused switch is not a turn failure. Collapsing the turn here
+    // dropped the Stop button while the agent kept working, and turned the
+    // next Enter into interrupt-and-replace instead of a steer.
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("Keep going");
+    harness.emit({ type: "agent_message", messageId: "answer-1", text: "Working" });
+
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_set_model") return Promise.reject(new Error("provider refused"));
+      return undefined;
+    });
+    await harness.session.setModel("grok-4.7");
+
+    const state = harness.session.getState();
+    expect(state.items.at(-1)).toMatchObject({
+      role: "error",
+      text: "Could not switch the model: provider refused",
+    });
+    expect(state.status).toBe("running");
+    expect(state.streaming).toBe(true);
   });
 
   it("treats a send failure that is not a CommandError as turn-level — death has its own events", async () => {
@@ -859,6 +970,8 @@ describe("ACP agent session", () => {
     });
   });
 
+  // Pins pre-existing behaviour: the old unconditional fail() ended the
+  // session on an attach failure too, so this does not exercise the split.
   it("ends the session when the attach itself fails", async () => {
     const invoke = vi.fn(async (command: string) => {
       if (command === "session_attach") throw new Error("no such session");
