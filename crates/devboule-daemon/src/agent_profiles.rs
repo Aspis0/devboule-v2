@@ -294,8 +294,12 @@ fn check_document(document: &mut AgentProfilesDocument) -> Result<(), String> {
     }
     let mut ids: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(document.profiles.len());
+    // One snapshot for the whole document. The registry is swappable, so a
+    // per-row read could validate row 1 against one catalogue and row 2
+    // against another, accepting a pair no single catalogue ever published.
+    let registry = crate::session::catalog_registry();
     for (index, profile) in document.profiles.iter_mut().enumerate() {
-        check_profile(profile, index + 1, &mut ids)?;
+        check_profile(profile, index + 1, &mut ids, &registry)?;
     }
     Ok(())
 }
@@ -311,6 +315,7 @@ fn check_profile(
     profile: &mut AgentProfile,
     position: usize,
     ids: &mut std::collections::HashSet<String>,
+    registry: &crate::session::ProviderRegistry,
 ) -> Result<(), String> {
     let name = profile.name.trim();
     if name.is_empty() {
@@ -386,7 +391,8 @@ fn check_profile(
             provider.len()
         ));
     }
-    let Some(canonical) = crate::provider_catalog::catalog_provider_id(provider) else {
+    let Some(canonical) = crate::provider_catalog::catalog_provider_id_for(registry, provider)
+    else {
         return Err(format!(
             "'{provider}' is not a provider the catalog publishes"
         ));
@@ -604,6 +610,36 @@ fn write_document(path: &Path, document: &AgentProfilesDocument) -> io::Result<(
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
+
+    /// The whole document is validated against **one** registry snapshot.
+    /// The registry is swappable, so a per-row read could accept row 1
+    /// against one catalogue and row 2 against another — a pair no single
+    /// catalogue ever published, which is exactly the hole the ordering rule
+    /// exists to close. Proven on a **local** registry the global cell never
+    /// sees: the row below is live in the snapshot handed to `check_profile`
+    /// and absent from the process-wide one, so a call that reached for the
+    /// global catalogue instead would refuse it.
+    #[test]
+    fn a_document_is_validated_against_one_snapshot() {
+        let rows = crate::user_providers::parse_providers_document(
+            br#"{"snapshot-agent": {"extends": "acp", "command": ["/bin/snap"]}}"#,
+            &crate::session::native_family_ids(),
+        )
+        .expect("a valid row");
+        let local = crate::session::ProviderRegistry::catalog_default().with_user_rows(rows);
+
+        assert!(
+            crate::provider_catalog::catalog_provider_id("snapshot-agent").is_none(),
+            "the row is NOT in the live catalogue: that is what makes this test mean something"
+        );
+
+        let mut named = profile("p-1", "On a user row");
+        named.provider = "snapshot-agent".to_string();
+        let mut ids = std::collections::HashSet::new();
+        check_profile(&mut named, 1, &mut ids, &local)
+            .expect("the snapshot handed in is the one consulted");
+        assert_eq!(named.provider, "snapshot-agent");
+    }
 
     fn profile(id: &str, name: &str) -> AgentProfile {
         AgentProfile {

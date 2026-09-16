@@ -208,6 +208,27 @@ fn validate_row(id: &str, row: &UserProviderRow, native_ids: &[String]) -> Resul
              extending a native family is not supported yet"
         ));
     }
+    // Scope limit, with its own sentence like the other two: nothing reads a
+    // live row's `label` or `description` — the only code that touches them
+    // is the `PartialEq` behind the refresh's deep-equal compare, which sees
+    // bytes and no meaning. A field accepted and ignored is a promise we do
+    // not keep, so it is refused until the surface that would show it exists
+    // (the rows are not in `ProvidersList` either, which is that surface's
+    // own gap). Kept in the shape rather than deleted so the refusal is a
+    // sentence a human can act on instead of a serde "unknown field".
+    // Scope limit, with its own sentence like the other two: nothing reads a
+    // live row's `label` or `description` — the only code that touches them is
+    // the `PartialEq` behind the refresh's deep-equal compare, which sees bytes
+    // and no meaning. A field accepted and ignored is a promise we do not keep,
+    // so it is refused until the surface that would show it exists (the rows
+    // are not in `ProvidersList` either, which is that surface's own gap).
+    // Kept in the shape rather than deleted so the refusal is a sentence a
+    // human can act on instead of a serde "unknown field".
+    if row.label.is_some() || row.description.is_some() {
+        return Err(format!(
+            "provider \"{id}\" declares label or description; nothing displays them yet, so they are refused rather than silently ignored (not supported yet)"
+        ));
+    }
     // A row this pass accepts is an ACP row, and an ACP row is its command:
     // without one it is a profile target nothing can spawn.
     let Some(command) = &row.command else {
@@ -314,10 +335,32 @@ fn check_optional_text(
 /// with the refresh itself: two threads arriving together must not
 /// interleave read-and-swap.
 pub(crate) struct RowsState {
-    last_seen: Option<Vec<u8>>,
+    last_seen: LastSeen,
 }
 
-static ROWS_STATE: Mutex<RowsState> = Mutex::new(RowsState { last_seen: None });
+/// What the previous refresh saw. **Absence and an empty file are different
+/// documents and must not share a marker.** An empty file is a document that
+/// fails to parse — refused, rows kept; absence is a deliberate removal —
+/// rows retired. When both were spelled `Some(vec![])`, an empty file poisoned
+/// the absence marker, and a `providers.json` deleted after an empty-file
+/// refusal never retired the rows it left live.
+enum LastSeen {
+    /// Nothing read yet this process.
+    Never,
+    /// The file was absent, and the rows have already been retired for it.
+    Absent,
+    /// These exact bytes were applied or refused.
+    Document(Vec<u8>),
+    /// A file this many bytes long was refused unread, over the cap. Keyed on
+    /// the length because the bytes were deliberately never loaded: the point
+    /// of the pre-check is not to read them. It still dedupes, so an oversize
+    /// file is named once and not at every create and resume.
+    TooLarge(u64),
+}
+
+static ROWS_STATE: Mutex<RowsState> = Mutex::new(RowsState {
+    last_seen: LastSeen::Never,
+});
 
 /// The lock every swap of the live registry takes — not only the rows
 /// file's. A test that puts rows into the live registry holds it across its
@@ -348,6 +391,27 @@ pub(crate) fn refresh_user_rows(runtime_dir: &Path) {
 /// hold the lock must use [`refresh_user_rows`].
 pub(crate) fn refresh_user_rows_with(state: &mut RowsState, runtime_dir: &Path) {
     let path = runtime_dir.join(PROVIDERS_FILE);
+    // The cap bounds the READ, not just the parse: `agent_profiles` asks the
+    // metadata first for exactly this reason, and this module copied the cap
+    // without the guard. An oversize file must not be pulled into memory just
+    // to be refused a moment later.
+    // The cap bounds the READ, not just the parse: `agent_profiles` asks the
+    // metadata first for exactly this reason, and this module copied the cap
+    // without the guard. An oversize file must not be pulled into memory just
+    // to be refused a moment later.
+    if let Ok(metadata) = std::fs::metadata(&path) {
+        let len = metadata.len();
+        if len > MAX_PROVIDERS_FILE_BYTES {
+            if !matches!(state.last_seen, LastSeen::TooLarge(seen) if seen == len) {
+                eprintln!(
+                    "user providers: {} is {len} bytes, over the {MAX_PROVIDERS_FILE_BYTES}-byte cap; keeping the providers already loaded",
+                    path.display()
+                );
+                state.last_seen = LastSeen::TooLarge(len);
+            }
+            return;
+        }
+    }
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         // A missing file is the normal first run, or the user removed every
@@ -355,9 +419,9 @@ pub(crate) fn refresh_user_rows_with(state: &mut RowsState, runtime_dir: &Path) 
         // loaded. (A zero-byte file that exists is not absence: it is
         // malformed JSON, and it is refused like any other bad document.)
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if state.last_seen.as_deref() != Some(&[]) {
+            if !matches!(state.last_seen, LastSeen::Absent) {
                 crate::session::apply_user_rows(BTreeMap::new());
-                state.last_seen = Some(Vec::new());
+                state.last_seen = LastSeen::Absent;
             }
             return;
         }
@@ -379,21 +443,21 @@ pub(crate) fn refresh_user_rows_with(state: &mut RowsState, runtime_dir: &Path) 
 /// once per boundary — and the live registry keeps whatever was loaded
 /// before it.
 fn apply_document(state: &mut RowsState, bytes: Vec<u8>, path: &Path) {
-    if state.last_seen.as_deref() == Some(bytes.as_slice()) {
+    if matches!(&state.last_seen, LastSeen::Document(seen) if seen == &bytes) {
         return;
     }
     let native_ids = crate::session::native_family_ids();
     match parse_providers_document(&bytes, &native_ids) {
         Ok(rows) => {
             crate::session::apply_user_rows(rows);
-            state.last_seen = Some(bytes);
+            state.last_seen = LastSeen::Document(bytes);
         }
         Err(reason) => {
             eprintln!(
                 "user providers: {} refused ({reason}); keeping the providers already loaded",
                 path.display()
             );
-            state.last_seen = Some(bytes);
+            state.last_seen = LastSeen::Document(bytes);
         }
     }
 }
@@ -416,8 +480,7 @@ mod tests {
     /// A row this pass accepts: extends acp, an argv, an env entry.
     fn valid_row_json(id: &str) -> String {
         format!(
-            r#"{{"{id}": {{"extends": "acp", "label": "My agent",
-                "description": "a local agent",
+            r#"{{"{id}": {{"extends": "acp",
                 "command": ["/usr/local/bin/{id}", "--chat"],
                 "env": {{"MY_KEY": "value"}}}}}}"#
         )
@@ -589,6 +652,156 @@ mod tests {
     /// reads), and deleting the file retires it. The rows lock is held
     /// across the assertions so a concurrent production refresh cannot swap
     /// the rows out under the test.
+    /// Pass 2e-2 let a profile name a user provider. The profile store
+    /// validates at **startup**, and the rows were only ever read on the
+    /// create and resume roads — so a legitimate pair of files made
+    /// `AgentProfilesStore::load` refuse the profile, and `load` does not
+    /// drop a row: it **quarantines the whole document** and starts with no
+    /// profiles and no standing instructions. A restart silently emptied the
+    /// user's profile list. The rows are now live before the store loads.
+    #[test]
+    fn a_profile_naming_a_user_row_survives_a_cold_start() {
+        let dir = temp_dir();
+        let gate = lock_rows_state();
+        std::fs::write(dir.join(PROVIDERS_FILE), valid_row_json("coldstart-agent"))
+            .expect("seed providers");
+        std::fs::write(
+            dir.join("agent-profiles.json"),
+            br#"{"profiles":[{"id":"p-1","name":"On a user row","icon":null,
+                "note":"","provider":"coldstart-agent","model":"m","modeId":"default",
+                "thinkingOptionId":null,"features":{},"toolOverlay":[],
+                "enabledForAgents":false}],"standingInstructions":"keep me"}"#,
+        )
+        .expect("seed profiles");
+        drop(gate);
+
+        let state = crate::server::ServerState::with_paths(
+            "cold-start-user-row".to_string(),
+            crate::paths::RuntimePaths::from_dir(dir.clone()),
+        )
+        .expect("state");
+
+        let document = state.agent_profiles.document();
+        assert_eq!(
+            document.profiles.len(),
+            1,
+            "the profile naming a live user row survived the cold start"
+        );
+        assert_eq!(document.profiles[0].provider, "coldstart-agent");
+        assert_eq!(
+            document.standing_instructions, "keep me",
+            "and the standing instructions were not thrown away with it"
+        );
+        assert!(
+            dir.join("agent-profiles.json").is_file(),
+            "the document was not quarantined aside"
+        );
+
+        let gate = lock_rows_state();
+        crate::session::apply_user_rows(BTreeMap::new());
+        drop(gate);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The cap bounds the READ, not just the parse: an oversize file is
+    /// refused from its metadata and never pulled into memory. It is also
+    /// deduped by length, so it is named once rather than at every create and
+    /// resume — the pre-check must not trade a wasted read for log spam.
+    #[test]
+    fn an_oversize_file_is_refused_unread_and_named_once() {
+        let dir = temp_dir();
+        let path = dir.join(PROVIDERS_FILE);
+        let mut gate = lock_rows_state();
+        std::fs::write(&path, valid_row_json("cap-agent")).expect("seed");
+        refresh_user_rows_with(&mut gate, &dir);
+        assert!(crate::session::catalog_registry()
+            .user_row_for("cap-agent")
+            .is_some());
+
+        let oversize = vec![b' '; (MAX_PROVIDERS_FILE_BYTES + 1) as usize];
+        std::fs::write(&path, &oversize).expect("grow");
+        refresh_user_rows_with(&mut gate, &dir);
+        assert!(
+            matches!(gate.last_seen, LastSeen::TooLarge(len) if len == MAX_PROVIDERS_FILE_BYTES + 1),
+            "refused from the metadata, and remembered by length so it is not re-logged"
+        );
+        assert!(
+            crate::session::catalog_registry()
+                .user_row_for("cap-agent")
+                .is_some(),
+            "an oversize file keeps the providers already loaded"
+        );
+
+        crate::session::apply_user_rows(BTreeMap::new());
+        drop(gate);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Nothing displays a row's `label` or `description` — the only code that
+    /// touches them compares bytes for the refresh's deep-equal. A field
+    /// accepted and ignored is a promise not kept, so it is refused with a
+    /// sentence, like the other two deferred cases in this module.
+    #[test]
+    fn a_row_declaring_label_or_description_is_refused_as_not_supported_yet() {
+        for document in [
+            r#"{"my-agent": {"extends": "acp", "command": ["/bin/ok"], "label": "Mine"}}"#,
+            r#"{"my-agent": {"extends": "acp", "command": ["/bin/ok"], "description": "d"}}"#,
+        ] {
+            let error = parse(document.as_bytes()).expect_err("refused");
+            assert!(
+                error.contains("label or description") && error.contains("not supported yet"),
+                "the refusal names the fields and says they are not supported yet: {error}"
+            );
+        }
+    }
+
+    /// Absence and an empty file are different documents. An empty file is
+    /// refused (it is not JSON) and must keep the rows already loaded; a file
+    /// that is then **deleted** is a deliberate removal and must retire them.
+    /// When both states shared one marker, the refusal poisoned the absence
+    /// marker and the delete retired nothing — the user's providers stayed
+    /// live with no file behind them.
+    #[test]
+    fn a_delete_after_an_empty_file_still_retires_the_rows() {
+        let dir = temp_dir();
+        let path = dir.join(PROVIDERS_FILE);
+        let mut gate = lock_rows_state();
+
+        std::fs::write(&path, valid_row_json("sentinel-agent")).expect("seed");
+        refresh_user_rows_with(&mut gate, &dir);
+        assert!(
+            crate::session::catalog_registry()
+                .user_row_for("sentinel-agent")
+                .is_some(),
+            "the row is live after the first refresh"
+        );
+
+        // Zero bytes: what an interrupted write leaves behind. Refused, and
+        // the rows already loaded stand.
+        std::fs::write(&path, b"").expect("truncate");
+        refresh_user_rows_with(&mut gate, &dir);
+        assert!(
+            crate::session::catalog_registry()
+                .user_row_for("sentinel-agent")
+                .is_some(),
+            "an empty file is a refused document, not an empty catalogue"
+        );
+
+        // Now the file is gone. That is a removal, and it must be obeyed.
+        std::fs::remove_file(&path).expect("remove");
+        refresh_user_rows_with(&mut gate, &dir);
+        assert!(
+            crate::session::catalog_registry()
+                .user_row_for("sentinel-agent")
+                .is_none(),
+            "a deleted file retires the rows even after an empty-file refusal"
+        );
+
+        crate::session::apply_user_rows(BTreeMap::new());
+        drop(gate);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn refresh_loads_and_retires_rows_through_the_seam() {
         let dir = temp_dir();

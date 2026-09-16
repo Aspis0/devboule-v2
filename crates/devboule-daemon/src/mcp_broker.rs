@@ -2121,7 +2121,7 @@ fn create_agent(
     // card or a slot is spent on it (`S5` §2). The provider is the profile's:
     // a creation cannot name one, so this is the only provider that can be
     // missing, and the sentence says what it is about.
-    if crate::provider_catalog::find_available(&profile.provider).is_none() {
+    if !provider_is_launchable(&profile.provider) {
         return tool_error(id, "provider not installed");
     }
     // The contradiction the profile alone decides is decided **here**, before
@@ -2268,6 +2268,20 @@ fn create_agent(
 }
 
 /// A refusal an agent reads: the sentence, and never a session id.
+/// Can this daemon launch `provider`? Two sources, because there are two ways
+/// a provider can exist: a catalogue row must be found on PATH, while a
+/// user-declared row carries its own argv and is launchable without being on
+/// PATH at all (`acp_client::resolve_named` reads the live registry before the
+/// PATH/CDN walk). Asking PATH alone refused every user provider on this road
+/// while the wire create road spawned it — one provider, two answers,
+/// depending on which door the caller came through.
+fn provider_is_launchable(provider: &str) -> bool {
+    crate::session::catalog_registry()
+        .user_row_for(provider)
+        .is_some()
+        || crate::provider_catalog::find_available(provider).is_some()
+}
+
 fn tool_error(id: &Value, message: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -2791,6 +2805,38 @@ mod tests {
     use crate::provider_catalog::{MCP_CREATE_AGENT_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL};
     use std::net::Shutdown;
     use std::sync::mpsc;
+
+    /// A user-declared row carries its own argv, so it is launchable without
+    /// being on PATH — `resolve_named` reads the live registry before the
+    /// PATH/CDN walk. Asking PATH alone refused every user provider on the
+    /// MCP create-from-profile road while the wire create road spawned it:
+    /// one provider, two answers, depending on which door the caller came in.
+    #[test]
+    fn a_user_row_is_launchable_even_though_it_is_not_on_path() {
+        let rows = crate::user_providers::parse_providers_document(
+            br#"{"launchable-agent": {"extends": "acp", "command": ["/bin/launchable"]}}"#,
+            &crate::session::native_family_ids(),
+        )
+        .expect("a valid row");
+        let gate = crate::user_providers::lock_rows_state();
+        crate::session::apply_user_rows(rows);
+
+        assert!(
+            crate::provider_catalog::find_available("launchable-agent").is_none(),
+            "it is not on PATH: that is what makes this test mean something"
+        );
+        assert!(
+            provider_is_launchable("launchable-agent"),
+            "a live user row is launchable through its own argv"
+        );
+
+        crate::session::apply_user_rows(std::collections::BTreeMap::new());
+        drop(gate);
+        assert!(
+            !provider_is_launchable("launchable-agent"),
+            "and once the row is retired it is not launchable again"
+        );
+    }
 
     #[test]
     fn tools_state_tri_state_and_single_computation_point() {

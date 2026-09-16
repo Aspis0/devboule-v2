@@ -2962,25 +2962,27 @@ fn resume_preserves_the_original_created_at_ms() {
 }
 
 #[test]
-fn resume_metadata_kind_follows_the_resolved_provider() {
-    // Pass 2c: the stamped kind is derived from the provider the resume
-    // resolved, not a constant. The ACP case stamps `Acp` (today's answer,
-    // unchanged); a Claude provider id stamps `Claude` — before the move a
-    // future Claude resume would have been journalled as an ACP session.
-    // (Assert the property — the stamp is derived — not the public road,
-    // which `resume_handle` refuses for non-ACP by design.)
+fn resume_metadata_kind_is_the_records_own_kind_not_the_provider_string() {
+    // Replaces `resume_metadata_kind_follows_the_resolved_provider`, and the
+    // reason is a MAX RECALL finding, so it is written down rather than
+    // quietly swapped.
     //
-    // The record's own kind is `Acp` in BOTH rows, deliberately: that is what
-    // makes this test able to tell the three candidate sources apart. A
-    // constant `Acp`, or a stamp read off `record.kind`, both answer `Acp` for
-    // the claude row and go red here; only the provider lookup answers
-    // `Claude`. The function never reads `record.kind`, so the mismatched
-    // fixture is not a forbidden state, it is the discriminator.
+    // Pass 2c derived the resumed kind from the provider string so a future
+    // family's resume would not be reported as ACP. The audit showed the
+    // premise was false: `provider` is a string on a row that CAN disagree
+    // with its own kind. `DEVBOULE_ACP_PROVIDER_ID` reaches
+    // `command.provider_id` without passing the native-id strip, so a create
+    // through the ACP command override journals `kind=acp, provider=codex`,
+    // and deriving from the provider stamped `Codex` on a session whose peer
+    // is ACP — which `start_spawned_session` then installs on the runtime,
+    // weakening the MCP gate and routing ACP envelopes through the Codex view.
+    //
+    // So the fixture below is the DANGEROUS pair on purpose: the record says
+    // `Acp`, the provider says a native family. The record wins. The old test
+    // asserted the opposite on this very pair, and that is the decision this
+    // one reverses.
     let command = PtyCommand::new("cmd.exe", Vec::new(), std::env::temp_dir(), Vec::new());
-    for (provider_id, kind) in [
-        ("grok".to_string(), SessionKind::Acp),
-        ("claude".to_string(), SessionKind::Claude),
-    ] {
+    for provider_id in ["grok", "claude", "codex", "pi"] {
         let record = new_session_record(
             "s.client.1",
             "S-1-5-21-1",
@@ -2992,12 +2994,35 @@ fn resume_metadata_kind_follows_the_resolved_provider() {
             "s.client.1",
             record,
             &command,
-            provider_id,
+            provider_id.to_string(),
             "peer-1".to_string(),
             2,
         );
-        assert_eq!(session.kind, kind);
+        assert_eq!(
+            session.kind,
+            SessionKind::Acp,
+            "an ACP row stays ACP however its provider string reads ({provider_id})"
+        );
     }
+
+    // And it is not a constant: a row of another kind stamps that kind, which
+    // is what pass 2c wanted and what the provider lookup was reaching for.
+    let record = new_session_record(
+        "s.client.2",
+        "S-1-5-21-1",
+        Some("w.1".to_string()),
+        SessionKind::Pi,
+        "Agent",
+    );
+    let session = session_metadata_for_resume(
+        "s.client.2",
+        record,
+        &command,
+        "pi".to_string(),
+        "peer-1".to_string(),
+        2,
+    );
+    assert_eq!(session.kind, SessionKind::Pi);
 }
 
 #[test]

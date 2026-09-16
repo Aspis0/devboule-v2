@@ -469,19 +469,32 @@ fn session_metadata_for_resume(
 ) -> Session {
     // Read before the record is consumed field by field below.
     let context_id = record.context();
+    let kind = record.kind.clone();
     Session {
         id: session_id.to_string(),
         workspace_id: record.workspace_id,
         cwd: Some(crate::workspace::display_path(
             &command.cwd.to_string_lossy(),
         )),
-        // The stamp follows the provider the resume resolved, not a
-        // constant: an ACP provider id resolves to the ACP impl (kind `Acp`,
-        // today's answer unchanged), but a future family's resume would
-        // otherwise have been journalled as an ACP session.
-        kind: provider::catalog_registry()
-            .provider_for(&provider)
-            .wire_kind(),
+        // The record's own kind, which is the session's kind: it was decided
+        // at create and journalled, and a resume does not re-decide it.
+        //
+        // Pass 2c derived this from the provider string instead
+        // (`provider_for(&provider).wire_kind()`), to keep a future family's
+        // resume from being reported as ACP. That was wrong, and the MAX
+        // RECALL found why: `provider` is a **string on a row that can
+        // disagree with its own kind**. `DEVBOULE_ACP_PROVIDER_ID` reaches
+        // `command.provider_id` without passing the native-id strip
+        // (`acp_client.rs`), so a journal row can read `kind=acp,
+        // provider=codex` — and deriving from it stamped `Codex` on a session
+        // whose peer is ACP. That is not a label: `start_spawned_session`
+        // installs the stamped kind on the runtime, which then drives
+        // `mcp_gates_first_prompt` (skipping the MCP invariant) and
+        // `event_pull`'s `is_codex` (replaying ACP envelopes through the
+        // Codex view). Reading the record keeps the old constant's answer for
+        // every ACP row AND stays right for a future family, because that
+        // family's rows carry its own kind.
+        kind,
         title: record.title,
         provider: Some(provider),
         peer_session_id: Some(peer_session_id),

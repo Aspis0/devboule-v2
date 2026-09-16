@@ -229,6 +229,13 @@ impl ServerState {
         let mcp = Arc::new(crate::mcp_broker::McpBroker::new(&paths.dir)?);
         // Read before `paths` moves into the session registry below.
         let tool_policy = Arc::new(crate::tool_policy::ToolPolicyStore::load(&paths.dir));
+        // The user's provider rows must be live BEFORE the profile store
+        // validates, because a profile may name one. Without this the load
+        // asks a catalogue that has no user rows yet, the profile naming one
+        // is refused, and `load` quarantines the WHOLE document: the user
+        // loses every profile and their standing instructions on a restart,
+        // for a configuration that is legitimate.
+        crate::user_providers::refresh_user_rows(&paths.dir);
         // Read at startup like the tool policy, and read again at every
         // creation: the store holds the document, the creation path asks it for
         // one, and nothing in a session keeps a copy.

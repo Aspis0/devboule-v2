@@ -1118,7 +1118,7 @@ impl ProviderRegistry {
     /// family that needs no per-provider code, which is what makes the
     /// provider dimension open. Called by [`apply_user_rows`], which swaps
     /// only when the rows differ from the live snapshot's.
-    fn with_user_rows(
+    pub(crate) fn with_user_rows(
         mut self,
         rows: BTreeMap<String, crate::user_providers::UserProviderRow>,
     ) -> Self {
