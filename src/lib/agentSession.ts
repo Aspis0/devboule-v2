@@ -14,6 +14,7 @@ import type { AttachmentReference, SessionChannel } from "./tauri";
 import { isCommandError } from "./tauri";
 import { eventTypeName } from "./eventTypeName";
 import { parseAgentPermissionRequest } from "./agentPermissionRequest";
+import { parseAgentDaemonNotice, type AgentDaemonNotice } from "./agentDaemonNotice";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -73,6 +74,13 @@ export type AgentChatItem =
        * its own visible note. `"absent"` means there was no excerpt block.
        */
       excerptState: "closed" | "unterminated" | "absent";
+    }
+  | {
+      /** One daemon notice envelope, parsed (see `agentDaemonNotice.ts`): a
+          known kind's facts, or an unrecognized frame kept visible. */
+      id: string;
+      role: "daemon_notice";
+      notice: AgentDaemonNotice;
     };
 
 export interface AgentFinished {
@@ -490,9 +498,14 @@ export class AgentSession {
         // echoed user message — one event, whole. A permission-request
         // envelope is reduced to its structured chat item: the daemon's
         // fields in system styling, the child's excerpt quoted and labelled
-        // as its own. Everything else appends by author: the daemon names
-        // who spoke and the app renders it, never re-deriving authorship
-        // from the text. Absent predates the field and reads as human.
+        // as its own. Any other frame whose fixed header claims `role:
+        // daemon` — a known kind, an unknown one, or a notice whose closing
+        // tag the daemon's size bound cut off — becomes a readable
+        // daemon_notice card, never the raw frame. Frames that do not claim
+        // it (the agent-to-agent echo, whatever its composed role) fall
+        // through by author: the daemon names who spoke and the app renders
+        // it, never re-deriving authorship from the text. Absent predates
+        // the field and reads as human.
         const permissionRequest = parseAgentPermissionRequest(event.text);
         if (permissionRequest !== null) {
           this.closeActiveBlocks();
@@ -503,6 +516,21 @@ export class AgentSession {
                 id: `permission-request-${this.nextItemId++}`,
                 role: "permission_request",
                 ...permissionRequest,
+              },
+            ],
+          });
+          return;
+        }
+        const daemonNotice = parseAgentDaemonNotice(event.text);
+        if (daemonNotice !== null) {
+          this.closeActiveBlocks();
+          this.update({
+            items: [
+              ...this.state.items,
+              {
+                id: `daemon-notice-${this.nextItemId++}`,
+                role: "daemon_notice",
+                notice: daemonNotice,
               },
             ],
           });

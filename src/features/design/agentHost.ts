@@ -418,10 +418,10 @@ export function extractArtifactHtml(state: AgentSessionState, startIndex = 0): s
 /**
  * The agent's own conversation from `startIndex` on: prose, reasoning, and tool
  * activity. User echoes are dropped (the surface renders the user's prompt and
- * the echo carries the doctrine block), and so are error, system, and parsed
- * permission-request items, which their own surfaces report in full — the
- * permission envelope's daemon fields and quoted excerpt have no row here, and
- * its child-chosen text must not leak into a design transcript. An assistant or
+ * the echo carries the doctrine block), and so are error, system, and the
+ * parsed envelope items — permission requests and daemon notices — which their
+ * own surfaces report in full: the envelopes' daemon fields and quoted
+ * child-chosen text must not leak into a design transcript. An assistant or
  * thought item with no text is a chunk that carried nothing, and a blank row
  * would only be noise. Tool rows are always kept: a tool with no title yet is
  * still activity.
@@ -437,7 +437,8 @@ export function transcriptItems(
       item.role === "user" ||
       item.role === "error" ||
       item.role === "system" ||
-      item.role === "permission_request"
+      item.role === "permission_request" ||
+      item.role === "daemon_notice"
     )
       continue;
     const parentage = {

@@ -50,7 +50,20 @@ function makeHarness(): Harness {
 /** Generic `{role, text}` projection; a tool row contributes its title as its text. */
 function itemRoleText(item: AgentChatItem): { role: string; text: string } {
   if (item.role === "permission_request") return { role: item.role, text: item.excerpt };
+  if (item.role === "daemon_notice") {
+    return { role: item.role, text: item.notice.kind ?? "(no kind)" };
+  }
   return { role: item.role, text: item.role === "tool" ? item.title : item.text };
+}
+
+/** The `role:text` projection the transcript-shape tests assert on. */
+function projectItem(item: AgentChatItem): string {
+  if (item.role === "permission_request") return `${item.role}:${item.excerpt}`;
+  if (item.role === "daemon_notice") {
+    return `${item.role}:${item.notice.kind ?? "(no kind)"}`;
+  }
+  if (item.role === "tool") return `tool:${item.title}\n${item.output}`;
+  return `${item.role}:${item.text}`;
 }
 
 describe("ACP agent session", () => {
@@ -257,17 +270,12 @@ describe("ACP agent session", () => {
     });
     harness.emit({ type: "agent_message", messageId: null, text: "dopo" });
 
-    expect(
-      harness.session
-        .getState()
-        .items.map((item) =>
-          item.role === "permission_request"
-            ? `${item.role}:${item.excerpt}`
-            : item.role === "tool"
-              ? `tool:${item.title}\n${item.output}`
-              : `${item.role}:${item.text}`,
-        ),
-    ).toEqual(["user:vai", "assistant:prima", "tool:Read file\n", "assistant:dopo"]);
+    expect(harness.session.getState().items.map(projectItem)).toEqual([
+      "user:vai",
+      "assistant:prima",
+      "tool:Read file\n",
+      "assistant:dopo",
+    ]);
   });
 
   it("keeps an existing tool update inside the tool bubble", async () => {
@@ -289,17 +297,11 @@ describe("ACP agent session", () => {
     });
     harness.emit({ type: "agent_message", messageId: null, text: "dopo" });
 
-    expect(
-      harness.session
-        .getState()
-        .items.map((item) =>
-          item.role === "permission_request"
-            ? `${item.role}:${item.excerpt}`
-            : item.role === "tool"
-              ? `tool:${item.title}\n${item.output}`
-              : `${item.role}:${item.text}`,
-        ),
-    ).toEqual(["assistant:prima", "tool:Read file\ncontents", "assistant:dopo"]);
+    expect(harness.session.getState().items.map(projectItem)).toEqual([
+      "assistant:prima",
+      "tool:Read file\ncontents",
+      "assistant:dopo",
+    ]);
   });
 
   it("does not close a later text bubble when an existing tool is updated", async () => {
@@ -322,17 +324,11 @@ describe("ACP agent session", () => {
     });
     harness.emit({ type: "agent_message", messageId: null, text: " ancora" });
 
-    expect(
-      harness.session
-        .getState()
-        .items.map((item) =>
-          item.role === "permission_request"
-            ? `${item.role}:${item.excerpt}`
-            : item.role === "tool"
-              ? `tool:${item.title}\n${item.output}`
-              : `${item.role}:${item.text}`,
-        ),
-    ).toEqual(["assistant:prima", "tool:Read file\ncontents", "assistant:dopo ancora"]);
+    expect(harness.session.getState().items.map(projectItem)).toEqual([
+      "assistant:prima",
+      "tool:Read file\ncontents",
+      "assistant:dopo ancora",
+    ]);
   });
 
   it("stores kind and locations on a tool call with empty output", async () => {
@@ -2089,5 +2085,120 @@ describe("creator permission-request envelope", () => {
       selectedOptionKind: "reject_once",
       selectedOptionName: "Deny",
     });
+  });
+});
+
+describe("creator daemon notice envelopes", () => {
+  const finishEnvelope = [
+    "<devboule-system>",
+    "origin: local",
+    "role: daemon",
+    "from_agent: s.child.7",
+    "kind: agent_finished",
+    "timestamp: 1760000000000",
+    "childSessionId: s.child.7",
+    "displayName: worker one",
+    "state: completed",
+    "summary: build is green",
+    "note: one flake retried",
+    'artifacts: [{"path":"dist/index.html"}]',
+    "</devboule-system>",
+    "",
+  ].join("\n");
+
+  it("reduces an agent_finished envelope to one daemon_notice item, not raw text", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-10",
+      text: finishEnvelope,
+    });
+
+    const items = harness.session.getState().items;
+    expect(items).toHaveLength(1);
+    const item = items[0];
+    expect(item.role).toBe("daemon_notice");
+    if (item.role !== "daemon_notice") return;
+    expect(item.notice).toEqual({
+      recognized: true,
+      kind: "agent_finished",
+      childSessionId: "s.child.7",
+      childName: "worker one",
+      state: "completed",
+      summary: "build is green",
+      unattributed: "note: one flake retried",
+      truncated: false,
+    });
+  });
+
+  it("keeps a daemon frame of an unknown kind visible as an unformatted notice", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-11",
+      text: [
+        "<devboule-system>",
+        "origin: local",
+        "role: daemon",
+        "from_agent: s.child.7",
+        "kind: agent_hibernating",
+        "timestamp: 1760000000000",
+        "childSessionId: s.child.7",
+        "</devboule-system>",
+      ].join("\n"),
+    });
+
+    const items = harness.session.getState().items;
+    expect(items).toHaveLength(1);
+    expect(items[0].role).toBe("daemon_notice");
+    if (items[0].role !== "daemon_notice") return;
+    expect(items[0].notice).toEqual({
+      recognized: false,
+      kind: "agent_hibernating",
+      childSessionId: "s.child.7",
+    });
+  });
+
+  it("keeps a peer's agent-to-agent frame out of the daemon-notice pipeline", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-12",
+      text: [
+        "<devboule-system>",
+        "origin: peer:dev-phone",
+        "role: client",
+        "from_agent: s.peer.1",
+        "timestamp: 1760000000000",
+        "words the peer sent",
+        "</devboule-system>",
+      ].join("\n"),
+    });
+
+    const items = harness.session.getState().items;
+    expect(items).toHaveLength(1);
+    // Not a daemon notice: the frame's role claims a peer, and its words are
+    // the peer's. Today's system rendering stands.
+    expect(items[0].role).toBe("system");
+  });
+
+  it("drops daemon_notice items from the design transcript like the other parsed envelopes", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-13",
+      text: finishEnvelope,
+    });
+    const items = harness.session.getState().items;
+    expect(items[0].role).toBe("daemon_notice");
+    expect(transcriptItems(items, 0)).toEqual([]);
   });
 });

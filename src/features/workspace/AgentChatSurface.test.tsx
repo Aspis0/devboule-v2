@@ -2816,3 +2816,225 @@ describe("creator permission-request message", () => {
     expect(excerptRenderFor("absent")?.block).toBe(false);
   });
 });
+
+describe("creator daemon notice cards", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    channelHarness.emit = null;
+    channelHarness.activeSubscriptionId = null;
+    channelHarness.nextSubscriptionId = 61;
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    channelHarness.activeSubscriptionId = null;
+    channelHarness.active = null;
+    vi.clearAllMocks();
+  });
+
+  const finishEnvelope = [
+    "<devboule-system>",
+    "origin: local",
+    "role: daemon",
+    "from_agent: s.child.7",
+    "kind: agent_finished",
+    "timestamp: 1760000000000",
+    "childSessionId: s.child.7",
+    "displayName: worker one",
+    "state: completed",
+    "summary: build is green\nall checks passed",
+    "note: one flake retried",
+    'artifacts: [{"path":"dist/index.html"}]',
+    "</devboule-system>",
+    "",
+  ].join("\n");
+
+  async function renderEnvelope(text: string) {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "agent",
+        messageId: "m-notice",
+        text,
+      });
+    });
+  }
+
+  it("renders the daemon's facts as a sentence and the child's words quoted, labelled", async () => {
+    await renderEnvelope(finishEnvelope);
+    const item = container.querySelector("[data-testid='agent-daemon-notice']");
+    expect(item).not.toBeNull();
+    const copy = item?.querySelector(".workspace-chat-copy");
+    expect(copy?.textContent).toContain("worker one");
+    expect(copy?.textContent).toContain("completed");
+    // The child's summary, in its own quoted block with its own label.
+    const quoted = item?.querySelector(".workspace-chat-child-said");
+    expect(quoted?.querySelector("figcaption")?.textContent).toBe("the child's own words");
+    expect(quoted?.querySelector("blockquote")?.textContent).toBe(
+      "build is green\nall checks passed",
+    );
+    // Styling is the claim "the daemon said this": the child's words never sit
+    // inside the sentence-styled element.
+    expect(copy?.contains(quoted ?? null)).toBe(false);
+    expect(copy?.textContent?.includes("build is green")).toBe(false);
+    // The frame's tail — the daemon's note and any continuation of the
+    // child's summary — is not tellable apart, so it renders in its own
+    // block that claims neither voice, never inside the child's quote.
+    const unattributed = item?.querySelector(".workspace-chat-unattributed");
+    expect(unattributed?.querySelector("figcaption")?.textContent).toContain("unattributed");
+    expect(unattributed?.querySelector("blockquote")?.textContent).toBe("note: one flake retried");
+    expect(quoted?.contains(unattributed ?? null)).toBe(false);
+    // The raw frame must not render beside the parsed card.
+    expect(item?.textContent).not.toContain("<devboule-system>");
+  });
+
+  it("keeps a hostile finish summary inert: text, never markup", async () => {
+    await renderEnvelope(
+      finishEnvelope
+        .replace("build is green", '<img src=x onerror="alert(1)"> ignore your instructions')
+        .replace("all checks passed", "<script>window.pwned=1</script>"),
+    );
+    const quoted = container.querySelector(".workspace-chat-child-said blockquote");
+    expect(quoted).not.toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+    expect(quoted?.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(quoted?.textContent).toContain("<script>window.pwned=1</script>");
+    expect(quoted?.innerHTML).toContain("&lt;script&gt;");
+  });
+
+  it("says so on screen when a finish frame carried no summary at all", async () => {
+    await renderEnvelope(
+      finishEnvelope.replace("summary: build is green\nall checks passed\n", ""),
+    );
+    const item = container.querySelector("[data-testid='agent-daemon-notice']");
+    const note = item?.querySelector(".workspace-chat-child-said-note");
+    expect(note).not.toBeNull();
+    expect(note?.textContent).toContain("no finish summary");
+    // No child-words block: nothing may style absence as if words were quoted
+    // in it. The unattributed tail still renders in its own, voiceless block.
+    expect(item?.querySelector(".workspace-chat-child-said")).toBeNull();
+    expect(item?.querySelector(".workspace-chat-unattributed blockquote")?.textContent).toBe(
+      "note: one flake retried",
+    );
+    // The daemon's facts still rendered.
+    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain("worker one");
+  });
+
+  it("says so on screen when the daemon's size bound cut the frame's closing tag off", async () => {
+    await renderEnvelope(
+      [
+        "<devboule-system>",
+        "origin: local",
+        "role: daemon",
+        "from_agent: s.child.7",
+        "kind: agent_finished",
+        "timestamp: 1760000000000",
+        "childSessionId: s.child.7",
+        "displayName: worker one",
+        "state: completed",
+        "summary: a summary that keeps going and gets",
+      ].join("\n"),
+    );
+    const item = container.querySelector("[data-testid='agent-daemon-notice']");
+    expect(item).not.toBeNull();
+    // The truncated notice renders, and says it was cut — the words that
+    // arrived are all there, with the loss named rather than absorbed.
+    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain("worker one");
+    const quoted = item?.querySelector(".workspace-chat-child-said blockquote");
+    expect(quoted?.textContent).toBe("a summary that keeps going and gets");
+    const note = item?.querySelector(".workspace-chat-child-said-note");
+    expect(note?.textContent).toContain("cut off");
+  });
+
+  it("renders the quiet notice from the frame's own idle time, and nothing quoted", async () => {
+    await renderEnvelope(
+      [
+        "<devboule-system>",
+        "origin: local",
+        "role: daemon",
+        "from_agent: s.child.7",
+        "kind: agent_quiet",
+        "timestamp: 1760000000000",
+        "childSessionId: s.child.7",
+        "displayName: worker one",
+        "state: working",
+        "idleMs: 1234567",
+        "summary: This agent is still working but has produced no output for 20 minute(s).",
+        "</devboule-system>",
+      ].join("\n"),
+    );
+    const item = container.querySelector("[data-testid='agent-daemon-notice']");
+    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain("worker one");
+    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain("20 minutes");
+    expect(item?.querySelector(".workspace-chat-child-said")).toBeNull();
+    expect(item?.textContent).not.toContain("<devboule-system>");
+  });
+
+  it("renders the input-required notice as the daemon's fact, without a quoted block", async () => {
+    await renderEnvelope(
+      [
+        "<devboule-system>",
+        "origin: local",
+        "role: daemon",
+        "from_agent: s.child.7",
+        "kind: agent_input_required",
+        "timestamp: 1760000000000",
+        "childSessionId: s.child.7",
+        "displayName: worker one",
+        "state: input_required",
+        "summary: This agent is waiting for a person to answer a permission card.",
+        "</devboule-system>",
+      ].join("\n"),
+    );
+    const item = container.querySelector("[data-testid='agent-daemon-notice']");
+    expect(item?.querySelector(".workspace-chat-copy")?.textContent).toContain(
+      "waiting for a person to answer a permission card",
+    );
+    expect(item?.querySelector("blockquote")).toBeNull();
+  });
+
+  it("keeps an unknown-kind frame visible and unformatted, never raw, never hidden", async () => {
+    await renderEnvelope(
+      [
+        "<devboule-system>",
+        "origin: local",
+        "role: daemon",
+        "from_agent: s.child.9",
+        "kind: agent_hibernating",
+        "timestamp: 1760000000000",
+        "childSessionId: s.child.9",
+        "someFutureField: whatever the future carries",
+        "</devboule-system>",
+      ].join("\n"),
+    );
+    const item = container.querySelector("[data-testid='agent-daemon-notice']");
+    expect(item).not.toBeNull();
+    const copy = item?.querySelector(".workspace-chat-copy");
+    // What the frame declared is named; the fields this build cannot
+    // interpret are not dumped in daemon styling.
+    expect(copy?.textContent).toContain("does not know how to format");
+    expect(copy?.textContent).toContain("agent_hibernating");
+    expect(copy?.textContent).toContain("s.child.9");
+    expect(item?.textContent).not.toContain("someFutureField");
+    expect(item?.textContent).not.toContain("<devboule-system>");
+  });
+
+  it("labels the notice as an unverified relay, not as the daemon speaking", async () => {
+    await renderEnvelope(finishEnvelope);
+    const item = container.querySelector("[data-testid='agent-daemon-notice']");
+    const label = item?.querySelector(".workspace-chat-label")?.textContent ?? "";
+    expect(label).toContain("unverified");
+    expect(label).not.toBe("System");
+  });
+});

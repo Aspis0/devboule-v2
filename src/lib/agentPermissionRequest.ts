@@ -4,12 +4,14 @@
  * transcript through the daemon's send path, so the app sees it as an echoed
  * user message.
  *
- * The finish envelope has a structured event beside it and the app must not
- * grow a parser for THAT frame (`child_finished` in `types/ipc.ts`). This one
- * has no structured twin on the wire — the excerpt is text the child chose,
- * and the whole point is that it reaches the creator's prompt as words — so
- * the app reads the frame here, once, and keeps what it parses in one chat
- * item type.
+ * The finish envelope has a structured twin beside it (`child_finished` in
+ * `types/ipc.ts`) — still the only record the app builds on (Design history,
+ * artifacts); the daemon's other notice envelopes have their own display
+ * parser in `agentDaemonNotice.ts`. This module stays the one reader of the
+ * permission frame: it has no structured twin on the wire — the excerpt is
+ * text the child chose, and the whole point is that it reaches the creator's
+ * prompt as words — so the app reads the frame here, once, and keeps what it
+ * parses in one chat item type.
  *
  * The grammar this side commits to (the daemon half is checked against it):
  *
@@ -90,18 +92,25 @@ export function parseAgentPermissionRequest(text: string): AgentPermissionReques
   const body = text.slice(ENVELOPE_OPEN.length, closeIndex);
   const lines = body.split("\n");
 
+  // POSITIONAL KIND GATE. The daemon composes the frame's fixed header —
+  // origin, role, from_agent, kind, timestamp, in that order — before any
+  // caller-controlled byte. An agent-to-agent echo puts the caller's free
+  // text after the timestamp line, and composes `role:` from the caller's
+  // peer record, so `role: daemon` alone proves nothing. A `kind:` line only
+  // counts INSIDE that header block: past `timestamp:`, a kind line is (or
+  // may be) the caller's words, and honouring it would let a caller mint a
+  // permission card in the creator's transcript.
+  const headerEnd = lines.findIndex((line) => line.startsWith("timestamp: "));
+  if (headerEnd === -1) return null;
+  if (!lines.slice(0, headerEnd).some((line) => line.trim() === KIND_LINE)) return null;
+
   let cardId: string | null = null;
   let toolTitle: string | null = null;
   let childName: string | null = null;
-  let kindMatched = false;
   let excerptStart = -1;
 
-  for (let at = 0; at < lines.length; at += 1) {
+  for (let at = headerEnd + 1; at < lines.length; at += 1) {
     const line = lines[at];
-    if (!kindMatched) {
-      if (line.trim() === KIND_LINE) kindMatched = true;
-      continue;
-    }
     // EXACT line matches only — never trimmed. The daemon neutralises the
     // exact literal inside the excerpt; a padded `end child-said` is a line
     // the escaper's contract leaves alone, so it is the child's own words,
@@ -125,7 +134,7 @@ export function parseAgentPermissionRequest(text: string): AgentPermissionReques
     if (name !== null) childName = name;
   }
 
-  if (!kindMatched || cardId === null || toolTitle === null || childName === null) {
+  if (cardId === null || toolTitle === null || childName === null) {
     return null;
   }
 
