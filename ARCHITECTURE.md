@@ -256,9 +256,10 @@ the caller must be an observer of the session it is stopping. `SessionClose` des
 mean closing something else.
 
 `SessionStop` kills the *tree*, not the root. After `killer.kill()` the daemon also calls
-`job.terminate()` on the session's own Job Object (`session.rs:4801`, `:4847`), because the session is
-being preserved and its job therefore stays open — nothing else would reap the descendants a CLI left
-behind. This mirrors what the on-OS-death handler already did (`:8874`). A killed-but-kept session is
+`job.terminate()` on the session's own Job Object (`session.rs:4945-4949` for the agent-facing stop,
+`:4992-4995` for the subscribed one), because the session is being preserved and its job therefore
+stays open — nothing else would reap the descendants a CLI left behind. This mirrors what the
+on-OS-death handler already did (`:9020-9022`). A killed-but-kept session is
 the one the app calls *archive*: the row and its transcript survive, the process does not.
 
 **The wire names who wrote a user message.** `UserMessageAuthor`
@@ -268,6 +269,15 @@ delivery's connection facts): it names whose words the echo carries. `creation` 
 when a human wrote the initial text, because that line is daemon-composed — standing instructions plus
 preamble plus prompt. The app renders by this field and never re-derives authorship from the text;
 absent predates the field and reads as `human`.
+
+**`role:` is not the daemon's claim about itself.** The daemon composes that line from the *caller's*
+peer record: a session created by a peer paired in the `Daemon` role writes `role: daemon` on the
+agent-to-agent envelope it sends, around another agent's words (`session.rs:5574`). So the app must
+not read `role: daemon` as "the daemon is speaking" — it did, briefly, and rendered a relayed message
+as a daemon notice while dropping the message text. The marker for a notice is a `kind:` line inside
+the fixed header: all four notice builders write one, the agent-to-agent envelope deliberately writes
+none, and `src/lib/agentDaemonNotice.ts` requires both. A header line counts only before the
+`timestamp:` line, so nothing after it — that is, nothing a caller chose — can mint one.
 
 
 **Retention.** Four limits, all configurable, with these defaults
@@ -504,8 +514,8 @@ provider, never read from the client (`:236-239`). It is registered for `Session
 agent gets no MCP tools today; the catalog says so and keeps the cells anyway, "so adding a non-ACP
 transport does not silently change a decision" (`provider_catalog.rs:440-446`).
 
-**Seven tools**, in `tools/list` order, from one table that the Settings panel reads too, so the panel
-and the wire cannot disagree (`provider_catalog.rs:194-212`):
+**Nine tools**, in `tools/list` order, from one table that the Settings panel reads too, so the panel
+and the wire cannot disagree (`provider_catalog.rs:199`):
 
 | Tool | Names | Disableable by policy? |
 | --- | --- | --- |
@@ -516,6 +526,8 @@ and the wire cannot disagree (`provider_catalog.rs:194-212`):
 | `devboule_answer_permission` | answer one delegated permission card | Yes |
 | `devboule_set_agent_profile` | move a child onto a ticked profile | Yes |
 | `devboule_agent_activity` | one agent's derived activity plus recent kinds, metadata only | Yes |
+| `devboule_stop_agent` | kill one own child's process tree, keeping its row and transcript | Yes |
+| `devboule_close_agent` | end one own child's session; history keeps the transcript | Yes |
 
 **The creation call.** The caller is the session whose bearer authenticated the connection — "there is
 no `from_session` parameter to lie about" (`mcp_broker.rs:1108-1110`). The order is fixed and stated
@@ -633,6 +645,28 @@ minutes. `deliver_notice_to_creator` exists so that cannot be reached by passing
 What the notice cannot tell you is stated in the code: a model thinking hard, a long build and a
 wedged process look identical from outside, which is the whole reason it reports and never acts.
 
+
+**Supervision's acting half, and the scope it is not allowed to exceed.** `devboule_stop_agent` kills
+one child's process tree and keeps its row and transcript; `devboule_close_agent` ends the session and
+leaves the transcript in history. Reading is scoped to the roster, but acting is **narrower on
+purpose**: both resolve their target through `resolve_own_child` (`session.rs:4847`), which admits
+only live sessions whose `created_by` is the caller. A grandchild is not a child, a sibling is not a
+child, and a parent is certainly not.
+
+`close` had no parentage check of any kind before this — only `check_user_owner` — so the scope check
+is added here rather than assumed. An invented id, the caller's parent, a live session of the user
+that the caller did not create, and another account's session all answer with one sentence and one
+code, so the tool tells nothing about what exists. Two honest limits on that: the caller's own child
+that has exited but not been reaped is still `Live`, so it resolves and answers "stopped"; and
+`devboule_list_agents` already hands every agent the ids of every live agent of the same owner, so
+existence was never a secret these sentences kept. They are kept because they stay right if the roster
+ever narrows.
+
+The predicate behind all of it is written once (`is_child_of`, `session.rs:720`) and called from every
+site that needs it. It had been four textual copies; a scope rule spelled five times is a scope rule
+that will be wrong in one of them. Both verbs are local by construction: the tool door judges them as
+`SessionStop` and `SessionClose`, which every peer is denied unconditionally whatever its capabilities,
+and a test walks the closed capability table for both roles rather than sampling one name.
 
 **Lineage is daemon-written.** `created_by` is deliberately absent from `SessionCreate` so no client
 can claim a parent, and `display_name` is set once at creation and is not renamable
