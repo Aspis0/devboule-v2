@@ -1353,9 +1353,14 @@ impl Journal {
     /// journal already holds is refused instead of merged, and the answer
     /// reaches the caller — a create that cannot own its id fails loudly
     /// here, before anything spawns against it.
+    ///
+    /// One round trip, not two: the writer checkpoints inline (best effort),
+    /// so a checkpoint stall never turns a landed row into a reported
+    /// failure. A birth that times out leaves no row — the writer deletes
+    /// the INSERT when the reply is abandoned — so the answer and the
+    /// journal never disagree.
     pub fn create_session(&self, record: SessionRecord) -> Result<(), JournalError> {
-        self.rpc(|reply| JournalCmd::CreateSession { record, reply })?;
-        self.flush()
+        self.rpc(|reply| JournalCmd::CreateSession { record, reply })
     }
 
     fn send_cmd(&self, cmd: JournalCmd, wait: Duration) -> Result<(), JournalError> {
@@ -1579,7 +1584,33 @@ fn journal_loop(
                 }
             }
             JournalCmd::CreateSession { record, reply } => {
-                let _ = reply.send(create_session_row(&conn, &record));
+                let result = create_session_row(&conn, &record);
+                let inserted = result.is_ok();
+                if inserted {
+                    // The bump lives here, where success is known: a refusal
+                    // changes no roster, and the call-site invalidate is
+                    // per-registry while this revision is the global signal.
+                    retention_state.session_set_changed();
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
+                    // Durability without a second round trip: the row is
+                    // committed in WAL already, so a checkpoint stall is
+                    // logged, never returned as a birth failure.
+                    if let Err(error) = conn
+                        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                        .map_err(JournalError::from)
+                    {
+                        on_write_error(&error);
+                    }
+                }
+                if reply.send(result).is_err() && inserted {
+                    // The caller timed out and is gone: remove the row it
+                    // was told it never got, so a failed birth leaves
+                    // nothing behind and frees the id.
+                    let _ = conn.execute("DELETE FROM events WHERE session_id = ?1", [&record.id]);
+                    let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", [&record.id]);
+                    retention_state.session_set_changed();
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
+                }
             }
             JournalCmd::Append(record) => {
                 let is_output = matches!(record.kind, EventKind::Output | EventKind::AcpEnvelope);
@@ -4869,6 +4900,70 @@ mod tests {
             store.session("s.process-1234.00000001").is_some(),
             "the old-shape id must still resolve for attachments"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// J3: a birth changes the roster, so it must bump the revision the
+    /// roster cache is keyed on. The older Upsert arm does; the new
+    /// CreateSession arm currently does not.
+    #[test]
+    fn create_session_bumps_roster_revision_on_success_and_not_on_refusal() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let before = journal.session_set_revision();
+        journal
+            .create_session(sample_session("s.j3-rev-1"))
+            .expect("birth lands");
+        let after = journal.session_set_revision();
+        assert!(
+            after > before,
+            "birth must bump roster revision: before={before} after={after}"
+        );
+        let before_refusal = journal.session_set_revision();
+        let refused = journal
+            .create_session(sample_session("s.j3-rev-1"))
+            .expect_err("held id refuses");
+        assert!(
+            matches!(refused, JournalError::SessionExists { .. }),
+            "refusal must name collision: {refused:?}"
+        );
+        let after_refusal = journal.session_set_revision();
+        assert_eq!(
+            after_refusal, before_refusal,
+            "a refusal changes no roster, so it must not bump"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// J1: a birth whose caller is gone must not leave a row behind.
+    ///
+    /// A timed-out `create_session` (slow writer, full queue) leaves exactly
+    /// this state: the command is queued but the reply receiver is dropped.
+    /// The writer currently INSERTs anyway and the reply goes nowhere,
+    /// leaving a Live row with no owner that consumes the id for good.
+    #[test]
+    fn abandoned_birth_leaves_no_row() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let record = sample_session("s.j1-ghost-1");
+        let (tx_reply, rx_reply) = mpsc::channel();
+        drop(rx_reply);
+        journal.reserve_slot();
+        journal
+            .tx
+            .try_send(JournalCmd::CreateSession {
+                record,
+                reply: tx_reply,
+            })
+            .expect("enqueue abandoned birth");
+        std::thread::sleep(Duration::from_millis(500));
+        let listing = journal.list().expect("list");
+        assert!(
+            !listing.iter().any(|row| row.id == "s.j1-ghost-1"),
+            "an abandoned birth must not leave a row behind"
+        );
+        journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

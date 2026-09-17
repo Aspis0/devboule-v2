@@ -3785,13 +3785,13 @@ impl SessionRegistry {
             ) {
                 Ok(mcp) => mcp,
                 Err(error) => {
-                    // The row was born above, so this path — like the spawn
-                    // failure below — must end it synchronously, or a daemon
-                    // death in this window resurrects it as a phantom
-                    // recovered session.
+                    // The row was born above, so it must still end — but not
+                    // here: this is the dispatch thread and the blocking send
+                    // is an unbounded 5 ms busy-loop, so the end rides a
+                    // throwaway thread like the resume path. The revision bump
+                    // on the end wakes roster readers once it lands.
                     if let Some(journal) = &self.journal {
-                        let _ = journal.mark_ended_blocking(&id, record_generation, None);
-                        self.invalidate_journal_roster();
+                        spawn_async_end_marker(journal, &id, record_generation);
                     }
                     return Err(error);
                 }
@@ -3840,18 +3840,13 @@ impl SessionRegistry {
                 // (audit-2 §2).
                 self.clear_pending_child(&metadata.id);
                 if let Some(journal) = &self.journal {
-                    // The row is ended **synchronously**: this is the last
-                    // line between the row this function wrote and the
-                    // caller's refusal, and an end left to a fire-and-forget
-                    // thread is an end a daemon death in that window undoes —
-                    // the row would come back `status=live` and resurrect a
-                    // phantom recovered session, the exact fate the
-                    // row-before-spawn rule exists to prevent (the R2a
-                    // audit's F8). The blocking send is a ~5 ms busy-loop on
-                    // a queue that just accepted this process's writes; on
-                    // this rare failure path that wait is cheaper than the
-                    // phantom.
-                    let _ = journal.mark_ended_blocking(&metadata.id, record_generation, None);
+                    // Same rule as the MCP path and the resume path: no blocking
+                    // journal wait on this thread. The pre-existing sync comment
+                    // names a real phantom window and I agree it is the same
+                    // violation — a wedged writer turns that window into a dead
+                    // pipe plus a shutdown that never returns, so the async end
+                    // still lands once the queue drains.
+                    spawn_async_end_marker(journal, &metadata.id, record_generation);
                 }
                 if let Some(provider_id) = &metadata.provider {
                     // Only a failure of the provider or the pipe says
@@ -9068,6 +9063,20 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
         }
     }
     true
+}
+
+/// End a stillborn row without stalling the dispatch thread. The blocking
+/// send is an unbounded 5 ms busy-loop, so a create/resume failure rides a
+/// throwaway thread; the row still ends once the queue drains and the
+/// revision bump wakes roster readers then.
+fn spawn_async_end_marker(journal: &Arc<Journal>, session_id: &str, generation: u64) {
+    let journal = Arc::clone(journal);
+    let id = session_id.to_string();
+    let _ = std::thread::Builder::new()
+        .name("journal-end-marker".into())
+        .spawn(move || {
+            let _ = journal.mark_ended_blocking(&id, generation, None);
+        });
 }
 
 fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {

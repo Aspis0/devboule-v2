@@ -1540,24 +1540,91 @@ fn a_refused_spawn_ends_its_journal_row_before_the_refusal_is_returned() {
         )
         .expect_err("a nonexistent program refuses the spawn");
 
-    // No poll: the end is synchronous, so the very first read after the
-    // refusal sees it.
-    let rows = state
+    // The end is async (throwaway thread, like the resume path), so poll
+    // until it lands: the refusal must not leave a Live row behind.
+    let journal = state
         .sessions
         .journal
         .as_ref()
-        .expect("the test state has a journal")
-        .list()
-        .expect("journal rows");
+        .expect("the test state has a journal");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let rows = journal.list().expect("journal rows");
+        let row = rows
+            .iter()
+            .find(|row| row.title == "Terminal")
+            .expect("the refused spawn's row");
+        if matches!(row.status, crate::journal::PersistStatus::Ended) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the refused spawn's row never ended: {:?}",
+            row.status
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// J2: a failed create must not stall the dispatch thread on the journal.
+/// The resume path already states the rule (unbounded 5 ms busy-loop, no
+/// timeout) and uses a throwaway thread; the create failure paths must do
+/// the same. This pins the async shape via the spawn road (the MCP road
+/// shares the same blocking call and gets the same fix): Live immediately
+/// after the refusal, Ended once the queue drains.
+#[test]
+fn a_refused_spawn_ends_its_row_async_without_blocking_the_caller() {
+    let state = ServerState::new("refused-row-async".to_string());
+    let owner = OwnerId::new("local", "test").expect("owner");
+    let command = PtyCommand::new(
+        "definitely-not-a-real-program-xyz",
+        Vec::new(),
+        std::env::temp_dir(),
+        Vec::new(),
+    );
+    let meta = SessionCreateMeta::default();
+    state
+        .sessions
+        .create_with_provider_env(
+            &state,
+            &owner,
+            None,
+            SessionKind::Terminal,
+            None,
+            crate::profile_delivery::ProfileDelivery::for_request(None),
+            Some(command),
+            &None,
+            None,
+            &meta,
+        )
+        .expect_err("a nonexistent program refuses the spawn");
+    let journal = state.sessions.journal.as_ref().expect("journal");
+    let rows = journal.list().expect("journal rows");
     let row = rows
         .iter()
         .find(|row| row.title == "Terminal")
         .expect("the refused spawn's row");
     assert!(
-        matches!(row.status, crate::journal::PersistStatus::Ended),
-        "the row is ended when the refusal is returned, not left live: {:?}",
+        matches!(row.status, crate::journal::PersistStatus::Live),
+        "the end is async, so the row is still Live when the refusal returns: {:?}",
         row.status
     );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let rows = journal.list().expect("journal rows");
+        let row = rows
+            .iter()
+            .find(|row| row.title == "Terminal")
+            .expect("the refused spawn's row");
+        if matches!(row.status, crate::journal::PersistStatus::Ended) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the async end never landed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 /// The health recorder's class line (the R2a audit's F6): a refusal the
