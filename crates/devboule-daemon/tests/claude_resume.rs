@@ -58,6 +58,26 @@ fn wait_peer(client: &devboule_daemon::DaemonClient, id: &str) -> String {
     }
 }
 
+/// The stub records its argv with a truncating `fs::write` on its own
+/// schedule after the daemon has spawned it
+/// (`devboule_claude_stub.rs:183`), and swallows write errors — so one
+/// unsynchronised read can return the previous spawn's argv, a partial line,
+/// or nothing. Wait for the property the assertion needs, and on timeout
+/// fail with what the file actually held.
+fn wait_argv_contains(argv_file: &std::path::Path, needle: &str) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let contents = std::fs::read_to_string(argv_file).unwrap_or_default();
+        if contents.contains(needle) {
+            return contents;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("the stub's argv never contained {needle:?}; argv file contents: {contents:?}");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn claude_resume_after_daemon_death_reuses_the_row() {
     let _test_lock = common::lock_tests();
@@ -162,10 +182,10 @@ fn claude_resume_after_daemon_death_reuses_the_row() {
     );
     let console = std::fs::read_to_string(&console_file).expect("stub console");
     assert!(console.contains("FOLLOW-UP"), "the rebound child answers");
-    let argv = std::fs::read_to_string(&argv_file).expect("stub argv");
+    let argv = wait_argv_contains(&argv_file, peer.as_str());
     assert!(
-        argv.lines().any(|line| line == "--resume") && argv.contains(peer.as_str()),
-        "the respawn carried the provider's conversation id: {argv}"
+        argv.lines().any(|line| line == "--resume"),
+        "the respawn carried the provider's resume flag: {argv}"
     );
     client
         .session_close(&session.id)
@@ -222,8 +242,9 @@ fn claude_resume_accepts_the_old_acp_tag() {
         ResumeResult::NotSupported => panic!("old tag answered NotSupported"),
         ResumeResult::Failed { message } => panic!("old tag resume failed: {message}"),
     }
-    let argv = std::fs::read_to_string(&argv_file).expect("stub argv");
-    assert!(argv.contains(peer.as_str()));
+    // The whole point of this test: the resumed child was spawned with the
+    // conversation id, and the argv file is the only record of that.
+    wait_argv_contains(&argv_file, peer.as_str());
     client
         .session_close(&session.id)
         .expect("close Claude session");
