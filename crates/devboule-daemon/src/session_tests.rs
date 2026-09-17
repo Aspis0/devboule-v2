@@ -578,6 +578,7 @@ pub(super) fn insert_move_child(
         context_id: None,
         unattended: devboule_protocol::UnattendedState::Unknown,
         labels: Default::default(),
+        resumable: false,
     };
     let session = PtySession {
         metadata,
@@ -3026,6 +3027,10 @@ fn resume_preserves_the_original_created_at_ms() {
     assert_eq!(session.created_at_ms, 1_700_000_000_123);
     assert_eq!(session.id, "s.client.1");
     assert_eq!(session.state, SessionState::Live { generation: 2 });
+    assert!(
+        !session.resumable,
+        "a just-resumed live row never offers resume"
+    );
 }
 
 #[test]
@@ -4614,6 +4619,7 @@ fn insert_transcript(registry: &SessionRegistry, id: &str, owner: OwnerId) {
         context_id: None,
         unattended: devboule_protocol::UnattendedState::No,
         labels: Default::default(),
+        resumable: false,
     };
     let runtime = SessionRuntime::from_replay(
         id.to_string(),
@@ -4781,6 +4787,7 @@ fn insert_live_agent_with_turn_control(
         context_id: None,
         unattended: devboule_protocol::UnattendedState::No,
         labels: Default::default(),
+        resumable: false,
     };
     let (broker, _) = permission_broker::test_broker();
     let runtime = SessionRuntime::for_acp(id.to_string(), registry.journal.clone(), broker);
@@ -4913,20 +4920,23 @@ fn codex_first_prompt_does_not_wait_for_mcp() {
 }
 
 #[test]
-fn resume_handle_refuses_non_acp_before_any_registration() {
-    // S9: family resume stays refused at the gate (deliberate — pi/Codex
-    // resume is undesigned), so the record-kind registration below it can
-    // only ever see ACP. A refusal here means no bearer is minted for a
-    // resumed pi/Codex row, ever.
+fn resume_handle_refuses_undesigned_families_before_any_registration() {
+    // S9: Pi/Codex/terminal resume stays refused at the gate (deliberate —
+    // pi/Codex resume is undesigned), so the record-kind registration below
+    // it only ever sees ACP and Claude. A refusal here means no bearer is
+    // minted for a refused row, ever.
     let owner = test_owner("S-1-5-21-resume", "process-resume");
     for (kind, needle) in [
         (SessionKind::Codex, "do not support resume"),
-        (SessionKind::Pi, "only ACP sessions support"),
-        (SessionKind::Terminal, "only ACP sessions support"),
+        (SessionKind::Pi, "only ACP and Claude sessions support"),
+        (
+            SessionKind::Terminal,
+            "only ACP and Claude sessions support",
+        ),
     ] {
         let record = new_session_record("s.resume.1", &owner.user, None, kind, "Old");
         let error = super::resume_handle(&record, &owner)
-            .expect_err("non-ACP resume is refused before anything is minted");
+            .expect_err("undesigned-family resume is refused before anything is minted");
         assert!(
             error.message.contains(needle),
             "the refusal names the boundary: {}",
@@ -4939,6 +4949,14 @@ fn resume_handle_refuses_non_acp_before_any_registration() {
     assert!(
         super::resume_handle(&acp, &owner).is_ok(),
         "an ACP row with its persisted handles passes the gate"
+    );
+    let mut claude =
+        new_session_record("s.resume.3", &owner.user, None, SessionKind::Claude, "Old");
+    claude.provider = Some("claude".to_string());
+    claude.peer_session_id = Some("peer-9".to_string());
+    assert!(
+        super::resume_handle(&claude, &owner).is_ok(),
+        "a Claude row with its persisted handles passes the gate"
     );
 }
 
@@ -6643,6 +6661,7 @@ fn insert_live_with_writer(
         context_id: None,
         unattended: devboule_protocol::UnattendedState::No,
         labels: Default::default(),
+        resumable: false,
     };
     let runtime = Arc::new(SessionRuntime::with_journal(
         id.to_string(),
@@ -7892,6 +7911,7 @@ fn invalid_claude_effort_is_rejected_before_switcher() {
         context_id: None,
         unattended: devboule_protocol::UnattendedState::No,
         labels: Default::default(),
+        resumable: false,
     };
     let session = PtySession {
         metadata,
@@ -8011,6 +8031,7 @@ fn invalid_session_mode_is_rejected_without_changing_the_manifest() {
         context_id: None,
         unattended: devboule_protocol::UnattendedState::No,
         labels: Default::default(),
+        resumable: false,
     };
     let session = PtySession {
         metadata,
@@ -8174,6 +8195,7 @@ fn transcript_entry(owner_user: &str, origin: SessionOrigin) -> RegistryEntry {
         context_id: None,
         unattended: devboule_protocol::UnattendedState::No,
         labels: Default::default(),
+        resumable: false,
     };
     RegistryEntry::Transcript(Box::new(TranscriptSession {
         metadata,

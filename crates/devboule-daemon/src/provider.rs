@@ -235,16 +235,41 @@ pub(crate) trait Provider: Send + Sync {
         runtime_dir: &Path,
     ) -> Result<McpProviderConfig, WireError>;
 
-    /// Whether this family's sessions support resume. Resume is ACP-only;
+    /// Whether this family's sessions support resume. Admitted per family;
     /// the refusal site (`resume_handle`) asks this.
     fn resumable(&self) -> bool;
+
+    /// Respawning a dead session of this family onto its existing row: same
+    /// id, same workspace, same transcript, new generation. Only families
+    /// whose `resumable()` is true carry a real one; the rest refuse with
+    /// their own sentence, so flipping a family to resumable without writing
+    /// its spawn is a loud failure, never a silent new session.
+    fn spawn_resuming(
+        &self,
+        state: &Arc<ServerState>,
+        command: super::PtyCommand,
+        peer_session_id: String,
+        mcp: Option<McpLaunchConfig>,
+    ) -> Result<SpawnedSession, WireError>;
 
     /// The wording of this family's resume refusal. NOT a second source of
     /// the decision — the fact stays `resumable()`; this method is only its
     /// explanation, so the yes/no is never expressible in two places. The
     /// default is the generic sentence; Codex overrides it with its own.
     fn resume_refusal(&self) -> &'static str {
-        "only ACP sessions support this resume path"
+        "only ACP and Claude sessions support this resume path"
+    }
+
+    /// The refusal a non-resumable family's `spawn_resuming` answers with:
+    /// the same sentence `resume_handle` refused with, so the gate and the
+    /// spawn cannot disagree about why. One spelling, shared by the impls
+    /// (`session.rs::cannot_resume` states it for the gate; this states it
+    /// for the spawn).
+    fn resume_refused(&self) -> WireError {
+        WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("This session cannot be resumed: {}.", self.resume_refusal()),
+        )
     }
 
     /// Whether a successful spawn of this family measures provider health
@@ -283,6 +308,23 @@ pub(crate) trait Provider: Send + Sync {
     /// the child road, the profile prediction and the tests read one source:
     /// these impls.
     fn unattended_mode(&self, delivered_mode: Option<&str>) -> UnattendedAnswer;
+}
+
+/// The daemon's resume verdict for one session: the process is gone, the
+/// family is resumable, and the provider and peer id were persisted
+/// non-empty. The one projection every surface reads — journal rows, live
+/// views, diagnostics — so the family yes/no stays `Provider::resumable()`
+/// and is never re-spelled beside it.
+pub(crate) fn session_resumable(
+    kind: &SessionKind,
+    provider: Option<&str>,
+    peer_session_id: Option<&str>,
+    is_live: bool,
+) -> bool {
+    !is_live
+        && catalog_registry().provider_for_kind(kind).resumable()
+        && provider.is_some_and(|id| !id.is_empty())
+        && peer_session_id.is_some_and(|id| !id.is_empty())
 }
 
 /// The ACP family: the fallthrough implementation. Every provider the catalog
@@ -395,8 +437,19 @@ impl Provider for AcpProvider {
     }
 
     fn resumable(&self) -> bool {
-        // The one family the resume gate admits (`resume_handle` asks this).
+        // One of the two families the resume gate admits (`resume_handle`
+        // asks this); the spawn half is `spawn_process_resuming`.
         true
+    }
+
+    fn spawn_resuming(
+        &self,
+        state: &Arc<ServerState>,
+        command: super::PtyCommand,
+        peer_session_id: String,
+        mcp: Option<McpLaunchConfig>,
+    ) -> Result<SpawnedSession, WireError> {
+        super::acp_client::spawn_process_resuming(state, command, peer_session_id, mcp)
     }
 
     fn spawn_measures_health(&self) -> bool {
@@ -530,7 +583,19 @@ impl Provider for ClaudeProvider {
     }
 
     fn resumable(&self) -> bool {
-        false
+        // The second family the resume gate admits: the provider keeps its
+        // own conversation on disk and takes it back by `--resume`.
+        true
+    }
+
+    fn spawn_resuming(
+        &self,
+        state: &Arc<ServerState>,
+        command: super::PtyCommand,
+        peer_session_id: String,
+        mcp: Option<McpLaunchConfig>,
+    ) -> Result<SpawnedSession, WireError> {
+        super::claude_client::spawn_process_resuming(state, command, peer_session_id, mcp)
     }
 
     fn spawn_measures_health(&self) -> bool {
@@ -659,6 +724,16 @@ impl Provider for PiProvider {
         false
     }
 
+    fn spawn_resuming(
+        &self,
+        _state: &Arc<ServerState>,
+        _command: super::PtyCommand,
+        _peer_session_id: String,
+        _mcp: Option<McpLaunchConfig>,
+    ) -> Result<SpawnedSession, WireError> {
+        Err(self.resume_refused())
+    }
+
     fn spawn_measures_health(&self) -> bool {
         true
     }
@@ -771,6 +846,16 @@ impl Provider for CodexProvider {
 
     fn resumable(&self) -> bool {
         false
+    }
+
+    fn spawn_resuming(
+        &self,
+        _state: &Arc<ServerState>,
+        _command: super::PtyCommand,
+        _peer_session_id: String,
+        _mcp: Option<McpLaunchConfig>,
+    ) -> Result<SpawnedSession, WireError> {
+        Err(self.resume_refused())
     }
 
     fn resume_refusal(&self) -> &'static str {
@@ -899,6 +984,16 @@ impl Provider for TerminalProvider {
 
     fn resumable(&self) -> bool {
         false
+    }
+
+    fn spawn_resuming(
+        &self,
+        _state: &Arc<ServerState>,
+        _command: super::PtyCommand,
+        _peer_session_id: String,
+        _mcp: Option<McpLaunchConfig>,
+    ) -> Result<SpawnedSession, WireError> {
+        Err(self.resume_refused())
     }
 
     fn spawn_measures_health(&self) -> bool {
@@ -1428,6 +1523,58 @@ mod tests {
                     .spawn_measures_health(),
                 measures,
                 "spawn_measures_health for {kind:?}"
+            );
+        }
+    }
+
+    /// Stage 1: Claude joins ACP as a resumable family; Pi, Codex and the
+    /// terminal stay refused. Pins all five answers — the flip this test
+    /// guards went red before it went green.
+    #[test]
+    fn resumable_is_a_per_family_fact() {
+        for (kind, resumable) in [
+            (SessionKind::Acp, true),
+            (SessionKind::Claude, true),
+            (SessionKind::Pi, false),
+            (SessionKind::Codex, false),
+            (SessionKind::Terminal, false),
+        ] {
+            assert_eq!(
+                catalog_registry().provider_for_kind(&kind).resumable(),
+                resumable,
+                "resumable for {kind:?}"
+            );
+        }
+    }
+
+    /// The verdict needs all four: a dead process, a resumable family, and
+    /// both persisted columns non-empty. Each missing piece refuses on its
+    /// own, so no surface can offer a resume the gate would not honour.
+    #[test]
+    fn session_resumable_needs_a_dead_process_family_and_columns() {
+        let live = session_resumable(&SessionKind::Claude, Some("claude"), Some("peer-1"), true);
+        assert!(!live, "a running process is never resumable");
+        for kind in [SessionKind::Pi, SessionKind::Codex, SessionKind::Terminal] {
+            assert!(
+                !session_resumable(&kind, Some("x"), Some("peer-1"), false),
+                "an undesigned family is never resumable ({kind:?})"
+            );
+        }
+        for (provider, peer) in [
+            (None, Some("peer-1")),
+            (Some("claude"), None),
+            (Some(""), Some("peer-1")),
+            (Some("claude"), Some("")),
+        ] {
+            assert!(
+                !session_resumable(&SessionKind::Claude, provider, peer, false),
+                "missing columns are never resumable"
+            );
+        }
+        for kind in [SessionKind::Acp, SessionKind::Claude] {
+            assert!(
+                session_resumable(&kind, Some("x"), Some("peer-1"), false),
+                "a dead admitted session with its columns is resumable ({kind:?})"
             );
         }
     }

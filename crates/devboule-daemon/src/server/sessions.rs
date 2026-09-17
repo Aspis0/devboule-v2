@@ -304,7 +304,11 @@ pub(super) fn dispatch_session(
                 id,
                 result: ResumeResult::NotSupported,
             },
-            PersistenceKind::Acp { handle } => {
+            // Every resumable variant unwraps to the same handle: the tag
+            // names the family that wrote the row, it never admits. Admission
+            // is the journal row through `Provider::resumable()` inside
+            // `resume`, so a tag/row mismatch still resumes what the row is.
+            PersistenceKind::Acp { handle } | PersistenceKind::Claude { handle } => {
                 match state.sessions.resume(state, &handle, owner, conn) {
                     Ok(session) => DaemonMessage::Resume {
                         id,

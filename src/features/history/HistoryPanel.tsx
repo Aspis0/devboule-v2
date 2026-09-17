@@ -266,19 +266,11 @@ function RetentionNotice({ usage }: { usage: JournalUsage }) {
   );
 }
 
-function isResumableSession(
-  session: Session | null,
-): session is Session & { kind: "acp"; provider: string; peerSessionId: string } {
-  return (
-    session?.kind === "acp" &&
-    // A live or silent session still has its process; the daemon refuses to
-    // resume those, so the button must not offer it.
-    (session.state.type === "ended" || session.state.type === "recovered") &&
-    typeof session.provider === "string" &&
-    session.provider.length > 0 &&
-    typeof session.peerSessionId === "string" &&
-    session.peerSessionId.length > 0
-  );
+function isResumableSession(session: Session | null): session is Session {
+  // The daemon's verdict, rendered, never re-derived: kind, liveness, and
+  // persisted columns are the daemon's to judge (`Provider::resumable()`),
+  // and an older daemon that omits the field offers no button.
+  return session?.resumable === true;
 }
 
 const HistoryRowView = memo(function HistoryRowView({

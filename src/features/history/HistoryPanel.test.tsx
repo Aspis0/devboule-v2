@@ -59,6 +59,7 @@ function resumableSession(id: string): Session {
     kind: "acp",
     provider: "grok",
     peerSessionId: "peer-session-1",
+    resumable: true,
   };
 }
 
@@ -209,26 +210,30 @@ describe("HistoryPanel", () => {
     expect(container.textContent).toContain("2");
   });
 
-  it("shows Reopen only for ACP rows with provider and peer session metadata", async () => {
+  it("shows Reopen only where the daemon's verdict says resume", async () => {
     const usage = baseUsage();
     usage.perSession = [
       usage.perSession[0],
       usage.perSession[1],
-      { ...usage.perSession[1], id: "session-no-provider", title: "No provider" },
-      { ...usage.perSession[1], id: "session-no-peer", title: "No peer" },
-      { ...usage.perSession[1], id: "session-still-running", title: "Still running" },
+      { ...usage.perSession[1], id: "session-claude", title: "Claude row" },
+      { ...usage.perSession[1], id: "session-live", title: "Live row" },
+      { ...usage.perSession[1], id: "session-old", title: "Old daemon row" },
     ];
     await renderPanel(usage, [
       endedSession("session-build"),
       resumableSession("session-review"),
-      { ...resumableSession("session-no-provider"), provider: undefined },
-      { ...resumableSession("session-no-peer"), peerSessionId: undefined },
+      // Claude resumes on the same verdict: the kind is not the decision.
+      { ...resumableSession("session-claude"), kind: "claude", provider: "claude" },
+      // Live, with columns: the daemon refuses while the process runs.
       {
-        ...resumableSession("session-still-running"),
+        ...resumableSession("session-live"),
         state: { type: "live", generation: 1 },
+        resumable: false,
       },
+      // A daemon that predates the field says nothing: no button on a guess.
+      { ...resumableSession("session-old"), resumable: undefined },
     ]);
-    expect(container.querySelectorAll(".history-reopen-action")).toHaveLength(1);
+    expect(container.querySelectorAll(".history-reopen-action")).toHaveLength(2);
     expect(container.textContent).toContain("Reopen");
   });
 

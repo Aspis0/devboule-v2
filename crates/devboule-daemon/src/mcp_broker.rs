@@ -2919,6 +2919,7 @@ mod tests {
             context_id: Some("s.s2.0".to_string()),
             unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
         }
     }
 
@@ -6263,6 +6264,7 @@ mod tests {
             context_id: Some("s.parent.1".to_string()),
             unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
         };
         let result = created_result(&json!(7), &session, true);
         let content = &result["result"]["structuredContent"];

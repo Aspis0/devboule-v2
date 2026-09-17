@@ -549,11 +549,14 @@ impl DiagnosticsReport {
                 devboule_protocol::SessionKind::Pi => sessions.pi += 1,
                 devboule_protocol::SessionKind::Codex => sessions.codex += 1,
             }
-            if !session.state.is_live()
-                && matches!(session.kind, devboule_protocol::SessionKind::Acp)
-                && session.provider.is_some()
-                && session.peer_session_id.is_some()
-            {
+            // The verdict the row already carries, computed from the trait
+            // where the row was materialised — asked, never re-spelled.
+            if crate::session::session_resumable(
+                &session.kind,
+                session.provider.as_deref(),
+                session.peer_session_id.as_deref(),
+                session.state.is_live(),
+            ) {
                 sessions.resumable += 1;
             }
         }
@@ -644,6 +647,7 @@ mod tests {
             context_id: None,
             unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
         }
     }
 
@@ -987,6 +991,47 @@ mod tests {
         assert_eq!(report.sessions.resumable, 1);
         assert_eq!(report.health.journal_schema_version, 5);
         assert_eq!(report.health.journal_file_bytes, Some(12));
+    }
+
+    #[test]
+    fn resumable_counts_dead_admitted_sessions_with_their_columns() {
+        // The verdict asks the family, not the wire tag: a dead Claude row
+        // with its columns counts, a live one does not, and neither does a
+        // dead row of an undesigned family.
+        fn ended() -> SessionState {
+            SessionState::Ended {
+                generation: 1,
+                code: Some(0),
+                integrity: TranscriptIntegrity::Complete,
+            }
+        }
+        fn recovered() -> SessionState {
+            SessionState::Recovered {
+                generation: 1,
+                integrity: TranscriptIntegrity::Complete,
+            }
+        }
+        let mut source = input();
+        let mut resumable_claude = session("s.1", SessionKind::Claude, recovered(), "one");
+        resumable_claude.provider = Some("claude".to_string());
+        resumable_claude.peer_session_id = Some("peer-1".to_string());
+        let mut live_claude = session(
+            "s.2",
+            SessionKind::Claude,
+            SessionState::Live { generation: 1 },
+            "two",
+        );
+        live_claude.provider = Some("claude".to_string());
+        live_claude.peer_session_id = Some("peer-2".to_string());
+        let mut columnless_claude = session("s.3", SessionKind::Claude, ended(), "three");
+        columnless_claude.provider = None;
+        columnless_claude.peer_session_id = None;
+        let mut dead_pi = session("s.4", SessionKind::Pi, recovered(), "four");
+        dead_pi.provider = Some("pi".to_string());
+        dead_pi.peer_session_id = Some("peer-4".to_string());
+        source.sessions = vec![resumable_claude, live_claude, columnless_claude, dead_pi];
+        let report = DiagnosticsReport::new(source);
+        assert_eq!(report.sessions.resumable, 1);
     }
 
     #[test]

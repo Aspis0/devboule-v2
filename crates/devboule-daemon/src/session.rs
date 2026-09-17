@@ -136,7 +136,9 @@ mod provider;
 /// `peer_policy::unattended_mode` reads it from there without this module
 /// growing any judgement of its own.
 pub(crate) use pi_client::unattended_answer as pi_unattended_answer;
-pub(crate) use provider::{apply_user_rows, catalog_registry, native_family_ids, ProviderRegistry};
+pub(crate) use provider::{
+    apply_user_rows, catalog_registry, native_family_ids, session_resumable, ProviderRegistry,
+};
 #[path = "session_types.rs"]
 mod session_types;
 #[path = "shell_command.rs"]
@@ -580,18 +582,32 @@ fn session_metadata_for_resume(
         context_id: Some(context_id),
         unattended: record.unattended_state,
         labels: record.labels,
+        // Live under a new generation: resume-while-running is refused, so a
+        // just-resumed row never offers it. Views recompute on every serve.
+        resumable: false,
     }
 }
 
 fn live_session_view(session: &PtySession) -> Session {
     let mut metadata = session.metadata.clone();
     metadata.peer_session_id = session.runtime.peer_session_id();
+    // The verdict travels on the view, recomputed from the live state every
+    // time: a running child never offers resume, a dead admitted one does.
+    let stamp_resumable = |metadata: &mut Session| {
+        metadata.resumable = provider::session_resumable(
+            &metadata.kind,
+            metadata.provider.as_deref(),
+            metadata.peer_session_id.as_deref(),
+            metadata.state.is_live(),
+        );
+    };
     if session.runtime.terminal_dead.load(Ordering::Acquire) {
         metadata.state = SessionState::Ended {
             generation: session.runtime.generation(),
             code: None,
             integrity: session.runtime.terminated_integrity(),
         };
+        stamp_resumable(&mut metadata);
         return metadata;
     }
     let Ok(stream) = session.runtime.lock_stream() else {
@@ -600,6 +616,7 @@ fn live_session_view(session: &PtySession) -> Session {
             code: None,
             integrity: session.runtime.terminated_integrity(),
         };
+        stamp_resumable(&mut metadata);
         return metadata;
     };
     metadata.state = match stream.disposition {
@@ -625,6 +642,7 @@ fn live_session_view(session: &PtySession) -> Session {
         stream.process_exited,
         Instant::now(),
     );
+    stamp_resumable(&mut metadata);
     metadata
 }
 
@@ -3768,6 +3786,9 @@ impl SessionRegistry {
             context_id: Some(context_id),
             unattended: unattended_state,
             labels: meta.labels.clone(),
+            // Born live: the process exists, so resume is refused. Views
+            // recompute on every serve.
+            resumable: false,
         };
         // The birth door: the row is created, not upserted, so an id the
         // journal already holds refuses the create loudly instead of merging
@@ -3989,7 +4010,11 @@ impl SessionRegistry {
         // The persisted provider is the original explicit provider choice.
         // In particular, a persisted npx wrapper is allowed through this
         // named path because its original create already supplied consent.
-        let mut command = acp_client::resolve_named(&provider, &self.paths)?;
+        // Resolved through the record's own family, not the ACP road: an ACP
+        // row takes the named catalog row exactly as before, a Claude row its
+        // fixed stream-json command.
+        let family = provider::catalog_registry().provider_for_kind(&record.kind);
+        let mut command = family.resolve_command(&self.paths, Some(&provider))?;
         self.apply_workspace_cwd(record.workspace_id.as_deref(), &mut command)?;
         let generation = record.generation.saturating_add(1);
 
@@ -4082,11 +4107,12 @@ impl SessionRegistry {
             }
             _ => crate::mcp_broker::AgentLineage::root(),
         };
-        // S9 kind-preserving fix: the gate above (`resume_handle`) admits ACP only,
-        // so this IS Acp today — but the kind comes from the record, never from a
-        // literal, so a resumed session re-registers with its own kind rather than
-        // as whatever the last author assumed. Pi/Codex resume stays refused at the
-        // gate (deliberate: family resume is undesigned — see `resume_handle`).
+        // S9 kind-preserving fix: the gate above (`resume_handle`) admits the
+        // resumable families, so this is Acp or Claude today — but the kind
+        // comes from the record, never from a literal, so a resumed session
+        // re-registers with its own kind rather than as whatever the last
+        // author assumed. Pi/Codex resume stays refused at the gate
+        // (deliberate: family resume is undesigned — see `resume_handle`).
         let mcp_session = match state.mcp.register_with_provider(
             session_id,
             owner,
@@ -8492,6 +8518,11 @@ pub fn spawn_resumed_session(
     context: ResumedSessionContext,
 ) -> Result<(), WireError> {
     let mcp = state.mcp.launch_config(&metadata.id);
+    // The family's own respawn: ACP reloads by session/load, Claude by
+    // `--resume`. Anything the gate admitted implements this; the refused
+    // families never reach here.
+    let family = provider::catalog_registry().provider_for_kind(&metadata.kind);
+    let spawned = family.spawn_resuming(state, command, context.peer_session_id, mcp)?;
     start_spawned_session(
         state,
         registry,
@@ -8499,7 +8530,7 @@ pub fn spawn_resumed_session(
         owner,
         Some(context.generation),
         None,
-        acp_client::spawn_process_resuming(state, command, context.peer_session_id, mcp)?,
+        spawned,
         context.mcp_session,
     )
 }
@@ -9261,10 +9292,11 @@ fn resume_handle(
     if record.owner != owner.user {
         return Err(unauthorized());
     }
-    // Pi can resume on its own wire, but the end-to-end design is not done:
-    // family resume stays refused deliberately, not by accident. The fact is
-    // the impls' `resumable()`; `resume_refusal()` is only the wording of
-    // the refusal, so the decision is never expressible in two places.
+    // Pi and Codex can resume on their own wires, but their end-to-end
+    // design is not done: those families stay refused deliberately, not by
+    // accident. The fact is the impls' `resumable()`; `resume_refusal()` is
+    // only the wording of the refusal, so the decision is never expressible
+    // in two places.
     let family = provider::catalog_registry().provider_for_kind(&record.kind);
     if !family.resumable() {
         return Err(cannot_resume(family.resume_refusal()));

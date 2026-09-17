@@ -3801,6 +3801,7 @@ process.stdin.on("data", (chunk) => {
             context_id: None,
             unattended: devboule_protocol::UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
         };
         crate::session::start_spawned_session(
             &state,

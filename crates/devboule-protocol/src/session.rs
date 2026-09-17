@@ -216,10 +216,11 @@ pub struct Session {
     pub cwd: Option<String>,
     pub kind: SessionKind,
     pub title: String,
-    /// Catalog provider id for ACP sessions, when one was persisted.
+    /// Catalog provider id for agent sessions, when one was persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Provider-side session id used by the ACP resume/load handshake.
+    /// Provider-side session id used by the family resume handshake
+    /// (ACP session/load, Claude `--resume`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_session_id: Option<String>,
     pub state: SessionState,
@@ -309,6 +310,15 @@ pub struct Session {
     /// or overwrite one.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub labels: std::collections::BTreeMap<String, String>,
+    /// Whether the daemon would accept a resume for this session right now:
+    /// not live, a resumable family, provider and peer id persisted.
+    ///
+    /// Computed by the daemon from `Provider::resumable()`; the app renders
+    /// it and never re-derives it from kind, state, or columns. `#[serde(default)]`
+    /// so a frame from a daemon that predates the field reads back as false —
+    /// the button stays hidden rather than offered on a guess.
+    #[serde(default)]
+    pub resumable: bool,
 }
 
 /// The connection-scoped roster update. It carries the fields the tab strip
@@ -462,7 +472,7 @@ pub enum SessionState {
         integrity: TranscriptIntegrity,
     },
     /// The daemon that owned the process is gone (kill, crash, update).
-    /// Replay only.
+    /// Replay always; resume when the family is resumable.
     ///
     /// The journal was not closed orderly, so whatever was still
     /// uncommitted in the dying process's writer queue left no record
@@ -1265,10 +1275,15 @@ pub struct TurnUsage {
     pub thought_tokens: Option<u64>,
 }
 
-/// ACP persistence handle. Terminal sessions always use [`PersistenceKind::None`].
+/// One family's resume handle. Terminal sessions always use [`PersistenceKind::None`].
 ///
 /// The protocol carries an explicit "resume not supported" result because
-/// "ACP is spoken" does not imply "resume is spoken".
+/// "the family is spoken" does not imply "resume is spoken".
+///
+/// The variant names the family that wrote the row; the daemon re-derives
+/// provider and peer id from the journal and admits through
+/// `Provider::resumable()`, so two variants unwrap to the same handling and
+/// the tag never decides.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Persistence {
@@ -1280,6 +1295,7 @@ pub struct Persistence {
 pub enum PersistenceKind {
     None,
     Acp { handle: String },
+    Claude { handle: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1485,6 +1501,7 @@ mod tests {
             context_id: None,
             unattended: UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["workspaceId"], "ws-1");
@@ -1517,6 +1534,7 @@ mod tests {
             context_id: None,
             unattended: UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["origin"]["kind"], "peer");
@@ -1559,6 +1577,7 @@ mod tests {
             context_id: None,
             unattended: UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
         };
         let mut value = serde_json::to_value(&session).expect("json");
         value
@@ -1594,6 +1613,7 @@ mod tests {
             context_id: None,
             unattended: UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
         };
         let encoded = serde_json::to_value(&session).expect("session json");
         assert_eq!(encoded["state"]["type"], "silent");
@@ -1634,6 +1654,7 @@ mod tests {
             context_id: None,
             unattended: UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["provider"], "grok");
@@ -2108,6 +2129,39 @@ mod tests {
     }
 
     #[test]
+    fn persistence_kind_claude_round_trips_with_its_own_tag() {
+        let encoded = serde_json::to_value(Persistence {
+            kind: PersistenceKind::Claude {
+                handle: "s.client.9".to_string(),
+            },
+        })
+        .expect("json");
+        assert_eq!(encoded["kind"]["type"], "claude");
+        assert_eq!(encoded["kind"]["handle"], "s.client.9");
+        let back: Persistence = serde_json::from_value(encoded).expect("round trip");
+        assert_eq!(
+            back.kind,
+            PersistenceKind::Claude {
+                handle: "s.client.9".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn session_without_resumable_reads_back_as_not_resumable() {
+        // A frame from a daemon that predates the field must parse, and must
+        // not offer a resume on a guess.
+        let session: Session = serde_json::from_str(
+            r#"{"id":"s.client.1","kind":"acp","title":"t",
+                "state":{"type":"ended","generation":1,"code":0,
+                "integrity":{"kind":"complete"}},
+                "createdAtMs":1,"origin":{"kind":"local"},"unattended":"unknown"}"#,
+        )
+        .expect("old frame parses");
+        assert!(!session.resumable);
+    }
+
+    #[test]
     fn resume_resumed_and_failed_round_trip_on_the_wire() {
         let resumed = ResumeResult::Resumed {
             session: Box::new(Session {
@@ -2128,6 +2182,7 @@ mod tests {
                 context_id: None,
                 unattended: UnattendedState::No,
                 labels: Default::default(),
+                resumable: false,
             }),
         };
         let value = serde_json::to_value(&resumed).expect("json");
@@ -2301,6 +2356,7 @@ mod tests {
             context_id: Some("s.root.1".to_string()),
             unattended: UnattendedState::Yes,
             labels: Default::default(),
+            resumable: false,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["displayName"], "worker");
@@ -2318,6 +2374,7 @@ mod tests {
             context_id: None,
             unattended: UnattendedState::No,
             labels: Default::default(),
+            resumable: false,
             ..session
         };
         let value = serde_json::to_value(&unnamed).expect("json");
@@ -2549,6 +2606,7 @@ mod tests {
             context_id: None,
             unattended: UnattendedState::Yes,
             labels: Default::default(),
+            resumable: false,
         };
         let value = serde_json::to_value(&session).expect("session json");
         assert_eq!(

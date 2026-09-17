@@ -459,6 +459,9 @@ impl SessionRecord {
                 integrity: self.integrity(false),
             },
         };
+        // Read before the struct moves `state`: a journal row is never a
+        // running child, so this is the transcript half of the verdict.
+        let is_live = state.is_live();
         Session {
             id: self.id.clone(),
             workspace_id: self.workspace_id.clone(),
@@ -483,6 +486,15 @@ impl SessionRecord {
             context_id: Some(self.context()),
             unattended: self.unattended_state,
             labels: self.labels.clone(),
+            // The verdict the app renders: dead process, admitted family,
+            // both columns present. Computed here, from the trait, so the
+            // wire never re-spells it.
+            resumable: crate::session::session_resumable(
+                &self.kind,
+                self.provider.as_deref(),
+                self.peer_session_id.as_deref(),
+                is_live,
+            ),
         }
     }
 
@@ -3463,6 +3475,31 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn to_session_carries_the_resume_verdict_from_the_trait() {
+        // A dead admitted row with its columns offers resume; without them,
+        // or of an undesigned family, it does not. The app renders this bool
+        // and never re-derives it.
+        let mut claude = sample_session("s.claude.dead");
+        claude.kind = SessionKind::Claude;
+        claude.status = PersistStatus::Ended;
+        claude.provider = Some("claude".to_string());
+        claude.peer_session_id = Some("peer-1".to_string());
+        assert!(claude.to_session().resumable);
+
+        let mut columnless = sample_session("s.claude.nocols");
+        columnless.kind = SessionKind::Claude;
+        columnless.status = PersistStatus::Ended;
+        assert!(!columnless.to_session().resumable);
+
+        let mut pi = sample_session("s.pi.dead");
+        pi.kind = SessionKind::Pi;
+        pi.status = PersistStatus::Ended;
+        pi.provider = Some("pi".to_string());
+        pi.peer_session_id = Some("peer-1".to_string());
+        assert!(!pi.to_session().resumable);
     }
 
     #[test]

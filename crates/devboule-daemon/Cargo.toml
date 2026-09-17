@@ -41,6 +41,11 @@ name = "devboule-agent-stub"
 path = "src/bin/devboule_agent_stub.rs"
 required-features = ["server"]
 
+[[bin]]
+name = "devboule-claude-stub"
+path = "src/bin/devboule_claude_stub.rs"
+required-features = ["server", "test-support"]
+
 [dependencies]
 devboule-protocol = { path = "../devboule-protocol" }
 # Direct because this crate serializes protocol frames to JSON. The daemon

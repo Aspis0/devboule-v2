@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -338,6 +339,99 @@ pub(super) fn validate_delivery(
     Ok(())
 }
 
+/// The `~/.claude/projects/<slug>` directory for one cwd, as the CLI lays
+/// it out: every byte outside `[A-Za-z0-9-]` becomes `-`. Measured against
+/// the directories on this machine (`C:\Users\gualt\Desktop\New
+/// devboule\devboule-v2` sits under
+/// `C--Users-gualt-Desktop-New-devboule-devboule-v2`); a cwd with characters
+/// outside the observed set keeps the same rule, and a mismatch fails closed
+/// in the history lookup below, never as a wrong file.
+fn claude_projects_slug(cwd: &Path) -> String {
+    cwd.to_string_lossy()
+        .chars()
+        .map(|cell| {
+            if cell.is_ascii_alphanumeric() || cell == '-' {
+                cell
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Where the CLI keeps its own conversations.
+fn claude_home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+/// Closed alphabet for a provider session id, not a blocklist: anything
+/// outside `[A-Za-z0-9-]` refuses. `Path::join` discards the whole base when
+/// the pushed segment carries a Windows prefix (`C:evil`, `C:\evil`, UNC),
+/// so rejecting `/`, `\` and `..` is not enough — and the id the journal
+/// holds is a provider UUID, which this alphabet accepts trivially.
+fn valid_peer_session_id(peer_session_id: &str) -> bool {
+    !peer_session_id.is_empty()
+        && peer_session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+/// The conversation file a `--resume` needs. The exact slug first; then one
+/// stat per sibling slug directory, because the CLI resolves `--resume` by
+/// id (measured: a session resumed from a cwd that is not its own prints no
+/// "not found"), while our slug rule for an exotic cwd may be wrong. `None`
+/// therefore means the conversation is on no disk we can see — deleted by
+/// the human or rotated by the CLI — never "we looked in one place".
+///
+/// `home` is a parameter rather than read here so tests pin the rule without
+/// moving the process environment.
+fn find_claude_history(home: &Path, cwd: &Path, peer_session_id: &str) -> Option<PathBuf> {
+    if !valid_peer_session_id(peer_session_id) {
+        return None;
+    }
+    let projects = home.join(".claude").join("projects");
+    let file = format!("{peer_session_id}.jsonl");
+    let exact = projects.join(claude_projects_slug(cwd)).join(&file);
+    if exact.is_file() {
+        return Some(exact);
+    }
+    let Ok(siblings) = std::fs::read_dir(&projects) else {
+        return None;
+    };
+    siblings.filter_map(Result::ok).find_map(|sibling| {
+        let candidate = sibling.path().join(&file);
+        candidate.is_file().then_some(candidate)
+    })
+}
+
+/// The refusal when there is nothing to resume: it names the conversation
+/// and the file's expected place, not a generic spawn error.
+fn missing_history_error(peer_session_id: &str, cwd: &Path, home: &Path) -> WireError {
+    let expected = home
+        .join(".claude")
+        .join("projects")
+        .join(claude_projects_slug(cwd))
+        .join(format!("{peer_session_id}.jsonl"));
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        format!(
+            "Claude conversation '{peer_session_id}' has no history file (expected at {}): it was deleted or rotated, so there is nothing to resume.",
+            expected.to_string_lossy()
+        ),
+    )
+}
+
+/// The resume half of the launch argv: `--resume <peer>` on top of the
+/// measured stream-json base. No `--model` pin — the pin names the card's
+/// model for a new conversation, and a resumed conversation already has one.
+fn push_resume_flag(mut args: Vec<String>, peer_session_id: &str) -> Vec<String> {
+    args.push("--resume".to_string());
+    args.push(peer_session_id.to_string());
+    args
+}
+
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
@@ -369,6 +463,66 @@ pub(super) fn spawn_process(
         launch_in_bypass_mode(args),
         launch_model_id(&delivery, &state.claude_models().models).as_deref(),
     );
+    spawn_claude_child(state, &command, args, requested_mode, &delivery, None)
+}
+
+/// A resumed child: the same launch minus the `--model` pin (the resumed
+/// conversation keeps its own model) plus `--resume <peer>`, onto the same
+/// session row. The provider's file must still be on disk — spawning into a
+/// deleted or rotated conversation reads as a hang, so its absence refuses
+/// here, naming the file, before any process exists.
+pub(super) fn spawn_process_resuming(
+    state: &Arc<ServerState>,
+    command: PtyCommand,
+    peer_session_id: String,
+    mcp: Option<McpLaunchConfig>,
+) -> Result<SpawnedSession, WireError> {
+    let home = claude_home_dir().ok_or_else(|| {
+        WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "Claude conversation '{peer_session_id}' cannot be resumed without a home directory to look its history file up in."
+            ),
+        )
+    })?;
+    if find_claude_history(&home, &command.cwd, &peer_session_id).is_none() {
+        return Err(missing_history_error(&peer_session_id, &command.cwd, &home));
+    }
+    let delivery = ProfileDelivery::none();
+    let requested_mode = crate::claude_view::DEFAULT_MODE.to_string();
+    let mut args = command.args.clone();
+    if let Some(path) = mcp
+        .as_ref()
+        .and_then(|config| config.claude_config_path.as_ref())
+    {
+        args.push("--mcp-config".to_string());
+        args.push(path.to_string_lossy().into_owned());
+        if !args.iter().any(|arg| arg == "--strict-mcp-config") {
+            args.push("--strict-mcp-config".to_string());
+        }
+    }
+    let args = push_resume_flag(launch_in_bypass_mode(args), &peer_session_id);
+    spawn_claude_child(
+        state,
+        &command,
+        args,
+        requested_mode,
+        &delivery,
+        Some(peer_session_id),
+    )
+}
+
+/// The child both roads share: process, job containment, stdio, the initial
+/// mode gate, the broker, the reader. Fresh and resumed differ only in the
+/// argv they arrive with and the peer id they report.
+fn spawn_claude_child(
+    state: &Arc<ServerState>,
+    command: &PtyCommand,
+    args: Vec<String>,
+    requested_mode: String,
+    delivery: &ProfileDelivery,
+    resume_peer: Option<String>,
+) -> Result<SpawnedSession, WireError> {
     let mut process = Command::new(&command.program);
     process
         .args(&args)
@@ -551,7 +705,7 @@ pub(super) fn spawn_process(
         stderr: Some(Box::new(stderr_source)),
         permission_broker: Some(permission_broker),
         os_handle,
-        peer_session_id: None,
+        peer_session_id: resume_peer,
         agent_version: None,
         // The delivery was applied inside `spawn_process`, before this value
         // existed; nothing is left for the session reader to answer.
@@ -2146,6 +2300,107 @@ mod tests {
             outcome.live_agent_replay,
         );
         (runtime, conn)
+    }
+
+    #[test]
+    fn resume_slug_matches_the_directories_the_cli_lays_out() {
+        // Measured against `%USERPROFILE%\.claude\projects` on this machine:
+        // the two killed sessions tonight sat under exactly these slugs.
+        assert_eq!(
+            claude_projects_slug(Path::new(
+                r"C:\Users\gualt\Desktop\New devboule\devboule-v2"
+            )),
+            "C--Users-gualt-Desktop-New-devboule-devboule-v2"
+        );
+        assert_eq!(
+            claude_projects_slug(Path::new(r"C:\Users\gualt\Desktop")),
+            "C--Users-gualt-Desktop"
+        );
+    }
+
+    #[test]
+    fn resume_argv_adds_the_flag_and_keeps_the_launch() {
+        let base = vec!["-p".to_string(), "--verbose".to_string()];
+        assert_eq!(
+            push_resume_flag(base, "peer-1"),
+            vec!["-p", "--verbose", "--resume", "peer-1"]
+        );
+    }
+
+    #[test]
+    fn history_lookup_finds_the_conversation_and_refuses_traversal() {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let home = std::env::temp_dir().join(format!(
+            "devboule-claude-hist-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let cwd = Path::new(r"C:\work\shop");
+        let dir = home
+            .join(".claude")
+            .join("projects")
+            .join(claude_projects_slug(cwd));
+        std::fs::create_dir_all(&dir).expect("history dir");
+        std::fs::write(dir.join("peer-1.jsonl"), "{}\n").expect("history file");
+        assert!(find_claude_history(&home, cwd, "peer-1").is_some());
+        assert!(find_claude_history(&home, cwd, "missing").is_none());
+        assert!(find_claude_history(&home, cwd, "../evil").is_none());
+        assert!(find_claude_history(&home, cwd, "a/b").is_none());
+        // A Windows prefix discards the whole base under `Path::join`, with
+        // none of the tokens above present — so it refuses at find level too.
+        assert!(find_claude_history(&home, cwd, "C:evil").is_none());
+        // A conversation filed under another slug still proves the id exists:
+        // the CLI resolves `--resume` by id, and our slug rule for an exotic
+        // cwd may be the thing that is wrong.
+        let elsewhere = home.join(".claude").join("projects").join("C--elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("sibling dir");
+        std::fs::write(elsewhere.join("peer-9.jsonl"), "{}\n").expect("sibling file");
+        assert!(find_claude_history(&home, cwd, "peer-9").is_some());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn missing_history_refusal_names_the_peer_and_the_expected_path() {
+        let error =
+            missing_history_error("peer-9", Path::new(r"C:\work"), Path::new(r"C:\Users\me"));
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains("peer-9"),
+            "the refusal names the conversation: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("deleted") || error.message.contains("rotated"),
+            "the refusal says what happened to the file: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn peer_session_id_is_a_closed_alphabet() {
+        // Provider UUIDs and the stub's ids pass; anything that could steer a
+        // `Path::join` — separators, dot-dot, Windows prefixes — refuses.
+        for ok in [
+            "550e8400-e29b-41d4-a716-446655440000",
+            "stub-peer-1",
+            "peer-1",
+        ] {
+            assert!(valid_peer_session_id(ok), "{ok} must pass");
+        }
+        for evil in [
+            "",
+            "C:evil",
+            r"C:\evil",
+            r"\\server\share\x",
+            "../evil",
+            "a/b",
+            r"a\b",
+            "..",
+            "peer 1",
+            "peer.jsonl",
+        ] {
+            assert!(!valid_peer_session_id(evil), "{evil:?} must refuse");
+        }
     }
 
     #[test]

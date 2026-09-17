@@ -483,6 +483,15 @@ export interface Session {
    */
   labels?: Record<string, string>;
   /**
+   * Whether the daemon would accept a resume for this session right now:
+   * process gone, resumable family, provider and peer id persisted
+   * (protocol `Session.resumable`, computed from `Provider::resumable()`).
+   * The panel renders it and never re-derives it from kind, state, or
+   * columns. Absent means the daemon predates the field — render no Reopen
+   * button rather than guessing from the kind.
+   */
+  resumable?: boolean;
+  /**
    * Mirror of the roster snapshot's `delegation`; the frontend only renders
    * it. The wire's `Session` (what `sessions_list` answers) never carries the
    * field — it is written onto this record only by the roster push merge
