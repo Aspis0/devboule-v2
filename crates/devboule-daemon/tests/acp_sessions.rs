@@ -2171,9 +2171,9 @@ fn acp_echoing_provider_gets_one_synthesized_user_message_without_echo_row() {
         .expect("events lock")
         .iter()
         .filter_map(|event| match event {
-            SessionEvent::AgentUserMessage { message_id, text } if text == prompt => {
-                Some(message_id.clone())
-            }
+            SessionEvent::AgentUserMessage {
+                message_id, text, ..
+            } if text == prompt => Some(message_id.clone()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -3383,9 +3383,9 @@ fn slice5_system_message(events: &[SessionEvent], needle: &str) -> (String, Opti
         .iter()
         .rev()
         .find_map(|event| match event {
-            SessionEvent::AgentUserMessage { message_id, text }
-                if text.contains("<devboule-system>") && text.contains(needle) =>
-            {
+            SessionEvent::AgentUserMessage {
+                message_id, text, ..
+            } if text.contains("<devboule-system>") && text.contains(needle) => {
                 Some((text.clone(), message_id.clone()))
             }
             _ => None,

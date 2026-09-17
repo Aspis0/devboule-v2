@@ -120,6 +120,7 @@ pub use session::{
     Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
     SessionModelEffort, SessionOrigin, SessionOriginKind, SessionState, SessionStateSnapshot,
     SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage, UnattendedState,
+    UserMessageAuthor,
 };
 
 /// Current protocol dialect spoken by this crate.

@@ -46,6 +46,12 @@ export type SendIntent = "interrupt" | "steer" | "queue";
  */
 export type ActiveTurnBehavior = "steer";
 
+/**
+ * Who authored one `agent_user_message` echo (protocol `UserMessageAuthor`).
+ * Not session origin nor envelope role: whose words the echo carries.
+ */
+export type UserMessageAuthor = "human" | "agent" | "creation";
+
 export type PermissionOutcome = "allow_once" | "deny";
 
 /**
@@ -784,8 +790,21 @@ export type SessionEvent =
         thoughtTokens?: number;
       };
     }
-  /** Echo of the user prompt, one ACP `user_message_chunk` at a time. */
-  | { type: "agent_user_message"; messageId: string | null; text: string }
+  /**
+   * Echo of the user prompt, one ACP `user_message_chunk` at a time.
+   *
+   * `author` names who spoke, computed by the daemon and rendered by the
+   * app instead of re-derived from the text: `human` is composer input,
+   * `agent` is an agent's outgoing A2A echo, `creation` is a child's
+   * daemon-composed first prompt. Absent on frames predating the field —
+   * read as `human`, the daemon's `#[serde(default)]`.
+   */
+  | {
+      type: "agent_user_message";
+      messageId: string | null;
+      text: string;
+      author: UserMessageAuthor;
+    }
   /**
    * An agent created a child session (protocol `SessionEvent::AgentCreated`).
    * Published on the **creator's** transcript, never on the child's, so the

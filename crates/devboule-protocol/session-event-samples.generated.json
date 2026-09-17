@@ -98,6 +98,7 @@
     "type": "agent_tool_update"
   },
   {
+    "author": "human",
     "messageId": null,
     "text": "",
     "type": "agent_user_message"

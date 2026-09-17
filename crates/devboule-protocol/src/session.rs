@@ -726,9 +726,17 @@ pub enum SessionEvent {
         spawn_depth: Option<u32>,
     },
     /// Echo of the user prompt, one ACP `user_message_chunk` at a time.
+    ///
+    /// `author` names who spoke, computed by the daemon and rendered by the
+    /// app instead of re-derived from the text: `human` is composer input,
+    /// `agent` is an agent's outgoing A2A echo (sender raw text and receiver
+    /// envelope alike), `creation` is a child's daemon-composed first prompt.
+    /// `#[serde(default)]` so frames predating the field read back as human.
     AgentUserMessage {
         message_id: Option<String>,
         text: String,
+        #[serde(default)]
+        author: UserMessageAuthor,
     },
     /// A prompt accepted by a running turn. This is journaled for audit but
     /// intentionally not pushed to live observers; the normal user-message
@@ -1344,6 +1352,20 @@ pub fn cursor_replay_ok(current_generation: u64, cursor: Cursor) -> Result<(), W
 pub enum NoticeSeverity {
     Info,
     Warning,
+}
+
+/// Who authored one `AgentUserMessage` echo. Not `SessionOrigin` (where a
+/// session came from) nor the envelope's `role`/`from_agent` (the delivery's
+/// connection facts): this names whose words the echo carries. `creation` is
+/// its own value even when a human wrote the initial text, because the line
+/// is daemon-composed (standing instructions plus preamble plus prompt).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UserMessageAuthor {
+    #[default]
+    Human,
+    Agent,
+    Creation,
 }
 
 #[cfg(test)]

@@ -9822,7 +9822,9 @@ fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
     let echoes: Vec<(Option<String>, String)> = drain(&conn)
         .into_iter()
         .filter_map(|event| match event {
-            SessionEvent::AgentUserMessage { message_id, text } => Some((message_id, text)),
+            SessionEvent::AgentUserMessage {
+                message_id, text, ..
+            } => Some((message_id, text)),
             _ => None,
         })
         .collect();
@@ -10007,6 +10009,87 @@ fn an_agent_message_is_attributed_to_the_caller_not_to_the_session_it_names() {
     assert!(envelope.contains("from_agent: s.msg.source"), "{envelope}");
     assert!(envelope.contains("please rebuild"), "{envelope}");
     assert!(envelope.ends_with("\n</devboule-system>"), "{envelope}");
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sender_a2a_echo_is_agent_while_human_composer_echo_is_human() {
+    // The defect: an agent's outgoing A2A echo rendered as YOU on the
+    // sender's own transcript. Both echoes live on the same session, so
+    // one replay must name two different authors.
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-author", "process-author");
+    let sender = insert_live_agent_with_kind_and_writer(
+        &registry,
+        "s.author.a",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+    );
+    insert_live_agent_with_kind_and_writer(
+        &registry,
+        "s.author.b",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+    );
+    let conn = attach_live_agent_for_test(&sender, "s.author.a", 91);
+    registry
+        .send_with_subscription_behavior(
+            "s.author.a",
+            91,
+            "human composer words",
+            &[],
+            &[],
+            &owner,
+            &conn,
+            None,
+        )
+        .expect("human send");
+    registry
+        .agent_message_send(
+            "s.author.a",
+            "s.author.b",
+            "Reply with exactly PING2",
+            &owner,
+            &conn,
+        )
+        .expect("a2a send");
+    journal.flush().expect("flush");
+    // Live observers, not the journal: `insert_live_agent_*` bypasses the
+    // session row `replay` needs, and both echoes are published to the
+    // sender's own attachment.
+    let echoes: Vec<(String, devboule_protocol::UserMessageAuthor)> = drain(&conn)
+        .into_iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentUserMessage { text, author, .. } => Some((text, author)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        echoes.len(),
+        2,
+        "human echo plus sender A2A echo: {echoes:?}"
+    );
+    let human = echoes
+        .iter()
+        .find(|(text, _)| text == "human composer words")
+        .expect("human echo");
+    assert_eq!(
+        human.1,
+        devboule_protocol::UserMessageAuthor::Human,
+        "composer input stays human"
+    );
+    let peer = echoes
+        .iter()
+        .find(|(text, _)| text == "Reply with exactly PING2")
+        .expect("sender echo");
+    assert_eq!(
+        peer.1,
+        devboule_protocol::UserMessageAuthor::Agent,
+        "sender A2A echo is not the human"
+    );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }

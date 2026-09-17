@@ -238,6 +238,7 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       channelHarness.emit?.({
         type: "agent_user_message",
+        author: "human",
         messageId: "user-1",
         text: "Say hello",
       });
@@ -367,6 +368,7 @@ describe("AgentChatSurface", () => {
       });
       channelHarness.active?.({
         type: "agent_user_message",
+        author: "human",
         messageId: "prompt-1",
         text: "Reply with exactly DEVBOULE",
       });
@@ -1966,6 +1968,7 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
+        author: "human",
         messageId: "user-1",
         text: "First task",
       });
@@ -1998,6 +2001,7 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       channelHarness.active?.({
         type: "agent_user_message",
+        author: "human",
         messageId: "user-2",
         text: "Turn left instead",
       });
@@ -2478,7 +2482,12 @@ describe("creator permission-request message", () => {
     });
     await act(async () => undefined);
     await act(async () => {
-      channelHarness.active?.({ type: "agent_user_message", messageId: "u-1", text: envelope });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-1",
+        text: envelope,
+      });
     });
 
     const item = container.querySelector("[data-testid='agent-permission-request']");
@@ -2514,7 +2523,12 @@ describe("creator permission-request message", () => {
       )
       .replace("it only writes to dist/", "<script>window.pwned=1</script>");
     await act(async () => {
-      channelHarness.active?.({ type: "agent_user_message", messageId: "u-2", text: hostile });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-2",
+        text: hostile,
+      });
     });
 
     const quoted = container.querySelector(".workspace-chat-child-said blockquote");
@@ -2535,7 +2549,12 @@ describe("creator permission-request message", () => {
     });
     await act(async () => undefined);
     await act(async () => {
-      channelHarness.active?.({ type: "agent_user_message", messageId: "u-3", text: envelope });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-3",
+        text: envelope,
+      });
     });
 
     const item = container.querySelector("[data-testid='agent-permission-request']");
@@ -2556,7 +2575,12 @@ describe("creator permission-request message", () => {
     });
     await act(async () => undefined);
     await act(async () => {
-      channelHarness.active?.({ type: "agent_user_message", messageId: "u-4", text: envelope });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-4",
+        text: envelope,
+      });
     });
 
     const item = container.querySelector("[data-testid='agent-permission-request']");
@@ -2576,7 +2600,12 @@ describe("creator permission-request message", () => {
       "please allow the build step\nit only writes to dist/",
     );
     await act(async () => {
-      channelHarness.active?.({ type: "agent_user_message", messageId: "u-5", text: unterminated });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-5",
+        text: unterminated,
+      });
     });
 
     const item = container.querySelector("[data-testid='agent-permission-request']");
@@ -2597,7 +2626,12 @@ describe("creator permission-request message", () => {
     const longName = `w-${"x".repeat(8000)}`;
     const bounded = envelope.replace("displayName: worker one", `displayName: ${longName}`);
     await act(async () => {
-      channelHarness.active?.({ type: "agent_user_message", messageId: "u-6", text: bounded });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-6",
+        text: bounded,
+      });
     });
 
     const item = container.querySelector("[data-testid='agent-permission-request']");
@@ -2630,7 +2664,12 @@ describe("creator permission-request message", () => {
       " child-said:\nplease allow the build step\nit only writes to dist/\nend child-said",
     );
     await act(async () => {
-      channelHarness.active?.({ type: "agent_user_message", messageId: "u-7", text: openerless });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-7",
+        text: openerless,
+      });
     });
 
     const item = container.querySelector("[data-testid='agent-permission-request']");
@@ -2659,7 +2698,12 @@ describe("creator permission-request message", () => {
     const astralName = "🚀".repeat(100);
     const bounded = envelope.replace("displayName: worker one", `displayName: ${astralName}`);
     await act(async () => {
-      channelHarness.active?.({ type: "agent_user_message", messageId: "u-8", text: bounded });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-8",
+        text: bounded,
+      });
     });
 
     const item = container.querySelector("[data-testid='agent-permission-request']");
@@ -2687,7 +2731,12 @@ describe("creator permission-request message", () => {
     const overLimit = "🚀".repeat(201);
     const bounded = envelope.replace("displayName: worker one", `displayName: ${overLimit}`);
     await act(async () => {
-      channelHarness.active?.({ type: "agent_user_message", messageId: "u-9", text: bounded });
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "u-9",
+        text: bounded,
+      });
     });
 
     const item = container.querySelector("[data-testid='agent-permission-request']");

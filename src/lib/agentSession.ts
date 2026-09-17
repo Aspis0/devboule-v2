@@ -489,7 +489,9 @@ export class AgentSession {
         // echoed user message — one event, whole. A permission-request
         // envelope is reduced to its structured chat item: the daemon's
         // fields in system styling, the child's excerpt quoted and labelled
-        // as its own. Everything else appends as it always did.
+        // as its own. Everything else appends by author: the daemon names
+        // who spoke and the app renders it, never re-deriving authorship
+        // from the text. Absent predates the field and reads as human.
         const permissionRequest = parseAgentPermissionRequest(event.text);
         if (permissionRequest !== null) {
           this.closeActiveBlocks();
@@ -500,6 +502,21 @@ export class AgentSession {
                 id: `permission-request-${this.nextItemId++}`,
                 role: "permission_request",
                 ...permissionRequest,
+              },
+            ],
+          });
+          return;
+        }
+        if ((event.author ?? "human") !== "human") {
+          this.closeActiveBlocks();
+          this.update({
+            items: [
+              ...this.state.items,
+              {
+                id: `system-${this.nextItemId++}`,
+                role: "system",
+                text: event.text,
+                severity: "info",
               },
             ],
           });

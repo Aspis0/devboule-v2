@@ -83,8 +83,8 @@ use devboule_protocol::{
     FinishArtifactPart, FinishArtifactPartMetadata, JournalRetention, JournalStats, OwnerId,
     PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session, SessionEvent,
     SessionKind, SessionModel, SessionOrigin, SessionOriginKind, SessionState,
-    SessionStateSnapshot, UnattendedState, WireError, Workspace, WorkspaceIsolation,
-    MAX_WRITE_BYTES,
+    SessionStateSnapshot, UnattendedState, UserMessageAuthor, WireError, Workspace,
+    WorkspaceIsolation, MAX_WRITE_BYTES,
 };
 #[cfg(test)]
 use std::sync::Barrier;
@@ -2281,6 +2281,10 @@ pub struct SendRequest<'a> {
     /// one place and no session has to be searched for its preamble
     /// (`create-from-profile`).
     pub preset_preamble: Option<&'a str>,
+    /// Who authored this prompt. Required so every caller states who spoke:
+    /// human composer input, an agent's A2A delivery, a child's creation
+    /// prompt, or the daemon's own report to a creator.
+    pub author: UserMessageAuthor,
 }
 
 /// What one delivery needs to re-key its brake slot (S4-10): the table, the
@@ -5430,6 +5434,7 @@ impl SessionRegistry {
             message_slot: None,
             // No preset preamble: a client's prompt is not a creation's.
             preset_preamble: None,
+            author: UserMessageAuthor::Human,
         })
         .map(|_| ())
     }
@@ -5557,6 +5562,7 @@ impl SessionRegistry {
             message_slot: Some(&slot_ref),
             // No preset preamble: an agent message is not a creation's prompt.
             preset_preamble: None,
+            author: UserMessageAuthor::Agent,
         });
         if result.is_ok() {
             // The sender sees the raw peer message in its own transcript; the
@@ -5565,7 +5571,7 @@ impl SessionRegistry {
             // already has the text, so a sender-side recording failure is a
             // degraded session, never an error the caller could retry (S4-09).
             if from_runtime
-                .publish_agent_user_message(text.to_string())
+                .publish_agent_user_message(text.to_string(), UserMessageAuthor::Agent)
                 .is_none()
             {
                 from_runtime.mark_journal_degraded();
@@ -5608,6 +5614,7 @@ impl SessionRegistry {
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: None,
+            author: UserMessageAuthor::Human,
         })
         .map(|_| ())
     }
@@ -5630,6 +5637,7 @@ impl SessionRegistry {
             interrupt_on_steer_refusal,
             message_slot,
             preset_preamble,
+            author,
         } = *request;
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -5788,7 +5796,8 @@ impl SessionRegistry {
                     // session and never as an error — the caller must not be
                     // invited to retry a steer that already landed
                     // (S4-06/S4-09).
-                    let echo_message_id = runtime.publish_agent_user_message(text.to_string());
+                    let echo_message_id =
+                        runtime.publish_agent_user_message(text.to_string(), author);
                     if echo_message_id.is_none() {
                         runtime.mark_journal_degraded();
                     }
@@ -6039,7 +6048,7 @@ impl SessionRegistry {
                 // base64 never leaves `PromptAttachment` either way — a
                 // turn's row must not grow by hundreds of KiB, and the user's
                 // images must not be copied into the history database.
-                match runtime.publish_agent_user_message(prompt.clone()) {
+                match runtime.publish_agent_user_message(prompt.clone(), author) {
                     Some(message_id) => delivered_message_id = Some(message_id),
                     None => return Err(internal("Agent input could not be recorded.")),
                 }
@@ -6768,6 +6777,7 @@ impl SessionRegistry {
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: Some(crate::provider_catalog::AGENT_PREAMBLE),
+            author: UserMessageAuthor::Creation,
         });
         if let Err(error) = sent {
             let _ = self.close(&child.id, &owner, &None);
@@ -7318,6 +7328,9 @@ impl SessionRegistry {
             // No preset preamble: the daemon's own report is not a creation's
             // prompt, and a child that was created already had its first one.
             preset_preamble: None,
+            // The daemon's own report about a child agent, never the person's
+            // words: rendered as non-human alongside agent echoes.
+            author: UserMessageAuthor::Agent,
         })
     }
 

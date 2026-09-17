@@ -3778,6 +3778,7 @@ describe("design transcript", () => {
     const { run } = await startRun(host);
     channelHarness.active?.({
       type: "agent_user_message",
+      author: "human",
       messageId: null,
       text: `User request: Update the design\n\n${DESIGN_DOCTRINE_BEGIN}`,
     });

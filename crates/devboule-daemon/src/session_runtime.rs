@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use devboule_protocol::{
     cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, NoticeSeverity, Session,
     SessionEvent, SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin,
-    TranscriptIntegrity, WireError,
+    TranscriptIntegrity, UserMessageAuthor, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -1149,7 +1149,11 @@ impl SessionRuntime {
     /// Publish a daemon-owned agent event as an AgentReport row rather than an
     /// ACP envelope. Provider echo envelopes remain replayable for history
     /// written before the echo was suppressed.
-    pub(crate) fn publish_agent_user_message(&self, text: String) -> Option<String> {
+    pub(crate) fn publish_agent_user_message(
+        &self,
+        text: String,
+        author: UserMessageAuthor,
+    ) -> Option<String> {
         // The id is built by the publisher, so the event, the transcript and the
         // journal row that links to it (`Steered`) name one message: the caller
         // takes the id back out of the event that was actually published rather
@@ -1157,6 +1161,7 @@ impl SessionRuntime {
         self.publish_journaled_agent_event(|generation, seq| SessionEvent::AgentUserMessage {
             message_id: Some(format!("devboule-user-{generation}-{seq}")),
             text,
+            author,
         })
         .and_then(|event| match event {
             SessionEvent::AgentUserMessage { message_id, .. } => message_id,
