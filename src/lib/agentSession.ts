@@ -657,7 +657,7 @@ export class AgentSession {
       // stops here rather than failing on every later send.
       case "detached":
         this.stopRunningSubagents();
-        this.fail("Another client took over this session.");
+        this.failSession("Another client took over this session.");
         return;
       case "output":
       case "agent_stderr":
