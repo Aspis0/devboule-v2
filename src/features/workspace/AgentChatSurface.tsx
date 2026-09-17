@@ -747,7 +747,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // moment the connection drops, and `connecting` is the top of each
   // reconnect attempt — a window with no client, in which every send is
   // guaranteed to fail.
-  const daemonGone = daemonState !== undefined && daemonState !== "connected";
+  const daemonGone = daemonState !== "connected";
   const { copy: statusLabel, tone: statusDot } = toolbarStatus(observedState, elapsedMs, state);
   // `AgentSession` replaces the items array on every update (copy-on-write),
   // so this memo recomputes whenever the transcript changes and can never

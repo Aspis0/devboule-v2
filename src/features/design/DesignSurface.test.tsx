@@ -2419,11 +2419,15 @@ describe("DesignSurface host capabilities", () => {
       await act(async () => send.click());
       await act(settle);
 
-      expect(container.querySelector(".design-history-open-status")?.textContent).toBe(
-        "This design was not added to your history.",
+      // The write, its notice, and the history refresh each arrive on their
+      // own chain; wait on the conditions instead of a fixed tick count.
+      await vi.waitFor(() =>
+        expect(container.querySelector(".design-history-open-status")?.textContent).toBe(
+          "This design was not added to your history.",
+        ),
       );
       // The history list still learns about the write attempt even though nothing was recorded.
-      expect(historyListMocks.refreshKey).toBe(1);
+      await vi.waitFor(() => expect(historyListMocks.refreshKey).toBe(1));
       await act(async () => root.unmount());
     });
 
@@ -2439,7 +2443,7 @@ describe("DesignSurface host capabilities", () => {
       await act(settle);
 
       expect(container.querySelector(".design-history-open-status")).toBeNull();
-      expect(historyListMocks.refreshKey).toBe(1);
+      await vi.waitFor(() => expect(historyListMocks.refreshKey).toBe(1));
       await act(async () => root.unmount());
     });
   });
