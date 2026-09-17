@@ -236,6 +236,15 @@ fn draw_session_nonce() -> u64 {
 /// The nonce is what a restart changes, so ids from two lives of the daemon
 /// cannot meet even when both counters start over.
 fn session_unique(process_nonce: u64, counter: u64) -> String {
+    // Guard in the mint, not surprise at composition: past 15 hex digits the
+    // unique passes the 32-char budget (2^60 creates in one process — never;
+    // at 1M creates/s that is 36,000 years) and compose refuses confusingly.
+    // Debug-only is proportionate: release keeps the infallible mint, tests
+    // fail loudly if the shape ever drifts past budget.
+    debug_assert!(
+        counter <= 0xFFF_FFFF_FFFF_FFFF,
+        "counter {counter} passes the session id budget; restart the daemon for fresh ids"
+    );
     format!("{counter:08x}-{process_nonce:016x}")
 }
 
@@ -245,6 +254,14 @@ fn mint_session_unique() -> String {
         session_nonce(),
         SESSION_COUNTER.fetch_add(1, Ordering::Relaxed),
     )
+}
+
+/// Test-only face of [`session_unique`], so the attachment store's folder-name
+/// test tracks the minter instead of copying its spelling. `#[cfg(test)]`
+/// keeps it out of release builds entirely; production callers use the mint.
+#[cfg(test)]
+pub(crate) fn session_unique_for_test(process_nonce: u64, counter: u64) -> String {
+    session_unique(process_nonce, counter)
 }
 
 /// The transport-specific ACP module supplies these three small adapters;

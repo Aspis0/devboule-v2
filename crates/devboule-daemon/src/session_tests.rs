@@ -11729,3 +11729,57 @@ fn the_minted_unique_stays_within_the_session_id_budget() {
         "{minted} left the lower-case hex-and-dash alphabet"
     );
 }
+
+/// M2 (nonce, pinnable in-process): the mint uses one stable per-process
+/// value and advances the counter. What this cannot prove from inside one
+/// process is that a fresh process draws a different nonce — that needs two
+/// processes or control of the OS RNG, so the cross-process half rests on
+/// inspection of `draw_session_nonce` (OS entropy, pid+time fallback) behind
+/// `OnceLock`, not on a test.
+#[test]
+fn mint_uses_a_stable_process_nonce_and_an_advancing_counter() {
+    let first = mint_session_unique();
+    let second = mint_session_unique();
+    let (first_counter, first_nonce) = first.split_once('-').expect("mint shape");
+    let (second_counter, second_nonce) = second.split_once('-').expect("mint shape");
+    assert_eq!(
+        first_nonce, second_nonce,
+        "two mints in one process share the nonce"
+    );
+    assert_ne!(
+        first_counter, second_counter,
+        "two mints advance the counter"
+    );
+    assert_eq!(
+        first_nonce,
+        format!("{:016x}", session_nonce()),
+        "the mint uses the process nonce"
+    );
+    assert_eq!(session_nonce(), session_nonce(), "the nonce is stable");
+}
+
+/// M2 (boundary): the 8-wide counter is a minimum width, not a maximum —
+/// past it the unique grows gracefully and still composes. The terminal
+/// refusal at the 32-char budget is pinned with a literal, not via the
+/// minter (which debug-asserts first — see below).
+#[test]
+fn counter_past_its_width_grows_gracefully_within_budget() {
+    let unique = session_unique(0x9f2c_1a7b_3e5d_6048, 0x1_0000_0000);
+    assert_eq!(unique.len(), 26, "{unique}");
+    compose_session_id("process-1234", &unique).expect("still within budget");
+    let overlong = "f".repeat(33);
+    assert!(
+        compose_session_id("process-1234", &overlong).is_err(),
+        "33 chars must refuse at the 32-char budget"
+    );
+}
+
+/// M2 (boundary guard): an over-budget counter must fail loudly in the mint,
+/// not as a confusing compose surprise. `u64::MAX` needs 16 hex digits — 33
+/// chars with nonce+dash — so the mint must refuse it here in test builds.
+/// Before the guard this does not panic (red).
+#[test]
+#[should_panic(expected = "session id budget")]
+fn mint_refuses_a_counter_past_the_id_budget() {
+    let _ = session_unique(0x9f2c_1a7b_3e5d_6048, u64::MAX);
+}

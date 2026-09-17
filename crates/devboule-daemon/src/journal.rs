@@ -2473,11 +2473,16 @@ fn write_session_row(
 }
 
 /// The one constraint the sessions table puts on `id` is its primary key,
-/// so a constraint failure naming that column is a held id, nothing else.
+/// so a primary-key violation naming that column is a held id, nothing else.
+/// The code leads and the prose follows: prose alone trusts a third-party
+/// string, code alone would claim another table's key.
 fn session_id_taken(error: &rusqlite::Error) -> bool {
-    let rusqlite::Error::SqliteFailure(_, message) = error else {
+    let rusqlite::Error::SqliteFailure(ffi_error, message) = error else {
         return false;
     };
+    if ffi_error.extended_code != rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY {
+        return false;
+    }
     message
         .as_deref()
         .is_some_and(|message| message.contains("sessions.id"))
@@ -4901,6 +4906,49 @@ mod tests {
             "the old-shape id must still resolve for attachments"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// M1: the held-id refusal must rest on the constraint code, not the prose.
+    /// Both errors below come from SQLite itself — no hand-made error value.
+    /// A real non-PK failure whose message names the column must not read as
+    /// held; a real PK duplicate must.
+    #[test]
+    fn session_id_taken_rests_on_the_constraint_code_not_the_prose() {
+        let conn = Connection::open_in_memory().expect("in-memory");
+        conn.execute_batch(
+            "CREATE TABLE sessions(id TEXT PRIMARY KEY);
+             CREATE TRIGGER trg BEFORE INSERT ON sessions
+             BEGIN SELECT RAISE(ABORT, 'sessions.id lookalike'); END;",
+        )
+        .expect("scratch sessions table with a prose-matching trigger");
+        let trigger_err = conn
+            .execute("INSERT INTO sessions(id) VALUES ('x')", [])
+            .expect_err("the trigger fires");
+        assert!(
+            !session_id_taken(&trigger_err),
+            "prose alone must not classify a held id: {trigger_err:?}"
+        );
+        conn.execute_batch("DROP TRIGGER trg;")
+            .expect("drop trigger");
+        conn.execute("INSERT INTO sessions(id) VALUES ('x')", [])
+            .expect("first insert lands");
+        let pk_err = conn
+            .execute("INSERT INTO sessions(id) VALUES ('x')", [])
+            .expect_err("duplicate primary key");
+        assert!(
+            session_id_taken(&pk_err),
+            "a real primary-key duplicate must read as held: {pk_err:?}"
+        );
+        assert_eq!(
+            pk_err.sqlite_error().map(|error| error.extended_code),
+            Some(rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY),
+            "the positive half really is a primary-key violation"
+        );
+        assert_ne!(
+            trigger_err.sqlite_error().map(|error| error.extended_code),
+            Some(rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY),
+            "the negative half really is not"
+        );
     }
 
     /// J3: a birth changes the roster, so it must bump the revision the

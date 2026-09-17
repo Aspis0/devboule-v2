@@ -3297,10 +3297,11 @@ mod tests {
     /// A rule that closes a hole by refusing the normal case is worse than the
     /// hole, so "the normal case" is not a shape this file gets to imagine. The
     /// ids below come from the two functions that mint them
-    /// ([`devboule_protocol::compose_session_id`] with the unique component
-    /// `session.rs` formats, `format!("{counter:08x}-{nonce:016x}")`, and the
-    /// M2 in-process form `session-{pid}-{n}`); a hand-written `s.a.1` would
-    /// prove nothing about either.
+    /// ([`devboule_protocol::compose_session_id`] with the unique component the
+    /// real minter formats — `crate::session::session_unique_for_test`, the
+    /// test-only face of `session.rs`'s composition — and the M2 in-process
+    /// form `session-{pid}-{n}`); a hand-written `s.a.1` would prove nothing
+    /// about either.
     ///
     /// The second half pins the assumption the `.`/`..` clause rests on: the
     /// protocol accepts both, so the store is the only thing between them and a
@@ -3330,8 +3331,8 @@ mod tests {
         let mut minted = Vec::new();
         for (user, client) in owners {
             let owner = OwnerId::new(user, client).expect("owner");
-            for (counter, nonce) in [(0u32, 0u64), (1, 0x9f2c_1a7b_3e5d_6048), (0xffff_ffff, 1)] {
-                let unique = format!("{counter:08x}-{nonce:016x}");
+            for (counter, nonce) in [(0u64, 0u64), (1, 0x9f2c_1a7b_3e5d_6048), (0xffff_ffff, 1)] {
+                let unique = crate::session::session_unique_for_test(nonce, counter);
                 let id = compose_session_id(&owner.session_token(), &unique)
                     .expect("the daemon mints this");
                 minted.push(id);
