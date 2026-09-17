@@ -438,7 +438,8 @@ export function transcriptItems(
       item.role === "error" ||
       item.role === "system" ||
       item.role === "permission_request" ||
-      item.role === "daemon_notice"
+      item.role === "daemon_notice" ||
+      item.role === "a2a_message"
     )
       continue;
     const parentage = {

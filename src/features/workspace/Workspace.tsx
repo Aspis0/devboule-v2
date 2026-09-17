@@ -1216,6 +1216,8 @@ export function Workspace({
                 observedState={selectedSession.state}
                 elapsedMs={selectedSession.elapsedMs}
                 daemonState={daemon.state}
+                sessionRoster={sessions}
+                deviceNames={peerNames}
                 auxiliary={
                   selectedPermission !== null ? (
                     <WorkspacePermissionCard

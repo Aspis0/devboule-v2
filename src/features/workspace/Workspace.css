@@ -710,8 +710,10 @@
 
 /* The sentence interpolates daemon-supplied strings; wrapping keeps an
    unbroken multi-kilobyte field inside the pane (the card also bounds those
-   fields in code — this is the belt to that brace). */
-.workspace-chat-daemon-notice .workspace-chat-copy {
+   fields in code — this is the belt to that brace). The agent-to-agent card
+   interpolates the sender's name the same way. */
+.workspace-chat-daemon-notice .workspace-chat-copy,
+.workspace-chat-a2a-message .workspace-chat-copy {
   margin-top: 4px;
   min-width: 0;
   overflow-wrap: anywhere;

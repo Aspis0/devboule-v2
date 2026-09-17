@@ -110,8 +110,9 @@ function headerLinesValue(lines: string[], key: string): string | null {
 
 /** The daemon's fixed header: every line before the first timestamp line.
     The daemon composes those lines before any caller-controlled byte; a
-    frame without a timestamp line has no provable header at all. */
-function headerBlock(lines: string[]): string[] {
+    frame without a timestamp line has no provable header at all. Shared
+    with `agentPeerMessage.ts`, which reads the same envelope's header. */
+export function headerBlock(lines: string[]): string[] {
   const end = lines.findIndex((line) => line.startsWith(TIMESTAMP_PREFIX));
   return end === -1 ? [] : lines.slice(0, end);
 }

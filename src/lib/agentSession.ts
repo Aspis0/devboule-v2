@@ -15,6 +15,7 @@ import { isCommandError } from "./tauri";
 import { eventTypeName } from "./eventTypeName";
 import { parseAgentPermissionRequest } from "./agentPermissionRequest";
 import { parseAgentDaemonNotice, type AgentDaemonNotice } from "./agentDaemonNotice";
+import { parseAgentPeerMessage, type AgentPeerOrigin } from "./agentPeerMessage";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -81,6 +82,20 @@ export type AgentChatItem =
       id: string;
       role: "daemon_notice";
       notice: AgentDaemonNotice;
+    }
+  | {
+      /** One agent-to-agent relay envelope, parsed (see `agentPeerMessage.ts`):
+          another agent's message, named and stripped of the envelope. */
+      id: string;
+      role: "a2a_message";
+      /** The sender the daemon's fixed header names. */
+      fromAgent: string;
+      /** What the frame's origin line commits to (`session.rs:8026`): this
+          machine, a paired device and its name when it names one, or
+          nothing. */
+      origin: AgentPeerOrigin;
+      /** The sender's message, verbatim — hostile input, rendered as text only. */
+      body: string;
     };
 
 export interface AgentFinished {
@@ -493,6 +508,15 @@ export class AgentSession {
 
     switch (event.type) {
       case "agent_user_message": {
+        // THE ORDER OF THE FIRST TWO PARSES IS LOAD-BEARING: a well-formed
+        // permission frame is also a well-formed notice to
+        // `parseAgentDaemonNotice` — `role: daemon`, and a `kind:` outside
+        // its KNOWN_KINDS, so that parser returns `unformatted()`, not null.
+        // The permission card survives only because its parse runs first;
+        // swapped, every permission card becomes "a notice this version
+        // cannot format" and the child's excerpt drops. Pinned by the
+        // "parser order" test in `agentSession.test.ts`.
+        //
         // The daemon's own reports reach a creator's transcript through the
         // send path, so a `<devboule-system>` envelope arrives here as the
         // echoed user message — one event, whole. A permission-request
@@ -501,13 +525,17 @@ export class AgentSession {
         // as its own. Any other frame whose fixed header carries both `role:
         // daemon` and a `kind:` line — a known kind, an unknown one, or a
         // notice whose closing tag the daemon's size bound cut off — becomes
-        // a readable daemon_notice card, never the raw frame. Everything
-        // else falls through by author, including the agent-to-agent echo:
-        // its role is composed from the caller's peer record and may read
-        // `daemon`, but it carries no kind, so it is not a notice and its
-        // text stays visible. The daemon names who spoke and the app renders
-        // it, never re-deriving authorship from the text. Absent predates
-        // the field and reads as human.
+        // a readable daemon_notice card, never the raw frame. The relay
+        // envelope — a `from_agent:` and no `kind:` in the fixed header — is
+        // another agent's message, not a notice: it becomes an a2a_message
+        // naming its sender, the envelope stripped. `origin` is not part of
+        // that marker: `origin_line` (`session.rs:8026`) writes the same
+        // three shapes — `local`, `peer:<device>`, `unknown` — for relays
+        // and notices alike, so it travels on the item as provenance.
+        // Everything else falls through by author, its text staying visible.
+        // The daemon names who spoke and the app renders it, never
+        // re-deriving authorship from the text. Absent predates the field
+        // and reads as human.
         const permissionRequest = parseAgentPermissionRequest(event.text);
         if (permissionRequest !== null) {
           this.closeActiveBlocks();
@@ -533,6 +561,23 @@ export class AgentSession {
                 id: `daemon-notice-${this.nextItemId++}`,
                 role: "daemon_notice",
                 notice: daemonNotice,
+              },
+            ],
+          });
+          return;
+        }
+        const peerMessage = parseAgentPeerMessage(event.text);
+        if (peerMessage !== null) {
+          this.closeActiveBlocks();
+          this.update({
+            items: [
+              ...this.state.items,
+              {
+                id: `a2a-message-${this.nextItemId++}`,
+                role: "a2a_message",
+                fromAgent: peerMessage.fromAgent,
+                origin: peerMessage.origin,
+                body: peerMessage.body,
               },
             ],
           });

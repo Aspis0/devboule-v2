@@ -16,6 +16,7 @@ import type {
   PermissionRequest,
   PermissionResolved,
   PromptAttachment,
+  Session,
   SessionManifest,
   SessionModel,
   SessionState,
@@ -42,6 +43,7 @@ import { WorkspaceComposer } from "./WorkspaceComposer";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
+import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
 
 interface AgentChatSurfaceProps {
   sessionId: string;
@@ -53,6 +55,18 @@ interface AgentChatSurfaceProps {
   elapsedMs?: number | null;
   /** The daemon connection's state; input is disabled while it cannot carry sends. Required so an omission is compile-visible. */
   daemonState: DaemonConnectionState;
+  /**
+   * The roster rows the agent-to-agent card resolves a relay's sender
+   * against. Handed none, the card can only show the session id the frame
+   * named — the truth it has, minus the name.
+   */
+  sessionRoster?: ReadonlyArray<Pick<Session, "displayName" | "id" | "kind" | "title">>;
+  /**
+   * Device id to display name, the same `DevicesList` map the permission
+   * card's origin line resolves against; the a2a card resolves a relay's
+   * paired device with it.
+   */
+  deviceNames?: ReadonlyMap<string, string>;
   onPermissionRequest?: (
     sessionId: string,
     subscriptionId: SubscriptionId,
@@ -481,7 +495,7 @@ function renderToolItem(
  * The wrapper carries the first item's frame, plus `is-running` when any
  * item is still running (Paseo's `isLoading`: any call running/executing)
  * and `is-failed` with the failed mark when any item failed. */
-function renderGroupEntry(group: ToolCallGroup) {
+function renderGroupEntry(group: ToolCallGroup, a2aNames: A2aNameSource) {
   const first = group.items[0];
   if (first === undefined) return null;
   const frame = entryFrame(first);
@@ -500,18 +514,18 @@ function renderGroupEntry(group: ToolCallGroup) {
         ) : null}
       </summary>
       <div className="workspace-chat-tool-group-body">
-        {group.items.map((item) => renderItem(item))}
+        {group.items.map((item) => renderItem(item, a2aNames))}
       </div>
     </details>
   );
 }
 
-function renderEntry(entry: AgentChatItem | ToolCallGroup) {
-  if (isToolCallGroup(entry)) return renderGroupEntry(entry);
-  return renderItem(entry);
+function renderEntry(entry: AgentChatItem | ToolCallGroup, a2aNames: A2aNameSource) {
+  if (isToolCallGroup(entry)) return renderGroupEntry(entry, a2aNames);
+  return renderItem(entry, a2aNames);
 }
 
-function renderItem(item: AgentChatItem) {
+function renderItem(item: AgentChatItem, a2aNames: A2aNameSource) {
   const isSubagent = hasParentToolUseId(item);
   const measuredDepth =
     "spawnDepth" in item && typeof item.spawnDepth === "number" ? item.spawnDepth : null;
@@ -617,6 +631,10 @@ function renderItem(item: AgentChatItem) {
     return <DaemonNoticeCard key={item.id} item={item} />;
   }
 
+  if (item.role === "a2a_message") {
+    return <A2aMessageCard key={item.id} item={item} names={a2aNames} />;
+  }
+
   return (
     <div
       className={className}
@@ -639,6 +657,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   observedState = null,
   elapsedMs = null,
   daemonState,
+  sessionRoster,
+  deviceNames,
   onPermissionRequest,
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
@@ -658,6 +678,15 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     journalLoss: null,
   });
   const conversationRef = useRef<HTMLDivElement>(null);
+  // The name source the a2a card resolves against, rebuilt only when a roster
+  // the workspace handed down changes: resolution happens at render, so a
+  // rename or a re-pairing is visible the next time the card paints.
+  const a2aNames = useMemo<A2aNameSource>(() => {
+    const sessionById = new Map(
+      (sessionRoster ?? []).map((session) => [session.id, session] as const),
+    );
+    return { sessionById, deviceNames: deviceNames ?? new Map<string, string>() };
+  }, [sessionRoster, deviceNames]);
 
   useEffect(() => {
     const session = new AgentSession({
@@ -775,7 +804,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         {state.items.length === 0 && state.status === "idle" && !osGone ? (
           <div className="workspace-chat-empty">Start a conversation with the agent.</div>
         ) : null}
-        {entries.map(renderEntry)}
+        {entries.map((entry) => renderEntry(entry, a2aNames))}
         {state.streaming && !osGone ? (
           <div className="workspace-chat-typing" role="status">
             Agent is working

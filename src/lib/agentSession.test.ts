@@ -53,6 +53,7 @@ function itemRoleText(item: AgentChatItem): { role: string; text: string } {
   if (item.role === "daemon_notice") {
     return { role: item.role, text: item.notice.kind ?? "(no kind)" };
   }
+  if (item.role === "a2a_message") return { role: item.role, text: item.body };
   return { role: item.role, text: item.role === "tool" ? item.title : item.text };
 }
 
@@ -62,6 +63,7 @@ function projectItem(item: AgentChatItem): string {
   if (item.role === "daemon_notice") {
     return `${item.role}:${item.notice.kind ?? "(no kind)"}`;
   }
+  if (item.role === "a2a_message") return `${item.role}:${item.body}`;
   if (item.role === "tool") return `tool:${item.title}\n${item.output}`;
   return `${item.role}:${item.text}`;
 }
@@ -2163,7 +2165,7 @@ describe("creator daemon notice envelopes", () => {
     });
   });
 
-  it("keeps a peer's agent-to-agent frame out of the daemon-notice pipeline", async () => {
+  it("reduces a peer's agent-to-agent frame to a named message, not a daemon notice", async () => {
     const harness = makeHarness();
     await harness.session.start();
     harness.emit({
@@ -2172,10 +2174,13 @@ describe("creator daemon notice envelopes", () => {
       messageId: "m-12",
       text: [
         "<devboule-system>",
-        "origin: peer:dev-phone",
-        "role: client",
-        "from_agent: s.peer.1",
-        "timestamp: 1760000000000",
+        // Producer-true: a paired caller's envelope (`session.rs:8164` writes
+        // `from_agent: {from_session}`; `origin_line` writes `peer:<uuid>`,
+        // `session.rs:8026`).
+        "origin: peer:7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        "role: daemon",
+        "from_agent: s.msg.source",
+        "timestamp: 1789671600000",
         "words the peer sent",
         "</devboule-system>",
       ].join("\n"),
@@ -2183,9 +2188,17 @@ describe("creator daemon notice envelopes", () => {
 
     const items = harness.session.getState().items;
     expect(items).toHaveLength(1);
-    // Not a daemon notice: the frame's role claims a peer, and its words are
-    // the peer's. Today's system rendering stands.
-    expect(items[0].role).toBe("system");
+    // Not a daemon notice — the frame carries no kind — but a named message
+    // from a paired agent: the marker is `from_agent` plus no kind, and the
+    // origin names the device it came from.
+    expect(items[0].role).toBe("a2a_message");
+    if (items[0].role !== "a2a_message") return;
+    expect(items[0].fromAgent).toBe("s.msg.source");
+    expect(items[0].origin).toEqual({
+      kind: "peer",
+      device: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    });
+    expect(items[0].body).toBe("words the peer sent");
   });
 
   it("drops daemon_notice items from the design transcript like the other parsed envelopes", async () => {
@@ -2200,5 +2213,126 @@ describe("creator daemon notice envelopes", () => {
     const items = harness.session.getState().items;
     expect(items[0].role).toBe("daemon_notice");
     expect(transcriptItems(items, 0)).toEqual([]);
+  });
+});
+
+describe("agent-to-agent relay envelopes", () => {
+  // Producer-true fixture values: `from_agent` is the source session id
+  // (`session.rs:8164`; the daemon's own test asserts the literal
+  // `from_agent: s.msg.source`, `session_tests.rs:10118`); `origin` is a
+  // shape `origin_line` writes (`session.rs:8026`); `role: client` for a
+  // local caller (`session.rs:5679-5680`); `timestamp` unix millis. Check
+  // these against the producer; do not trust them.
+  const relayEnvelope = [
+    "<devboule-system>",
+    "origin: local",
+    "role: client",
+    "from_agent: s.msg.source",
+    "timestamp: 1789671600000",
+    "here is the actual message the other agent wrote",
+    "</devboule-system>",
+  ].join("\n");
+
+  it("reduces a relayed envelope to one a2a_message item naming the sender", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-20",
+      text: relayEnvelope,
+    });
+
+    const items = harness.session.getState().items;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      role: "a2a_message",
+      fromAgent: "s.msg.source",
+      body: "here is the actual message the other agent wrote",
+      origin: { kind: "local" },
+    });
+  });
+
+  it("carries the paired device the origin line names", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-22",
+      text: relayEnvelope
+        .replace("origin: local", "origin: peer:7c9e6679-7425-40de-944b-e07fc1f90ae7")
+        .replace("role: client", "role: daemon"),
+    });
+
+    const items = harness.session.getState().items;
+    expect(items[0].role).toBe("a2a_message");
+    if (items[0].role !== "a2a_message") return;
+    expect(items[0].origin).toEqual({
+      kind: "peer",
+      device: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    });
+  });
+
+  it("keeps a relay envelope without from_agent on today's system fallthrough", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-21",
+      text: [
+        "<devboule-system>",
+        "origin: local",
+        "role: client",
+        "timestamp: 1789671600000",
+        "words from a shape this build does not recognise",
+        "</devboule-system>",
+      ].join("\n"),
+    });
+
+    const items = harness.session.getState().items;
+    expect(items).toHaveLength(1);
+    expect(items[0].role).toBe("system");
+    if (items[0].role !== "system") return;
+    expect(items[0].text).toContain("words from a shape this build does not recognise");
+  });
+});
+
+describe("parser order", () => {
+  it("reduces a permission frame to a permission_request, never a daemon_notice", async () => {
+    // The pin: a well-formed `agent_permission_request` frame is ALSO a
+    // well-formed notice to `parseAgentDaemonNotice` — `role: daemon`, and a
+    // `kind:` outside its KNOWN_KINDS, so the notice parser returns
+    // `unformatted()`, not null. The card survives only because
+    // `parseAgentPermissionRequest` runs first in `handleEvent`. Reordering
+    // the two calls would turn every permission card into "a notice this
+    // version cannot format" and drop the child's excerpt. This test fails
+    // loudly if that order is ever swapped.
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-30",
+      text: [
+        "<devboule-system>",
+        "origin: local",
+        "role: daemon",
+        "from_agent: s.child.7",
+        "kind: agent_permission_request",
+        "timestamp: 1760000000000",
+        "cardId: card-9",
+        "toolTitle: Write",
+        "displayName: worker one",
+        "</devboule-system>",
+      ].join("\n"),
+    });
+
+    const items = harness.session.getState().items;
+    expect(items).toHaveLength(1);
+    expect(items[0].role).toBe("permission_request");
+    if (items[0].role !== "permission_request") return;
+    expect(items[0].cardId).toBe("card-9");
   });
 });
