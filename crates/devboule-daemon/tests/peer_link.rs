@@ -232,13 +232,15 @@ impl Peer {
     }
 
     /// Where a peer should dial this daemon. `None` when the listener is not up
-    /// (no Tailscale), which is how the test decides to skip.
+    /// (no Tailscale), which is how the test decides to skip. Composed by
+    /// `SocketAddr`, so an IPv6 tailnet address arrives bracketed.
     fn peer_address(&self) -> Option<String> {
         let info = self.self_info();
         if info.addresses.is_empty() || info.port == 0 {
             return None;
         }
-        Some(format!("{}:{}", info.addresses[0], info.port))
+        let ip: std::net::IpAddr = info.addresses[0].parse().expect("self address is an ip");
+        Some(SocketAddr::new(ip, info.port).to_string())
     }
 
     fn stderr_contents(&self) -> String {
@@ -839,6 +841,70 @@ fn a_paired_daemon_dials_its_peer_and_reads_the_reply() {
     )
     .expect_err("a far end that presents the wrong key must fail the dial");
     assert_eq!(error.step(), "handshake", "{error}");
+}
+
+/// The direction yesterday's daemon could not do: the device that **displayed**
+/// the code (the responder) dials the device that typed it. The responder's
+/// row must record the initiator's advertised listener port — the port on the
+/// accepted socket is the initiator's ephemeral source port and belongs to
+/// nothing — and the dial through the production path must be answered.
+#[test]
+fn the_device_that_displayed_the_code_can_dial_its_peer_back() {
+    let _guard = lock_tests();
+
+    let (port_a, port_b) = two_free_ports();
+    let a = Peer::spawn("back-a", port_a);
+    let b = Peer::spawn("back-b", port_b);
+
+    let (Some(address_a), Some(address_b)) = (a.peer_address(), b.peer_address()) else {
+        eprintln!(
+            "SKIP peer_link dial-back: no reachable tailnet address. A said {}; B said {}.",
+            a.remote_label(),
+            b.remote_label()
+        );
+        return;
+    };
+    let a_self = a.self_info();
+    let b_self = b.self_info();
+
+    // B displays the code, A types it: B is the responder.
+    pair_as_daemons(&a, &b, &address_b, &b_self.device_id);
+
+    let (pinned_key, stored_address) = b
+        .stored_row_for(&a_self.device_id)
+        .expect("B holds a row for A");
+    assert_eq!(
+        stored_address, address_a,
+        "the responder's row records the initiator's advertised listener port"
+    );
+
+    let dial_hello = ClientHello::m3a(
+        OwnerId::new(format!("peer_{}", b_self.device_id), "daemon").expect("owner"),
+        "devboule-daemon",
+    );
+    let reply = dial_peer(
+        &b.static_private(),
+        &pinned_key,
+        &stored_address,
+        &dial_hello,
+        &ClientMessage::SessionsList { id: 11 },
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "the responder dials the initiator back: {error}; A stderr: {}",
+            a.stderr_contents()
+        )
+    });
+    match reply {
+        DaemonMessage::Sessions { id, sessions } => {
+            assert_eq!(id, 11, "the reply carries the request id");
+            assert!(
+                sessions.is_empty(),
+                "a fresh Daemon peer has created no sessions on A: {sessions:?}"
+            );
+        }
+        other => panic!("expected Sessions, got {other:?}"),
+    }
 }
 
 /// A dial refuses an address that is not on the tailnet before anything

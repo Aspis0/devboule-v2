@@ -8,8 +8,14 @@
 //! 3. both HKDF-SHA256 the SPAKE2 key into a 32-byte PSK;
 //! 4. Noise `XXpsk3` with each side's long-term static, prologue
 //!    `devboule-pair-v1`, and that PSK;
-//! 5. inside Noise: `{device_id, display_name, role, public_key}` each way, and
-//!    the responder answers `{accepted, reason}`.
+//! 5. inside Noise: `{device_id, display_name, role, public_key, listenPort}`
+//!    each way, and the responder answers `{accepted, reason}`.
+//!
+//! `listenPort` is how the initiator tells the responder which port its own
+//! listener is bound to: the responder would otherwise record the ephemeral
+//! source port of the pairing connection, which belongs to nothing. The IP is
+//! never carried — the responder keeps the one the kernel attested off
+//! `accept()`, so a payload cannot point future dials at a third machine.
 //!
 //! The PAKE is what makes an 8-character code worth its 40 bits: an
 //! eavesdropper learns nothing, and an active attacker gets exactly one guess
@@ -344,6 +350,31 @@ struct PairPayload {
     /// The claimed Noise static public key, base64. It must equal the remote
     /// static the Noise handshake actually authenticated.
     public_key: String,
+    /// The port this device's peer listener is bound to, so the other side can
+    /// store a working address for it. `default` keeps a peer built before
+    /// this field existed pairing instead of failing on a field it never
+    /// heard of; the responder records port `0` for such a peer and a dial to
+    /// `0` refuses, rather than anyone guessing.
+    #[serde(default)]
+    listen_port: Option<u16>,
+}
+
+/// This device's own payload: its identity, its role in this pairing, and the
+/// port its peer listener actually bound. The port is read from the listener
+/// state the daemon published when it bound — the bound socket is the truth —
+/// not re-parsed from the environment.
+fn own_payload(
+    identity: &crate::device_identity::DeviceIdentity,
+    role: PeerRole,
+    server: &Arc<ServerState>,
+) -> PairPayload {
+    PairPayload {
+        device_id: identity.device_id.clone(),
+        display_name: identity.display_name.clone(),
+        role,
+        public_key: identity.public_key_b64(),
+        listen_port: server.remote_port(),
+    }
 }
 
 /// The name in a pairing payload is attacker-chosen and ends up on the card a
@@ -674,6 +705,24 @@ impl PairingService {
                 "the code is not in the expected format".to_string(),
             ));
         }
+        // A `Daemon` peer promises to be callable, so this device must have a
+        // listener to advertise: without one the responder records `:0`, both
+        // screens say paired, and the row can never be dialled — re-pairing
+        // would reproduce the same `0`. A `Client` peer makes no such promise
+        // and may pair without a listener. The retry is the same one showing a
+        // code uses, so the instruction below is one the daemon honours.
+        if role == PeerRole::Daemon {
+            if server.remote_port().is_none() {
+                server.ensure_remote_listener();
+            }
+            if server.remote_port().is_none() {
+                return Err(PairingError::Failed(
+                    "this device has no tailnet listener to advertise; start Tailscale, then \
+                     pair again"
+                        .to_string(),
+                ));
+            }
+        }
         let identity = server
             .device_identity()
             .as_ref()
@@ -737,12 +786,7 @@ impl PairingService {
             .to_vec();
         let (mut reader, mut writer, _closer) = split_session(&stream, session)?;
 
-        let payload = PairPayload {
-            device_id: identity.device_id.clone(),
-            display_name: identity.display_name.clone(),
-            role,
-            public_key: identity.public_key_b64(),
-        };
+        let payload = own_payload(&identity, role, server);
         write_json(&mut writer, &payload, setup_deadline)?;
 
         // The responder's own payload. This is the identity recorded below:
@@ -992,12 +1036,7 @@ impl PairingService {
         // identity to store but its own.
         write_json(
             &mut writer,
-            &PairPayload {
-                device_id: identity.device_id.clone(),
-                display_name: identity.display_name.clone(),
-                role: responder_role,
-                public_key: identity.public_key_b64(),
-            },
+            &own_payload(&identity, responder_role, server),
             deadline,
         )?;
 
@@ -1007,7 +1046,22 @@ impl PairingService {
             .binding(&peer_addr)
             .map_err(|error| PairingError::Failed(error.to_string()))?;
         let key_fingerprint = crate::device_identity::key_fingerprint(&remote_static);
-        let address = format!("{}:{}", peer_addr.ip(), peer_addr.port());
+        // The IP is the one the kernel attested off `accept()`, and **only the
+        // port** may come from the payload. On this responder path, a payload
+        // that could set the IP would let a paired device point future dials
+        // at a third machine, and the pinned key would not stop the connection
+        // being attempted there. (The initiator is different: it stores,
+        // verbatim, the address its human typed.) The port is the listener the
+        // initiator advertised inside this Noise session — keyed by the spoken
+        // code, so only the device actually being paired with could have set
+        // it. The accepted socket's own port is the initiator's ephemeral
+        // source port and belongs to nothing. An absent advertisement records
+        // `0`: a dial to `0` refuses, rather than anyone guessing. The address
+        // is composed by `SocketAddr`, which brackets IPv6 by construction.
+        let address = crate::peer_transport::compose_peer_address(
+            peer_addr.ip(),
+            payload.listen_port.unwrap_or(0),
+        );
 
         // 5: a `Daemon` peer is answered at once; a `Client` peer is the one
         // the person at this device must approve (design §8b A11).
@@ -1446,6 +1500,224 @@ mod tests {
         drop(server_b);
         let _ = std::fs::remove_dir_all(&dir_a);
         let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    /// Pair two in-process services over the given loopback bind, both sides
+    /// declaring `role`, the initiator advertising `initiator_listen_port`
+    /// from its listener state (`None` when it has nothing to advertise). A
+    /// `Daemon` pairing writes the responder's row inside the exchange; a
+    /// `Client` pairing parks at the responder and is confirmed here. Returns
+    /// the responder's runtime directory, its state, and the address it
+    /// recorded for the initiator.
+    fn a_pairing_completes_and_the_responder_records(
+        role: PeerRole,
+        initiator_listen_port: Option<u16>,
+        bind: &str,
+    ) -> (PathBuf, Arc<ServerState>, String) {
+        let (dir_a, server_a) = server("port-initiator");
+        let (dir_b, server_b) = server("port-responder");
+        if let Some(port) = initiator_listen_port {
+            server_a.set_remote_state(crate::device_identity::RemoteState::Enabled {
+                addresses: vec!["100.64.0.10".parse().expect("an ip address")],
+                port,
+            });
+        }
+        let service_a = PairingService::new();
+        let service_b = Arc::new(PairingService::new());
+        let (code, _expires_at) = service_b.start(role).expect("a code");
+        let transport = Arc::new(crate::peer_transport::TestTransport::default());
+        assert!(server_a.set_peer_transport(transport.clone()).is_ok());
+
+        let listener = std::net::TcpListener::bind(bind).expect("bind");
+        let address = listener.local_addr().expect("addr").to_string();
+
+        let responder_transport = Arc::clone(&transport);
+        let responder_server = Arc::clone(&server_b);
+        let responder_service = Arc::clone(&service_b);
+        let caps = Arc::new(crate::peer_transport::AcceptCaps::default());
+        let responder = std::thread::spawn(move || {
+            let (stream, peer_addr) = accept_bounded(&listener);
+            let slot = caps
+                .admit_handshake(crate::peer_transport::HandshakeKind::Pairing)
+                .expect("a pairing slot");
+            responder_service.handle(
+                responder_transport.as_ref(),
+                stream,
+                peer_addr,
+                &responder_server,
+                slot,
+            );
+        });
+
+        service_a
+            .complete(&server_a, &address, &code, role)
+            .expect("the initiator completes the exchange");
+        let recorded = match role {
+            PeerRole::Daemon => {
+                join_bounded(responder, "the responder's pairing thread");
+                let rows = server_b.peers().expect("the responder's rows");
+                assert_eq!(rows.len(), 1, "exactly one row at the responder");
+                rows[0].address.clone()
+            }
+            PeerRole::Client => {
+                let initiator_id = server_a
+                    .device_identity()
+                    .as_ref()
+                    .expect("A has an identity")
+                    .device_id
+                    .clone();
+                let row = match service_b
+                    .confirm(&server_b, &initiator_id, true)
+                    .expect("confirm")
+                {
+                    ConfirmOutcome::Accepted(row) => *row,
+                    ConfirmOutcome::Declined => panic!("an accept must produce a row"),
+                };
+                join_bounded(responder, "the responder's pairing thread");
+                row.address
+            }
+        };
+
+        drop(server_a);
+        let _ = std::fs::remove_dir_all(&dir_a);
+        (dir_b, server_b, recorded)
+    }
+
+    /// The responder's row must record the listener port the initiator
+    /// **advertised** in its payload. The port on the accepted socket is the
+    /// initiator's ephemeral source port and belongs to nothing. The IP in the
+    /// same assertion is the one the kernel attested off `accept()` — the
+    /// payload carries no IP and must never be allowed to move it.
+    #[test]
+    fn the_responder_records_the_initiators_advertised_listener_port() {
+        let (dir_b, server_b, recorded) = a_pairing_completes_and_the_responder_records(
+            PeerRole::Daemon,
+            Some(47890),
+            "127.0.0.1:0",
+        );
+        assert_eq!(
+            recorded, "127.0.0.1:47890",
+            "the recorded port is the advertised listener, not the pairing socket's source port"
+        );
+        drop(server_b);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    /// The address is composed by `SocketAddr`, so an IPv6 initiator arrives
+    /// bracketed and the row is an address a dial can parse. Hand-composing
+    /// `ip:port` yields `::1:47890` — text no `SocketAddr` accepts, a row that
+    /// can never be dialled.
+    #[test]
+    fn the_responder_composes_an_ipv6_initiator_address_that_parses() {
+        let (dir_b, server_b, recorded) =
+            a_pairing_completes_and_the_responder_records(PeerRole::Daemon, Some(47890), "[::1]:0");
+        assert_eq!(
+            recorded.parse::<SocketAddr>(),
+            Ok("[::1]:47890"
+                .parse::<SocketAddr>()
+                .expect("the expected form")),
+            "the recorded address must be the initiator's bracketed IPv6 listener: {recorded}"
+        );
+        drop(server_b);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    /// A `Client` initiator makes no promise to be callable, so it pairs
+    /// legitimately with no listener and is recorded as `:0` — the dial
+    /// refusal, not a guess, is what answers a later dial.
+    #[test]
+    fn an_initiator_that_advertises_no_port_is_recorded_with_port_zero() {
+        let (dir_b, server_b, recorded) =
+            a_pairing_completes_and_the_responder_records(PeerRole::Client, None, "127.0.0.1:0");
+        assert_eq!(
+            recorded, "127.0.0.1:0",
+            "an absent advertisement is recorded as zero, never guessed"
+        );
+        drop(server_b);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    /// The advertisement reaches the other side only under its literal JSON
+    /// key, which `rename_all = "camelCase"` derives from the field name. Both
+    /// ends of every test here are the same build, so a rename of the field
+    /// would round-trip cleanly and silently degrade every new-to-new pairing
+    /// to port `0` with all behaviour tests green — this pins the key itself.
+    #[test]
+    fn the_listener_advertisement_keeps_its_wire_key() {
+        let payload = PairPayload {
+            device_id: "6f1e5b7a-0000-4000-8000-00000000c0dd".to_string(),
+            display_name: "Peer".to_string(),
+            role: PeerRole::Daemon,
+            public_key: String::new(),
+            listen_port: Some(47831),
+        };
+        let json = serde_json::to_value(&payload).expect("json");
+        assert_eq!(
+            json.get("listenPort"),
+            Some(&serde_json::Value::from(47831)),
+            "the wire key must stay exactly listenPort: {json}"
+        );
+    }
+
+    /// A `Daemon` initiator promises to be callable, so it must have a
+    /// listener to advertise. Without one the responder would record `:0`,
+    /// both screens would say paired, and the row would be dead on arrival —
+    /// and "re-pair" would reproduce the same `0` forever. The refusal is the
+    /// same one showing a code gets: start Tailscale, then pair again.
+    #[test]
+    fn a_daemon_initiator_without_a_listener_is_refused_not_recorded_as_zero() {
+        let (dir, server) = server("no-listener-initiator");
+        assert!(server
+            .set_peer_transport(Arc::new(NoListenerTransport))
+            .is_ok());
+        let service = PairingService::new();
+        let (code, _expires_at) = service.start(PeerRole::Daemon).expect("a code");
+        let error = service
+            .complete(&server, "127.0.0.1:1", &code, PeerRole::Daemon)
+            .expect_err("a daemon initiator with no listener must be refused");
+        assert!(
+            error.to_string().contains("listener"),
+            "the refusal must name what is missing: {error}"
+        );
+        let rows = server.peers().expect("rows");
+        assert!(rows.is_empty(), "no row may be written: {rows:?}");
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A transport whose listener can never come up, so the
+    /// listener-refusal test is deterministic even on a machine where
+    /// Tailscale is running and a real listener could start.
+    struct NoListenerTransport;
+
+    impl crate::peer_transport::PeerTransport for NoListenerTransport {
+        fn listen(
+            &self,
+            _paths: &crate::paths::RuntimePaths,
+            _stop: Arc<std::sync::atomic::AtomicBool>,
+        ) -> io::Result<crate::peer_transport::PeerListener> {
+            Err(io::Error::other("no tailnet in this test"))
+        }
+
+        fn pre_noise_filter(
+            &self,
+            _peer: &SocketAddr,
+            _peers: &crate::peer_transport::PeerTable,
+        ) -> Result<(), crate::peer_transport::RejectReason> {
+            Ok(())
+        }
+
+        fn binding(
+            &self,
+            _peer: &SocketAddr,
+        ) -> Result<crate::peer_policy::TransportBinding, crate::peer_transport::BindingError>
+        {
+            Ok(crate::peer_policy::TransportBinding::tailnet(
+                "nstable",
+                "host.tailnet.ts.net.",
+                "user@example.com",
+            ))
+        }
     }
 
     /// The same exchange with the code wrong on one side: the PAKE derives a
@@ -2406,6 +2678,7 @@ mod tests {
             display_name: name.to_string(),
             role: PeerRole::Client,
             public_key: String::new(),
+            listen_port: None,
         };
         // A normal hostname passes.
         assert!(validate_peer_payload(&payload("Marcolenovo")).is_ok());

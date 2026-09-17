@@ -91,6 +91,10 @@ pub(crate) enum DialStep {
     Busy,
     /// The stored address was not an `ip:port` at all.
     Address,
+    /// The stored address carries port `0`: the peer never advertised a
+    /// listener port, so the row cannot name a dial target. Re-pairing fixes
+    /// a pre-advertisement row; a client device cannot be dialled at all.
+    NoListenPort,
     /// TCP would not connect.
     Connect,
     /// The Noise exchange failed — including a far end whose static key does
@@ -115,6 +119,7 @@ impl DialStep {
             Self::Identity => "identity",
             Self::Busy => "busy",
             Self::Address => "address",
+            Self::NoListenPort => "no_listen_port",
             Self::Connect => "connect",
             Self::Handshake => "handshake",
             Self::Hello => "hello",
@@ -196,6 +201,19 @@ fn connect_and_handshake(
             format!("{address:?} is not an ip:port: {error}"),
         )
     })?;
+    // A row with port `0` is the record of a peer that never advertised a
+    // listener port — a pairing made before peers advertised, or a client
+    // device with no listener. Connecting anyway would mean dialling into
+    // whatever now owns an ephemeral port on that host, so the dial refuses
+    // before any socket is opened, and the remedy it names is one that is
+    // actually true.
+    if address.port() == 0 {
+        return Err(DialError::at(
+            DialStep::NoListenPort,
+            "the peer never advertised a listener port, so there is nothing to dial: re-pair if \
+             the peer is a daemon; a client device cannot be dialled",
+        ));
+    }
     // The same footing the pairing initiator enforces: a stored row is data,
     // and data can be wrong or tampered with, so nothing outside the tailnet
     // is ever dialled — before any socket is opened.

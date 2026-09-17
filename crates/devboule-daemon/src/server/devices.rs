@@ -321,14 +321,15 @@ fn pairing_address(state: &Arc<ServerState>) -> Result<String, WireError> {
     }
 }
 
-/// The `ip:port` this device advertises for pairing, when it has one.
+/// The `ip:port` this device advertises for pairing, when it has one. A
+/// human types this verbatim into the far device's pairing field, so it is
+/// composed by `SocketAddr` — hand-composing loses the brackets on IPv6 and
+/// the text is no longer an address.
 fn remote_address(state: &Arc<ServerState>) -> Option<String> {
     let addresses = state.remote_addresses();
-    let port = state.remote_port();
-    match (addresses.first(), port) {
-        (Some(address), Some(port)) => Some(format!("{address}:{port}")),
-        _ => None,
-    }
+    let ip: std::net::IpAddr = addresses.first()?.parse().ok()?;
+    let port = state.remote_port()?;
+    Some(crate::peer_transport::compose_peer_address(ip, port))
 }
 
 fn no_tailnet_address() -> WireError {
@@ -340,4 +341,43 @@ fn no_tailnet_address() -> WireError {
         // worked.
         "This device has no tailnet address to pair over. Start Tailscale, then show a code again.",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The address a human must type on the other device is composed by
+    /// `SocketAddr`, so an IPv6 tailnet address arrives bracketed and parses
+    /// back. Hand-composing `ip:port` yields text no `SocketAddr` accepts, and
+    /// the person at the far end types it verbatim into the pairing field.
+    #[test]
+    fn the_advertised_pairing_address_parses_on_ipv6() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule devices {}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("runtime dir");
+        let server = ServerState::with_paths(
+            "devices-test".into(),
+            crate::paths::RuntimePaths::from_dir(&dir),
+        )
+        .expect("state");
+        let ip: std::net::IpAddr = "fd7a:115c:a1e0::1".parse().expect("ip");
+        server.set_remote_state(RemoteState::Enabled {
+            addresses: vec![ip],
+            port: 47831,
+        });
+
+        let address = remote_address(&server).expect("an advertised address");
+        assert_eq!(
+            address.parse::<std::net::SocketAddr>(),
+            Ok(std::net::SocketAddr::new(ip, 47831)),
+            "the advertised address must be the bracketed listener: {address}"
+        );
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

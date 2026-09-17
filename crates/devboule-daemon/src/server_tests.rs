@@ -2784,7 +2784,7 @@ fn pairing_complete_reaches_the_initiator_and_never_echoes_the_code() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         listener.local_addr().expect("addr").port()
     };
-    let address = format!("127.0.0.1:{port}");
+    let address = std::net::SocketAddr::new("127.0.0.1".parse().expect("ip"), port).to_string();
 
     let reply = dispatch(
         &state,

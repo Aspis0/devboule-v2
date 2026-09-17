@@ -844,6 +844,14 @@ impl PeerTransport for Tailnet {
     }
 }
 
+/// The text form of a peer address. `SocketAddr` brackets IPv6 by
+/// construction; hand-composing `format!("{ip}:{port}")` does not, and
+/// `fd7a:115c:a1e0::1:47831` is not an address at all — or worse, parses as a
+/// different one where an `IpAddr` is tried first.
+pub fn compose_peer_address(ip: IpAddr, port: u16) -> String {
+    SocketAddr::new(ip, port).to_string()
+}
+
 /// Whether `address` is inside a tailnet range: Tailscale allocates from
 /// `100.64.0.0/10` for IPv4 and `fd7a:115c:a1e0::/48` for IPv6.
 ///
@@ -1975,14 +1983,18 @@ mod tests {
         assert!(table.by_static_key(&[3u8; 31]).is_none());
     }
 
+    /// The addresses the tailnet filter accepts, as text. Shared with the
+    /// composition property below so the two tables cannot drift.
+    const TAILNET_INSIDE: &[&str] = &[
+        "100.64.0.1",
+        "100.127.255.254",
+        "fd7a:115c:a1e0::1",
+        "fd7a:115c:a1e0:ffff::9",
+    ];
+
     #[test]
     fn only_tailnet_ranges_are_treated_as_tailnet_sources() {
-        for inside in [
-            "100.64.0.1",
-            "100.127.255.254",
-            "fd7a:115c:a1e0::1",
-            "fd7a:115c:a1e0:ffff::9",
-        ] {
+        for inside in TAILNET_INSIDE {
             assert!(
                 is_tailnet_address(&inside.parse().expect("ip")),
                 "{inside} is inside a tailnet range"
@@ -1998,6 +2010,24 @@ mod tests {
             assert!(
                 !is_tailnet_address(&outside.parse().expect("ip")),
                 "{outside} is not a tailnet address"
+            );
+        }
+    }
+
+    /// Every address a row may record is composed by
+    /// [`compose_peer_address`], so the composed text must parse back into
+    /// the very address it was composed from — brackets and all. A test that
+    /// only used `127.0.0.1` let the unbracketed IPv6 form through.
+    #[test]
+    fn every_tailnet_address_composes_into_a_parseable_peer_address() {
+        const PORT: u16 = 47831;
+        for text in TAILNET_INSIDE {
+            let ip: IpAddr = text.parse().expect("ip");
+            let composed = compose_peer_address(ip, PORT);
+            assert_eq!(
+                composed.parse::<SocketAddr>(),
+                Ok(SocketAddr::new(ip, PORT)),
+                "{composed} must parse back into the address it was composed from"
             );
         }
     }

@@ -163,6 +163,29 @@ fn a_revoked_row_is_not_dialable() {
     assert_eq!(error.step(), "revoked", "{error}");
 }
 
+/// A row whose port is `0` is the record of a peer that never advertised a
+/// listener port. The dial refuses with its own named step before any socket
+/// is opened: connecting anyway would mean dialling whatever now owns an
+/// ephemeral port, and the remedy is to re-pair, not to retry.
+#[test]
+fn a_dial_to_port_zero_refuses_before_it_connects() {
+    let keypair = pinned_keypair();
+    let private: [u8; 32] = keypair.private.clone().try_into().expect("32 bytes");
+    let hello = ClientHello::m3a(
+        OwnerId::new("peer_fixture", "devboule-daemon").expect("owner"),
+        "devboule-daemon",
+    );
+    let error = dial_peer(
+        &private,
+        &keypair.public,
+        "100.64.0.10:0",
+        &hello,
+        &ClientMessage::SessionsList { id: 1 },
+    )
+    .expect_err("a peer that never advertised a port is not dialable");
+    assert_eq!(error.step(), "no_listen_port", "{error}");
+}
+
 /// A revoke that lands while the dial is connecting is heard before any
 /// application byte leaves. The ordering is a barrier, not a sleep: the
 /// accept proves the dial already passed its first revocation check, the
