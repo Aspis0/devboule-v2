@@ -3477,6 +3477,7 @@ mod tests {
             command.creation_flags(0x0800_0000);
         }
         let child = command.spawn().expect("ping");
+        let pid = child.id();
         let sent = Arc::new(Mutex::new(Vec::new()));
         let sent_for_sender = Arc::clone(&sent);
         let sender: Arc<PermissionSender> = Arc::new(move |_, result| {
@@ -3550,6 +3551,31 @@ mod tests {
             SessionEvent::AgentError { message } if message.contains("closed")
         )));
         assert_eq!(broker.pending_len(), 1);
+        // The fake agent is still alive here by design: `interrupt` is soft
+        // and must not kill it (the live second permission above proves it).
+        // Reap it explicitly and prove the OS process is gone. Dropping
+        // `Child` does not terminate, and an infinite `ping -t` orphaned
+        // past the test binary keeps the shared test log open on Windows.
+        killer.kill();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match killer
+                .process
+                .lock()
+                .expect("fake agent")
+                .try_wait()
+                .expect("poll fake agent")
+            {
+                Some(_) => break,
+                None => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "fake agent {pid} still alive 5s after kill"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
     }
 
     #[test]

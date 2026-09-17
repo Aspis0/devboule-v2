@@ -190,7 +190,9 @@ pub struct AttachmentReference {
 ///   if any, drop in-memory state, invalidate the id. Unrecoverable except
 ///   by loading a *new* session from the journal (M3c).
 /// - [`ClientMessage::SessionStop`]: terminate the running process (PTY child
-///   / ACP agent) but **keep** the session object (id, scrollback, metadata).
+///   / ACP agent) **and its descendants** — the session's job object is
+///   terminated, not just its root, so an agent's children do not outlive the
+///   stop — but **keep** the session object (id, scrollback, metadata).
 ///   Emits `exit`. Generation is unchanged — the instance died, it was not
 ///   replaced. Recreating a process under the same id is a different call
 ///   and MUST bump generation so a reconnecting client cannot treat the new

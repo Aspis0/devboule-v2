@@ -4748,7 +4748,7 @@ impl SessionRegistry {
     pub fn stop(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let mut killer = {
+        let (mut killer, job) = {
             let mut map = self
                 .inner
                 .lock()
@@ -4756,9 +4756,16 @@ impl SessionRegistry {
             let entry = peer_entry_mut(&mut map, session_id, owner, &None)?;
             let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
             session.preserve_on_exit.store(true, Ordering::SeqCst);
-            session.killer.clone_killer()
+            (
+                session.killer.clone_killer(),
+                Arc::clone(&session.process_job),
+            )
         };
         killer.kill();
+        // The session is preserved, so its job stays open: the kill above
+        // stops only the root. Terminate the tree too, or the agent's
+        // descendants outlive the stop. Mirrors the on-OS-death handler.
+        let _ = job.terminate();
         Ok(())
     }
 
@@ -4771,14 +4778,18 @@ impl SessionRegistry {
     ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let (mut killer, runtime) = {
+        let (mut killer, runtime, job) = {
             let mut map = self
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = peer_entry_mut(&mut map, session_id, owner, &conn.conn_peer)?;
             let session = entry.as_peer_visible_mut().ok_or_else(process_gone)?;
-            (session.killer.clone_killer(), Arc::clone(&session.runtime))
+            (
+                session.killer.clone_killer(),
+                Arc::clone(&session.runtime),
+                Arc::clone(&session.process_job),
+            )
         };
         check_attached(&runtime, conn, subscription_id)?;
         {
@@ -4798,6 +4809,9 @@ impl SessionRegistry {
             }
         }
         killer.kill();
+        // Same ownership as `stop`: the session is preserved, so its job
+        // stays open and the kill above stops only the root.
+        let _ = job.terminate();
         Ok(())
     }
 
