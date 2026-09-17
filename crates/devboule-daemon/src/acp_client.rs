@@ -2405,6 +2405,7 @@ fn acp_request_error_message(error: &serde_json::Value) -> String {
     let message = error
         .pointer("/data/message")
         .and_then(serde_json::Value::as_str)
+        .filter(|message| !message.is_empty())
         .or_else(|| error.get("message").and_then(serde_json::Value::as_str));
     match (
         error.get("code").and_then(serde_json::Value::as_i64),
@@ -4054,6 +4055,20 @@ mod tests {
             "a non-string data.message is payload, not diagnosis: {text}"
         );
         assert!(text.contains("(-32603)"), "code must stay visible: {text}");
+    }
+
+    #[test]
+    fn request_error_empty_data_message_falls_back_to_the_error_message() {
+        let error = serde_json::json!({
+            "code": -32000,
+            "message": "Authentication required: run the provider login",
+            "data": {"message": ""}
+        });
+        let text = acp_request_error_message(&error);
+        assert_eq!(
+            text, "ACP request failed (-32000): Authentication required: run the provider login",
+            "an empty data.message must not silence the envelope's own sentence"
+        );
     }
 
     #[test]
