@@ -15,6 +15,7 @@ import {
   UNATTENDED_UNKNOWN_BADGE_LABEL,
   chatCapableProviders,
   createWorkspaceSessionController,
+  isRecoveredSession,
   peerDeviceNames,
   requiresConsent,
   sessionCreateFromProvider,
@@ -1443,5 +1444,100 @@ describe("delegation facts ride the roster push", () => {
     expect(sessionDelegationBadges(row)).toEqual([
       { tone: "unknown", label: DELEGATION_UNKNOWN_BADGE_LABEL },
     ]);
+  });
+});
+
+describe("recovered rows in the strip", () => {
+  const recoveredSession = (id: string, overrides: Partial<Session> = {}): Session => ({
+    ...liveSession(id),
+    kind: "claude",
+    state: {
+      type: "recovered",
+      generation: 2,
+      integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+    },
+    elapsedMs: null,
+    ...overrides,
+  });
+
+  it("includes recovered rows automatically: attaching is reading, not resuming", async () => {
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [recoveredSession("rec-1"), liveSession("live-1")]),
+      create: vi.fn(async () => liveSession("live-2")),
+    });
+    await controller.refresh();
+
+    expect(isRecoveredSession(recoveredSession("rec-1"))).toBe(true);
+    expect(isRecoveredSession(liveSession("live-1"))).toBe(false);
+    expect(controller.getState().sessions.map((session) => session.id)).toEqual([
+      "rec-1",
+      "live-1",
+    ]);
+  });
+
+  it("keeps ended rows out unless the user opened them", async () => {
+    const ended: Session = {
+      ...liveSession("ended-1"),
+      state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [ended, recoveredSession("rec-1")]),
+      create: vi.fn(async () => liveSession("live-2")),
+    });
+    await controller.refresh();
+
+    expect(controller.getState().sessions.map((session) => session.id)).toEqual(["rec-1"]);
+
+    controller.open(ended);
+    expect(controller.getState().sessions.map((session) => session.id)).toEqual([
+      "rec-1",
+      "ended-1",
+    ]);
+  });
+
+  it("keeps a recovered row pushed after mount, without an explicit open", async () => {
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("live-1")]),
+      create: vi.fn(async () => liveSession("live-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+    watched.listener?.([
+      {
+        id: "live-1",
+        workspaceId: null,
+        kind: "terminal",
+        title: "live-1",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+      },
+      {
+        id: "rec-push",
+        workspaceId: null,
+        kind: "claude",
+        title: "pushed back",
+        state: {
+          type: "recovered",
+          generation: 2,
+          integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+        },
+        elapsedMs: null,
+      },
+    ]);
+
+    expect(controller.getState().sessions.map((session) => session.id)).toEqual([
+      "live-1",
+      "rec-push",
+    ]);
+    release();
   });
 });

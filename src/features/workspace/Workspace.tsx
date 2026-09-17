@@ -46,8 +46,11 @@ import {
   sessionOriginUnknown,
   sessionStateLabel,
   sessionTitle,
+  isRecoveredSession,
   useWorkspaceSessions,
 } from "./workspaceSessions";
+import { RecoveredSessionBar } from "./recoveredSessionBar";
+import { DaemonRestartNotice } from "./daemonRestartNotice";
 import type {
   DaemonStatus,
   PermissionRequest,
@@ -1122,6 +1125,10 @@ export function Workspace({
           <span className="workspace-tabs-spacer" />
           <span className="workspace-rate">{sessionStatusText}</span>
         </div>
+        <DaemonRestartNotice
+          instanceId={daemon.instanceId}
+          hasRecovered={sessions.some(isRecoveredSession)}
+        />
 
         {pendings.map((pending) => (
           <PendingUndoBar key={pending.id} pending={pending} onUndo={undoPendingAction} />
@@ -1184,6 +1191,7 @@ export function Workspace({
 
         {selectedSessionId !== null ? (
           <>
+            <RecoveredSessionBar session={selectedSession} onReopened={handleReopenSession} />
             {selectedSession != null && isAgentKind(selectedSession.kind) ? (
               <AgentChatSurface
                 key={selectedSessionId}

@@ -669,7 +669,7 @@ describe("Workspace sessions", () => {
     expect(container.textContent).not.toContain("Could not load sessions");
   });
 
-  it("keeps recovered journal sessions out of the tab strip but renders a live one", async () => {
+  it("shows recovered journal sessions in the tab strip beside a live one", async () => {
     vi.mocked(sessionsList).mockResolvedValue([
       {
         ...terminal("recovered-1", "recovered agent"),
@@ -686,10 +686,13 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     const tabs = [...container.querySelectorAll(".workspace-session-tab")];
-    expect(tabs.map((tab) => tab.textContent)).toEqual([expect.stringContaining("running agent")]);
-    expect(container.textContent).not.toContain("recovered · unverifiable");
-    // Selection stays on the visible tab instead of a hidden one.
-    expect(container.querySelector("[data-testid=terminal-surface]")?.textContent).toBe("live-1");
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      expect.stringContaining("recovered agent"),
+      expect.stringContaining("running agent"),
+    ]);
+    // The recovered tab is visibly not live: the daemon's own word, not a
+    // second name for the same state.
+    expect(container.textContent).toContain("recovered · unverifiable");
   });
 
   it("keeps healthy projects visible, marks a failed project, and retries its load", async () => {

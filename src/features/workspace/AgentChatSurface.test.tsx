@@ -1324,6 +1324,56 @@ describe("AgentChatSurface", () => {
     ).toBe(true);
   });
 
+  it("renders the replayed transcript for a recovered session: readable without resuming", async () => {
+    const recovered: SessionState = {
+      type: "recovered",
+      generation: 2,
+      integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+    };
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="rec-agent"
+          title="Old chat"
+          observedState={recovered}
+          elapsedMs={null}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    // Attaching is reading: the journal replays through the same channel,
+    // with no resume involved. The old messages must show even though the
+    // composer stays disabled with its reason.
+    expect(sessionAttach).toHaveBeenCalledWith("rec-agent", null, expect.anything());
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_user_message",
+        author: "human",
+        messageId: "user-old",
+        text: "what did we decide",
+      });
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "answer-old",
+        text: "we decided to ship it",
+      });
+    });
+
+    expect(container.textContent).toContain("what did we decide");
+    expect(container.textContent).toContain("we decided to ship it");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Finished");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "This session is no longer available.",
+    );
+  });
+
   it("keeps the composer usable when a turn-level agent error arrives", async () => {
     // Field test (Grok 402): one refused turn must not read as a dead session.
     root = createRoot(container);

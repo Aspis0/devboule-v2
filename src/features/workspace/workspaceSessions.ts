@@ -72,12 +72,18 @@ const LIST_ERROR = "Could not load sessions. The daemon is unreachable.";
 const CREATE_FALLBACK_ERROR = "Could not create the agent session.";
 
 /**
- * A session with a running process belongs in the tab strip. Journal-only
- * records (recovered or ended) stay out of it — they remain reachable from
- * History, and join the strip only once the user opens them there.
+ * What belongs in the tab strip: a running process (live/silent) plus a
+ * recovered transcript. Attaching is reading — replay from the journal, no
+ * process, no cost — so recovered rows appear by themselves. Ended rows stay
+ * out: they remain reachable from History and join only once opened there.
+ * Resuming (a child process, a new bearer, a live turn) never happens here.
  */
 function sessionHasProcess(session: Session): boolean {
   return session.state.type === "live" || session.state.type === "silent";
+}
+
+export function isRecoveredSession(session: Pick<Session, "state">): boolean {
+  return session.state.type === "recovered";
 }
 
 /**
@@ -575,7 +581,10 @@ export function createWorkspaceSessionController(
   };
 
   const stripSessions = (candidates: readonly Session[]): Session[] =>
-    candidates.filter((session) => sessionHasProcess(session) || openedIds.has(session.id));
+    candidates.filter(
+      (session) =>
+        sessionHasProcess(session) || isRecoveredSession(session) || openedIds.has(session.id),
+    );
 
   const chooseSelected = (
     candidates: readonly Session[],
