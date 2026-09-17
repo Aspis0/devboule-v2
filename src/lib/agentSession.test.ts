@@ -2,11 +2,18 @@ import { describe, expect, it, vi, type Mock } from "vitest";
 import type { PermissionRequest, SessionEvent } from "../types/ipc";
 
 const historyMocks = vi.hoisted(() => ({ recordChildFinishedHistory: vi.fn(async () => true) }));
+const mirrorMocks = vi.hoisted(() => ({ scheduleDelegatedDesignMirror: vi.fn() }));
 
 // The Design history is a surface settings write, not a daemon call: the test
 // asserts the pipeline reaches it, and the writer's own test covers storage.
 vi.mock("../features/design/childFinishedHistory", () => ({
   recordChildFinishedHistory: historyMocks.recordChildFinishedHistory,
+}));
+
+// The mirror replays the child through a read-only attach: the test asserts
+// the pipeline schedules it, and the mirror's own test covers the replay.
+vi.mock("../features/design/delegatedDesignMirror", () => ({
+  scheduleDelegatedDesignMirror: mirrorMocks.scheduleDelegatedDesignMirror,
 }));
 
 import {
@@ -1847,6 +1854,7 @@ describe("ACP agent session", () => {
     // and this pipeline is what sees the event live on the creator's transcript
     // and again when the creator is replayed from the journal.
     historyMocks.recordChildFinishedHistory.mockClear();
+    mirrorMocks.scheduleDelegatedDesignMirror.mockClear();
     const harness = makeHarness();
     await harness.session.start();
 
@@ -1865,6 +1873,53 @@ describe("ACP agent session", () => {
     );
     // Nothing about the finish becomes a transcript item of the creator's.
     expect(harness.session.getState().items).toEqual([]);
+  });
+
+  it("schedules the delegated mirror on the default finish path only", async () => {
+    // The default path records the history entry AND schedules the panel
+    // mirror; an `onChildFinished` override (the history reopen) suppresses
+    // both, so a replayed finish neither re-dates the history nor yanks the
+    // panel.
+    mirrorMocks.scheduleDelegatedDesignMirror.mockClear();
+    historyMocks.recordChildFinishedHistory.mockClear();
+    const harness = makeHarness();
+    await harness.session.start();
+    const finish: SessionEvent = {
+      type: "child_finished",
+      messageId: "m2",
+      childSessionId: "s.parent.2",
+      displayName: "worker one",
+      state: "completed",
+      artifacts: [],
+    };
+    harness.emit(finish);
+    expect(mirrorMocks.scheduleDelegatedDesignMirror).toHaveBeenCalledTimes(1);
+    expect(mirrorMocks.scheduleDelegatedDesignMirror).toHaveBeenCalledWith(
+      expect.objectContaining({ childSessionId: "s.parent.2" }),
+    );
+
+    mirrorMocks.scheduleDelegatedDesignMirror.mockClear();
+    historyMocks.recordChildFinishedHistory.mockClear();
+    const override = vi.fn(async () => false);
+    let reopenedEmit: (event: SessionEvent) => void = () => undefined;
+    const reopened = new AgentSession({
+      sessionId: "agent-1",
+      invoke: harness.invoke,
+      createChannel: (onEvent) => {
+        reopenedEmit = onEvent;
+        return {} as AgentChannel;
+      },
+      onChildFinished: override,
+    });
+    await reopened.start();
+    reopenedEmit(finish);
+    expect(override).toHaveBeenCalledTimes(1);
+    expect(override).toHaveBeenCalledWith(
+      expect.objectContaining({ childSessionId: "s.parent.2" }),
+    );
+    expect(historyMocks.recordChildFinishedHistory).not.toHaveBeenCalled();
+    expect(mirrorMocks.scheduleDelegatedDesignMirror).not.toHaveBeenCalled();
+    reopened.dispose();
   });
 
   it("ignores a creation record without turning it into a transcript line", async () => {

@@ -9,6 +9,7 @@ import type {
   ToolLocation,
 } from "../types/ipc";
 import { recordChildFinishedHistory } from "../features/design/childFinishedHistory";
+import { scheduleDelegatedDesignMirror } from "../features/design/delegatedDesignMirror";
 import type { AttachmentReference, SessionChannel } from "./tauri";
 import { isCommandError } from "./tauri";
 import { eventTypeName } from "./eventTypeName";
@@ -719,7 +720,19 @@ export class AgentSession {
         // out (`attached-connection-loses-events.md`; the dispatcher-thread fix
         // is not in). The history write is the app's own surface settings file
         // through Tauri commands that never touch the daemon — keep it that way.
-        void (this.deps.onChildFinished ?? recordChildFinishedHistory)(event);
+        // The mirror below is scheduled, not called: its synchronous prefix is
+        // pin checks only, and the child's replay (a read-only attach/detach
+        // through `openDesignHistoryEntry`) runs after this handler returns, so
+        // nothing here blocks the event callback and nothing acts — no resume,
+        // no spawn, no send. An `onChildFinished` override (the history reopen)
+        // suppresses both the write and the mirror: a replayed finish must
+        // neither re-date the history nor yank the panel.
+        if (this.deps.onChildFinished !== undefined) {
+          void this.deps.onChildFinished(event);
+        } else {
+          void recordChildFinishedHistory(event);
+          scheduleDelegatedDesignMirror(event);
+        }
         return;
       default: {
         // Every `SessionEvent` arm is a case above, so this branch is

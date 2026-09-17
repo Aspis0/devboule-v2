@@ -3363,6 +3363,83 @@ describe("Settings agents panel — new profile form", () => {
     expect(sent?.profiles[0]?.enabledForAgents).toBe(true);
   });
 
+  it("saves no overlay by default and both peer tools when the tick is on", async () => {
+    await renderAgentsPanel({ profiles: [], standingInstructions: "" });
+    // The store's read-back after the confirmed create.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [storedProfile("minted-1")], standingInstructions: "" },
+    });
+    await openForm();
+
+    const tick = field<HTMLInputElement>(
+      'input[aria-label="Children cannot message peers or create further agents"]',
+    );
+    expect(tick.checked).toBe(false);
+    // The tick names what it denies: peer messages and further creations.
+    // It must not promise a surface it does not deliver, so no "design".
+    expect(form().textContent).toContain("cannot message other agents or create further");
+    expect(form().textContent).not.toContain("Design");
+
+    await fillDraft();
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const unticked = vi.mocked(agentProfilesSet).mock.calls[0]?.[0];
+    expect(unticked?.profiles[0]?.toolOverlay).toEqual([]);
+
+    // Again, with the tick: the overlay denies exactly the two peer tools.
+    await openForm();
+    await fillDraft();
+    const retick = field<HTMLInputElement>(
+      'input[aria-label="Children cannot message peers or create further agents"]',
+    );
+    await tickCheckbox(retick, true);
+    await act(async () => createButton().click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(2);
+    const ticked = vi.mocked(agentProfilesSet).mock.calls[1]?.[0];
+    expect(ticked?.profiles.at(-1)?.toolOverlay).toEqual([
+      "devboule_send_message",
+      "devboule_create_agent",
+    ]);
+  });
+
+  it("shows the peer restriction on a stored profile row", async () => {
+    await renderAgentsPanel({
+      profiles: [
+        storedProfile("p-1", {
+          name: "Hermit",
+          toolOverlay: ["devboule_send_message", "devboule_create_agent"],
+        }),
+        storedProfile("p-2", { name: "Social" }),
+      ],
+      standingInstructions: "",
+    });
+
+    const hermit = container.textContent ?? "";
+    expect(hermit).toContain("cannot message peers or create further agents");
+  });
+
+  it("names the denial on a row whose overlay is not the exact peer pair", async () => {
+    // A single-tool denial is valid daemon-side; the row must render it
+    // instead of showing nothing.
+    await renderAgentsPanel({
+      profiles: [
+        storedProfile("p-1", {
+          name: "NoGrandchildren",
+          toolOverlay: ["devboule_create_agent"],
+        }),
+      ],
+      standingInstructions: "",
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("cannot use: devboule_create_agent");
+    expect(text).not.toContain("cannot message peers");
+  });
+
   it("renders absent vocabulary as free text with the spec's sentence, never as a select", async () => {
     vi.mocked(providerVocabularyGet).mockResolvedValueOnce(makeVocabulary());
     await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
@@ -4280,7 +4357,7 @@ describe("Settings agents panel — new profile form", () => {
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Thirty-eight: the delegation section's one sentence on this panel (an
+    // Thirty-nine: the delegation section's one sentence on this panel (an
     // older daemon's named absence — the switch itself is gated harder and
     // only renders when the handshake advertises permission_delegation), the
     // fifteen vocabulary sentences, the ACP suggestion
@@ -4288,12 +4365,12 @@ describe("Settings agents panel — new profile form", () => {
     // off-switch pair and the no-note sentence, the delete-confirm copy,
     // the editor hint, the three cap refusals, the model/mode refusals, the
     // two profile-cap sentences, the two catalog sentences, the heading
-    // description, the intro copy, the two tick notes, and the standing
+    // description, the intro copy, the three tick notes, and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry). A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(38);
+    expect(sentences).toHaveLength(39);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

@@ -107,6 +107,11 @@ import {
   type DesignHistoryOpenHandle,
   type DesignHistoryOpenResult,
 } from "./designHistoryOpen";
+import {
+  clearDelegatedMirrorPin,
+  DELEGATED_DESIGN_MESSAGE_PREFIX,
+  noteHumanOpenedHistory,
+} from "./delegatedDesignMirror";
 import { buildSkillBlock } from "./skillLoader";
 import { useProviderConsent } from "../workspace/useProviderConsent";
 import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
@@ -4416,6 +4421,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   );
   const endSession = useCallback(() => {
     if (busy || agentSession === null) return;
+    // Ending the session closes the reading too: the pin goes with it, so
+    // the next delegation may mirror again.
+    clearDelegatedMirrorPin();
     void host.closeAgentSession?.();
   }, [agentSession, busy, host]);
 
@@ -4425,7 +4433,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         (message): message is DesignAssistantMessage =>
           message.role === "assistant" &&
           message.status === "done" &&
-          !isHistoryOpenMessage(message),
+          !isHistoryOpenMessage(message) &&
+          // Delegated cards are readings, not generations the human started.
+          !message.id.startsWith(DELEGATED_DESIGN_MESSAGE_PREFIX),
       ).length,
     [messages],
   );
@@ -4939,6 +4949,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           // The oversized error is rendered in the canvas message below, so a banner would duplicate it.
           setHistoryOpenResult(isOversizedArtifact ? null : result);
           if (result.status === "artifact" || isOversizedArtifact) {
+            // A deliberate open that landed pins the panel: later delegated
+            // arrivals replay nothing and write nothing until the human
+            // moves on. A failed open pins nothing — there is no card being
+            // read, so there is nothing to protect from being yanked away.
+            noteHumanOpenedHistory(entry.sessionId);
             const messageId = `${HISTORY_OPEN_MESSAGE_PREFIX}${++historyOpenMessageCounterRef.current}`;
             // A pointer is not a prompt: a `child` entry's title is the commissioned
             // agent's display name, so it is left off the card as an instruction and
@@ -5022,6 +5037,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       ) {
         return;
       }
+      // A new run is the human's own work: release the history pin so later
+      // delegations may mirror again.
+      clearDelegatedMirrorPin();
       generationInFlightRef.current = true;
       disposeHistoryOpen();
       setHistoryOpenResult(null);

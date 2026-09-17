@@ -21,6 +21,7 @@ import {
 } from "../../lib/delegation";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
+import { overlayDenialsDescription, toolOverlayForPeerRestriction } from "./profileOverlay";
 import type {
   AgentProfile,
   AgentProfilesDocument,
@@ -762,6 +763,7 @@ interface NewProfileDraft {
   modeId: string;
   autoAccept: boolean;
   enabledForAgents: boolean;
+  restrictPeers: boolean;
 }
 
 /**
@@ -878,6 +880,7 @@ function NewAgentProfileForm({
   const [mode, setMode] = useState("");
   const [autoAccept, setAutoAccept] = useState(false);
   const [enabledForAgents, setEnabledForAgents] = useState(false);
+  const [restrictPeers, setRestrictPeers] = useState(false);
   const [vocabulary, setVocabulary] = useState<ProviderVocabulary | null>(null);
   const [vocabularyError, setVocabularyError] = useState<string | null>(null);
   // Monotonic fetch sequence for the vocabulary query: a reply may apply
@@ -981,6 +984,7 @@ function NewAgentProfileForm({
       modeId: mode,
       autoAccept,
       enabledForAgents,
+      restrictPeers,
     });
   }
 
@@ -1118,6 +1122,22 @@ function NewAgentProfileForm({
           </span>
         </span>
       </label>
+      <label className="agent-profile-tick">
+        <input
+          type="checkbox"
+          aria-label="Children cannot message peers or create further agents"
+          checked={restrictPeers}
+          disabled={busy}
+          onChange={(event) => setRestrictPeers(event.target.checked)}
+        />
+        <span>
+          <span>No peer contact and no further agents for children</span>
+          <span className="agent-profile-tick-note">
+            Children created from this profile cannot message other agents or create further agents.
+            They keep the agent roster, their read-only view.
+          </span>
+        </span>
+      </label>
       <div className="device-actions">
         <button
           type="button"
@@ -1137,8 +1157,9 @@ function NewAgentProfileForm({
 
 /**
  * One row's name/note editor — the only fields editable here on purpose.
- * Provider, model, mode, thinking option and features are the provider's own
- * vocabulary, stored verbatim, so this editor leaves them exactly as the
+ * Provider, model, mode, thinking option, features and the peer-contact
+ * restriction are the provider's own vocabulary and the human's saved deny
+ * list, stored verbatim, so this editor leaves them exactly as the
  * daemon holds them and the row displays them; the way to different values is
  * a new profile ([`NewAgentProfileForm`], which asks the daemon for the
  * vocabulary), not editing this one. The name is capped in characters, the
@@ -1192,8 +1213,9 @@ function AgentProfileEditor({
         </span>
       </label>
       <p className="device-field-hint">
-        Provider, model, mode and features are shown on the row and are not editable here. To change
-        them, create a new profile with the values you want and delete this one.
+        Provider, model, mode, features and the peer-contact restriction are shown on the row and
+        are not editable here. To change them, create a new profile with the values you want and
+        delete this one.
       </p>
       <div className="device-actions">
         <button
@@ -1781,7 +1803,10 @@ function AgentProfilesPanel() {
       // none; a new profile starts without one.
       thinkingOptionId: null,
       features: draft.autoAccept ? { autoAccept: true } : {},
-      toolOverlay: [],
+      // The human's tick, not an agent's argument: a profile that denies
+      // peer contact makes children that cannot message peers or create
+      // further agents. Unticked saves nothing, exactly as before.
+      toolOverlay: toolOverlayForPeerRestriction(draft.restrictPeers),
       // Default off, always: a profile that becomes agent-reachable the
       // moment it is saved is a profile nobody deliberately ticked.
       enabledForAgents: draft.enabledForAgents,
@@ -1920,6 +1945,14 @@ function AgentProfilesPanel() {
                   <span className="agent-profile-meta">
                     {profile.provider} · {profile.model} · mode {profile.modeId}
                   </span>
+                  {/* Read-only: provider, model, mode and the overlay are the provider's own
+                      vocabulary and the human's saved deny list, so they are shown, not edited.
+                      To change them, create a new profile and delete this one. */}
+                  {overlayDenialsDescription(profile.toolOverlay) === null ? null : (
+                    <span className="agent-profile-note">
+                      {overlayDenialsDescription(profile.toolOverlay)}
+                    </span>
+                  )}
                   {profile.note ? (
                     <span className="agent-profile-note">
                       <span className="agent-profile-note-label">When to use: </span>

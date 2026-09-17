@@ -4,6 +4,11 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
+import {
+  resetDelegatedMirrorForTests,
+  scheduleDelegatedDesignMirror,
+} from "./delegatedDesignMirror";
+import type { DesignHistoryOpenResult } from "./designHistoryOpen";
 import { ARTIFACT_CSP, ARTIFACT_CSP_META } from "./artifactCsp";
 import {
   builtInSkillIndex,
@@ -127,7 +132,12 @@ import {
 } from "./designViewport";
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
-import type { DesignGenerationResult, DesignOutputMode, PendingPermission } from "./designHost";
+import type {
+  DesignAssistantMessage,
+  DesignGenerationResult,
+  DesignOutputMode,
+  PendingPermission,
+} from "./designHost";
 import { AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
 import {
   DESIGN_DOCTRINE_BEGIN,
@@ -149,6 +159,7 @@ import type {
   SessionManifest,
   SessionModel,
   Session,
+  SessionEvent,
   Workspace,
 } from "../../types/ipc";
 
@@ -434,6 +445,9 @@ beforeEach(() => {
   historyListMocks.refreshKey = 0;
   historyListMocks.refreshKeys = [];
   historyOpenMocks.open.mockReset();
+  // The mirror's pin is module state: a test that pins must not decide what
+  // a later test's delegation does.
+  resetDelegatedMirrorForTests();
   skillSettingsMocks.load.mockResolvedValue({ version: 1, mode: "all", enabledSlugs: [] });
   skillSettingsMocks.save.mockResolvedValue(true);
   skillSettingsMocks.loadProvider.mockResolvedValue(null);
@@ -919,6 +933,242 @@ describe("DesignSurface host capabilities", () => {
     expect(popover.hidden).toBe(true);
     // closeHistory keeps parking focus on its trigger; that keyboard path is unchanged.
     expect(document.activeElement).toBe(trigger);
+    await act(async () => root.unmount());
+  });
+
+  /**
+   * One controllable reopen for the delegation tests below: captures the
+   * callback instead of answering, so each test fires the outcome it needs.
+   */
+  function delegatedOpen(
+    captured: Array<{
+      sessionId: string;
+      onResult: (result: DesignHistoryOpenResult) => void;
+    }>,
+  ): (
+    sessionId: string,
+    deps: { onResult: (result: DesignHistoryOpenResult) => void },
+  ) => { dispose: () => void } {
+    return ((sessionId: string, deps: { onResult: (result: DesignHistoryOpenResult) => void }) => {
+      captured.push({ sessionId, onResult: deps.onResult });
+      return { dispose: () => undefined };
+    }) as (
+      sessionId: string,
+      deps: { onResult: (result: DesignHistoryOpenResult) => void },
+    ) => { dispose: () => void };
+  }
+
+  function delegatedFinish(
+    childSessionId: string,
+  ): Extract<SessionEvent, { type: "child_finished" }> {
+    return {
+      type: "child_finished",
+      messageId: "m9",
+      childSessionId,
+      displayName: "delegated work",
+      state: "completed",
+      artifacts: [],
+    };
+  }
+
+  async function flushMirror(): Promise<void> {
+    for (let index = 0; index < 10; index += 1) await Promise.resolve();
+  }
+
+  async function settleDesignLoad(): Promise<void> {
+    await act(settle);
+    // The load effect answers in microtasks; a delegation racing it would
+    // read a half-loaded store, so every test below starts from settled.
+    await vi.waitFor(() => {
+      if (useAppStore.getState().designSession.document === null) {
+        throw new Error("design document still loading");
+      }
+    });
+  }
+
+  async function pickHistoryEntry(container: HTMLDivElement, sessionId: string): Promise<void> {
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const onOpen = historyListMocks.onOpen;
+    if (trigger === null || onOpen === null) throw new Error("History controls missing");
+    await act(async () => trigger.click());
+    await act(async () => onOpen({ sessionId }));
+  }
+
+  it("keeps a mirrored card when the surface loads after the delegation", async () => {
+    // The P0 interlock: the mirror leaves host and messages, the surface
+    // mount must not wipe them back to the loaded document's transcript.
+    const host = createHost();
+    useAppStore.getState().setDesignHost(host);
+    const captured: Array<{
+      sessionId: string;
+      onResult: (result: DesignHistoryOpenResult) => void;
+    }> = [];
+    scheduleDelegatedDesignMirror(delegatedFinish("delegated-1"), {
+      openHistory: delegatedOpen(captured),
+      store: useAppStore,
+    });
+    await flushMirror();
+    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    await flushMirror();
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>Delegated</main>",
+    });
+
+    const { root } = await renderDesign(host);
+    await settleDesignLoad();
+
+    const session = useAppStore.getState().designSession;
+    expect(session.messages.some((message) => message.id === "delegated-design-delegated-1")).toBe(
+      true,
+    );
+    expect(session.latestArtifact).toMatchObject({ html: "<main>Delegated</main>" });
+    await act(async () => root.unmount());
+  });
+
+  it("writes a delegated arrival when the picked entry never opened", async () => {
+    // A failed pick pins nothing: the open never reported back, so no card
+    // landed and the panel stays open to delegations.
+    historyOpenMocks.open.mockReturnValue({ dispose: vi.fn() });
+    const { container, root } = await renderDesign(createHost());
+    await settleDesignLoad();
+    await pickHistoryEntry(container, "history-old");
+    expect(historyOpenMocks.open).toHaveBeenCalledTimes(1);
+
+    const captured: Array<{
+      sessionId: string;
+      onResult: (result: DesignHistoryOpenResult) => void;
+    }> = [];
+    scheduleDelegatedDesignMirror(delegatedFinish("delegated-new"), {
+      openHistory: delegatedOpen(captured),
+      store: useAppStore,
+    });
+    await flushMirror();
+    expect(captured.map((open) => open.sessionId)).toEqual(["delegated-new"]);
+    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    await flushMirror();
+
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>Delegated</main>",
+    });
+    await act(async () => root.unmount());
+  });
+
+  it("holds the panel on an entry whose open succeeded", async () => {
+    // The retained pin: a pick that landed a card keeps later delegations
+    // from replaying at all, until the human moves on.
+    historyOpenMocks.open.mockImplementation(
+      (_sessionId: string, deps: { onResult: (result: DesignHistoryOpenResult) => void }) => {
+        deps.onResult({ status: "artifact", html: "<main>Old</main>" });
+        return { dispose: vi.fn() };
+      },
+    );
+    const { container, root } = await renderDesign(createHost());
+    await settleDesignLoad();
+    await pickHistoryEntry(container, "history-old");
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>Old</main>",
+    });
+
+    const captured: Array<{
+      sessionId: string;
+      onResult: (result: DesignHistoryOpenResult) => void;
+    }> = [];
+    scheduleDelegatedDesignMirror(delegatedFinish("delegated-new"), {
+      openHistory: delegatedOpen(captured),
+      store: useAppStore,
+    });
+    await flushMirror();
+
+    expect(captured).toEqual([]);
+    const session = useAppStore.getState().designSession;
+    expect(session.latestArtifact).toMatchObject({ html: "<main>Old</main>" });
+    expect(session.messages.some((message) => message.id.startsWith("delegated-design-"))).toBe(
+      false,
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("mirrors again after the human ends the session", async () => {
+    // Ending the session closes the reading: the pin goes with it and the
+    // next delegation lands.
+    historyOpenMocks.open.mockImplementation(
+      (_sessionId: string, deps: { onResult: (result: DesignHistoryOpenResult) => void }) => {
+        deps.onResult({ status: "artifact", html: "<main>Old</main>" });
+        return { dispose: vi.fn() };
+      },
+    );
+    const { session } = fakeAgentSession(agentState(null));
+    let currentSession: typeof session | null = session;
+    const listeners = new Set<() => void>();
+    const { container, root } = await renderDesign(
+      createHost({
+        getAgentSession: () => currentSession,
+        closeAgentSession: vi.fn(async () => {
+          currentSession = null;
+          for (const listener of listeners) listener();
+        }),
+        subscribeAgentSession: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      }),
+    );
+    await settleDesignLoad();
+    await pickHistoryEntry(container, "history-old");
+
+    const end = container.querySelector<HTMLButtonElement>(".design-session-end-button");
+    if (end === null) throw new Error("End session control missing");
+    await act(async () => end.click());
+
+    const captured: Array<{
+      sessionId: string;
+      onResult: (result: DesignHistoryOpenResult) => void;
+    }> = [];
+    scheduleDelegatedDesignMirror(delegatedFinish("delegated-new"), {
+      openHistory: delegatedOpen(captured),
+      store: useAppStore,
+    });
+    await flushMirror();
+    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    await flushMirror();
+
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>Delegated</main>",
+    });
+    await act(async () => root.unmount());
+  });
+
+  it("counts generations without reopened or delegated cards", async () => {
+    // The visible count names runs the human started: history and delegated
+    // cards are readings, not generations, so neither may inflate it.
+    const host = createHost();
+    const card = (id: string): DesignAssistantMessage => ({
+      id,
+      role: "assistant",
+      status: "done",
+      title: "Card",
+      desc: "A reading.",
+      sources: [],
+      nodeIds: [],
+    });
+    useAppStore.setState({
+      designSession: {
+        host,
+        document: DOCUMENT,
+        messages: [card("gen-1"), card("design-history-open-9"), card("delegated-design-child-9")],
+        latestArtifact: { html: "<main>Old</main>" },
+        generation: null,
+        sectionNotes: [],
+      },
+    });
+    const { container, root } = await renderDesign(host);
+    await act(settle);
+
+    expect(container.textContent).toContain("1 generation");
+    expect(container.textContent).not.toContain("2 generations");
+    expect(container.textContent).not.toContain("3 generations");
     await act(async () => root.unmount());
   });
 

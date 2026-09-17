@@ -6180,6 +6180,73 @@ mod tests {
             crate::provider_catalog::MCP_BROKER_TOOLS.len()
         );
     }
+    /// Both enforcement points consult a profile-sourced overlay: the two
+    /// peer tools hidden at `tools/list` and refused at `tools/call`, the
+    /// roster kept — while a profile without the tick serves everything. The
+    /// store is real, but this stops at the resolved overlay: it does not
+    /// walk the creation road that stamps it onto the child
+    /// (`overlay: profile.overlay.clone()` at the spawn assembly).
+    #[test]
+    fn a_profile_overlay_hides_peer_tools_from_the_child_it_creates() {
+        let store = profile_store(document(
+            vec![
+                profile(
+                    "hermit",
+                    "profile-hermit",
+                    "claude",
+                    "default",
+                    serde_json::json!({}),
+                    &[MCP_SEND_MESSAGE_TOOL, MCP_CREATE_AGENT_TOOL],
+                    true,
+                ),
+                profile(
+                    "social",
+                    "profile-social",
+                    "claude",
+                    "default",
+                    serde_json::json!({}),
+                    &[],
+                    true,
+                ),
+            ],
+            "",
+        ));
+        let names = |overlay: &ToolOverlay| {
+            enabled_tool_list(
+                crate::provider_catalog::MCP_BROKER_TOOLS,
+                None,
+                overlay.clone(),
+            )
+            .into_iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect::<Vec<_>>()
+        };
+        let hermit = resolve_profile(&store, "hermit").expect("ticked");
+        let listed = names(&hermit.overlay);
+        assert!(!listed.iter().any(|name| name == MCP_CREATE_AGENT_TOOL));
+        assert!(!listed.iter().any(|name| name == MCP_SEND_MESSAGE_TOOL));
+        assert!(listed.iter().any(|name| name == MCP_ROSTER_TOOL));
+        assert_eq!(
+            tool_call_refusal(None, &hermit.overlay, MCP_CREATE_AGENT_TOOL),
+            Some("Tool disabled by policy")
+        );
+        assert_eq!(
+            tool_call_refusal(None, &hermit.overlay, MCP_SEND_MESSAGE_TOOL),
+            Some("Tool disabled by policy")
+        );
+        assert_eq!(
+            tool_call_refusal(None, &hermit.overlay, MCP_ROSTER_TOOL),
+            None
+        );
+        let social = resolve_profile(&store, "social").expect("ticked");
+        let listed = names(&social.overlay);
+        assert!(listed.iter().any(|name| name == MCP_CREATE_AGENT_TOOL));
+        assert!(listed.iter().any(|name| name == MCP_SEND_MESSAGE_TOOL));
+        assert_eq!(
+            tool_call_refusal(None, &social.overlay, MCP_CREATE_AGENT_TOOL),
+            None
+        );
+    }
     // -----------------------------------------------------------------------
     // `create-from-profile`: resolving a profile, and the sentences a refusal
     // uses (`BRIEF-slice-5.md` §2, rev 9).
