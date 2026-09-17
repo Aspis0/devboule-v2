@@ -7791,8 +7791,8 @@ fn agent_finished_envelope(
     let clean = |value: &str| neutralise_envelope_text(value);
     let mut body = format!(
         "childSessionId: {}\ndisplayName: {}\nstate: {}\nsummary: {}",
-        clean(child_session_id),
-        clean(display_name),
+        clean(&single_line_header(child_session_id)),
+        clean(&single_line_header(display_name)),
         state.as_str(),
         clean(summary)
     );
@@ -7804,7 +7804,7 @@ fn agent_finished_envelope(
     format!(
         "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_finished\ntimestamp: {}\n{}\n</devboule-system>",
         origin_line(child_origin),
-        clean(child_session_id),
+        clean(&single_line_header(child_session_id)),
         unix_millis(),
         body
     )
@@ -7820,10 +7820,10 @@ fn agent_input_required_envelope(
     format!(
         "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_input_required\ntimestamp: {}\nchildSessionId: {}\ndisplayName: {}\nstate: input_required\nsummary: This agent is waiting for a person to answer a permission card.\n</devboule-system>",
         origin_line(child_origin),
-        neutralise_envelope_text(child_session_id),
+        neutralise_envelope_text(&single_line_header(child_session_id)),
         unix_millis(),
-        neutralise_envelope_text(child_session_id),
-        neutralise_envelope_text(display_name)
+        neutralise_envelope_text(&single_line_header(child_session_id)),
+        neutralise_envelope_text(&single_line_header(display_name))
     )
 }
 
@@ -7842,9 +7842,9 @@ fn agent_quiet_envelope(
     format!(
         "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_quiet\ntimestamp: {}\nchildSessionId: {}\ndisplayName: {}\nstate: working\nidleMs: {}\nsummary: This agent is still working but has produced no output for {minutes} minute(s). It may be thinking, building, or stuck; nothing was stopped.\n</devboule-system>",
         origin_line(child_origin),
-        neutralise_envelope_text(child_session_id),
+        neutralise_envelope_text(&single_line_header(child_session_id)),
         unix_millis(),
-        neutralise_envelope_text(child_session_id),
+        neutralise_envelope_text(&single_line_header(child_session_id)),
         neutralise_envelope_text(&single_line_header(display_name)),
         idle_ms,
     )
@@ -7889,7 +7889,7 @@ fn agent_permission_request_envelope(
     format!(
         "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_permission_request\ntimestamp: {}\ncardId: {}\ntoolTitle: {}\ndisplayName: {}\nchild-said:\n{}\nend child-said\n</devboule-system>",
         origin_line(child_origin),
-        neutralise_envelope_text(child_session_id),
+        neutralise_envelope_text(&single_line_header(child_session_id)),
         unix_millis(),
         neutralise_envelope_text(&single_line_header(card_id)),
         neutralise_envelope_text(&single_line_header(tool_title)),
