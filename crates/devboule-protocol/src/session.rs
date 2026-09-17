@@ -1012,6 +1012,13 @@ pub enum SessionEvent {
     Recovered {
         integrity: TranscriptIntegrity,
     },
+    /// This observer's attachment was removed because another client took
+    /// the session over: a resume replaced the generation it was watching.
+    /// The session itself lives on — this names the observer's view, not
+    /// the session, and reattaching observes the new generation. Distinct
+    /// from [`SessionEvent::Recovered`], which says the process died
+    /// unobserved and this is a transcript.
+    Detached,
     /// The journal has started dropping output for this live session. The
     /// counters measure what was noticed, never everything that was lost.
     JournalDegraded {

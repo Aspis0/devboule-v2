@@ -400,6 +400,12 @@ export class TerminalSession {
       case "recovered":
         this.markRecovered(event.integrity);
         break;
+      // Our attachment was replaced, not the session: another client resumed
+      // it. The process is alive and a fresh attach would work, so this says
+      // the view is stale rather than that the terminal died.
+      case "detached":
+        this.showError("Another client took over this session.");
+        break;
       case "silent":
         this.silenceBannerVisible = true;
         this.deps.onBanner({ kind: "silent", elapsedMs: event.elapsedMs });

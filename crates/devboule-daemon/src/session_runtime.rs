@@ -784,6 +784,9 @@ impl SessionRuntime {
                     };
                     stream.transcript_agent_reports.insert(seq, event);
                 }
+                // Detached names one observer's view and is never journalled;
+                // a replay can only meet it as a no-op marker.
+                SessionEvent::Detached => {}
             }
         }
         drop(stream);
@@ -2247,7 +2250,8 @@ impl SessionRuntime {
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. }
-                | SessionEvent::AgentReported { .. } => None,
+                | SessionEvent::AgentReported { .. }
+                | SessionEvent::Detached => None,
             })
             .collect()
     }
@@ -2493,20 +2497,20 @@ impl SessionRuntime {
             if key.conn_id != conn_id {
                 // The old pull may already have consumed Exit; direct queueing
                 // keeps this replacement signal deliverable through that seam.
-                attachment
-                    .outbound
-                    .enqueue_reply(devboule_protocol::DaemonMessage::SubscriptionEvent {
-                    subscription_id: key.subscription_id,
-                    envelope: SessionEventEnvelope {
-                        session_id: self.session_id.clone(),
-                        generation,
-                        event: SessionEvent::AgentError {
-                            message:
-                                "Session generation was replaced; reattach to continue observing."
-                                    .to_string(),
+                // The event names the case structurally: this observer's view
+                // was replaced and the session lives on. Never AgentError —
+                // the event a single malformed line rides on — which the app
+                // could only tell apart by comparing English.
+                attachment.outbound.enqueue_reply(
+                    devboule_protocol::DaemonMessage::SubscriptionEvent {
+                        subscription_id: key.subscription_id,
+                        envelope: SessionEventEnvelope {
+                            session_id: self.session_id.clone(),
+                            generation,
+                            event: SessionEvent::Detached,
                         },
                     },
-                });
+                );
             }
         }
     }
@@ -2876,6 +2880,49 @@ mod tests {
             .into_iter()
             .map(|pending| pending.envelope.event)
             .collect()
+    }
+
+    /// The takeover tells every *other* observer that its view is dead. That
+    /// must travel as the event's identity, not as a sentence on AgentError —
+    /// the event a single malformed output line rides on — which the app can
+    /// only tell apart by comparing English.
+    #[test]
+    fn a_replaced_generation_tells_the_other_observer_by_event_identity() {
+        let runtime = SessionRuntime::new();
+        let taker = ConnHandle::new(1);
+        runtime
+            .try_attach_with_replay(None, &taker, false)
+            .expect("the taking-over client attaches");
+        let observer = ConnHandle::new(2);
+        runtime
+            .try_attach_with_replay(None, &observer, false)
+            .expect("the replaced observer attaches");
+
+        runtime.notify_generation_replaced(taker.id);
+
+        let told = |conn: &ConnHandle| {
+            conn.outbound
+                .pull_replies()
+                .into_iter()
+                .filter_map(|reply| match reply {
+                    devboule_protocol::DaemonMessage::SubscriptionEvent { envelope, .. } => {
+                        Some(envelope.event)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            told(&taker).is_empty(),
+            "the connection that took the session over is not the one told"
+        );
+        let events = told(&observer);
+        assert_eq!(events.len(), 1, "the replaced view learns exactly once");
+        assert!(
+            matches!(events[0], SessionEvent::Detached),
+            "the replaced view must be named by the event itself, not by prose on AgentError: {:?}",
+            events[0]
+        );
     }
 
     fn model(model_id: &str) -> SessionModel {

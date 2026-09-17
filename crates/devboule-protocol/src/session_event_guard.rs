@@ -221,6 +221,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
                 trimmed_bytes: 0,
             },
         },
+        Detached => SessionEvent::Detached,
         JournalDegraded => SessionEvent::JournalDegraded {
             dropped_frames: 0,
             dropped_bytes: 0,

@@ -129,6 +129,9 @@
     "type": "child_finished"
   },
   {
+    "type": "detached"
+  },
+  {
     "code": null,
     "type": "exit"
   },

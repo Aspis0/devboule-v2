@@ -409,6 +409,7 @@ impl ConnHandle {
                 }
                 SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
                 SessionEvent::Silent { .. }
+                | SessionEvent::Detached
                 | SessionEvent::JournalDegraded { .. }
                 | SessionEvent::SessionsSnapshot { .. }
                 | SessionEvent::Snapshot { .. }
@@ -2518,6 +2519,7 @@ mod tests {
                 SessionEvent::Output { .. } => "output",
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
+                SessionEvent::Detached => "detached",
                 SessionEvent::Silent { .. } => "silent",
                 SessionEvent::JournalDegraded { .. } => "journal_degraded",
                 SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
@@ -2721,6 +2723,7 @@ mod tests {
                 SessionEvent::Output { .. } => "output",
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
+                SessionEvent::Detached => "detached",
                 SessionEvent::Silent { .. } => "silent",
                 SessionEvent::JournalDegraded { .. } => "journal_degraded",
                 SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",

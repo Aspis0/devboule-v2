@@ -651,6 +651,14 @@ export class AgentSession {
         this.stopRunningSubagents();
         this.failSession("This agent session is no longer available.");
         return;
+      // Our view was replaced, not the session: another client resumed it and
+      // the daemon detached this attachment. The session is alive and a fresh
+      // attach would work, but this view can no longer speak for it, so input
+      // stops here rather than failing on every later send.
+      case "detached":
+        this.stopRunningSubagents();
+        this.fail("Another client took over this session.");
+        return;
       case "output":
       case "agent_stderr":
       case "silent":

@@ -885,6 +885,8 @@ export type SessionEvent =
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }
   | { type: "recovered"; integrity: UnverifiableTranscriptIntegrity }
+  /** Another client took the session over: this view is dead, the session is not. */
+  | { type: "detached" }
   | { type: "journal_degraded"; droppedFrames: number; droppedBytes: number }
   /** Connection-scoped roster update; not an attach-channel event. */
   | { type: "sessions_snapshot"; sessions: SessionStateSnapshot[] }

@@ -528,6 +528,7 @@ fn send_pending_event(
             SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
             SessionEvent::AgentCreated { .. } => " agent_created".to_string(),
             SessionEvent::ChildFinished { .. } => " child_finished".to_string(),
+            SessionEvent::Detached => " detached".to_string(),
         };
         eprintln!(
             "discarded stale pending event for session {} generation {}{}",
