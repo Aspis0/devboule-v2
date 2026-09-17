@@ -447,8 +447,9 @@ export class AgentSession {
   /**
    * Hot-switch the permission mode. Like setModel, the invoke response is not
    * a confirmation: the chip shows the chosen mode optimistically until a
-   * later session_manifest reports it, and a rejected invoke reverts to the
-   * manifest value through the chat error path.
+   * later session_manifest reports it, and a rejected invoke is reported
+   * through `noteError` — the sentence lands in the transcript, the pending
+   * marker reverts to the manifest value, and nothing else changes.
    */
   async setMode(modeId: string): Promise<void> {
     if (this.disposed || !this.started || !this.attached) return;

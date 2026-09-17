@@ -39,6 +39,7 @@ import { ToolIcon } from "./ToolIcon";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { WorkspaceComposer } from "./WorkspaceComposer";
+import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 
 interface AgentChatSurfaceProps {
@@ -347,35 +348,6 @@ function modelOptionDescription(model: SessionModel): string | undefined {
     model.contextTokens === undefined ? null : `${model.contextTokens.toLocaleString()} tokens`,
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? parts.join(" · ") : undefined;
-}
-
-/** Bytes the way the terminal banner prints them (1000-based). */
-function humanSize(bytes: number): string {
-  const units = ["B", "KB", "MB", "GB"];
-  let value = Math.max(0, bytes);
-  let unit = 0;
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1000;
-    unit += 1;
-  }
-  const rounded =
-    unit === 0
-      ? Math.round(value).toString()
-      : value >= 10
-        ? Math.round(value).toString()
-        : value.toFixed(1);
-  return `${rounded} ${units[unit]}`;
-}
-
-/**
- * The journal-loss notice: pinned for the rest of the session's life, because
- * the transcript on disk stays incomplete no matter what happens next.
- */
-function journalLossCopy(loss: { frames: number; bytes: number }): string {
-  const frame = loss.frames === 1 ? "frame" : "frames";
-  // Frames and bytes are worst-known per field independently; the sentence
-  // must not join them into one measured loss that never occurred.
-  return `This conversation is not being saved: at least ${loss.frames} ${frame} and at least ${humanSize(loss.bytes)} of it could not be written to disk.`;
 }
 
 function usageCopy(state: AgentSessionState): string | null {
@@ -742,12 +714,16 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const pendingCopy = manifest === null ? null : pendingTargetCopy(manifest, state.pendingSwitch);
   const osGone =
     observedType(observedState) === "ended" || observedType(observedState) === "recovered";
-  // The daemon connection is a global fact with its own channel. Every
-  // non-connected state gates input: the supervisor clears the client the
-  // moment the connection drops, and `connecting` is the top of each
-  // reconnect attempt — a window with no client, in which every send is
-  // guaranteed to fail.
-  const daemonGone = daemonState !== "connected";
+  // The daemon connection is a global fact with its own channel. The gate
+  // covers the two states where the supervisor has cleared the client, so
+  // every send is guaranteed to fail: `disconnected` (ConnectionLost or
+  // Stopped) and `connecting` (the top of each reconnect attempt, client
+  // already gone). `error` and `unresponsive` are published while the client
+  // is still installed — gating them would lock every composer on a single
+  // failed ping. Keeping input live there is a judgement about likely
+  // failure, not a guarantee: sends may be slow, and a failure is recorded
+  // as a turn-level note.
+  const daemonGone = daemonState === "disconnected" || daemonState === "connecting";
   const { copy: statusLabel, tone: statusDot } = toolbarStatus(observedState, elapsedMs, state);
   // `AgentSession` replaces the items array on every update (copy-on-write),
   // so this memo recomputes whenever the transcript changes and can never
@@ -755,11 +731,16 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const entries = useMemo(() => groupToolCalls(state.items), [state.items]);
   const composerDisabled =
     osGone || daemonGone || (state.status !== "idle" && state.status !== "running");
-  const disabledReason = daemonGone
-    ? "The agent daemon is not connected."
-    : state.status === "initializing" && !osGone
-      ? "Connecting to the agent…"
-      : "This session is no longer available.";
+  // The session's own terminal verdict outranks the transient daemon states:
+  // a gone session must be named as gone even while a reconnect is pending.
+  const sessionGone = osGone || state.status === "error" || state.status === "closed";
+  const disabledReason = sessionGone
+    ? "This session is no longer available."
+    : daemonGone
+      ? "The agent daemon is not connected."
+      : state.status === "initializing"
+        ? "Connecting to the agent…"
+        : "This session is no longer available.";
   return (
     <div id={id} className="workspace-agent-shell" role="tabpanel" aria-label="Agent chat">
       <div className="workspace-agent-toolbar">

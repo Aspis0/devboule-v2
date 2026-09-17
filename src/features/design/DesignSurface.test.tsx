@@ -39,6 +39,11 @@ const historyListMocks = vi.hoisted(() => ({
   onOpen: null as ((entry: unknown) => void) | null,
   liveSessionId: null as string | null,
   refreshKey: 0,
+  // Durable journal of every refreshKey the double rendered with. The mirror
+  // above is overwritten on every render, so a poll can look before and after
+  // the value it wants and never see it; this list only grows, so polling it
+  // with toContain is monotone and cannot miss.
+  refreshKeys: [] as number[],
 }));
 
 const historyOpenMocks = vi.hoisted(() => ({
@@ -89,6 +94,7 @@ vi.mock("./DesignHistoryList", () => ({
     historyListMocks.onOpen = props.onOpen;
     historyListMocks.liveSessionId = props.liveSessionId ?? null;
     historyListMocks.refreshKey = props.refreshKey ?? 0;
+    historyListMocks.refreshKeys.push(props.refreshKey ?? 0);
     return null;
   },
 }));
@@ -426,6 +432,7 @@ beforeEach(() => {
   historyListMocks.onOpen = null;
   historyListMocks.liveSessionId = null;
   historyListMocks.refreshKey = 0;
+  historyListMocks.refreshKeys = [];
   historyOpenMocks.open.mockReset();
   skillSettingsMocks.load.mockResolvedValue({ version: 1, mode: "all", enabledSlugs: [] });
   skillSettingsMocks.save.mockResolvedValue(true);
@@ -462,6 +469,58 @@ afterEach(() => {
 });
 
 describe("DesignSurface host capabilities", () => {
+  it("shows the journal-loss notice on the design surface", async () => {
+    // L5: Design renders an agent conversation too, so a journal that stops
+    // saving must be visible here, not only in the workspace chat.
+    const base = agentState(null);
+    const { session, updateState } = fakeAgentSession(base);
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const host = createHost({
+      generate,
+      getAgentSession: () => session,
+      subscribeAgentSession: (listener) => session.subscribe(listener),
+    });
+    const { container, root } = await renderDesign(host);
+    await act(settle);
+
+    updateState({
+      ...base,
+      journalLoss: { frames: 15, bytes: 61286 },
+    });
+    await act(settle);
+
+    const banner = container.querySelector('[data-testid="design-journal-notice"]');
+    expect(banner).not.toBeNull();
+    expect(banner?.textContent).toContain("at least 15 frames");
+    expect(banner?.textContent).toContain("at least 61 KB");
+    await act(async () => root.unmount());
+  });
+
+  it("gates the visual check while the daemon cannot carry sends", async () => {
+    // L1: the ◉ button calls startGeneration like Generate does; the daemon
+    // gate lives in startGeneration so every caller is covered.
+    providerMocks.daemonStatus.mockResolvedValue({
+      state: "connecting",
+      pid: 42,
+      instanceId: "daemon-test",
+      protocolVersion: 1,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    });
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const host = createHost({ generate });
+    const { container, root } = await renderDesign(host);
+    await act(async () => undefined);
+
+    const check = container.querySelector<HTMLButtonElement>('[aria-label="Run visual check"]');
+    if (check === null) throw new Error("visual check control missing");
+    await act(async () => check.click());
+
+    expect(generate).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it("gates Generate while the daemon cannot carry sends", async () => {
     // H4: Design is the primary prompt surface; a send during a non-connected
     // window is guaranteed to fail, so the action is gated on the real state
@@ -477,7 +536,7 @@ describe("DesignSurface host capabilities", () => {
     });
     const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
     const host = createHost({ generate });
-    const { container } = await renderDesign(host);
+    const { container, root } = await renderDesign(host);
     await act(async () => undefined);
     await fillDraft(container, "Create the final card.");
 
@@ -487,18 +546,20 @@ describe("DesignSurface host capabilities", () => {
     expect(send.title).toContain("daemon");
     await act(async () => send.click());
     expect(generate).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
   });
 
   it("keeps Generate usable when the daemon is connected", async () => {
     const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
     const host = createHost({ generate });
-    const { container } = await renderDesign(host);
+    const { container, root } = await renderDesign(host);
     await act(async () => undefined);
     await fillDraft(container, "Create the final card.");
 
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (send === null) throw new Error("Generate control missing");
     expect(send.disabled).toBe(false);
+    await act(async () => root.unmount());
   });
 
   it("renders Design permissions and sends Allow once and Deny to the host", async () => {
@@ -1035,8 +1096,10 @@ describe("DesignSurface host capabilities", () => {
     if (onOpen === null) throw new Error("History list did not receive an open handler");
     await act(async () => onOpen({ sessionId: "history-timeout" }));
 
-    expect(container.querySelector('[role="status"].design-history-open-status')?.textContent).toBe(
-      "The transcript did not produce a design within 5 seconds.",
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector('[role="status"].design-history-open-status')?.textContent,
+      ).toBe("The transcript did not produce a design within 5 seconds."),
     );
     expect(container.querySelector(".design-canvas-artifact")).toBeNull();
     await act(async () => root.unmount());
@@ -1904,6 +1967,9 @@ describe("DesignSurface host capabilities", () => {
   it("omits the save control when the host is view-only", async () => {
     const { container, root } = await renderDesign(createHost());
 
+    await vi.waitFor(() => expect(container.querySelector(".design-toolbar")).not.toBeNull());
+    // Absence is only meaningful once the document load has completed; asserted
+    // earlier, an unloaded surface would still pass this test.
     expect(container.querySelector(".design-save-primary")).toBeNull();
     await act(async () => root.unmount());
   });
@@ -1982,8 +2048,10 @@ describe("DesignSurface host capabilities", () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector(".design-save-status")?.textContent).toContain(
-      "Unsaved changes",
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-save-status")?.textContent).toContain(
+        "Unsaved changes",
+      ),
     );
     await act(async () => root.unmount());
   });
@@ -1998,8 +2066,10 @@ describe("DesignSurface host capabilities", () => {
 
     await act(async () => save.click());
 
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Repository unavailable",
+    await vi.waitFor(() =>
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Repository unavailable",
+      ),
     );
     expect(container.querySelector(".design-save-status")?.textContent).not.toContain("Saved");
     await act(async () => root.unmount());
@@ -2015,13 +2085,17 @@ describe("DesignSurface host capabilities", () => {
     if (save === null) throw new Error("Save control missing");
 
     await act(async () => save.click());
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Repository unavailable",
+    await vi.waitFor(() =>
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Repository unavailable",
+      ),
     );
     await act(async () => save.click());
 
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-save-status")?.textContent).toContain("Saved"),
+    );
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(container.querySelector(".design-save-status")?.textContent).toContain("Saved");
     await act(async () => root.unmount());
   });
 
@@ -2046,6 +2120,9 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() => expect(container.textContent).toContain("Generated result"));
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late-rendered selection control would still pass this test.
     expect(
       Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
         (button) => button.textContent === "Select on canvas",
@@ -2162,8 +2239,10 @@ describe("DesignSurface host capabilities", () => {
         (message) => message.role === "assistant" && message.status === "working",
       ),
     ).toBe(false);
-    expect(container.querySelector(".design-save-status")?.textContent).toContain(
-      "Unsaved changes",
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-save-status")?.textContent).toContain(
+        "Unsaved changes",
+      ),
     );
     await act(async () => root.unmount());
 
@@ -2227,7 +2306,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => send.click());
 
     expect(generate).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain("Generation failed");
+    await vi.waitFor(() => expect(container.textContent).toContain("Generation failed"));
     expect(container.textContent).toContain("Generation unavailable");
     await act(async () => root.unmount());
   });
@@ -2241,7 +2320,7 @@ describe("DesignSurface host capabilities", () => {
 
     await act(async () => send.click());
 
-    expect(container.textContent).toContain("Generated result");
+    await vi.waitFor(() => expect(container.textContent).toContain("Generated result"));
     expect(container.textContent).not.toContain("Generating…");
     expect(container.querySelector("iframe")).toBeNull();
     await act(async () => root.unmount());
@@ -2353,14 +2432,16 @@ describe("DesignSurface host capabilities", () => {
 
     await act(async () => send.click());
 
-    expect(historyMocks.record).toHaveBeenCalledWith({
-      sessionId: "session-design",
-      peerSessionId: "peer-design",
-      createdAtMs: 1_000,
-      title: "Create the final card",
-      savedAtMs: expect.any(Number),
-      origin: "design",
-    });
+    await vi.waitFor(() =>
+      expect(historyMocks.record).toHaveBeenCalledWith({
+        sessionId: "session-design",
+        peerSessionId: "peer-design",
+        createdAtMs: 1_000,
+        title: "Create the final card",
+        savedAtMs: expect.any(Number),
+        origin: "design",
+      }),
+    );
     await act(async () => root.unmount());
   });
 
@@ -2382,8 +2463,10 @@ describe("DesignSurface host capabilities", () => {
 
       // The save was attempted; only its outcome differed.
       expect(skillSettingsMocks.saveProvider).toHaveBeenCalledWith("grok");
-      expect(container.querySelector(".design-history-open-status")?.textContent).toBe(
-        "Your agent choice was not saved.",
+      await vi.waitFor(() =>
+        expect(container.querySelector(".design-history-open-status")?.textContent).toBe(
+          "Your agent choice was not saved.",
+        ),
       );
       await act(async () => root.unmount());
     });
@@ -2427,7 +2510,13 @@ describe("DesignSurface host capabilities", () => {
         ),
       );
       // The history list still learns about the write attempt even though nothing was recorded.
-      await vi.waitFor(() => expect(historyListMocks.refreshKey).toBe(1));
+      // The ceiling only bounds worst-case scheduler delay under full-suite
+      // parallelism; the wait returns the moment the chain completes. Polled on
+      // the durable journal, not the mirror: the mirror holds only the latest
+      // render's prop, so a later render can overwrite 1 with 0 between polls.
+      await vi.waitFor(() => expect(historyListMocks.refreshKeys).toContain(1), {
+        timeout: 5_000,
+      });
       await act(async () => root.unmount());
     });
 
@@ -2442,8 +2531,12 @@ describe("DesignSurface host capabilities", () => {
       await act(async () => send.click());
       await act(settle);
 
+      await vi.waitFor(() => expect(historyListMocks.refreshKeys).toContain(1), {
+        timeout: 5_000,
+      });
+      // Absence is only meaningful once the write chain has completed; asserted
+      // earlier, a late-rendered notice would still pass this test.
       expect(container.querySelector(".design-history-open-status")).toBeNull();
-      await vi.waitFor(() => expect(historyListMocks.refreshKey).toBe(1));
       await act(async () => root.unmount());
     });
   });
@@ -2522,6 +2615,21 @@ describe("DesignSurface host capabilities", () => {
 
     await act(async () => onOpen({ sessionId: "history-session", title: "Reopened card" }));
 
+    // Durable evidence the reopen branch ran: the appended card persists, and the
+    // dirty flag was set synchronously in the same callback, so both committed
+    // in one batch. Polling the status text itself can miss a transient window;
+    // waiting on the card cannot, and the reads below land on its commit.
+    // The ceiling only bounds worst-case scheduler delay under full-suite
+    // parallelism; the wait returns the moment the chain completes.
+    await vi.waitFor(
+      () => {
+        const cards = container.querySelectorAll<HTMLElement>(".design-message-card");
+        const card = cards[cards.length - 1];
+        expect(card?.textContent).toContain("Reopened card");
+        expect(card?.textContent).toContain("Reopened from design history.");
+      },
+      { timeout: 5_000 },
+    );
     expect(container.querySelector(".design-save-status")?.textContent).toContain(
       "Unsaved changes",
     );
@@ -2559,11 +2667,15 @@ describe("DesignSurface host capabilities", () => {
     );
 
     // The reopened row is appended, so it is the last card.
+    await vi.waitFor(() => {
+      const cards = container.querySelectorAll<HTMLElement>(".design-message-card");
+      const card = cards[cards.length - 1];
+      expect(card?.textContent).toContain("worker one");
+      expect(card?.textContent).toContain("Reopened from design history.");
+    });
     const cards = container.querySelectorAll<HTMLElement>(".design-message-card");
     const card = cards[cards.length - 1];
     if (card === undefined) throw new Error("Reopened card missing");
-    expect(card.textContent).toContain("worker one");
-    expect(card.textContent).toContain("Reopened from design history.");
 
     // What a retry on this row actually produces comes first, so a row that
     // re-offered the action would be caught by what it produced rather than by a
@@ -2587,6 +2699,9 @@ describe("DesignSurface host capabilities", () => {
 
     await act(async () => send.click());
 
+    await vi.waitFor(() => expect(container.textContent).toContain("Generated result"));
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late history write would still pass this test.
     expect(historyMocks.record).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
@@ -2623,14 +2738,16 @@ describe("DesignSurface host capabilities", () => {
     currentSession = replacementSession;
     await act(async () => resolveGeneration?.());
 
-    expect(historyMocks.record).toHaveBeenCalledWith({
-      sessionId: "producer-session",
-      peerSessionId: "producer-peer",
-      createdAtMs: 1_001,
-      title: "Create the final card.",
-      savedAtMs: expect.any(Number),
-      origin: "design",
-    });
+    await vi.waitFor(() =>
+      expect(historyMocks.record).toHaveBeenCalledWith({
+        sessionId: "producer-session",
+        peerSessionId: "producer-peer",
+        createdAtMs: 1_001,
+        title: "Create the final card.",
+        savedAtMs: expect.any(Number),
+        origin: "design",
+      }),
+    );
     await act(async () => root.unmount());
   });
 
@@ -2829,6 +2946,9 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLElement>(".design-canvas-artifact")).not.toBeNull(),
+    );
     const artifact = container.querySelector<HTMLElement>(".design-canvas-artifact");
     if (artifact === null) throw new Error("Generated artifact missing");
     const artifactRect: NodeRect = {
@@ -2862,6 +2982,9 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLDivElement>(".design-canvas-artifact")).not.toBeNull(),
+    );
     const artifact = container.querySelector<HTMLDivElement>(".design-canvas-artifact");
     const stage = container.querySelector<HTMLDivElement>(".design-canvas-stage");
     if (artifact === null || stage === null) {
@@ -2926,6 +3049,9 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLIFrameElement>("iframe")).not.toBeNull(),
+    );
     const iframe = container.querySelector<HTMLIFrameElement>("iframe");
     if (iframe === null) throw new Error("Generated artifact frame missing");
     const srcDoc = iframe.getAttribute("srcdoc");
@@ -2952,6 +3078,7 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() => expect(container.textContent).toContain(path));
     const cards = container.querySelectorAll<HTMLElement>(".design-message-card");
     const card = cards[cards.length - 1];
     if (card === undefined) throw new Error("Run summary missing");
@@ -2979,6 +3106,7 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() => expect(container.textContent).toContain("Agent wrote no files"));
     const cards = container.querySelectorAll<HTMLElement>(".design-message-card");
     const card = cards[cards.length - 1];
     if (card === undefined) throw new Error("Run summary missing");
@@ -3001,6 +3129,9 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLElement>(".design-grounding-notice")).not.toBeNull(),
+    );
     const quiet = container.querySelector<HTMLElement>(".design-grounding-notice");
     if (quiet === null) throw new Error("Grounding notice missing");
     expect(quiet.textContent).toBe(notice);
@@ -3018,6 +3149,9 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() => expect(container.textContent).toContain("Generated result"));
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late-rendered notice would still pass this test.
     expect(container.querySelector(".design-grounding-notice")).toBeNull();
     await act(async () => root.unmount());
   });
@@ -3033,6 +3167,9 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLIFrameElement>("iframe")).not.toBeNull(),
+    );
     const iframe = container.querySelector<HTMLIFrameElement>("iframe");
     if (iframe === null) throw new Error("Artifact at the cap was not rendered");
     const srcDoc = iframe.getAttribute("srcdoc");
@@ -3052,8 +3189,10 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
-    expect(container.querySelector(".design-canvas-artifact-error")?.textContent).toBe(
-      "Artifact too large to display (maximum 256 KiB).",
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-canvas-artifact-error")?.textContent).toBe(
+        "Artifact too large to display (maximum 256 KiB).",
+      ),
     );
     expect(container.querySelector("iframe")).toBeNull();
     await act(async () => root.unmount());
@@ -3072,6 +3211,13 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLElement>(
+          '[role="status"].design-canvas-artifact-token-warning',
+        ),
+      ).not.toBeNull(),
+    );
     const warning = container.querySelector<HTMLElement>(
       '[role="status"].design-canvas-artifact-token-warning',
     );
@@ -3094,6 +3240,11 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLElement>(".design-canvas-artifact")).not.toBeNull(),
+    );
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late-rendered warning would still pass this test.
     expect(container.querySelector(".design-canvas-artifact-token-warning")).toBeNull();
     await act(async () => root.unmount());
   });
@@ -3540,11 +3691,12 @@ describe("DesignSurface host capabilities", () => {
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
-    await act(async () => Promise.resolve());
 
-    const notice = container.querySelector<HTMLElement>(".design-skill-result");
-    expect(notice?.textContent).toContain(SKILL_MODE_LABELS.all.fallbackNotice);
-    expect(notice?.textContent).toContain("Applied: anti-ai-slop, motion.");
+    await vi.waitFor(() => {
+      const notice = container.querySelector<HTMLElement>(".design-skill-result");
+      expect(notice?.textContent).toContain(SKILL_MODE_LABELS.all.fallbackNotice);
+      expect(notice?.textContent).toContain("Applied: anti-ai-slop, motion.");
+    });
 
     await openSkillCraft(container);
     const motion = builtInSkillIndex().find((entry) => entry.slug === "motion");
@@ -3586,9 +3738,11 @@ describe("DesignSurface host capabilities", () => {
     if (send === null || historyTrigger === null) throw new Error("History controls missing");
 
     await act(async () => send.click());
-    await act(async () => Promise.resolve());
-    expect(container.querySelector<HTMLElement>(".design-skill-result")?.textContent).toContain(
-      "Matched craft: anti-ai-slop, motion.",
+
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLElement>(".design-skill-result")?.textContent).toContain(
+        "Matched craft: anti-ai-slop, motion.",
+      ),
     );
 
     await act(async () => historyTrigger.click());
@@ -3596,6 +3750,9 @@ describe("DesignSurface host capabilities", () => {
     if (onOpen === null) throw new Error("History list did not receive an open handler");
     await act(async () => onOpen({ sessionId: "history-session", title: "Older design" }));
 
+    // The provenance clears synchronously on open, before any history result lands,
+    // so this absence needs no wait: the wait above already proved the generation
+    // chain that produced the notice completed.
     expect(container.querySelector(".design-skill-result")).toBeNull();
     await act(async () => root.unmount());
   });
@@ -4002,8 +4159,9 @@ describe("DesignSurface host capabilities", () => {
       attachments: [],
       onAttachmentFeedback: expect.any(Function),
     });
-    await act(async () => Promise.resolve());
-    expect(container.textContent).toContain(`Automatic craft: ${selected.slug}`);
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(`Automatic craft: ${selected.slug}`),
+    );
     await act(async () => root.unmount());
   });
 
@@ -4028,10 +4186,11 @@ describe("DesignSurface host capabilities", () => {
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
-    await act(async () => Promise.resolve());
 
-    expect(container.textContent).toContain(
-      "Automatic choice did not happen; the most important sections that fit were used, and the rest were omitted.",
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain(
+        "Automatic choice did not happen; the most important sections that fit were used, and the rest were omitted.",
+      ),
     );
     await openSkillCraft(container);
     for (const entry of skillIndex) {
@@ -4088,7 +4247,9 @@ describe("Design chrome, composer and folder attachment", () => {
       container.querySelector<HTMLButtonElement>(".design-generate-button")?.click(),
     );
 
-    expect(container.querySelector(".design-canvas-artifact")).not.toBeNull();
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-canvas-artifact")).not.toBeNull(),
+    );
     expect(container.querySelector(".design-canvas-empty")).toBeNull();
     await act(async () => root.unmount());
   });
@@ -4390,11 +4551,13 @@ describe("artifact slides shape notice", () => {
 
     await generateArtifact(container, "Make a deck about the release.");
 
+    await vi.waitFor(() =>
+      expect(slideNotice(container)?.textContent).toBe(
+        "Slides mode asked for one <section> per slide; this artifact has no <section> elements.",
+      ),
+    );
     const notice = slideNotice(container);
     if (notice === null) throw new Error("Slides shape notice missing");
-    expect(notice.textContent).toBe(
-      "Slides mode asked for one <section> per slide; this artifact has no <section> elements.",
-    );
     // A notice, not a gate: the artifact is still on the canvas and still exports.
     expect(container.querySelector(".design-canvas-artifact")).not.toBeNull();
     expect(container.querySelector('button[aria-label="Copy HTML"]')).not.toBeNull();
@@ -4419,6 +4582,11 @@ describe("artifact slides shape notice", () => {
 
     await generateArtifact(container, "Make a deck about the release.");
 
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-canvas-artifact")).not.toBeNull(),
+    );
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late-rendered notice would still pass this test.
     expect(slideNotice(container)).toBeNull();
     // A green badge on every successful render would be noise, so there is no
     // status line about the shape at all when the shape is what was asked.
@@ -4434,6 +4602,11 @@ describe("artifact slides shape notice", () => {
 
     await generateArtifact(container, "Make the header count dynamic.");
 
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-canvas-artifact")).not.toBeNull(),
+    );
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late-rendered notice would still pass this test.
     expect(slideNotice(container)).toBeNull();
     expect(container.textContent).not.toContain("Slides mode asked for");
     await act(async () => root.unmount());
@@ -4447,7 +4620,7 @@ describe("artifact slides shape notice", () => {
     expect(outputToggle(container).textContent).toContain("Slides");
 
     await generateArtifact(container, "Make a deck about the release.");
-    expect(slideNotice(container)).not.toBeNull();
+    await vi.waitFor(() => expect(slideNotice(container)).not.toBeNull());
 
     // The switch states what the next run will ask for. It regenerates nothing,
     // so the artifact on screen keeps the notice its own run earned.
@@ -4466,6 +4639,11 @@ describe("artifact slides shape notice", () => {
     expect(outputToggle(container).textContent).toContain("Page");
 
     await generateArtifact(container, "Make the header count dynamic.");
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-canvas-artifact")).not.toBeNull(),
+    );
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late-rendered notice would still pass this test.
     expect(slideNotice(container)).toBeNull();
 
     // Slides was never asked of this artifact, and the switch cannot ask it
@@ -4490,6 +4668,11 @@ describe("artifact slides shape notice", () => {
 
     // Absent is not `page`: an unknown mode is a mode nobody can show was asked
     // for, so it is not accused of failing the slides contract either.
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-canvas-artifact")).not.toBeNull(),
+    );
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late-rendered notice would still pass this test.
     expect(slideNotice(container)).toBeNull();
     expect(container.textContent).not.toContain("Slides mode asked for");
     await act(async () => root.unmount());
@@ -4523,11 +4706,13 @@ describe("artifact fence block notice", () => {
 
     await generateArtifact(container, "Turn the outline into a deck.");
 
+    await vi.waitFor(() =>
+      expect(fenceNotice(container)?.textContent).toBe(
+        "The reply carried 3 HTML blocks; the canvas shows only the last one.",
+      ),
+    );
     const notice = fenceNotice(container);
     if (notice === null) throw new Error("Fenced block notice missing");
-    expect(notice.textContent).toBe(
-      "The reply carried 3 HTML blocks; the canvas shows only the last one.",
-    );
     // A notice, not a gate: the artifact is still on the canvas and still exports.
     expect(container.querySelector(".design-canvas-artifact")).not.toBeNull();
     expect(container.querySelector('button[aria-label="Copy HTML"]')).not.toBeNull();
@@ -4544,6 +4729,11 @@ describe("artifact fence block notice", () => {
 
     await generateArtifact(container, "Fix the header count.");
 
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-canvas-artifact")).not.toBeNull(),
+    );
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late-rendered notice would still pass this test.
     expect(fenceNotice(container)).toBeNull();
     expect(container.textContent).not.toContain("HTML blocks");
     await act(async () => root.unmount());
@@ -4559,6 +4749,11 @@ describe("artifact fence block notice", () => {
 
     await generateArtifact(container, "Fix the header count.");
 
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-canvas-artifact")).not.toBeNull(),
+    );
+    // Absence is only meaningful once the generation chain has completed; asserted
+    // earlier, a late-rendered notice would still pass this test.
     expect(fenceNotice(container)).toBeNull();
     expect(container.textContent).not.toContain("HTML blocks");
     expect(container.querySelector(".design-canvas-artifact")).not.toBeNull();

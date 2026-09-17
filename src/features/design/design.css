@@ -1517,6 +1517,15 @@
   line-height: 1.35;
 }
 
+/* Same voice as the workspace journal banner: a loss the user must know about. */
+.design-journal-notice {
+  margin: 4px 0 0;
+  color: var(--danger-deep);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .design-craft-overlay {
   position: absolute;
   top: 58px;

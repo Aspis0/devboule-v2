@@ -66,12 +66,17 @@ function createRootContainer(): { container: HTMLDivElement; root: Root } {
 async function renderDesignSurface(): Promise<{ container: HTMLDivElement; root: Root }> {
   const { container, root } = createRootContainer();
   await act(async () => root.render(<App />));
-  await vi.waitFor(() =>
-    expect(
-      container.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Describe a design change"]',
-      ),
-    ).not.toBeNull(),
+  // Mounting the whole App under full-suite parallelism can outlast the 1s
+  // default. The condition is monotone — the textarea stays once rendered —
+  // so a generous ceiling bounds the wait without masking anything.
+  await vi.waitFor(
+    () =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
+    { timeout: 10_000 },
   );
   return { container, root };
 }

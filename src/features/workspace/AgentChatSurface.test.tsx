@@ -1416,6 +1416,79 @@ describe("AgentChatSurface", () => {
     );
   });
 
+  it("keeps the composer usable through a degraded-but-present connection", async () => {
+    // L3: `error` and `unresponsive` are published while the daemon's client
+    // is still installed — sends may be slow or fail, and a failure is
+    // recorded as a note, so the gate covers only the client-less states.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface sessionId="daemon-degraded" title="Agent" daemonState="error" />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+    });
+
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(false);
+  });
+
+  it("does not mask a gone session behind a transient daemon state", async () => {
+    // L4: the session's own terminal verdict outranks the daemon hint —
+    // `connecting` is transient, `error` is latched.
+    const ended: SessionState = {
+      type: "ended",
+      generation: 1,
+      code: 1,
+      integrity: { kind: "complete" },
+    };
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          sessionId="mask-agent"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+          daemonState="connected"
+        />,
+      );
+    });
+    await act(async () => undefined);
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Long task");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+
+    await act(async () => {
+      channelHarness.active?.({ type: "exit", code: 1 });
+    });
+
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          sessionId="mask-agent"
+          title="Agent"
+          observedState={ended}
+          daemonState="connecting"
+        />,
+      );
+    });
+
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "This session is no longer available.",
+    );
+  });
+
   it("disables Stop while the daemon connection is gone", async () => {
     // H7: the Stop arm renders on `streaming` alone; a disconnected daemon
     // must not leave a clickable Stop beside a disabled composer.
@@ -1668,19 +1741,27 @@ describe("AgentChatSurface", () => {
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await act(async () => send.click());
 
-    await act(async () => {
-      channelHarness.active?.({ type: "exit", code: 1 });
-    });
-
+    // L2: open the model menu while the session is alive...
     const chip = container.querySelector<HTMLButtonElement>('[data-testid="model-chip"]');
     if (chip === null) throw new Error("model chip did not render");
     await act(async () => chip.click());
+    expect(container.querySelector('[aria-label="Model"]')).not.toBeNull();
 
+    // ...then let the fatal event land: the open menu must close, because its
+    // options would still reach setModel on a gone view.
+    await act(async () => {
+      channelHarness.active?.({ type: "exit", code: 1 });
+    });
+    expect(container.querySelector('[aria-label="Model"]')).toBeNull();
+
+    // And the chip must not reopen it.
+    await act(async () => chip.click());
     expect(container.querySelector('[aria-label="Model"]')).toBeNull();
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(true);
+    expect(sessionSetModel).not.toHaveBeenCalled();
   });
 
   it("keeps the Stop button when a switch is refused mid-turn", async () => {

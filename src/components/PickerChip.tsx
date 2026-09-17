@@ -66,16 +66,20 @@ export function PickerChip({
 }: PickerChipProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const listId = useId();
-  const [open, setOpen] = useState(false);
+  const [openRequested, setOpenRequested] = useState(false);
+  // A fatal event can flip `disabled` while the menu is open; deriving `open`
+  // means the menu unmounts with the chip in the same render, and its option
+  // buttons cannot reach `onSelect` on a gone view.
+  const open = openRequested && !disabled;
 
   useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") setOpenRequested(false);
     };
     const closeOnOutsideClick = (event: MouseEvent) => {
       const target = event.target;
-      if (!(target instanceof Node) || !menuRef.current?.contains(target)) setOpen(false);
+      if (!(target instanceof Node) || !menuRef.current?.contains(target)) setOpenRequested(false);
     };
     document.addEventListener("keydown", closeOnEscape);
     document.addEventListener("click", closeOnOutsideClick);
@@ -115,7 +119,7 @@ export function PickerChip({
         disabled={disabled}
         onClick={() => {
           if (disabled) return;
-          setOpen((value) => !value);
+          setOpenRequested((value) => !value);
         }}
       >
         {current !== null && dotFor !== undefined ? (
@@ -145,7 +149,7 @@ export function PickerChip({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
                 onSelect(option.id);
-                setOpen(false);
+                setOpenRequested(false);
               }}
             >
               <span className="workspace-mode-name">{option.name}</span>

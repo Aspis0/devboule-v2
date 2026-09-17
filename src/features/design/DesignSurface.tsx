@@ -110,6 +110,7 @@ import {
 import { buildSkillBlock } from "./skillLoader";
 import { useProviderConsent } from "../workspace/useProviderConsent";
 import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
+import { journalLossCopy } from "../workspace/journalLoss";
 import { chatCapableProviders, requiresConsent } from "../workspace/workspaceSessions";
 import { PermissionCard } from "../../components/PermissionCard";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
@@ -3058,9 +3059,10 @@ const DesignAssistant = memo(function DesignAssistant({
             <button
               className="design-visual-check"
               type="button"
-              title="Visual check"
+              title={daemonGone ? "The agent daemon is not connected." : "Visual check"}
               aria-label="Run visual check"
               onClick={onVisualCheck}
+              disabled={daemonGone}
             >
               ◉
             </button>
@@ -3195,6 +3197,15 @@ const DesignAssistant = memo(function DesignAssistant({
                   })}
                 </div>
               </>
+            ) : null}
+            {agentState?.journalLoss ? (
+              <div
+                className="design-journal-notice"
+                role="status"
+                data-testid="design-journal-notice"
+              >
+                {journalLossCopy(agentState.journalLoss)}
+              </div>
             ) : null}
             <div className="design-composer-input">
               <textarea
@@ -5004,6 +5015,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     (prompt: string) => {
       if (
         busy ||
+        daemonGone ||
         generate === undefined ||
         generationInFlightRef.current ||
         historyOpenInFlightRef.current
@@ -5231,6 +5243,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       commitAttachments,
       composerContextLayerName,
       composerContextTarget,
+      daemonGone,
       document.contextPrefix,
       disposeHistoryOpen,
       document.workingMessage,

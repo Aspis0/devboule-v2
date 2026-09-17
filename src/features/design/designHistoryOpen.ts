@@ -194,8 +194,12 @@ export function openDesignHistoryEntry(
         return;
       }
 
+      // Both terminal statuses mean the replay can never yield an artifact;
+      // `closed` names a clean exit, which is still an unopenable transcript.
       if (state.status === "error") {
         finish({ status: "failed", message: lastErrorText(state) });
+      } else if (state.status === "closed") {
+        finish({ status: "failed", message: "The transcript could not be opened." });
       }
     } catch (cause) {
       finish({ status: "failed", message: reasonFromCause(cause) });

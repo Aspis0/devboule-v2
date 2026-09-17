@@ -1106,8 +1106,9 @@ describe("ACP agent session", () => {
   });
 
   it("never relabels a failure as a clean finish", async () => {
-    // H6, the other direction: a session whose turn ended in failure must
-    // keep "Needs attention" even when the process later exits cleanly.
+    // H6, the other direction: `error` is the latched verdict for a gone view,
+    // and a later clean `exit` must not downgrade it to `closed` — the two
+    // render differently and the failure is what happened.
     const harness = makeHarness();
     await harness.session.start();
     await harness.session.send("Keep going");

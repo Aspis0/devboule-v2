@@ -157,6 +157,30 @@ describe("design history reopen", () => {
     }
   });
 
+  it("reports a clean exit as a transcript that cannot be opened", async () => {
+    // L7: a replayed transcript that exits cleanly before any artifact can
+    // never yield one, so the open must fail immediately instead of sitting
+    // out the deadline and misreporting the outcome as a timeout.
+    vi.useFakeTimers();
+    try {
+      const invoke = vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"];
+      const harness = historyHarness(invoke);
+      await Promise.resolve();
+
+      harness.emit({ type: "exit", code: 0 });
+
+      expect(harness.results.at(-1)).toMatchObject({
+        status: "failed",
+        message: "The transcript could not be opened.",
+      });
+      harness.handle.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses the formatted number when choosing singular or plural timeout wording", async () => {
     vi.useFakeTimers();
     try {
