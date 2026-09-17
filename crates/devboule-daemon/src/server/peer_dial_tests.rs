@@ -163,6 +163,68 @@ fn a_revoked_row_is_not_dialable() {
     assert_eq!(error.step(), "revoked", "{error}");
 }
 
+/// A revoke that lands while the dial is connecting is heard before any
+/// application byte leaves. The ordering is a barrier, not a sleep: the
+/// accept proves the dial already passed its first revocation check, the
+/// revoke is written, and only then is the handshake allowed to finish.
+#[test]
+fn a_revoke_during_the_handshake_stops_the_request() {
+    let state = ServerState::new("peer-dial-revoke-race".into());
+    let keypair = pinned_keypair();
+    let private: [u8; 32] = keypair.private.clone().try_into().expect("32 bytes");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the fake responder");
+    let address = listener.local_addr().expect("fake responder address");
+    let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel();
+    let (saw_tx, saw_rx) = std::sync::mpsc::channel();
+
+    let responder = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept one dial");
+        accepted_tx.send(()).expect("report the accept");
+        go_rx.recv().expect("wait until the revoke has landed");
+        let session = responder_handshake(
+            &stream,
+            Instant::now() + Duration::from_secs(10),
+            &private,
+            PEER_PROLOGUE,
+            None,
+            PEER_NOISE_PATTERN,
+        )
+        .expect("fake responder handshake");
+        let (reader, writer, closer) = split_session(&stream, session).expect("split");
+        let framed = Framed::from_stream(reader, writer, closer);
+        // The dialer must refuse before its hello, so nothing may arrive.
+        let got = framed
+            .recv_timeout::<ClientMessage>(Duration::from_secs(2))
+            .is_ok();
+        saw_tx.send(got).expect("report what arrived");
+    });
+
+    state
+        .peer_upsert(dial_row(address.to_string(), &keypair.public))
+        .expect("upsert the row");
+    let dialer = {
+        let state = Arc::clone(&state);
+        std::thread::spawn(move || call_peer(&state, "b", ClientMessage::SessionsList { id: 7 }))
+    };
+    accepted_rx.recv().expect("the dial connected");
+    state
+        .peer_revoke("b", 1)
+        .expect("revoke while the dial is in flight");
+    go_tx.send(()).expect("let the handshake finish");
+
+    let error = dialer
+        .join()
+        .expect("the dialer thread")
+        .expect_err("a peer revoked mid-dial must not be talked to");
+    assert_eq!(error.step(), "revoked", "{error}");
+    assert!(
+        !saw_rx.recv().expect("the responder reports"),
+        "no application frame may reach a peer revoked before the handshake finished"
+    );
+    responder.join().expect("responder thread");
+}
+
 #[test]
 fn the_outbound_cap_caps_concurrent_dials() {
     let state = ServerState::new("peer-dial-cap".into());

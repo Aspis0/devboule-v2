@@ -176,6 +176,20 @@ pub fn dial_peer(
     hello: &ClientHello,
     request: &ClientMessage,
 ) -> Result<DaemonMessage, DialError> {
+    let framed = connect_and_handshake(static_private, remote_static, address)?;
+    exchange(&framed, hello, request)
+}
+
+/// Everything up to and including the authentication, and nothing after it.
+///
+/// Split out so a caller can decide between the handshake and the first
+/// application byte — the last moment at which refusing still discloses
+/// nothing and causes nothing. `call_peer` re-reads the revocation there.
+fn connect_and_handshake(
+    static_private: &[u8; 32],
+    remote_static: &[u8],
+    address: &str,
+) -> Result<Framed, DialError> {
     let address: SocketAddr = address.parse().map_err(|error| {
         DialError::at(
             DialStep::Address,
@@ -207,9 +221,24 @@ pub fn dial_peer(
     .map_err(|error| DialError::at(DialStep::Handshake, error.to_string()))?;
     let (reader, writer, closer) = split_session(&stream, session)
         .map_err(|error| DialError::at(DialStep::Handshake, error.to_string()))?;
-    let framed = Framed::from_stream(reader, writer, closer);
+    Ok(Framed::from_stream(reader, writer, closer))
+}
+
+/// The application half: the versioned hello every client speaks, then one
+/// request and its reply. Both sends carry the dial's own deadline — without
+/// one they fall back to the stream's 300 s idle bound, and a far end that
+/// completes the handshake and then stops reading would park the caller (and
+/// its outbound slot) for five minutes.
+fn exchange(
+    framed: &Framed,
+    hello: &ClientHello,
+    request: &ClientMessage,
+) -> Result<DaemonMessage, DialError> {
     framed
-        .send(&ClientMessage::Hello(hello.clone()))
+        .send_until(
+            &ClientMessage::Hello(hello.clone()),
+            Instant::now() + DIAL_REPLY_TIMEOUT,
+        )
         .map_err(|error| DialError::at(DialStep::Send, error.to_string()))?;
     match framed.recv_timeout::<DaemonMessage>(DIAL_REPLY_TIMEOUT) {
         Ok(DaemonMessage::Hello(_)) => {}
@@ -225,7 +254,7 @@ pub fn dial_peer(
         Err(error) => return Err(DialError::at(DialStep::Hello, error.to_string())),
     }
     framed
-        .send(request)
+        .send_until(request, Instant::now() + DIAL_REPLY_TIMEOUT)
         .map_err(|error| DialError::at(DialStep::Send, error.to_string()))?;
     framed
         .recv_timeout::<DaemonMessage>(DIAL_REPLY_TIMEOUT)
@@ -275,13 +304,24 @@ pub fn call_peer(
             .map_err(|error| DialError::at(DialStep::Identity, error))?,
         "devboule-daemon",
     );
-    dial_peer(
-        identity.private_key(),
-        &row.public_key,
-        &row.address,
-        &hello,
-        &request,
-    )
+    let framed = connect_and_handshake(identity.private_key(), &row.public_key, &row.address)?;
+    // Ask again, now. Connecting and shaking hands can take fifteen seconds,
+    // and a revoke that lands inside them would not be in the row read above.
+    // The inbound side closes live connections on revoke; outbound keeps no
+    // registry, so this is where an outbound call hears it. It is also the
+    // last honest moment: after the hello the request has been disclosed and
+    // acted upon, and a refusal afterwards would be theatre.
+    match state.peer_get(device_id) {
+        Ok(Some(fresh)) if !fresh.is_revoked() => {}
+        Ok(_) => {
+            return Err(DialError::at(
+                DialStep::Revoked,
+                "the peer was revoked while this dial was connecting",
+            ))
+        }
+        Err(error) => return Err(DialError::at(DialStep::RowMissing, error)),
+    }
+    exchange(&framed, &hello, &request)
 }
 
 #[cfg(test)]
