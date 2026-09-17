@@ -498,12 +498,14 @@ export class AgentSession {
         // echoed user message — one event, whole. A permission-request
         // envelope is reduced to its structured chat item: the daemon's
         // fields in system styling, the child's excerpt quoted and labelled
-        // as its own. Any other frame whose fixed header claims `role:
-        // daemon` — a known kind, an unknown one, or a notice whose closing
-        // tag the daemon's size bound cut off — becomes a readable
-        // daemon_notice card, never the raw frame. Frames that do not claim
-        // it (the agent-to-agent echo, whatever its composed role) fall
-        // through by author: the daemon names who spoke and the app renders
+        // as its own. Any other frame whose fixed header carries both `role:
+        // daemon` and a `kind:` line — a known kind, an unknown one, or a
+        // notice whose closing tag the daemon's size bound cut off — becomes
+        // a readable daemon_notice card, never the raw frame. Everything
+        // else falls through by author, including the agent-to-agent echo:
+        // its role is composed from the caller's peer record and may read
+        // `daemon`, but it carries no kind, so it is not a notice and its
+        // text stays visible. The daemon names who spoke and the app renders
         // it, never re-deriving authorship from the text. Absent predates
         // the field and reads as human.
         const permissionRequest = parseAgentPermissionRequest(event.text);

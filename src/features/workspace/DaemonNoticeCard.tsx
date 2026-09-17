@@ -53,10 +53,7 @@ function unrecognizedSentence(notice: Extract<DaemonNotice, { recognized: false 
   // what this build could read and leaves the rest unformatted — visible,
   // inert, and never a guess.
   const sentence = "The daemon sent a notice this version of the app does not know how to format.";
-  const kind =
-    notice.kind === null
-      ? " The frame declared no kind."
-      : ` It declared kind: ${bound(notice.kind)}.`;
+  const kind = ` It declared kind: ${bound(notice.kind)}.`;
   const child =
     notice.childSessionId === null
       ? ""

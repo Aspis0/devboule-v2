@@ -7,9 +7,9 @@
  *
  *     <devboule-system>
  *     origin: …
- *     role: daemon          ← the claim this parser gates on
+ *     role: daemon          ← necessary, not sufficient
  *     from_agent: …
- *     kind: …               ← only counts BEFORE the timestamp line
+ *     kind: …               ← the marker, and only BEFORE the timestamp
  *     timestamp: …          ← the header block ends here
  *     …kind-specific fields…
  *     </devboule-system>
@@ -19,10 +19,17 @@
  *   while an agent-to-agent echo carries the caller's free text after the
  *   timestamp line and composes `role:` from the caller's peer record. A
  *   `kind:` line counts only inside that header block. See `headerBlock`.
- * - A frame whose `role:` is not exactly `daemon` returns null. One that
- *   claims `role: daemon` NEVER returns null — recognized kind, or
- *   `recognized: false` naming what the frame declared — not even when the
- *   daemon's size bound cut the closing tag off (then `truncated`).
+ * - `role:` ALONE DOES NOT MARK A NOTICE. The daemon composes it from the
+ *   CALLER's peer record (`session.rs:5574`), so an echo sent by a session a
+ *   paired daemon created reads `role: daemon` while carrying another
+ *   agent's words. The marker is a `kind:` line in the fixed header: all
+ *   four notices carry one, the echo carries none. A frame missing either
+ *   returns null and is rendered by author, with its text intact.
+ * - A frame that carries both NEVER returns null — recognized kind, or
+ *   `recognized: false` naming the kind it declared — not even when the
+ *   daemon's size bound cut the closing tag off (then `truncated`). A cut
+ *   that lands inside the header removes the timestamp line, which empties
+ *   the header block, so such a frame returns null rather than half-parsing.
  * - A recognized kind demotes when a field its card cannot stand without is
  *   missing or malformed; the surface invents no stand-in values.
  * - THE FINISH TAIL IS NOT ATTRIBUTABLE HERE: the child's summary, the
@@ -72,8 +79,9 @@ export type AgentDaemonNotice =
     }
   | {
       recognized: false;
-      /** What the frame declared, when it declared one. */
-      kind: string | null;
+      /** The kind the fixed header declared. A frame without one is not a
+          notice and never reaches this type. */
+      kind: string;
       /** The frame's universal child pointer, from the fixed header. */
       childSessionId: string | null;
     };
@@ -181,10 +189,10 @@ function parseFinished(
 
 /**
  * Parses one daemon notice out of transcript text. Returns null for
- * everything that does not claim `role: daemon` inside the fixed header of a
- * complete-or-cut envelope — ordinary messages, permission requests (another
- * parser's frame), and the daemon's agent-to-agent frame, whose payload is a
- * peer's words.
+ * everything whose fixed header does not carry BOTH `role: daemon` and a
+ * `kind:` line — ordinary messages, permission requests (another parser's
+ * frame), and the daemon's agent-to-agent echo, whose payload is another
+ * agent's words and whose composed role may itself read `daemon`.
  */
 export function parseAgentDaemonNotice(text: string): AgentDaemonNotice | null {
   if (!text.startsWith(ENVELOPE_OPEN)) return null;
@@ -208,7 +216,13 @@ export function parseAgentDaemonNotice(text: string): AgentDaemonNotice | null {
   const header = headerBlock(lines);
   if (headerLinesValue(header, "role") !== DAEMON_ROLE) return null;
 
+  // `role:` is not the notice marker. The daemon composes it from the
+  // CALLER's peer record (`session.rs:5574`), so an agent-to-agent echo sent
+  // by a session a paired daemon created reads `role: daemon` while its body
+  // is another agent's words. `kind:` inside the fixed header is the marker:
+  // every notice the daemon builds carries one, the echo carries none.
   const kind = headerLinesValue(header, "kind");
+  if (kind === null) return null;
   const fromAgent = headerLinesValue(header, "from_agent");
   const unformatted = (): AgentDaemonNotice => ({
     recognized: false,

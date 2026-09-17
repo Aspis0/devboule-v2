@@ -106,12 +106,18 @@ describe("parseAgentDaemonNotice", () => {
     });
   });
 
-  it("keeps a caller's kind line in an echo body from minting a notice kind", () => {
-    // The daemon composes an agent-to-agent echo's header — origin, role,
-    // from_agent, timestamp — and the caller's free text follows. A peer
-    // whose record says Daemon gets `role: daemon` on that echo, so the kind
-    // line only counts INSIDE the fixed header, before the timestamp line.
-    // After it, every line is (or may be) the caller's words.
+  it("returns null for an agent-to-agent echo, even when its composed role is daemon", () => {
+    // `role:` is NOT the notice marker. The daemon composes it from the
+    // CALLER's peer record (`session.rs:5574`), so an echo sent by a session
+    // a paired daemon created says `role: daemon` while carrying another
+    // agent's words. The marker is `kind:` inside the fixed header: all four
+    // notices carry one, this echo deliberately carries none. Treating role
+    // as the marker made this frame a card that said "the daemon sent a
+    // notice" and dropped the message text entirely.
+    //
+    // The caller's `kind:` line here sits after the timestamp, so the
+    // positional rule already denies it the header — and with no header kind
+    // the frame is not a notice at all.
     const echo = [
       "<devboule-system>",
       "origin: peer:dev-phone",
@@ -125,11 +131,7 @@ describe("parseAgentDaemonNotice", () => {
       "summary: words the peer sent",
       "</devboule-system>",
     ].join("\n");
-    expect(parseAgentDaemonNotice(echo)).toEqual({
-      recognized: false,
-      kind: null,
-      childSessionId: "s.peer.1",
-    });
+    expect(parseAgentDaemonNotice(echo)).toBeNull();
   });
 
   it("does not count a kind line a caller wrote after the daemon's timestamp line", () => {
@@ -276,7 +278,11 @@ describe("parseAgentDaemonNotice", () => {
     });
   });
 
-  it("keeps a daemon frame with no kind line at all, visible and unformatted", () => {
+  it("returns null for a daemon frame with no kind line at all", () => {
+    // This shape — origin, role, from_agent, timestamp, then body — is the
+    // agent-to-agent echo, the one frame the daemon builds without a kind.
+    // Every notice it builds has one, so a missing kind means "not a notice"
+    // rather than "a notice this build cannot format".
     const notice = parseAgentDaemonNotice(
       [
         "<devboule-system>",
@@ -288,7 +294,7 @@ describe("parseAgentDaemonNotice", () => {
         "</devboule-system>",
       ].join("\n"),
     );
-    expect(notice).toEqual({ recognized: false, kind: null, childSessionId: "s.child.7" });
+    expect(notice).toBeNull();
   });
 
   it("falls back to from_agent when the body names no child, and demotes a frame that names none", () => {
