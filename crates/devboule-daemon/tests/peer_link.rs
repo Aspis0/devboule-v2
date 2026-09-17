@@ -30,8 +30,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
-    connect_pipe, initiator_handshake, split_session, Framed, RuntimePaths, PEER_NOISE_PATTERN,
-    PEER_PROLOGUE,
+    connect_pipe, dial_peer, initiator_handshake, split_session, Framed, RuntimePaths,
+    PEER_NOISE_PATTERN, PEER_PROLOGUE,
 };
 use devboule_protocol::{ClientHello, ClientMessage, DaemonMessage, ErrorCode, OwnerId, PeerRole};
 
@@ -315,6 +315,22 @@ impl Peer {
             .collect::<Result<Vec<_>, _>>()
             .expect("rows")
     }
+
+    /// One peer row's pinned key and stored address, read straight from the
+    /// journal: exactly the data the dial path resolves out of the row at
+    /// dial time.
+    fn stored_row_for(&self, device_id: &str) -> Option<(Vec<u8>, String)> {
+        let connection = rusqlite::Connection::open(self.dir.join("journal.db")).expect("journal");
+        let mut statement = connection
+            .prepare("SELECT public_key, address FROM peers WHERE device_id = ?1")
+            .expect("prepare");
+        let mut rows = statement
+            .query_map([device_id], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query");
+        rows.next().transpose().expect("row")
+    }
 }
 
 impl Drop for Peer {
@@ -394,6 +410,35 @@ fn wait_for_row_count(peer: &Peer, count: usize) -> Vec<(String, String, Option<
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Pair `a` to `b` as Daemon peers, `b` displaying the code. A `Daemon`
+/// pairing needs no confirmation window, so this returns once both rows are
+/// written.
+fn pair_as_daemons(a: &Peer, b: &Peer, address_b: &str, b_device_id: &str) {
+    let id = b.pipe.id();
+    let code = match b.pipe.expect(ClientMessage::PairingStart {
+        id,
+        role: PeerRole::Daemon,
+    }) {
+        DaemonMessage::PairingCode { code, .. } => code,
+        other => panic!("expected PairingCode, got {other:?}"),
+    };
+    let id = a.pipe.id();
+    match a.pipe.expect(ClientMessage::PairingComplete {
+        id,
+        address: address_b.to_string(),
+        code,
+        role: PeerRole::Daemon,
+    }) {
+        DaemonMessage::PairingDone { peer, .. } => {
+            assert_eq!(peer.device_id, b_device_id);
+            assert_eq!(peer.role, PeerRole::Daemon);
+        }
+        other => panic!("expected PairingDone for a Daemon pairing, got {other:?}"),
+    }
+    wait_for_row_count(a, 1);
+    wait_for_row_count(b, 1);
 }
 
 /// Assert that a JSON object carries no usable value under `key`.
@@ -704,5 +749,150 @@ fn two_daemons_pair_over_the_tailnet_and_a_peer_is_restricted() {
                 "{name} stderr leaks a public key:\n{stderr}"
             );
         }
+    }
+}
+
+/// The outbound dial: two real daemons pair, and then one of them dials the
+/// other through the production dial path. The dialer's side of the call is
+/// driven with daemon A's own static key and the row A's journal holds for B —
+/// exactly the data the state-aware caller resolves at dial time — and B
+/// answers through its real accept path: pre-Noise filter, pinned-key lookup,
+/// binding check, gate, dispatch.
+#[test]
+fn a_paired_daemon_dials_its_peer_and_reads_the_reply() {
+    let _guard = lock_tests();
+
+    let (port_a, port_b) = two_free_ports();
+    let a = Peer::spawn("dial-a", port_a);
+    let b = Peer::spawn("dial-b", port_b);
+
+    let (Some(_address_a), Some(address_b)) = (a.peer_address(), b.peer_address()) else {
+        eprintln!(
+            "SKIP peer_link dial: no reachable tailnet address. A said {}; B said {}.",
+            a.remote_label(),
+            b.remote_label()
+        );
+        return;
+    };
+    let a_self = a.self_info();
+    let b_self = b.self_info();
+
+    // The hello a dialing daemon speaks: it names itself the way a remote
+    // peer is named on the wire, `peer_<device_id>`. The responder replaces
+    // the owner with the identity the Noise handshake authenticated; nothing
+    // authorizes on it.
+    let dial_hello = ClientHello::m3a(
+        OwnerId::new(format!("peer_{}", a_self.device_id), "daemon").expect("owner"),
+        "devboule-daemon",
+    );
+
+    // ---- pair as Daemon peers: a Daemon pairing needs no confirmation window
+    pair_as_daemons(&a, &b, &address_b, &b_self.device_id);
+
+    let (pinned_key, stored_address) = a
+        .stored_row_for(&b_self.device_id)
+        .expect("A holds a row for B");
+    assert_eq!(
+        stored_address, address_b,
+        "the row names B's tailnet address"
+    );
+    assert_eq!(pinned_key.len(), 32, "a pinned key is a Noise static key");
+
+    // ---- the happy dial: one request, one reply ----------------------------
+    let reply = dial_peer(
+        &a.static_private(),
+        &pinned_key,
+        &stored_address,
+        &dial_hello,
+        &ClientMessage::SessionsList { id: 7 },
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "a paired daemon dials its peer: {error}; B stderr: {}",
+            b.stderr_contents()
+        )
+    });
+    match reply {
+        DaemonMessage::Sessions { id, sessions } => {
+            assert_eq!(id, 7, "the reply carries the request id");
+            assert!(
+                sessions.is_empty(),
+                "a fresh Daemon peer has created no sessions on B: {sessions:?}"
+            );
+        }
+        other => panic!("expected Sessions, got {other:?}"),
+    }
+
+    // ---- a far end that does not match the pinned key ----------------------
+    //
+    // The key is flipped, not replaced with garbage, so the failure is the
+    // handshake's key check and not a length or encoding refusal. There is no
+    // fallback: the dial fails, full stop.
+    let mut impostor_key = pinned_key.clone();
+    impostor_key[31] ^= 0x01;
+    let error = dial_peer(
+        &a.static_private(),
+        &impostor_key,
+        &stored_address,
+        &dial_hello,
+        &ClientMessage::SessionsList { id: 8 },
+    )
+    .expect_err("a far end that presents the wrong key must fail the dial");
+    assert_eq!(error.step(), "handshake", "{error}");
+}
+
+/// A dial refuses an address that is not on the tailnet before anything
+/// connects. The address comes out of a stored row, and a stored row is data
+/// that could be wrong — so the dialer enforces the same footing the pairing
+/// initiator does, on the way out. The decoy listener proves the refusal: a
+/// dial that tried to connect would be accepted by it.
+#[test]
+fn a_dial_refuses_an_address_that_is_not_on_the_tailnet() {
+    let _guard = lock_tests();
+
+    let (port_a, port_b) = two_free_ports();
+    let a = Peer::spawn("refuse-a", port_a);
+    let b = Peer::spawn("refuse-b", port_b);
+
+    let (Some(_address_a), Some(address_b)) = (a.peer_address(), b.peer_address()) else {
+        eprintln!(
+            "SKIP peer_link dial refusal: no reachable tailnet address. A said {}; B said {}.",
+            a.remote_label(),
+            b.remote_label()
+        );
+        return;
+    };
+    let a_self = a.self_info();
+    let b_self = b.self_info();
+    pair_as_daemons(&a, &b, &address_b, &b_self.device_id);
+    let (pinned_key, _stored_address) = a
+        .stored_row_for(&b_self.device_id)
+        .expect("A holds a row for B");
+    let dial_hello = ClientHello::m3a(
+        OwnerId::new(format!("peer_{}", a_self.device_id), "daemon").expect("owner"),
+        "devboule-daemon",
+    );
+
+    // A loopback address is well formed and something is even listening there
+    // — and the dial must still refuse it, because it is not a tailnet
+    // address. Whatever this machine's tailscaled offers, a stored row never
+    // gets to point the daemon off the tailnet.
+    let decoy = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the decoy listener");
+    let decoy_port = decoy.local_addr().expect("decoy address").port();
+    let error = dial_peer(
+        &a.static_private(),
+        &pinned_key,
+        &format!("127.0.0.1:{decoy_port}"),
+        &dial_hello,
+        &ClientMessage::SessionsList { id: 9 },
+    )
+    .expect_err("a non-tailnet address must be refused before anything connects");
+    assert_eq!(error.step(), "address", "{error}");
+    decoy
+        .set_nonblocking(true)
+        .expect("decoy goes non-blocking");
+    match decoy.accept() {
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        accepted => panic!("the refused dial must not have connected anywhere: {accepted:?}"),
     }
 }

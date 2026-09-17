@@ -83,6 +83,10 @@ use devices::*;
 mod peer_gate;
 use peer_gate::*;
 
+#[path = "server/peer_dial.rs"]
+mod peer_dial;
+pub use peer_dial::{call_peer, dial_peer, DialError};
+
 #[path = "server/journal_domain.rs"]
 mod journal_domain;
 use journal_domain::*;

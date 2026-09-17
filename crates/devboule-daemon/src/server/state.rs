@@ -148,6 +148,11 @@ pub struct ServerState {
     /// instance for the process: a `Tailnet` on a real daemon is a unit struct,
     /// so this costs nothing and lets a test substitute a stub.
     peer_transport: OnceLock<Arc<dyn crate::peer_transport::PeerTransport>>,
+    /// The outbound dial budget (`peer_dial.rs`): how many calls this daemon
+    /// may have in flight toward the tailnet at once. The mirror of the
+    /// accept path's per-source cap, held on the state so it is per-daemon
+    /// like the inbound budgets.
+    pub(super) outbound_dials: super::peer_dial::DialSlots,
     pairing: Arc<crate::pairing::PairingService>,
     /// Test-only: real `peers` loads, so a test can prove the cache held.
     #[cfg(test)]
@@ -302,6 +307,7 @@ impl ServerState {
             peer_stop: Arc::new(AtomicBool::new(false)),
             peer_listener: Mutex::new(None),
             peer_transport: OnceLock::new(),
+            outbound_dials: super::peer_dial::DialSlots::default(),
             pairing: Arc::new(crate::pairing::PairingService::new()),
             #[cfg(test)]
             peer_table_loads: AtomicU64::new(0),

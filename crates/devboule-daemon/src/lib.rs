@@ -140,7 +140,7 @@ pub use screen::{
     render_ansi, Screen, ScreenSnapshot, SnapshotCursor, SnapshotCursorShape, MAX_TITLE_CHARS,
 };
 #[cfg(feature = "server")]
-pub use server::{run, ServerState};
+pub use server::{call_peer, dial_peer, run, DialError, ServerState};
 #[cfg(feature = "server")]
 pub use session::{
     write_test_pty_command, PtyCommand, COALESCE_FLUSH, COALESCE_MAX_BYTES,

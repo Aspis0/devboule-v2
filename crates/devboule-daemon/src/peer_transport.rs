@@ -428,8 +428,20 @@ pub fn responder_handshake(
     handshake.into_transport_mode().map_err(PeerError::from)
 }
 
-/// Complete a Noise handshake as the initiator (pairing only; the steady-state
-/// listener is always the responder).
+/// Complete a Noise handshake as the initiator: the pairing exchange, and any
+/// dial to a device already paired with.
+///
+/// `remote_static` is the key the caller demands the far end prove, and this
+/// function ENFORCES it. Handing it to snow does not: `remote_public_key` only
+/// seeds the expected key, and plain `XX` overwrites that seed with whatever
+/// the responder actually presents — so a dial pinned to key A completes
+/// happily against key B. Measured 2026-09-17, the first time any caller
+/// passed `Some`. The check is here rather than at the call site because a
+/// pin every caller has to remember is a pin the next caller will forget.
+///
+/// `None` means the caller has no key yet and authenticates by other means:
+/// pairing derives a PSK from the spoken code, and the PSK is what fails when
+/// the code is wrong.
 pub fn initiator_handshake(
     stream: &TcpStream,
     deadline: Instant,
@@ -454,6 +466,15 @@ pub fn initiator_handshake(
     };
     let mut handshake = builder.build_initiator()?;
     run_handshake(stream, deadline, &mut handshake)?;
+    if let Some(expected) = remote_static {
+        // After the exchange, not before: only now does snow know what the far
+        // end presented. No fallback — a pinned dial has nothing to fall back to.
+        if handshake.get_remote_static() != Some(expected) {
+            return Err(PeerError::Noise(
+                "the far end's static key does not match the pinned key".to_string(),
+            ));
+        }
+    }
     handshake.into_transport_mode().map_err(PeerError::from)
 }
 
@@ -1585,6 +1606,66 @@ mod tests {
         let written = initiator.write_message(b"payload", &mut message)?;
         let read = responder.read_message(&message[..written], &mut plaintext)?;
         Ok(plaintext[..read].to_vec())
+    }
+
+    /// A pinned key is enforced by `initiator_handshake`, not merely handed to
+    /// snow: `remote_public_key` seeds the expected key and plain `XX`
+    /// overwrites that seed with whatever the responder presents, so without
+    /// the check a dial pinned to one key completes happily against another.
+    /// The control dial with the true key proves the refusal is the key.
+    #[test]
+    fn an_initiator_refuses_a_key_that_is_not_the_one_it_pinned() {
+        let (responder_private, responder_public) = keypair(PEER_NOISE_PATTERN);
+        let (initiator_private, _) = keypair(PEER_NOISE_PATTERN);
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr");
+
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = accept_bounded(&listener);
+                let _ = responder_handshake(
+                    &stream,
+                    Instant::now() + bound::READ,
+                    &responder_private,
+                    PEER_PROLOGUE,
+                    None,
+                    PEER_NOISE_PATTERN,
+                );
+            }
+        });
+
+        // One bit flipped, so the refusal is the comparison and not a length
+        // or encoding error on a garbage key.
+        let mut impostor = responder_public.clone();
+        impostor[31] ^= 0x01;
+        let stream = connect_bounded(address);
+        let error = initiator_handshake(
+            &stream,
+            Instant::now() + bound::READ,
+            &initiator_private,
+            Some(&impostor),
+            PEER_PROLOGUE,
+            None,
+            PEER_NOISE_PATTERN,
+        )
+        .expect_err("a far end presenting another key must fail the handshake");
+        assert!(
+            error.to_string().contains("pinned key"),
+            "the refusal names the pin: {error}"
+        );
+
+        let stream = connect_bounded(address);
+        initiator_handshake(
+            &stream,
+            Instant::now() + bound::READ,
+            &initiator_private,
+            Some(&responder_public),
+            PEER_PROLOGUE,
+            None,
+            PEER_NOISE_PATTERN,
+        )
+        .expect("the same dial with the pinned key succeeds");
+        server.join().expect("responder");
     }
 
     #[test]
