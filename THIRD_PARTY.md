@@ -897,7 +897,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | rustc_version | 0.4.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Rust transitive (lockfile) | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustix-openpty | 0.2.0 | Rust transitive (lockfile) | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustls | 0.23.43 | Rust transitive (lockfile) | Apache-2.0 OR ISC OR MIT |
+| rustls | 0.23.45 | Rust transitive (lockfile) | Apache-2.0 OR ISC OR MIT |
 | rustls-native-certs | 0.8.4 | Rust transitive (lockfile) | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.15.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | rustls-webpki | 0.103.15 | Rust transitive (lockfile) | ISC |
