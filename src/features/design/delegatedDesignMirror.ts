@@ -12,8 +12,8 @@
 // `openDesignHistoryEntry`, whose invoke wrapper only allows `session_attach`
 // and `session_detach` and rejects resume, send, spawn and close before the
 // bridge can receive them. The mirror itself never calls the daemon directly:
-// it writes the extracted artifact into the app store, which costs nothing
-// and allocates nothing. No attach here spawns, resumes or sends.
+// it writes the extracted artifact into the app store. No attach here spawns,
+// resumes or sends.
 //
 // Only an artifact is ever written. A replay that yields nothing writes
 // nothing: no card, no error, no warning. The common case is a child whose
@@ -22,11 +22,9 @@
 //
 // The write leaves a complete session behind — host, document, messages —
 // because the surface's load effect stands down on a non-null document and
-// replaces the transcript otherwise. Establishing the session here (one small
-// file, next to the write it protects) is harder to break than teaching the
-// shared load path to merge: every future loading change would have to
-// re-derive the merge, while this state is byte-identical to one the app
-// already produces (a fresh load followed by an appended card).
+// replaces the transcript otherwise. Establishing it here, next to the write
+// it protects, is harder to break than teaching the shared load path to
+// merge: every future loading change would have to re-derive the merge.
 //
 // Every value import below is type-only on purpose. This module is scheduled
 // from the shared session event pipeline, so a static runtime edge into the
@@ -90,21 +88,18 @@ export function resetDelegatedMirrorForTests(): void {
 }
 
 async function defaultEnsureHost(): Promise<DesignHost> {
-  // Dynamic, not static: `agentHost` imports `AgentSession`, which imports
-  // this module for the scheduling call, so a static import would close a
-  // module cycle through the shared event pipeline. The construction itself
-  // performs no daemon I/O; the host owns no session until a generation.
+  // Dynamic: a static import would close a module cycle through the shared
+  // event pipeline. Construction performs no daemon I/O.
   const { createAgentHost } = await import("./agentHost");
   return createAgentHost();
 }
 
 /**
- * The replay's HTML, or null when there is no design work to show. Both
- * non-artifact outcomes resolve null, silently: a timeout proves nothing
- * about the transcript, and a failed extraction means it holds no fenced
- * HTML — which covers the oversized artifact too (unrenderable in the
- * panel; reachable through its history entry, where the surface reports the
- * too-large message itself). The panel keeps whatever it showed on either.
+ * The replay's HTML, or null when there is nothing this panel can show — a
+ * timeout proves nothing, and a failed extraction means no HTML to hand over.
+ * The oversized case is not "no fenced HTML": the artifact exists and is too
+ * large to carry, and it is mirrored as absent just the same. Silent either
+ * way; the panel keeps what it showed.
  */
 function replayChildArtifact(
   childSessionId: string,
@@ -120,28 +115,46 @@ function replayChildArtifact(
   });
 }
 
+/** Whether the transcript already holds this mirror's card: same id, same React key. */
+function hasDelegatedCard(messages: readonly { id: string }[], cardId: string): boolean {
+  return messages.some((message) => message.id === cardId);
+}
+
+/** Writes one card. A pin landed mid-replay, a host changed under the
+ * write, or a card already there all answer false, so only shown work
+ * marks the slot. */
 async function writeDelegatedArtifact(
   childSessionId: string,
   displayName: string,
   html: string,
   ensureHost: () => Promise<DesignHost>,
   store: typeof useAppStoreType,
-): Promise<void> {
+): Promise<boolean> {
   // The human pinned an entry while the replay was in flight, or a duplicate
   // arrival's replay finished second: neither may write.
-  if (humanPinnedChildId !== null) return;
-  if (mirroredChildId === childSessionId) return;
+  if (humanPinnedChildId !== null) return false;
+  if (mirroredChildId === childSessionId) return false;
   let host = store.getState().designSession.host;
   if (host === null) {
-    // Design was never opened this run, so the store has no host to write
-    // through. Creating one is what lets the panel mirror the delegation
-    // instead of keeping its never-opened empty state.
-    host = await ensureHost();
-    store.getState().setDesignHost(host);
+    const fresh = await ensureHost();
+    const appeared = store.getState().designSession.host;
+    if (appeared !== null) {
+      // A session appeared while the factory resolved: adopt it and drop
+      // the fresh host, which owns no daemon resources. Establishing it
+      // would zero the live session and strand the mounted surface.
+      host = appeared;
+    } else {
+      // Design was never opened this run, so the store has no host to write
+      // through. Creating one is what lets the panel mirror the delegation
+      // instead of keeping its never-opened empty state.
+      store.getState().setDesignHost(fresh);
+      host = fresh;
+    }
   }
   const title = displayName.length > 0 ? displayName : childSessionId.slice(0, 8);
+  const cardId = `${DELEGATED_DESIGN_MESSAGE_PREFIX}${childSessionId}`;
   const card = {
-    id: `${DELEGATED_DESIGN_MESSAGE_PREFIX}${childSessionId}`,
+    id: cardId,
     role: "assistant",
     status: "done",
     title,
@@ -154,40 +167,42 @@ async function writeDelegatedArtifact(
     artifactHtml: html,
   } as const;
   const current = store.getState().designSession;
-  if (current.host !== host) return;
+  if (current.host !== host) return false;
   if (current.document !== null) {
+    if (hasDelegatedCard(current.messages, cardId)) return false;
     store.getState().setDesignMessages(host, (messages) => [...messages, { ...card }]);
-    return;
+    return true;
   }
-  // No document: establish the host's own loaded document together with the
-  // card. A fresh host's loader is pure defaults, so nothing here is
-  // invented, and the re-reads bracket every await so this write never
-  // clobbers a document that appeared while it waited. What they cannot
-  // cover: the surface's own load calls setDesignDocument with the loaded
-  // messages unconditionally, so one already in flight when this lands still
-  // replaces the card. Both loaders resolve in microtasks, so the window is
-  // microtask-wide, and it cannot be closed from this side.
+  // No document: establish the host's own loaded document with the card —
+  // pure defaults from a fresh loader, nothing invented. The re-read below
+  // buys the append branch when the surface's load lands first; it does NOT
+  // stop the surface replacing this card afterwards, because
+  // `DesignSurface`'s own load calls `setDesignDocument` with the loaded
+  // messages unconditionally. What rules that ordering out today is microtask
+  // FIFO over a synchronous default factory — give `loadDocument` real I/O
+  // and the replacement becomes reachable while this code still looks safe.
   const document = await host.loadDocument();
   const settled = store.getState().designSession;
-  if (settled.host !== host) return;
+  if (settled.host !== host) return false;
   if (settled.document !== null) {
+    if (hasDelegatedCard(settled.messages, cardId)) return false;
     store.getState().setDesignMessages(host, (messages) => [...messages, { ...card }]);
-    return;
+    return true;
   }
+  // No await sits between each check and its write, so concurrent
+  // deliveries cannot both pass: the second sees the first's card.
+  if (hasDelegatedCard(settled.messages, cardId)) return false;
   store.getState().setDesignDocument(host, document, [...settled.messages, { ...card }]);
+  return true;
 }
 
 /**
- * Schedules the mirror for one finished child. Fire-and-forget from the
- * shared session event pipeline (`AgentSession.handleEvent`): the synchronous
- * prefix is the sequence bump only — it performs no daemon I/O, reads no
- * store and takes no dependency, so nothing here blocks the event callback
- * and nothing can deadlock against a cleared session. Every check runs in
- * the async runner after the store resolves: a cleared session first drops
- * the pin and the mirror record (both died with the card), then the pin and
- * the duplicate checks run before any replay starts, so a pinned arrival
- * performs no daemon read at all. Failures warn and change nothing; a lost
- * mirror must not take the pipeline down with it.
+ * Schedules the mirror for one finished child, fire-and-forget from
+ * `AgentSession.handleEvent`. The synchronous prefix is the `completed`
+ * gate and the sequence bump only — no store reads, no daemon I/O. Every
+ * other check runs after the store resolves; a cleared session first drops
+ * the pin and the mirror record, and a pinned arrival performs no daemon
+ * read at all. Failures warn and change nothing.
  */
 export function scheduleDelegatedDesignMirror(
   event: ChildFinishedEvent,
@@ -222,14 +237,16 @@ export function scheduleDelegatedDesignMirror(
       if (mirroredChildId === childSessionId) return;
       const html = await replayChildArtifact(childSessionId, open);
       if (html === null) return;
-      // Only a newer *write* drops this one: an arrival that produced
-      // nothing consumes no slot, so a slow design replay still lands after
-      // a fast empty one. Among arrivals with content the last writer wins,
-      // which converges on the most recent one either way.
+      // Only a newer *write* drops this one, and only a write marks the
+      // slot: an arrival that produced nothing — or whose write found
+      // nothing to do — consumes nothing, so a slow design replay still
+      // lands after a fast empty one. Among arrivals with content the last
+      // writer wins, which converges on the most recent one either way.
       if (sequence < writtenSequence) return;
-      await writeDelegatedArtifact(childSessionId, displayName, html, ensureHost, store);
-      writtenSequence = sequence;
-      mirroredChildId = childSessionId;
+      if (await writeDelegatedArtifact(childSessionId, displayName, html, ensureHost, store)) {
+        writtenSequence = sequence;
+        mirroredChildId = childSessionId;
+      }
     } catch (error) {
       console.warn(`Could not mirror the finish of child session ${childSessionId}.`, error);
     }

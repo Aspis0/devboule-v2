@@ -3,7 +3,6 @@ import {
   PEER_CREATE_TOOL,
   PEER_MESSAGE_TOOL,
   overlayDenialsDescription,
-  profileRestrictsPeers,
   toolOverlayForPeerRestriction,
 } from "./profileOverlay";
 
@@ -19,13 +18,6 @@ describe("profile peer restriction", () => {
       "devboule_create_agent",
     ]);
     expect(toolOverlayForPeerRestriction(false)).toEqual([]);
-  });
-
-  it("reads the restriction back off a stored overlay", () => {
-    expect(profileRestrictsPeers(["devboule_send_message", "devboule_create_agent"])).toBe(true);
-    expect(profileRestrictsPeers([])).toBe(false);
-    expect(profileRestrictsPeers(undefined)).toBe(false);
-    expect(profileRestrictsPeers(["devboule_send_message"])).toBe(false);
   });
 
   it("renders what a stored overlay denies, not just the ticked shape", () => {

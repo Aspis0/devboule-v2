@@ -21,12 +21,6 @@ export function toolOverlayForPeerRestriction(restricted: boolean): string[] {
   return restricted ? [...PEER_TOOLS] : [];
 }
 
-/** Whether a stored overlay denies both peer tools (it may deny more besides). */
-export function profileRestrictsPeers(toolOverlay: readonly string[] | undefined): boolean {
-  if (toolOverlay === undefined) return false;
-  return PEER_TOOLS.every((tool) => toolOverlay.includes(tool));
-}
-
 /**
  * The row badge for a stored overlay, or null when it denies nothing. The
  * exact peer pair keeps its human sentence; any other non-empty overlay
