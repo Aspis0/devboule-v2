@@ -10,7 +10,7 @@ pub(super) fn providers_reply(state: &Arc<ServerState>, id: u64, force: bool) ->
     if !force {
         let _ = state.claude_models();
     }
-    let discovery = if force {
+    let mut discovery = if force {
         refresh_provider_catalog(state)
     } else {
         crate::provider_catalog::discover_catalog(
@@ -18,6 +18,7 @@ pub(super) fn providers_reply(state: &Arc<ServerState>, id: u64, force: bool) ->
             state.sessions.runtime_dir(),
         )
     };
+    append_user_rows(&mut discovery);
     // ProviderInfo.authentication carries the measured last-start outcome for
     // this provider. It is a recorded observation, not an auth probe.
     let providers = discovery
@@ -33,6 +34,26 @@ pub(super) fn providers_reply(state: &Arc<ServerState>, id: u64, force: bool) ->
         providers,
         unreadable_dirs: discovery.unreadable_dirs,
     }
+}
+
+/// User-declared rows join the discovered catalogue behind the same answer
+/// the spawn road gives: `resolve_named` reads the live rows before the
+/// PATH/CDN walk, so a discovered row with the same id yields to the
+/// declaration here too — one id, one row, the launchable one. (Reserved
+/// names keep the two from meeting in practice; this is the rule, not the
+/// luck.) The vocabulary needs nothing parallel: a user row rides ACP, and
+/// `absent` is the honest vocabulary for an agent-defined dialect.
+fn append_user_rows(discovery: &mut crate::provider_catalog::ProviderDiscovery) {
+    let rows = crate::session::catalog_registry().user_agents();
+    if rows.is_empty() {
+        return;
+    }
+    discovery.agents.retain(|agent| {
+        !rows
+            .iter()
+            .any(|row| row.id.eq_ignore_ascii_case(&agent.id))
+    });
+    discovery.agents.extend(rows);
 }
 
 fn refresh_provider_catalog(

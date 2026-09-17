@@ -1166,6 +1166,43 @@ impl ProviderRegistry {
         self.entries.iter().map(|(id, _)| id)
     }
 
+    /// `InstalledAgent` rows for the live user declarations, so the catalogue
+    /// list answers what the spawn road can spawn (`resolve_named` reads the
+    /// same rows first). A declaration is launchable by fiat — its argv is
+    /// explicit — so every row reads installed and ACP-available; a command
+    /// that does not exist surfaces at launch like any PATH row that
+    /// vanished, not here. The channel is inert `Npm` with no package: it
+    /// runs no `--version` probe on refresh and offers no update, which is
+    /// what a row with no installation story wants.
+    pub(crate) fn user_agents(&self) -> Vec<crate::provider_catalog::InstalledAgent> {
+        self.user_rows
+            .iter()
+            .map(|(id, row)| {
+                let command = row.command.clone().unwrap_or_default();
+                crate::provider_catalog::InstalledAgent {
+                    id: id.to_string(),
+                    aliases: &[],
+                    installed: true,
+                    executable: command.first().cloned().unwrap_or_default().into(),
+                    prefix_args: Vec::new(),
+                    acp_command: Some(command),
+                    stream_json_command: None,
+                    rpc_command: None,
+                    app_server_command: None,
+                    authentication: crate::provider_catalog::AuthenticationStatus::Unknown,
+                    origin: crate::provider_catalog::ProviderOrigin::UserBinary,
+                    launch_args: None,
+                    pickable: None,
+                    installed_version: None,
+                    latest_version: None,
+                    install_channel: crate::provider_catalog::InstallChannel::Npm,
+                    npm_package: None,
+                    tools: crate::provider_catalog::mcp_tools_for(id),
+                }
+            })
+            .collect()
+    }
+
     /// The provider a create's id names. An id the catalog does not publish
     /// falls through to the ACP implementation — the open dimension's rule
     /// that ACP is the one implementation needing no per-provider code; the

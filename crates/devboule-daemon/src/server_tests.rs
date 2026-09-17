@@ -89,6 +89,78 @@ fn temp_state(tag: &str) -> (std::path::PathBuf, Arc<ServerState>) {
     (path, state)
 }
 
+/// A user-declared row is a provider the daemon can spawn, so the catalogue
+/// list must answer it. Seeds `providers.json`, holds the rows lock across
+/// the whole read (the global-registry discipline), and asks both surfaces:
+/// the vocabulary already answers the row `absent` (free-text — correct for
+/// an ACP row), while `ProvidersList` omits it. That disagreement is the gap.
+#[test]
+fn providers_list_answers_a_live_user_row() {
+    let (path, state) = temp_state("user-rows-visible");
+    std::fs::create_dir_all(&path).expect("runtime dir");
+    std::fs::write(
+        path.join("providers.json"),
+        r#"{"fieldtest-grok": {"extends": "acp", "command": ["/usr/local/bin/fieldtest-grok", "--chat"]}}"#,
+    )
+    .expect("seed user row");
+    let mut gate = crate::user_providers::lock_rows_state();
+    crate::user_providers::refresh_user_rows_with(&mut gate, &path);
+    assert!(
+        crate::session::catalog_registry()
+            .user_row_for("fieldtest-grok")
+            .is_some(),
+        "setup: the row is live"
+    );
+    // Second gate first: the vocabulary already sees the row, as `absent`.
+    let vocab =
+        crate::provider_vocabulary::provider_vocabulary_reply(&state, 2, "fieldtest-grok", false);
+    assert!(
+        matches!(
+            &vocab,
+            devboule_protocol::DaemonMessage::ProviderVocabulary { provider, models, .. }
+            if provider == "fieldtest-grok" && models.state == devboule_protocol::VocabularyState::Absent
+        ),
+        "vocabulary answers the live row absent: {vocab:?}"
+    );
+    // The list does not — red.
+    let reply = super::providers::providers_reply(&state, 1, false);
+    let providers = match reply {
+        DaemonMessage::Providers { providers, .. } => providers,
+        other => panic!("ProvidersList must answer Providers, got {other:?}"),
+    };
+    let row = providers
+        .iter()
+        .find(|provider| provider.id == "fieldtest-grok")
+        .unwrap_or_else(|| {
+            let ids: Vec<&str> = providers
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect();
+            panic!(
+                "the catalogue list must answer the live user row \"fieldtest-grok\", got {ids:?}"
+            )
+        });
+    assert_eq!(
+        row.protocol.as_deref(),
+        Some("acp"),
+        "a user row is an ACP row"
+    );
+    assert!(row.installed, "a live declaration reads as installed");
+    assert!(
+        row.acp_available,
+        "a live declaration reads as ACP-available"
+    );
+    assert_ne!(
+        row.origin.as_deref(),
+        Some("npx-wrapper"),
+        "a local declaration never asks for npx consent"
+    );
+    crate::session::apply_user_rows(std::collections::BTreeMap::new());
+    drop(gate);
+    drop(state);
+    let _ = std::fs::remove_dir_all(&path);
+}
+
 fn remote_conn(role: PeerRole, paired_by_user: Option<&str>) -> Arc<ConnHandle> {
     remote_conn_with_caps(role, paired_by_user, &[])
 }
