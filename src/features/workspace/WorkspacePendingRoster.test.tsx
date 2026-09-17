@@ -102,12 +102,12 @@ const terminal = (id: string, title: string): Session => ({
   elapsedMs: 0,
 });
 
-const liveSnapshot = (id: string, title: string): SessionStateSnapshot => ({
+const liveSnapshot = (id: string, title: string, generation = 1): SessionStateSnapshot => ({
   id,
   workspaceId: "workspace-1",
   kind: "terminal",
   title,
-  state: { type: "live", generation: 1 },
+  state: { type: "live", generation },
   elapsedMs: 0,
 });
 
@@ -264,6 +264,81 @@ describe("Workspace pending roster edges", () => {
     await flush();
 
     expect(container.textContent).toContain("already scheduled for archive");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UNDO_WINDOW_MS);
+    });
+    await flush();
+    expect(vi.mocked(sessionStop)).toHaveBeenCalledTimes(1);
+  });
+
+  it("voids an archive when the row comes back live as a new instance", async () => {
+    // The defect-A sequence: swipe archive against generation 1, resume
+    // brings the same id back live at generation 2, and the timer must
+    // never fire at the process the human just started.
+    await renderWorkspace();
+    const archive = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Archive shell one"]',
+    );
+    if (!archive) throw new Error("archive control did not render");
+    await act(async () => archive.click());
+    await flush();
+    expect(tabTitles().some((title) => title.includes("shell one"))).toBe(false);
+
+    await pushSnapshots([
+      liveSnapshot("session-1", "shell one", 2),
+      liveSnapshot("session-2", "shell two", 1),
+    ]);
+    // The new instance shows; nothing fires at it.
+    expect(tabTitles().some((title) => title.includes("shell one"))).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UNDO_WINDOW_MS + 1000);
+    });
+    await flush();
+    expect(vi.mocked(sessionStop)).not.toHaveBeenCalled();
+    expect(tabTitles().some((title) => title.includes("shell one"))).toBe(true);
+  });
+
+  it("brings an archived tab back when its session is reopened", async () => {
+    // The defect-B sequence: the archive fires against generation 1, the
+    // dismissal hides the row, then a reopen returns the same id live at
+    // generation 2 — and the tab must come back with it.
+    await renderWorkspace();
+    const archive = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Archive shell one"]',
+    );
+    if (!archive) throw new Error("archive control did not render");
+    await act(async () => archive.click());
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(UNDO_WINDOW_MS);
+    });
+    await flush();
+    expect(vi.mocked(sessionStop)).toHaveBeenCalledTimes(1);
+    expect(tabTitles().some((title) => title.includes("shell one"))).toBe(false);
+
+    await pushSnapshots([
+      liveSnapshot("session-1", "shell one", 2),
+      liveSnapshot("session-2", "shell two", 1),
+    ]);
+    expect(tabTitles().some((title) => title.includes("shell one"))).toBe(true);
+  });
+
+  it("keeps the intent when the same instance is re-pushed", async () => {
+    // The guard against over-voiding: a roster refresh that changes
+    // nothing must not disarm anything.
+    await renderWorkspace();
+    const archive = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Archive shell one"]',
+    );
+    if (!archive) throw new Error("archive control did not render");
+    await act(async () => archive.click());
+    await flush();
+
+    await pushSnapshots([
+      liveSnapshot("session-1", "shell one", 1),
+      liveSnapshot("session-2", "shell two", 1),
+    ]);
+    expect(tabTitles().some((title) => title.includes("shell one"))).toBe(false);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(UNDO_WINDOW_MS);
     });

@@ -189,6 +189,7 @@ describe("Workspace pending lifetime", () => {
       title: "shell one",
       kind: "archive",
       createdAtMs: 42,
+      generation: 1,
       dueAt: Date.now() - 1000,
     };
     window.localStorage.setItem(PENDING_STORAGE_KEY, JSON.stringify([leftover]));
@@ -204,7 +205,9 @@ describe("Workspace pending lifetime", () => {
   });
 
   it("a verified leftover re-arms with a fresh window instead of firing blind", async () => {
-    const leftover: PendingSessionAction = {
+    // Old crash-copy shape, from before intents recorded a generation:
+    // the re-arm stamps the instance from the verified row.
+    const leftover: Omit<PendingSessionAction, "generation"> = {
       id: "session-1",
       title: "shell one",
       kind: "archive",

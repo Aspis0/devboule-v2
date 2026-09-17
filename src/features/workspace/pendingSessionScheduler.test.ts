@@ -48,7 +48,7 @@ describe("PendingSessionScheduler", () => {
     id: string,
     kind: PendingSessionAction["kind"] = "archive",
   ): PendingSessionAction {
-    return { id, title: id, kind, dueAt: now + UNDO_WINDOW_MS };
+    return { id, title: id, kind, generation: 1, dueAt: now + UNDO_WINDOW_MS };
   }
 
   it("fires the action only after the undo window expires", async () => {
@@ -152,18 +152,31 @@ describe("settled dismissals and errors", () => {
       title: "one",
       kind: "archive",
       createdAtMs: 42,
+      generation: 1,
       dueAt: now + UNDO_WINDOW_MS,
     });
-    scheduler.schedule({ id: "s.2", title: "two", kind: "delete", dueAt: now + UNDO_WINDOW_MS });
+    scheduler.schedule({
+      id: "s.2",
+      title: "two",
+      kind: "delete",
+      generation: 1,
+      dueAt: now + UNDO_WINDOW_MS,
+    });
     scheduler.cancel("s.2");
     await vi.advanceTimersByTimeAsync(UNDO_WINDOW_MS);
-    expect(scheduler.getSettledSnapshot().get("s.1")).toBe(42);
+    expect(scheduler.getSettledSnapshot().get("s.1")).toEqual({ createdAtMs: 42, generation: 1 });
     expect(scheduler.getSettledSnapshot().has("s.2")).toBe(false);
   });
 
   it("writes back the pruned settled map", async () => {
     const { scheduler } = setup();
-    scheduler.schedule({ id: "s.1", title: "one", kind: "archive", dueAt: now + UNDO_WINDOW_MS });
+    scheduler.schedule({
+      id: "s.1",
+      title: "one",
+      kind: "archive",
+      generation: 1,
+      dueAt: now + UNDO_WINDOW_MS,
+    });
     await vi.advanceTimersByTimeAsync(UNDO_WINDOW_MS);
     expect(scheduler.getSettledSnapshot().has("s.1")).toBe(true);
     scheduler.replaceSettled(new Map());
@@ -179,18 +192,54 @@ describe("settled dismissals and errors", () => {
     expect(scheduler.getErrorSnapshot()).toBeNull();
   });
 
+  it("turns a not-attached refusal into an actionable sentence and restores the tab", async () => {
+    // Residue of a resume between the last roster read and the fire: the
+    // daemon detached the old instance's observers. The new process is
+    // safe — the call killed nothing — so the tab comes back with guidance
+    // instead of the protocol's sentence.
+    const storage = memoryStorage();
+    const fire = vi.fn(async (_action: PendingSessionAction) => {
+      throw { code: "invalid_request", message: "Session is not attached to this subscription." };
+    });
+    const scheduler = new PendingSessionScheduler(fire, { now: () => now, storage });
+    scheduler.schedule({
+      id: "s.1",
+      title: "one",
+      kind: "archive",
+      generation: 1,
+      dueAt: now + UNDO_WINDOW_MS,
+    });
+    await vi.advanceTimersByTimeAsync(UNDO_WINDOW_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scheduler.getSettledSnapshot().has("s.1")).toBe(false);
+    expect(scheduler.getErrorSnapshot()).toContain("didn't go through");
+    expect(scheduler.getErrorSnapshot()).toContain("Archive it again");
+  });
+
   it("rebinds the fire for the next mount", async () => {
     const { scheduler } = setup();
     const second = vi.fn(async (_action: PendingSessionAction) => undefined);
     scheduler.setFire(second);
-    scheduler.schedule({ id: "s.1", title: "one", kind: "archive", dueAt: now + UNDO_WINDOW_MS });
+    scheduler.schedule({
+      id: "s.1",
+      title: "one",
+      kind: "archive",
+      generation: 1,
+      dueAt: now + UNDO_WINDOW_MS,
+    });
     await vi.advanceTimersByTimeAsync(UNDO_WINDOW_MS);
     expect(second).toHaveBeenCalledTimes(1);
   });
 
   it("drops the crash copy so re-armed records repersist cleanly", () => {
     const { scheduler, storage } = setup();
-    scheduler.schedule({ id: "s.1", title: "one", kind: "archive", dueAt: now + UNDO_WINDOW_MS });
+    scheduler.schedule({
+      id: "s.1",
+      title: "one",
+      kind: "archive",
+      generation: 1,
+      dueAt: now + UNDO_WINDOW_MS,
+    });
     expect(storage.dump()).toContain("s.1");
     scheduler.clearPersisted();
     expect(storage.dump()).toBeNull();

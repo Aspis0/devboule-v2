@@ -3,7 +3,7 @@
 // subscribes to. Pure policy (mootness, verification, pruning) lives in
 // pendingSessionActions.ts beside the types.
 
-import type { PendingSessionAction } from "./pendingSessionActions";
+import type { PendingSessionAction, SessionInstance } from "./pendingSessionActions";
 import { isCommandError, reasonFromCause } from "../../lib/tauri";
 
 const STORAGE_KEY = "devboule.pendingSessionActions.v1";
@@ -51,8 +51,8 @@ export class PendingSessionScheduler {
   // Fired but unconfirmed: the tab stays hidden until the roster confirms.
   // Survives unmount with the timers — this is what keeps a surface switch
   // from resurrecting a tab whose act already left.
-  private settled = new Map<string, number | undefined>();
-  private settledSnapshot: ReadonlyMap<string, number | undefined> = new Map();
+  private settled = new Map<string, SessionInstance>();
+  private settledSnapshot: ReadonlyMap<string, SessionInstance> = new Map();
   private fireError: string | null = null;
 
   constructor(
@@ -74,7 +74,7 @@ export class PendingSessionScheduler {
 
   getSnapshot = (): PendingSessionAction[] => this.snapshot;
 
-  getSettledSnapshot = (): ReadonlyMap<string, number | undefined> => this.settledSnapshot;
+  getSettledSnapshot = (): ReadonlyMap<string, SessionInstance> => this.settledSnapshot;
 
   getErrorSnapshot = (): string | null => this.fireError;
 
@@ -86,7 +86,7 @@ export class PendingSessionScheduler {
   }
 
   /** Writes back the roster-pruned settled map (see `pruneDismissed`). */
-  replaceSettled(next: ReadonlyMap<string, number | undefined>): void {
+  replaceSettled(next: ReadonlyMap<string, SessionInstance>): void {
     this.settled = new Map(next);
     this.settledSnapshot = this.settled;
     this.notify();
@@ -177,19 +177,46 @@ export class PendingSessionScheduler {
     // Copy-on-write throughout: the snapshots handed to useSyncExternalStore
     // compare by reference, so an in-place mutation would hide the tab (or
     // show it) without ever re-rendering.
-    this.settled = new Map(this.settled).set(id, action.createdAtMs);
+    this.settled = new Map(this.settled).set(id, {
+      createdAtMs: action.createdAtMs,
+      generation: action.generation,
+    });
     this.settledSnapshot = this.settled;
     this.publish();
     void this.fire(action).then(undefined, (cause: unknown) => {
       // Gone by another hand (closed elsewhere, raced exit): the call
       // answers session_not_found, the postcondition holds, and the tab
-      // stays hidden with nothing said. Anything else restores the tab
-      // through the settled map and reports the reason — including a daemon
-      // that is simply unreachable, which must never read as done.
+      // stays hidden with nothing said.
       if (isCommandError(cause) && cause.code === "session_not_found") return;
-      const next = new Map(this.settled);
-      next.delete(action.id);
-      this.replaceSettled(next);
+      const restore = () => {
+        const next = new Map(this.settled);
+        next.delete(action.id);
+        this.replaceSettled(next);
+      };
+      // Residue of a resume that landed between the last roster read and
+      // the fire: the daemon detached the old instance's observers, so the
+      // stop names a subscription that is gone
+      // (`SessionRuntime::is_observer`, InvalidRequest). The new process is
+      // safe — the call killed nothing — but the intent is void and the tab
+      // must come back with a sentence the human can act on, not the
+      // protocol's. Matched narrowly (code plus the daemon's own words);
+      // if the daemon ever renames it this falls through to the generic
+      // error below, which still restores the tab.
+      if (
+        action.kind === "archive" &&
+        isCommandError(cause) &&
+        cause.code === "invalid_request" &&
+        cause.message.includes("not attached")
+      ) {
+        restore();
+        this.reportError(
+          `Archive of “${action.title}” didn't go through — the session restarted. Archive it again if you still want to.`,
+        );
+        return;
+      }
+      // Anything else restores the tab and reports the reason — including
+      // a daemon that is simply unreachable, which must never read as done.
+      restore();
       this.reportError(reasonFromCause(cause));
     });
   }

@@ -8,7 +8,7 @@ import { SessionTabSwipe } from "./SessionTabSwipe";
 import { PendingUndoBar } from "./PendingUndoBar";
 import {
   UNDO_WINDOW_MS,
-  isPendingActionMoot,
+  pendingFate,
   pruneDismissed,
   verifyPendingRecord,
   type PendingSessionAction,
@@ -246,17 +246,21 @@ export function Workspace({
   // the first intent is still armed and the duplicate dies silently.
   const [pendingNotice, setPendingNotice] = useState<string | null>(null);
   const pendingIds = useMemo(() => new Set(pendings.map((action) => action.id)), [pendings]);
-  // A dismissed tab stays out of the strip while its own row is still
-  // reported. The stamp is the point: a row that ever reappeared under the
-  // same id with another creation time would be a different session and
-  // must show.
+  // A dismissal hides a row only while the row is still the same instance
+  // it was made against: same stamp AND same generation. A resume keeps
+  // the stamp and bumps the generation, so a reopened session comes back
+  // to the strip instead of staying buried by its own archive.
   const visibleSessions = useMemo(
     () =>
-      sessions.filter(
-        (session) =>
-          !pendingIds.has(session.id) &&
-          (!settled.has(session.id) || settled.get(session.id) !== session.createdAtMs),
-      ),
+      sessions.filter((session) => {
+        if (pendingIds.has(session.id)) return false;
+        const dismissal = settled.get(session.id);
+        return (
+          dismissal === undefined ||
+          dismissal.createdAtMs !== session.createdAtMs ||
+          dismissal.generation !== session.state.generation
+        );
+      }),
     [sessions, pendingIds, settled],
   );
   const scheduleSessionAction = useCallback(
@@ -267,6 +271,7 @@ export function Workspace({
         title,
         kind,
         ...(session.createdAtMs === undefined ? {} : { createdAtMs: session.createdAtMs }),
+        generation: session.state.generation,
         dueAt: Date.now() + UNDO_WINDOW_MS,
       };
       if (pendingScheduler.schedule(action) === "duplicate") {
@@ -288,12 +293,14 @@ export function Workspace({
     },
     [pendingScheduler],
   );
-  // An archived-then-ended session needs no stop; the tab stays hidden.
-  // Delete is never settled here (see `isPendingActionMoot`).
+  // A roster change voids intents the row outgrew. Natural death voids
+  // silently (outcome achieved); a new generation — a resume — voids too,
+  // so the timer can never fire at the instance the human just started.
+  // Visibility follows the roster on its own: cancelling is the whole act.
   useEffect(() => {
     const rows = new Map(sessions.map((session) => [session.id, session]));
     for (const action of pendingScheduler.pending()) {
-      if (isPendingActionMoot(action, rows.get(action.id) ?? null)) {
+      if (pendingFate(action, rows.get(action.id) ?? null) !== "keep") {
         pendingScheduler.cancel(action.id);
       }
     }
@@ -314,8 +321,15 @@ export function Workspace({
     if (leftovers.length === 0) return;
     pendingScheduler.clearPersisted();
     for (const record of leftovers) {
-      if (verifyPendingRecord(record, sessions) === null) continue;
-      pendingScheduler.schedule({ ...record, dueAt: Date.now() + UNDO_WINDOW_MS });
+      const row = verifyPendingRecord(record, sessions);
+      if (row === null) continue;
+      // Re-stamp the instance from the verified row: a leftover predates
+      // the generation field, and the row is the authority on both halves.
+      pendingScheduler.schedule({
+        ...record,
+        generation: row.state.generation,
+        dueAt: Date.now() + UNDO_WINDOW_MS,
+      });
     }
   }, [sessionsLoading, sessionsError, sessions, pendingScheduler]);
   // A pending delete evaporating on close is worse than firing early:

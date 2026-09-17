@@ -18,16 +18,50 @@ export interface PendingSessionAction {
   title: string;
   kind: PendingSessionKind;
   createdAtMs?: number;
+  /** The instance swiped: every `SessionState` variant carries it, and the
+   * daemon bumps it on exactly the event — resume — that voids an intent. */
+  generation: number;
   dueAt: number;
 }
 
-export function isPendingActionMoot(
-  action: Pick<PendingSessionAction, "kind">,
+/**
+ * The instance an intent or dismissal was made against: the row
+ * (`createdAtMs`) plus the process (`generation`). A resume keeps the first
+ * and bumps the second, which is why hiding needs both to match.
+ */
+export interface SessionInstance {
+  createdAtMs?: number;
+  generation?: number;
+}
+
+/**
+ * What a roster change means for a pending intent. "The row moved" splits
+ * two ways that matter: `void-hidden` (the instance is gone with nothing
+ * to show — died on its own, or left the roster) versus `void-visible`
+ * (the row is live again under a NEW generation — a resume — so the old
+ * intent must not fire at the new process, and the tab must show).
+ *
+ * Delete is never voided by absence: the strip cannot tell "ended" (which
+ * still needs its close) from "destroyed" (which answers the close with
+ * session_not_found). But delete IS voided by a new generation: closing
+ * the row would take the resumed instance with it.
+ */
+export type PendingFate = "keep" | "void-hidden" | "void-visible";
+
+export function pendingFate(
+  action: Pick<PendingSessionAction, "kind" | "generation">,
   session: Session | null,
-): boolean {
-  if (action.kind === "delete") return false;
-  if (session === null) return true;
-  return session.state.type !== "live" && session.state.type !== "silent";
+): PendingFate {
+  if (
+    session !== null &&
+    (session.state.type === "live" || session.state.type === "silent") &&
+    session.state.generation !== action.generation
+  ) {
+    return "void-visible";
+  }
+  if (action.kind === "delete") return "keep";
+  if (session === null) return "void-hidden";
+  return session.state.type === "live" || session.state.type === "silent" ? "keep" : "void-hidden";
 }
 
 export function verifyPendingRecord(
@@ -41,16 +75,20 @@ export function verifyPendingRecord(
 }
 
 export function pruneDismissed(
-  dismissed: ReadonlyMap<string, number | undefined>,
+  dismissed: ReadonlyMap<string, SessionInstance>,
   sessions: readonly Session[],
   isPending: (id: string) => boolean,
-): ReadonlyMap<string, number | undefined> | null {
+): ReadonlyMap<string, SessionInstance> | null {
   const rows = new Map(sessions.map((session) => [session.id, session]));
-  let next: Map<string, number | undefined> | null = null;
-  for (const [id, stamp] of dismissed) {
+  let next: Map<string, SessionInstance> | null = null;
+  for (const [id, instance] of dismissed) {
     if (isPending(id)) continue;
     const row = rows.get(id);
-    if (row === undefined || row.createdAtMs !== stamp) {
+    if (
+      row === undefined ||
+      row.createdAtMs !== instance.createdAtMs ||
+      row.state.generation !== instance.generation
+    ) {
       if (next === null) next = new Map(dismissed);
       next.delete(id);
     }
