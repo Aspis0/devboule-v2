@@ -677,6 +677,46 @@
   font-style: italic;
 }
 
+/* The finish frame's tail: from its first field marker on, the daemon's note
+   and the child's summary are not tellable apart, so the words render in a
+   block that claims neither voice — same shape as the child's quote, none of
+   its colour. */
+.workspace-chat-unattributed {
+  margin: 6px 0 0 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--silence);
+  background: var(--surface-muted);
+}
+
+.workspace-chat-unattributed figcaption {
+  font-size: 10px;
+  font-weight: 700;
+  font-style: italic;
+  color: var(--silence);
+}
+
+.workspace-chat-unattributed blockquote {
+  margin: 2px 0 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The parsed daemon notice envelopes (finish, input-required, quiet, and any
+   kind this build cannot format): the same card family as the permission
+   request — daemon facts as one sentence, child words quoted beside it. */
+.workspace-chat-daemon-notice {
+  max-width: 90%;
+}
+
+/* The sentence interpolates daemon-supplied strings; wrapping keeps an
+   unbroken multi-kilobyte field inside the pane (the card also bounds those
+   fields in code — this is the belt to that brace). */
+.workspace-chat-daemon-notice .workspace-chat-copy {
+  margin-top: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .workspace-session-add {
   width: 25px;
   height: 25px;

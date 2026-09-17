@@ -41,6 +41,7 @@ import { boundByGraphemes } from "../../lib/graphemeBound";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
+import { DaemonNoticeCard } from "./DaemonNoticeCard";
 
 interface AgentChatSurfaceProps {
   sessionId: string;
@@ -610,6 +611,10 @@ function renderItem(item: AgentChatItem) {
         })()}
       </div>
     );
+  }
+
+  if (item.role === "daemon_notice") {
+    return <DaemonNoticeCard key={item.id} item={item} />;
   }
 
   return (
