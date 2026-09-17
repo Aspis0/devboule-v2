@@ -434,4 +434,181 @@ describe("delegated design mirror", () => {
     expect(session.host).toBe(freshHost);
     expect(session.latestArtifact).toMatchObject({ html: "<main>First</main>" });
   });
+
+  it("adopts a session that appears while the host factory resolves", async () => {
+    // The ensureHost window: host null at schedule time, the human opens
+    // Design (host + loaded document) while the factory is still resolving.
+    // Establishing the fresh host would zero that live session and strand
+    // the mounted surface on a host the store no longer holds.
+    useAppStore.setState({
+      designSession: {
+        host: null,
+        document: null,
+        messages: [],
+        latestArtifact: null,
+        generation: null,
+        sectionNotes: [],
+      },
+    });
+    const liveDoc = { ...TEST_DOCUMENT, name: "live-session" };
+    const liveLoad = vi.fn(async () => ({ ...liveDoc }));
+    const liveHost: DesignHost = { loadDocument: liveLoad };
+    const droppedLoad = vi.fn(async () => ({ ...TEST_DOCUMENT }));
+    const droppedHost: DesignHost = { loadDocument: droppedLoad };
+    let resolveHost!: (host: DesignHost) => void;
+    const hostPromise = new Promise<DesignHost>((resolve) => {
+      resolveHost = resolve;
+    });
+    const captured: CapturedOpen[] = [];
+    scheduleDelegatedDesignMirror(childFinished("child-1", "Delegated"), {
+      openHistory: fakeOpen(captured),
+      store: useAppStore,
+      ensureHost: () => hostPromise,
+    });
+    await flush();
+    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    await flush();
+
+    // The human opens Design while the factory is still resolving.
+    useAppStore.getState().setDesignHost(liveHost);
+    useAppStore.getState().setDesignDocument(liveHost, liveDoc, []);
+    resolveHost(droppedHost);
+    await flush();
+
+    const session = useAppStore.getState().designSession;
+    expect(session.host).toBe(liveHost);
+    expect(session.document).toMatchObject({ name: "live-session" });
+    expect(session.latestArtifact).toMatchObject({ html: "<main>Delegated</main>" });
+    expect(session.messages).toHaveLength(1);
+    expect(droppedLoad).not.toHaveBeenCalled();
+    expect(liveLoad).not.toHaveBeenCalled();
+  });
+
+  it("appends to a document that appears while loading its own", async () => {
+    // The surface's own load lands while the mirror is still loading: the
+    // mirror must append to the landed document, not replace it with the
+    // one it loaded.
+    const surfaceDoc = { ...TEST_DOCUMENT, name: "surface-loaded" };
+    let resolveLoad!: (document: typeof TEST_DOCUMENT) => void;
+    const loadPromise = new Promise<typeof TEST_DOCUMENT>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const loadingHost: DesignHost = { loadDocument: () => loadPromise };
+    useAppStore.setState({
+      designSession: {
+        host: loadingHost,
+        document: null,
+        messages: [],
+        latestArtifact: null,
+        generation: null,
+        sectionNotes: [],
+      },
+    });
+    const captured: CapturedOpen[] = [];
+    scheduleDelegatedDesignMirror(childFinished("child-1", "Delegated"), {
+      openHistory: fakeOpen(captured),
+      store: useAppStore,
+    });
+    await flush();
+    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    await flush();
+
+    // The surface load lands first, with an empty transcript.
+    useAppStore.getState().setDesignDocument(loadingHost, surfaceDoc, []);
+    resolveLoad({ ...TEST_DOCUMENT });
+    await flush();
+
+    const session = useAppStore.getState().designSession;
+    expect(session.document).toMatchObject({ name: "surface-loaded" });
+    expect(session.latestArtifact).toMatchObject({ html: "<main>Delegated</main>" });
+    expect(session.messages).toHaveLength(1);
+  });
+
+  it("writes one card for two concurrent deliveries of the same finish", async () => {
+    // A live finish plus its journal replay landing inside a load: both
+    // runners pass the pre-replay checks, so idempotence must hold at the
+    // write — same card id, same React key, written once.
+    let resolveLoad!: (document: typeof TEST_DOCUMENT) => void;
+    const loadPromise = new Promise<typeof TEST_DOCUMENT>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const loadingHost: DesignHost = { loadDocument: () => loadPromise };
+    useAppStore.setState({
+      designSession: {
+        host: loadingHost,
+        document: null,
+        messages: [],
+        latestArtifact: null,
+        generation: null,
+        sectionNotes: [],
+      },
+    });
+    const captured: CapturedOpen[] = [];
+    const deps = { openHistory: fakeOpen(captured), store: useAppStore };
+    scheduleDelegatedDesignMirror(childFinished("child-1", "Delegated"), deps);
+    scheduleDelegatedDesignMirror(childFinished("child-1", "Delegated"), deps);
+    await flush();
+    expect(captured).toHaveLength(2);
+    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    captured[1].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    await flush();
+    resolveLoad({ ...TEST_DOCUMENT });
+    await flush();
+
+    const cards = useAppStore
+      .getState()
+      .designSession.messages.filter((message) => message.id === "delegated-design-child-1");
+    expect(cards).toHaveLength(1);
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>Delegated</main>",
+    });
+  });
+
+  it("retries a child whose write found nothing to do", async () => {
+    // The boolean slot: a pin landing mid-replay discards the write without
+    // marking it mirrored, so the same finish presented again afterwards
+    // still lands.
+    const captured: CapturedOpen[] = [];
+    const deps = { openHistory: fakeOpen(captured), store: useAppStore };
+    scheduleDelegatedDesignMirror(childFinished("child-1", "Delegated"), deps);
+    await flush();
+    noteHumanOpenedHistory("old-entry");
+    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    await flush();
+    expect(useAppStore.getState().designSession.messages).toHaveLength(0);
+
+    clearDelegatedMirrorPin();
+    scheduleDelegatedDesignMirror(childFinished("child-1", "Delegated"), deps);
+    await flush();
+    expect(captured).toHaveLength(2);
+    captured[1].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    await flush();
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>Delegated</main>",
+    });
+  });
+
+  it("holds a late artifact on a fresh host after the session was cleared", async () => {
+    // The release interleave: the session is cleared (host null) while the
+    // replay is in flight. The artifact still lands — on a fresh host, as a
+    // complete session the next load stands down on — which is the retained
+    // worked-host lifecycle, not a leak.
+    const captured: CapturedOpen[] = [];
+    scheduleDelegatedDesignMirror(childFinished("child-1", "Delegated"), {
+      openHistory: fakeOpen(captured),
+      store: useAppStore,
+      ensureHost: async () => ({ loadDocument: async () => ({ ...TEST_DOCUMENT }) }),
+    });
+    await flush();
+    useAppStore.getState().clearDesignSession(HOST);
+    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    await flush();
+
+    const session = useAppStore.getState().designSession;
+    expect(session.host).not.toBeNull();
+    expect(session.host).not.toBe(HOST);
+    expect(session.document).not.toBeNull();
+    expect(session.latestArtifact).toMatchObject({ html: "<main>Delegated</main>" });
+    expect(session.messages).toHaveLength(1);
+  });
 });

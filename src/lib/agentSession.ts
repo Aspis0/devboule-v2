@@ -750,11 +750,12 @@ export class AgentSession {
         // out (`attached-connection-loses-events.md`; the dispatcher-thread fix
         // is not in). The history write is the app's own surface settings file
         // through Tauri commands that never touch the daemon — keep it that way.
-        // The mirror below is scheduled, not called: its synchronous prefix is
-        // pin checks only, and the child's replay (a read-only attach/detach
-        // through `openDesignHistoryEntry`) runs after this handler returns, so
-        // nothing here blocks the event callback and nothing acts — no resume,
-        // no spawn, no send. An `onChildFinished` override (the history reopen)
+        // The mirror below is scheduled, not called: its synchronous prefix
+        // is the `completed` gate and the sequence bump — no pin reads, no
+        // store reads, no daemon I/O — and the replay plus the pin, duplicate
+        // and content checks run after this handler returns, so nothing here
+        // blocks the event callback and nothing acts — no resume, no spawn,
+        // no send. An `onChildFinished` override (the history reopen)
         // suppresses both the write and the mirror: a replayed finish must
         // neither re-date the history nor yank the panel.
         if (this.deps.onChildFinished !== undefined) {

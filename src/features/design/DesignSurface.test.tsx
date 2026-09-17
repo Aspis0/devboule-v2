@@ -1090,6 +1090,42 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps the pin when the surface unmounts, because navigation is not teardown", async () => {
+    // A worked Design host survives surface navigation on purpose, so its
+    // transcript and artifact are there when the human comes back
+    // (`App.tsx:52-55`); "End session" is the teardown they ask for. Dropping
+    // the pin on unmount would let a child that finishes while they are on
+    // Workspace replace the entry they were reading, and they would find it
+    // gone on return.
+    historyOpenMocks.open.mockImplementation(
+      (_sessionId: string, deps: { onResult: (result: DesignHistoryOpenResult) => void }) => {
+        deps.onResult({ status: "artifact", html: "<main>Old</main>" });
+        return { dispose: vi.fn() };
+      },
+    );
+    const { container, root } = await renderDesign(createHost());
+    await settleDesignLoad();
+    await pickHistoryEntry(container, "history-old");
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>Old</main>",
+    });
+    await act(async () => root.unmount());
+
+    const captured: Array<{
+      sessionId: string;
+      onResult: (result: DesignHistoryOpenResult) => void;
+    }> = [];
+    scheduleDelegatedDesignMirror(delegatedFinish("delegated-new"), {
+      openHistory: delegatedOpen(captured),
+      store: useAppStore,
+    });
+    await flushMirror();
+    expect(captured).toEqual([]);
+    expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
+      html: "<main>Old</main>",
+    });
+  });
+
   it("mirrors again after the human ends the session", async () => {
     // Ending the session closes the reading: the pin goes with it and the
     // next delegation lands.
