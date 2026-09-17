@@ -225,6 +225,14 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_ACTIVITY_TOOL,
         "Reads what one live agent session of your own owner has been doing: its current activity (working, idle, blocked or unknown), how long since it last published, and its recent event kinds with timestamps. Metadata only, never transcript text. Name the session by id or display name; limit caps the recent lines (default 10, max 50; 0 returns the state with no recent lines).",
     ),
+    (
+        MCP_STOP_AGENT_TOOL,
+        "Stops one of your own live child sessions: its process tree is killed and the child stops running, while its session row and transcript stay in history. Use this for a child that is stuck or that you no longer need running. Name the child by id or display name; you can only stop a session you created yourself.",
+    ),
+    (
+        MCP_CLOSE_AGENT_TOOL,
+        "Ends one of your own live child sessions: the live session goes away and its transcript stays in history. Use this to finish with a child you created and no longer need. Name the child by id or display name; you can only close a session you created yourself.",
+    ),
 ];
 
 /// The read-only roster tool, and the one name a tool policy can never
@@ -266,6 +274,20 @@ pub const MCP_ANSWER_PERMISSION_TOOL: &str = "devboule_answer_permission";
 /// the profile list stay the two tools a policy cannot remove, because without
 /// them an agent cannot work at all; without this one it only cannot watch.
 pub const MCP_ACTIVITY_TOOL: &str = "devboule_agent_activity";
+/// The stop tool: a creator stops one of its own live children — the
+/// process tree dies, the row and its transcript stay (`session.rs::stop`).
+///
+/// Served to every MCP-capable provider, subject to the provider tool policy
+/// like `devboule_send_message`: a stored policy may take supervision away,
+/// and taking it away is the safe direction. The act is destructive, so the
+/// tool is local-only by construction: the peer door judges it as the wire's
+/// `SessionStop`, which no capability names.
+pub const MCP_STOP_AGENT_TOOL: &str = "devboule_stop_agent";
+/// The close tool: a creator ends one of its own live children — the live
+/// session goes away, the transcript stays in history. Same policy subject
+/// and same local-only construction as [`MCP_STOP_AGENT_TOOL`], judged as
+/// the wire's `SessionClose`.
+pub const MCP_CLOSE_AGENT_TOOL: &str = "devboule_close_agent";
 /// The read-only profile-list tool (`create-from-profile`).
 ///
 /// Served to every MCP-capable provider, and **always on**, like the roster
@@ -379,6 +401,28 @@ pub(crate) fn agent_activity_input_schema() -> serde_json::Value {
                 "minimum": 0,
                 "maximum": 50,
                 "description": "How many recent event lines to return. Default 10, max 50."
+            }
+        },
+        "required": ["session"],
+        "additionalProperties": false
+    })
+}
+
+/// The `tools/list` input schema shared by [`MCP_STOP_AGENT_TOOL`] and
+/// [`MCP_CLOSE_AGENT_TOOL`].
+///
+/// One schema, not two: the verbs differ in what they do, not in what they
+/// accept, and sharing keeps that fact load-bearing. Closed on purpose, like
+/// the create schema; there is deliberately no caller or creator parameter —
+/// identity is imposed by the broker from the bearer's registration.
+#[cfg(feature = "server")]
+pub(crate) fn agent_end_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "session": {
+                "type": "string",
+                "description": "The id or display name of one of your own live child sessions."
             }
         },
         "required": ["session"],

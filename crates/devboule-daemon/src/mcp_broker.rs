@@ -1393,6 +1393,73 @@ fn handle_rpc(
                     }
                     Err(_) => Ok(Some(rpc_error(id, -32602, "target agent not found"))),
                 }
+            } else if tool_name == Some(crate::provider_catalog::MCP_STOP_AGENT_TOOL)
+                || tool_name == Some(crate::provider_catalog::MCP_CLOSE_AGENT_TOOL)
+            {
+                // The destructive pair. Identity is the bearer, never an
+                // argument: the sessions layer refuses everything that is
+                // not the caller's own live child with one sentence that
+                // does not say whether the id exists, and refuses the
+                // caller itself outright. Both outcomes are audited, like
+                // the profile move.
+                let stopping = tool_name == Some(crate::provider_catalog::MCP_STOP_AGENT_TOOL);
+                let session_arg = message
+                    .pointer("/params/arguments/session")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let Some(session_arg) = session_arg else {
+                    return Ok(Some(rpc_error(id, -32602, "session is required")));
+                };
+                let tool = if stopping {
+                    crate::provider_catalog::MCP_STOP_AGENT_TOOL
+                } else {
+                    crate::provider_catalog::MCP_CLOSE_AGENT_TOOL
+                };
+                let audit = |outcome_label: &str| {
+                    audit_mcp_tool(
+                        state,
+                        &caller,
+                        tool,
+                        &registration.session_id,
+                        outcome_label,
+                    );
+                };
+                let action = if stopping {
+                    state
+                        .sessions
+                        .stop_agent_child(&registration.session_id, session_arg)
+                } else {
+                    state
+                        .sessions
+                        .close_agent_child(&registration.session_id, session_arg)
+                        .map(|_| ())
+                };
+                match action {
+                    Ok(()) => {
+                        audit("ok");
+                        let word = if stopping { "stopped" } else { "closed" };
+                        Ok(Some(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{"type": "text", "text": word}],
+                                "structuredContent": {"state": word, "sessionId": session_arg},
+                                "isError": false,
+                            },
+                        })))
+                    }
+                    Err(error) => {
+                        audit("denied");
+                        Ok(Some(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{"type": "text", "text": error.message}],
+                                "isError": true,
+                            },
+                        })))
+                    }
+                }
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -1553,6 +1620,12 @@ fn enabled_tool_list(
                 crate::provider_catalog::agent_set_profile_input_schema()
             } else if *name == crate::provider_catalog::MCP_ACTIVITY_TOOL {
                 crate::provider_catalog::agent_activity_input_schema()
+            } else if *name == crate::provider_catalog::MCP_STOP_AGENT_TOOL
+                || *name == crate::provider_catalog::MCP_CLOSE_AGENT_TOOL
+            {
+                // One closed document for both verbs: they differ in what
+                // they do, not in what they accept.
+                crate::provider_catalog::agent_end_input_schema()
             } else {
                 json!({"type": "object", "properties": {}, "additionalProperties": false})
             };
@@ -3614,6 +3687,181 @@ mod tests {
     }
 
     #[test]
+    fn the_end_tools_stop_and_close_a_callers_own_children_only() {
+        // The destructive pair end to end: served, scoped to the caller's
+        // own children, and refused for the caller's parent, itself, and an
+        // invented id — with the sentences the sessions layer owns.
+        let state = ServerState::new("mcp-end".to_string());
+        let owner = owner("mcp-end-user", "mcp-end-client");
+        crate::session::insert_test_live_agent(&state.sessions, "end-parent", owner.clone());
+        crate::session::insert_test_child_agent(
+            &state.sessions,
+            "end-caller",
+            owner.clone(),
+            "end-parent",
+        );
+        crate::session::insert_test_child_agent(
+            &state.sessions,
+            "end-child",
+            owner.clone(),
+            "end-caller",
+        );
+        let guard = state
+            .mcp
+            .register("end-caller", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("caller MCP guard");
+        let token = state.mcp.test_token("end-caller").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let call = |name: &str, arguments: &str| {
+            http_request(
+                &state.mcp.url,
+                Some(&format!("Bearer {token}")),
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+                ),
+            )
+        };
+        let sentence = |reply: &str| {
+            response_json(reply)["result"]["content"][0]["text"]
+                .as_str()
+                .expect("the refusal sentence")
+                .to_string()
+        };
+        let listed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        let tools = response_json(&listed)["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .to_vec();
+        for name in [
+            crate::provider_catalog::MCP_STOP_AGENT_TOOL,
+            crate::provider_catalog::MCP_CLOSE_AGENT_TOOL,
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == json!(name))
+                .unwrap_or_else(|| panic!("{name} is served"));
+            assert_eq!(tool["inputSchema"]["required"], json!(["session"]));
+        }
+        // The green stop: the child stops, the row stays.
+        let stopped = response_json(&call(
+            crate::provider_catalog::MCP_STOP_AGENT_TOOL,
+            r#"{"session":"end-child"}"#,
+        ));
+        assert_eq!(stopped["result"]["isError"], json!(false));
+        assert_eq!(stopped["result"]["content"][0]["text"], json!("stopped"));
+        let live_ids = || {
+            state
+                .sessions
+                .live_agent_entries(&owner)
+                .expect("entries")
+                .into_iter()
+                .map(|entry| entry.session.id)
+                .collect::<Vec<_>>()
+        };
+        assert!(live_ids().iter().any(|id| id == "end-child"));
+        // The parent, itself, and an invented id: refused either way, and
+        // the invented one is indistinguishable from the parent.
+        assert!(sentence(&call(
+            crate::provider_catalog::MCP_STOP_AGENT_TOOL,
+            r#"{"session":"end-parent"}"#,
+        ))
+        .contains("none of your live children"));
+        assert!(sentence(&call(
+            crate::provider_catalog::MCP_STOP_AGENT_TOOL,
+            r#"{"session":"end-caller"}"#,
+        ))
+        .contains("not its own child"));
+        assert!(sentence(&call(
+            crate::provider_catalog::MCP_STOP_AGENT_TOOL,
+            r#"{"session":"end-invented"}"#,
+        ))
+        .contains("none of your live children"));
+        // A missing argument is a protocol error before any scope runs.
+        let bogus = response_json(&call(
+            crate::provider_catalog::MCP_STOP_AGENT_TOOL,
+            r#"{"bogus":1}"#,
+        ));
+        assert_eq!(bogus["error"]["code"], json!(-32602));
+        // The green close: the row goes, everything else stays.
+        let closed = response_json(&call(
+            crate::provider_catalog::MCP_CLOSE_AGENT_TOOL,
+            r#"{"session":"end-child"}"#,
+        ));
+        assert_eq!(closed["result"]["isError"], json!(false));
+        assert_eq!(closed["result"]["content"][0]["text"], json!("closed"));
+        let remaining = live_ids();
+        assert!(!remaining.iter().any(|id| id == "end-child"));
+        assert!(remaining.iter().any(|id| id == "end-caller"));
+        assert!(remaining.iter().any(|id| id == "end-parent"));
+        drop(guard);
+        drop(server);
+    }
+
+    #[test]
+    fn a_stored_policy_can_take_the_end_tools_away() {
+        // The catalog promises it: the destructive pair is supervision,
+        // disableable like the send tool, unlike the roster and the profile
+        // list. A disabled tool is refused before anything is touched.
+        let state = ServerState::new("mcp-end-policy".to_string());
+        let owner = owner("mcp-end-policy-user", "mcp-end-policy-client");
+        crate::session::insert_test_live_agent(&state.sessions, "end-policy-caller", owner.clone());
+        let guard = state
+            .mcp
+            .register_with_provider(
+                "end-policy-caller",
+                &owner,
+                &SessionKind::Acp,
+                Some("claude"),
+                AgentLineage::root(),
+            )
+            .expect("registration")
+            .expect("MCP guard");
+        state
+            .tool_policy
+            .set(
+                "claude",
+                Some(true),
+                vec![
+                    crate::provider_catalog::MCP_STOP_AGENT_TOOL.to_string(),
+                    crate::provider_catalog::MCP_CLOSE_AGENT_TOOL.to_string(),
+                ],
+            )
+            .expect("policy");
+        let token = state.mcp.test_token("end-policy-caller").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let listed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        let listed_body = response_json(&listed);
+        let names: Vec<&str> = listed_body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(!names.contains(&crate::provider_catalog::MCP_STOP_AGENT_TOOL));
+        assert!(!names.contains(&crate::provider_catalog::MCP_CLOSE_AGENT_TOOL));
+        let refused = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_stop_agent","arguments":{"session":"end-policy-caller"}}}"#,
+        );
+        assert_eq!(
+            response_json(&refused).pointer("/error/code"),
+            Some(&json!(-32601))
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    #[test]
     fn a_restored_overlay_hides_and_refuses_both_denied_tools() {
         // The two gates a resumed lineage feeds, on the exact functions the
         // broker calls: `enabled_tool_list` for tools/list,
@@ -5588,10 +5836,9 @@ mod tests {
         );
 
         // And `tools/list` for the same session still reports every tool the
-        // session is served: the roster, the profile list this pass adds, the
-        // sender slice 4 added, the creation tool slice 5 adds, the delegated
-        // permission answer slice 5b adds, the profile move Pass A of 5b
-        // adds, and the activity read this pass adds. Disabling one does not
+        // session is served: the roster, the profile list, the sender, the
+        // creation tool, the delegated permission answer, the profile move,
+        // the activity read, and the stop/close pair. Disabling one does not
         // shrink the other rows, which is the point of this test.
         let listed = http_request(
             &state.mcp.url,
@@ -5603,7 +5850,7 @@ mod tests {
                 .pointer("/result/tools")
                 .and_then(Value::as_array)
                 .map(|tools| tools.len()),
-            Some(7)
+            Some(9)
         );
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);

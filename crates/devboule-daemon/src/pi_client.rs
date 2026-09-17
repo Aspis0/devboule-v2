@@ -122,6 +122,21 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_ACTIVITY_TOOL,
         requires_confirmation: false,
     },
+    // Stop: kills one of the caller's own children's process trees; the row
+    // and its transcript stay. Destructive, so the origin door judges it —
+    // and refuses every peer — before anything is touched; a generic confirm
+    // here would not know which child the card was about.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_STOP_AGENT_TOOL,
+        requires_confirmation: false,
+    },
+    // Close: ends one of the caller's own children; the transcript stays in
+    // history. Same door, same every-peer refusal, same reasoning as the
+    // stop tool.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_CLOSE_AGENT_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -172,7 +187,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// `pi.registerTool` per broker tool (seven today), closed schemas matching the
+/// `pi.registerTool` per broker tool (nine today), closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -428,6 +443,40 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_agent_activity", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_stop_agent",
+    label: "Stop Devboule agent",
+    description: `Stops one of your own live child sessions: its process tree is killed and the child stops running, while its session row and transcript stay in history. Use this for a child that is stuck or that you no longer need running. Name the child by id or display name; you can only stop a session you created yourself.`,
+    parameters: Type.Object(
+      {
+        session: Type.String({ description: "The id or display name of one of your own live child sessions." }),
+      },
+      { required: ["session"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_stop_agent", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_close_agent",
+    label: "Close Devboule agent",
+    description: `Ends one of your own live child sessions: the live session goes away and its transcript stays in history. Use this to finish with a child you created and no longer need. Name the child by id or display name; you can only close a session you created yourself.`,
+    parameters: Type.Object(
+      {
+        session: Type.String({ description: "The id or display name of one of your own live child sessions." }),
+      },
+      { required: ["session"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_close_agent", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });
@@ -3190,7 +3239,7 @@ mod tests {
     fn pi_broker_tools_are_unmediated_and_walked() {
         // S3 walking test: every tool the broker serves is classified exactly
         // once by the same constants the extension renders — unmediated with a
-        // reason (all seven today), never silently inheriting either answer. An
+        // reason (all nine today), never silently inheriting either answer. An
         // eighth broker tool with no row here fails the first assertion; a
         // `devboule_*` name missing from the unmediated set fails the second.
         for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {

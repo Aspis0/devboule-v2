@@ -10,7 +10,7 @@ use devboule_protocol::{
 // ------------------------------------------------------------------
 
 /// A live agent session that is somebody's child, with a display name.
-fn insert_child(
+pub(super) fn insert_child(
     registry: &SessionRegistry,
     id: &str,
     owner: OwnerId,
@@ -12791,4 +12791,240 @@ fn a_later_upsert_without_birth_facts_keeps_them() {
     assert_eq!(row.depth, Some(2), "the upsert kept the birth depth");
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&_dir);
+}
+
+// ------------------------------------------------------------------
+// An agent ends its own children: the shared scope gate behind
+// `stop_agent_child` and `close_agent_child`, and the one spelling
+// of the child predicate all of its callers read.
+// ------------------------------------------------------------------
+
+/// The predicate answers `created_by` alone: a child is a session whose
+/// `created_by` names the caller. Same owner, same display name, nothing
+/// else makes a child.
+#[test]
+fn the_child_predicate_answers_created_by_alone() {
+    assert!(is_child_of(Some("creator"), "creator"));
+    assert!(!is_child_of(None, "creator"));
+    assert!(!is_child_of(Some("sibling"), "creator"));
+}
+
+#[test]
+fn an_agent_closes_only_its_own_children() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("end-children-user", "end-children-client");
+    let stranger = test_owner("end-children-stranger", "end-children-stranger-client");
+    let parent = compose_session_id(&owner.session_token(), "end-par").expect("id");
+    let caller = compose_session_id(&owner.session_token(), "end-cal").expect("id");
+    let child = compose_session_id(&owner.session_token(), "end-chi").expect("id");
+    let human = compose_session_id(&owner.session_token(), "end-hum").expect("id");
+    let foreign = compose_session_id(&stranger.session_token(), "end-for").expect("id");
+    insert_live_agent(&registry, &parent, owner.clone());
+    insert_live_agent(&registry, &caller, owner.clone());
+    insert_child(&registry, &child, owner.clone(), &caller);
+    insert_live_agent(&registry, &human, owner.clone());
+    insert_live_agent(&registry, &foreign, stranger);
+
+    // The parent: refused, row intact — a child cannot end the session
+    // that made it, and this refusal is the scope check doing its work.
+    let parent_refusal = registry
+        .close_agent_child(&caller, &parent)
+        .expect_err("closing its parent is refused");
+    assert!(
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .contains_key(&parent),
+        "the parent's row survives the refusal"
+    );
+
+    // Itself: refused with its own sentence — the caller's MCP client is
+    // the process waiting on this reply.
+    let self_refusal = registry
+        .close_agent_child(&caller, &caller)
+        .expect_err("closing itself is refused");
+    assert_eq!(
+        self_refusal.code,
+        ErrorCode::InvalidRequest,
+        "{self_refusal:?}"
+    );
+    assert!(
+        self_refusal.message.contains("not its own child"),
+        "{}",
+        self_refusal.message
+    );
+    assert!(
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .contains_key(&caller),
+        "the caller's row survives the self-refusal"
+    );
+
+    // Everything that is not the caller's own live child is one refusal:
+    // an invented id, the parent, a human-started session of the same
+    // user, a stranger's session. Same code, same sentence — the only
+    // difference is the target the caller itself named, so none of the
+    // four is distinguishable from the others and existence does not leak.
+    let refused_as_not_child = |label: &str, refusal: &WireError, target: &str| {
+        assert_eq!(
+            refusal.code,
+            ErrorCode::SessionNotFound,
+            "{label}: {refusal:?}"
+        );
+        assert_eq!(
+            refusal.message,
+            format!("none of your live children is called '{target}'"),
+            "{label} reads as not-a-child, never as existing-or-not"
+        );
+    };
+    let human_refusal = registry
+        .close_agent_child(&caller, &human)
+        .expect_err("a session it did not create is refused");
+    let foreign_refusal = registry
+        .close_agent_child(&caller, &foreign)
+        .expect_err("a stranger's session is refused");
+    let invented = registry
+        .close_agent_child(&caller, "end-invented")
+        .expect_err("an invented id is refused");
+    refused_as_not_child("the parent", &parent_refusal, &parent);
+    refused_as_not_child("a human-started session", &human_refusal, &human);
+    refused_as_not_child("a stranger's session", &foreign_refusal, &foreign);
+    refused_as_not_child("an invented id", &invented, "end-invented");
+
+    // The green path: the caller's own child goes, and only it does.
+    registry
+        .close_agent_child(&caller, &child)
+        .expect("the caller closes its own child");
+    {
+        let map = registry.inner.lock().expect("registry");
+        assert!(!map.contains_key(&child), "the child's row is gone");
+        assert!(map.contains_key(&caller), "the caller's row stays");
+    }
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stop_refuses_what_close_refuses_and_preserves_the_row_it_stops() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("stop-children-user", "stop-children-client");
+    let parent = compose_session_id(&owner.session_token(), "stop-par").expect("id");
+    let caller = compose_session_id(&owner.session_token(), "stop-cal").expect("id");
+    let child = compose_session_id(&owner.session_token(), "stop-chi").expect("id");
+    insert_live_agent(&registry, &parent, owner.clone());
+    insert_live_agent(&registry, &caller, owner.clone());
+    insert_child(&registry, &child, owner.clone(), &caller);
+
+    let parent_refusal = registry
+        .stop_agent_child(&caller, &parent)
+        .expect_err("stopping its parent is refused");
+    let invented = registry
+        .stop_agent_child(&caller, "stop-invented")
+        .expect_err("an invented id is refused");
+    let self_refusal = registry
+        .stop_agent_child(&caller, &caller)
+        .expect_err("stopping itself is refused");
+    assert_eq!(
+        self_refusal.code,
+        ErrorCode::InvalidRequest,
+        "{self_refusal:?}"
+    );
+    assert!(self_refusal.message.contains("not its own child"));
+    assert_eq!(parent_refusal.code, ErrorCode::SessionNotFound);
+    assert_eq!(
+        parent_refusal.message,
+        format!("none of your live children is called '{parent}'")
+    );
+    assert_eq!(
+        invented.message,
+        "none of your live children is called 'stop-invented'"
+    );
+
+    // The green path: the process side dies, the session row stays and is
+    // marked preserved, so the transcript survives the stop.
+    registry
+        .stop_agent_child(&caller, &child)
+        .expect("the caller stops its own child");
+    {
+        let map = registry.inner.lock().expect("registry");
+        let live = map
+            .get(&child)
+            .and_then(RegistryEntry::as_peer_visible)
+            .expect("the child's row stays");
+        assert!(live.preserve_on_exit.load(Ordering::Acquire));
+    }
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The stop reaches the whole tree, not just the root: the fixture killer
+/// is a no-op, so a grandchild that dies was killed by the child's job
+/// object — the same object the spawn path assigns the provider's process
+/// to. The row and its transcript survive; only the tree goes.
+#[cfg(windows)]
+#[test]
+fn an_agent_stops_its_own_child_and_the_job_ends_the_tree() {
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("stop-tree-user", "stop-tree-client");
+    let parent = compose_session_id(&owner.session_token(), "tree-par").expect("id");
+    let caller = compose_session_id(&owner.session_token(), "tree-cal").expect("id");
+    let child = compose_session_id(&owner.session_token(), "tree-chi").expect("id");
+    insert_live_agent(&registry, &parent, owner.clone());
+    insert_live_agent(&registry, &caller, owner.clone());
+    insert_child(&registry, &child, owner.clone(), &caller);
+
+    let job = {
+        let map = registry.inner.lock().expect("registry");
+        map.get(&child)
+            .and_then(RegistryEntry::as_child_process)
+            .map(|session| std::sync::Arc::clone(&session.process_job))
+            .expect("the child holds a job object")
+    };
+    let mut grandchild = std::process::Command::new("ping")
+        .args(["-n", "30", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .expect("a long-lived grandchild");
+    let grandchild_handle = AsRawHandle::as_raw_handle(&grandchild);
+    job.assign(grandchild_handle)
+        .expect("the grandchild joins the child's job");
+    assert!(
+        grandchild.try_wait().expect("poll").is_none(),
+        "the grandchild is alive before the stop"
+    );
+
+    registry
+        .stop_agent_child(&caller, &child)
+        .expect("the caller stops its own child");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if grandchild.try_wait().expect("poll").is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the grandchild outlived the stop"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    {
+        let map = registry.inner.lock().expect("registry");
+        let live = map
+            .get(&child)
+            .and_then(RegistryEntry::as_peer_visible)
+            .expect("the child's row stays");
+        assert!(live.preserve_on_exit.load(Ordering::Acquire));
+    }
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
 }

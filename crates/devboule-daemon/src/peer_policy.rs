@@ -405,8 +405,9 @@ pub enum McpToolWire {
 ///   a peer with `send` may still change modes over the wire `SessionSetMode`.
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
-        MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CREATE_AGENT_TOOL,
+        MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
         MCP_LIST_PROFILES_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL,
+        MCP_STOP_AGENT_TOOL,
     };
     if tool == MCP_ROSTER_TOOL {
         Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
@@ -476,6 +477,23 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
                 effort: None,
             },
         ]))
+    } else if tool == MCP_STOP_AGENT_TOOL {
+        // The destructive supervisor verb, judged as the wire's own
+        // `SessionStop` — which no capability names, so every peer is
+        // refused and the tool stays local-only by construction.
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionStop {
+            id: 0,
+            session_id: String::new(),
+            subscription_id: 0,
+        }]))
+    } else if tool == MCP_CLOSE_AGENT_TOOL {
+        // The same construction as the stop tool, for the wire's
+        // `SessionClose`: a destructive verb no capability opens.
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionClose {
+            id: 0,
+            session_id: String::new(),
+            idempotency_key: None,
+        }]))
     } else {
         None
     }
@@ -1119,6 +1137,71 @@ pub(crate) mod tests {
             crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL,
         ] {
             assert!(names.contains(&expected), "{expected} is served");
+        }
+    }
+
+    /// The verbs that end a child are refused to every peer, walked over the
+    /// closed wire capability table rather than sampled: a capability added
+    /// to `PEER_CAPS` that could reach stop or close — through the wire gate
+    /// or the tool door — fails here by construction.
+    #[test]
+    fn no_capability_reaches_stop_or_close() {
+        use crate::provider_catalog::{MCP_CLOSE_AGENT_TOOL, MCP_STOP_AGENT_TOOL};
+        use devboule_protocol::PEER_CAPS;
+        let stop = ClientMessage::SessionStop {
+            id: 0,
+            session_id: String::new(),
+            subscription_id: 0,
+        };
+        let close = ClientMessage::SessionClose {
+            id: 0,
+            session_id: String::new(),
+            idempotency_key: None,
+        };
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            for cap in PEER_CAPS {
+                let caps = caps(&[cap]);
+                assert_eq!(
+                    peer_allows(role, &caps, &stop),
+                    PeerDecision::Deny("session.stop"),
+                    "{role:?} holding {cap} must not stop a session"
+                );
+                assert_eq!(
+                    peer_allows(role, &caps, &close),
+                    PeerDecision::Deny("session.close"),
+                    "{role:?} holding {cap} must not close a session"
+                );
+                assert_eq!(
+                    mcp_tool_denial(role, &caps, MCP_STOP_AGENT_TOOL),
+                    Some("session.stop"),
+                    "{role:?} holding {cap} must not reach the stop tool"
+                );
+                assert_eq!(
+                    mcp_tool_denial(role, &caps, MCP_CLOSE_AGENT_TOOL),
+                    Some("session.close"),
+                    "{role:?} holding {cap} must not reach the close tool"
+                );
+            }
+            // One capability at a time is not "every peer": a peer holding the
+            // whole table is legal, and a future arm gated on a combination
+            // would pass the loop above and fail here.
+            let every = caps(&PEER_CAPS);
+            assert_eq!(
+                peer_allows(role, &every, &stop),
+                PeerDecision::Deny("session.stop")
+            );
+            assert_eq!(
+                peer_allows(role, &every, &close),
+                PeerDecision::Deny("session.close")
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &every, MCP_STOP_AGENT_TOOL),
+                Some("session.stop")
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &every, MCP_CLOSE_AGENT_TOOL),
+                Some("session.close")
+            );
         }
     }
 

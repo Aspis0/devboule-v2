@@ -713,6 +713,14 @@ fn unauthorized() -> WireError {
     )
 }
 
+/// Whether `created_by` names `creator_session_id` — the one spelling of
+/// "this session is a child of that caller". The delegated answer, the
+/// profile move and the stop/close scope all read it; a scope rule written
+/// twice is a scope rule that will eventually disagree with itself.
+fn is_child_of(created_by: Option<&str>, creator_session_id: &str) -> bool {
+    created_by == Some(creator_session_id)
+}
+
 /// The origin a create from this connection writes.
 ///
 /// A local connection — and a `Local` peer identity — is the person at this
@@ -4480,7 +4488,7 @@ impl SessionRegistry {
                     continue;
                 }
                 let is_child = entry.as_peer_visible().is_some_and(|live| {
-                    live.metadata.created_by.as_deref() == Some(creator_session_id)
+                    is_child_of(live.metadata.created_by.as_deref(), creator_session_id)
                 });
                 if is_child {
                     child_holders += 1;
@@ -4521,7 +4529,7 @@ impl SessionRegistry {
                     "permission card {card_id} is not pending on one of your live sessions"
                 ));
             };
-            if session.created_by.as_deref() != Some(creator_session_id) {
+            if !is_child_of(session.created_by.as_deref(), creator_session_id) {
                 return Err(format!(
                     "permission card {card_id} belongs to a session that is not your child; it stays pending for whoever may answer it"
                 ));
@@ -4676,7 +4684,9 @@ impl SessionRegistry {
                         entry.owner().clone(),
                     ))
                 })
-                .filter(|(session, _, _)| session.created_by.as_deref() == Some(creator_session_id))
+                .filter(|(session, _, _)| {
+                    is_child_of(session.created_by.as_deref(), creator_session_id)
+                })
                 .filter(|(session, _, _)| session.id == target || display(session) == target)
                 .collect();
             match matches.len() {
@@ -4692,7 +4702,7 @@ impl SessionRegistry {
                         entry.owner().user == caller_owner.user
                             && entry.as_peer_visible().is_some_and(|live| {
                                 let session = live_session_view(live);
-                                session.created_by.as_deref() != Some(creator_session_id)
+                                !is_child_of(session.created_by.as_deref(), creator_session_id)
                                     && (session.id == target || display(&session) == target)
                             })
                     });
@@ -4824,7 +4834,98 @@ impl SessionRegistry {
         }
     }
 
-    #[cfg(test)]
+    /// Resolve `target` (exact id or display name) among the caller's own
+    /// live children — the scope gate for `stop_agent_child` and
+    /// `close_agent_child`.
+    ///
+    /// Scope is the caller's own children and nothing else: a session the
+    /// caller did not create, a dead one, and an invented id all get the
+    /// same refusal, so the answer never says whether an id exists. The
+    /// caller itself is refused before the scan: a session is not its own
+    /// child, and the process waiting for this reply would be the one torn
+    /// down.
+    fn resolve_own_child(
+        &self,
+        creator_session_id: &str,
+        target: &str,
+    ) -> Result<(String, OwnerId), WireError> {
+        if target == creator_session_id {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "a session is not its own child; name a session you created",
+            ));
+        }
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let caller_owner = map
+            .get(creator_session_id)
+            .map(|entry| entry.owner().clone())
+            .ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "the calling session is not registered on this daemon",
+                )
+            })?;
+        let display = |session: &Session| {
+            session
+                .display_name
+                .clone()
+                .unwrap_or_else(|| session.title.clone())
+        };
+        let mut matches: Vec<(String, OwnerId)> = map
+            .values()
+            .filter(|entry| entry.owner().user == caller_owner.user)
+            .filter_map(|entry| {
+                let live = entry.as_peer_visible()?;
+                let session = &live.metadata;
+                if !is_child_of(session.created_by.as_deref(), creator_session_id) {
+                    return None;
+                }
+                (session.id == target || display(session) == target)
+                    .then(|| (session.id.clone(), entry.owner().clone()))
+            })
+            .collect();
+        match matches.len() {
+            1 => Ok(matches.pop().expect("exactly one match")),
+            0 => Err(WireError::new(
+                ErrorCode::SessionNotFound,
+                format!("none of your live children is called '{target}'"),
+            )),
+            _ => Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "more than one of your live children is called '{target}'; use the session id"
+                ),
+            )),
+        }
+    }
+
+    /// Stop one of the caller's own children (`devboule_stop_agent`): the
+    /// child's process tree dies, the session row and its transcript stay.
+    /// The everyday supervisor action for a stuck child.
+    pub fn stop_agent_child(
+        &self,
+        creator_session_id: &str,
+        target: &str,
+    ) -> Result<(), WireError> {
+        let (child_id, owner) = self.resolve_own_child(creator_session_id, target)?;
+        self.stop(&child_id, &owner)
+    }
+
+    /// Close one of the caller's own children (`devboule_close_agent`): the
+    /// live session ends, the transcript stays in history. What a finished
+    /// child's creator does when it no longer needs the child.
+    pub fn close_agent_child(
+        &self,
+        creator_session_id: &str,
+        target: &str,
+    ) -> Result<bool, WireError> {
+        let (child_id, owner) = self.resolve_own_child(creator_session_id, target)?;
+        self.close(&child_id, &owner, &None)
+    }
+
     pub fn stop(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -9724,6 +9825,18 @@ pub(crate) fn insert_test_live_agent(
     owner: OwnerId,
 ) -> Arc<SessionRuntime> {
     tests::insert_live_agent(registry, id, owner)
+}
+
+/// Test-only live agent that is somebody's child: `created_by` is the fact
+/// the stop/close scope reads, so a test can build a real parent-child pair.
+#[cfg(test)]
+pub(crate) fn insert_test_child_agent(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    creator: &str,
+) -> Arc<SessionRuntime> {
+    tests::insert_child(registry, id, owner, creator)
 }
 
 /// Test-only live agent of one explicit kind (S9): the door reads origin, not
