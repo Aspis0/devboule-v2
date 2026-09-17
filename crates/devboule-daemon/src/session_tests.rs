@@ -3110,6 +3110,7 @@ fn resume_metadata_kind_is_the_records_own_kind_not_the_provider_string() {
 fn the_acp_command_override_cannot_journal_a_native_provider_id() {
     let state = ServerState::new("acp-native-id-strip".to_string());
     let owner = test_owner("S-1-5-21-acp-strip", "acp-native-strip");
+    let _acp_env = crate::session::lock_acp_env();
     std::env::set_var(
         "DEVBOULE_ACP_COMMAND",
         r#"["definitely-not-a-real-program-xyz"]"#,
@@ -12697,6 +12698,7 @@ fn an_unreadable_overlay_cell_refuses_resume_but_not_the_roster() {
 fn a_birth_write_carries_overlay_and_depth_even_when_spawn_fails() {
     let state = ServerState::new("overlay-birth-write".to_string());
     let owner = test_owner("overlay-birth-user", "overlay-birth-client");
+    let _acp_env = crate::session::lock_acp_env();
     std::env::set_var(
         "DEVBOULE_ACP_COMMAND",
         r#"["definitely-not-a-real-program-xyz"]"#,

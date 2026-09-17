@@ -5202,6 +5202,7 @@ process.stdin.on("data", (chunk) => {
             // child carries and naming the windowed id the way the audit's
             // trigger describes. The named-provider resolution the resume
             // performs before the guard needs the direct-command override.
+            let _acp_env = crate::session::lock_acp_env();
             std::env::set_var("DEVBOULE_ACP_COMMAND", r#"["cmd"]"#);
             std::env::set_var("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub");
             if let Some(journal) = state.sessions.journal.as_ref() {

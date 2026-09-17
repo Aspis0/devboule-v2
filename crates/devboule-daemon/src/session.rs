@@ -114,6 +114,11 @@ pub(crate) use session_runtime::{
 };
 #[path = "acp_client.rs"]
 mod acp_client;
+/// One function out of a private module, under test only: the four tests that
+/// write the ACP override environment live in three different files and must
+/// serialise against each other.
+#[cfg(test)]
+pub(crate) use acp_client::lock_acp_env;
 #[path = "acp_host.rs"]
 mod acp_host;
 #[path = "claude_client.rs"]

@@ -42,6 +42,22 @@ use super::{
 use crate::profile_delivery::ProfileDelivery;
 
 const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
+
+/// Serialises the tests that write the ACP override environment.
+///
+/// Those variables are process-global and Rust runs tests as threads in one
+/// process, so four tests setting and clearing them concurrently corrupt each
+/// other. Measured 2026-09-17: a resume test failed asserting "cannot be
+/// resumed while its process is running" and got "is not an ACP agent" —
+/// another test had cleared the command between its own set and its act.
+/// Every test that writes either variable holds this for the whole span.
+#[cfg(test)]
+pub(crate) fn lock_acp_env() -> std::sync::MutexGuard<'static, ()> {
+    static ACP_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ACP_ENV
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 /// Test/direct-command counterpart to [`COMMAND_ENV`]. A direct command has
 /// no catalog row to identify it; tests set this to the stub provider id so a
 /// later resume can still exercise the named-provider path.

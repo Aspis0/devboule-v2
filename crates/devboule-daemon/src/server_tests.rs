@@ -4286,6 +4286,7 @@ fn a_refused_resume_releases_its_lifecycle_slot() {
     let owner = OwnerId::new("slot-user", "slot-client").expect("owner");
     let session_id =
         devboule_protocol::compose_session_id(&owner.session_token(), "slot01").expect("id");
+    let _acp_env = crate::session::lock_acp_env();
     std::env::set_var(
         "DEVBOULE_ACP_COMMAND",
         r#"["definitely-not-a-real-program-xyz"]"#,
