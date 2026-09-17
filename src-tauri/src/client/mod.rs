@@ -390,6 +390,21 @@ impl AttachmentRegistry {
         ids
     }
 
+    /// The newest bound subscription for one session, if any. Unbound
+    /// entries — left by a deferred reattach that has not run yet — cannot
+    /// serve the daemon's observer check, so they are not candidates no
+    /// matter their age; newest wins among the bound, as the live view.
+    fn bound_subscription_for_session(&self, session_id: &str) -> Option<SubscriptionId> {
+        self.state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.session_id == session_id && entry.binding.is_some())
+            .map(|(subscription_id, _)| *subscription_id)
+            .max()
+    }
+
     /// Drop every local attachment for one session. Call only after the daemon
     /// confirmed the session is gone: forgetting a live session's attachment
     /// silently stops delivering its events to the window that owns it.
@@ -870,6 +885,14 @@ impl DaemonBridge {
         self.inner.session_close(session_id, subscription_id)
     }
 
+    pub(crate) fn session_stop(
+        &self,
+        session_id: &str,
+        subscription_id: Option<SubscriptionId>,
+    ) -> Result<(), DaemonError> {
+        self.inner.session_stop(session_id, subscription_id)
+    }
+
     pub fn forget_generation(&self, session_id: &str) {
         self.inner.forget_generation(session_id);
     }
@@ -1193,6 +1216,166 @@ impl BridgeInner {
     pub fn forget_generation(&self, session_id: &str) {
         self.attachments.forget_generation(session_id);
     }
+
+    /// Stop a session's process, keeping the session. The subscription check
+    /// is `session_close`'s: a caller-held id must name this session. The
+    /// wire differs — `SessionStop` carries a subscription the daemon
+    /// validates as an observer, while `SessionClose` carries none — so a
+    /// caller without one cannot skip the check the way close does. The
+    /// bridge reuses a live attachment for the session when one exists; a
+    /// swiped background tab has none, so it attaches briefly at the tail on
+    /// a sink that discards, stops, and detaches again. Unlike close, nothing
+    /// is forgotten here: the session outlives its process, and its
+    /// attachments stay valid for the exit the stop emits.
+    ///
+    /// Only the resolve-and-clone holds the lifecycle lock. The daemon
+    /// roundtrips (30 s timeout each) run outside it: holding it across
+    /// three of them would stall recovery and every other session call
+    /// behind up to 90 s on a wedged daemon. A client swapped mid-sequence
+    /// fails honestly below instead of hanging.
+    pub(crate) fn session_stop(
+        &self,
+        session_id: &str,
+        subscription_id: Option<SubscriptionId>,
+    ) -> Result<(), DaemonError> {
+        enum Plan {
+            Direct(Arc<DaemonClient>, SubscriptionId),
+            Temporary(Arc<DaemonClient>),
+        }
+        let plan = {
+            let _lifecycle = self
+                .client_lifecycle
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            match subscription_id {
+                Some(subscription_id) => {
+                    let attached_session = self
+                        .attachments
+                        .session_id_for(subscription_id)
+                        .ok_or_else(|| {
+                            DaemonError::Protocol(
+                                "session attachment is not registered".to_string(),
+                            )
+                        })?;
+                    if attached_session != session_id {
+                        return Err(DaemonError::Protocol(
+                            "session subscription does not belong to this session".to_string(),
+                        ));
+                    }
+                    let client = self
+                        .client
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .clone()
+                        .ok_or(DaemonError::ConnectionLost)?;
+                    // No attachment is dropped, not even on connection loss:
+                    // the session survives a stop, so a view into it must
+                    // survive a failed one too — the reconnect path reattaches
+                    // it.
+                    Plan::Direct(client, subscription_id)
+                }
+                None => {
+                    let client = self
+                        .client
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .clone()
+                        .ok_or(DaemonError::ConnectionLost)?;
+                    match self.attachments.bound_subscription_for_session(session_id) {
+                        Some(reuse) => Plan::Direct(client, reuse),
+                        None => Plan::Temporary(client),
+                    }
+                }
+            }
+        };
+        match plan {
+            Plan::Direct(client, subscription_id) => {
+                client.session_stop_with_subscription(session_id, subscription_id)
+            }
+            Plan::Temporary(client) => self.stop_via_temporary_attachment(&client, session_id),
+        }
+    }
+
+    /// The no-attachment stop: attach briefly at the tail, stop, detach.
+    /// Lock-free by construction — the caller resolved outside the lifecycle
+    /// lock — so a client replacement mid-sequence lands as an honest
+    /// connection error, never a stall.
+    fn stop_via_temporary_attachment(
+        &self,
+        client: &DaemonClient,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let sink: AttachmentSink = Arc::new(|_| {});
+        // The tail, not zero: a cursorless attach replays the whole journal
+        // into this sink — for a live journaled agent that is the entire
+        // transcript over the socket, thrown away frame by frame. `seq:
+        // u64::MAX` asks for nothing after everything: the replay driver
+        // short-circuits at cursor >= watermark, the transcript filters keep
+        // only higher seqs, and `cursor_replay_ok` gates on generation alone,
+        // so a process that changed identity mid-window fails loudly instead
+        // of being killed unseen. The cursor is never persisted — conn-scoped
+        // pull state, detached below either way. Without a known generation
+        // there is nothing to gate on, so the attach stays cursorless and
+        // pays the full replay; that is the honest fallback (see
+        // `stop_tail_cursor`), not a second clever cursor.
+        let temporary = self.attachments.insert(
+            session_id,
+            stop_tail_cursor(self.attachments.generation_for(session_id)),
+            sink,
+        );
+        if let Err(error) = self.attachments.bind(client, temporary) {
+            self.attachments.remove(temporary);
+            // The roster removes unbound entries for terminal sessions without
+            // this lock, so a push that landed between the insert and the
+            // bind reads as a protocol error. If the roster now shows this
+            // session terminal or gone, its process is already dead — the
+            // stop's postcondition holds, and success is the true answer.
+            if Self::stop_already_achieved(&self.attachments, session_id) {
+                return Ok(());
+            }
+            return Err(error);
+        }
+        let stop = client.session_stop_with_subscription(session_id, temporary);
+        // Best effort: the stop already happened or already failed, and a
+        // detach failure must not rewrite that answer — least of all into a
+        // success. The local entry is always dropped; a daemon-side leftover
+        // observer dies with the connection and holds a sink that discards.
+        let detach = client.session_detach_with_subscription(session_id, temporary);
+        self.attachments.remove(temporary);
+        stop?;
+        let _ = detach;
+        Ok(())
+    }
+
+    /// True when stopping is pointless because the process is already dead:
+    /// the roster shows the session terminal, or does not show it at all.
+    /// No roster yet means no evidence — that stays an error, never a guess.
+    fn stop_already_achieved(attachments: &AttachmentRegistry, session_id: &str) -> bool {
+        let state = attachments
+            .state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let Some(roster) = state.roster.as_ref() else {
+            return false;
+        };
+        match roster.get(session_id) {
+            None => true,
+            Some(snapshot) => terminal_event(&snapshot.state).is_some(),
+        }
+    }
+}
+
+/// The cursor a stop's temporary attach carries: the tail when the
+/// generation is known, nothing when it is not. `u64::MAX` is not a guess at
+/// the tail — it is past any tail, which is exactly what the replay driver
+/// needs to send nothing (`cursor >= watermark` short-circuits before any
+/// page is fetched). Unknown generation stays cursorless: inventing one
+/// would fail loudly at best, and the full replay it pays is honest.
+fn stop_tail_cursor(generation: Option<u64>) -> Option<Cursor> {
+    generation.map(|generation| Cursor {
+        generation,
+        seq: u64::MAX,
+    })
 }
 
 #[tauri::command]
@@ -1605,6 +1788,117 @@ mod tests {
     use devboule_protocol::{SessionKind, SessionState, SessionStateSnapshot};
     use std::collections::HashSet;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn stop_attach_asks_for_nothing_after_everything_when_generation_known() {
+        let cursor = stop_tail_cursor(Some(3)).expect("a known generation carries a cursor");
+        assert_eq!(cursor.generation, 3);
+        assert_eq!(cursor.seq, u64::MAX);
+    }
+
+    #[test]
+    fn stop_attach_stays_cursorless_without_a_generation() {
+        // No generation, no gate: inventing one would fail the daemon's
+        // generation check at best, so the attach pays the full replay.
+        assert_eq!(stop_tail_cursor(None), None);
+    }
+
+    fn bind_attachment(registry: &AttachmentRegistry, subscription_id: SubscriptionId) {
+        registry
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .get_mut(&subscription_id)
+            .expect("inserted attachment is registered")
+            .binding = Some(1);
+    }
+
+    fn set_roster(registry: &AttachmentRegistry, snapshots: Vec<SessionStateSnapshot>) {
+        registry
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .roster = Some(
+            snapshots
+                .into_iter()
+                .map(|snapshot| (snapshot.id.clone(), snapshot))
+                .collect(),
+        );
+    }
+
+    fn stop_test_snapshot(id: &str, state: SessionState) -> SessionStateSnapshot {
+        SessionStateSnapshot {
+            id: id.to_string(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
+            title: id.to_string(),
+            state,
+            elapsed_ms: None,
+            attention: None,
+            origin: devboule_protocol::SessionOrigin::local(),
+            display_name: None,
+            created_by: None,
+            profile_id: None,
+            context_id: None,
+            unattended: devboule_protocol::UnattendedState::Unknown,
+            labels: std::collections::BTreeMap::new(),
+            delegation: None,
+        }
+    }
+
+    #[test]
+    fn stop_reuse_prefers_the_newest_bound_attachment() {
+        let registry = AttachmentRegistry::default();
+        let sink: AttachmentSink = Arc::new(|_| {});
+        let first = registry.insert("s.1", None, Arc::clone(&sink));
+        let second = registry.insert("s.1", None, Arc::clone(&sink));
+        registry.insert("s.2", None, sink);
+        // Nothing bound yet: entries a deferred reattach left behind cannot
+        // serve the daemon's observer check, whatever their age.
+        assert_eq!(registry.bound_subscription_for_session("s.1"), None);
+        bind_attachment(&registry, first);
+        assert_eq!(registry.bound_subscription_for_session("s.1"), Some(first));
+        bind_attachment(&registry, second);
+        assert_eq!(registry.bound_subscription_for_session("s.1"), Some(second));
+        assert_eq!(registry.bound_subscription_for_session("s.2"), None);
+        assert_eq!(registry.bound_subscription_for_session("s.9"), None);
+    }
+
+    #[test]
+    fn stop_bind_race_against_a_terminal_roster_is_already_stopped() {
+        let registry = AttachmentRegistry::default();
+        set_roster(
+            &registry,
+            vec![stop_test_snapshot(
+                "s.1",
+                SessionState::Ended {
+                    generation: 1,
+                    code: Some(0),
+                    integrity: devboule_protocol::TranscriptIntegrity::Complete,
+                },
+            )],
+        );
+        // Terminal in the roster, or gone from it: the process is already
+        // dead, so the stop's postcondition holds.
+        assert!(BridgeInner::stop_already_achieved(&registry, "s.1"));
+        assert!(BridgeInner::stop_already_achieved(&registry, "s.gone"));
+    }
+
+    #[test]
+    fn stop_bind_race_without_evidence_stays_an_error() {
+        let registry = AttachmentRegistry::default();
+        // No roster yet is no evidence — never a guess.
+        assert!(!BridgeInner::stop_already_achieved(&registry, "s.1"));
+        set_roster(
+            &registry,
+            vec![stop_test_snapshot(
+                "s.1",
+                SessionState::Live { generation: 1 },
+            )],
+        );
+        assert!(!BridgeInner::stop_already_achieved(&registry, "s.1"));
+    }
 
     #[derive(Default)]
     struct FakeAttachmentClient {

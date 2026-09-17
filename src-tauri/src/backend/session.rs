@@ -274,6 +274,22 @@ pub fn session_close(
     Ok(())
 }
 
+/// Stops a session's running process but keeps the session: id, scrollback,
+/// metadata. Same argument shape as `session_close` — a live subscription
+/// when the caller holds one, nothing when the tab was never attached — but
+/// no `forget_generation`: the instance died, it was not replaced, so the
+/// generation is unchanged and a reconnecting client must still recognize it.
+#[tauri::command]
+pub fn session_stop(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    subscription_id: Option<SubscriptionId>,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    bridge.session_stop(&id, subscription_id)?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn sessions_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Session>, CommandError> {
     Ok(require_client(&bridge)?.sessions_list()?)
@@ -534,6 +550,18 @@ mod tests {
             String,
             PromptAttachment,
         ) -> Result<AttachmentReference, CommandError> = session_deposit;
+    }
+
+    /// The sibling of `session_close`'s shape: `{ id, subscription_id? }` in,
+    /// nothing out. The optionality is the point — a swiped background tab was
+    /// never attached, so the bridge resolves the subscription itself.
+    #[test]
+    fn session_stop_forwarder_has_the_frozen_tauri_signature() {
+        let _: fn(
+            State<'_, DaemonBridge>,
+            String,
+            Option<SubscriptionId>,
+        ) -> Result<(), CommandError> = session_stop;
     }
 
     fn reference(session_id: &str, digest: &str) -> AttachmentReference {

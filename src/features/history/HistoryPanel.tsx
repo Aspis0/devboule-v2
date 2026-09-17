@@ -27,7 +27,7 @@ interface HistoryRow extends JournalSessionUsage {
   session: Session | null;
 }
 
-const CLOSE_FIRST_REASON = "Close the session before deleting it from history.";
+const CLOSE_FIRST_REASON = "Archive the session before deleting it from history.";
 const EMPTY_SESSIONS: Session[] = [];
 
 export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPanelProps) {

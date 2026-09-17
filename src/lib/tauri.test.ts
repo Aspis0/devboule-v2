@@ -24,6 +24,7 @@ import {
   sessionAttach,
   sessionClaim,
   sessionClose,
+  sessionStop,
   sessionDetach,
   sessionDeposit,
   sessionInterrupt,
@@ -562,6 +563,38 @@ describe("create and attach command wrappers", () => {
     // id alone.
     expect(invoke).toHaveBeenCalledWith("session_close", { id: "s.owner.1" });
     expect(vi.mocked(invoke).mock.calls[0]?.[1]).not.toHaveProperty("subscriptionId");
+  });
+});
+
+describe("stop command wrapper", () => {
+  it("passes the subscription id when stopping an attached session", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionStop("s.owner.1", 41);
+
+    expect(invoke).toHaveBeenCalledWith("session_stop", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+    });
+  });
+
+  it("omits the subscription when stopping a session that never had one", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionStop("s.owner.1");
+
+    // Same absent-not-undefined rule as close: a swiped background tab was
+    // never attached, and the bridge resolves the subscription itself.
+    expect(invoke).toHaveBeenCalledWith("session_stop", { id: "s.owner.1" });
+    expect(vi.mocked(invoke).mock.calls[0]?.[1]).not.toHaveProperty("subscriptionId");
+  });
+
+  it("pins the wire keys of the stop command", () => {
+    // The structural parity test compares this with the Rust signature; a
+    // rename on either side has to fail here first.
+    expect(COMMAND_ARG_KEYS.session_stop).toEqual(["id", "subscriptionId"]);
   });
 });
 

@@ -65,6 +65,7 @@ pub fn run() {
             backend::session::session_permission_respond,
             backend::session::session_resize,
             backend::session::session_close,
+            backend::session::session_stop,
             backend::journal::journal_usage,
             backend::journal::journal_retention_get,
             backend::journal::journal_retention_set,

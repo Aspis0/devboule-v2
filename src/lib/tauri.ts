@@ -136,6 +136,7 @@ export type CommandArgs = {
   session_resize: { id: Id; subscriptionId: SubscriptionId; cols: number; rows: number };
   session_detach: { subscriptionId: SubscriptionId };
   session_close: { id: Id; subscriptionId?: SubscriptionId };
+  session_stop: { id: Id; subscriptionId?: SubscriptionId };
   journal_usage: undefined;
   journal_retention_get: undefined;
   journal_retention_set: RetentionPatch;
@@ -209,6 +210,7 @@ type CommandResults = {
   session_resize: void;
   session_detach: void;
   session_close: void;
+  session_stop: void;
   journal_usage: JournalUsage;
   journal_retention_get: JournalRetention;
   journal_retention_set: JournalRetention;
@@ -342,6 +344,7 @@ export const COMMAND_ARG_KEYS = {
   session_resize: ["id", "subscriptionId", "cols", "rows"],
   session_detach: ["subscriptionId"],
   session_close: ["id", "subscriptionId"],
+  session_stop: ["id", "subscriptionId"],
   journal_usage: [],
   journal_retention_get: [],
   journal_retention_set: ["maxAgeMs", "maxBytes", "maxSessions", "sessionMaxBytes"],
@@ -615,6 +618,19 @@ export const sessionDetach = (subscriptionId: SubscriptionId) =>
  */
 export const sessionClose = (id: Id, subscriptionId?: SubscriptionId) =>
   invokeTyped("session_close", {
+    id,
+    ...(subscriptionId === undefined ? {} : { subscriptionId }),
+  });
+/**
+ * Stops a session's running process and keeps everything else: id,
+ * scrollback, metadata. The tab-strip archive path. The subscription is
+ * optional for the same reason `sessionClose` takes one: a swiped background
+ * tab was never attached, so the bridge reuses a live attachment for the
+ * session or attaches briefly itself. Close destroys the session; stop only
+ * ends its process — the session becomes an ordinary History row.
+ */
+export const sessionStop = (id: Id, subscriptionId?: SubscriptionId) =>
+  invokeTyped("session_stop", {
     id,
     ...(subscriptionId === undefined ? {} : { subscriptionId }),
   });

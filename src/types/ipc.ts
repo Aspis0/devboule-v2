@@ -406,9 +406,11 @@ export interface Session {
   /**
    * Unix milliseconds when the session was first created, stable across
    * resume. Pair it with `id` to tell "my saved id still means this session"
-   * from "this id was reissued": ids are `s.{clientPid}.{counter}` where the
-   * counter restarts at 1 on every daemon run and the PID comes from an OS
-   * that recycles them, so an id alone is unique today but not durable.
+   * from "same id, different session": ids embed a per-daemon-process
+   * random nonce beside the counter (`session_unique`), so two lives of the
+   * daemon cannot mint the same id — but resume deliberately reuses both the
+   * id and this stamp, which is what makes the pair an identity check rather
+   * than a timestamp. A row sharing only the id never matches.
    *
    * Optional here and never optional on the wire: every session from
    * `sessionsList` has it. It is absent only on a session this frontend

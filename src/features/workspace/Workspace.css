@@ -2333,3 +2333,150 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* Session tab swipe: the act is named underneath, revealed as the tab slides.
+   Archive sits right (right-to-left drag), delete sits left — and delete reads
+   heavier, because one keeps the messages and the other destroys them. */
+.session-swipe {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.session-swipe-underlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.session-swipe-underlay-archive {
+  right: 0;
+  left: 0;
+  justify-content: flex-end;
+  padding-right: 10px;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+}
+
+.session-swipe-underlay-delete {
+  right: 0;
+  left: 0;
+  justify-content: flex-start;
+  padding-left: 10px;
+  background: var(--terracotta-deep);
+  color: #fff;
+}
+
+.session-swipe-content {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  touch-action: pan-y;
+  will-change: transform;
+}
+
+/* The keyboard and screen-reader path to the same two acts. Absolutely
+   positioned so the row reserves no layout for them: measured in WebView2,
+   the in-flow version held ~100 px of blank space per tab. Visible on hover
+   and whenever focus is inside the row, so a keyboard user tabs into a
+   visible control; hidden state is unreachable by pointer (visibility) and
+   announces nothing extra (the buttons' own labels say it all). */
+.session-swipe-actions {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-50%);
+  transition:
+    opacity 150ms ease-out,
+    visibility 150ms;
+}
+
+.session-swipe:hover .session-swipe-actions,
+.session-swipe:focus-within .session-swipe-actions {
+  opacity: 1;
+  visibility: visible;
+}
+
+.workspace-tab-archive,
+.workspace-tab-delete {
+  padding: 1px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.workspace-tab-delete {
+  border-color: var(--terracotta);
+  color: var(--terracotta-deep);
+}
+
+/* The undo window: future tense, because the daemon call has not fired yet. */
+.pending-undo-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: var(--surface-muted);
+  font-size: 12px;
+}
+
+.pending-undo-bar-delete {
+  background: var(--terracotta-deep);
+  color: #fff;
+}
+
+.pending-undo-action {
+  flex: none;
+  padding: 1px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* A non-error notice sharing the error banner's shape: duplicates and
+   other spoken-but-harmless states. Neutral border and ink — terracotta
+   would report a failure that did not happen. */
+.workspace-session-notice {
+  border-color: var(--border-strong);
+  color: var(--ink-soft);
+}
+
+.workspace-session-notice .workspace-session-error-dismiss {
+  color: var(--ink-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-swipe-content {
+    transition: none !important;
+  }
+  .session-swipe-actions {
+    transition: none;
+  }
+}

@@ -1,17 +1,20 @@
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { HistoryPanel } from "../history/HistoryPanel";
+import { SessionTabSwipe } from "./SessionTabSwipe";
+import { PendingUndoBar } from "./PendingUndoBar";
+import {
+  UNDO_WINDOW_MS,
+  isPendingActionMoot,
+  pruneDismissed,
+  verifyPendingRecord,
+  type PendingSessionAction,
+  type PendingSessionKind,
+} from "./pendingSessionActions";
+import { claimStartupRecovery, sharedPendingScheduler } from "./pendingSessionScheduler";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { startPresenceReporting, type PresenceReporter } from "./presence";
 import { createDaemonRecovery } from "./daemonRecovery";
@@ -54,7 +57,14 @@ import type {
 } from "../../types/ipc";
 import type { DelegationBadge } from "./workspaceSessions";
 import { isAgentKind } from "../../types/ipc";
-import { daemonRestart, devicesList, providersList, reasonFromCause } from "../../lib/tauri";
+import {
+  daemonRestart,
+  devicesList,
+  providersList,
+  reasonFromCause,
+  sessionClose,
+  sessionStop,
+} from "../../lib/tauri";
 import "./Workspace.css";
 
 type ActiveSidePanel = SidePanelEntry["id"];
@@ -200,6 +210,119 @@ export function Workspace({
   useEffect(() => {
     setSessionFacts(sessions);
   }, [sessions, setSessionFacts]);
+  // Pending archive/delete intents: the swipe schedules, the daemon call
+  // fires only when UNDO_WINDOW_MS expires (see pendingSessionActions.ts).
+  // The scheduler is app-lifetime, not per-mount: its timers survive a
+  // surface switch, so leaving for Settings neither fires early nor loses
+  // the countdown. Only `beforeunload` flushes.
+  const rawFireAction = useCallback(
+    (action: PendingSessionAction) =>
+      action.kind === "archive" ? sessionStop(action.id) : sessionClose(action.id),
+    [],
+  );
+  const [pendingScheduler] = useState(() =>
+    sharedPendingScheduler(
+      rawFireAction,
+      typeof localStorage !== "undefined" ? localStorage : null,
+    ),
+  );
+  useEffect(() => {
+    pendingScheduler.setFire(rawFireAction);
+  }, [pendingScheduler, rawFireAction]);
+  const pendings = useSyncExternalStore(pendingScheduler.subscribe, pendingScheduler.getSnapshot);
+  const settled = useSyncExternalStore(
+    pendingScheduler.subscribe,
+    pendingScheduler.getSettledSnapshot,
+  );
+  const pendingError = useSyncExternalStore(
+    pendingScheduler.subscribe,
+    pendingScheduler.getErrorSnapshot,
+  );
+  // A gesture that does nothing must say so: the tab hides a beat after the
+  // click lands (state, then paint), so a fast second click can arrive while
+  // the first intent is still armed and the duplicate dies silently.
+  const [pendingNotice, setPendingNotice] = useState<string | null>(null);
+  const pendingIds = useMemo(() => new Set(pendings.map((action) => action.id)), [pendings]);
+  // A dismissed tab stays out of the strip while its own row is still
+  // reported. The stamp is the point: a row that ever reappeared under the
+  // same id with another creation time would be a different session and
+  // must show.
+  const visibleSessions = useMemo(
+    () =>
+      sessions.filter(
+        (session) =>
+          !pendingIds.has(session.id) &&
+          (!settled.has(session.id) || settled.get(session.id) !== session.createdAtMs),
+      ),
+    [sessions, pendingIds, settled],
+  );
+  const scheduleSessionAction = useCallback(
+    (session: Session, kind: PendingSessionKind) => {
+      const title = sessionTitle(session);
+      const action: PendingSessionAction = {
+        id: session.id,
+        title,
+        kind,
+        ...(session.createdAtMs === undefined ? {} : { createdAtMs: session.createdAtMs }),
+        dueAt: Date.now() + UNDO_WINDOW_MS,
+      };
+      if (pendingScheduler.schedule(action) === "duplicate") {
+        setPendingNotice(
+          kind === "archive"
+            ? `“${title}” is already scheduled for archive. Use Undo to cancel it.`
+            : `“${title}” is already scheduled for delete. Use Undo to cancel it.`,
+        );
+        return;
+      }
+      setPendingNotice(null);
+    },
+    [pendingScheduler],
+  );
+  const undoPendingAction = useCallback(
+    (id: string) => {
+      if (pendingScheduler.cancel(id) === null) return;
+      setPendingNotice(null);
+    },
+    [pendingScheduler],
+  );
+  // An archived-then-ended session needs no stop; the tab stays hidden.
+  // Delete is never settled here (see `isPendingActionMoot`).
+  useEffect(() => {
+    const rows = new Map(sessions.map((session) => [session.id, session]));
+    for (const action of pendingScheduler.pending()) {
+      if (isPendingActionMoot(action, rows.get(action.id) ?? null)) {
+        pendingScheduler.cancel(action.id);
+      }
+    }
+    // Settled entries the strip no longer needs: a confirmed row is gone.
+    const pruned = pruneDismissed(pendingScheduler.getSettledSnapshot(), sessions, (id) =>
+      pendingScheduler.has(id),
+    );
+    if (pruned !== null) pendingScheduler.replaceSettled(pruned);
+  }, [sessions, pendingScheduler]);
+  // Intents left by a close that won the race against the timer. Re-armed
+  // with a fresh window — never fired blind — and only against a roster
+  // that loaded: `loading:false` with an error is not an empty world, so a
+  // failed load leaves the crash copy for the next successful one.
+  useEffect(() => {
+    if (sessionsLoading || sessionsError) return;
+    if (!claimStartupRecovery()) return;
+    const leftovers = pendingScheduler.loadPersisted();
+    if (leftovers.length === 0) return;
+    pendingScheduler.clearPersisted();
+    for (const record of leftovers) {
+      if (verifyPendingRecord(record, sessions) === null) continue;
+      pendingScheduler.schedule({ ...record, dueAt: Date.now() + UNDO_WINDOW_MS });
+    }
+  }, [sessionsLoading, sessionsError, sessions, pendingScheduler]);
+  // A pending delete evaporating on close is worse than firing early:
+  // `beforeunload` flushes. A surface switch (unmount) deliberately does
+  // not — the timers belong to the app's lifetime and keep running.
+  useEffect(() => {
+    const flush = () => pendingScheduler.flushAll();
+    window.addEventListener("beforeunload", flush);
+    return () => window.removeEventListener("beforeunload", flush);
+  }, [pendingScheduler]);
   // An unknown id means persisted state points to a removed panel, including a plugin that is no
   // longer loaded. Keep that id so the fallback is not shown as the user's selected option; use
   // the first available entry only because rendering safe panel content is better than a blank side panel.
@@ -850,7 +973,7 @@ export function Workspace({
 
       <main className="workspace-center-panel">
         <div className="workspace-session-tabs" role="tablist" aria-label="Sessions">
-          {sessions.map((session) => {
+          {visibleSessions.map((session) => {
             const originBadge = sessionOriginBadge(session, peerNames);
             // A badge for a session the daemon described as a peer's, or the
             // unknown one for a session it did not describe at all. The two are
@@ -873,8 +996,21 @@ export function Workspace({
             // The take-back lives on the row that can act, beside its pill:
             // qualifying rows only, while the one switch is on.
             const rowTakeBack = takeBackAvailable && sessionDelegationTakeBack(session);
+            // Two directions, two acts: right-to-left archives (the process
+            // stops, every message stays), left-to-right deletes (the session
+            // is destroyed). Both schedule — the daemon call fires only when
+            // the undo window expires — and both have the named buttons below
+            // as their keyboard and screen-reader path.
+            const tabTitle = sessionTitle(session);
+            const archiveLabel = isAgentKind(session.kind)
+              ? `Archive ${tabTitle}. This will archive 1 agent. The process stops; every message stays in History.`
+              : `Archive ${tabTitle}. Any running process in this terminal will be stopped. Every message stays in History.`;
+            const deleteLabel = `Delete ${tabTitle}. Destroys the session and stops its running process immediately.`;
             return (
-              <Fragment key={session.id}>
+              <SessionTabSwipe
+                key={session.id}
+                onCommit={(direction) => scheduleSessionAction(session, direction)}
+              >
                 <button
                   type="button"
                   role="tab"
@@ -929,6 +1065,26 @@ export function Workspace({
                     </span>
                   ) : null}
                 </button>
+                <span className="session-swipe-actions">
+                  <button
+                    type="button"
+                    className="workspace-tab-archive"
+                    aria-label={archiveLabel}
+                    title={archiveLabel}
+                    onClick={() => scheduleSessionAction(session, "archive")}
+                  >
+                    Archive
+                  </button>
+                  <button
+                    type="button"
+                    className="workspace-tab-delete"
+                    aria-label={deleteLabel}
+                    title={deleteLabel}
+                    onClick={() => scheduleSessionAction(session, "delete")}
+                  >
+                    Delete
+                  </button>
+                </span>
                 {rowTakeBack ? (
                   <button
                     type="button"
@@ -944,7 +1100,7 @@ export function Workspace({
                     Take back
                   </button>
                 ) : null}
-              </Fragment>
+              </SessionTabSwipe>
             );
           })}
           <div
@@ -966,6 +1122,38 @@ export function Workspace({
           <span className="workspace-tabs-spacer" />
           <span className="workspace-rate">{sessionStatusText}</span>
         </div>
+
+        {pendings.map((pending) => (
+          <PendingUndoBar key={pending.id} pending={pending} onUndo={undoPendingAction} />
+        ))}
+        {pendingNotice !== null ? (
+          <div className="workspace-session-error workspace-session-notice" role="status">
+            <span className="workspace-session-error-text">{pendingNotice}</span>
+            <button
+              type="button"
+              className="workspace-session-error-dismiss"
+              onClick={() => setPendingNotice(null)}
+              aria-label="Dismiss notice"
+              title="Dismiss notice"
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
+        {pendingError !== null ? (
+          <div className="workspace-session-error" role="alert">
+            <span className="workspace-session-error-text">{pendingError}</span>
+            <button
+              type="button"
+              className="workspace-session-error-dismiss"
+              onClick={() => pendingScheduler.reportError(null)}
+              aria-label="Dismiss error"
+              title="Dismiss error"
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
 
         {sessionsError !== null ? (
           <div className="workspace-session-error" role="alert">

@@ -322,7 +322,7 @@ describe("HistoryPanel", () => {
     expect(container.textContent).not.toContain("The history limit removed");
   });
 
-  it("disables delete for a joined live session with a close-first explanation", async () => {
+  it("disables delete for a joined live session with an archive-first explanation", async () => {
     const usage = baseUsage();
     usage.perSession = [usage.perSession[0]];
     await renderPanel(usage, [
@@ -331,7 +331,7 @@ describe("HistoryPanel", () => {
         state: { type: "live", generation: 1 },
       },
     ]);
-    const label = "Close the session before deleting it from history.";
+    const label = "Archive the session before deleting it from history.";
     const button = buttonByLabel(label);
     expect(button.disabled).toBe(true);
     expect(button.title).toBe(label);
