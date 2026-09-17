@@ -318,6 +318,22 @@ impl ServerState {
                 state.broadcast_session_state(&owner);
             }
         }));
+        // The quiet sweep: one notice per quiet spell, never an action. A
+        // minute cadence divides the 20-minute threshold twenty times; the
+        // thread dies with the state (a failed upgrade ends the loop).
+        let state_for_quiet = Arc::downgrade(&state);
+        if let Err(error) = std::thread::Builder::new()
+            .name("session-quiet-sweep".to_string())
+            .spawn(move || loop {
+                std::thread::sleep(crate::agent_activity::QUIET_SWEEP_INTERVAL);
+                let Some(state) = state_for_quiet.upgrade() else {
+                    return;
+                };
+                state.sessions.sweep_quiet_children(Instant::now());
+            })
+        {
+            eprintln!("could not start quiet sweeper: {error}");
+        }
         Ok(state)
     }
 

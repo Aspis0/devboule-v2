@@ -76,6 +76,13 @@ impl AgentReportState {
         self.last.as_ref()
     }
 
+    /// Headline hook facts without the transcript: state plus the hook's own
+    /// seq. The message stays in the journaled event; the activity answer
+    /// carries metadata only.
+    pub fn last_state(&self) -> Option<(AgentActivityState, Option<u64>)> {
+        self.last.as_ref().map(|last| (last.state, last.seq))
+    }
+
     /// Apply `report` if its `seq` is fresh for `report.source`. Returns
     /// whether the accepted state changed.
     pub fn apply(&mut self, report: AgentReport) -> Result<bool, WireError> {

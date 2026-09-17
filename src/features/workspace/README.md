@@ -34,6 +34,33 @@ What is wired and what is not:
 History lives in the left sidebar footer beside the daemon status. It is a
 separate journal log view, not terminal screen restore.
 
+## The tab strip
+
+The strip carries live and silent sessions and **recovered** ones as well
+(`workspaceSessions.ts`). A recovered session is one whose daemon died: showing
+it costs nothing, because attaching to it is reading — replay from the journal,
+no process — so it comes back on its own, in a diminished state with the
+transcript readable and the composer disabled behind a reason. Resuming it is a
+separate click, and only for the families the daemon says are resumable
+(`Session.resumable`, never re-derived here). Ended sessions stay in History:
+there is nothing for them to come back to.
+
+Swiping a tab reveals the act underneath — archive to the right, delete to the
+left — and commits it past `SWIPE_COMMIT_PX`. Neither act calls the daemon.
+`pendingSessionActions.ts` records the intent, the tab disappears, and one undo
+window of `UNDO_WINDOW_MS` opens; the IPC fires only when it expires. Three
+rules in that file are load-bearing:
+
+- Capture happens when the press becomes a **drag**, never on `pointerdown`.
+  Capturing on press retargets WebView2's compatibility mouse events and the
+  click never reaches the tab button inside.
+- The scheduler lives **above** the surface that unmounts. A flush in an
+  unmount cleanup would fire the destructive act every time the user navigates
+  to Settings; only `beforeunload` is the app closing.
+- An intent is keyed by the session's **generation**, not by its id. A row that
+  died and came back is not the row the swipe was taken against, so the intent
+  is voided rather than applied to a different instance.
+
 ## Terminal lifecycle
 
 The terminal session is created when the terminal view mounts. A runtime-only

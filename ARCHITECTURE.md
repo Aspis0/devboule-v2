@@ -153,8 +153,16 @@ tree, so "closing the last window quits the app" is not something this code show
    `Ended` / `Recovered` with a transcript-integrity verdict (`journal.rs:398-418`); the replay emits
    `Recovered` and no exit event (`journal_replay.rs:374-392`). The transcript is then replayed from
    the journal on attach (§3). Starting the provider again is an explicit, separate act: `resume` is
-   the only path, and it is ACP-only today — `resume_handle` refuses Codex outright and says Pi is
-   deliberately excluded "until Pi resume is designed end to end" (`session.rs:3388`, `:8039-8065`).
+   the only path, and the gate admits **two** families — ACP and Claude
+   (`resume_handle`, `session.rs:9500`; the per-family fact is `Provider::resumable`,
+   `provider.rs:240`, answered `true` by `AcpProvider` and `ClaudeProvider` and `false` by Pi, Codex
+   and Terminal). Codex is refused outright and Pi is deliberately excluded "until Pi resume is
+   designed end to end" — pi can resume on its own wire, so that exclusion is a decision, not a
+   limitation. Claude resumes by handing the CLI back its own history: the daemon finds the
+   transcript file for the provider's session id under the Claude home, refuses with a named error
+   when it is not there, and passes `--resume` (`claude_client.rs:390`, `:411`, `:429`). The id it
+   builds that path from is validated against a closed alphabet first, because a session id that
+   could contain a separator is a path that could leave its root.
 
 **The daemon can outlive the app.** Because the idle exit requires `sessions == 0` (`server.rs:415`),
 a daemon whose app went away without delivering `Shutdown` — a kill, a crash — keeps running with its
@@ -185,9 +193,17 @@ process actually received, a kind, a title, the provider and the provider's own 
 exist, a state, and the two provenance fields — `origin` (local or a paired device, with the role it
 was paired as) and `created_by` (the agent that created it, daemon-written and deliberately absent
 from the create request so no client can claim a parent). The struct is
-`crates/devboule-protocol/src/session.rs:177-236`, and its field comments are the contract: `cwd` is
-display-only and never a filesystem key (`:180-186`), and an absent `origin` on the wire means `Local`
-while a NULL `origin_kind` in the journal means `Unknown`, which grants a peer nothing (`:206-219`).
+`crates/devboule-protocol/src/session.rs:207-322`, and its field comments are the contract: `cwd` is
+display-only and never a filesystem key (`:210-216`), and an absent `origin` on the wire means `Local`
+while a NULL `origin_kind` in the journal means `Unknown`, which grants a peer nothing (`:244-250`).
+
+One field is an answer rather than a property: `resumable` (`:314-321`). The daemon decides whether a
+row can be started again and says so on the wire; the app never re-derives it from kind, state or
+columns, and `#[serde(default)]` makes a frame from an older daemon read back as `false`, so the
+button stays hidden rather than offered on a guess. The single source is `session_resumable`
+(`crates/devboule-daemon/src/provider.rs:318`), which answers `true` only when four things hold at
+once: the session is not live, its family is resumable, and both the provider id and the provider's
+own session id are present and non-empty.
 
 **Kinds.** Five, serialised as `snake_case` (`crates/devboule-protocol/src/session.rs:17-23`):
 `Terminal`, `Acp`, `Claude`, `Pi`, `Codex`. `is_agent()` is true for all but `Terminal` (`:34-43`).
@@ -195,12 +211,18 @@ Session ids are composed, not random: `s.<first 16 chars of the owner token>.<un
 (`crates/devboule-protocol/src/ids.rs:59-71`). That middle segment looks like an owner and is not one;
 §8 records where that once mattered.
 
-**State.** Four states (`crates/devboule-protocol/src/session.rs:313-341`): `Live { generation }`,
+**State.** Four states (`crates/devboule-protocol/src/session.rs:460-485`): `Live { generation }`,
 `Silent { generation }` (still running, no output for the silence threshold — never an exit),
 `Ended { generation, code, integrity }` (the process exited while this daemon was alive) and
-`Recovered { generation, integrity }` (the daemon that owned the process is gone; replay only). The
-silence threshold is 300 s (`crates/devboule-daemon/src/session.rs:182`) and it produces a banner
-event, not a kill (`crates/devboule-daemon/src/session_runtime.rs:1779-1783`).
+`Recovered { generation, integrity }` (the daemon that owned the process is gone). The silence
+threshold is 300 s (`crates/devboule-daemon/src/session.rs:200`) and it produces a banner event, not a
+kill (`crates/devboule-daemon/src/session_runtime.rs:1916`).
+
+`Recovered` used to mean "replay only". It no longer does: the variant's own doc now reads "replay
+always; resume when the family is resumable" (`session.rs:475`). Replay is free — journal bytes, no
+process — so it happens by itself; resume allocates a process and stays a deliberate act. Every state
+carries a `generation`, and that is what lets a deferred intent belong to an *instance* of a session
+rather than to its id: a row that died and came back is not the row the intent was taken against.
 
 **The journal.** SQLite in WAL mode at `<runtime dir>/journal.db`, beside the lock file
 (`crates/devboule-daemon/src/paths.rs:51-55`), schema version 10
@@ -225,6 +247,28 @@ daemon died during drain — and any other `live` row becomes `interrupted`
 replay emits `SessionEvent::Recovered` in place of an exit event
 (`journal_replay.rs:374-392`). `Recovered` therefore means "the process was lost unobserved", which is
 a stronger and more honest claim than "the session ended".
+
+**Three ways a session stops being on your screen, and they are not the same act.** `SessionDetach`
+gives up one subscription and leaves everything running (`messages.rs:255`). `SessionStop` kills the
+process and **keeps the session and its transcript** (`:272`); it carries a `subscription_id` because
+the caller must be an observer of the session it is stopping. `SessionClose` destroys the session
+(`:266`), and it carries an idempotency key rather than a subscription, because closing twice must not
+mean closing something else.
+
+`SessionStop` kills the *tree*, not the root. After `killer.kill()` the daemon also calls
+`job.terminate()` on the session's own Job Object (`session.rs:4801`, `:4847`), because the session is
+being preserved and its job therefore stays open — nothing else would reap the descendants a CLI left
+behind. This mirrors what the on-OS-death handler already did (`:8874`). A killed-but-kept session is
+the one the app calls *archive*: the row and its transcript survive, the process does not.
+
+**The wire names who wrote a user message.** `UserMessageAuthor`
+(`crates/devboule-protocol/src/session.rs:1364`) is `human`, `agent` or `creation`, and it is neither
+the session's `origin` (where the session came from) nor the envelope's `role`/`from_agent` (the
+delivery's connection facts): it names whose words the echo carries. `creation` is its own value even
+when a human wrote the initial text, because that line is daemon-composed — standing instructions plus
+preamble plus prompt. The app renders by this field and never re-derives authorship from the text;
+absent predates the field and reads as `human`.
+
 
 **Retention.** Four limits, all configurable, with these defaults
 (`crates/devboule-daemon/src/journal.rs:72-83`): 512 MiB per session, 8 GiB total, 10 000 sessions,
@@ -460,7 +504,7 @@ provider, never read from the client (`:236-239`). It is registered for `Session
 agent gets no MCP tools today; the catalog says so and keeps the cells anyway, "so adding a non-ACP
 transport does not silently change a decision" (`provider_catalog.rs:440-446`).
 
-**Three tools**, in `tools/list` order, from one table that the Settings panel reads too, so the panel
+**Seven tools**, in `tools/list` order, from one table that the Settings panel reads too, so the panel
 and the wire cannot disagree (`provider_catalog.rs:194-212`):
 
 | Tool | Names | Disableable by policy? |
@@ -468,6 +512,10 @@ and the wire cannot disagree (`provider_catalog.rs:194-212`):
 | `devboule_list_agents` | the roster: siblings, their state, their creator, their depth | **No** — an agent that cannot list its siblings cannot be steered at all (`:214-217`) |
 | `devboule_send_message` | send to one live session | Yes |
 | `devboule_create_agent` | create a child from a preset and give it an initial prompt | Yes, deliberately (`:219-226`) |
+| `devboule_list_profiles` | the ticked profiles agents may create from | **No** — without it creation is undiscoverable |
+| `devboule_answer_permission` | answer one delegated permission card | Yes |
+| `devboule_set_agent_profile` | move a child onto a ticked profile | Yes |
+| `devboule_agent_activity` | one agent's derived activity plus recent kinds, metadata only | Yes |
 
 **The creation call.** The caller is the session whose bearer authenticated the connection — "there is
 no `from_session` parameter to lie about" (`mcp_broker.rs:1108-1110`). The order is fixed and stated
@@ -560,9 +608,31 @@ child's whole last `AgentMessage` into the **creator's** folder (`:4246`) as mar
 `agent-finished.md` (`:4260-4264`), refusing anything over the artifact cap (`:4254`). The artifact is
 named by reference and never by path: `devboule-attachment:<sessionId>/<digest>` (`:4269-4272`), which
 is exactly the reference type the wire carries (`FinishArtifact { artifact_id, parts }`,
-`crates/devboule-protocol/src/session.rs:461-495`; the event at `:651`). The Design surface records a
+`crates/devboule-protocol/src/session.rs:669-672`, its parts at `:644-659`; the event at `:853`). The Design surface records a
 finished child in history by that reference rather than a second copy
 (`src/features/design/childFinishedHistory.ts:80`).
+
+**Supervision: what a creator can see, and one notice it is sent.** `devboule_agent_activity` answers
+for one live agent of the same owner — the roster's scope, because reading is not destroying and the
+roster already lists them. The answer is metadata only: the derived headline (`working` / `idle` /
+`blocked` / `unknown`), the hook's own last state beside it, the idle age, and a bounded tail of
+recent event *kinds* with their sequence numbers and timestamps. No transcript text, ever. The
+headline is derived from facts the daemon holds — liveness, a running turn, a parked permission card
+— and never merged with the hook map, which keeps its own `seq` discipline
+(`crates/devboule-daemon/src/agent_activity.rs`). The recent tail is an in-memory ring of 64 marks,
+not a journal query: the read takes two locks and touches no rows.
+
+A child that has been *working* with nothing published for `CHILD_QUIET_AFTER` (20 minutes) earns its
+creator one envelope, `kind: agent_quiet`, once per quiet spell; movement re-arms it. It is a notice
+and never an action: the child's turn, its cards and its brakes are untouched, and the test asserts
+exactly that. This is also why it is delivered without steering. A steer's *refusal* path is an
+interrupt, and an ACP creator cannot take a steer (`acp_client.rs` does not override `clone_steerer`),
+so routing a routine notice through the steer path would have cancelled the creator's own turn and
+dropped its pending cards — the most destructive act in the system, on the wrong session, every twenty
+minutes. `deliver_notice_to_creator` exists so that cannot be reached by passing the wrong boolean.
+What the notice cannot tell you is stated in the code: a model thinking hard, a long build and a
+wedged process look identical from outside, which is the whole reason it reports and never acts.
+
 
 **Lineage is daemon-written.** `created_by` is deliberately absent from `SessionCreate` so no client
 can claim a parent, and `display_name` is set once at creation and is not renamable
@@ -639,6 +709,25 @@ key to a component in one record (`src/app/App.tsx:101-108`): `pubvia` is a lite
 other five are real surfaces loaded lazily. `Shell.tsx` derives its keyboard reachability from the same
 array, which is what keeps a new surface from having to be registered twice
 (`src/app/Shell.tsx:6`, `:14`).
+
+**What the workspace strip shows, and what a swipe on it means.** The strip carries live and silent
+sessions, and **recovered** ones as well (`src/features/workspace/workspaceSessions.ts:76-86`): a
+recovered row costs nothing to show because attaching to it is reading — replay from the journal, no
+process — so it comes back by itself, in a diminished state with its transcript readable and its
+composer disabled. Ended rows stay in History; they have nothing left to come back to.
+
+A swipe on a tab reveals the act underneath — **Archive to the right, Delete to the left** — and
+releasing past `SWIPE_COMMIT_PX = 90` commits it (`SessionTabSwipe.tsx:1-13`). The gesture never calls
+the daemon. It records an intent, hides the tab, and opens one undo window of `UNDO_WINDOW_MS = 5000`
+(`pendingSessionActions.ts:12`, which owns the only such timer in the tree). Two details are load-
+bearing and were both paid for. Pointer capture is taken when the press becomes a drag, never on
+`pointerdown`: capturing on press retargets WebView2's compatibility mouse events and the click never
+reaches the tab button inside (`SessionTabSwipe.tsx:20-28`). And the deferred intent is owned above
+the surface that can unmount, because a flush in an unmount cleanup would fire the destructive act
+every time the user navigates away — only `beforeunload` is the app closing. The intent is keyed by
+the session's `generation`, so an intent taken against one instance is void if the row died and came
+back.
+
 
 **Per-surface settings are opaque on purpose.** Each surface stores one JSON document at
 `<app_config_dir>/surface-settings/<surfaceId>.json`; the backend never inspects the value's shape — it

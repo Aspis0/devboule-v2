@@ -1328,6 +1328,71 @@ fn handle_rpc(
                         })))
                     }
                 }
+            } else if tool_name == Some(crate::provider_catalog::MCP_ACTIVITY_TOOL) {
+                // Identity is the bearer; the argument names which of the
+                // caller's own live agents to read, by id or display name.
+                // A read like the roster: no new identity and no text, only
+                // timing metadata (idle age, seqs, kind timestamps) the
+                // roster does not show.
+                let arguments = message
+                    .pointer("/params/arguments")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let (session_arg, limit) = match parse_activity_arguments(&arguments) {
+                    Ok(parsed) => parsed,
+                    Err(message) => return Ok(Some(rpc_error(id, -32602, &message))),
+                };
+                let mut candidates = state
+                    .sessions
+                    .live_agent_entries(&registration.owner)
+                    .map_err(|error| {
+                        json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": error.message}})
+                    })?
+                    .into_iter()
+                    .filter(|entry| {
+                        entry.session.id == session_arg
+                            || entry.session.title == session_arg
+                            || entry
+                                .session
+                                .display_name
+                                .as_deref()
+                                .unwrap_or(&entry.session.title)
+                                == session_arg
+                    })
+                    .map(|entry| entry.session.id)
+                    .collect::<Vec<_>>();
+                if candidates.len() > 1 {
+                    return Ok(Some(rpc_error(
+                        id,
+                        -32602,
+                        &format!(
+                            "more than one of your live agents is called '{session_arg}'; use the session id"
+                        ),
+                    )));
+                }
+                let Some(target) = candidates.pop() else {
+                    return Ok(Some(rpc_error(id, -32602, "target agent not found")));
+                };
+                match state
+                    .sessions
+                    .agent_activity(&target, &registration.owner, limit)
+                {
+                    Ok(document) => {
+                        let text = serde_json::to_string(&document).map_err(|error| {
+                            json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": format!("Could not encode agent activity: {error}")}})
+                        })?;
+                        Ok(Some(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{"type": "text", "text": text}],
+                                "structuredContent": document,
+                                "isError": false,
+                            },
+                        })))
+                    }
+                    Err(_) => Ok(Some(rpc_error(id, -32602, "target agent not found"))),
+                }
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -1486,6 +1551,8 @@ fn enabled_tool_list(
                 // named by id or display name, the profile by its name, and
                 // nothing a caller could state as identity is offered at all.
                 crate::provider_catalog::agent_set_profile_input_schema()
+            } else if *name == crate::provider_catalog::MCP_ACTIVITY_TOOL {
+                crate::provider_catalog::agent_activity_input_schema()
             } else {
                 json!({"type": "object", "properties": {}, "additionalProperties": false})
             };
@@ -1539,6 +1606,46 @@ fn agent_value(
         "depth": depth,
         "tools": runtime.tools_state().as_str(),
     })
+}
+
+/// One validated `devboule_agent_activity` call: the child to read plus the
+/// bounded recent-lines limit. The known-parameter check is read out of the
+/// published schema, so the document and the check cannot disagree.
+fn parse_activity_arguments(arguments: &Value) -> Result<(String, usize), String> {
+    let empty = json!({});
+    let arguments = match arguments {
+        Value::Null => &empty,
+        Value::Object(_) => arguments,
+        _ => return Err("arguments must be an object".to_string()),
+    };
+    let object = arguments
+        .as_object()
+        .ok_or_else(|| "arguments must be an object".to_string())?;
+    let known: Vec<String> = crate::provider_catalog::agent_activity_input_schema()["properties"]
+        .as_object()
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default();
+    for key in object.keys() {
+        if !known.iter().any(|known| known == key) {
+            return Err(format!("unknown parameter '{key}'"));
+        }
+    }
+    let session = object
+        .get("session")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "session is required".to_string())?;
+    let limit = match object.get("limit") {
+        None | Some(Value::Null) => crate::agent_activity::clamp_limit(None),
+        Some(Value::Number(n)) => {
+            let n = n
+                .as_u64()
+                .ok_or_else(|| "limit must be an integer 0..50".to_string())?;
+            crate::agent_activity::clamp_limit(Some(n))
+        }
+        Some(_) => return Err("limit must be an integer 0..50".to_string()),
+    };
+    Ok((session.to_string(), limit))
 }
 
 /// One validated `devboule_create_agent` call (`S5` §2, `create-from-profile`).
@@ -3312,6 +3419,201 @@ mod tests {
     }
 
     #[test]
+    fn agent_activity_tool_serves_one_agents_metadata() {
+        let state = ServerState::new("mcp-activity".to_string());
+        let stranger_owner = owner("mcp-stranger-user", "mcp-stranger-client");
+        let owner = owner("mcp-activity-user", "mcp-activity-client");
+        crate::session::insert_test_live_agent(&state.sessions, "activity-caller", owner.clone());
+        let child = crate::session::insert_test_live_agent(
+            &state.sessions,
+            "activity-child",
+            owner.clone(),
+        );
+        child.publish_agent_event(
+            SessionEvent::AgentThought {
+                message_id: None,
+                text: "thinking".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
+            },
+            None,
+        );
+        let guard = state
+            .mcp
+            .register("activity-caller", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("caller MCP guard");
+        let token = state.mcp.test_token("activity-caller").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let listed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        let listed_body = response_json(&listed);
+        let tools = listed_body["result"]["tools"].as_array().expect("tools");
+        let activity = tools
+            .iter()
+            .find(|tool| tool["name"] == crate::provider_catalog::MCP_ACTIVITY_TOOL)
+            .expect("activity is served");
+        assert_eq!(activity["inputSchema"]["required"], json!(["session"]));
+        let response = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"activity-child"}}}"#,
+        );
+        let body = response_json(&response);
+        assert_eq!(body["result"]["isError"], false);
+        let doc = &body["result"]["structuredContent"];
+        assert_eq!(doc["sessionId"], "activity-child");
+        assert_eq!(doc["activity"], "idle");
+        let recent = doc["recent"].as_array().expect("recent");
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0]["kind"], "agent_thought");
+        assert!(
+            recent[0].get("text").is_none(),
+            "kinds only, never transcript text"
+        );
+        assert!(doc.get("summary").is_none());
+        let missing = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"activity-missing"}}}"#,
+        );
+        assert_eq!(response_json(&missing)["error"]["code"], -32602);
+        let bogus = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"activity-child","bogus":1}}}"#,
+        );
+        assert_eq!(response_json(&bogus)["error"]["code"], -32602);
+        // A stranger's session is the same refusal as a missing one: the
+        // daemon cannot and must not say which.
+        crate::session::insert_test_live_agent(
+            &state.sessions,
+            "activity-stranger",
+            stranger_owner,
+        );
+        let stranger = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"activity-stranger"}}}"#,
+        );
+        assert_eq!(response_json(&stranger)["error"]["code"], -32602);
+        // Every test session is titled "Agent": naming the title refuses
+        // with the remedy instead of silently reading the lowest id.
+        let vague = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"Agent"}}}"#,
+        );
+        let vague_body = response_json(&vague);
+        assert_eq!(vague_body["error"]["code"], -32602);
+        assert!(
+            vague_body["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("use the session id")),
+            "ambiguity names the remedy: {}",
+            vague_body["error"]["message"]
+        );
+        // The limit is honored and capped: 0 reads state only, a huge
+        // number stops at the cap.
+        for _ in 0..55 {
+            child.publish_agent_event(
+                SessionEvent::AgentThought {
+                    message_id: None,
+                    text: "thinking".to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                },
+                None,
+            );
+        }
+        let capped = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"activity-child","limit":5000}}}"#,
+        );
+        assert_eq!(
+            response_json(&capped)["result"]["structuredContent"]["recent"]
+                .as_array()
+                .expect("recent")
+                .len(),
+            crate::agent_activity::ACTIVITY_MAX_LIMIT
+        );
+        let state_only = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"activity-child","limit":0}}}"#,
+        );
+        assert!(
+            response_json(&state_only)["result"]["structuredContent"]["recent"]
+                .as_array()
+                .expect("recent")
+                .is_empty()
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    #[test]
+    fn a_stored_policy_can_take_the_activity_tool_away() {
+        // The catalog promises it: supervision is disableable, unlike the
+        // roster and the profile list. A disabled tool is refused before
+        // anything is touched, and vanishes from tools/list.
+        let state = ServerState::new("mcp-activity-policy".to_string());
+        let owner = owner("mcp-activity-policy-user", "mcp-activity-policy-client");
+        crate::session::insert_test_live_agent(&state.sessions, "policy-caller", owner.clone());
+        let guard = state
+            .mcp
+            .register_with_provider(
+                "policy-caller",
+                &owner,
+                &SessionKind::Acp,
+                Some("claude"),
+                AgentLineage::root(),
+            )
+            .expect("registration")
+            .expect("MCP guard");
+        state
+            .tool_policy
+            .set(
+                "claude",
+                Some(true),
+                vec![crate::provider_catalog::MCP_ACTIVITY_TOOL.to_string()],
+            )
+            .expect("policy");
+        let token = state.mcp.test_token("policy-caller").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let listed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        let listed_body = response_json(&listed);
+        let names: Vec<&str> = listed_body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(!names.contains(&crate::provider_catalog::MCP_ACTIVITY_TOOL));
+        let refused = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_agent_activity","arguments":{"session":"policy-caller"}}}"#,
+        );
+        let refused_body = response_json(&refused);
+        assert_eq!(refused_body.pointer("/error/code"), Some(&json!(-32601)));
+        assert_eq!(
+            refused_body.pointer("/error/message"),
+            Some(&json!("Tool disabled by policy"))
+        );
+        drop(guard);
+        drop(server);
+    }
+
+    #[test]
     fn pi_bridge_fetch_hygiene_against_the_real_broker() {
         // S5/Q1 measurement: the bridge's exact header set against the REAL broker,
         // raw bytes. Dual Accept takes the JSON branch (not SSE framing); the
@@ -3397,7 +3699,7 @@ mod tests {
             "notification status: {head}"
         );
         assert!(body.is_empty(), "202 carries no body");
-        // tools/list over the same headers → the six tools as JSON.
+        // tools/list over the same headers → the seven tools as JSON.
         let listed = raw_post(
             &url,
             &headers_ref,
@@ -5150,9 +5452,9 @@ mod tests {
         // And `tools/list` for the same session still reports every tool the
         // session is served: the roster, the profile list this pass adds, the
         // sender slice 4 added, the creation tool slice 5 adds, the delegated
-        // permission answer slice 5b adds, and the profile move Pass A of 5b
-        // adds. Disabling one does not shrink the other rows, which is the
-        // point of this test.
+        // permission answer slice 5b adds, the profile move Pass A of 5b
+        // adds, and the activity read this pass adds. Disabling one does not
+        // shrink the other rows, which is the point of this test.
         let listed = http_request(
             &state.mcp.url,
             Some(&format!("Bearer {token}")),
@@ -5163,7 +5465,7 @@ mod tests {
                 .pointer("/result/tools")
                 .and_then(Value::as_array)
                 .map(|tools| tools.len()),
-            Some(6)
+            Some(7)
         );
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);

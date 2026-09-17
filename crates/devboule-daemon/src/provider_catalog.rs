@@ -211,7 +211,7 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     ),
     (
         MCP_CREATE_AGENT_TOOL,
-        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name.",
+        "Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.",
     ),
     (
         MCP_SET_AGENT_PROFILE_TOOL,
@@ -220,6 +220,10 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
     (
         MCP_ANSWER_PERMISSION_TOOL,
         "Answers one pending permission card of one of your own live children, when the human has turned permission delegation on. The card reaches you as an agent_permission_request notice naming its cardId. outcome is allow_once or deny - never anything durable, and never a card that is not your child's. The human still sees the card either way.",
+    ),
+    (
+        MCP_ACTIVITY_TOOL,
+        "Reads what one live agent session of your own owner has been doing: its current activity (working, idle, blocked or unknown), how long since it last published, and its recent event kinds with timestamps. Metadata only, never transcript text. Name the session by id or display name; limit caps the recent lines (default 10, max 50; 0 returns the state with no recent lines).",
     ),
 ];
 
@@ -255,6 +259,13 @@ pub const MCP_SET_AGENT_PROFILE_TOOL: &str = "devboule_set_agent_profile";
 /// — the broker table must not reach the delegation switch, which has no
 /// tool at all.
 pub const MCP_ANSWER_PERMISSION_TOOL: &str = "devboule_answer_permission";
+/// The read-only activity tool: one agent's derived headline plus its bounded
+/// recent kinds. A read like the roster, subject to the provider tool policy
+/// like `devboule_send_message` — a stored policy may take supervision away,
+/// and taking it away is the safe direction. Never always-on: the roster and
+/// the profile list stay the two tools a policy cannot remove, because without
+/// them an agent cannot work at all; without this one it only cannot watch.
+pub const MCP_ACTIVITY_TOOL: &str = "devboule_agent_activity";
 /// The read-only profile-list tool (`create-from-profile`).
 ///
 /// Served to every MCP-capable provider, and **always on**, like the roster
@@ -344,6 +355,33 @@ pub(crate) fn agent_set_profile_input_schema() -> serde_json::Value {
             }
         },
         "required": ["session", "profile"],
+        "additionalProperties": false
+    })
+}
+
+/// The `tools/list` input schema of [`MCP_ACTIVITY_TOOL`].
+///
+/// Closed on purpose, like the create schema: the child is named by id or
+/// display name (the broker resolves both, like `devboule_send_message`'s
+/// `to_agent`), and `limit` is optional. Identity is never a parameter — it
+/// is imposed from the bearer's registration.
+#[cfg(feature = "server")]
+pub(crate) fn agent_activity_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "session": {
+                "type": "string",
+                "description": "The id or display name of one live agent session of your own owner."
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50,
+                "description": "How many recent event lines to return. Default 10, max 50."
+            }
+        },
+        "required": ["session"],
         "additionalProperties": false
     })
 }

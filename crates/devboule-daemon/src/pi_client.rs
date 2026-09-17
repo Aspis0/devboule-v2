@@ -115,6 +115,13 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_ANSWER_PERMISSION_TOOL,
         requires_confirmation: false,
     },
+    // Activity: one live agent's derived state plus its recent kinds, metadata
+    // only and never transcript text; the broker judges peer callers at the
+    // origin door before anything is touched.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_ACTIVITY_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -165,7 +172,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// `pi.registerTool` per broker tool (six today), closed schemas matching the
+/// `pi.registerTool` per broker tool (seven today), closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -351,7 +358,7 @@ export default function (pi) {
   pi.registerTool({
     name: "devboule_create_agent",
     label: "Create Devboule agent",
-    description: `Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name.`,
+    description: `Creates a new Devboule agent session from a profile the human enabled for agents, and sends it an initial prompt. The human is asked to authorize the first creation from this session; the result is the new session's id, its A2A task and context, and its display name. With notifyOnFinish false the child is also exempt from the idle (quiet) notice.`,
     parameters: Type.Object(
       {
         profile: Type.String({ description: "Name of a profile the human enabled for agents; see devboule_list_profiles." }),
@@ -403,6 +410,24 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_answer_permission", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_agent_activity",
+    label: "Read Devboule agent activity",
+    description: `Reads what one live agent session of your own owner has been doing: its current activity (working, idle, blocked or unknown), how long since it last published, and its recent event kinds with timestamps. Metadata only, never transcript text. Name the session by id or display name; limit caps the recent lines (default 10, max 50; 0 returns the state with no recent lines).`,
+    parameters: Type.Object(
+      {
+        session: Type.String({ description: "The id or display name of one live agent session of your own owner." }),
+        limit: Type.Optional(Type.Integer({ minimum: 0, maximum: 50, description: "How many recent event lines to return. Default 10, max 50." })),
+      },
+      { required: ["session"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_agent_activity", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });
@@ -3165,8 +3190,8 @@ mod tests {
     fn pi_broker_tools_are_unmediated_and_walked() {
         // S3 walking test: every tool the broker serves is classified exactly
         // once by the same constants the extension renders — unmediated with a
-        // reason (all six today), never silently inheriting either answer. A
-        // seventh broker tool with no row here fails the first assertion; a
+        // reason (all seven today), never silently inheriting either answer. An
+        // eighth broker tool with no row here fails the first assertion; a
         // `devboule_*` name missing from the unmediated set fails the second.
         for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
             assert!(
@@ -3217,7 +3242,7 @@ mod tests {
     fn pi_bridge_template_serves_the_broker_tools() {
         // S5 walking test for the bridge: every served tool's name and verbatim
         // description reaches the exact string `write_bridge_extension` persists —
-        // a seventh tool, or a catalog rewording without a bridge edit, fails.
+        // an eighth tool, or a catalog rewording without a bridge edit, fails.
         // Hygiene markers ride the same test: dual Accept, named timeout, bridge
         // announce, env-identity Bearer, result/error + 202 handling.
         let template = bridge_extension();
@@ -3416,6 +3441,7 @@ export const Type = {
   String: (opts = {}) => ({ type: "string", ...opts }),
   Boolean: (opts = {}) => ({ type: "boolean", ...opts }),
   Optional: (inner) => ({ ...inner, optional: true }),
+  Integer: (opts = {}) => ({ type: "integer", ...opts }),
   Record: (k, v, opts = {}) => ({ type: "object", record: true, ...opts }),
   Union: (anyOf) => ({ anyOf }),
   Literal: (value) => ({ const: value }),

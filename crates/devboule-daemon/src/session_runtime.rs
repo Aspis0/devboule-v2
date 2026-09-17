@@ -8,9 +8,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
-    cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, NoticeSeverity, Session,
-    SessionEvent, SessionEventEnvelope, SessionKind, SessionModel, SessionOrigin,
-    TranscriptIntegrity, UserMessageAuthor, WireError,
+    cursor_replay_ok, AgentActivityState, Attention, AttentionReason, Cursor, ErrorCode,
+    NoticeSeverity, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionModel,
+    SessionOrigin, TranscriptIntegrity, UserMessageAuthor, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -235,6 +235,10 @@ pub(crate) struct SessionRuntime {
     /// with a transcript already had a first prompt — the instructions were on
     /// it, or it predates them — so a resume never re-injects them.
     first_prompt_owed: AtomicBool,
+    /// Bounded recent event kinds for the activity answer. Metadata only;
+    /// every publish appends, the oldest drops past the cap, and no payload
+    /// text is ever kept here.
+    activity_feed: Mutex<VecDeque<crate::agent_activity::ActivityMark>>,
 }
 
 struct McpReadiness {
@@ -486,6 +490,7 @@ impl SessionRuntime {
             // A live session being started: nobody has sent it a prompt yet, so
             // the first one carries the standing instructions.
             first_prompt_owed: AtomicBool::new(true),
+            activity_feed: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -1241,6 +1246,7 @@ impl SessionRuntime {
             stream.next_seq = stream.next_seq.saturating_add(1);
             let event = build(generation, seq);
             stream.last_publish = Some(Instant::now());
+            self.record_activity(Some(seq), &event);
             enqueue_agent(&mut stream, event.clone(), Some(seq));
             self.published_frames.fetch_add(1, Ordering::Relaxed);
             self.published_bytes.fetch_add(
@@ -1497,6 +1503,7 @@ impl SessionRuntime {
                 (stream.generation, seq, text.to_string())
             });
             let event_seq = event_seq.or_else(|| journal_output.as_ref().map(|(_, seq, _)| *seq));
+            self.record_activity(event_seq, &event);
             enqueue_agent(&mut stream, event.clone(), event_seq);
             self.published_frames.fetch_add(1, Ordering::Relaxed);
             self.published_bytes.fetch_add(
@@ -1559,6 +1566,7 @@ impl SessionRuntime {
                 agent_session_path: report.agent_session_path,
                 session_start_source: report.session_start_source,
             };
+            self.record_activity(Some(seq), &event);
             enqueue_agent(&mut stream, event.clone(), Some(seq));
             notify_observers(&stream);
             journaled = (stream.generation, seq, event);
@@ -1587,6 +1595,72 @@ impl SessionRuntime {
     /// question, asked without a turn id.
     pub(crate) fn is_running_turn(&self) -> bool {
         self.turn_active.load(Ordering::Acquire)
+    }
+
+    /// Whether a permission card is parked right now. Ground truth for the
+    /// Blocked headline; a hook cannot clear it.
+    pub(crate) fn permission_pending(&self) -> bool {
+        self.permission_broker()
+            .is_some_and(|broker| broker.pending_len() > 0)
+    }
+
+    /// Append one metadata mark. Called by the central agent-event
+    /// publishers only, so the feed holds the supervision-relevant stream —
+    /// published agent events, newest last — without keeping any text. It is
+    /// not a mirror of journal order: paths that consume a sequence without
+    /// publishing an agent event (a steer audit row, a session notice, a raw
+    /// envelope, terminal output) take no mark, so `last_seq` can run ahead
+    /// of the last mark.
+    pub(crate) fn record_activity(&self, seq: Option<u64>, event: &SessionEvent) {
+        let mark = crate::agent_activity::ActivityMark {
+            seq,
+            kind: crate::agent_activity::event_kind(event),
+            ts_ms: crate::agent_activity::wall_now_ms(),
+        };
+        if let Ok(mut feed) = self.activity_feed.lock() {
+            feed.push_back(mark);
+            while feed.len() > crate::agent_activity::ACTIVITY_FEED_CAP {
+                feed.pop_front();
+            }
+        }
+    }
+
+    /// Tail of the feed, oldest first, at most `limit` marks. The caller
+    /// clamps the limit; this never touches the journal.
+    pub(crate) fn recent_activity(&self, limit: usize) -> Vec<crate::agent_activity::ActivityMark> {
+        self.activity_feed
+            .lock()
+            .map(|feed| {
+                let skip = feed.len().saturating_sub(limit);
+                feed.iter().skip(skip).copied().collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Time since the last publish at `now`. `None` never published (besides
+    /// the creation stamp): the quiet rule reads that as Unknown, not idle.
+    pub(crate) fn activity_idle_at(&self, now: Instant) -> Option<Duration> {
+        self.lock_stream()
+            .ok()
+            .and_then(|stream| stream.last_publish)
+            .map(|last| now.saturating_duration_since(last))
+    }
+
+    /// Last allocated stream sequence, for the activity answer's `lastSeq`.
+    /// It can run ahead of the feed's last mark: unmarked paths consume
+    /// sequences too (see `record_activity`).
+    pub(crate) fn last_seq(&self) -> u64 {
+        self.lock_stream()
+            .map(|stream| stream.next_seq.saturating_sub(1))
+            .unwrap_or(0)
+    }
+
+    /// Hook headline without its text: state plus the hook's own seq. The
+    /// activity answer carries this beside the derived state, never merged.
+    pub(crate) fn hook_activity(&self) -> Option<(AgentActivityState, Option<u64>)> {
+        self.lock_stream()
+            .ok()
+            .and_then(|stream| stream.agent_reports.last_state())
     }
 
     /// The last `AgentMessage` this provider published, chunks of one message

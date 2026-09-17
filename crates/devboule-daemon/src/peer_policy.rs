@@ -373,6 +373,8 @@ pub enum McpToolWire {
 ///
 /// - Roster (`devboule_list_agents`) reads the owner's live agents: the wire
 ///   read `SessionsList`, the act `view` names.
+/// - Activity (`devboule_agent_activity`) reads one of those agents: the same
+///   wire read, the same act. Kinds and timestamps only, never transcript.
 /// - Profile list (`devboule_list_profiles`) is `Unjudged`: it serves only the
 ///   ticked subset (name, note, provider, model, mode, unattended prediction)
 ///   the human enabled for agents to consume — not the full document
@@ -403,10 +405,15 @@ pub enum McpToolWire {
 ///   a peer with `send` may still change modes over the wire `SessionSetMode`.
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
-        MCP_ANSWER_PERMISSION_TOOL, MCP_CREATE_AGENT_TOOL, MCP_LIST_PROFILES_TOOL, MCP_ROSTER_TOOL,
-        MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL,
+        MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CREATE_AGENT_TOOL,
+        MCP_LIST_PROFILES_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL,
     };
     if tool == MCP_ROSTER_TOOL {
+        Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
+            id: 0,
+        }]))
+    } else if tool == MCP_ACTIVITY_TOOL {
+        // A read like the roster: the owner's live agents, no transcript.
         Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
             id: 0,
         }]))
@@ -1104,6 +1111,7 @@ pub(crate) mod tests {
         // loudly instead of silently unjudging a tool.
         for expected in [
             crate::provider_catalog::MCP_ROSTER_TOOL,
+            crate::provider_catalog::MCP_ACTIVITY_TOOL,
             crate::provider_catalog::MCP_LIST_PROFILES_TOOL,
             crate::provider_catalog::MCP_SEND_MESSAGE_TOOL,
             crate::provider_catalog::MCP_CREATE_AGENT_TOOL,
@@ -1129,6 +1137,16 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_ROSTER_TOOL),
+                None
+            );
+            // The activity read is the roster's act: a peer without `view`
+            // is refused, a peer with it reads one agent's metadata.
+            assert_eq!(
+                mcp_tool_denial(role, &none, MCP_ACTIVITY_TOOL),
+                Some(CAP_VIEW)
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_ACTIVITY_TOOL),
                 None
             );
             // The ticked list performs nothing judged: allowed even holding

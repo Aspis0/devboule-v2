@@ -25,7 +25,13 @@ because it is ready to use.
 What works today:
 
 - **Workspace** — the main surface, with terminal sessions attached to real
-  PTYs and agent sessions owned by the daemon.
+  PTYs and agent sessions owned by the daemon. The tab strip also carries
+  sessions recovered from a daemon that died, so their transcript is one click
+  away instead of buried in History. Swiping a tab reveals what it would do —
+  archive to the right, delete to the left — and neither happens immediately:
+  the tab goes away, a five-second undo window opens, and only when it expires
+  does the daemon hear about it. Archiving kills the process and keeps the
+  session and its transcript; deleting removes the row.
 - **Terminal sessions** — owned by a background daemon rather than by the view,
   so moving to another surface, detaching and coming back leaves the process
   untouched. Output is journalled, so reattaching replays what was missed
@@ -39,9 +45,12 @@ What works today:
   as `Recovered` and replays from the journal rather than pretending to be
   alive. The process does not come back with it. Every provider lives inside a
   Windows job object that kills it when the daemon exits, so resuming a
-  provider's own session is a separate, explicit act, and today it exists for
-  ACP providers only — a Claude, Codex or pi session can be replayed, not
-  resumed.
+  provider's own session is a separate, explicit act — replaying is free and
+  happens by itself, resuming starts a process and waits for you to ask. It
+  exists today for **ACP and Claude** sessions: a Claude session is resumed by
+  handing the CLI back its own history file. A Codex or pi session can be
+  replayed, not resumed; pi can resume on its own wire, and that exclusion is a
+  decision rather than a limitation.
 - **Agent conversation** — real IPC sessions on the daemon. Claude, Codex
   (app-server) and pi run through native adapters; other agents speak ACP.
   Each provider declares its own permission modes (for Claude: plan, always

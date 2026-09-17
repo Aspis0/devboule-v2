@@ -78,10 +78,10 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_attachment_references, validate_attachments,
-    validate_session_id, ActiveTurnBehavior, AgentTaskState, AttachmentReference, Cursor,
-    DelegationRunState, DelegationState, ErrorCode, ErrorDetails, FinishArtifact,
-    FinishArtifactPart, FinishArtifactPartMetadata, JournalRetention, JournalStats, OwnerId,
-    PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session, SessionEvent,
+    validate_session_id, ActiveTurnBehavior, AgentActivityState, AgentTaskState,
+    AttachmentReference, Cursor, DelegationRunState, DelegationState, ErrorCode, ErrorDetails,
+    FinishArtifact, FinishArtifactPart, FinishArtifactPartMetadata, JournalRetention, JournalStats,
+    OwnerId, PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session, SessionEvent,
     SessionKind, SessionModel, SessionOrigin, SessionOriginKind, SessionState,
     SessionStateSnapshot, UnattendedState, UserMessageAuthor, WireError, Workspace,
     WorkspaceIsolation, MAX_WRITE_BYTES,
@@ -1799,6 +1799,9 @@ struct AgentChild {
     /// makes the report idempotent across the three paths that can observe the
     /// same end (a finished turn, a process exit, a close).
     report_owed: bool,
+    /// The quiet notice is owed until it has been sent once per quiet spell.
+    /// Cleared when the child publishes again, so one spell is one notice.
+    quiet_notified: bool,
 }
 
 /// One parked child end (audit-2 §2): what the end path still had in hand when
@@ -6555,6 +6558,7 @@ impl SessionRegistry {
                 started: true,
                 notice_owed: true,
                 report_owed: true,
+                quiet_notified: false,
             },
         );
         let caps = table
@@ -6606,6 +6610,7 @@ impl SessionRegistry {
                 started: true,
                 notice_owed: true,
                 report_owed: true,
+                quiet_notified: false,
             },
         );
     }
@@ -6830,6 +6835,7 @@ impl SessionRegistry {
                 started: true,
                 notice_owed: true,
                 report_owed: true,
+                quiet_notified: false,
             },
         );
         (true, deferred)
@@ -7144,6 +7150,161 @@ impl SessionRegistry {
         let _ = self.deliver_to_creator(&creator, &owner, &envelope);
     }
 
+    /// Read-only activity answer for one agent session: the derived headline,
+    /// the hook's last state beside it (never merged), the idle age, and the
+    /// bounded tail of the in-memory kind feed.
+    ///
+    /// Roster scope, deliberately: any session of the caller's own owner
+    /// still in the live map — a commissioned child, a person-started
+    /// session, or a recently ended one, which reads `unknown` with
+    /// whatever feed survives in memory. A closed transcript is not found.
+    /// Reading is not acting, and the roster already shows these rows. Metadata
+    /// only — kinds, seqs, timestamps and the display name the roster
+    /// already discloses; no payload text, no hook message. The broker
+    /// resolves display names before calling, so this takes the exact id.
+    pub(crate) fn agent_activity(
+        &self,
+        child: &str,
+        owner: &OwnerId,
+        limit: usize,
+    ) -> Result<serde_json::Value, WireError> {
+        let limit = limit.min(crate::agent_activity::ACTIVITY_MAX_LIMIT);
+        let Some((session, runtime, child_owner)) = self.child_view(child) else {
+            return Err(not_found());
+        };
+        if child_owner.user != owner.user {
+            return Err(not_found());
+        }
+        let is_live = matches!(
+            session.state,
+            SessionState::Live { .. } | SessionState::Silent { .. }
+        );
+        let activity = crate::agent_activity::derive_activity(
+            is_live,
+            runtime.is_running_turn(),
+            runtime.permission_pending(),
+        );
+        let activity_str = match activity {
+            AgentActivityState::Idle => "idle",
+            AgentActivityState::Working => "working",
+            AgentActivityState::Blocked => "blocked",
+            AgentActivityState::Unknown => "unknown",
+        };
+        let (hook_str, hook_seq) = match runtime.hook_activity() {
+            Some((state, seq)) => (
+                Some(match state {
+                    AgentActivityState::Idle => "idle",
+                    AgentActivityState::Working => "working",
+                    AgentActivityState::Blocked => "blocked",
+                    AgentActivityState::Unknown => "unknown",
+                }),
+                seq,
+            ),
+            None => (None, None),
+        };
+        let idle_ms = runtime
+            .activity_idle_at(Instant::now())
+            .map(|idle| idle.as_millis().try_into().unwrap_or(u64::MAX));
+        let recent: Vec<serde_json::Value> = runtime
+            .recent_activity(limit)
+            .into_iter()
+            .map(|mark| serde_json::json!({"seq": mark.seq, "kind": mark.kind, "tsMs": mark.ts_ms}))
+            .collect();
+        let display_name = session
+            .display_name
+            .clone()
+            .unwrap_or_else(|| session.title.clone());
+        Ok(serde_json::json!({
+            "sessionId": session.id,
+            "displayName": display_name,
+            "activity": activity_str,
+            "hookActivity": hook_str,
+            "hookSeq": hook_seq,
+            "idleMs": idle_ms,
+            "lastSeq": runtime.last_seq(),
+            "recent": recent,
+        }))
+    }
+
+    /// One quiet notice per quiet spell. Returns whether a notice was sent.
+    ///
+    /// Notice, never action: the child's turn, disposition and brakes are
+    /// untouched; only the creator gets one envelope. Blocked children are
+    /// excluded (their permission card already has its own envelope), and a
+    /// creator that set `notifyOnFinish: false` gets silence here too.
+    pub(crate) fn notify_quiet_child(&self, child: &str, now: Instant) -> bool {
+        let Some((session, runtime, owner)) = self.child_view(child) else {
+            return false;
+        };
+        let is_live = matches!(
+            session.state,
+            SessionState::Live { .. } | SessionState::Silent { .. }
+        );
+        let Some(idle) = runtime.activity_idle_at(now) else {
+            return false;
+        };
+        let turn = runtime.is_running_turn();
+        let pending = runtime.permission_pending();
+        let mut table = self
+            .creations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(link) = table.children.get_mut(child) else {
+            return false;
+        };
+        // Movement re-arms: a publish newer than the threshold means this
+        // spell is over, whether or not a notice ever went out.
+        if idle < crate::agent_activity::CHILD_QUIET_AFTER {
+            link.quiet_notified = false;
+            return false;
+        }
+        if !crate::agent_activity::quiet_due(is_live, turn, pending, idle, link.quiet_notified)
+            || !link.notify
+        {
+            return false;
+        }
+        // The latch is set only after a delivery the creator actually got
+        // (below): a lost notice must stay owed so the next sweep retries
+        // the same spell instead of burning it.
+        let creator = link.creator.clone();
+        drop(table);
+        let display_name = session
+            .display_name
+            .clone()
+            .unwrap_or_else(|| session.title.clone());
+        let idle_ms: u64 = idle.as_millis().try_into().unwrap_or(u64::MAX);
+        let envelope = agent_quiet_envelope(&session.id, &display_name, idle_ms, &session.origin);
+        let delivered = self
+            .deliver_notice_to_creator(&creator, &owner, &envelope)
+            .is_ok();
+        if delivered {
+            if let Ok(mut table) = self.creations.lock() {
+                if let Some(link) = table.children.get_mut(child) {
+                    link.quiet_notified = true;
+                }
+            }
+        }
+        delivered
+    }
+
+    /// Sweep every commissioned child for quiet, sending at most one notice
+    /// each. Driven once a minute by the server-owned thread; tests call it
+    /// with injected instants.
+    pub(crate) fn sweep_quiet_children(&self, now: Instant) -> usize {
+        let children: Vec<String> = self
+            .creations
+            .lock()
+            .map(|table| table.children.keys().cloned().collect())
+            .unwrap_or_default();
+        let mut sent = 0;
+        for child in &children {
+            if self.notify_quiet_child(child, now) {
+                sent += 1;
+            }
+        }
+        sent
+    }
+
     /// The finish report: the deposit, the text message and the structured
     /// event, in that order (`S5` decisions 7 and 10).
     ///
@@ -7299,6 +7460,20 @@ impl SessionRegistry {
         if steer.is_ok() || !local {
             return steer;
         }
+        self.send_to_creator(creator, owner, text, false)
+    }
+
+    /// One daemon notice a creator is owed without urgency: it queues behind
+    /// the creator's running turn as a plain prompt and can never steer. A
+    /// separate function rather than a flag, so the urgent steer-or-prompt
+    /// path above keeps its shape and no routine notice can pass the wrong
+    /// boolean and interrupt a turn it only meant to inform.
+    fn deliver_notice_to_creator(
+        &self,
+        creator: &str,
+        owner: &OwnerId,
+        text: &str,
+    ) -> Result<Option<String>, WireError> {
         self.send_to_creator(creator, owner, text, false)
     }
 
@@ -7605,6 +7780,37 @@ fn agent_input_required_envelope(
     )
 }
 
+/// The quiet notice: a Working child with no publish for `idle_ms`. A notice,
+/// never an action — it names the child and its idle age, carries no child
+/// text, and changes nothing about the child. What it cannot distinguish: a
+/// model thinking hard, a long build and a wedged process look identical
+/// from outside, so the creator decides and the daemon only reports.
+fn agent_quiet_envelope(
+    child_session_id: &str,
+    display_name: &str,
+    idle_ms: u64,
+    child_origin: &SessionOrigin,
+) -> String {
+    let minutes = idle_ms / 60_000;
+    format!(
+        "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_quiet\ntimestamp: {}\nchildSessionId: {}\ndisplayName: {}\nstate: working\nidleMs: {}\nsummary: This agent is still working but has produced no output for {minutes} minute(s). It may be thinking, building, or stuck; nothing was stopped.\n</devboule-system>",
+        origin_line(child_origin),
+        neutralise_envelope_text(child_session_id),
+        unix_millis(),
+        neutralise_envelope_text(child_session_id),
+        neutralise_envelope_text(&single_line_header(display_name)),
+        idle_ms,
+    )
+}
+
+/// One header line per child-chosen value: a newline in it would impersonate
+/// frame structure, so it becomes a space before anything else runs. The cap
+/// bounds the frame, not the card.
+fn single_line_header(text: &str) -> String {
+    let normalised = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+    normalised.chars().take(TITLE_LINE_MAX_CHARS).collect()
+}
+
 /// The delegated-surfacing envelope (§4.3, §6.7 of the app contract): the
 /// daemon's facts in the header — `cardId`, `toolTitle`, `displayName`, one
 /// line each, exactly those keys — and the child's own words fenced between
@@ -7633,21 +7839,14 @@ fn agent_permission_request_envelope(
     display_name: &str,
     excerpt: &str,
 ) -> String {
-    // One header line per field: a newline in the child-chosen values would
-    // impersonate frame structure, so it becomes a space before anything else
-    // runs. The cap on the excerpt is the scalar cap below.
-    let single_line = |text: &str| -> String {
-        let normalised = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
-        normalised.chars().take(TITLE_LINE_MAX_CHARS).collect()
-    };
     format!(
         "<devboule-system>\norigin: {}\nrole: daemon\nfrom_agent: {}\nkind: agent_permission_request\ntimestamp: {}\ncardId: {}\ntoolTitle: {}\ndisplayName: {}\nchild-said:\n{}\nend child-said\n</devboule-system>",
         origin_line(child_origin),
         neutralise_envelope_text(child_session_id),
         unix_millis(),
-        neutralise_envelope_text(&single_line(card_id)),
-        neutralise_envelope_text(&single_line(tool_title)),
-        neutralise_envelope_text(&single_line(display_name)),
+        neutralise_envelope_text(&single_line_header(card_id)),
+        neutralise_envelope_text(&single_line_header(tool_title)),
+        neutralise_envelope_text(&single_line_header(display_name)),
         neutralise_envelope_text(&cap_excerpt_scalars(excerpt)),
     )
 }
