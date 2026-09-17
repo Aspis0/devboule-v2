@@ -463,6 +463,17 @@ impl ServerState {
             .shutting_down
     }
 
+    /// Test-only face of the lifecycle session count: every post-increment
+    /// failure path must leave it unchanged, or refused operations leak
+    /// idle-shutdown slots for the life of the process.
+    #[cfg(test)]
+    pub(crate) fn live_session_count(&self) -> u32 {
+        self.lifecycle
+            .lock()
+            .map(|lifecycle| lifecycle.sessions)
+            .unwrap_or(u32::MAX)
+    }
+
     /// Admit a client unless shutdown has started. A reconnect that wins this
     /// lock invalidates any idle timer armed by the previous connection.
     pub(super) fn client_connected(&self) -> bool {

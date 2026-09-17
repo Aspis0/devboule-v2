@@ -59,7 +59,7 @@ runs (`src-tauri/tauri.conf.json:9`, `beforeDevCommand`); there is no bundling s
 - **Every child process and its lifetime.** PTY terminals and provider CLIs are spawned by the daemon
   (`crates/devboule-daemon/src/session.rs:7253-7283` for a PTY), each in a Windows Job Object (§2).
 - **The journal.** SQLite, WAL mode, `journal.db` beside the lock file
-  (`crates/devboule-daemon/src/paths.rs:51-55`), schema version 10
+  (`crates/devboule-daemon/src/paths.rs:51-55`), schema version 13
   (`crates/devboule-daemon/src/journal.rs:54`).
 - **The MCP broker.** A loopback HTTP listener with one bearer token per session
   (`crates/devboule-daemon/src/mcp_broker.rs:1-7`, `:40`, `:228`).
@@ -225,7 +225,7 @@ carries a `generation`, and that is what lets a deferred intent belong to an *in
 rather than to its id: a row that died and came back is not the row the intent was taken against.
 
 **The journal.** SQLite in WAL mode at `<runtime dir>/journal.db`, beside the lock file
-(`crates/devboule-daemon/src/paths.rs:51-55`), schema version 10
+(`crates/devboule-daemon/src/paths.rs:51-55`), schema version 13
 (`crates/devboule-daemon/src/journal.rs:54`). One writer thread owns it
 (`crates/devboule-daemon/src/journal.rs:1398`) with a bounded queue of 1024 commands (`:63`) and a
 snapshot of the screen emulator every 64 KiB of output (`:66`). Rows are appended per session
@@ -637,6 +637,19 @@ wedged process look identical from outside, which is the whole reason it reports
 **Lineage is daemon-written.** `created_by` is deliberately absent from `SessionCreate` so no client
 can claim a parent, and `display_name` is set once at creation and is not renamable
 (`crates/devboule-protocol/src/session.rs:220-235`).
+
+**A child's powers are a birth fact, and they survive the daemon.** A creation resolves a tool
+overlay — a deny-list of tool names the child will not be offered and cannot call — and the journal
+row keeps it (`sessions.overlay`, schema v13). A resume reads it back in the same lookup that reads
+`created_by`; `resumed_lineage` takes no profile store, which is the structural reason it cannot
+re-resolve. That is deliberate and it cost a column: re-resolving from `profile_id` would ask a
+**mutable** store a question whose answer can change, and when the profile has since been edited or
+deleted the honest fallback is "no overlay" — which is exactly the silent escalation this avoids. A
+row written before v13 carries no recorded restriction, even if the child was born restricted:
+the overlay column did not exist to record it, so a resumed pre-v13 child comes back
+unrestricted — only the depth cap holds it, at the closed end for rows that still name a
+creator. There is no backfill, because a backfill could only manufacture a restriction
+nobody recorded.
 
 ## 8. Attachments
 

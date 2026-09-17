@@ -4272,3 +4272,65 @@ fn a_revoked_connection_writes_no_queued_event() {
     drop(state);
     let _ = std::fs::remove_dir_all(path);
 }
+
+/// A refused resume after the slot increment must give the slot back: every
+/// other exit past the gate balances with `session_finished`, and a leaked
+/// slot keeps `sessions != 0` forever, so the idle shutdown never re-arms
+/// for the life of the process. The row here is recovered with an
+/// unreadable overlay cell — the exact state that refuses at the lineage
+/// line — and the command resolves from the environment so the test never
+/// spawns anything: the failure lands before any provider starts.
+#[test]
+fn a_refused_resume_releases_its_lifecycle_slot() {
+    let (path, state) = temp_state("resume-slot-balance");
+    let owner = OwnerId::new("slot-user", "slot-client").expect("owner");
+    let session_id =
+        devboule_protocol::compose_session_id(&owner.session_token(), "slot01").expect("id");
+    std::env::set_var(
+        "DEVBOULE_ACP_COMMAND",
+        r#"["definitely-not-a-real-program-xyz"]"#,
+    );
+    // The row's provider must resolve through the paired override (parse
+    // only — the lineage failure lands before any spawn), never through
+    // PATH or the registry.
+    std::env::set_var("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub");
+    let mut record = crate::journal::new_session_record(
+        session_id.clone(),
+        owner.user.clone(),
+        None,
+        devboule_protocol::SessionKind::Acp,
+        "Slot",
+    );
+    record.provider = Some("devboule-acp-stub".to_string());
+    record.peer_session_id = Some("peer-slot".to_string());
+    record.created_by = Some("slot-creator".to_string());
+    // Unreadable on purpose: not a deny list, so the lineage line refuses.
+    // Written around the typed API, which cannot produce these bytes.
+    let journal = state.journal.clone().expect("state journal");
+    journal.create_session(record).expect("birth row");
+    rusqlite::Connection::open(path.join("journal.db"))
+        .expect("open journal file")
+        .execute(
+            "UPDATE sessions SET overlay = '{\"broken\":' WHERE id = ?1",
+            [&session_id],
+        )
+        .expect("rot the cell");
+    let conn = crate::session::ConnHandle::new(9);
+    let before = state.live_session_count();
+    let result = state.sessions.resume(&state, &session_id, &owner, &conn);
+    std::env::remove_var("DEVBOULE_ACP_COMMAND");
+    std::env::remove_var("DEVBOULE_ACP_PROVIDER_ID");
+    let error = result.expect_err("the unreadable cell refuses the resume");
+    assert!(
+        error.message.contains("overlay"),
+        "the refusal names the column: {}",
+        error.message
+    );
+    assert_eq!(
+        state.live_session_count(),
+        before,
+        "the refused resume gave its slot back"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}

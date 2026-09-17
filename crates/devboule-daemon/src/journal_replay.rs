@@ -113,7 +113,8 @@ pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, Jou
                 generation, status, exit_code, closed, last_seq, degraded,
                 dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                 peer_session_id, provider, origin_kind, origin_device, origin_role,
-                display_name, created_by, profile_id, context_id, unattended, unattended_state, labels
+                display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
+                overlay, depth
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
@@ -158,6 +159,13 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         context_id: row.get(26)?,
         unattended_state: super::unattended_state_from_rank(row.get::<_, i64>(28)?),
         labels: deserialize_labels(row.get(29)?),
+        overlay: deserialize_overlay(row.get(30)?),
+        // A hand-written out-of-range depth must read as the cap, never as
+        // a truncation toward the permissive end: `u32::try_from` fails
+        // closed in both directions, where `as` would wrap 2³² to 0.
+        depth: row
+            .get::<_, Option<i64>>(31)?
+            .map(|depth| u32::try_from(depth).unwrap_or(crate::session::MAX_AGENT_DEPTH)),
     })
 }
 
@@ -173,6 +181,36 @@ fn deserialize_labels(raw: Option<String>) -> std::collections::BTreeMap<String,
         .unwrap_or_default()
 }
 
+/// The session's overlay, as the JSON array the daemon wrote — or `None`
+/// when the cell cannot be read as a deny list. NULL (every row that
+/// predates v13) and an empty array both read as no overlay; anything else
+/// unreadable — bit rot, a hand edit, a name no broker tool serves — is not
+/// an empty restriction but an unreadable cell, and only the resume path
+/// judges it: the roster reads the cell through this function but decides
+/// nothing from it, so one bad cell cannot take the roster down with it.
+/// (A storage class SQLite cannot convert to text still fails the row read
+/// itself — the same pre-existing exposure `labels` has; this promise
+/// covers malformed JSON, not a mistyped column, whose shape the schema
+/// validators refuse at open.)
+fn deserialize_overlay(raw: Option<String>) -> Option<crate::provider_catalog::ToolOverlay> {
+    let Some(text) = raw else {
+        return Some(crate::provider_catalog::ToolOverlay::NONE);
+    };
+    let names: Vec<String> = serde_json::from_str(&text).ok()?;
+    if names.is_empty() {
+        return Some(crate::provider_catalog::ToolOverlay::NONE);
+    }
+    // The store refuses a deny name the broker does not serve; the journal
+    // re-checks at read, so a hand-added unknown cannot widen into a tool
+    // tomorrow's broker serves under that name.
+    let known = names.iter().all(|name| {
+        crate::provider_catalog::MCP_BROKER_TOOLS
+            .iter()
+            .any(|(served, _)| *served == name)
+    });
+    known.then(|| crate::provider_catalog::ToolOverlay::from_profile_names(&names))
+}
+
 pub(super) fn replay_session(
     conn: &Connection,
     session_id: &str,
@@ -184,7 +222,8 @@ pub(super) fn replay_session(
                     generation, status, exit_code, closed, last_seq, degraded,
                     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                     peer_session_id, provider, origin_kind, origin_device, origin_role,
-                    display_name, created_by, profile_id, context_id, unattended, unattended_state, labels
+                    display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
+                    overlay, depth
              FROM sessions WHERE id = ?1",
             [session_id],
             row_to_session,

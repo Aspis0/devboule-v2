@@ -631,7 +631,21 @@ pub fn mcp_catalog_id(agent_id: &str) -> Option<&'static str> {
         .map(|(id, _)| *id)
 }
 
-/// The tool-policy overlay a preset applies to the sessions it creates
+/// Equality is on the deny set, not the source tag: a preset list and a
+/// profile list with the same names allow the same tools, so a live child
+/// and a resumed one compare equal. Order-free, like `allows`.
+#[cfg(feature = "server")]
+impl PartialEq for ToolOverlay {
+    fn eq(&self, other: &Self) -> bool {
+        let mut own = self.disabled_names();
+        let mut theirs = other.disabled_names();
+        own.sort();
+        theirs.sort();
+        own == theirs
+    }
+}
+
+/// The tool-policy overlay a creation applies to the sessions it makes
 /// (`S5` §2).
 ///
 /// An overlay can only ever *remove* tools. There is no field that grants one,
@@ -639,7 +653,7 @@ pub fn mcp_catalog_id(agent_id: &str) -> Option<&'static str> {
 /// authority beside the stored `ToolPolicyEntry` the human edits; the overlay
 /// is the preset's own deny list, and the effective answer for one tool is
 /// "the stored policy allows it AND the overlay allows it".
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 #[cfg(feature = "server")]
 pub(crate) struct ToolOverlay {
     /// The tool names this overlay removes, from whichever source made it.
@@ -687,9 +701,26 @@ impl ToolOverlay {
     };
 
     /// A profile's overlay: the tools the human's profile denies, by name.
+    /// Normalised (sorted, deduped) so equality stays order- and
+    /// repetition-free like `allows`: the store does not refuse duplicates,
+    /// and a live overlay must compare equal to its resumed twin.
     pub(crate) fn from_profile_names(names: &[String]) -> Self {
+        let mut names = names.to_vec();
+        names.sort();
+        names.dedup();
         Self {
-            disabled: OverlayNames::Profile(names.to_vec()),
+            disabled: OverlayNames::Profile(names),
+        }
+    }
+
+    /// The deny list as owned names, for the journal column. The source
+    /// (a preset const vs a profile vec) is behavior-free — `allows` reads
+    /// names only — so the column keeps names alone and the read rebuilds
+    /// the owned form; a live child and a resumed one compare equal.
+    pub(crate) fn disabled_names(&self) -> Vec<String> {
+        match &self.disabled {
+            OverlayNames::Preset(names) => names.iter().map(|name| name.to_string()).collect(),
+            OverlayNames::Profile(names) => names.clone(),
         }
     }
 
@@ -3327,6 +3358,29 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
                 assert!(published.contains(&disabled), "{disabled} is not a tool");
             }
         }
+    }
+
+    /// A repeated deny name normalises at construction: the store does not
+    /// refuse duplicates, and a live overlay must compare equal to its
+    /// resumed twin, which the write canonicalises.
+    #[test]
+    fn a_repeated_deny_name_normalises_at_construction() {
+        let once =
+            super::ToolOverlay::from_profile_names(&[super::MCP_SEND_MESSAGE_TOOL.to_string()]);
+        let twice = super::ToolOverlay::from_profile_names(&[
+            super::MCP_SEND_MESSAGE_TOOL.to_string(),
+            super::MCP_CREATE_AGENT_TOOL.to_string(),
+            super::MCP_SEND_MESSAGE_TOOL.to_string(),
+        ]);
+        let reordered = super::ToolOverlay::from_profile_names(&[
+            super::MCP_CREATE_AGENT_TOOL.to_string(),
+            super::MCP_SEND_MESSAGE_TOOL.to_string(),
+        ]);
+        assert_eq!(twice, reordered);
+        assert!(!twice.allows(super::MCP_SEND_MESSAGE_TOOL));
+        assert!(!twice.allows(super::MCP_CREATE_AGENT_TOOL));
+        assert!(twice.allows(super::MCP_ROSTER_TOOL));
+        assert_ne!(twice, once);
     }
 
     /// The refusals are one sentence each, and an unknown preset does not read

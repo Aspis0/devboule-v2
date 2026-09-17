@@ -3154,6 +3154,11 @@ mod tests {
                 // reads nothing from it, and `unknown` says exactly that.
                 unattended_state: devboule_protocol::UnattendedState::Unknown,
                 labels: Default::default(),
+                // No overlay: an end-marker upsert carries NULL, so the
+                // birth value stays (the upsert keeps it on NULL).
+                overlay: None,
+                // No depth either, same rule: the birth value stays.
+                depth: None,
             })
             .expect("session row");
         let runtime = Arc::new(SessionRuntime::with_journal(

@@ -240,7 +240,7 @@ struct RegisteredSession {
     /// the registration and never from a request — the depth cap is a fact
     /// about who asked, and a caller field would be a claim.
     depth: u32,
-    /// The preset's tool overlay for this session (`S5` §2), applied on top of
+    /// The tool overlay for this session (`S5` §2), applied on top of
     /// the provider's stored policy at `tools/list` and `tools/call`.
     overlay: crate::provider_catalog::ToolOverlay,
     bearer: String,
@@ -250,7 +250,7 @@ struct RegisteredSession {
 }
 
 /// The facts a registration may not read from a request (`S5` §3): how deep
-/// this session is and what its preset turns off.
+/// this session is and what its birth overlay turns off.
 ///
 /// [`AgentLineage::root`] is the human's: a session someone started at this
 /// machine is depth 0 with every tool its provider offers.
@@ -3611,6 +3611,144 @@ mod tests {
         );
         drop(guard);
         drop(server);
+    }
+
+    #[test]
+    fn a_restored_overlay_hides_and_refuses_both_denied_tools() {
+        // The two gates a resumed lineage feeds, on the exact functions the
+        // broker calls: `enabled_tool_list` for tools/list,
+        // `tool_call_refusal` for tools/call. One tool proving one gate
+        // does not prove the restriction.
+        use crate::provider_catalog::{
+            MCP_ACTIVITY_TOOL, MCP_CREATE_AGENT_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
+        };
+        let overlay = crate::provider_catalog::ToolOverlay::from_profile_names(&[
+            MCP_SEND_MESSAGE_TOOL.to_string(),
+            MCP_CREATE_AGENT_TOOL.to_string(),
+        ]);
+        let names: Vec<String> = enabled_tool_list(
+            crate::provider_catalog::MCP_BROKER_TOOLS,
+            None,
+            overlay.clone(),
+        )
+        .into_iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+        assert!(
+            !names.iter().any(|name| name == MCP_SEND_MESSAGE_TOOL),
+            "send is hidden from the list: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name == MCP_CREATE_AGENT_TOOL),
+            "create is hidden from the list: {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name == MCP_ROSTER_TOOL)
+                && names.iter().any(|name| name == MCP_ACTIVITY_TOOL),
+            "the rest is still served: {names:?}"
+        );
+        assert_eq!(
+            tool_call_refusal(None, &overlay, MCP_SEND_MESSAGE_TOOL),
+            Some("Tool disabled by policy")
+        );
+        assert_eq!(
+            tool_call_refusal(None, &overlay, MCP_CREATE_AGENT_TOOL),
+            Some("Tool disabled by policy")
+        );
+        assert_eq!(tool_call_refusal(None, &overlay, MCP_ROSTER_TOOL), None);
+    }
+
+    #[test]
+    fn a_journal_row_restriction_reaches_the_broker_registration() {
+        // From journal bytes to broker gates through every production
+        // function on the wiring path: row → resumed_lineage →
+        // register_with_provider → HTTP tools/list + tools/call. It does not
+        // execute resume()'s call site (which needs a live provider for the
+        // respawn) nor the respawn itself: reverting that one line escapes
+        // this test, and only the live e2e battery covers it.
+        use crate::provider_catalog::{MCP_CREATE_AGENT_TOOL, MCP_SEND_MESSAGE_TOOL};
+        let dir =
+            std::env::temp_dir().join(format!("devboule-overlay-wire-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let journal = crate::journal::Journal::open(&dir.join("journal.db")).expect("journal");
+        let mut record = crate::journal::new_session_record(
+            "wire-child",
+            "wire-user",
+            None,
+            SessionKind::Acp,
+            "Agent",
+        );
+        record.created_by = Some("wire-creator".to_string());
+        record.overlay = Some(crate::provider_catalog::ToolOverlay::from_profile_names(&[
+            MCP_SEND_MESSAGE_TOOL.to_string(),
+            MCP_CREATE_AGENT_TOOL.to_string(),
+        ]));
+        record.depth = Some(1);
+        journal.create_session(record).expect("birth row");
+        journal.shutdown();
+        // The restart: a new journal on the same file.
+        let journal = crate::journal::Journal::open(&dir.join("journal.db")).expect("reopen");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "wire-child")
+            .expect("the birth row survived");
+        let lineage = crate::session::SessionRegistry::resumed_lineage(Some(&row))
+            .expect("readable row restores");
+        assert_eq!(lineage.depth, 1);
+        // Register the way resume() does, then ask over HTTP like a child
+        // would: both denied tools stay hidden and refused.
+        let state = ServerState::new("mcp-overlay-wire".to_string());
+        let owner = owner("wire-user", "wire-client");
+        crate::session::insert_test_live_agent(&state.sessions, "wire-child", owner.clone());
+        let guard = state
+            .mcp
+            .register_with_provider("wire-child", &owner, &SessionKind::Acp, None, lineage)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("wire-child").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+        let listed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        let listed_body = response_json(&listed);
+        let names: Vec<&str> = listed_body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(!names.contains(&MCP_SEND_MESSAGE_TOOL));
+        assert!(!names.contains(&MCP_CREATE_AGENT_TOOL));
+        for (id, tool) in [(2, MCP_SEND_MESSAGE_TOOL), (3, MCP_CREATE_AGENT_TOOL)] {
+            let call = http_request(
+                &state.mcp.url,
+                Some(&format!("Bearer {token}")),
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+                ),
+            );
+            let body = response_json(&call);
+            assert_eq!(
+                body.pointer("/error/code"),
+                Some(&json!(-32601)),
+                "{tool} refused"
+            );
+            assert_eq!(
+                body.pointer("/error/message"),
+                Some(&json!("Tool disabled by policy"))
+            );
+        }
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        drop(server);
+        drop(guard);
+        drop(state);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(runtime_dir);
     }
 
     #[test]

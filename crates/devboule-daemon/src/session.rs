@@ -2050,7 +2050,7 @@ pub(crate) struct SessionCreateMeta {
     /// How far this session is from a human root: 0 for a human's session, 1
     /// for its child, 2 for a grandchild.
     pub(crate) depth: u32,
-    /// The preset's tool overlay, which the broker consults per session.
+    /// The profile's tool overlay, which the broker consults per session.
     pub(crate) overlay: crate::provider_catalog::ToolOverlay,
     /// The origin to record. `None` means "this connection's", which is every
     /// human-started create; a created child passes its creator's stored origin.
@@ -3750,6 +3750,15 @@ impl SessionRegistry {
         // child misreport what it was started from), the labels the creation
         // stamped, and the context this session belongs to.
         record.profile_id = meta.profile_id.clone();
+        // The overlay the creation resolved at birth, written here with the
+        // other birth facts and never re-resolved: the profile it came from
+        // may be edited or deleted afterwards, and the child's powers were
+        // decided when it was born.
+        record.overlay = Some(meta.overlay.clone());
+        // The child's own depth, same rule: the cap must survive a restart,
+        // and re-deriving it by walking `created_by` would trust a chain
+        // the retention sweep may have cut.
+        record.depth = Some(meta.depth);
         // The marker, derived here from the **delivered** mode (R2b): this is
         // the one place the kind and the delivery the child is started on meet
         // the row, so the marker is the delivery's own judgement — a profile's
@@ -3994,6 +4003,44 @@ impl SessionRegistry {
         runtime.claim_resize(conn.id, subscription_id)
     }
 
+    /// The lineage a resumed session re-registers with, read off its journal
+    /// row in the same lookup that reads `created_by` — never re-resolved
+    /// from the profile store, whose answer may have changed since the birth.
+    /// Depth and overlay are both birth facts: gating either on the creator
+    /// being live would launder powers through a restart (an orphan resumed
+    /// shallow could delegate again), so liveness only decides the
+    /// bookkeeping in `readmit_agent_child`, never this lineage. A row that
+    /// predates the columns resumes depth-capped, never at a depth nobody
+    /// recorded; a human's own row is the root lineage. An unreadable
+    /// overlay cell refuses the resume — it must never read as unrestricted —
+    /// while the roster, which never reads the cell, keeps listing the row.
+    ///
+    /// `pub(crate)` for the wiring test: it feeds a real journal row through
+    /// this mapping into a real broker registration.
+    pub(crate) fn resumed_lineage(
+        row: Option<&SessionRecord>,
+    ) -> Result<crate::mcp_broker::AgentLineage, WireError> {
+        let Some(row) = row else {
+            return Ok(crate::mcp_broker::AgentLineage::root());
+        };
+        if row.created_by.is_none() {
+            return Ok(crate::mcp_broker::AgentLineage::root());
+        }
+        let Some(overlay) = row.overlay.clone() else {
+            return Err(WireError::new(
+                ErrorCode::Internal,
+                format!(
+                    "cannot resume session '{}': its stored tool overlay is unreadable (sessions.overlay)",
+                    row.id
+                ),
+            ));
+        };
+        Ok(crate::mcp_broker::AgentLineage {
+            depth: row.depth.unwrap_or(MAX_AGENT_DEPTH),
+            overlay,
+        })
+    }
+
     pub fn resume(
         &self,
         state: &Arc<ServerState>,
@@ -4095,24 +4142,24 @@ impl SessionRegistry {
         }
         // A resumed agent-created session is still that creator's child (audit
         // S5B-05). The journal has carried `created_by` since the slice-5
-        // migration, so the lineage is read back instead of being dropped: with
-        // the creator live the session re-enters the bookkeeping at the same
-        // depth, and a session whose creator is gone stays an ordinary one
-        // (`created_by` is kept on the row for the roster, and nothing is
-        // counted). The *overlay* and the *quiet* preference are not persisted;
-        // a resume comes back with the root's overlay and reports its end.
-        let resumed_child = self
-            .journal_roster()
-            .and_then(|rows| rows.into_iter().find(|row| row.id == session_id))
-            .and_then(|row| row.created_by);
-        let lineage = match resumed_child.as_deref() {
-            Some(creator) if self.live_runtime(creator, owner).is_some() => {
-                crate::mcp_broker::AgentLineage {
-                    depth: 1,
-                    overlay: crate::provider_catalog::ToolOverlay::NONE,
-                }
+        // migration, and the birth overlay and depth since v13, so the
+        // lineage is read back instead of being dropped: the session
+        // re-registers under the powers it was born with, whether or not
+        // its creator is live — losing a restriction because the parent is
+        // gone would be the silent escalation this column exists to stop.
+        // Whether the creator is live decides only the bookkeeping in
+        // `readmit_agent_child` below, never the powers. The *quiet*
+        // preference is still not persisted: a resume reports its end.
+        // The row is the one this function already holds: re-reading it
+        // through the roster cache would trade a propagated error for a
+        // silent root lineage on a slow journal.
+        let resumed_child = record.created_by.clone();
+        let lineage = match Self::resumed_lineage(Some(&record)) {
+            Ok(lineage) => lineage,
+            Err(error) => {
+                state.session_finished();
+                return Err(error);
             }
-            _ => crate::mcp_broker::AgentLineage::root(),
         };
         // S9 kind-preserving fix: the gate above (`resume_handle`) admits the
         // resumable families, so this is Acp or Claude today — but the kind

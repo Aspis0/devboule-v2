@@ -51,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 12;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 13;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -286,6 +286,23 @@ pub struct SessionRecord {
     /// session with none (a human's own sessions carry none), and for every row
     /// that predates v11.
     pub labels: std::collections::BTreeMap<String, String>,
+    /// The tool overlay the creation stamped on this child, as the deny list
+    /// it resolved at birth. Read back at resume instead of re-resolving the
+    /// profile, whose answer may have changed since. `None` is an unreadable
+    /// cell — never a recorded value, since every write carries a definite
+    /// overlay — and only the resume path judges it; the roster reads the
+    /// cell but decides nothing from it.
+    ///
+    /// `pub(crate)` while the sibling fields are `pub`: the overlay type
+    /// itself is crate-internal, and widening it for one field would grow
+    /// the crate's API for nothing the app ever names.
+    pub(crate) overlay: Option<crate::provider_catalog::ToolOverlay>,
+    /// The child's own depth at birth: its creator's depth, plus one. A
+    /// birth fact like the overlay above, read back at resume so the depth
+    /// cap survives a restart. `None` is a row that predates the column;
+    /// the resume mapping, not this field, decides what that resumes as —
+    /// and only for rows that still name a creator.
+    pub(crate) depth: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2359,16 +2376,18 @@ fn on_write_error(error: &JournalError) {
     eprintln!("journal write failed: {error}");
 }
 
-/// The session row's insert — the column list and its 30 bindings — shared
-/// by the birth insert and the update-or-insert upsert, so neither can grow
-/// a column the other does not write.
+/// The session row's insert — 33 columns, 32 bindings plus the literal `0`
+/// for `unsnapshotted_bytes` — shared by the birth insert and the
+/// update-or-insert upsert, so neither can grow a column the other does not
+/// write.
 const SESSION_INSERT: &str = "INSERT INTO sessions (
     id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
     generation, status, exit_code, closed, last_seq, degraded,
     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
     reaped, peer_session_id, provider, origin_kind, origin_device, origin_role,
-    display_name, created_by, profile_id, context_id, unattended, unattended_state, labels
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)";
+    display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
+    overlay, depth
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)";
 
 /// The upsert's conflict clause: an existing id is *updated*, with the
 /// never-downward ratchets and the birth-fact protections below.
@@ -2409,7 +2428,12 @@ const SESSION_UPSERT_CLAUSE: &str = "
         -- Same rule: labels are written once, at the creation. A later
         -- upsert with an empty map (the common one, every end marker)
         -- must not erase them.
-        labels = COALESCE(NULLIF(excluded.labels, '{}'), sessions.labels)";
+        labels = COALESCE(NULLIF(excluded.labels, '{}'), sessions.labels),
+        -- Same rule again: the overlay and the depth are birth facts. Later
+        -- upserts carry NULL (their records never re-derive them), so the
+        -- birth values stay.
+        overlay = COALESCE(excluded.overlay, sessions.overlay),
+        depth = COALESCE(excluded.depth, sessions.depth)";
 
 fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), JournalError> {
     write_session_row(conn, record, true)
@@ -2428,6 +2452,7 @@ fn write_session_row(
     upsert: bool,
 ) -> Result<(), JournalError> {
     let labels = labels_json(&record.labels);
+    let overlay = overlay_json(&record.overlay)?;
     let sql = if upsert {
         format!("{SESSION_INSERT}{SESSION_UPSERT_CLAUSE}")
     } else {
@@ -2470,6 +2495,8 @@ fn write_session_row(
             },
             unattended_state_rank(record.unattended_state),
             labels,
+            overlay,
+            record.depth.map(|depth| depth as i64),
         ],
     )
     .map_err(|error| {
@@ -2534,6 +2561,34 @@ fn unattended_state_from_rank(rank: i64) -> UnattendedState {
 /// shows no labels — never a session that cannot be listed.
 fn labels_json(labels: &std::collections::BTreeMap<String, String>) -> String {
     serde_json::to_string(labels).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The overlay column: one JSON array of denied tool names, canonicalised
+/// (sorted, deduped — the deny check is order-free), and NULL for a session
+/// that carries no overlay (which is every session a human started, and
+/// every row that predates v13). NULL is the one representation of "no
+/// overlay": a birth with no restriction writes the same bytes a pre-v13
+/// row already has, so absence keeps meaning absence and no backfill can
+/// manufacture a restriction nobody recorded.
+///
+/// The encoding cannot fail for the names this function is given, and the
+/// failure is still loud: a restriction silently unwritten would read back
+/// as no restriction, which is the open direction the read side refuses.
+fn overlay_json(
+    overlay: &Option<crate::provider_catalog::ToolOverlay>,
+) -> Result<Option<String>, JournalError> {
+    let Some(overlay) = overlay else {
+        return Ok(None);
+    };
+    let mut names = overlay.disabled_names();
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_string(&names)
+        .map(Some)
+        .map_err(|error| JournalError::Corrupt(format!("could not encode tool overlay: {error}")))
 }
 
 fn append_event(
@@ -3060,6 +3115,12 @@ pub fn new_session_record(
         // derived the marker yet is a record nobody has said anything about.
         unattended_state: UnattendedState::Unknown,
         labels: std::collections::BTreeMap::new(),
+        // No overlay: a human's own session is the root lineage, and a row
+        // that predates the column reads the same way (NULL).
+        overlay: None,
+        // No depth either: the birth stamps its own, and a row that predates
+        // the column resumes at the closed end of the cap.
+        depth: None,
     }
 }
 
