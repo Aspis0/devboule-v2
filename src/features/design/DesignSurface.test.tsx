@@ -2,13 +2,20 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
 import {
   resetDelegatedMirrorForTests,
   scheduleDelegatedDesignMirror,
 } from "./delegatedDesignMirror";
 import type { DesignHistoryOpenResult } from "./designHistoryOpen";
+import type { AttachmentReference, StoredAttachment } from "../../lib/tauri";
+
+interface CapturedRead {
+  reference: AttachmentReference;
+  resolve: (stored: StoredAttachment) => void;
+  reject: (error: unknown) => void;
+}
 import { ARTIFACT_CSP, ARTIFACT_CSP_META } from "./artifactCsp";
 import {
   builtInSkillIndex,
@@ -937,43 +944,60 @@ describe("DesignSurface host capabilities", () => {
   });
 
   /**
-   * One controllable reopen for the delegation tests below: captures the
-   * callback instead of answering, so each test fires the outcome it needs.
+   * One controllable read for the delegation tests below: captures the
+   * reference instead of answering, so each test resolves the outcome it
+   * needs.
    */
-  function delegatedOpen(
-    captured: Array<{
-      sessionId: string;
-      onResult: (result: DesignHistoryOpenResult) => void;
-    }>,
-  ): (
-    sessionId: string,
-    deps: { onResult: (result: DesignHistoryOpenResult) => void },
-  ) => { dispose: () => void } {
-    return ((sessionId: string, deps: { onResult: (result: DesignHistoryOpenResult) => void }) => {
-      captured.push({ sessionId, onResult: deps.onResult });
-      return { dispose: () => undefined };
-    }) as (
-      sessionId: string,
-      deps: { onResult: (result: DesignHistoryOpenResult) => void },
-    ) => { dispose: () => void };
+  function delegatedRead(
+    captured: Array<CapturedRead>,
+  ): (reference: AttachmentReference) => Promise<StoredAttachment> {
+    return (reference: AttachmentReference) =>
+      new Promise<StoredAttachment>((resolve, reject) => {
+        captured.push({ reference, resolve, reject });
+      });
   }
 
   function delegatedFinish(
     childSessionId: string,
   ): Extract<SessionEvent, { type: "child_finished" }> {
+    const digest = "a".repeat(64);
     return {
       type: "child_finished",
       messageId: "m9",
       childSessionId,
       displayName: "delegated work",
       state: "completed",
-      artifacts: [],
+      artifacts: [
+        {
+          artifactId: `devboule-attachment:s.creator.1/${digest}`,
+          parts: [
+            {
+              url: `devboule-attachment:s.creator.1/${digest}`,
+              mimeType: "text/markdown",
+              metadata: { storedBytes: 512 },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  function toBase64Markdown(html: string): StoredAttachment {
+    return {
+      mimeType: "text/markdown",
+      data: Buffer.from(`\`\`\`html\n${html}\n\`\`\``, "utf8").toString("base64"),
     };
   }
 
   async function flushMirror(): Promise<void> {
-    for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    for (let index = 0; index < 30; index += 1) await Promise.resolve();
   }
+
+  // The mirror resolves its extractor through a dynamic import: pre-warm
+  // it once, so these flushes wait on the mirror instead of module loading.
+  beforeAll(async () => {
+    await import("./agentHost");
+  });
 
   async function settleDesignLoad(): Promise<void> {
     await act(settle);
@@ -1001,16 +1025,13 @@ describe("DesignSurface host capabilities", () => {
     // mount must not wipe them back to the loaded document's transcript.
     const host = createHost();
     useAppStore.getState().setDesignHost(host);
-    const captured: Array<{
-      sessionId: string;
-      onResult: (result: DesignHistoryOpenResult) => void;
-    }> = [];
+    const captured: Array<CapturedRead> = [];
     scheduleDelegatedDesignMirror(delegatedFinish("delegated-1"), {
-      openHistory: delegatedOpen(captured),
+      readStored: delegatedRead(captured),
       store: useAppStore,
     });
     await flushMirror();
-    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    captured[0].resolve(toBase64Markdown("<main>Delegated</main>"));
     await flushMirror();
     expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
       html: "<main>Delegated</main>",
@@ -1036,17 +1057,14 @@ describe("DesignSurface host capabilities", () => {
     await pickHistoryEntry(container, "history-old");
     expect(historyOpenMocks.open).toHaveBeenCalledTimes(1);
 
-    const captured: Array<{
-      sessionId: string;
-      onResult: (result: DesignHistoryOpenResult) => void;
-    }> = [];
+    const captured: Array<CapturedRead> = [];
     scheduleDelegatedDesignMirror(delegatedFinish("delegated-new"), {
-      openHistory: delegatedOpen(captured),
+      readStored: delegatedRead(captured),
       store: useAppStore,
     });
     await flushMirror();
-    expect(captured.map((open) => open.sessionId)).toEqual(["delegated-new"]);
-    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    expect(captured).toHaveLength(1);
+    captured[0].resolve(toBase64Markdown("<main>Delegated</main>"));
     await flushMirror();
 
     expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({
@@ -1071,12 +1089,9 @@ describe("DesignSurface host capabilities", () => {
       html: "<main>Old</main>",
     });
 
-    const captured: Array<{
-      sessionId: string;
-      onResult: (result: DesignHistoryOpenResult) => void;
-    }> = [];
+    const captured: Array<CapturedRead> = [];
     scheduleDelegatedDesignMirror(delegatedFinish("delegated-new"), {
-      openHistory: delegatedOpen(captured),
+      readStored: delegatedRead(captured),
       store: useAppStore,
     });
     await flushMirror();
@@ -1111,12 +1126,9 @@ describe("DesignSurface host capabilities", () => {
     });
     await act(async () => root.unmount());
 
-    const captured: Array<{
-      sessionId: string;
-      onResult: (result: DesignHistoryOpenResult) => void;
-    }> = [];
+    const captured: Array<CapturedRead> = [];
     scheduleDelegatedDesignMirror(delegatedFinish("delegated-new"), {
-      openHistory: delegatedOpen(captured),
+      readStored: delegatedRead(captured),
       store: useAppStore,
     });
     await flushMirror();
@@ -1158,16 +1170,13 @@ describe("DesignSurface host capabilities", () => {
     if (end === null) throw new Error("End session control missing");
     await act(async () => end.click());
 
-    const captured: Array<{
-      sessionId: string;
-      onResult: (result: DesignHistoryOpenResult) => void;
-    }> = [];
+    const captured: Array<CapturedRead> = [];
     scheduleDelegatedDesignMirror(delegatedFinish("delegated-new"), {
-      openHistory: delegatedOpen(captured),
+      readStored: delegatedRead(captured),
       store: useAppStore,
     });
     await flushMirror();
-    captured[0].onResult({ status: "artifact", html: "<main>Delegated</main>" });
+    captured[0].resolve(toBase64Markdown("<main>Delegated</main>"));
     await flushMirror();
 
     expect(useAppStore.getState().designSession.latestArtifact).toMatchObject({

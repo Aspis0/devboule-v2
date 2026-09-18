@@ -17,8 +17,9 @@ type ChildFinishedEvent = Extract<SessionEvent, { type: "child_finished" }>;
  *
  * The event's `artifacts[0]` remains a **fallback, not the hot path**: it would
  * be read only if a later replay came back without an artifact. Nothing reads
- * it here — there is no read-by-reference door in the app yet, and the entry
- * stores no url to reach one through. Do not resolve it from this callback.
+ * it here — the entry stores no url to reach one through, and the Design
+ * mirror reads the bytes through the attachment-read door instead. Do not
+ * resolve it from this callback.
  *
  * `peerSessionId` and `createdAtMs` are null: the event carries neither, and
  * both belong to the child's own row, which `historyEntryStatus` re-reads by

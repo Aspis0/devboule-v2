@@ -830,11 +830,11 @@ export type SessionEvent =
    * creator: same facts, same `messageId`, and the app reads THIS one — it has
    * no parser for the envelope and must not grow one.
    *
-   * The app's only reader is the Design history entry that points at the child
-   * (`childFinishedHistory.ts`), and that entry carries a session id and no
-   * url. `artifacts` is read by nobody: with no read-by-reference door to open
-   * one through, nothing is copied on arrival, and the daemon's own copy is the
-   * only one — it dies with the creator session, as
+   * The app's only reader is the Design mirror, which reads the first
+   * markdown part through the attachment-read door (`sessionAttachmentRead`)
+   * on arrival; the history entry points at the child with a session id and
+   * no url. Nothing else is copied on arrival, and the daemon's own copy is
+   * the only one — it dies with the creator session, as
    * `SessionEvent::ChildFinished` says in `devboule-protocol/src/session.rs`.
    */
   | {

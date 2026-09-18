@@ -1,21 +1,20 @@
 // Automatic mirror of delegated design work into the Design side panel.
 //
-// Which child the panel mirrors: the most recent finished child whose replay
-// yields a design artifact. When two children finish close together the later
-// arrival wins and the earlier arrival's slow replay is dropped as stale, but
-// a human who deliberately opened an older history entry keeps it: the pin
-// set by `noteHumanOpenedHistory` blocks every later arrival until the human
-// starts a generation or clears it, because a panel that yanks itself out
-// from under the reader is worse than one that waits.
+// Which child the panel mirrors: the most recent finished child whose
+// deposited artifact yields a design. When two children finish close
+// together the later arrival wins and the earlier arrival's slow read is
+// dropped as stale, but a human who deliberately opened an older history
+// entry keeps it: the pin set by `noteHumanOpenedHistory` blocks every
+// later arrival until the human starts a generation or clears it, because
+// a panel that yanks itself out from under the reader is worse than one
+// that waits.
 //
-// Displaying is reading. The mirror replays the child through
-// `openDesignHistoryEntry`, whose invoke wrapper only allows `session_attach`
-// and `session_detach` and rejects resume, send, spawn and close before the
-// bridge can receive them. The mirror itself never calls the daemon directly:
-// it writes the extracted artifact into the app store. No attach here spawns,
-// resumes or sends.
+// Displaying is reading. The mirror reads the finished child's deposited
+// bytes through `sessionAttachmentRead` and extracts fenced HTML from the
+// decoded markdown: no replay, no attach, and it writes the extracted
+// artifact into the app store. No read here spawns, resumes or sends.
 //
-// Only an artifact is ever written. A replay that yields nothing writes
+// Only an artifact is ever written. A finish that yields nothing writes
 // nothing: no card, no error, no warning. The common case is a child whose
 // job was never design (a coder finishing leaves no fenced HTML behind),
 // and that is not an error to display in a panel about design work.
@@ -33,15 +32,16 @@
 // the handler returns, which is also what keeps the event callback unblocked.
 import type { useAppStore as useAppStoreType } from "../../store/appStore";
 import type { SessionEvent } from "../../types/ipc";
+import type { AttachmentReference, StoredAttachment } from "../../lib/tauri";
 import type { DesignHost } from "./designHost";
-import type { openDesignHistoryEntry as openHistoryType } from "./designHistoryOpen";
+import { parseAttachmentReference } from "./attachmentReference";
 
 /** The `child_finished` arm of the session event union. */
 type ChildFinishedEvent = Extract<SessionEvent, { type: "child_finished" }>;
 
 export interface DelegatedMirrorDeps {
-  /** Test seam: defaults to the read-only history reopen. */
-  openHistory?: typeof openHistoryType;
+  /** Test seam: defaults to the real attachment read. */
+  readStored?: (reference: AttachmentReference) => Promise<StoredAttachment>;
   /** Test seam: defaults to creating the real Design host. */
   ensureHost?: () => Promise<DesignHost>;
   /** Test seam: defaults to the real app store. */
@@ -95,24 +95,42 @@ async function defaultEnsureHost(): Promise<DesignHost> {
 }
 
 /**
- * The replay's HTML, or null when there is nothing this panel can show — a
- * timeout proves nothing, and a failed extraction means no HTML to hand over.
- * The oversized case is not "no fenced HTML": the artifact exists and is too
- * large to carry, and it is mirrored as absent just the same. Silent either
- * way; the panel keeps what it showed.
+ * The stored markdown of the first markdown part, or null when there is
+ * nothing this panel can show — no markdown part, an unparseable url, or
+ * markdown with no fenced HTML. Silent either way; the panel keeps what it
+ * showed. A failed read never answers here: the rejection propagates to the
+ * runner's catch, which warns and writes nothing.
  */
-function replayChildArtifact(
-  childSessionId: string,
-  open: typeof openHistoryType,
+async function readChildArtifact(
+  artifacts: ChildFinishedEvent["artifacts"],
+  readStored: (reference: AttachmentReference) => Promise<StoredAttachment>,
+  extractFencedHtml: (text: string) => string | undefined,
 ): Promise<string | null> {
-  return new Promise((resolve) => {
-    open(childSessionId, {
-      onResult: (result) => {
-        if (result.status === "loading") return;
-        resolve(result.status === "artifact" ? result.html : null);
-      },
-    });
-  });
+  for (const artifact of artifacts) {
+    for (const part of artifact.parts) {
+      // A part of another type is not markdown and must not be extracted
+      // from; the first markdown part decides, even when it refuses.
+      if (part.mimeType !== "text/markdown") continue;
+      const reference = parseAttachmentReference(part);
+      if (reference === null) return null;
+      const stored = await readStored(reference);
+      return extractFencedHtml(decodeAttachmentText(stored.data)) ?? null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Base64 to text, through bytes: `atob` yields one byte per character, so
+ * reading its output as text corrupts every non-ASCII byte into mojibake.
+ */
+function decodeAttachmentText(data: string): string {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /** Whether the transcript already holds this mirror's card: same id, same React key. */
@@ -120,7 +138,7 @@ function hasDelegatedCard(messages: readonly { id: string }[], cardId: string): 
   return messages.some((message) => message.id === cardId);
 }
 
-/** Writes one card. A pin landed mid-replay, a host changed under the
+/** Writes one card. A pin landed mid-read, a host changed under the
  * write, or a card already there all answer false, so only shown work
  * marks the slot. */
 async function writeDelegatedArtifact(
@@ -130,8 +148,8 @@ async function writeDelegatedArtifact(
   ensureHost: () => Promise<DesignHost>,
   store: typeof useAppStoreType,
 ): Promise<boolean> {
-  // The human pinned an entry while the replay was in flight, or a duplicate
-  // arrival's replay finished second: neither may write.
+  // The human pinned an entry while the read was in flight, or a duplicate
+  // arrival's read finished second: neither may write.
   if (humanPinnedChildId !== null) return false;
   if (mirroredChildId === childSessionId) return false;
   let host = store.getState().designSession.host;
@@ -220,8 +238,6 @@ export function scheduleDelegatedDesignMirror(
 
   void (async () => {
     try {
-      const open =
-        deps?.openHistory ?? (await import("./designHistoryOpen")).openDesignHistoryEntry;
       const store = deps?.store ?? (await import("../../store/appStore")).useAppStore;
       const ensureHost = deps?.ensureHost ?? defaultEnsureHost;
       // A cleared session drops the pin and the mirror record with it: the
@@ -235,11 +251,14 @@ export function scheduleDelegatedDesignMirror(
       }
       if (humanPinnedChildId !== null) return;
       if (mirroredChildId === childSessionId) return;
-      const html = await replayChildArtifact(childSessionId, open);
+      const readStored =
+        deps?.readStored ?? (await import("../../lib/tauri")).sessionAttachmentRead;
+      const { extractFencedHtml } = await import("./agentHost");
+      const html = await readChildArtifact(event.artifacts, readStored, extractFencedHtml);
       if (html === null) return;
       // Only a newer *write* drops this one, and only a write marks the
       // slot: an arrival that produced nothing — or whose write found
-      // nothing to do — consumes nothing, so a slow design replay still
+      // nothing to do — consumes nothing, so a slow design read still
       // lands after a fast empty one. Among arrivals with content the last
       // writer wins, which converges on the most recent one either way.
       if (sequence < writtenSequence) return;
