@@ -409,6 +409,16 @@
   white-space: nowrap;
 }
 
+/* The strip is a flex row, so bare text in it is an anonymous item no ellipsis
+   can reach; the label clips inside its own box, and min-width: 0 lets that box
+   shrink; the dot keeps its size and the note yields beside it. */
+.workspace-daemon-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* A restart that did not complete: an additional fact beside the daemon's own
    unresponsive sentence, held together in the same strip. */
 .workspace-recovery-note::before {
@@ -416,8 +426,16 @@
   color: var(--terracotta-deep);
 }
 
+/* The yielding fragment: capped under half the strip so a short label and the
+   note share it without contest, and clipped in its own box so a contested
+   strip announces both cuts instead of silently clipping at the edge. */
 .workspace-recovery-note {
+  max-width: 40%;
+  min-width: 0;
+  overflow: hidden;
   color: var(--terracotta-deep);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace-daemon-status .workspace-status-dot,

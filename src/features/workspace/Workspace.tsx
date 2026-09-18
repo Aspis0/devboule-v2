@@ -964,7 +964,7 @@ export function Workspace({
                 <span
                   className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`}
                 />
-                {daemonLabel(daemon)}
+                <span className="workspace-daemon-status-label">{daemonLabel(daemon)}</span>
                 {restartFailureNote !== null ? (
                   <span className="workspace-recovery-note">{restartFailureNote}</span>
                 ) : null}
