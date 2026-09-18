@@ -1448,9 +1448,22 @@ mod tests {
         assert_eq!(pending.role, PeerRole::Client);
         assert!(!pending.key_fingerprint.is_empty());
 
-        // B parked it, keyed by the device that typed the code (A).
-        let parked = service_b.pending_snapshot();
-        assert_eq!(parked.len(), 1, "exactly one pairing is parked at B");
+        // B parked it, keyed by the device that typed the code (A). The
+        // responder parks after it sends its payload, which is what
+        // `complete` above already read, so the park may still be in flight
+        // on the responder thread: wait for it.
+        let deadline = Instant::now() + bound::THREAD;
+        let parked = loop {
+            let parked = service_b.pending_snapshot();
+            if parked.len() == 1 {
+                break parked;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "exactly one pairing is parked at B; saw {parked:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
         let initiator_id = server_a
             .device_identity()
             .as_ref()
