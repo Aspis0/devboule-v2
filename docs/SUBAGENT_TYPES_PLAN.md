@@ -150,11 +150,36 @@ stated plainly, each acting power named with its switch off. A Settings section 
 the tool-policy section for granting and revoking afterwards, plus the list of installed
 types with their origin plugin.
 
-**T5 — the typed return channel (daemon + shell + frontend).** A read-by-reference door:
-an RPC that resolves `devboule-attachment:<sessionId>/<digest>` through the attachment
-store with the store's own size as the number that counts, its Tauri command, and a
-frontend reader for `ChildFinished.artifacts`. Then `delegatedDesignMirror.ts` stops
-replaying the transcript and stops synthesising metadata it can now read.
+**T5 — the typed return channel (daemon + shell + frontend).** A read-by-reference door.
+Measured on 2026-09-17, so the slice is smaller than it looks:
+
+- The store already has the read half. `AttachmentStore::resolve(session_id, digest, hint)`
+  returns `(path, size)` with the digest validated as 64 lowercase hex, the folder refused
+  if it redirects, the name built from the store's own extension table, and the size
+  re-stat'ed from disk rather than remembered. What is missing is only a door that returns
+  **bytes** to the app: there is no such method, no message pair, no command, no wrapper.
+- The frame ceiling is `MAX_FRAME_BYTES` = 1 MiB on both transports, and a finish artifact
+  is capped at `MAX_AGENT_ARTIFACT_BYTES` = 32 KiB. The body fits with room to spare, and
+  32 KiB is the read cap the door should carry — it already exists as a number.
+- The RPC spine to copy is `SessionDeposit`: request arm, dispatch arm, response arm,
+  `client.rs` roundtrip, Tauri forwarder, `invokeTyped` wrapper, and the two contract
+  guards. Adding a variant forces classification in five closed matches, three of them in
+  the peer gate, so the peer question cannot be skipped by omission.
+- **The peer posture is deny.** Every existing content read is refused to peers —
+  `ToolPolicyGet`, `AgentProfilesGet`, `DelegationGet`, `ProviderVocabularyGet` — while
+  only list reads ride on `CAP_VIEW`. A door that resolves `<sessionId>/<digest>` for a
+  paired device would be a way to read deposited bytes from another machine, and nothing
+  in the product asks for that yet. The handler calls `check_user_owner` exactly like the
+  deposit arm, so a reference resolves only inside a session the caller's own scope owns.
+- **A dead reference needs its own answer.** The creator's folder is removed on close and
+  swept after the retention window, and `ChildFinished` is journaled — so a replayed event
+  names a digest that no longer resolves. "Never deposited" and "deposited and gone" are
+  two different sentences, and the surface must be able to tell them apart.
+- On the frontend, less dies than the recon's first reading suggested. The deposit stores
+  the child's final message as `text/markdown`, so the fenced-HTML extraction **survives**,
+  applied to the artifact's bytes instead of a replayed transcript. What dies is the replay
+  itself: the attach, the 5 s timeout, the quiesce window, and the silent nothing on an
+  oversize artifact. The pin, the arrival sequencing and the card write all stay.
 
 This is the piece the other four cannot replace: without it every new type re-invents the
 Design mirror's trick, and each one gets it wrong in its own way.
