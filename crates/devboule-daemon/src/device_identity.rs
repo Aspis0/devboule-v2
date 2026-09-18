@@ -238,20 +238,6 @@ pub const MAX_DISPLAY_NAME_CHARS: usize = 64;
 /// The fallback when this device's own name cannot be used.
 pub const FALLBACK_DISPLAY_NAME: &str = "unknown";
 
-/// Zero-width and bidirectional-format characters.
-///
-/// These are the ones that make a name render as something other than what it
-/// contains: a U+202E makes the rest of the line read backwards, and U+200B /
-/// U+FEFF make two different strings look identical. A person confirming a
-/// pairing by reading a name aloud must see the name that was sent.
-fn is_invisible_format(character: char) -> bool {
-    matches!(
-        character,
-        '\u{00ad}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}' | '\u{feff}'
-    )
-}
-
 /// Whether `name` may be stored and shown as a device name.
 ///
 /// The rules are deliberately narrow, because this string is attacker-chosen
@@ -263,7 +249,10 @@ fn is_invisible_format(character: char) -> bool {
 /// - no leading or trailing whitespace (so `"Foo "` and `"Foo"` cannot look
 ///   like two different devices);
 /// - no control characters;
-/// - no zero-width or bidirectional-format characters ([`is_invisible_format`]).
+/// - no zero-width or bidirectional-format characters
+///   ([`crate::text_safety::is_invisible_format`]);
+/// - no line-break characters ([`crate::text_safety::is_mandatory_line_break`]),
+///   which would put the card's decision text on a second line.
 ///
 /// The fingerprint remains the check that actually matters; this only stops the
 /// name from being a second, confusing channel.
@@ -287,8 +276,11 @@ pub fn validate_display_name(name: &str) -> Result<(), String> {
         if character.is_control() {
             return Err("the device name contains a control character".to_string());
         }
-        if is_invisible_format(character) {
+        if crate::text_safety::is_invisible_format(character) {
             return Err("the device name contains an invisible formatting character".to_string());
+        }
+        if crate::text_safety::is_mandatory_line_break(character) {
+            return Err("the device name contains a line break character".to_string());
         }
     }
     Ok(())
@@ -758,6 +750,8 @@ mod tests {
             ("two\nlines", "a control character"),
             ("tab\there", "a control character"),
             ("bell\u{7}", "a control character"),
+            ("separator\u{2028}line", "a line break"),
+            ("paragraph\u{2029}break", "a line break"),
             ("soft\u{ad}hyphen", "an invisible formatting character"),
             ("zero\u{200b}width", "an invisible formatting character"),
             ("join\u{200d}er", "an invisible formatting character"),

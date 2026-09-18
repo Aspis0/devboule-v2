@@ -7956,14 +7956,26 @@ fn agent_quiet_envelope(
     )
 }
 
-/// One header line per child-chosen value: a newline in it would impersonate
-/// frame structure, so it becomes a space before anything else runs. The cap
+/// One header line per child-chosen value: a line break in it would impersonate
+/// frame structure, so every mandatory break (CR, LF, VT, FF, NEL, U+2028, U+2029)
+/// becomes a space before anything else runs. The cap
 /// bounds the frame, not the card. `pub(crate)` because the peer-roster
 /// boundary (`mcp_peer_agents`) composes the same two passes the card path
 /// composes rather than growing a second neutraliser.
 pub(crate) fn single_line_header(text: &str) -> String {
-    let normalised = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
-    normalised.chars().take(TITLE_LINE_MAX_CHARS).collect()
+    let mut single = String::with_capacity(text.len());
+    let mut rest = text.chars().peekable();
+    while let Some(next) = rest.next() {
+        if crate::text_safety::is_mandatory_line_break(next) {
+            if next == '\r' && rest.peek() == Some(&'\n') {
+                rest.next();
+            }
+            single.push(' ');
+        } else {
+            single.push(next);
+        }
+    }
+    single.chars().take(TITLE_LINE_MAX_CHARS).collect()
 }
 
 /// The delegated-surfacing envelope (§4.3, §6.7 of the app contract): the

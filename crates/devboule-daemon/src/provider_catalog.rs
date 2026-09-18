@@ -38,18 +38,16 @@ pub(crate) fn cap_external_version(value: &str) -> Option<String> {
 }
 
 /// The characters an externally supplied string may keep: no control
-/// characters, no bidi overrides. [`cap_external_version`] applies this to
-/// version labels; the peer-roster boundary (`mcp_peer_agents`) applies the
-/// same set to a far daemon's roster text, so there is one table and not two.
+/// characters, no invisible formatting. [`cap_external_version`] applies this
+/// to version labels; the peer-roster boundary (`mcp_peer_agents`) applies
+/// the same set to a far daemon's roster text. The invisible set is the
+/// shared table, so the two paths agree by construction rather than by
+/// coincidence.
 pub(crate) fn strip_control_and_bidi(value: &str) -> String {
     value
         .chars()
         .filter(|character| {
-            !character.is_control()
-                && !matches!(
-                    *character,
-                    '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
-                )
+            !character.is_control() && !crate::text_safety::is_invisible_format(*character)
         })
         .collect()
 }

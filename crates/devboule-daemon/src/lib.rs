@@ -84,6 +84,7 @@ mod spawn;
 mod tailscale_localapi;
 #[cfg(all(test, feature = "server"))]
 mod test_support;
+mod text_safety;
 #[cfg(feature = "server")]
 mod tool_paths;
 #[cfg(feature = "server")]
