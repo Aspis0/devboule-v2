@@ -1151,6 +1151,12 @@ pub struct Cursor {
     pub seq: u64,
 }
 
+/// The seq value of a cursor that means "nothing is owed": the reader asks
+/// to be sent no rows at all, whatever generations they span. It is a
+/// sentinel, not a position — no seq is past every row once history is
+/// owed regardless of the cursor.
+pub const NOTHING_OWED_CURSOR: u64 = u64::MAX;
+
 /// Outcome of a typed permission prompt. The wire name is fixed so
 /// permission-response idempotency remains stable across clients.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

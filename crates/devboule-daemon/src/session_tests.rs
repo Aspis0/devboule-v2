@@ -2742,6 +2742,104 @@ fn delivered_transcript_exit_removes_the_idle_registry_entry() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The transcript store holds the whole history whatever the cursor says.
+/// A reattaching reader presents a cursor that is a position inside the
+/// current generation only — history does not advance cursors, so a cursor
+/// can never certify the history was read — and the hydration behind the
+/// store must therefore read unpositioned: the pull, through the owed-row
+/// predicate, decides what is delivered.
+#[test]
+fn the_transcript_store_holds_the_whole_history_whatever_the_cursor_says() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-1", "probe");
+    let session_id = "s.store.all.1";
+    journal
+        .upsert_blocking(crate::journal::new_session_record(
+            session_id,
+            &owner.user,
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("journal row");
+    let ledger_row = crate::journal::output_record(session_id, 1, 1, "gen-1 ledger".as_bytes());
+    journal.append_blocking(ledger_row).expect("gen-1 ledger");
+    let user_row = crate::journal::agent_report_record(
+        session_id,
+        1,
+        2,
+        &SessionEvent::AgentUserMessage {
+            message_id: Some("m1".into()),
+            text: "gen-1 user".into(),
+            author: devboule_protocol::UserMessageAuthor::Human,
+        },
+    )
+    .unwrap();
+    journal.append_blocking(user_row).expect("gen-1 user row");
+    journal.start_generation(session_id, 2).expect("resume");
+    let ledger_after = crate::journal::output_record(session_id, 2, 6, "gen-2 ledger".as_bytes());
+    journal.append_blocking(ledger_after).expect("gen-2 ledger");
+    let answer_row = crate::journal::agent_report_record(
+        session_id,
+        2,
+        7,
+        &SessionEvent::AgentMessage {
+            message_id: Some("m2".into()),
+            text: "after cursor".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        },
+    )
+    .unwrap();
+    journal.append_blocking(answer_row).expect("gen-2 answer");
+
+    // A reattaching reader whose cursor says it is at seq 5 of generation 2.
+    let conn = ConnHandle::new(9);
+    registry
+        .attach_with_subscription(
+            session_id,
+            901,
+            Some(Cursor {
+                generation: 2,
+                seq: 5,
+            }),
+            &conn,
+            &owner,
+            false,
+        )
+        .expect("transcript observer attaches");
+    let mut events = conn.pull_events();
+    for event in &events {
+        conn.event_sent(event);
+    }
+    loop {
+        let more = conn.pull_events();
+        if more.is_empty() {
+            break;
+        }
+        for event in &more {
+            conn.event_sent(event);
+        }
+        events.extend(more);
+    }
+    let transcript: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.envelope.event {
+            SessionEvent::Output { data, .. } => Some(data.clone()),
+            SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+            SessionEvent::AgentMessage { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        transcript,
+        vec!["gen-1 ledger", "gen-1 user", "gen-2 ledger", "after cursor",],
+        "the store must hold the whole history whatever the cursor says: {transcript:?}"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn stale_generation_is_rejected() {
     let runtime = SessionRuntime::new();
@@ -2812,7 +2910,7 @@ fn journal_keeps_drain_bytes_after_reap() {
     assert_eq!(stats.accepted_frames, 2);
     assert_eq!(stats.committed_frames, 2);
     assert_eq!(stats.failed_frames, 0);
-    let replay = journal.replay("s.drain.1", 0).unwrap();
+    let replay = journal.replay("s.drain.1").unwrap();
     let replay_bytes: usize = replay
         .events
         .iter()
@@ -7216,7 +7314,7 @@ fn poisoned_agent_writer_publishes_error_without_prompt() {
     );
 
     let replay = journal
-        .replay("agent-poisoned-writer", 0)
+        .replay("agent-poisoned-writer")
         .expect("replay poisoned writer");
     let replayed = replay.events;
     assert!(!replayed.iter().any(|event| {
@@ -7273,7 +7371,7 @@ fn closed_agent_output_refuses_unrecordable_prompt() {
     assert_eq!(runtime.current_agent_seq(), 0);
     journal.flush().expect("flush closed-output journal");
     let replayed = journal
-        .replay("agent-closed-output", 0)
+        .replay("agent-closed-output")
         .expect("replay closed output")
         .events;
     assert!(!replayed.iter().any(|event| matches!(
@@ -7326,7 +7424,7 @@ fn poisoned_agent_stream_refuses_unrecordable_prompt() {
     assert!(written.lock().expect("written lock").is_empty());
     journal.flush().expect("flush poisoned-stream journal");
     let replayed = journal
-        .replay("agent-poisoned-stream", 0)
+        .replay("agent-poisoned-stream")
         .expect("replay poisoned stream")
         .events;
     assert!(!replayed.iter().any(|event| matches!(
@@ -9578,7 +9676,7 @@ fn a_finish_that_lands_after_the_write_and_before_the_reply_still_records_the_st
     );
     journal.flush().expect("flush the journal");
     let steered = journal
-        .replay("s.steer.window", 0)
+        .replay("s.steer.window")
         .expect("replay")
         .events
         .into_iter()
@@ -9973,7 +10071,7 @@ fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
     // reader has to guess between.
     journal.flush().expect("flush the journal");
     let steered: Vec<Option<String>> = journal
-        .replay("s.steer.echo", 0)
+        .replay("s.steer.echo")
         .expect("replay")
         .events
         .into_iter()
@@ -11417,7 +11515,7 @@ fn creator_replay(journal: &Arc<Journal>, session_id: &str) -> Vec<SessionEvent>
         // The appends are the journal thread's work: flush before reading,
         // or a loaded machine reads a transcript that is still in flight.
         let _ = journal.flush();
-        let events = journal.replay(session_id, 0).expect("replay").events;
+        let events = journal.replay(session_id).expect("replay").events;
         let created = events
             .iter()
             .any(|event| matches!(event, SessionEvent::AgentCreated { .. }));

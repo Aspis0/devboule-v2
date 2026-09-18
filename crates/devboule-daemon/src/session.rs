@@ -4283,8 +4283,12 @@ impl SessionRegistry {
             return Err(unauthorized());
         }
         journal.pin(session_id)?;
-        let from_seq = from_cursor.map(|cursor| cursor.seq).unwrap_or(0);
-        let replay = match journal.replay(session_id, from_seq) {
+        // The store holds the whole history, whatever the cursor says: a
+        // cursor is a position inside the current generation — history
+        // never advances it — so it cannot certify the history was read.
+        // What this reader is owed is the pull's decision, through the
+        // owed-row predicate, against the cursor.
+        let replay = match journal.replay(session_id) {
             Ok(replay) => replay,
             Err(error) => {
                 journal.unpin(session_id);

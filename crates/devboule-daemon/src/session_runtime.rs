@@ -257,6 +257,14 @@ struct AttentionHooks {
 }
 
 pub(crate) struct LiveAgentReplay {
+    /// The generation side of the replay's start position. A cursor at
+    /// seq 0 is a fresh or reset reader (a Reopen's new cursor included):
+    /// it owns nothing yet, so the replay starts at generation 1. A cursor
+    /// with seq > 0 bounds the replay to the current generation from that
+    /// seq — it bounds the read, and does not certify the reader received
+    /// the skipped rows: a lagging journal write can leave rows neither the
+    /// replay nor the live queue reach, which no later cursor gets back.
+    pub(crate) from_generation: u64,
     pub(crate) from_seq: u64,
     pub(crate) watermark: u64,
 }
@@ -735,7 +743,12 @@ impl SessionRuntime {
             let journal_seq = replay.event_seqs.get(index).copied();
             match event {
                 SessionEvent::Output { seq, data } => {
-                    stream.scrollback.push(seq, data.as_bytes());
+                    // The row's own generation, not the runtime's: a resumed
+                    // session's transcript carries Output rows (the
+                    // permission ledger) from every generation, and two
+                    // generations can share a seq.
+                    let generation = journal_seq.map_or(replay.generation, |(g, _)| g);
+                    stream.scrollback.push(generation, seq, data.as_bytes());
                 }
                 SessionEvent::Exit { code } => {
                     stream.exit_code = code;
@@ -762,7 +775,14 @@ impl SessionRuntime {
                 // recovered session replays transcript events only.
                 SessionEvent::Snapshot { .. } => {}
                 SessionEvent::AgentReported { seq, .. } => {
-                    stream.transcript_agent_reports.insert(seq, event);
+                    // Seqs restart per generation, so the map key is the
+                    // record's (generation, seq), not the seq alone: rows
+                    // from different generations sharing a seq must all
+                    // survive the replay.
+                    let generation = journal_seq.map_or(replay.generation, |(g, _)| g);
+                    stream
+                        .transcript_agent_reports
+                        .insert((generation, seq), event);
                 }
                 SessionEvent::AgentMessage { .. }
                 | SessionEvent::AgentUserMessage { .. }
@@ -784,10 +804,14 @@ impl SessionRuntime {
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. } => {
-                    let Some(seq) = journal_seq else {
+                    // Same key as AgentReported above: (generation, seq),
+                    // so colliding seqs across the resume seam coexist.
+                    let Some((generation, seq)) = journal_seq else {
                         continue;
                     };
-                    stream.transcript_agent_reports.insert(seq, event);
+                    stream
+                        .transcript_agent_reports
+                        .insert((generation, seq), event);
                 }
                 // Detached names one observer's view and is never journalled;
                 // a replay can only meet it as a no-op marker.
@@ -2250,6 +2274,7 @@ impl SessionRuntime {
     pub(crate) fn replay_journal_agent_page(
         &self,
         generation: u64,
+        from_generation: u64,
         from_seq: u64,
         through_seq: u64,
         limit: usize,
@@ -2260,6 +2285,7 @@ impl SessionRuntime {
         let page = journal.replay_agent_page(
             &self.session_id,
             generation,
+            from_generation,
             from_seq,
             through_seq,
             limit,
@@ -2268,21 +2294,22 @@ impl SessionRuntime {
         Ok(Some(page))
     }
 
-    pub(crate) fn replay_journal_outputs(
-        &self,
-        from_seq: u64,
-        generation: u64,
-    ) -> Vec<(u64, String)> {
+    /// Fresh journal copies of a session's Output rows, as
+    /// `(generation, seq, data)`. The read is unpositioned — from seq 0 —
+    /// because the caller filters with the owed-row predicate: history rows
+    /// are owed whatever their seq, and a cursor-positioned read would
+    /// never even fetch them.
+    pub(crate) fn replay_journal_outputs(&self, generation: u64) -> Vec<(u64, u64, String)> {
         let Some(journal) = &self.journal else {
             return Vec::new();
         };
-        let replay = match journal.replay(&self.session_id, from_seq) {
+        let replay = match journal.replay(&self.session_id) {
             Ok(replay) => replay,
             Err(error) => {
                 self.mark_journal_degraded();
                 eprintln!(
-                    "journal replay failed for live session {} from seq {}: {error}",
-                    self.session_id, from_seq
+                    "journal replay failed for live session {}: {error}",
+                    self.session_id
                 );
                 return Vec::new();
             }
@@ -2299,8 +2326,9 @@ impl SessionRuntime {
         replay
             .events
             .into_iter()
-            .filter_map(|event| match event {
-                SessionEvent::Output { seq, data } => Some((seq, data)),
+            .zip(replay.event_seqs)
+            .filter_map(|(event, (row_generation, seq))| match event {
+                SessionEvent::Output { data, .. } => Some((row_generation, seq, data)),
                 SessionEvent::Exit { .. }
                 | SessionEvent::Recovered { .. }
                 | SessionEvent::Silent { .. }
@@ -2411,7 +2439,12 @@ impl SessionRuntime {
         // its ordinary live queue contract; a configured journal gets the
         // lazy history replay and stored-manifest seam below.
         let live_agent_replay = if live_agent && self.journal.is_some() {
+            let from_generation = match from_cursor {
+                Some(cursor) if cursor.seq > 0 => cursor.generation,
+                _ => 0,
+            };
             Some(LiveAgentReplay {
+                from_generation,
                 from_seq: from_cursor.map(|cursor| cursor.seq).unwrap_or(0),
                 watermark: stream.next_seq.saturating_sub(1),
             })
@@ -3218,7 +3251,7 @@ mod tests {
         let recovered = SessionRuntime::from_replay(
             "s.notice.reattach".to_string(),
             Some(Arc::clone(&journal)),
-            journal.replay("s.notice.reattach", 0).expect("replay"),
+            journal.replay("s.notice.reattach").expect("replay"),
         );
         let third = ConnHandle::new(3);
         let third_outcome = recovered
@@ -3277,7 +3310,7 @@ mod tests {
         let recovered = SessionRuntime::from_replay(
             "s.replayed".to_string(),
             Some(Arc::clone(&journal)),
-            journal.replay("s.replayed", 0).expect("replay"),
+            journal.replay("s.replayed").expect("replay"),
         );
         assert!(
             !recovered.take_first_prompt(),

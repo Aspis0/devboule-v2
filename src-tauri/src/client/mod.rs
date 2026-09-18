@@ -16,7 +16,7 @@ use devboule_daemon::{
 };
 use devboule_protocol::{
     ClientHello, Cursor, DaemonStatusBody, ErrorCode, SessionEvent, SessionEventEnvelope,
-    SessionState, SessionStateSnapshot, SubscriptionId,
+    SessionState, SessionStateSnapshot, SubscriptionId, NOTHING_OWED_CURSOR,
 };
 use serde::Serialize;
 use tauri::State;
@@ -437,18 +437,28 @@ impl AttachmentRegistry {
 
     fn generation_for(&self, session_id: &str) -> Option<u64> {
         let state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        // The roster wins: it is the daemon's own word on the current
+        // generation, while an entry cursor can legitimately name an older
+        // one mid-replay — history is restamped and never advances cursors.
+        // Both paths through here attach without a mismatch retry, so a
+        // stale generation would fail the stop instead of just restarting
+        // the stream. When no roster names the session, fall back to the
+        // newest bound entry, deterministically.
         state
-            .entries
-            .values()
-            .find(|entry| entry.session_id == session_id)
-            .and_then(|entry| entry.cursor)
-            .map(|cursor| cursor.generation)
+            .roster
+            .as_ref()
+            .and_then(|roster| roster.get(session_id))
+            .map(|snapshot| snapshot.state.generation())
             .or_else(|| {
                 state
-                    .roster
-                    .as_ref()
-                    .and_then(|roster| roster.get(session_id))
-                    .map(|snapshot| snapshot.state.generation())
+                    .entries
+                    .iter()
+                    .filter(|(_, entry)| entry.session_id == session_id && entry.binding.is_some())
+                    .map(|(subscription_id, _)| *subscription_id)
+                    .max()
+                    .and_then(|newest| state.entries.get(&newest))
+                    .and_then(|entry| entry.cursor)
+                    .map(|cursor| cursor.generation)
             })
     }
 
@@ -768,10 +778,18 @@ fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) 
             }
         }
         _ => {
-            entry.cursor = Some(Cursor {
-                generation: envelope.generation,
-                seq: seq.unwrap_or(0),
-            });
+            // Cross-generation transcript replay shares the dispatch path
+            // with live traffic, so an envelope from below the stored
+            // generation must not drag the cursor backwards.
+            let regress = entry
+                .cursor
+                .is_some_and(|cursor| cursor.generation > envelope.generation);
+            if !regress {
+                entry.cursor = Some(Cursor {
+                    generation: envelope.generation,
+                    seq: seq.unwrap_or(0),
+                });
+            }
         }
     }
 }
@@ -1366,15 +1384,16 @@ impl BridgeInner {
 }
 
 /// The cursor a stop's temporary attach carries: the tail when the
-/// generation is known, nothing when it is not. `u64::MAX` is not a guess at
-/// the tail — it is past any tail, which is exactly what the replay driver
-/// needs to send nothing (`cursor >= watermark` short-circuits before any
-/// page is fetched). Unknown generation stays cursorless: inventing one
-/// would fail loudly at best, and the full replay it pays is honest.
+/// generation is known, nothing when it is not. The seq is the daemon's
+/// nothing-owed sentinel, not a guess at the tail: history is owed to
+/// readers regardless of position, so only the sentinel — which the owed-row
+/// predicate recognises — says "send nothing". Unknown generation stays
+/// cursorless: inventing one would fail loudly at best, and the full replay
+/// it pays is honest.
 fn stop_tail_cursor(generation: Option<u64>) -> Option<Cursor> {
     generation.map(|generation| Cursor {
         generation,
-        seq: u64::MAX,
+        seq: NOTHING_OWED_CURSOR,
     })
 }
 
@@ -1817,6 +1836,82 @@ mod tests {
         // No generation, no gate: inventing one would fail the daemon's
         // generation check at best, so the attach pays the full replay.
         assert_eq!(stop_tail_cursor(None), None);
+    }
+
+    #[test]
+    fn delivered_history_leaves_the_client_cursor_at_its_real_position() {
+        let registry = AttachmentRegistry::default();
+        let sink: AttachmentSink = Arc::new(|_| {});
+        let subscription = registry.insert("s.1", None, sink);
+        // Pre-attach history is history: a cross-generation replay delivers
+        // its rows with their own generation on the envelope. Such an
+        // envelope is a record of what happened, not a position in the
+        // current stream, however large the seq it carries.
+        let history = SessionEventEnvelope {
+            session_id: "s.1".to_string(),
+            generation: 1,
+            event: SessionEvent::AgentReported {
+                seq: 100,
+                source: "devboule:stub".to_string(),
+                agent: "stub".to_string(),
+                state: devboule_protocol::AgentActivityState::Working,
+                message: None,
+                report_seq: Some(1),
+                agent_session_id: None,
+                agent_session_path: None,
+                session_start_source: None,
+            },
+        };
+        let mut state = registry.state.lock().unwrap();
+        let entry = state.entries.get_mut(&subscription).unwrap();
+        entry.cursor = Some(Cursor {
+            generation: 2,
+            seq: 5,
+        });
+        advance_cursor(entry, &history);
+        let cursor = entry.cursor.expect("cursor kept");
+        assert_eq!(
+            cursor.generation, 2,
+            "history must not move the cursor to its own generation"
+        );
+        assert_eq!(
+            cursor.seq, 5,
+            "history must not move the cursor past the reader's real position"
+        );
+    }
+
+    #[test]
+    fn generation_for_prefers_the_roster_over_any_entry_cursor() {
+        let registry = AttachmentRegistry::default();
+        let sink: AttachmentSink = Arc::new(|_| {});
+        registry.insert("s.1", None, Arc::clone(&sink));
+        registry.insert("s.1", None, sink);
+        // Mid-replay a cursor can legitimately name an older generation:
+        // history is restamped to its own generation and never advances
+        // cursors. The roster is the daemon's word on the current one.
+        {
+            let mut state = registry.state.lock().unwrap();
+            for entry in state.entries.values_mut() {
+                if entry.session_id == "s.1" {
+                    entry.cursor = Some(Cursor {
+                        generation: 1,
+                        seq: 50,
+                    });
+                }
+            }
+        }
+        set_roster(
+            &registry,
+            vec![stop_test_snapshot(
+                "s.1",
+                SessionState::Live { generation: 2 },
+            )],
+        );
+        assert_eq!(
+            registry.generation_for("s.1"),
+            Some(2),
+            "a stale entry cursor must not outrank the roster's generation"
+        );
     }
 
     fn bind_attachment(registry: &AttachmentRegistry, subscription_id: SubscriptionId) {

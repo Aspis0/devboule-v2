@@ -580,9 +580,10 @@ struct PermissionRecord {
 pub struct Replay {
     pub generation: u64,
     pub events: Vec<SessionEvent>,
-    /// Journal stream sequence for each `events` entry. ACP views have no
-    /// seq on the event itself; this is the same space as Output.
-    pub event_seqs: Vec<u64>,
+    /// Journal position for each `events` entry, as `(generation, seq)`.
+    /// Stream seqs restart per generation, so the pair — the order the
+    /// `events_session` index serves — is the transcript's real order.
+    pub event_seqs: Vec<(u64, u64)>,
     pub last_seq: u64,
     pub integrity: TranscriptIntegrity,
 }
@@ -751,12 +752,12 @@ enum JournalCmd {
     },
     Replay {
         session_id: String,
-        from_seq: u64,
         reply: mpsc::Sender<Result<Replay, JournalError>>,
     },
     ReplayAgentPage {
         session_id: String,
         generation: u64,
+        from_generation: u64,
         from_seq: u64,
         through_seq: u64,
         limit: usize,
@@ -1240,10 +1241,12 @@ impl Journal {
         })
     }
 
-    pub fn replay(&self, session_id: &str, from_seq: u64) -> Result<Replay, JournalError> {
+    /// The whole transcript, all generations, in (generation, seq) order.
+    /// The read is unpositioned by design: the store holds everything, and
+    /// what a reader is owed is decided later, by the pull.
+    pub fn replay(&self, session_id: &str) -> Result<Replay, JournalError> {
         self.rpc(|reply| JournalCmd::Replay {
             session_id: session_id.to_string(),
-            from_seq,
             reply,
         })
     }
@@ -1252,6 +1255,7 @@ impl Journal {
         &self,
         session_id: &str,
         generation: u64,
+        from_generation: u64,
         from_seq: u64,
         through_seq: u64,
         limit: usize,
@@ -1259,6 +1263,7 @@ impl Journal {
         self.rpc(|reply| JournalCmd::ReplayAgentPage {
             session_id: session_id.to_string(),
             generation,
+            from_generation,
             from_seq,
             through_seq,
             limit,
@@ -1830,16 +1835,13 @@ fn journal_loop(
                 }
                 let _ = reply.send(result);
             }
-            JournalCmd::Replay {
-                session_id,
-                from_seq,
-                reply,
-            } => {
-                let _ = reply.send(replay_session(&conn, &session_id, from_seq));
+            JournalCmd::Replay { session_id, reply } => {
+                let _ = reply.send(replay_session(&conn, &session_id));
             }
             JournalCmd::ReplayAgentPage {
                 session_id,
                 generation,
+                from_generation,
                 from_seq,
                 through_seq,
                 limit,
@@ -1849,6 +1851,7 @@ fn journal_loop(
                     &conn,
                     &session_id,
                     generation,
+                    from_generation,
                     from_seq,
                     through_seq,
                     limit,
@@ -3310,6 +3313,7 @@ fn sample_session(id: &str) -> SessionRecord {
 mod tests {
     use super::*;
     use devboule_protocol::TranscriptIntegrity;
+    use devboule_protocol::UserMessageAuthor;
     use std::process::Command;
 
     /// §8 R2 / H7: the origin a *row* reads back as. `local` is the pre-v9
@@ -3690,7 +3694,7 @@ mod tests {
         record.dropped_bytes = 4096;
         journal.upsert_blocking(record).expect("upsert");
 
-        let replay = journal.replay("s.ended.loss", 0).expect("replay");
+        let replay = journal.replay("s.ended.loss").expect("replay");
         assert_eq!(
             replay.events,
             vec![
@@ -3720,7 +3724,7 @@ mod tests {
         record.status = PersistStatus::Ended;
         journal.upsert_blocking(record).expect("upsert");
 
-        let replay = journal.replay("s.ended.clean", 0).expect("replay");
+        let replay = journal.replay("s.ended.clean").expect("replay");
         assert_eq!(replay.events, vec![SessionEvent::Exit { code: None }]);
         assert_eq!(replay.integrity, TranscriptIntegrity::Complete);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3859,7 +3863,7 @@ mod tests {
         journal
             .append_blocking(output_record("s.a.1", 1, 2, b"two"))
             .expect("b");
-        let replay = journal.replay("s.a.1", 0).expect("replay");
+        let replay = journal.replay("s.a.1").expect("replay");
         match &replay.events[..] {
             [SessionEvent::Output { seq: 1, data: a }, SessionEvent::Output { seq: 2, data: b }, SessionEvent::Recovered {
                 integrity:
@@ -3901,7 +3905,7 @@ mod tests {
         journal
             .append_blocking(agent_report_record("s.a.1", 1, 2, &event).expect("record"))
             .expect("report");
-        let replay = journal.replay("s.a.1", 0).expect("replay");
+        let replay = journal.replay("s.a.1").expect("replay");
         assert!(
             replay.events.iter().any(|item| item == &event),
             "replay missing agent report: {:?}",
@@ -3955,7 +3959,7 @@ mod tests {
             payload: serde_json::to_vec(&legacy).expect("legacy payload"),
         };
         journal.append_blocking(record).expect("append");
-        let replay = journal.replay("s.a.1", 0).expect("replay");
+        let replay = journal.replay("s.a.1").expect("replay");
         let created = replay
             .events
             .iter()
@@ -4038,7 +4042,7 @@ mod tests {
             payload: serde_json::to_vec(&legacy).expect("legacy payload"),
         };
         journal.append_blocking(record).expect("append");
-        let replay = journal.replay("s.p.card", 0).expect("replay");
+        let replay = journal.replay("s.p.card").expect("replay");
         let hydrated = replay
             .events
             .iter()
@@ -4133,7 +4137,7 @@ mod tests {
                 ))
                 .expect("append");
         }
-        let replay = journal.replay("s.a.1", 0).expect("replay");
+        let replay = journal.replay("s.a.1").expect("replay");
         let seqs: Vec<u64> = replay
             .events
             .iter()
@@ -4229,7 +4233,7 @@ mod tests {
         .expect("insert");
         drop(conn);
         let journal = Journal::open(&path).expect("reopen");
-        let replay = journal.replay("s.a.1", 0).expect("replay");
+        let replay = journal.replay("s.a.1").expect("replay");
         assert!(replay.events.iter().all(|event| match event {
             SessionEvent::Output { seq, .. } => *seq != 99,
             _ => true,
@@ -4261,7 +4265,7 @@ mod tests {
         // EOF path: now freeze last_seq with the exit row.
         journal.try_mark_ended("s.drain.1", 1, Some(0));
         journal.flush().expect("flush ended");
-        let replay = journal.replay("s.drain.1", 0).expect("replay");
+        let replay = journal.replay("s.drain.1").expect("replay");
         let output: String = replay
             .events
             .iter()
@@ -4310,8 +4314,8 @@ mod tests {
         drop(journal);
 
         let journal = Journal::open(&path).expect("reopen");
-        let ended = journal.replay("s.ended", 0).expect("ended");
-        let killed = journal.replay("s.kill", 0).expect("killed");
+        let ended = journal.replay("s.ended").expect("ended");
+        let killed = journal.replay("s.kill").expect("killed");
         assert!(matches!(
             ended.events.last(),
             Some(SessionEvent::Exit { code: Some(0) })
@@ -4387,7 +4391,7 @@ mod tests {
                     ..
                 }
             ));
-            let replay = journal.replay("s.cross.silent", 0).expect("replay");
+            let replay = journal.replay("s.cross.silent").expect("replay");
             let replay_bytes: usize = replay
                 .events
                 .iter()
@@ -4455,7 +4459,7 @@ mod tests {
                     ..
                 }
             ));
-            let replay = journal.replay("s.cross.declared", 0).expect("replay");
+            let replay = journal.replay("s.cross.declared").expect("replay");
             assert_eq!(
                 replay.integrity,
                 TranscriptIntegrity::Unverifiable {
@@ -4536,7 +4540,7 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         let journal = Journal::open(&path).expect("reopen after kill");
-        let replay = journal.replay("s.hammer.1", 0);
+        let replay = journal.replay("s.hammer.1");
         assert!(replay.is_ok(), "journal unreadable after kill: {replay:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4983,12 +4987,10 @@ mod tests {
         assert!(found.is_some(), "the old-shape row must resolve");
         // Replay derives view events from raw frames, so the count is not
         // ours to pin; the appended frames themselves must come back.
-        let replay = journal
-            .replay("s.process-1234.00000001", 0)
-            .expect("replay");
+        let replay = journal.replay("s.process-1234.00000001").expect("replay");
         for seq in [1, 2, 3] {
             assert!(
-                replay.event_seqs.contains(&seq),
+                replay.event_seqs.iter().any(|&(_, s)| s == seq),
                 "appended frame {seq} must still replay: {:?}",
                 replay.event_seqs
             );
@@ -5003,6 +5005,218 @@ mod tests {
             store.session("s.process-1234.00000001").is_some(),
             "the old-shape id must still resolve for attachments"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A resume keeps the session id and every earlier generation's events,
+    /// so a transcript read must return the whole history, ordered by
+    /// (generation, seq) — the order the events_session index serves.
+    #[test]
+    fn replay_returns_whole_history_across_generations() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.cross.gen.replay";
+        journal.create_session(sample_session(id)).expect("birth");
+        let user_before = SessionEvent::AgentUserMessage {
+            message_id: Some("m1".into()),
+            text: "gen-1 user".into(),
+            author: UserMessageAuthor::Human,
+        };
+        let answer_before = SessionEvent::AgentMessage {
+            message_id: Some("m2".into()),
+            text: "gen-1 answer".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        let answer_after = SessionEvent::AgentMessage {
+            message_id: Some("m3".into()),
+            text: "after resume".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        journal
+            .append_blocking(agent_report_record(id, 1, 1, &user_before).unwrap())
+            .expect("gen-1 user row");
+        journal
+            .append_blocking(agent_report_record(id, 1, 2, &answer_before).unwrap())
+            .expect("gen-1 answer row");
+        journal.start_generation(id, 2).expect("resume generation");
+        journal
+            .append_blocking(agent_report_record(id, 2, 1, &answer_after).unwrap())
+            .expect("gen-2 answer row");
+        let replay = journal.replay(id).expect("replay");
+        let transcript: Vec<String> = replay
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+                SessionEvent::AgentMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            transcript,
+            vec!["gen-1 user", "gen-1 answer", "after resume"],
+            "the transcript must span the resume seam in journal order: {transcript:?}"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The session's exit code is the current generation's end. An Exit row
+    /// journaled by an earlier generation predates the resume and must not
+    /// be reported as the session's exit — the sessions row's own
+    /// `exit_code` is the authority when the current generation left no
+    /// Exit row of its own.
+    #[test]
+    fn a_previous_generations_exit_row_does_not_speak_for_the_session() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.cross.gen.exit";
+        journal.create_session(sample_session(id)).expect("birth");
+        let frame = SessionEvent::AgentUserMessage {
+            message_id: Some("m1".into()),
+            text: "gen-1 user".into(),
+            author: UserMessageAuthor::Human,
+        };
+        journal
+            .append_blocking(agent_report_record(id, 1, 1, &frame).unwrap())
+            .expect("gen-1 row");
+        // Generation 1 ended with an observed exit, code 7.
+        journal
+            .append_blocking(EventRecord {
+                session_id: id.to_string(),
+                generation: 1,
+                seq: 2,
+                kind: EventKind::Exit,
+                ts_ms: now_ms(),
+                payload: 7u32.to_le_bytes().to_vec(),
+            })
+            .expect("gen-1 exit row");
+        journal.start_generation(id, 2).expect("resume generation");
+        let frame_after = SessionEvent::AgentMessage {
+            message_id: Some("m2".into()),
+            text: "after resume".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        journal
+            .append_blocking(agent_report_record(id, 2, 1, &frame_after).unwrap())
+            .expect("gen-2 row");
+        // The current generation was reaped without leaving an Exit row of
+        // its own — the `try_mark_ended` command was dropped on a full
+        // queue while the wait observed code 0 — so the row says
+        // live + reaped + exit_code 0.
+        journal.mark_reaped(id, Some(0)).expect("mark reaped");
+        let replay = journal.replay(id).expect("replay");
+        let exit_codes: Vec<Option<u32>> = replay
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Exit { code } => Some(*code),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            exit_codes,
+            vec![Some(0)],
+            "generation 1's exit row must not be reported as the session's exit: {exit_codes:?}"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The live-agent paging read must serve the same whole-history contract:
+    /// rows from generations up to the expected one, in (generation, seq)
+    /// order, each record stamped with its own generation.
+    #[test]
+    fn agent_page_spans_generations_in_journal_order() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.cross.gen.page";
+        journal.create_session(sample_session(id)).expect("birth");
+        let user_before = SessionEvent::AgentUserMessage {
+            message_id: Some("m1".into()),
+            text: "gen-1 user".into(),
+            author: UserMessageAuthor::Human,
+        };
+        let answer_before = SessionEvent::AgentMessage {
+            message_id: Some("m2".into()),
+            text: "gen-1 answer".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        let answer_after = SessionEvent::AgentMessage {
+            message_id: Some("m3".into()),
+            text: "after resume".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        journal
+            .append_blocking(agent_report_record(id, 1, 1, &user_before).unwrap())
+            .expect("gen-1 user row");
+        journal
+            .append_blocking(agent_report_record(id, 1, 2, &answer_before).unwrap())
+            .expect("gen-1 answer row");
+        journal.start_generation(id, 2).expect("resume generation");
+        journal
+            .append_blocking(agent_report_record(id, 2, 1, &answer_after).unwrap())
+            .expect("gen-2 answer row");
+        // Attaching to generation 2 with a from_seq of 0 replays the whole
+        // history: both generations, oldest first.
+        let page = journal.replay_agent_page(id, 2, 0, 0, 1, 10).expect("page");
+        let rows: Vec<(u64, u64)> = page
+            .records
+            .iter()
+            .map(|record| (record.generation, record.seq))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(1, 1), (1, 2), (2, 1)],
+            "the page must span the resume seam in (generation, seq) order: {rows:?}"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The page bounds are bound as i64, and a u64::MAX from-seq — the
+    /// nothing-owed sentinel a stop-tail attach carries — would wrap
+    /// negative and re-serve rows the reader asked to skip. The bind must
+    /// clamp structurally, not rely on a caller's short-circuit upstream.
+    #[test]
+    fn the_nothing_owed_sentinel_cannot_widen_a_page_range() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let id = "s.cross.gen.sentinel";
+        journal.create_session(sample_session(id)).expect("birth");
+        let user_before = SessionEvent::AgentUserMessage {
+            message_id: Some("m1".into()),
+            text: "gen-1 user".into(),
+            author: UserMessageAuthor::Human,
+        };
+        let answer_after = SessionEvent::AgentMessage {
+            message_id: Some("m2".into()),
+            text: "after resume".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        journal
+            .append_blocking(agent_report_record(id, 1, 1, &user_before).unwrap())
+            .expect("gen-1 user row");
+        journal.start_generation(id, 2).expect("resume generation");
+        journal
+            .append_blocking(agent_report_record(id, 2, 1, &answer_after).unwrap())
+            .expect("gen-2 answer row");
+        // The stop-tail shape: from-seq at the sentinel, through-seq sane.
+        let page = journal
+            .replay_agent_page(id, 2, 2, u64::MAX, 1, 10)
+            .expect("page");
+        assert!(
+            page.records.is_empty(),
+            "a nothing-owed from-seq must narrow the page to nothing, not widen it: {:?}",
+            page.records
+        );
+        journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

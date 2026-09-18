@@ -4512,7 +4512,7 @@ mod tests {
                 crate::journal::acp_envelope_record("s.envelope", 1, 1, &envelope).expect("record"),
             )
             .expect("append");
-        let replay = journal.replay("s.envelope", 0).expect("replay");
+        let replay = journal.replay("s.envelope").expect("replay");
         assert!(
             replay.events.iter().any(|event| matches!(
                 event,
@@ -4571,7 +4571,7 @@ mod tests {
                     .expect("record"),
             )
             .expect("append");
-        let replay = journal.replay("s.old-user-echo", 0).expect("replay");
+        let replay = journal.replay("s.old-user-echo").expect("replay");
         assert!(replay.events.iter().any(|event| matches!(
             event,
             SessionEvent::AgentUserMessage { text, .. } if text == "old prompt"

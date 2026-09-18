@@ -9,6 +9,10 @@ use super::{
 
 #[derive(Debug)]
 pub(crate) struct AgentReplayPage {
+    /// The session's generation in the `sessions` row at page time — a
+    /// freshness probe against the attach generation, never the generation
+    /// of the rows inside `records`: a page legitimately spans every
+    /// generation up to the one the attachment attached to.
     pub(crate) generation: u64,
     pub(crate) last_seq: u64,
     pub(crate) records: Vec<EventRecord>,
@@ -19,10 +23,19 @@ pub(crate) struct AgentReplayPage {
 /// rebuilding a long conversation into one Vec would merely move the memory
 /// spike from `stream.pending` to the writer thread. View derivation happens
 /// incrementally in `event_pull`, under the same pull budget as live events.
+///
+/// The range is lexicographic in `(generation, seq)` — the order the
+/// `events_session` index serves — from just after `(from_generation,
+/// from_seq)` through `(expected_generation, through_seq)`. A resume keeps
+/// the session id and every earlier generation's events, so serving the
+/// generations below the attach generation is how a Reopen shows the whole
+/// conversation; rows past the attach generation belong to a stream this
+/// attachment cannot see and are never served.
 pub(super) fn replay_agent_page(
     conn: &Connection,
     session_id: &str,
     expected_generation: u64,
+    from_generation: u64,
     from_seq: u64,
     through_seq: u64,
     limit: usize,
@@ -52,34 +65,43 @@ pub(super) fn replay_agent_page(
         });
     }
 
+    // The bounds are bound as i64. A u64::MAX from-seq — the nothing-owed
+    // sentinel — must clamp to the top of the representable range, not wrap
+    // negative and widen the window; that must hold here at the bind, not
+    // depend on a caller's short-circuit upstream.
+    let from_seq = i64::try_from(from_seq).unwrap_or(i64::MAX);
+    let through_seq = i64::try_from(through_seq).unwrap_or(i64::MAX);
     let mut statement = conn.prepare(
-        "SELECT seq, kind, ts_ms, payload, checksum FROM events
-         WHERE session_id = ?1 AND generation = ?2
-           AND seq > ?3 AND seq <= ?4
+        "SELECT generation, seq, kind, ts_ms, payload, checksum FROM events
+         WHERE session_id = ?1
+           AND (generation, seq) > (?2, ?3)
+           AND (generation, seq) <= (?4, ?5)
            AND kind IN ('agent_report', 'acp_envelope')
-         ORDER BY seq LIMIT ?5",
+         ORDER BY generation, seq LIMIT ?6",
     )?;
     let rows = statement.query_map(
         params![
             session_id,
-            generation as i64,
-            from_seq as i64,
-            through_seq as i64,
+            from_generation as i64,
+            from_seq,
+            expected_generation as i64,
+            through_seq,
             limit as i64
         ],
         |row| {
             Ok((
                 row.get::<_, i64>(0)? as u64,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)? as u64,
-                row.get::<_, Vec<u8>>(3)?,
-                row.get::<_, i64>(4)? as u32,
+                row.get::<_, i64>(1)? as u64,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)? as u64,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, i64>(5)? as u32,
             ))
         },
     )?;
     let mut records = Vec::new();
     for row in rows {
-        let (seq, kind, ts_ms, payload, checksum) = row?;
+        let (row_generation, seq, kind, ts_ms, payload, checksum) = row?;
         if crc32(&payload) != checksum {
             return Err(JournalError::Checksum {
                 session_id: session_id.to_string(),
@@ -93,7 +115,7 @@ pub(super) fn replay_agent_page(
         })?;
         records.push(EventRecord {
             session_id: session_id.to_string(),
-            generation,
+            generation: row_generation,
             seq,
             kind,
             ts_ms,
@@ -211,11 +233,7 @@ fn deserialize_overlay(raw: Option<String>) -> Option<crate::provider_catalog::T
     known.then(|| crate::provider_catalog::ToolOverlay::from_profile_names(&names))
 }
 
-pub(super) fn replay_session(
-    conn: &Connection,
-    session_id: &str,
-    from_seq: u64,
-) -> Result<Replay, JournalError> {
+pub(super) fn replay_session(conn: &Connection, session_id: &str) -> Result<Replay, JournalError> {
     let record = conn
         .query_row(
             "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
@@ -235,147 +253,61 @@ pub(super) fn replay_session(
     }
     let generation = record.generation;
     let mut events: Vec<SessionEvent> = Vec::new();
-    let mut event_seqs: Vec<u64> = Vec::new();
-    let mut covered = from_seq;
-    let mut claude_view = crate::claude_view::ClaudeView::new(None);
-    let mut codex_view = crate::codex_view::CodexView::new(None);
+    let mut event_seqs: Vec<(u64, u64)> = Vec::new();
+    let mut exit_event: Option<SessionEvent> = None;
+    // The store holds the whole history: every generation up to the row's
+    // own, read in journal order, so appending each one's seq-ordered rows
+    // keeps the transcript in (generation, seq) order. What a reader is
+    // owed is the pull's decision, never the read's.
+    for replayed_generation in 1..=generation {
+        let mut gen_events: Vec<SessionEvent> = Vec::new();
+        let mut gen_seqs: Vec<u64> = Vec::new();
+        let mut covered = 0;
+        let mut claude_view = crate::claude_view::ClaudeView::new(None);
+        let mut codex_view = crate::codex_view::CodexView::new(None);
 
-    let mut snap_stmt = conn.prepare(
-        "SELECT from_seq, up_to_seq, blob, checksum FROM snapshots
-         WHERE session_id = ?1 AND generation = ?2 AND up_to_seq > ?3
-         ORDER BY up_to_seq",
-    )?;
-    let snaps = snap_stmt.query_map(
-        params![session_id, generation as i64, from_seq as i64],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0)? as u64,
-                row.get::<_, i64>(1)? as u64,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, i64>(3)? as u32,
-            ))
-        },
-    )?;
-    for snap in snaps {
-        let (_from, up_to, blob, checksum) = snap?;
-        if crc32(&blob) != checksum {
-            return Err(JournalError::Checksum {
-                session_id: session_id.to_string(),
-                seq: up_to,
-            });
-        }
-        let chunks = decode_chunks(&blob).ok_or_else(|| {
-            JournalError::Corrupt(format!("snapshot blob for {session_id} up_to {up_to}"))
-        })?;
-        for (seq, data) in chunks {
-            if seq > from_seq {
-                events.push(SessionEvent::Output {
+        let mut snap_stmt = conn.prepare(
+            "SELECT from_seq, up_to_seq, blob, checksum FROM snapshots
+             WHERE session_id = ?1 AND generation = ?2
+             ORDER BY up_to_seq",
+        )?;
+        let snaps =
+            snap_stmt.query_map(params![session_id, replayed_generation as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)? as u32,
+                ))
+            })?;
+        for snap in snaps {
+            let (_from, up_to, blob, checksum) = snap?;
+            if crc32(&blob) != checksum {
+                return Err(JournalError::Checksum {
+                    session_id: session_id.to_string(),
+                    seq: up_to,
+                });
+            }
+            let chunks = decode_chunks(&blob).ok_or_else(|| {
+                JournalError::Corrupt(format!("snapshot blob for {session_id} up_to {up_to}"))
+            })?;
+            for (seq, data) in chunks {
+                gen_events.push(SessionEvent::Output {
                     seq,
                     data: String::from_utf8_lossy(&data).into_owned(),
                 });
-                event_seqs.push(seq);
+                gen_seqs.push(seq);
             }
+            covered = covered.max(up_to);
         }
-        covered = covered.max(up_to);
-    }
 
-    let mut event_stmt = conn.prepare(
-        "SELECT seq, kind, payload, checksum FROM events
-         WHERE session_id = ?1 AND generation = ?2 AND seq > ?3
-         ORDER BY seq",
-    )?;
-    let event_rows = event_stmt.query_map(
-        params![session_id, generation as i64, covered as i64],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0)? as u64,
-                row.get::<_, String>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, i64>(3)? as u32,
-            ))
-        },
-    )?;
-    let mut exit_event: Option<SessionEvent> = None;
-    for row in event_rows {
-        let (seq, kind, payload, checksum) = row?;
-        if crc32(&payload) != checksum {
-            return Err(JournalError::Checksum {
-                session_id: session_id.to_string(),
-                seq,
-            });
-        }
-        match EventKind::parse(&kind) {
-            Some(EventKind::Output) => {
-                events.push(SessionEvent::Output {
-                    seq,
-                    data: String::from_utf8_lossy(&payload).into_owned(),
-                });
-                event_seqs.push(seq);
-            }
-            Some(EventKind::Exit) => {
-                let code = if payload.len() == 4 {
-                    Some(u32::from_le_bytes(
-                        payload.as_slice().try_into().unwrap_or([0; 4]),
-                    ))
-                } else {
-                    None
-                };
-                exit_event = Some(SessionEvent::Exit { code });
-            }
-            Some(EventKind::AgentReport) => {
-                if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
-                    events.push(event);
-                    event_seqs.push(seq);
-                }
-            }
-            Some(EventKind::AcpEnvelope) => {
-                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                    if record.kind == SessionKind::Codex {
-                        for view in codex_view.ingest(&value) {
-                            events.push(view);
-                            event_seqs.push(seq);
-                        }
-                    } else if record.kind == SessionKind::Pi {
-                        for view in crate::pi_view::events_from_line(&value) {
-                            events.push(view);
-                            event_seqs.push(seq);
-                        }
-                    } else if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
-                        events.push(view);
-                        event_seqs.push(seq);
-                    } else {
-                        for view in claude_view.ingest(&value) {
-                            events.push(view);
-                            event_seqs.push(seq);
-                        }
-                    }
-                }
-            }
-            None => {}
-        }
-    }
-
-    // Snapshots cover output seqs and raise `covered`, which would hide
-    // agent_report rows that stay in `events` (they are not compacted).
-    // Reload those rows independently and merge by stream sequence.
-    let mut covered_reports = Vec::new();
-    let mut covered_claude = crate::claude_view::ClaudeView::new(None);
-    let mut covered_codex = crate::codex_view::CodexView::new(None);
-    if covered > from_seq {
-        let mut report_stmt = conn.prepare(
+        let mut event_stmt = conn.prepare(
             "SELECT seq, kind, payload, checksum FROM events
-             WHERE session_id = ?1 AND generation = ?2
-               AND kind IN ('agent_report', 'acp_envelope')
-               AND seq > ?3 AND seq <= ?4
+             WHERE session_id = ?1 AND generation = ?2 AND seq > ?3
              ORDER BY seq",
         )?;
-        let report_rows = report_stmt.query_map(
-            params![
-                session_id,
-                generation as i64,
-                from_seq as i64,
-                covered as i64
-            ],
+        let event_rows = event_stmt.query_map(
+            params![session_id, replayed_generation as i64, covered as i64],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)? as u64,
@@ -385,7 +317,7 @@ pub(super) fn replay_session(
                 ))
             },
         )?;
-        for row in report_rows {
+        for row in event_rows {
             let (seq, kind, payload, checksum) = row?;
             if crc32(&payload) != checksum {
                 return Err(JournalError::Checksum {
@@ -393,57 +325,160 @@ pub(super) fn replay_session(
                     seq,
                 });
             }
-            if kind == "agent_report" {
-                if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
-                    covered_reports.push((seq, event));
+            match EventKind::parse(&kind) {
+                Some(EventKind::Output) => {
+                    gen_events.push(SessionEvent::Output {
+                        seq,
+                        data: String::from_utf8_lossy(&payload).into_owned(),
+                    });
+                    gen_seqs.push(seq);
                 }
-            } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                if record.kind == SessionKind::Codex {
-                    for view in covered_codex.ingest(&value) {
-                        covered_reports.push((seq, view));
+                Some(EventKind::Exit) => {
+                    let code = if payload.len() == 4 {
+                        Some(u32::from_le_bytes(
+                            payload.as_slice().try_into().unwrap_or([0; 4]),
+                        ))
+                    } else {
+                        None
+                    };
+                    // Only the current generation's exit row speaks for the
+                    // session: an earlier generation's exit predates the
+                    // resume, and the sessions row's own exit_code is the
+                    // authority when the current generation left no row.
+                    if replayed_generation == generation {
+                        exit_event = Some(SessionEvent::Exit { code });
                     }
-                } else if record.kind == SessionKind::Pi {
-                    for view in crate::pi_view::events_from_line(&value) {
-                        covered_reports.push((seq, view));
+                }
+                Some(EventKind::AgentReport) => {
+                    if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                        gen_events.push(event);
+                        gen_seqs.push(seq);
                     }
-                } else if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
-                    covered_reports.push((seq, view));
-                } else {
-                    for view in covered_claude.ingest(&value) {
+                }
+                Some(EventKind::AcpEnvelope) => {
+                    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                        if record.kind == SessionKind::Codex {
+                            for view in codex_view.ingest(&value) {
+                                gen_events.push(view);
+                                gen_seqs.push(seq);
+                            }
+                        } else if record.kind == SessionKind::Pi {
+                            for view in crate::pi_view::events_from_line(&value) {
+                                gen_events.push(view);
+                                gen_seqs.push(seq);
+                            }
+                        } else if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
+                            gen_events.push(view);
+                            gen_seqs.push(seq);
+                        } else {
+                            for view in claude_view.ingest(&value) {
+                                gen_events.push(view);
+                                gen_seqs.push(seq);
+                            }
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+
+        // Snapshots cover output seqs and raise `covered`, which would hide
+        // agent_report rows that stay in `events` (they are not compacted).
+        // Reload those rows independently and merge by stream sequence.
+        let mut covered_reports: Vec<(u64, SessionEvent)> = Vec::new();
+        let mut covered_claude = crate::claude_view::ClaudeView::new(None);
+        let mut covered_codex = crate::codex_view::CodexView::new(None);
+        if covered > 0 {
+            let mut report_stmt = conn.prepare(
+                "SELECT seq, kind, payload, checksum FROM events
+                 WHERE session_id = ?1 AND generation = ?2
+                   AND kind IN ('agent_report', 'acp_envelope')
+                   AND seq <= ?3
+                 ORDER BY seq",
+            )?;
+            let report_rows = report_stmt.query_map(
+                params![session_id, replayed_generation as i64, covered as i64],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)? as u64,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, i64>(3)? as u32,
+                    ))
+                },
+            )?;
+            for row in report_rows {
+                let (seq, kind, payload, checksum) = row?;
+                if crc32(&payload) != checksum {
+                    return Err(JournalError::Checksum {
+                        session_id: session_id.to_string(),
+                        seq,
+                    });
+                }
+                if kind == "agent_report" {
+                    if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                        covered_reports.push((seq, event));
+                    }
+                } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                    if record.kind == SessionKind::Codex {
+                        for view in covered_codex.ingest(&value) {
+                            covered_reports.push((seq, view));
+                        }
+                    } else if record.kind == SessionKind::Pi {
+                        for view in crate::pi_view::events_from_line(&value) {
+                            covered_reports.push((seq, view));
+                        }
+                    } else if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
                         covered_reports.push((seq, view));
+                    } else {
+                        for view in covered_claude.ingest(&value) {
+                            covered_reports.push((seq, view));
+                        }
                     }
                 }
             }
         }
-    }
-    if !covered_reports.is_empty() {
-        for (seq, event) in covered_reports {
-            events.push(event);
-            event_seqs.push(seq);
+        if !covered_reports.is_empty() {
+            for (seq, event) in covered_reports {
+                gen_events.push(event);
+                gen_seqs.push(seq);
+            }
+            let mut paired: Vec<(u64, SessionEvent)> =
+                gen_seqs.into_iter().zip(gen_events).collect();
+            paired.sort_by_key(|(seq, _)| *seq);
+            for (seq, event) in paired {
+                events.push(event);
+                event_seqs.push((replayed_generation, seq));
+            }
+        } else {
+            for (seq, event) in gen_seqs.into_iter().zip(gen_events) {
+                events.push(event);
+                event_seqs.push((replayed_generation, seq));
+            }
         }
-        let mut paired: Vec<(u64, SessionEvent)> = event_seqs.into_iter().zip(events).collect();
-        paired.sort_by_key(|(seq, _)| *seq);
-        (event_seqs, events) = paired.into_iter().unzip();
     }
 
     let terminated = matches!(record.status, PersistStatus::Ended)
         || matches!(record.status, PersistStatus::Live) && record.reaped;
     let integrity = record.integrity(terminated);
+    // The terminal marker sits at the current generation's end — the
+    // session's end. Earlier generations' rows all sort before it.
+    let tail_seq = (generation, record.last_seq);
     if terminated {
         if record.degraded {
             events.push(SessionEvent::JournalDegraded {
                 dropped_frames: record.dropped_frames,
                 dropped_bytes: record.dropped_bytes,
             });
-            event_seqs.push(record.last_seq);
+            event_seqs.push(tail_seq);
         }
         events.push(exit_event.unwrap_or(SessionEvent::Exit {
             code: record.exit_code,
         }));
-        event_seqs.push(record.last_seq);
+        event_seqs.push(tail_seq);
     } else {
         events.push(SessionEvent::Recovered { integrity });
-        event_seqs.push(record.last_seq);
+        event_seqs.push(tail_seq);
     }
 
     Ok(Replay {

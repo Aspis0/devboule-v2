@@ -1415,7 +1415,7 @@ mod tests {
             .expect("session");
         assert_eq!(row.payload_bytes, 4);
         assert_eq!(row.trimmed_bytes, 4);
-        let replay = journal.replay("s.trim.exact", 0).expect("replay");
+        let replay = journal.replay("s.trim.exact").expect("replay");
         assert_eq!(
             replay.integrity,
             TranscriptIntegrity::Unverifiable {
@@ -1725,7 +1725,7 @@ mod tests {
             .expect("end");
 
         assert_eq!(
-            journal.replay("s.trim.ended", 0).expect("replay").integrity,
+            journal.replay("s.trim.ended").expect("replay").integrity,
             TranscriptIntegrity::Truncated {
                 dropped_frames: 0,
                 dropped_bytes: 0,
@@ -1814,7 +1814,7 @@ mod tests {
             !listed.contains(&"s.a.1".to_string()),
             "retention should have dropped the oldest unpinned session: {listed:?}"
         );
-        let replay = journal.replay("s.a.2", 0).expect("pinned replay");
+        let replay = journal.replay("s.a.2").expect("pinned replay");
         assert!(replay.events.iter().any(|event| matches!(
             event,
             SessionEvent::Output { data, .. } if data.contains("bravo")

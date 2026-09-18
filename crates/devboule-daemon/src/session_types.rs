@@ -57,8 +57,33 @@ impl PtyCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct SequencedChunk {
+    /// The generation the row was written under. Agent sessions journal
+    /// Output rows per generation and seqs restart per generation, so the
+    /// pair — never the bare seq — is the row's identity.
+    pub(super) generation: u64,
     pub(super) seq: u64,
     pub(super) data: Vec<u8>,
+}
+
+use devboule_protocol::NOTHING_OWED_CURSOR;
+
+/// Pre-attach history is history: a row from below the attach generation is
+/// a record of what happened and is owed to every reader, whatever its seq.
+/// The current generation is a position: a row in it is owed only past the
+/// reader's cursor. Every transcript filter asks this predicate, so a bare
+/// seq is never held up against a cursor from another numbering space.
+///
+/// The sentinel is the third state: nothing is owed at all.
+pub(super) fn transcript_row_owed(
+    generation: u64,
+    seq: u64,
+    attach_generation: u64,
+    cursor: u64,
+) -> bool {
+    if cursor == NOTHING_OWED_CURSOR {
+        return false;
+    }
+    generation < attach_generation || seq > cursor
 }
 
 /// Transcript replay buffer for a recovered session.
@@ -73,16 +98,21 @@ pub(super) struct Scrollback {
 }
 
 impl Scrollback {
-    pub(super) fn push(&mut self, seq: u64, data: &[u8]) {
+    pub(super) fn push(&mut self, generation: u64, seq: u64, data: &[u8]) {
         if data.is_empty() {
             return;
         }
         self.chunks.push_back(SequencedChunk {
+            generation,
             seq,
             data: data.to_vec(),
         });
     }
 
+    /// Whether the journal might hold Output rows the store lacks. Sound
+    /// because hydration is unpositioned: the chunks hold every Output row
+    /// the journal has, so the gate can only be over-eager — an extra read
+    /// the union deduplicates — never under-eager.
     pub(super) fn needs_journal_replay(&self, from_cursor: Option<u64>, next_seq: u64) -> bool {
         let cursor = from_cursor.unwrap_or(0);
         self.chunks
@@ -92,34 +122,39 @@ impl Scrollback {
     }
 
     #[cfg(test)]
-    fn replay_after(&self, from_cursor: Option<u64>) -> Vec<SessionEvent> {
-        self.replay_after_with_journal(from_cursor, &[])
+    fn replay_after(
+        &self,
+        from_cursor: Option<u64>,
+        attach_generation: u64,
+    ) -> Vec<((u64, u64), String)> {
+        self.replay_after_with_journal(from_cursor, attach_generation, &[])
     }
 
     pub(super) fn replay_after_with_journal(
         &self,
         from_cursor: Option<u64>,
-        journal_outputs: &[(u64, String)],
-    ) -> Vec<SessionEvent> {
+        attach_generation: u64,
+        journal_outputs: &[(u64, u64, String)],
+    ) -> Vec<((u64, u64), String)> {
         let cursor = from_cursor.unwrap_or(0);
-        let mut outputs = BTreeMap::<u64, String>::new();
+        let mut outputs = BTreeMap::<(u64, u64), String>::new();
         for chunk in &self.chunks {
-            if chunk.seq > cursor {
-                outputs.insert(chunk.seq, String::from_utf8_lossy(&chunk.data).into_owned());
+            if transcript_row_owed(chunk.generation, chunk.seq, attach_generation, cursor) {
+                outputs.insert(
+                    (chunk.generation, chunk.seq),
+                    String::from_utf8_lossy(&chunk.data).into_owned(),
+                );
             }
         }
-        // Prefer the journal copy for a sequence present in both sources. It
+        // Prefer the journal copy for a position present in both sources. It
         // is the durable copy and makes the seam a set union, never two
-        // envelopes for one sequence.
-        for (seq, data) in journal_outputs {
-            if *seq > cursor {
-                outputs.insert(*seq, data.clone());
+        // envelopes for one row.
+        for (generation, seq, data) in journal_outputs {
+            if transcript_row_owed(*generation, *seq, attach_generation, cursor) {
+                outputs.insert((*generation, *seq), data.clone());
             }
         }
-        outputs
-            .into_iter()
-            .map(|(seq, data)| SessionEvent::Output { seq, data })
-            .collect()
+        outputs.into_iter().collect()
     }
 }
 
@@ -219,8 +254,10 @@ pub(crate) struct StreamState {
     /// stream lock so two concurrent announcements cannot both apply.
     pub(super) agent_reports: AgentReportState,
     /// Journaled agent reports for a recovered transcript, keyed by the
-    /// stream sequence so attach replay can interleave them with output.
-    pub(super) transcript_agent_reports: BTreeMap<u64, SessionEvent>,
+    /// record's `(generation, seq)` — seqs restart per generation, so the
+    /// pair is the key the whole history orders by — so attach replay can
+    /// interleave them with output.
+    pub(super) transcript_agent_reports: BTreeMap<(u64, u64), SessionEvent>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -257,10 +294,17 @@ pub(super) struct PullState {
 
 pub(super) struct AgentReplay {
     pub(super) from_seq: u64,
+    /// The generation side of the paging cursor: the page range is
+    /// lexicographic in `(generation, seq)`, so a replay can walk through
+    /// the generations below the attach one and into it.
+    pub(super) cursor_generation: u64,
     pub(super) cursor: u64,
     pub(super) watermark: u64,
     pub(super) generation: u64,
-    pub(super) pending: VecDeque<(u64, SessionEvent)>,
+    /// Derived replay events awaiting delivery, as `(generation, seq,
+    /// event)`: the generation rides along so the wire stamp can tell
+    /// history from the current stream.
+    pub(super) pending: VecDeque<(u64, u64, SessionEvent)>,
     pub(super) replayed_seqs: HashSet<u64>,
     pub(super) claude_view: Option<crate::claude_view::ClaudeView>,
     pub(super) codex_view: Option<crate::codex_view::CodexView>,
@@ -413,22 +457,13 @@ mod tests {
     #[test]
     fn cursor_replay_is_strictly_after_last_seen_sequence() {
         let mut scrollback = Scrollback::default();
-        scrollback.push(1, b"one");
-        scrollback.push(2, b"two");
-        scrollback.push(3, b"three");
+        scrollback.push(1, 1, b"one");
+        scrollback.push(1, 2, b"two");
+        scrollback.push(1, 3, b"three");
         assert_eq!(
-            scrollback.replay_after(Some(1)),
-            vec![
-                SessionEvent::Output {
-                    seq: 2,
-                    data: "two".to_string(),
-                },
-                SessionEvent::Output {
-                    seq: 3,
-                    data: "three".to_string(),
-                },
-            ]
+            scrollback.replay_after(Some(1), 1),
+            vec![((1, 2), "two".to_string()), ((1, 3), "three".to_string()),]
         );
-        assert_eq!(scrollback.replay_after(None).len(), 3);
+        assert_eq!(scrollback.replay_after(None, 1).len(), 3);
     }
 }

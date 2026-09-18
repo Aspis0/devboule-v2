@@ -13,7 +13,7 @@ use crate::peer_policy::ConnPeer;
 use crate::screen::{ScreenSnapshot, SnapshotCursorShape};
 
 use super::session_runtime::LiveAgentReplay;
-use super::session_types::{AgentReplay, AttachmentKey};
+use super::session_types::{transcript_row_owed, AgentReplay, AttachmentKey};
 use super::{Disposition, PendingEvent, PendingItem, PullState, SessionRuntime};
 
 /// A live agent may keep publishing while SQLite is being paged. Eight page
@@ -66,9 +66,15 @@ fn extend_live_agent_watermark(runtime: &SessionRuntime, replay: &mut AgentRepla
     false
 }
 
+/// Stamp one event for the wire. `envelope_generation` is the generation the
+/// row belongs to — the attach generation for live and current-generation
+/// traffic, the record's own generation for history, because pre-attach
+/// history is a record of what happened, never a position in the current
+/// stream.
 fn wire_event(
     session_id: &str,
     pull: &PullState,
+    envelope_generation: u64,
     event: SessionEvent,
     transcript_seq: Option<u64>,
 ) -> PendingEvent {
@@ -78,7 +84,7 @@ fn wire_event(
         attachment_generation: pull.attachment_generation,
         envelope: SessionEventEnvelope {
             session_id: session_id.to_string(),
-            generation: pull.generation,
+            generation: envelope_generation,
             event,
         },
         transcript_seq,
@@ -237,6 +243,7 @@ impl ConnHandle {
                 transcript_cursor,
                 agent_replay: live_agent_replay.map(|replay| AgentReplay {
                     from_seq: replay.from_seq,
+                    cursor_generation: replay.from_generation,
                     cursor: replay.from_seq,
                     watermark: replay.watermark,
                     generation,
@@ -402,8 +409,13 @@ impl ConnHandle {
             }
             match &event.envelope.event {
                 SessionEvent::Output { seq, .. } | SessionEvent::AgentReported { seq, .. } => {
-                    if let Some(cursor) = pull.transcript_cursor.as_mut() {
-                        *cursor = (*cursor).max(*seq);
+                    // These events carry their own seq, but a history row's
+                    // seq belongs to another numbering space: only a
+                    // current-generation row is a position in this stream.
+                    if event.envelope.generation == pull.generation {
+                        if let Some(cursor) = pull.transcript_cursor.as_mut() {
+                            *cursor = (*cursor).max(*seq);
+                        }
                     }
                     false
                 }
@@ -493,8 +505,18 @@ fn pull_live_agent_replay_events(
             return;
         };
 
-        if let Some((seq, event)) = replay.pending.pop_front() {
-            events.push(wire_event(session_id, pull, event, Some(seq)));
+        if let Some((generation, seq, event)) = replay.pending.pop_front() {
+            // History is a record, not a position: it carries its own
+            // generation and no transcript position, so neither reader's
+            // cursor can be dragged into another generation's numbering.
+            let transcript_seq = (generation == pull.generation).then_some(seq);
+            events.push(wire_event(
+                session_id,
+                pull,
+                generation,
+                event,
+                transcript_seq,
+            ));
             if events.len() >= super::PULL_BATCH {
                 return;
             }
@@ -528,7 +550,9 @@ fn pull_live_agent_replay_events(
                     replay.force_finish = true;
                 }
                 if let Some(manifest) = pull.runtime.session_manifest() {
-                    replay.pending.push_back((replay.watermark, manifest));
+                    replay
+                        .pending
+                        .push_back((pull.generation, replay.watermark, manifest));
                 }
                 replay.manifest_emitted = true;
                 continue;
@@ -543,6 +567,7 @@ fn pull_live_agent_replay_events(
                 events.push(wire_event(
                     session_id,
                     pull,
+                    pull.generation,
                     pull.runtime.journal_degraded_event(),
                     None,
                 ));
@@ -552,7 +577,7 @@ fn pull_live_agent_replay_events(
             return;
         }
 
-        if replay.cursor >= replay.watermark {
+        if (replay.cursor_generation, replay.cursor) >= (replay.generation, replay.watermark) {
             replay.durable_done = true;
             continue;
         }
@@ -560,6 +585,7 @@ fn pull_live_agent_replay_events(
         let from_seq = replay.cursor;
         let page_result = pull.runtime.replay_journal_agent_page(
             replay.generation,
+            replay.cursor_generation,
             from_seq,
             replay.watermark,
             super::PULL_BATCH,
@@ -608,8 +634,20 @@ fn pull_live_agent_replay_events(
             continue;
         }
 
+        let mut page_generation = replay.cursor_generation;
         for record in page.records {
-            replay.cursor = replay.cursor.max(record.seq);
+            if record.generation != page_generation {
+                // The view builders are per-provider-process state; a resume
+                // seam is a new process, so its rows must not be parsed with
+                // the previous generation's partial view.
+                replay.claude_view = None;
+                replay.codex_view = None;
+                page_generation = record.generation;
+            }
+            // Pages arrive in (generation, seq) order, so each record
+            // advances the cursor lexicographically.
+            replay.cursor_generation = record.generation;
+            replay.cursor = record.seq;
             let derived = match record.kind {
                 crate::journal::EventKind::AgentReport => {
                     match serde_json::from_slice::<SessionEvent>(&record.payload) {
@@ -666,8 +704,10 @@ fn pull_live_agent_replay_events(
             // in the detached backlog because `acp_view` deliberately leaves
             // those protocol requests to the live permission broker. Only
             // rows that produced at least one replay event are eligible for
-            // backlog de-duplication at the replay/live seam.
-            if !derived.is_empty() {
+            // backlog de-duplication at the replay/live seam — and only
+            // current-generation rows: the seam dedupes against live items,
+            // whose seqs belong to the attach generation alone.
+            if !derived.is_empty() && record.generation == replay.generation {
                 replay.replayed_seqs.insert(record.seq);
             }
             for event in derived {
@@ -677,11 +717,17 @@ fn pull_live_agent_replay_events(
                 if matches!(event, SessionEvent::SessionManifest { .. }) {
                     continue;
                 }
-                replay.pending.push_back((record.seq, event));
+                replay
+                    .pending
+                    .push_back((record.generation, record.seq, event));
             }
         }
         let watermark_extended = extend_live_agent_watermark(pull.runtime.as_ref(), replay);
-        if replay.force_finish || (!watermark_extended && replay.cursor >= replay.watermark) {
+        if replay.force_finish
+            || (!watermark_extended
+                && (replay.cursor_generation, replay.cursor)
+                    >= (replay.generation, replay.watermark))
+        {
             replay.durable_done = true;
             // `try_append` is intentionally asynchronous. If the journal
             // writer has not reached the attach watermark yet, the rows
@@ -770,15 +816,16 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
         events.push(wire_event(
             session_id,
             pull,
+            pull.generation,
             pull.runtime.journal_degraded_event(),
             None,
         ));
     }
     if let Some(event) = silent_event {
-        events.push(wire_event(session_id, pull, event, None));
+        events.push(wire_event(session_id, pull, pull.generation, event, None));
     }
     if let Some(event) = exit_event {
-        events.push(wire_event(session_id, pull, event, None));
+        events.push(wire_event(session_id, pull, pull.generation, event, None));
     }
 }
 
@@ -794,7 +841,7 @@ fn emit_live_items(
             PendingItem::Output { seq, data } => SessionEvent::Output { seq, data },
             PendingItem::Agent { event, .. } => event,
         };
-        events.push(wire_event(session_id, pull, event, None));
+        events.push(wire_event(session_id, pull, pull.generation, event, None));
     }
 }
 
@@ -803,6 +850,7 @@ fn push_dead_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
         events.push(wire_event(
             session_id,
             pull,
+            pull.generation,
             pull.runtime.journal_degraded_event(),
             None,
         ));
@@ -812,6 +860,7 @@ fn push_dead_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
         events.push(wire_event(
             session_id,
             pull,
+            pull.generation,
             SessionEvent::Exit { code: None },
             None,
         ));
@@ -837,8 +886,7 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
             .needs_journal_replay(cursor, stream.next_seq)
     };
     let journal_outputs = if needs_journal {
-        pull.runtime
-            .replay_journal_outputs(cursor.unwrap_or(0), pull.generation)
+        pull.runtime.replay_journal_outputs(pull.generation)
     } else {
         Vec::new()
     };
@@ -847,31 +895,44 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
             push_dead_events(session_id, pull, events);
             return;
         };
-        let mut replay: Vec<(u64, SessionEvent)> = stream
+        // Order key is (generation, seq): a transcript can span a resume
+        // seam, and seqs restart per generation. Each row keeps the
+        // generation it was written under — never the attach generation.
+        let mut replay: Vec<((u64, u64), SessionEvent)> = stream
             .scrollback
-            .replay_after_with_journal(cursor, &journal_outputs)
+            .replay_after_with_journal(cursor, pull.generation, &journal_outputs)
             .into_iter()
-            .filter_map(|event| match event {
-                SessionEvent::Output { seq, .. } => Some((seq, event)),
-                _ => None,
+            .map(|((generation, seq), data)| {
+                ((generation, seq), SessionEvent::Output { seq, data })
             })
             .collect();
         let cursor_seq = cursor.unwrap_or(0);
-        for (seq, event) in &stream.transcript_agent_reports {
-            if *seq > cursor_seq {
-                replay.push((*seq, event.clone()));
+        for ((generation, seq), event) in &stream.transcript_agent_reports {
+            if transcript_row_owed(*generation, *seq, pull.generation, cursor_seq) {
+                replay.push(((*generation, *seq), event.clone()));
             }
         }
-        replay.sort_by_key(|(seq, _)| *seq);
+        replay.sort_by_key(|(key, _)| *key);
         replay
     };
-    for (seq, event) in replay {
-        events.push(wire_event(session_id, pull, event, Some(seq)));
+    for ((generation, seq), event) in replay {
+        // History is a record, not a position: it carries its own
+        // generation and no transcript position, so neither reader's
+        // cursor can be dragged into another generation's numbering.
+        let transcript_seq = (generation == pull.generation).then_some(seq);
+        events.push(wire_event(
+            session_id,
+            pull,
+            generation,
+            event,
+            transcript_seq,
+        ));
     }
     if !pull.journal_degraded_sent && pull.runtime.journal_degraded() {
         events.push(wire_event(
             session_id,
             pull,
+            pull.generation,
             pull.runtime.journal_degraded_event(),
             None,
         ));
@@ -891,7 +952,7 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
                     }
                 }
             };
-            events.push(wire_event(session_id, pull, event, None));
+            events.push(wire_event(session_id, pull, pull.generation, event, None));
             pull.exit_sent = true;
         }
     }
@@ -1967,6 +2028,708 @@ mod tests {
         assert_eq!(error.code, ErrorCode::SessionGenerationMismatch);
     }
 
+    /// A Reopen resets the client cursor to the new generation's seq 0; the
+    /// replay that follows must still serve the generations before the
+    /// attach — the whole transcript, in journal order.
+    #[test]
+    fn live_agent_replay_delivers_the_generations_before_the_attach() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-cross-gen-replay-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.cross.gen.attach";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        let user_before = SessionEvent::AgentUserMessage {
+            message_id: Some("m1".into()),
+            text: "gen-1 user".into(),
+            author: devboule_protocol::UserMessageAuthor::Human,
+        };
+        let answer_before = SessionEvent::AgentMessage {
+            message_id: Some("m2".into()),
+            text: "gen-1 answer".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        let answer_after = SessionEvent::AgentMessage {
+            message_id: Some("m3".into()),
+            text: "after resume".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        journal
+            .append_blocking(
+                crate::journal::agent_report_record(session_id, 1, 1, &user_before).unwrap(),
+            )
+            .unwrap();
+        journal
+            .append_blocking(
+                crate::journal::agent_report_record(session_id, 1, 2, &answer_before).unwrap(),
+            )
+            .unwrap();
+        journal.start_generation(session_id, 2).unwrap();
+        journal
+            .append_blocking(
+                crate::journal::agent_report_record(session_id, 2, 1, &answer_after).unwrap(),
+            )
+            .unwrap();
+
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.generation = 2;
+            stream.next_seq = 2;
+        }
+        runtime.generation.store(2, Ordering::Release);
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(
+                Some(Cursor {
+                    generation: 2,
+                    seq: 0,
+                }),
+                &conn,
+                true,
+            )
+            .expect("attach live agent");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn);
+        let transcript: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+                SessionEvent::AgentMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            transcript,
+            vec!["gen-1 user", "gen-1 answer", "after resume"],
+            "the replay must span the resume seam in journal order: {transcript:?}"
+        );
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pre-attach history is history: a row from below the attach generation
+    /// is delivered with its own generation on the envelope and no transcript
+    /// position, so it can advance neither reader's cursor into a numbering
+    /// space that is not its own.
+    #[test]
+    fn live_agent_replay_stamps_history_envelopes_with_their_own_generation() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-history-stamp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.history.stamp";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        // Generation 1's last record is an AgentReported far above anything
+        // generation 2 has published: exactly the shape that corrupts a
+        // cursor when it arrives wearing the attach generation.
+        let hook_report = SessionEvent::AgentReported {
+            seq: 100,
+            source: "devboule:stub".to_string(),
+            agent: "stub".to_string(),
+            state: devboule_protocol::AgentActivityState::Working,
+            message: None,
+            report_seq: Some(1),
+            agent_session_id: None,
+            agent_session_path: None,
+            session_start_source: None,
+        };
+        let user_after = SessionEvent::AgentUserMessage {
+            message_id: Some("m1".into()),
+            text: "after resume".into(),
+            author: devboule_protocol::UserMessageAuthor::Human,
+        };
+        let answer_after = SessionEvent::AgentMessage {
+            message_id: Some("m2".into()),
+            text: "gen-2 answer".into(),
+            parent_tool_use_id: None,
+            spawn_depth: None,
+        };
+        journal
+            .append_blocking(
+                crate::journal::agent_report_record(session_id, 1, 100, &hook_report).unwrap(),
+            )
+            .unwrap();
+        journal.start_generation(session_id, 2).unwrap();
+        journal
+            .append_blocking(
+                crate::journal::agent_report_record(session_id, 2, 1, &user_after).unwrap(),
+            )
+            .unwrap();
+        journal
+            .append_blocking(
+                crate::journal::agent_report_record(session_id, 2, 2, &answer_after).unwrap(),
+            )
+            .unwrap();
+
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.generation = 2;
+            stream.next_seq = 3;
+        }
+        runtime.generation.store(2, Ordering::Release);
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(
+                Some(Cursor {
+                    generation: 2,
+                    seq: 0,
+                }),
+                &conn,
+                true,
+            )
+            .expect("attach live agent");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let mut batch = conn.pull_events();
+        while batch.len() < 3 {
+            let more = conn.pull_events();
+            if more.is_empty() {
+                break;
+            }
+            batch.extend(more);
+        }
+        let history: Vec<(u64, Option<u64>)> = batch
+            .iter()
+            .filter(|pending| matches!(pending.envelope.event, SessionEvent::AgentReported { .. }))
+            .map(|pending| (pending.envelope.generation, pending.transcript_seq))
+            .collect();
+        assert_eq!(
+            history,
+            vec![(1, None)],
+            "a history row must carry its own generation and no transcript position: {history:?}"
+        );
+        let current: Vec<(u64, Option<u64>)> = batch
+            .iter()
+            .filter(|pending| matches!(pending.envelope.event, SessionEvent::AgentMessage { .. }))
+            .map(|pending| (pending.envelope.generation, pending.transcript_seq))
+            .collect();
+        assert_eq!(
+            current,
+            vec![(2, Some(2))],
+            "current-generation rows keep the attach generation and their position: {current:?}"
+        );
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The daemon's transcript cursor means "how far inside the current
+    /// generation this reader has got". History must not move it: a reader
+    /// that accounts a history row as current-generation progress starves
+    /// its own reattach of every current-generation row below that number.
+    #[test]
+    fn history_does_not_move_the_transcript_cursor_or_starve_the_reattach() {
+        let integrity = recovered_integrity();
+        let replay = crate::journal::Replay {
+            generation: 2,
+            last_seq: 2,
+            integrity,
+            event_seqs: vec![(1, 100), (2, 1), (2, 2), (2, 2)],
+            events: vec![
+                SessionEvent::AgentReported {
+                    seq: 100,
+                    source: "devboule:stub".to_string(),
+                    agent: "stub".to_string(),
+                    state: devboule_protocol::AgentActivityState::Working,
+                    message: None,
+                    report_seq: Some(1),
+                    agent_session_id: None,
+                    agent_session_path: None,
+                    session_start_source: None,
+                },
+                SessionEvent::AgentUserMessage {
+                    message_id: Some("m1".into()),
+                    text: "gen-2 user".into(),
+                    author: devboule_protocol::UserMessageAuthor::Human,
+                },
+                SessionEvent::AgentMessage {
+                    message_id: Some("m2".into()),
+                    text: "still here".into(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                },
+                SessionEvent::Recovered { integrity },
+            ],
+        };
+        let runtime = SessionRuntime::from_replay("s.history.cursor".to_string(), None, replay);
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            "s.history.cursor",
+            Arc::clone(&runtime),
+            true,
+            Some(0),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        // A reader that receives only the first envelope — the history row —
+        // and then drops. Whatever cursor it accounts from that one row is
+        // what its reattach will present.
+        let first = conn.pull_events().remove(0);
+        conn.event_sent(&first);
+        let accounted = conn
+            .attached
+            .lock()
+            .expect("attached")
+            .get(&conn.id)
+            .and_then(|pull| pull.transcript_cursor);
+        runtime.detach_if_conn(conn.id);
+
+        let conn2 = ConnHandle::new(2);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn2, false)
+            .expect("reattach");
+        conn2.track_with_agent_replay(
+            "s.history.cursor",
+            Arc::clone(&runtime),
+            true,
+            accounted,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn2);
+        let transcript: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+                SessionEvent::AgentMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            transcript,
+            vec!["gen-2 user", "still here"],
+            "the reattach must still be served the current generation: {transcript:?}"
+        );
+        // The mechanism, checked after the loss it causes: the accounted
+        // cursor stayed at the attach position (0) — history moved it to
+        // 100 when the event_sent gate is broken.
+        assert_eq!(
+            accounted,
+            Some(0),
+            "history must not advance the transcript cursor"
+        );
+    }
+
+    /// A reattach to a multi-generation transcript with a non-zero cursor is
+    /// owed the whole history plus the current generation after the cursor.
+    /// Old-generation rows sit at seqs below the cursor here, which is the
+    /// case a bare-seq filter silently drops — for both row families: the
+    /// agent-report map and the in-memory Output chunks.
+    #[test]
+    fn reattach_to_history_serves_the_whole_conversation() {
+        let integrity = recovered_integrity();
+        let replay = crate::journal::Replay {
+            generation: 2,
+            last_seq: 7,
+            integrity,
+            event_seqs: vec![(1, 2), (1, 3), (2, 6), (2, 7), (2, 7)],
+            events: vec![
+                SessionEvent::Output {
+                    seq: 2,
+                    data: "gen-1 output".to_string(),
+                },
+                SessionEvent::AgentUserMessage {
+                    message_id: Some("m1".into()),
+                    text: "gen-1 report".into(),
+                    author: devboule_protocol::UserMessageAuthor::Human,
+                },
+                SessionEvent::Output {
+                    seq: 6,
+                    data: "gen-2 output".to_string(),
+                },
+                SessionEvent::AgentMessage {
+                    message_id: Some("m2".into()),
+                    text: "still here".into(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                },
+                SessionEvent::Recovered { integrity },
+            ],
+        };
+        let runtime = SessionRuntime::from_replay("s.reattach.history".to_string(), None, replay);
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            "s.reattach.history",
+            Arc::clone(&runtime),
+            true,
+            Some(5),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn);
+        let transcript: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { data, .. } => Some(data.clone()),
+                SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+                SessionEvent::AgentMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            transcript,
+            vec!["gen-1 output", "gen-1 report", "gen-2 output", "still here",],
+            "history below the cursor is still owed on a reattach: {transcript:?}"
+        );
+    }
+
+    /// The journal-copies branch of the transcript replay must serve history
+    /// too: a runtime whose in-memory scrollback begins above the cursor —
+    /// hydrated with a catch-up cursor — still owes the older generations'
+    /// Output rows the journal holds, whatever seq they sit at.
+    #[test]
+    fn journal_copies_of_history_survive_the_reattach() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-journal-history-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.journal.history";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        // A history Output row the hydrated scrollback does not hold: the
+        // runtime below is built from a hand-built replay that starts at
+        // the current generation, exactly like a hydrate that arrived with
+        // a catch-up cursor.
+        journal
+            .append_blocking(crate::journal::output_record(
+                session_id,
+                1,
+                2,
+                "gen-1 journal row".as_bytes(),
+            ))
+            .expect("gen-1 journal row");
+        journal.start_generation(session_id, 2).unwrap();
+        journal
+            .append_blocking(crate::journal::output_record(
+                session_id,
+                2,
+                8,
+                "journal hole row".as_bytes(),
+            ))
+            .expect("journal hole row");
+        let integrity = recovered_integrity();
+        let replay = crate::journal::Replay {
+            generation: 2,
+            last_seq: 7,
+            integrity,
+            event_seqs: vec![(2, 7), (2, 7)],
+            events: vec![
+                SessionEvent::Output {
+                    seq: 7,
+                    data: "gen-2 chunk".to_string(),
+                },
+                SessionEvent::Recovered { integrity },
+            ],
+        };
+        let runtime =
+            SessionRuntime::from_replay(session_id.to_string(), Some(Arc::clone(&journal)), replay);
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            true,
+            Some(5),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn);
+        let ledger: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ledger,
+            vec!["gen-1 journal row", "gen-2 chunk", "journal hole row",],
+            "journal copies of history are owed whatever their seq: {ledger:?}"
+        );
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The stop-tail attach carries the nothing-owed sentinel as its seq: a
+    /// stop wants no rows, not "everything below the attach generation".
+    /// History is owed to readers, which is exactly why the sentinel must
+    /// mean nothing rather than merely a very large seq.
+    #[test]
+    fn a_stop_tail_cursor_owes_nothing_not_even_history() {
+        let integrity = recovered_integrity();
+        let replay = crate::journal::Replay {
+            generation: 2,
+            last_seq: 1,
+            integrity,
+            event_seqs: vec![(1, 1), (1, 2), (2, 1), (2, 1)],
+            events: vec![
+                SessionEvent::Output {
+                    seq: 1,
+                    data: "gen-1 ledger".to_string(),
+                },
+                SessionEvent::AgentUserMessage {
+                    message_id: Some("m1".into()),
+                    text: "gen-1 report".into(),
+                    author: devboule_protocol::UserMessageAuthor::Human,
+                },
+                SessionEvent::AgentMessage {
+                    message_id: Some("m2".into()),
+                    text: "still here".into(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                },
+                SessionEvent::Recovered { integrity },
+            ],
+        };
+        let runtime = SessionRuntime::from_replay("s.stop.tail".to_string(), None, replay);
+
+        // The store is not degenerate: a fresh reader is served the history.
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            "s.stop.tail",
+            Arc::clone(&runtime),
+            true,
+            Some(0),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let seen = drain(&conn);
+        assert!(!seen.is_empty(), "the fixture must hold rows");
+
+        // The stop-tail reader: the cursor the client's stop sends.
+        let conn2 = ConnHandle::new(2);
+        let outcome = runtime
+            .try_attach_with_replay(
+                Some(Cursor {
+                    generation: 2,
+                    seq: u64::MAX,
+                }),
+                &conn2,
+                false,
+            )
+            .expect("stop-tail attach");
+        conn2.track_with_agent_replay(
+            "s.stop.tail",
+            Arc::clone(&runtime),
+            true,
+            Some(u64::MAX),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn2);
+        let transcript: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { data, .. } => Some(data.clone()),
+                SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+                SessionEvent::AgentMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            transcript,
+            Vec::<String>::new(),
+            "a stop-tail cursor must owe nothing, not the history: {transcript:?}"
+        );
+    }
+
+    /// Transcript rows from different generations can share a stream seq
+    /// (it restarts per generation); the recovered-transcript replay must
+    /// keep both and deliver them in (generation, seq) order.
+    #[test]
+    fn transcript_replay_keeps_rows_from_different_generations() {
+        let integrity = recovered_integrity();
+        let replay = crate::journal::Replay {
+            generation: 2,
+            last_seq: 1,
+            integrity,
+            event_seqs: vec![(1, 1), (1, 2), (2, 1)],
+            events: vec![
+                SessionEvent::AgentUserMessage {
+                    message_id: Some("m1".into()),
+                    text: "gen-1 user".into(),
+                    author: devboule_protocol::UserMessageAuthor::Human,
+                },
+                SessionEvent::AgentMessage {
+                    message_id: Some("m2".into()),
+                    text: "gen-1 answer".into(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                },
+                SessionEvent::AgentMessage {
+                    message_id: Some("m3".into()),
+                    text: "after resume".into(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
+                },
+                SessionEvent::Recovered { integrity },
+            ],
+        };
+        let runtime = SessionRuntime::from_replay("s.cross.gen.view".to_string(), None, replay);
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            "s.cross.gen.view",
+            Arc::clone(&runtime),
+            true,
+            Some(0),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn);
+        let transcript: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+                SessionEvent::AgentMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            transcript,
+            vec!["gen-1 user", "gen-1 answer", "after resume"],
+            "rows from different generations must all survive the replay: {transcript:?}"
+        );
+    }
+
+    /// Agent sessions journal Output rows (the permission-answered ledger)
+    /// per generation, so two generations can carry the same seq. The
+    /// transcript replay must not flatten them into one seq space: both
+    /// survive, ordered by (generation, seq).
+    #[test]
+    fn transcript_outputs_from_different_generations_do_not_collide() {
+        let integrity = recovered_integrity();
+        let replay = crate::journal::Replay {
+            generation: 2,
+            last_seq: 1,
+            integrity,
+            event_seqs: vec![(1, 1), (2, 1), (2, 1)],
+            events: vec![
+                SessionEvent::Output {
+                    seq: 1,
+                    data: "gen-1 ledger".to_string(),
+                },
+                SessionEvent::Output {
+                    seq: 1,
+                    data: "gen-2 ledger".to_string(),
+                },
+                SessionEvent::Recovered { integrity },
+            ],
+        };
+        let runtime = SessionRuntime::from_replay("s.cross.gen.ledger".to_string(), None, replay);
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            "s.cross.gen.ledger",
+            Arc::clone(&runtime),
+            true,
+            Some(0),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn);
+        let ledger: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ledger,
+            vec!["gen-1 ledger", "gen-2 ledger"],
+            "same-seq outputs from different generations must both survive, in journal order: {ledger:?}"
+        );
+    }
+
     #[test]
     fn live_claude_replay_derives_journaled_views() {
         let dir = std::env::temp_dir().join(format!(
@@ -2114,7 +2877,7 @@ mod tests {
             outcome.generation,
             outcome.live_agent_replay,
         );
-        runtime.stream.lock().unwrap().scrollback.push(2, b"two");
+        runtime.stream.lock().unwrap().scrollback.push(2, 2, b"two");
         runtime.finish(Some(0));
         let events = drain(&conn);
         assert_eq!(
@@ -2136,7 +2899,7 @@ mod tests {
             generation: 1,
             last_seq: 3,
             integrity,
-            event_seqs: vec![1, 2, 3, 3],
+            event_seqs: vec![(1, 1), (1, 2), (1, 3), (1, 3)],
             events: vec![
                 SessionEvent::Output {
                     seq: 1,
@@ -2371,7 +3134,7 @@ mod tests {
             generation: 1,
             last_seq: 11,
             integrity,
-            event_seqs: vec![10, 11, 11],
+            event_seqs: vec![(1, 10), (1, 11), (1, 11)],
             events: vec![
                 SessionEvent::Output {
                     seq: 10,
@@ -2416,7 +3179,7 @@ mod tests {
             generation: 1,
             last_seq: 3,
             integrity,
-            event_seqs: vec![2, 3, 3],
+            event_seqs: vec![(1, 2), (1, 3), (1, 3)],
             events: vec![
                 SessionEvent::Output {
                     seq: 2,
@@ -2588,7 +3351,7 @@ mod tests {
         runtime.finish(Some(0));
         journal.flush().unwrap();
 
-        let replay = journal.replay("s.recover.1", 0).unwrap();
+        let replay = journal.replay("s.recover.1").unwrap();
         let seqs: Vec<u64> = replay
             .events
             .iter()
@@ -2600,16 +3363,14 @@ mod tests {
         assert_eq!(seqs, (1..=300).collect::<Vec<_>>());
 
         // The recovered runtime is a transcript: no emulator, journal replay
-        // instead of a snapshot. Hydrating at 150 leaves a prefix that only
-        // a journal read can fill, so the attach below exercises the seam.
-        let replay_late = journal.replay("s.recover.1", 150).unwrap();
-        let recovered = SessionRuntime::from_replay(
-            "s.recover.1".into(),
-            Some(Arc::clone(&journal)),
-            replay_late,
-        );
+        // instead of a snapshot. Hydration reads unpositioned — the store
+        // holds every frame, whatever a reattaching cursor claims — so the
+        // attach below serves the whole transcript from the store alone.
+        let replay = journal.replay("s.recover.1").unwrap();
+        let recovered =
+            SessionRuntime::from_replay("s.recover.1".into(), Some(Arc::clone(&journal)), replay);
         assert!(recovered.is_transcript());
-        assert_eq!(recovered.transcript_chunks().len(), 150);
+        assert_eq!(recovered.transcript_chunks().len(), 300);
         let conn = ConnHandle::new(1);
         attach_tracked(&recovered, &conn);
         let events = drain(&conn);
@@ -2623,8 +3384,9 @@ mod tests {
         assert_eq!(seqs, (1..=300).collect::<Vec<_>>());
         assert_eq!(
             recovered.journal_replay_count(),
-            1,
-            "one journal read filled the prefix, not one per pull"
+            0,
+            "zero journal reads: the store alone served the attach (the \
+             counter spans both read kinds, so zero means neither ran)"
         );
         drop(recovered);
         drop(runtime);
@@ -2698,7 +3460,7 @@ mod tests {
                 dropped_bytes: 0,
                 trimmed_bytes: 0,
             },
-            event_seqs: vec![1, 1],
+            event_seqs: vec![(1, 1), (1, 1)],
             events: vec![
                 SessionEvent::Output {
                     seq: 1,

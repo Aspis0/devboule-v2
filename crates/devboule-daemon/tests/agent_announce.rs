@@ -201,7 +201,7 @@ fn pty_stub_announces_over_the_named_pipe() {
     let journal_path = harness.paths.journal_file();
     let deadline = Instant::now() + Duration::from_secs(3);
     let replay = loop {
-        match Journal::open(&journal_path).and_then(|journal| journal.replay(&session.id, 0)) {
+        match Journal::open(&journal_path).and_then(|journal| journal.replay(&session.id)) {
             Ok(replay)
                 if replay.events.iter().any(|event| {
                     matches!(event, SessionEvent::AgentReported { agent, .. } if agent == "stub")

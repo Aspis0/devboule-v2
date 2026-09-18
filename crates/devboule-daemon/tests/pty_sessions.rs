@@ -2985,7 +2985,7 @@ fn attach_during_flood_delivers_every_sequence_once() {
     // captured Outputs alone are not the whole stream; the journal is.
     let journal =
         devboule_daemon::Journal::open(&harness.paths.journal_file()).expect("open journal");
-    let replay = journal.replay(&session.id, 0).expect("journal replay");
+    let replay = journal.replay(&session.id).expect("journal replay");
     let mut ordered: Vec<(u64, String)> = replay
         .events
         .into_iter()
