@@ -251,6 +251,10 @@ pub(super) fn peer_mode_refusal(
         // — one arm per variant and no `_` arm, because a new `ClientMessage`
         // variant is a decision here. A frame that names a session but no mode
         // is the registry's business, not this gate's.
+        // A read returns bytes and never reaches the agent: nothing is
+        // prompted, so there is no mode to vet — the same reason the
+        // deposit below is not vetted either.
+        ClientMessage::SessionAttachmentRead { .. } => None,
         ClientMessage::Hello(_) => None,
         // A deposit writes bytes into a session's folder and never reaches the
         // agent: nothing is prompted, so there is no mode to vet. The send that
@@ -479,6 +483,11 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionPermissionRespond { session_id, .. }
         | ClientMessage::SessionReportAgent { session_id, .. }
         | ClientMessage::SessionDelete { session_id, .. } => Some(session_id.clone()),
+        // The reference names its session the way a frame names one: the
+        // digest resolves only inside it.
+        ClientMessage::SessionAttachmentRead { reference, .. } => {
+            Some(reference.session_id.clone())
+        }
         // No session is named: a connection-level frame, a daemon-level one, a
         // workspace or provider one, or a pairing one. Named individually on
         // purpose — a new frame must be classified here, not inherit `None`.

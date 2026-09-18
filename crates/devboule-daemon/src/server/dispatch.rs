@@ -167,6 +167,7 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::SessionSend { .. }
         | ClientMessage::AgentMessageSend { .. }
         | ClientMessage::SessionDeposit { .. }
+        | ClientMessage::SessionAttachmentRead { .. }
         | ClientMessage::SessionResize { .. }
         | ClientMessage::SessionInterrupt { .. }
         | ClientMessage::SessionSetModel { .. }

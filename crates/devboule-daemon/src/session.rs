@@ -83,8 +83,8 @@ use devboule_protocol::{
     FinishArtifact, FinishArtifactPart, FinishArtifactPartMetadata, JournalRetention, JournalStats,
     OwnerId, PermissionOutcome, Project, PromptAttachment, RetentionPatch, Session, SessionEvent,
     SessionKind, SessionModel, SessionOrigin, SessionOriginKind, SessionState,
-    SessionStateSnapshot, UnattendedState, UserMessageAuthor, WireError, Workspace,
-    WorkspaceIsolation, MAX_WRITE_BYTES,
+    SessionStateSnapshot, StoredAttachment, UnattendedState, UserMessageAuthor, WireError,
+    Workspace, WorkspaceIsolation, MAX_WRITE_BYTES,
 };
 #[cfg(test)]
 use std::sync::Barrier;
@@ -668,13 +668,19 @@ fn not_found_while_configuring(entry: &RegistryEntry) -> WireError {
     }
 }
 
-/// The one door an id-addressed peer call resolves its id through: the
+/// The door most id-addressed calls resolve their id through: the
 /// entry must exist, belong to this owner, and be past its delivery window.
 /// A `Configuring` entry answers `SessionNotFound` here, because the session
 /// does not exist for peers until the delivery has landed (the re-audit's
 /// P2-1/P2-2 — the variant's own doc claims this refusal, and this door is
-/// what makes the claim true rather than a per-site edit). A new peer path
-/// cannot forget the window: there is no second lookup that skips it.
+/// what makes the claim true rather than a per-site edit).
+///
+/// Two callers do not come through here: `deposit` and `read_attachment`
+/// resolve with a hand-rolled `map.get` plus the ownership check, so they
+/// answer about a `Configuring` session instead of refusing it
+/// `SessionNotFound`. A new peer path that needs the window refused must use
+/// this door rather than copying those two.
+///
 /// Daemon-side readers — teardown, EOF reaping, handle storage, the resume
 /// guard — do not go through this door; they ask
 /// `RegistryEntry::as_child_process` directly. `delete_session` cannot
@@ -5462,6 +5468,106 @@ impl SessionRegistry {
             session_id: session_id.to_string(),
             digest: deposited.digest,
             stored_bytes: deposited.stored_bytes,
+        })
+    }
+
+    /// Read back the bytes of one deposited attachment, verified.
+    ///
+    /// The same door [`Self::deposit`] walks, in the same order: the
+    /// registry's ownership check first — a reference resolves only inside
+    /// a session the caller's own scope owns — then the wire's own
+    /// reference rules, then the store. The digest names the file, but no
+    /// check short of the hash binds the reply to the reference: the store
+    /// resolves by name and stats by name, so anything rewritten under the
+    /// same name comes back unless the bytes themselves are verified.
+    ///
+    /// The read is bounded before it is believed. The file is opened and at
+    /// most [`MAX_AGENT_ARTIFACT_BYTES`] plus one byte is taken, so a file
+    /// grown past the cap is never fully allocated and can never reach the
+    /// frame. The bytes taken must then be exactly as long as the reference
+    /// states, and their SHA-256 must equal its digest — the store hashed
+    /// the same bytes on the write, so the legitimate path cannot fail
+    /// this, and a store that disagrees with itself is refused. Each
+    /// refusal echoes only what the reference stated: no sentence here
+    /// reports a size or a digest the caller did not name.
+    ///
+    /// The MIME type is the store's own statement from its extension table.
+    /// A reference whose session or file is gone answers with the store's
+    /// own sentences, which cannot tell a swept folder from a digest
+    /// deposited elsewhere.
+    pub(crate) fn read_attachment(
+        &self,
+        reference: &AttachmentReference,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<StoredAttachment, WireError> {
+        {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = map.get(&reference.session_id).ok_or_else(not_found)?;
+            check_user_owner(entry, owner, &conn.conn_peer)?;
+        }
+        validate_attachment_references(&reference.session_id, std::slice::from_ref(reference))
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let (path, _) = self
+            .attachments
+            .resolve(&reference.session_id, &reference.digest, None)?;
+        if reference.stored_bytes > MAX_AGENT_ARTIFACT_BYTES as u64 {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "The reference states {} bytes for '{}', over the {}-byte read cap.",
+                    reference.stored_bytes, reference.digest, MAX_AGENT_ARTIFACT_BYTES
+                ),
+            ));
+        }
+        // Bounded before believed: an oversized file is never fully
+        // allocated, so it can never reach the frame no matter what the
+        // stat said a moment ago.
+        let file = std::fs::File::open(&path).map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not read a stored attachment: {error}"),
+            )
+        })?;
+        let mut bytes = Vec::new();
+        file.take(MAX_AGENT_ARTIFACT_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| {
+                WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not read a stored attachment: {error}"),
+                )
+            })?;
+        if bytes.len() as u64 != reference.stored_bytes {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "The stored attachment '{}' is not {} bytes as the reference states.",
+                    reference.digest, reference.stored_bytes
+                ),
+            ));
+        }
+        if crate::attachment_store::sha256_hex(&bytes) != reference.digest {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "The stored attachment '{}' does not match its digest.",
+                    reference.digest
+                ),
+            ));
+        }
+        use base64::Engine as _;
+        Ok(StoredAttachment {
+            mime_type: path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .and_then(crate::attachment_store::mime_type_for_extension)
+                .unwrap_or("application/octet-stream")
+                .to_string(),
+            data: base64::engine::general_purpose::STANDARD.encode(&bytes),
         })
     }
 

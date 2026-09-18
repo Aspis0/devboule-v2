@@ -105,9 +105,9 @@ pub use messages::{
     JournalLimits, JournalRetention, JournalSessionUsage, JournalStats, JournalUsage,
     PairingSecret, PeerAgent, PeerRole, PeerRosterScope, PeerRow, PendingPairing, PromptAttachment,
     ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource,
-    SelfInfo, SessionEventEnvelope, ToolDescriptor, ToolPolicyEntry, Unreclaimable,
-    VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource, VocabularyState,
-    PEER_CAPS, PEER_DEFAULT_CAPS,
+    SelfInfo, SessionEventEnvelope, StoredAttachment, ToolDescriptor, ToolPolicyEntry,
+    Unreclaimable, VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource,
+    VocabularyState, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -193,6 +193,14 @@ pub mod caps {
     /// the name exists so a client can tell a daemon that accepts deposits
     /// from one that does not.
     pub const ATTACHMENTS_DEPOSIT: &str = "attachments.deposit";
+
+    /// Stored-attachment reads (`SessionAttachmentRead`/`SessionAttachment`).
+    ///
+    /// Its own name rather than the deposit's: the handshake negotiates the
+    /// intersection, so a client gating the read on `attachments.deposit`
+    /// would ask a deposit-era daemon for bytes it cannot serve. In both
+    /// lists for the reason `agent_profiles` is.
+    pub const ATTACHMENTS_READ: &str = "attachments.read";
 
     /// Agents create agents (`devboule_create_agent`) and the finish reports
     /// that come back (`S5`).
@@ -587,6 +595,11 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // A deposit is a session RPC this daemon serves, so the daemon offers the
     // name; the app has to offer it too or the intersection drops it.
     capabilities.push(Capability::new(caps::ATTACHMENTS_DEPOSIT));
+    // Same pairing again, for the read half: the daemon serves stored bytes
+    // back, so the app must offer the name or the handshake would negotiate
+    // it away — and the app reads it to tell a daemon that serves
+    // `SessionAttachmentRead` from one that predates it.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_READ));
     // Same pairing again: `agent_create` names the MCP tool an agent may call
     // and the two events that come back from it. The daemon serves it, so the
     // app must offer it or the handshake would negotiate it away.
@@ -638,6 +651,10 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // negotiated, and a client could not then tell a daemon that accepts
     // deposits from one that does not.
     capabilities.push(Capability::new(caps::ATTACHMENTS_DEPOSIT));
+    // Same pairing, for the read half: the app offers it so the intersection
+    // keeps it, and reads it before asking a daemon that predates
+    // `SessionAttachmentRead`.
+    capabilities.push(Capability::new(caps::ATTACHMENTS_READ));
     // Same pairing, for the creation surface: the app offers it so the
     // intersection keeps it, and reads it to know whether the daemon serves
     // `devboule_create_agent` and its two events.
@@ -803,6 +820,27 @@ mod tests {
                 .iter()
                 .any(|cap| cap.as_str() == caps::PERMISSION_DELEGATION),
             "the negotiated set must keep permission_delegation: {agreed:?}"
+        );
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_the_attachments_read_capability() {
+        // Both lists, for the reason the tests above state: the handshake
+        // negotiates the intersection, so a name only one side offers is
+        // never negotiated, and the app could not tell a daemon that serves
+        // `SessionAttachmentRead` from one that predates it.
+        assert!(m3a_daemon_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::ATTACHMENTS_READ));
+        assert!(m3a_client_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == caps::ATTACHMENTS_READ));
+        let agreed = intersect_capabilities(&m3a_client_capabilities(), &m3a_daemon_capabilities());
+        assert!(
+            agreed
+                .iter()
+                .any(|cap| cap.as_str() == caps::ATTACHMENTS_READ),
+            "the negotiated set must keep attachments.read: {agreed:?}"
         );
     }
 

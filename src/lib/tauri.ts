@@ -67,6 +67,22 @@ export type AttachmentReference = {
 };
 
 /**
+ * The bytes of one stored attachment, as the daemon hands them back: the
+ * reply of `session_attachment_read`.
+ *
+ * Declared beside `AttachmentReference` for the same reason: it is one
+ * command's reply, and this is where that command is declared. `data` is
+ * base64 and `mimeType` is the store's own statement from its extension
+ * table — not the finish event's report, which is a claim about the file.
+ */
+export type StoredAttachment = {
+  /** The stored file's type, from the store's extension table. */
+  mimeType: string;
+  /** The stored bytes, base64. */
+  data: string;
+};
+
+/**
  * The typed argument shape of every Tauri command. Exported (type-only) so
  * call sites outside this module — e.g. injected presence seams — can reference
  * a command's payload without re-writing its keys by hand.
@@ -121,6 +137,7 @@ export type CommandArgs = {
     attachmentReferences?: readonly AttachmentReference[];
   };
   session_deposit: { id: Id; attachment: PromptAttachment };
+  session_attachment_read: { reference: AttachmentReference };
   session_interrupt: { id: Id; subscriptionId: SubscriptionId };
   session_claim: { subscriptionId: SubscriptionId };
   session_set_model: { id: Id; modelId?: string; effort?: string };
@@ -201,6 +218,8 @@ type CommandResults = {
   session_send: void;
   /** The reference to the bytes the deposit stored, exactly as the daemon stated it. */
   session_deposit: AttachmentReference;
+  /** The stored bytes and MIME type, exactly as the daemon stated them. */
+  session_attachment_read: StoredAttachment;
   session_interrupt: void;
   session_claim: void;
   session_set_model: void;
@@ -335,6 +354,7 @@ export const COMMAND_ARG_KEYS = {
     "attachmentReferences",
   ],
   session_deposit: ["id", "attachment"],
+  session_attachment_read: ["reference"],
   session_interrupt: ["id", "subscriptionId"],
   session_claim: ["subscriptionId"],
   session_set_model: ["id", "modelId", "effort"],
@@ -564,6 +584,14 @@ export const sessionSend = (
  */
 export const sessionDeposit = (id: Id, attachment: PromptAttachment) =>
   invokeTyped("session_deposit", { id, attachment });
+/**
+ * Reads back the bytes of one deposited attachment, by reference.
+ *
+ * One call, one reference: the reply carries at most the artifact cap, and
+ * the reference is the value a deposit answered with, verbatim.
+ */
+export const sessionAttachmentRead = (reference: AttachmentReference) =>
+  invokeTyped("session_attachment_read", { reference });
 export const sessionInterrupt = (id: Id, subscriptionId: SubscriptionId) =>
   invokeTyped("session_interrupt", { id, subscriptionId });
 export const sessionClaim = (subscriptionId: SubscriptionId) =>

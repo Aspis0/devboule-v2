@@ -421,6 +421,23 @@ pub(super) fn dispatch_session(
             audit_peer_unauthorized(state, conn, "SessionDeposit", Some(session_id), &reply);
             reply
         }
+        // The read half of the deposit: ownership is checked where the
+        // deposit checks it, inside `read_attachment`, so a reference
+        // resolves only in a session the caller's own scope owns.
+        //
+        // No audit call here, although the deposit arm has one: the helper
+        // returns early unless the connection is remote, and a remote
+        // caller is refused by `peer_allows` at the gate and never reaches
+        // this handler. A peer holding `send` can still fall on the
+        // deposit's ownership check, which is why the deposit's call is
+        // live and this one would be dead.
+        ClientMessage::SessionAttachmentRead { id, reference } => reply_result(
+            id,
+            state
+                .sessions
+                .read_attachment(&reference, owner, conn)
+                .map(|attachment| DaemonMessage::SessionAttachment { id, attachment }),
+        ),
         // Closed on purpose (`S5`, block 6): every frame that is not a
         // session-level one is named, so a new frame has to be classified here
         // rather than falling into a catch-all. The sentence is constant and

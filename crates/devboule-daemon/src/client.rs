@@ -12,8 +12,8 @@ use devboule_protocol::{
     Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode, JournalRetention,
     JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
     Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionStateSnapshot, SubscriptionId, WireError, Workspace,
-    WorkspaceIsolation,
+    SessionEventEnvelope, SessionKind, SessionStateSnapshot, StoredAttachment, SubscriptionId,
+    WireError, Workspace, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -537,6 +537,32 @@ impl DaemonClient {
             attachment: attachment.clone(),
         })? {
             DaemonMessage::SessionDeposited { reference, .. } => Ok(reference),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Read back the bytes of one deposited attachment, by reference.
+    ///
+    /// One reference per call, like one attachment per deposit: the reply
+    /// carries at most the artifact cap, well under the frame ceiling. The
+    /// digest and size are the store's to state, so the reference this
+    /// takes is the value a deposit answered with, verbatim.
+    ///
+    /// Errors arrive as an `Error` frame on the correlation id, exactly as
+    /// they do for a deposit: an id this daemon does not know, a session
+    /// the caller does not own, a reference naming another session, a file
+    /// the store no longer holds, or bytes over the read cap.
+    pub fn session_attachment_read(
+        &self,
+        reference: &AttachmentReference,
+    ) -> Result<StoredAttachment, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionAttachmentRead {
+            id,
+            reference: reference.clone(),
+        })? {
+            DaemonMessage::SessionAttachment { attachment, .. } => Ok(attachment),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -1713,6 +1739,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::AgentMessageReceipt { id, .. }
         | DaemonMessage::Resume { id, .. }
         | DaemonMessage::SessionDeposited { id, .. }
+        | DaemonMessage::SessionAttachment { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),
     }
 }

@@ -1689,6 +1689,21 @@ fn extension_for(mime_type: &str) -> Option<&'static str> {
     }
 }
 
+/// The MIME type the store's own extension names, for a read answer.
+///
+/// The reverse of [`extension_for`], over the same table: the reply states
+/// the type of the file it hands back, and that statement has to come from
+/// the store rather than from whoever named the reference.
+pub(crate) fn mime_type_for_extension(extension: &str) -> Option<&'static str> {
+    match extension {
+        "png" => Some("image/png"),
+        "jpg" => Some("image/jpeg"),
+        "svg" => Some("image/svg+xml"),
+        "md" => Some("text/markdown"),
+        _ => None,
+    }
+}
+
 /// The extension a hint names, if it names one this store writes.
 ///
 /// A hint arrives either as the MIME type a caller happens to know
@@ -2253,6 +2268,23 @@ mod tests {
                 "{mime_type} is accepted on the wire but has no extension"
             );
         }
+    }
+
+    #[test]
+    fn every_stored_extension_names_its_mime_type() {
+        // The read answer states the file's type from the store's table, so
+        // the reverse map has to cover every extension the store writes —
+        // and round-trip back to the type the forward map names.
+        for extension in STORED_EXTENSIONS {
+            let mime_type = mime_type_for_extension(extension).expect("a mime type");
+            assert_eq!(
+                extension_for(mime_type),
+                Some(extension),
+                "{extension} must round-trip through the type table"
+            );
+        }
+        assert_eq!(mime_type_for_extension("tmp"), None);
+        assert_eq!(mime_type_for_extension("bak"), None);
     }
 
     #[test]

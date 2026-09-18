@@ -165,6 +165,10 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::PairingConfirm { .. } => PeerDecision::Deny("pairing.confirm"),
         ClientMessage::PeerRevoke { .. } => PeerDecision::Deny("peer.revoke"),
         ClientMessage::PeerSetCaps { .. } => PeerDecision::Deny("peer.set_caps"),
+        // A door that hands over deposited bytes must not become a way for a
+        // paired device to read them: every content read on this surface is
+        // refused, while only list reads ride on `view`.
+        ClientMessage::SessionAttachmentRead { .. } => PeerDecision::Deny("attachment.read"),
 
         // Tool policies are this device's own settings, read and written by
         // its user through the app. A paired device toggling them would be
@@ -1493,6 +1497,10 @@ pub(crate) mod tests {
             // not allowed to send must not, or it writes bytes into a session
             // folder nothing on this machine can consume.
             ClientMessage::SessionDeposit { .. } => under(CAP_SEND),
+            // The read half of the deposit: refused to every set, like every
+            // other content read — a paired device must not read deposited
+            // bytes through any capability it holds.
+            ClientMessage::SessionAttachmentRead { .. } => always("attachment.read"),
             ClientMessage::SessionPermissionRespond { .. } => under(CAP_ANSWER_PERMISSIONS),
             ClientMessage::Status { .. } => always("status"),
             ClientMessage::DaemonDiagnostics { .. } => always("diagnostics"),
@@ -1544,7 +1552,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 52;
+    pub(crate) const VARIANT_COUNT: usize = 53;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -1565,6 +1573,7 @@ pub(crate) mod tests {
             ClientMessage::SessionStop { .. } => "SessionStop",
             ClientMessage::SessionSend { .. } => "SessionSend",
             ClientMessage::SessionDeposit { .. } => "SessionDeposit",
+            ClientMessage::SessionAttachmentRead { .. } => "SessionAttachmentRead",
             ClientMessage::AgentMessageSend { .. } => "AgentMessageSend",
             ClientMessage::SessionResize { .. } => "SessionResize",
             ClientMessage::SessionInterrupt { .. } => "SessionInterrupt",
@@ -1668,6 +1677,14 @@ pub(crate) mod tests {
                     name: "page.png".to_string(),
                     mime_type: "image/png".to_string(),
                     data: String::new(),
+                },
+            },
+            ClientMessage::SessionAttachmentRead {
+                id: 1,
+                reference: devboule_protocol::AttachmentReference {
+                    session_id: "s.a.1".to_string(),
+                    digest: "b".repeat(64),
+                    stored_bytes: 512,
                 },
             },
             ClientMessage::AgentMessageSend {
@@ -1889,6 +1906,32 @@ pub(crate) mod tests {
             serde_json::to_value(PeerRole::Daemon).expect("json"),
             serde_json::json!("daemon")
         );
+    }
+
+    #[test]
+    fn a_peer_may_not_read_a_deposited_attachment() {
+        // The read half of the deposit, refused like every other content
+        // read: no capability a pairing can hold opens deposited bytes to
+        // a paired device.
+        let read = || ClientMessage::SessionAttachmentRead {
+            id: 1,
+            reference: devboule_protocol::AttachmentReference {
+                session_id: "s.a.1".to_string(),
+                digest: "b".repeat(64),
+                stored_bytes: 512,
+            },
+        };
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            assert_eq!(
+                peer_allows(role, &Vec::new(), &read()),
+                PeerDecision::Deny("attachment.read")
+            );
+            assert_eq!(
+                peer_allows(role, &all_caps(), &read()),
+                PeerDecision::Deny("attachment.read"),
+                "{role:?} holding everything is still refused the read"
+            );
+        }
     }
 
     #[test]

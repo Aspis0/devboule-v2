@@ -59,6 +59,7 @@ pub fn run() {
             backend::session::session_presence,
             backend::session::session_send,
             backend::session::session_deposit,
+            backend::session::session_attachment_read,
             backend::session::session_interrupt,
             backend::session::session_set_model,
             backend::session::session_set_mode,

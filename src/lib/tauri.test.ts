@@ -22,6 +22,7 @@ import {
   peerSetCaps,
   providersRefresh,
   sessionAttach,
+  sessionAttachmentRead,
   sessionClaim,
   sessionClose,
   sessionStop,
@@ -538,6 +539,23 @@ describe("create and attach command wrappers", () => {
     // The manifest the structural parity test compares with the Rust parameter
     // list, so a rename on either side has to fail here.
     expect(COMMAND_ARG_KEYS.session_deposit).toEqual(["id", "attachment"]);
+  });
+
+  it("reads one stored attachment by reference and answers the daemon's bytes", async () => {
+    vi.mocked(invoke).mockClear();
+    const reference = { sessionId: "s.owner.1", digest: "a".repeat(64), storedBytes: 512 };
+    const stored = { mimeType: "text/markdown", data: "aGk=" };
+    vi.mocked(invoke).mockResolvedValue(stored as never);
+
+    const answer = await sessionAttachmentRead(reference);
+
+    expect(invoke).toHaveBeenCalledWith("session_attachment_read", { reference });
+    // The bytes travel back verbatim: base64 and the store's MIME type,
+    // which no caller can state.
+    expect(answer).toEqual(stored);
+    // The manifest the structural parity test compares with the Rust parameter
+    // list, so a rename on either side has to fail here.
+    expect(COMMAND_ARG_KEYS.session_attachment_read).toEqual(["reference"]);
   });
 
   it("passes the subscription id when closing a session", async () => {

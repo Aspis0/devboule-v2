@@ -4200,6 +4200,502 @@ fn a_local_deposit_answers_a_reference_and_a_refusal_echoes_nothing() {
     let _ = std::fs::remove_dir_all(path);
 }
 
+/// The read half of the deposit, refused like every other content read: a
+/// paired device holds no capability that opens deposited bytes — not even
+/// all of them at once. The audit rows below are the gate's, not the
+/// handler's: the gate refuses first, so the handler — and its ownership
+/// check — never runs for a peer. The control proves the same frame from
+/// the local pipe passes the gate and reaches the handler's own answer.
+#[test]
+fn a_peers_attachment_read_is_refused_at_the_gate() {
+    let (path, state) = temp_state("peer-read-refused");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let read = |id: u64| ClientMessage::SessionAttachmentRead {
+        id,
+        reference: stored_reference("s.none.1", 'b'),
+    };
+    for role in [PeerRole::Client, PeerRole::Daemon] {
+        let peer = remote_conn_with_caps(
+            role,
+            Some("S-user-a"),
+            &[
+                crate::peer_policy::CAP_VIEW,
+                crate::peer_policy::CAP_SEND,
+                crate::peer_policy::CAP_ROSTER,
+                crate::peer_policy::CAP_ANSWER_PERMISSIONS,
+                crate::peer_policy::CAP_CREATE_SESSIONS,
+            ],
+        );
+        let refusal = match dispatch(&state, &owner, read(1), &peer, true, true, true, true)
+            .expect("the gate answers")
+        {
+            DaemonMessage::Error(error) => error,
+            other => panic!("{role:?} peer's read must be refused: {other:?}"),
+        };
+        assert_eq!(
+            refusal.code,
+            ErrorCode::CapabilityNotSupported,
+            "{refusal:?}"
+        );
+        assert_eq!(
+            refusal.message, "capability 'attachment.read' was not negotiated",
+            "{refusal:?}"
+        );
+        assert_eq!(refusal.id, Some(1));
+    }
+
+    // The control: the local pipe passes the gate — an absent session is
+    // the handler's answer, not the gate's.
+    let local = match dispatch(
+        &state,
+        &owner,
+        read(2),
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::Error(error) => error,
+        other => panic!("a local read is answered, not dropped: {other:?}"),
+    };
+    assert_eq!(local.code, ErrorCode::SessionNotFound, "{local:?}");
+
+    drop(state);
+    assert_eq!(
+        audit_sessions(&path),
+        vec![Some("s.none.1".to_string()), Some("s.none.1".to_string())],
+        "each refused read's audit row must name the session the reference named"
+    );
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// The accepted half: a local read of a deposited file answers the store's
+/// own bytes and MIME type under the caller's id.
+#[test]
+fn a_local_attachment_read_answers_the_store_s_bytes() {
+    let (path, state) = temp_state("read-handler");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let session_id =
+        devboule_protocol::compose_session_id(&owner.session_token(), "read01").expect("id");
+    crate::session::insert_test_live_agent(&state.sessions, &session_id, owner.clone());
+    let stored = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionDeposit {
+            id: 8,
+            session_id: session_id.clone(),
+            attachment: wire_attachment("a.png", &crate::raster_metadata::clean_png(0x0b)),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::SessionDeposited { reference, .. } => reference,
+        other => panic!("setup deposit is answered: {other:?}"),
+    };
+    let attachment = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionAttachmentRead {
+            id: 9,
+            reference: stored.clone(),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::SessionAttachment { id, attachment } => {
+            assert_eq!(id, 9, "the reply names the call it answers");
+            attachment
+        }
+        other => panic!("a local read is answered, not refused: {other:?}"),
+    };
+    assert_eq!(attachment.mime_type, "image/png");
+    {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&attachment.data)
+            .expect("the reply carries base64");
+        let file = files_under(&path.join("attachments"));
+        assert_eq!(file.len(), 1);
+        assert_eq!(bytes, std::fs::read(&file[0]).expect("the stored file"));
+    }
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// A journaled reference outlives the folder it names, so the app will ask
+/// for references that no longer resolve. Three disk states, two answers:
+/// no session behind the id (the registry answers), a folder holding a
+/// different file than the digest names, and no folder at all — the last
+/// two are the store's one sentence, byte for byte, although the disk
+/// differs. The store cannot tell a swept folder from a digest deposited
+/// elsewhere, and this test pins that it does not try.
+#[test]
+fn a_read_of_a_dead_reference_names_what_is_missing() {
+    let (path, state) = temp_state("read-dead");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let session_id =
+        devboule_protocol::compose_session_id(&owner.session_token(), "dead01").expect("id");
+    crate::session::insert_test_live_agent(&state.sessions, &session_id, owner.clone());
+    // One real deposit first, so the folder and a file exist: the cases
+    // below differ in disk state, not just in digest spelling.
+    let stored = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionDeposit {
+            id: 7,
+            session_id: session_id.clone(),
+            attachment: wire_attachment("a.png", &crate::raster_metadata::clean_png(0x0b)),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::SessionDeposited { reference, .. } => reference,
+        other => panic!("setup deposit is answered: {other:?}"),
+    };
+    let read = |id: u64, reference: AttachmentReference| match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionAttachmentRead { id, reference },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::Error(error) => error,
+        other => panic!("a dead reference is an error: {other:?}"),
+    };
+    const NO_STORED_FILE: &str = "The store holds no attachment with that digest in this session.";
+
+    // No session behind the id: the registry answers, before the store.
+    let error = read(1, stored_reference("s.none.9", 'b'));
+    assert_eq!(error.code, ErrorCode::SessionNotFound, "{error:?}");
+    assert_eq!(error.message, "No session with that id.");
+
+    // The folder exists and holds the deposit, but the digest names a
+    // different file: the store answers its one sentence. The digest is
+    // well formed and the session is the request's own, so neither the
+    // wire rules nor the ownership check can be the refusal.
+    let error = read(
+        2,
+        AttachmentReference {
+            session_id: session_id.clone(),
+            digest: "c".repeat(64),
+            stored_bytes: 7,
+        },
+    );
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+    assert_eq!(error.message, NO_STORED_FILE);
+
+    // The folder is gone — the deposit above gave the path, so this
+    // removes the folder it wrote. The request is the deposit's own
+    // reference, and it reads the same sentence, byte for byte.
+    let file = files_under(&path.join("attachments"));
+    assert_eq!(file.len(), 1);
+    std::fs::remove_dir_all(file[0].parent().expect("session folder")).expect("sweep the folder");
+    let error = read(3, stored.clone());
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+    assert_eq!(error.message, NO_STORED_FILE);
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// The claimed size is compared against the store's, and a disagreement is
+/// a refusal: a request naming a size the file does not have is naming
+/// something it did not deposit.
+#[test]
+fn a_read_naming_the_wrong_size_is_refused() {
+    let (path, state) = temp_state("read-size");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let session_id =
+        devboule_protocol::compose_session_id(&owner.session_token(), "size01").expect("id");
+    crate::session::insert_test_live_agent(&state.sessions, &session_id, owner.clone());
+    let stored = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionDeposit {
+            id: 8,
+            session_id: session_id.clone(),
+            attachment: wire_attachment("a.png", &crate::raster_metadata::clean_png(0x0b)),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::SessionDeposited { reference, .. } => reference,
+        other => panic!("setup deposit is answered: {other:?}"),
+    };
+    let wrong = AttachmentReference {
+        stored_bytes: stored.stored_bytes + 1,
+        ..stored.clone()
+    };
+    let error = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionAttachmentRead {
+            id: 9,
+            reference: wrong.clone(),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::Error(error) => error,
+        other => panic!("a mis-sized read is an error: {other:?}"),
+    };
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+    assert_eq!(
+        error.message,
+        format!(
+            "The stored attachment '{}' is not {} bytes as the reference states.",
+            stored.digest, wrong.stored_bytes
+        ),
+        "the refusal names the claim it would not serve, not the file's size"
+    );
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// The read cap is the artifact cap: one constant, the number the deposit
+/// already enforces. A file over it is refused with the cap named.
+#[test]
+fn a_read_over_the_artifact_cap_names_the_cap() {
+    let (path, state) = temp_state("read-cap");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let session_id =
+        devboule_protocol::compose_session_id(&owner.session_token(), "capp01").expect("id");
+    crate::session::insert_test_live_agent(&state.sessions, &session_id, owner.clone());
+    let stored = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionDeposit {
+            id: 8,
+            session_id: session_id.clone(),
+            attachment: wire_attachment("a.png", &crate::raster_metadata::clean_png(0x0b)),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::SessionDeposited { reference, .. } => reference,
+        other => panic!("setup deposit is answered: {other:?}"),
+    };
+    // Grow the stored file past the cap without renaming it: the digest
+    // still names the file, so the read reaches the cap refusal rather
+    // than the identity one.
+    let file = files_under(&path.join("attachments"));
+    assert_eq!(file.len(), 1);
+    let grown = crate::session::MAX_AGENT_ARTIFACT_BYTES + 1024;
+    std::fs::write(&file[0], vec![0u8; grown]).expect("grow the stored file");
+    let big = AttachmentReference {
+        stored_bytes: grown as u64,
+        ..stored.clone()
+    };
+    let error = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionAttachmentRead {
+            id: 9,
+            reference: big,
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::Error(error) => error,
+        other => panic!("an over-cap read is an error: {other:?}"),
+    };
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+    assert_eq!(
+        error.message,
+        format!(
+            "The reference states {} bytes for '{}', over the {}-byte read cap.",
+            grown as u64,
+            stored.digest,
+            crate::session::MAX_AGENT_ARTIFACT_BYTES
+        ),
+        "the refusal names the cap, and only what the reference states"
+    );
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// Bytes rewritten under the same name at the same length are still
+/// refused: the size check alone cannot catch a substitution that keeps
+/// the length, which is the reason the read hashes what it returns.
+#[test]
+fn a_read_of_rewritten_bytes_is_refused() {
+    let (path, state) = temp_state("read-rewritten");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let session_id =
+        devboule_protocol::compose_session_id(&owner.session_token(), "rwrt01").expect("id");
+    crate::session::insert_test_live_agent(&state.sessions, &session_id, owner.clone());
+    let stored = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionDeposit {
+            id: 8,
+            session_id: session_id.clone(),
+            attachment: wire_attachment("a.png", &crate::raster_metadata::clean_png(0x0b)),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::SessionDeposited { reference, .. } => reference,
+        other => panic!("setup deposit is answered: {other:?}"),
+    };
+    // Rewrite the file in place with different bytes of the same length:
+    // the digest still names the file and the size still matches, so only
+    // the hash can catch this.
+    let file = files_under(&path.join("attachments"));
+    assert_eq!(file.len(), 1);
+    let bytes = std::fs::read(&file[0]).expect("the stored file");
+    let rewritten: Vec<u8> = bytes.iter().map(|byte| !byte).collect();
+    assert_ne!(rewritten, bytes);
+    std::fs::write(&file[0], &rewritten).expect("rewrite the stored file");
+    let error = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionAttachmentRead {
+            id: 9,
+            reference: stored.clone(),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::Error(error) => error,
+        other => panic!("rewritten bytes must be refused, not served: {other:?}"),
+    };
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+    assert_eq!(
+        error.message,
+        format!(
+            "The stored attachment '{}' does not match its digest.",
+            stored.digest
+        ),
+        "rewritten bytes fail verification with their own sentence"
+    );
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// A file grown huge is refused from a bounded read: the door opens the
+/// file and takes at most the cap plus one byte, so a monster is never
+/// fully allocated and never reaches the frame. The request below still
+/// names the original small size, so the length check — not the cap — is
+/// what refuses it.
+#[test]
+fn a_read_of_a_huge_file_is_refused_without_reading_it_all() {
+    let (path, state) = temp_state("read-huge");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let session_id =
+        devboule_protocol::compose_session_id(&owner.session_token(), "huge01").expect("id");
+    crate::session::insert_test_live_agent(&state.sessions, &session_id, owner.clone());
+    let stored = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionDeposit {
+            id: 8,
+            session_id: session_id.clone(),
+            attachment: wire_attachment("a.png", &crate::raster_metadata::clean_png(0x0b)),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::SessionDeposited { reference, .. } => reference,
+        other => panic!("setup deposit is answered: {other:?}"),
+    };
+    let file = files_under(&path.join("attachments"));
+    assert_eq!(file.len(), 1);
+    std::fs::write(&file[0], vec![0u8; 256 * 1024]).expect("grow the stored file");
+    let error = match dispatch(
+        &state,
+        &owner,
+        ClientMessage::SessionAttachmentRead {
+            id: 9,
+            reference: stored.clone(),
+        },
+        &ConnHandle::new(4),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the gate answers")
+    {
+        DaemonMessage::Error(error) => error,
+        other => panic!("a huge file must be refused, not served: {other:?}"),
+    };
+    assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+    assert_eq!(
+        error.message,
+        format!(
+            "The stored attachment '{}' is not {} bytes as the reference states.",
+            stored.digest, stored.stored_bytes
+        ),
+        "a huge file fails the length check with its own sentence"
+    );
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
 /// A stand-in for the pipe a connection writes to, so a test can read back
 /// exactly the frames a teardown wrote. On Windows `Framed` writes with
 /// `WriteFile` and an `OVERLAPPED`, which a disk handle must be opened for.

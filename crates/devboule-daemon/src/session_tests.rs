@@ -8406,6 +8406,23 @@ fn ownership_paths(
                 )
                 .map(|_| ()),
         ),
+        // The read half of the deposit: a well-formed digest naming no
+        // file, so this row proves the ownership check and answers about
+        // the session rather than its absence.
+        (
+            "read_attachment",
+            registry
+                .read_attachment(
+                    &devboule_protocol::AttachmentReference {
+                        session_id: id.to_string(),
+                        digest: "a".repeat(64),
+                        stored_bytes: 0,
+                    },
+                    owner,
+                    conn,
+                )
+                .map(|_| ()),
+        ),
         // `close` is destructive, and this vector is evaluated eagerly and in
         // order: it goes last, or every row behind it would run against the
         // session it just removed, answer `SessionNotFound`, and satisfy the
@@ -8692,6 +8709,7 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
     match request {
         ClientMessage::SessionSend { .. } => Some(&["send"]),
         ClientMessage::SessionDeposit { .. } => Some(&["deposit"]),
+        ClientMessage::SessionAttachmentRead { .. } => Some(&["read_attachment"]),
         ClientMessage::AgentMessageSend { .. } => Some(&["agent_message_send"]),
         ClientMessage::SessionStop { .. } => Some(&["stop", "stop_with_subscription"]),
         ClientMessage::SessionClose { .. } => Some(&["close"]),

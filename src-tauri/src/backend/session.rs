@@ -12,7 +12,8 @@ use tauri::State;
 use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
 use devboule_protocol::{
     ActiveTurnBehavior, AttachmentReference, ErrorCode, PermissionOutcome, Persistence,
-    PersistenceKind, PromptAttachment, ResumeResult, SubscriptionId, MAX_WRITE_BYTES,
+    PersistenceKind, PromptAttachment, ResumeResult, StoredAttachment, SubscriptionId,
+    MAX_WRITE_BYTES,
 };
 
 use crate::client::DaemonBridge;
@@ -176,6 +177,28 @@ pub fn session_deposit(
     require_session_id(&id)?;
     require_attachment_limits(std::slice::from_ref(&attachment))?;
     Ok(require_client(&bridge)?.session_deposit(&id, &attachment)?)
+}
+
+/// Read back the bytes of one deposited attachment, by reference.
+///
+/// The forwarder is `session_deposit`'s, minus the attachment: the reference
+/// carries its session, so there is no separate id to validate — the wire's
+/// own reference limits run here before the frame leaves (the same
+/// `validate_attachment_references` the daemon runs, so a malformed digest
+/// is refused as a round trip it never makes), and the daemon's `Error`
+/// frame is mapped to a `CommandError` by the same `?`.
+///
+/// One reference per call is the shape of the protocol, not a choice made
+/// here: the reply carries at most the artifact cap, well under the frame
+/// ceiling, and a second reference would be a second answer with nowhere to
+/// put it.
+#[tauri::command]
+pub fn session_attachment_read(
+    bridge: State<'_, DaemonBridge>,
+    reference: AttachmentReference,
+) -> Result<StoredAttachment, CommandError> {
+    require_attachment_reference_limits(&reference.session_id, std::slice::from_ref(&reference))?;
+    Ok(require_client(&bridge)?.session_attachment_read(&reference)?)
 }
 
 #[tauri::command]
@@ -550,6 +573,18 @@ mod tests {
             String,
             PromptAttachment,
         ) -> Result<AttachmentReference, CommandError> = session_deposit;
+    }
+
+    /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ reference }`
+    /// in, the stored bytes and MIME type out. Tauri derives the JS-side key
+    /// names from these parameters, so a rename here silently changes the
+    /// command's argument shape.
+    #[test]
+    fn session_attachment_read_forwarder_has_the_frozen_tauri_signature() {
+        let _: fn(
+            State<'_, DaemonBridge>,
+            AttachmentReference,
+        ) -> Result<StoredAttachment, CommandError> = session_attachment_read;
     }
 
     /// The sibling of `session_close`'s shape: `{ id, subscription_id? }` in,

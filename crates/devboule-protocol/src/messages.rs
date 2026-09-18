@@ -189,6 +189,22 @@ pub struct AttachmentReference {
     pub stored_bytes: u64,
 }
 
+/// The bytes of one stored attachment, as the daemon hands them back.
+///
+/// `data` is base64, like [`PromptAttachment::data`]: bytes do not survive
+/// the frame trip any other way, and a local path would not survive a
+/// two-daemon relay. `mime_type` is the store's own statement from its
+/// extension table — not the child's report from the finish event, which is
+/// a claim about the same file, not the file.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredAttachment {
+    /// The stored file's type, from the store's extension table.
+    pub mime_type: String,
+    /// The stored bytes, base64.
+    pub data: String,
+}
+
 /// Messages the client writes.
 ///
 /// # Session operations that cannot be collapsed
@@ -337,6 +353,18 @@ pub enum ClientMessage {
         id: u64,
         session_id: String,
         attachment: PromptAttachment,
+    },
+    /// Read back the bytes of one deposited attachment.
+    ///
+    /// The reference is the value a deposit answered with (or the finish
+    /// report carried): session, digest and claimed size together, so a
+    /// digest is never handled without the session it resolves in. The
+    /// daemon compares the claimed size against the store's and refuses a
+    /// disagreement, exactly as the send path does, and refuses a file over
+    /// the artifact cap. The reply is [`DaemonMessage::SessionAttachment`].
+    SessionAttachmentRead {
+        id: u64,
+        reference: AttachmentReference,
     },
     SessionResize {
         id: u64,
@@ -659,6 +687,7 @@ impl ClientMessage {
             | Self::SessionSend { id, .. }
             | Self::AgentMessageSend { id, .. }
             | Self::SessionDeposit { id, .. }
+            | Self::SessionAttachmentRead { id, .. }
             | Self::SessionResize { id, .. }
             | Self::SessionInterrupt { id, .. }
             | Self::SessionSetModel { id, .. }
@@ -736,6 +765,7 @@ impl ClientMessage {
             | Self::SessionClaim { .. }
             | Self::SessionStop { .. }
             | Self::SessionDeposit { .. }
+            | Self::SessionAttachmentRead { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
@@ -791,6 +821,7 @@ impl ClientMessage {
             Self::SessionSend { .. } => "SessionSend",
             Self::AgentMessageSend { .. } => "AgentMessageSend",
             Self::SessionDeposit { .. } => "SessionDeposit",
+            Self::SessionAttachmentRead { .. } => "SessionAttachmentRead",
             Self::SessionResize { .. } => "SessionResize",
             Self::SessionInterrupt { .. } => "SessionInterrupt",
             Self::SessionSetModel { .. } => "SessionSetModel",
@@ -854,6 +885,7 @@ impl ClientMessage {
             | Self::ProvidersList { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
+            | Self::SessionAttachmentRead { .. }
             | Self::ToolPolicyGet { .. }
             | Self::AgentProfilesGet { .. }
             | Self::ProviderVocabularyGet { .. }
@@ -998,6 +1030,12 @@ pub enum DaemonMessage {
     SessionDeposited {
         id: u64,
         reference: AttachmentReference,
+    },
+    /// The reply to [`ClientMessage::SessionAttachmentRead`]: the stored
+    /// bytes, base64, with the store's own MIME type for them.
+    SessionAttachment {
+        id: u64,
+        attachment: StoredAttachment,
     },
     InvokeResult {
         id: u64,
@@ -2715,6 +2753,65 @@ mod tests {
         assert_eq!(
             decoded,
             DaemonMessage::SessionDeposited { id: 4, reference }
+        );
+    }
+
+    #[test]
+    fn session_attachment_read_names_itself_and_is_a_read() {
+        // A read returns bytes but writes nothing, so it sits on the read
+        // side of `is_state_changing`: an audit row for it would be a disk
+        // sink, and the gate refuses peers before any row is written.
+        let read = ClientMessage::SessionAttachmentRead {
+            id: 5,
+            reference: AttachmentReference {
+                session_id: "s.a.1".to_string(),
+                digest: "b".repeat(64),
+                stored_bytes: 512,
+            },
+        };
+        assert_eq!(read.name(), "SessionAttachmentRead");
+        assert!(!read.is_state_changing());
+        assert_eq!(read.request_id(), Some(5));
+        assert_eq!(read.idempotency_key(), None);
+    }
+
+    #[test]
+    fn session_attachment_read_round_trips_with_a_camel_case_envelope() {
+        let message = ClientMessage::SessionAttachmentRead {
+            id: 5,
+            reference: AttachmentReference {
+                session_id: "s.a.1".to_string(),
+                digest: "b".repeat(64),
+                stored_bytes: 512,
+            },
+        };
+        let value = serde_json::to_value(&message).expect("json");
+        assert_eq!(value["type"], "session_attachment_read");
+        assert_eq!(value["reference"]["sessionId"], "s.a.1");
+        assert_eq!(value["reference"]["digest"], "b".repeat(64));
+        assert_eq!(value["reference"]["storedBytes"], 512);
+        let decoded: ClientMessage = serde_json::from_value(value).expect("round trip");
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn session_attachment_carries_the_store_s_bytes_and_mime() {
+        let attachment = StoredAttachment {
+            mime_type: "text/markdown".to_string(),
+            data: "aGk=".to_string(),
+        };
+        let value = serde_json::to_value(DaemonMessage::SessionAttachment {
+            id: 6,
+            attachment: attachment.clone(),
+        })
+        .expect("json");
+        assert_eq!(value["type"], "session_attachment");
+        assert_eq!(value["attachment"]["mimeType"], "text/markdown");
+        assert_eq!(value["attachment"]["data"], "aGk=");
+        let decoded: DaemonMessage = serde_json::from_value(value).expect("round trip");
+        assert_eq!(
+            decoded,
+            DaemonMessage::SessionAttachment { id: 6, attachment }
         );
     }
 
