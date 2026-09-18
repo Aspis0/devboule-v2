@@ -1223,6 +1223,23 @@
   opacity: 0.72;
 }
 
+.workspace-chat-tool.is-interrupted .workspace-chat-tool-label,
+.workspace-chat-tool-group.is-interrupted .workspace-chat-tool-group-summary-text {
+  opacity: 1;
+  color: var(--silence);
+}
+
+.workspace-chat-tool-interrupted {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  color: var(--silence);
+  background: var(--surface-muted);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
 .workspace-chat-tool-summary-text,
 .workspace-chat-tool-group-summary-text {
   min-width: 0;

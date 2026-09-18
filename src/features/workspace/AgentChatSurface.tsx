@@ -37,6 +37,12 @@ import {
 } from "../../lib/toolCallGroups";
 import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
+import {
+  INTERRUPTED_TOOL_CLASS,
+  INTERRUPTED_TOOL_COPY,
+  isInterruptedToolStatus,
+  isToolRunningStatus,
+} from "./interruptedTool";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { WorkspaceComposer } from "./WorkspaceComposer";
@@ -417,11 +423,6 @@ function pendingTargetCopy(
   return effort === undefined ? null : `switching to ${effort.label}…`;
 }
 
-function isToolRunningStatus(status: string): boolean {
-  const normalized = status.toLowerCase();
-  return normalized === "running" || normalized === "pending" || normalized === "in_progress";
-}
-
 function isToolFailedStatus(status: string): boolean {
   return status.toLowerCase() === "failed";
 }
@@ -454,13 +455,15 @@ function renderToolItem(
   item: ToolChatItem,
   className: string,
   style: { marginInlineStart: string } | undefined,
+  transcriptEnded: boolean,
 ) {
   const model = toolRowDisplay(item);
-  const running = isToolRunningStatus(item.status);
+  const interrupted = isInterruptedToolStatus(item.status, transcriptEnded);
+  const running = isToolRunningStatus(item.status) && !interrupted;
   const failed = isToolFailedStatus(item.status);
   const status = item.status.toLowerCase();
   const cancelled = status === "cancelled" || status === "canceled";
-  const toolClassName = `${className}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}`;
+  const toolClassName = `${className}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   return (
     <details className={toolClassName} key={item.id} style={style}>
       <summary className="workspace-chat-tool-summary">
@@ -468,6 +471,9 @@ function renderToolItem(
         <span className="workspace-chat-tool-label">{model.displayName}</span>
         {model.summary !== undefined ? (
           <span className="workspace-chat-tool-summary-text">{model.summary}</span>
+        ) : null}
+        {interrupted ? (
+          <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
         ) : null}
         {failed ? (
           <span className="workspace-chat-tool-failed" aria-hidden="true">
@@ -494,19 +500,26 @@ function renderToolItem(
 /** One collapsed row for a run of consecutive tool calls (see `toolCallGroups`).
  * The wrapper carries the first item's frame, plus `is-running` when any
  * item is still running (Paseo's `isLoading`: any call running/executing)
- * and `is-failed` with the failed mark when any item failed. */
-function renderGroupEntry(group: ToolCallGroup, a2aNames: A2aNameSource) {
+ * and `is-failed` with the failed mark when any item failed. A run replayed
+ * into a transcript with no process left carries `is-interrupted` instead of
+ * `is-running`: nothing will ever complete it. */
+function renderGroupEntry(group: ToolCallGroup, a2aNames: A2aNameSource, transcriptEnded: boolean) {
   const first = group.items[0];
   if (first === undefined) return null;
   const frame = entryFrame(first);
-  const running = group.items.some((item) => isToolRunningStatus(item.status));
+  const anyRunning = group.items.some((item) => isToolRunningStatus(item.status));
+  const interrupted = transcriptEnded && anyRunning;
+  const running = anyRunning && !transcriptEnded;
   const failed = group.items.some((item) => isToolFailedStatus(item.status));
-  const className = `${frame.className} workspace-chat-tool-group${running ? " is-running" : ""}${failed ? " is-failed" : ""}`;
+  const className = `${frame.className} workspace-chat-tool-group${running ? " is-running" : ""}${failed ? " is-failed" : ""}${interrupted ? ` ${INTERRUPTED_TOOL_CLASS}` : ""}`;
   return (
     <details className={className} key={group.id} style={frame.style}>
       <summary className="workspace-chat-tool-group-summary">
         <ToolIcon name="wrench" />
         <span className="workspace-chat-tool-group-summary-text">{group.summary}</span>
+        {interrupted ? (
+          <span className="workspace-chat-tool-interrupted">{INTERRUPTED_TOOL_COPY}</span>
+        ) : null}
         {failed ? (
           <span className="workspace-chat-tool-failed" aria-hidden="true">
             ×
@@ -514,18 +527,22 @@ function renderGroupEntry(group: ToolCallGroup, a2aNames: A2aNameSource) {
         ) : null}
       </summary>
       <div className="workspace-chat-tool-group-body">
-        {group.items.map((item) => renderItem(item, a2aNames))}
+        {group.items.map((item) => renderItem(item, a2aNames, transcriptEnded))}
       </div>
     </details>
   );
 }
 
-function renderEntry(entry: AgentChatItem | ToolCallGroup, a2aNames: A2aNameSource) {
-  if (isToolCallGroup(entry)) return renderGroupEntry(entry, a2aNames);
-  return renderItem(entry, a2aNames);
+function renderEntry(
+  entry: AgentChatItem | ToolCallGroup,
+  a2aNames: A2aNameSource,
+  transcriptEnded: boolean,
+) {
+  if (isToolCallGroup(entry)) return renderGroupEntry(entry, a2aNames, transcriptEnded);
+  return renderItem(entry, a2aNames, transcriptEnded);
 }
 
-function renderItem(item: AgentChatItem, a2aNames: A2aNameSource) {
+function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnded: boolean) {
   const isSubagent = hasParentToolUseId(item);
   const measuredDepth =
     "spawnDepth" in item && typeof item.spawnDepth === "number" ? item.spawnDepth : null;
@@ -542,7 +559,7 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource) {
       : undefined;
   if (item.role === "tool") {
     const frame = entryFrame(item);
-    return renderToolItem(item, frame.className, frame.style);
+    return renderToolItem(item, frame.className, frame.style, transcriptEnded);
   }
 
   if (item.role === "thought") {
@@ -804,7 +821,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         {state.items.length === 0 && state.status === "idle" && !osGone ? (
           <div className="workspace-chat-empty">Start a conversation with the agent.</div>
         ) : null}
-        {entries.map((entry) => renderEntry(entry, a2aNames))}
+        {entries.map((entry) => renderEntry(entry, a2aNames, osGone))}
         {state.streaming && !osGone ? (
           <div className="workspace-chat-typing" role="status">
             Agent is working
