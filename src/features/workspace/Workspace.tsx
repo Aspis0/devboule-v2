@@ -1244,6 +1244,7 @@ export function Workspace({
                 id={WORKSPACE_TERMINAL_PANEL_ID}
                 workspaceId={selectedWorkspace}
                 sessionId={selectedSessionId}
+                observedState={selectedSession?.state ?? null}
                 cwd={selectedSession?.cwd}
                 onClosed={handleSessionClosed}
                 onExited={handleSessionClosed}

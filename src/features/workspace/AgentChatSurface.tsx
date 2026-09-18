@@ -705,6 +705,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     return { sessionById, deviceNames: deviceNames ?? new Map<string, string>() };
   }, [sessionRoster, deviceNames]);
 
+  // An attachment is valid for exactly one `(sessionId, generation)` pair.
+  // Resume keeps the id but increments the generation, so this is the signal
+  // that the surface's attachment is dead and must be rebuilt. Generation
+  // moves only on resume, so this cannot remount under someone mid-turn.
   useEffect(() => {
     const session = new AgentSession({
       sessionId,
@@ -719,6 +723,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     });
     sessionRef.current = session;
     appliedEffortPrefRef.current = false;
+    // `start()` is async: seed the new controller now so the old controller's
+    // latched error cannot render until the first notification. This is
+    // external-session synchronization, so it belongs here despite the lint rule.
+    setState(session.getState());
     const unsubscribe = session.subscribe(() => setState(session.getState()));
     void session.start();
     return () => {
@@ -726,7 +734,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       if (sessionRef.current === session) sessionRef.current = null;
       session.dispose();
     };
-  }, [onPermissionRequest, onPermissionResolved, sessionId]);
+  }, [onPermissionRequest, onPermissionResolved, sessionId, observedState?.generation]);
 
   // Zed's pattern: re-apply the remembered effort once, on the first manifest
   // of the session. The confirmation manifest is just another manifest here —

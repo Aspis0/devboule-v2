@@ -10,6 +10,8 @@ const channelHarness = vi.hoisted(() => ({
   active: null as ((event: SessionEvent) => void) | null,
   activeSubscriptionId: null as number | null,
   nextSubscriptionId: 41,
+  deferNextAttach: false,
+  releaseNextAttach: null as (() => void) | null,
   handlers: new WeakMap<object, (event: SessionEvent) => void>(),
 }));
 
@@ -100,6 +102,13 @@ vi.mock("../../lib/tauri", () => ({
     return channel;
   }),
   sessionAttach: vi.fn(async (...args: unknown[]) => {
+    if (channelHarness.deferNextAttach) {
+      channelHarness.deferNextAttach = false;
+      await new Promise<void>((resolve) => {
+        channelHarness.releaseNextAttach = resolve;
+      });
+      channelHarness.releaseNextAttach = null;
+    }
     await Promise.resolve();
     const channel = args[2];
     const subscriptionId = channelHarness.nextSubscriptionId++;
@@ -180,6 +189,8 @@ describe("AgentChatSurface", () => {
     channelHarness.emit = null;
     channelHarness.activeSubscriptionId = null;
     channelHarness.nextSubscriptionId = 41;
+    channelHarness.deferNextAttach = false;
+    channelHarness.releaseNextAttach = null;
     localStorage.removeItem("devboule.modelEffortPrefs");
   });
 
@@ -188,6 +199,8 @@ describe("AgentChatSurface", () => {
     container.remove();
     channelHarness.activeSubscriptionId = null;
     channelHarness.active = null;
+    channelHarness.deferNextAttach = false;
+    channelHarness.releaseNextAttach = null;
     vi.clearAllMocks();
   });
 
@@ -1376,6 +1389,135 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
       "This session is no longer available.",
     );
+  });
+
+  it("reattaches when a recovered session is reopened into a new generation", async () => {
+    const recovered: SessionState = {
+      type: "recovered",
+      generation: 2,
+      integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+    };
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="reopened-agent"
+          title="Agent"
+          observedState={recovered}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({
+        type: "recovered",
+        integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+      });
+    });
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "This session is no longer available.",
+    );
+
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="reopened-agent"
+          title="Agent"
+          observedState={{ type: "live", generation: 2 }}
+        />,
+      );
+    });
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "This session is no longer available.",
+    );
+
+    channelHarness.deferNextAttach = true;
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="reopened-agent"
+          title="Agent"
+          observedState={{ type: "live", generation: 3 }}
+        />,
+      );
+    });
+
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
+      "Connecting to the agent…",
+    );
+    expect(container.querySelector(".workspace-composer-hint")?.textContent).not.toBe(
+      "This session is no longer available.",
+    );
+
+    channelHarness.releaseNextAttach?.();
+    await act(async () => undefined);
+
+    expect(sessionAttach).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      channelHarness.active?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            efforts: [{ id: "high", label: "High" }],
+          },
+          { modelId: "grok-4.5", name: "Grok 4.5" },
+        ],
+      });
+    });
+
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(false);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Live");
+    expect(container.querySelector(".workspace-composer-hint")).toBeNull();
+    expect(container.querySelector('[data-testid="model-chip"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="effort-chip"]')).not.toBeNull();
+  });
+
+  it("does not reattach when the session generation is unchanged", async () => {
+    root = createRoot(container);
+    const observed: SessionState = { type: "live", generation: 7 };
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="same-generation-agent"
+          title="Agent"
+          observedState={observed}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="same-generation-agent"
+          title="Agent"
+          observedState={{ type: "live", generation: 7 }}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    expect(sessionAttach).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the composer usable when a turn-level agent error arrives", async () => {
