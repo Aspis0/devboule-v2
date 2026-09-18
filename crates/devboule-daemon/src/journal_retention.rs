@@ -208,18 +208,28 @@ fn trim_session(
         return Ok(());
     };
     let mut remaining = payload.max(0) as u64;
+    // `seq` restarts at 1 in every generation, so the victim order and the
+    // DELETE must both be scoped to the row's generation: ordering by `seq`
+    // alone picks the renumbered current transcript, and a generation-blind
+    // DELETE removes the same seq in every generation while only one row is
+    // accounted. Oldest-first holds within each table — snapshots drain
+    // before events by policy — and `(generation, seq)` is branch order,
+    // not wall-clock age: `ts_ms` is stamped on the caller's thread and
+    // can regress against insert order.
     while remaining > limits.session_max_bytes {
-        let oldest: Option<(i64, i64)> = conn
+        let oldest: Option<(i64, i64, i64)> = conn
             .query_row(
-                "SELECT up_to_seq, payload_bytes FROM snapshots WHERE session_id = ?1 ORDER BY up_to_seq ASC LIMIT 1",
+                "SELECT generation, up_to_seq, payload_bytes FROM snapshots
+                 WHERE session_id = ?1
+                 ORDER BY generation ASC, up_to_seq ASC LIMIT 1",
                 [session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        if let Some((up_to, snap_bytes)) = oldest {
+        if let Some((generation, up_to, snap_bytes)) = oldest {
             conn.execute(
-                "DELETE FROM snapshots WHERE session_id = ?1 AND up_to_seq = ?2",
-                params![session_id, up_to],
+                "DELETE FROM snapshots WHERE session_id = ?1 AND generation = ?2 AND up_to_seq = ?3",
+                params![session_id, generation, up_to],
             )?;
             conn.execute(
                 "UPDATE sessions SET
@@ -230,19 +240,20 @@ fn trim_session(
             )?;
             remaining = remaining.saturating_sub(snap_bytes.max(0) as u64);
         } else {
-            let oldest_event: Option<(i64, i64, String)> = conn
+            let oldest_event: Option<(i64, i64, i64, String)> = conn
                 .query_row(
-                    "SELECT seq, LENGTH(payload), kind FROM events
+                    "SELECT generation, seq, LENGTH(payload), kind FROM events
                      WHERE session_id = ?1 AND kind IN ('output', 'acp_envelope', 'agent_report')
-                     ORDER BY seq ASC LIMIT 1",
+                     ORDER BY generation ASC, seq ASC LIMIT 1",
                     [session_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()?;
-            if let Some((seq, bytes, kind)) = oldest_event {
+            if let Some((generation, seq, bytes, kind)) = oldest_event {
                 conn.execute(
-                    "DELETE FROM events WHERE session_id = ?1 AND seq = ?2 AND kind = ?3",
-                    params![session_id, seq, kind],
+                    "DELETE FROM events
+                     WHERE session_id = ?1 AND generation = ?2 AND seq = ?3 AND kind = ?4",
+                    params![session_id, generation, seq, kind],
                 )?;
                 conn.execute(
                     "UPDATE sessions SET
@@ -253,6 +264,25 @@ fn trim_session(
                 )?;
                 remaining = remaining.saturating_sub(bytes.max(0) as u64);
             } else {
+                // Both victim tables are exhausted while the counter still
+                // claims overage: an empty table cannot owe bytes, so the
+                // counter is lying. Rewrite it from the table truth and
+                // stop. `trimmed_bytes` stays untouched: it ratchets bytes
+                // the trimmer really removed, and these never were rows.
+                let actual: i64 = conn.query_row(
+                    "SELECT
+                         COALESCE((SELECT SUM(LENGTH(payload)) FROM events
+                                   WHERE session_id = ?1
+                                     AND kind IN ('output', 'acp_envelope', 'agent_report')), 0)
+                       + COALESCE((SELECT SUM(payload_bytes) FROM snapshots
+                                   WHERE session_id = ?1), 0)",
+                    [session_id],
+                    |row| row.get(0),
+                )?;
+                conn.execute(
+                    "UPDATE sessions SET payload_bytes = ?1 WHERE id = ?2",
+                    params![actual, session_id],
+                )?;
                 break;
             }
         }
@@ -1394,6 +1424,238 @@ mod tests {
                 trimmed_bytes: 4,
             }
         );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A resume starts a new generation whose `seq` restarts at 1, so the
+    /// oldest content is the lowest `(generation, seq)`, not the lowest
+    /// `seq`. The fixture stages a reversal — generation 1 holds the higher
+    /// seq numbers — so the lowest seq is unambiguously the current
+    /// generation and no planner tie-break can hide the defect. The trim
+    /// must consume generation 1 including its non-output envelope: the
+    /// `kind IN (...)` filter counts every transcribable kind.
+    #[test]
+    fn head_trim_across_generations_takes_the_oldest_and_accounts_one_row() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                // 149-byte envelope + 10 + 2×12 appends: only the final
+                // append crosses the cap, and it trims exactly generation 1.
+                session_max_bytes: 171,
+                max_bytes: 0,
+                max_sessions: 0,
+                max_age_ms: 0,
+                snapshot_every_bytes: 1 << 40,
+            },
+        )
+        .expect("open");
+        journal
+            .upsert_blocking(sample_session("s.trim.resume"))
+            .expect("row");
+        journal
+            .append_blocking(output_record("s.trim.resume", 1, 5, b"AAAAAAAAAA"))
+            .expect("gen1 seq5");
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "abcdefghij"}
+                }
+            }
+        });
+        journal
+            .append_blocking(
+                acp_envelope_record("s.trim.resume", 1, 6, &envelope).expect("envelope"),
+            )
+            .expect("gen1 seq6");
+        journal
+            .start_generation("s.trim.resume", 2)
+            .expect("generation 2");
+        journal
+            .append_blocking(output_record("s.trim.resume", 2, 1, b"CCCCCCCCCCCC"))
+            .expect("gen2 seq1");
+        journal
+            .append_blocking(output_record("s.trim.resume", 2, 2, b"DDDDDDDDDDDD"))
+            .expect("gen2 seq2");
+        journal.flush().expect("flush");
+
+        let conn = Connection::open(&path).expect("inspect");
+        let mut stmt = conn
+            .prepare(
+                "SELECT generation, seq, LENGTH(payload) FROM events
+                 WHERE session_id = 's.trim.resume'
+                 ORDER BY generation, seq",
+            )
+            .expect("survivor query");
+        let survivors: Vec<(i64, i64, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("survivors")
+            .collect::<Result<_, _>>()
+            .expect("survivor rows");
+        assert_eq!(
+            survivors,
+            vec![(2, 1, 12), (2, 2, 12)],
+            "trim must consume generation 1 before the renumbered current one"
+        );
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.trim.resume")
+            .expect("session");
+        assert_eq!(row.payload_bytes, 24);
+        assert_eq!(row.trimmed_bytes, 159);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Snapshots carry the same generation-scoped key as events, so the
+    /// snapshot trim must name the generation in both the victim query and
+    /// the DELETE. The fixture stages the same reversal as the event test:
+    /// generation 1 holds the higher seq numbers.
+    #[test]
+    fn snapshot_trim_across_generations_takes_the_oldest_and_accounts_one_row() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                session_max_bytes: 25,
+                snapshot_every_bytes: 8,
+                max_bytes: 0,
+                max_sessions: 0,
+                max_age_ms: 0,
+            },
+        )
+        .expect("open");
+        journal
+            .upsert_blocking(sample_session("s.trim.resume.snap"))
+            .expect("row");
+        for (generation, seq) in [(1, 5), (1, 6), (2, 1), (2, 2)] {
+            if (generation, seq) == (2, 1) {
+                journal
+                    .start_generation("s.trim.resume.snap", 2)
+                    .expect("generation 2");
+            }
+            journal
+                .append_blocking(output_record(
+                    "s.trim.resume.snap",
+                    generation,
+                    seq,
+                    b"ABCDEFGHIJ",
+                ))
+                .expect("append");
+        }
+        journal.flush().expect("flush");
+
+        let conn = Connection::open(&path).expect("inspect");
+        let mut stmt = conn
+            .prepare(
+                "SELECT generation, up_to_seq, payload_bytes FROM snapshots
+                 WHERE session_id = 's.trim.resume.snap'
+                 ORDER BY generation, up_to_seq",
+            )
+            .expect("survivor query");
+        let survivors: Vec<(i64, i64, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("survivors")
+            .collect::<Result<_, _>>()
+            .expect("survivor rows");
+        assert_eq!(
+            survivors,
+            vec![(2, 1, 10), (2, 2, 10)],
+            "trim must consume generation 1 snapshots before the renumbered current one"
+        );
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.trim.resume.snap")
+            .expect("session");
+        assert_eq!(row.payload_bytes, 20);
+        assert_eq!(row.trimmed_bytes, 20);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A counter inflated past every countable row drives the trim to the
+    /// break with bytes still owed. The break is the one honest moment to
+    /// reconcile — an empty table cannot owe bytes — and the point of the
+    /// exercise is the append after it: the session must be able to record.
+    #[test]
+    fn trim_reconciles_a_lying_counter_when_no_countable_row_is_left() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                session_max_bytes: 25,
+                max_bytes: 0,
+                max_sessions: 0,
+                max_age_ms: 0,
+                snapshot_every_bytes: 1 << 40,
+            },
+        )
+        .expect("open");
+        journal
+            .upsert_blocking(sample_session("s.trim.liar"))
+            .expect("row");
+        journal
+            .append_blocking(output_record("s.trim.liar", 1, 1, b"AAAAAAAAAA"))
+            .expect("first");
+        journal
+            .append_blocking(output_record("s.trim.liar", 1, 2, b"BBBBBBBBBB"))
+            .expect("second");
+        journal.flush().expect("flush");
+        {
+            let conn = Connection::open(&path).expect("inspect");
+            conn.execute(
+                "UPDATE sessions SET payload_bytes = 600 WHERE id = 's.trim.liar'",
+                [],
+            )
+            .expect("inflate the counter");
+        }
+
+        // The healing append: the lie out-owes every row, so the trim
+        // consumes all three outputs and reaches the break.
+        journal
+            .append_blocking(output_record("s.trim.liar", 1, 3, b"CCCCCCCCCCCC"))
+            .expect("trigger");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.trim.liar")
+            .expect("session");
+        assert_eq!(row.payload_bytes, 0, "an empty table cannot owe bytes");
+        assert_eq!(row.trimmed_bytes, 32, "only really trimmed bytes ratchet");
+
+        journal
+            .append_blocking(output_record("s.trim.liar", 1, 4, b"DDDDDDDDDDDD"))
+            .expect("recovery append");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.trim.liar")
+            .expect("session");
+        assert_eq!(row.payload_bytes, 12);
+        let conn = Connection::open(&path).expect("inspect after recovery");
+        let mut stmt = conn
+            .prepare(
+                "SELECT generation, seq, LENGTH(payload) FROM events
+                 WHERE session_id = 's.trim.liar'
+                 ORDER BY generation, seq",
+            )
+            .expect("survivor query");
+        let survivors: Vec<(i64, i64, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("survivors")
+            .collect::<Result<_, _>>()
+            .expect("survivor rows");
+        assert_eq!(survivors, vec![(1, 4, 12)]);
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
