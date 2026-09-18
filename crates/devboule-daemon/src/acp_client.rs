@@ -437,6 +437,7 @@ impl TurnWatch {
                 },
                 None,
             );
+            publish_turn_finished(&runtime, "cancelled");
         }
     }
 }
@@ -2778,6 +2779,17 @@ impl AcpReader {
     }
 }
 
+fn publish_turn_finished(runtime: &SessionRuntime, stop_reason: &str) {
+    let _ = runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: stop_reason.to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+}
+
 fn observe_mcp_status(value: &serde_json::Value, runtime: &SessionRuntime) {
     if !is_mcp_status(value) {
         return;
@@ -3542,6 +3554,7 @@ impl AcpReader {
                     ),
                 },
             );
+            publish_turn_finished(runtime, "error");
             return;
         }
         if let Some(view) = view_from_envelope_in(value, &self.session_id, Some(self.host.cwd())) {
@@ -3877,7 +3890,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     /// Pass 2e step 2: a user row resolves through the same named road a
     /// catalog row rides, to its own argv and env — the row's command is
@@ -4281,6 +4294,8 @@ mod tests {
             "stub-session".to_string(),
             broker,
         );
+        let turn_id = runtime.turn_counter();
+        runtime.begin_turn();
         reader.turn.start_prompt(9);
         reader
             .feed(
@@ -4289,19 +4304,58 @@ mod tests {
                 &runtime,
             )
             .expect("feed");
-        let message = conn
-            .pull_events()
-            .into_iter()
-            .find_map(|event| match event.envelope.event {
-                SessionEvent::AgentError { message } => Some(message),
-                _ => None,
-            })
-            .expect("turn error event");
+        let events = conn.pull_events();
+        assert_eq!(events.len(), 2, "error response must close the turn");
+        assert!(matches!(
+            &events[0].envelope.event,
+            SessionEvent::AgentError { message }
+                if message == "ACP request 9 failed: ACP request failed (-32602): unknown model"
+        ));
+        assert!(matches!(
+            &events[1].envelope.event,
+            SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "error"
+        ));
+        assert!(!runtime.is_turn_active(turn_id));
+        let message = match &events[0].envelope.event {
+            SessionEvent::AgentError { message } => message,
+            _ => unreachable!("first event was not the ACP error"),
+        };
         assert_eq!(
             message,
             "ACP request 9 failed: ACP request failed (-32602): unknown model"
         );
         assert!(!message.contains("do-not-publish"));
+    }
+
+    #[test]
+    fn silent_prompt_abandonment_publishes_error_and_finishes_the_turn() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::from([88u64]))),
+            "stub-session".to_string(),
+            broker,
+        );
+        let turn_id = runtime.turn_counter();
+        runtime.begin_turn();
+        reader.turn.bind_runtime(&runtime);
+        reader.turn.start_prompt(88);
+        *reader.turn.last_activity.lock().expect("activity lock") =
+            Instant::now() - reader.turn.silence - Duration::from_secs(1);
+
+        reader.turn.tick();
+
+        let events = conn.pull_events();
+        assert_eq!(events.len(), 2, "watchdog abandonment must close the turn");
+        assert!(matches!(
+            &events[0].envelope.event,
+            SessionEvent::AgentError { message } if message.contains("stayed silent")
+        ));
+        assert!(matches!(
+            &events[1].envelope.event,
+            SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "cancelled"
+        ));
+        assert!(!runtime.is_turn_active(turn_id));
     }
 
     #[test]
@@ -5011,6 +5065,44 @@ mod tests {
                 _ => "other",
             })
             .collect()
+    }
+
+    #[test]
+    fn successful_prompt_publishes_one_finish_and_closes_the_turn() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let mut reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::from([7u64]))),
+            "stub-session".to_string(),
+            broker,
+        );
+        let turn_id = runtime.turn_counter();
+        runtime.begin_turn();
+        reader.turn.start_prompt(7);
+        reader
+            .feed(
+                br#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":"end_turn"}}"#
+                    .as_ref()
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(b'\n'))
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                &runtime,
+            )
+            .expect("feed");
+
+        let events = conn.pull_events();
+        assert_eq!(
+            events.len(),
+            1,
+            "successful prompt must finish exactly once"
+        );
+        assert!(matches!(
+            &events[0].envelope.event,
+            SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn"
+        ));
+        assert!(!runtime.is_turn_active(turn_id));
     }
 
     #[test]
