@@ -26,63 +26,89 @@ use crate::server::{call_peer, DialError, ServerState};
 /// every drop is counted in the document the tool returns.
 pub(crate) const MAX_PEER_ROSTER_ENTRIES: usize = 128;
 
-/// The roster for one device, or the RPC error code plus the sentence the
-/// broker answers with.
+/// The audit outcomes for a roster call: one word per cause, not one word
+/// for every failure. `denied` is this session's own door — absent,
+/// unattributed, another user's, gone. `unscoped` is the far side's honest
+/// scope refusal, the same word the responder writes for it. `failed` is
+/// everything that broke on the way — the dial, or a reply that was not a
+/// roster. The responder shares `ok` and `unscoped`, so the same act reads
+/// the same from either machine's trail.
+pub(crate) const PEER_AGENTS_OK: &str = "ok";
+pub(crate) const PEER_AGENTS_DENIED: &str = "denied";
+pub(crate) const PEER_AGENTS_UNSCOPED: &str = "unscoped";
+pub(crate) const PEER_AGENTS_FAILED: &str = "failed";
+/// The responder's fallible work failed after the gate passed: no roster
+/// was disclosed, and the peer was told so. Kept beside the caller-side
+/// words so the two halves of one act share one vocabulary.
+pub(crate) const PEER_AGENTS_ERROR: &str = "error";
+
+/// A roster call that produced no document: the RPC code, the sentence the
+/// broker answers with, and the audit outcome naming the cause.
+#[derive(Debug)]
+pub(crate) struct PeerAgentsError {
+    pub(crate) code: i32,
+    pub(crate) sentence: String,
+    pub(crate) outcome: &'static str,
+}
+
+impl PeerAgentsError {
+    fn refused(sentence: String) -> Self {
+        Self {
+            code: -32602,
+            sentence,
+            outcome: PEER_AGENTS_DENIED,
+        }
+    }
+}
+
+/// The roster for one device, or the failure naming its cause.
 pub(crate) fn list_peer_agents(
     state: &Arc<ServerState>,
     caller: &OwnerId,
     device_id: &str,
-) -> Result<Value, (i32, String)> {
+) -> Result<Value, PeerAgentsError> {
     // The device is resolved from this daemon's rows by id first, then
     // attributed: absence, a pairing with no recorded user, and a pairing
     // that belongs to someone else are three different refusals.
     let row = state
         .peers()
-        .map_err(|error| (-32603, error))?
+        .map_err(|error| PeerAgentsError {
+            code: -32603,
+            sentence: error,
+            outcome: PEER_AGENTS_FAILED,
+        })?
         .into_iter()
         .find(|record| record.device_id == device_id);
     let Some(row) = row else {
-        return Err((
-            -32602,
-            format!(
-                "No paired device named '{device_id}' is paired by this session's user; use \
-                 devboule_list_devices to name a device this session can call."
-            ),
-        ));
+        return Err(PeerAgentsError::refused(format!(
+            "No paired device named '{device_id}' is paired by this session's user; use \
+             devboule_list_devices to name a device this session can call."
+        )));
     };
     // `paired_by_user` is always `None` on a platform without user ids and
     // on pairings that predate the recording, so this session cannot tell
     // whether the device is its to call. That is its own refusal — not the
     // absent one, and never a silent pass.
     let Some(paired_user) = &row.paired_by_user else {
-        return Err((
-            -32602,
-            format!(
-                "The pairing with {} has no user recorded on this machine, so this session \
-                 cannot tell whether it is the device's pair; re-pair to record the user.",
-                row.display_name
-            ),
-        ));
+        return Err(PeerAgentsError::refused(format!(
+            "The pairing with {} has no user recorded on this machine, so this session \
+             cannot tell whether it is the device's pair; re-pair to record the user.",
+            row.display_name
+        )));
     };
     if paired_user != &caller.user {
-        return Err((
-            -32602,
-            format!(
-                "No paired device named '{device_id}' is paired by this session's user; use \
-                 devboule_list_devices to name a device this session can call."
-            ),
-        ));
+        return Err(PeerAgentsError::refused(format!(
+            "No paired device named '{device_id}' is paired by this session's user; use \
+             devboule_list_devices to name a device this session can call."
+        )));
     }
     // A revoked row is a different fact from an absent one: the pairing is
     // gone, and only re-pairing brings it back.
     if row.revoked_at.is_some() {
-        return Err((
-            -32602,
-            format!(
-                "The pairing with {} is gone; pair it again before calling it.",
-                row.display_name
-            ),
-        ));
+        return Err(PeerAgentsError::refused(format!(
+            "The pairing with {} is gone; pair it again before calling it.",
+            row.display_name
+        )));
     }
     match call_peer(state, device_id, ClientMessage::PeerAgentsList { id: 0 }) {
         Ok(DaemonMessage::PeerAgents { agents, scope, .. }) => {
@@ -91,26 +117,32 @@ pub(crate) fn list_peer_agents(
             // nobody in particular. Not an empty roster, and not this
             // session's data to read.
             if scope == devboule_protocol::PeerRosterScope::Unscoped {
-                return Err((
-                    -32602,
-                    format!(
+                return Err(PeerAgentsError {
+                    code: -32602,
+                    sentence: format!(
                         "{} cannot scope its roster: its pairing recorded no user, so it \
                          answers for nobody; re-pair it to record the user.",
                         row.display_name
                     ),
-                ));
+                    outcome: PEER_AGENTS_UNSCOPED,
+                });
             }
             let (agents, dropped) = boundary_pass(agents);
             Ok(roster_document(&row, agents, dropped))
         }
-        Ok(_) => Err((
-            -32602,
-            format!(
+        Ok(_) => Err(PeerAgentsError {
+            code: -32602,
+            sentence: format!(
                 "{} answered the roster request with an unexpected message; try again later.",
                 row.display_name
             ),
-        )),
-        Err(error) => Err((-32602, dial_error_sentence(&error, &row))),
+            outcome: PEER_AGENTS_FAILED,
+        }),
+        Err(error) => Err(PeerAgentsError {
+            code: -32602,
+            sentence: dial_error_sentence(&error, &row),
+            outcome: PEER_AGENTS_FAILED,
+        }),
     }
 }
 

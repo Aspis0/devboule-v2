@@ -1500,8 +1500,10 @@ fn handle_rpc(
                     return Ok(Some(rpc_error(id, -32602, "deviceId is required")));
                 };
                 // This is the tool that dials other machines and comes back
-                // with their roster, so both outcomes are audited with the
-                // caller, like the answer and move tools.
+                // with their roster, so every outcome is audited with the
+                // caller, like the answer and move tools — and the failure
+                // carries its cause (`denied`, `unscoped`, `failed`), because
+                // a scope refusal is a different fact from a dead dial.
                 let audit = |outcome_label: &str| {
                     audit_mcp_tool(
                         state,
@@ -1531,9 +1533,9 @@ fn handle_rpc(
                             },
                         })))
                     }
-                    Err((code, sentence)) => {
-                        audit("denied");
-                        Ok(Some(rpc_error(id, code, &sentence)))
+                    Err(error) => {
+                        audit(error.outcome);
+                        Ok(Some(rpc_error(id, error.code, &error.sentence)))
                     }
                 }
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
@@ -5353,6 +5355,166 @@ mod tests {
                 "ok".to_string()
             )),
             "the dialled roster call is audited as ok with its actor: {rows:?}"
+        );
+
+        drop(guard);
+        drop(server);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// The far side's scope refusal keeps its word in this machine's trail
+    /// too: a canned `unscoped` answer is audited `unscoped`, never
+    /// `denied` and never `failed` — "the device declined to scope its
+    /// roster to me" reads differently from a dead dial.
+    #[test]
+    fn a_far_side_scope_refusal_is_audited_as_unscoped() {
+        let keypair = snow::Builder::new(
+            crate::peer_transport::PEER_NOISE_PATTERN
+                .parse()
+                .expect("pattern"),
+        )
+        .generate_keypair()
+        .expect("keypair");
+        let canned = devboule_protocol::DaemonMessage::PeerAgents {
+            id: 0,
+            scope: devboule_protocol::PeerRosterScope::Unscoped,
+            agents: Vec::new(),
+        };
+        let private: [u8; 32] = keypair.private.clone().try_into().expect("32 bytes");
+        let address = crate::test_support::spawn_canned_noise_responder(
+            private,
+            vec![devboule_protocol::Capability::new(
+                devboule_protocol::caps::PEER_AGENTS,
+            )],
+            canned,
+        );
+
+        let state = ServerState::new("mcp-peer-agents-far-unscoped".to_string());
+        let owner = owner("S-1-5-21-peeragents-far-unscoped", "mcp-peer-agents-client");
+        crate::session::insert_test_live_agent(&state.sessions, "session", owner.clone());
+        state
+            .peer_upsert(crate::journal::PeerRecord {
+                device_id: "dev-far".to_string(),
+                display_name: "Far daemon".to_string(),
+                role: "daemon".to_string(),
+                public_key: keypair.public.clone(),
+                paired_by_user: Some(owner.user.clone()),
+                binding_kind: "tailnet".to_string(),
+                binding_stable_id: None,
+                binding_node_name: None,
+                binding_login_name: None,
+                address: address.to_string(),
+                paired_at: 1,
+                revoked_at: None,
+                caps: vec![crate::peer_policy::CAP_ROSTER.to_string()],
+            })
+            .expect("peer row");
+        let guard = state
+            .mcp
+            .register("session", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let call = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_list_peer_agents","arguments":{"deviceId":"dev-far"}}}"#,
+        );
+        let body = response_json(&call);
+        assert_eq!(body.pointer("/error/code"), Some(&json!(-32602)), "{body}");
+        assert!(
+            body.pointer("/error/message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("cannot scope its roster")),
+            "{body}"
+        );
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        let connection =
+            rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+        let mut statement = connection
+            .prepare("SELECT action, session_id, outcome FROM audit ORDER BY id")
+            .expect("prepare");
+        let rows: Vec<(String, Option<String>, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query")
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            rows.contains(&(
+                crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL.to_string(),
+                Some("session".to_string()),
+                "unscoped".to_string()
+            )),
+            "the scope refusal is audited as unscoped: {rows:?}"
+        );
+
+        drop(guard);
+        drop(server);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// A dial that goes nowhere is a failure, not a refusal: the closed
+    /// loopback port refuses immediately, so the test pays no connect
+    /// timeout, and the trail says `failed`.
+    #[test]
+    fn a_dial_that_goes_nowhere_is_audited_as_failed() {
+        let state = ServerState::new("mcp-peer-agents-dial-failed".to_string());
+        let owner = owner("S-1-5-21-peeragents-dial-failed", "mcp-peer-agents-client");
+        crate::session::insert_test_live_agent(&state.sessions, "session", owner.clone());
+        state
+            .peer_upsert(crate::journal::PeerRecord {
+                device_id: "dev-asleep".to_string(),
+                display_name: "Sleeping daemon".to_string(),
+                role: "daemon".to_string(),
+                public_key: vec![7u8; 32],
+                paired_by_user: Some(owner.user.clone()),
+                binding_kind: "tailnet".to_string(),
+                binding_stable_id: None,
+                binding_node_name: None,
+                binding_login_name: None,
+                address: "127.0.0.1:1".to_string(),
+                paired_at: 1,
+                revoked_at: None,
+                caps: vec![crate::peer_policy::CAP_ROSTER.to_string()],
+            })
+            .expect("peer row");
+        let guard = state
+            .mcp
+            .register("session", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let call = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_list_peer_agents","arguments":{"deviceId":"dev-asleep"}}}"#,
+        );
+        let body = response_json(&call);
+        assert_eq!(body.pointer("/error/code"), Some(&json!(-32602)), "{body}");
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        let connection =
+            rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+        let mut statement = connection
+            .prepare("SELECT action, session_id, outcome FROM audit ORDER BY id")
+            .expect("prepare");
+        let rows: Vec<(String, Option<String>, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query")
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            rows.contains(&(
+                crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL.to_string(),
+                Some("session".to_string()),
+                "failed".to_string()
+            )),
+            "the dead dial is audited as failed, never denied: {rows:?}"
         );
 
         drop(guard);

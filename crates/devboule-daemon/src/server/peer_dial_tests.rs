@@ -147,10 +147,12 @@ fn call_peer_answers_one_request_through_the_paired_row() {
 /// advertising the peer-roster capability — the hello of a daemon that
 /// predates the frame. After the hello it waits briefly and hangs up: a
 /// well-behaved dialer refuses before any request arrives.
-fn spawn_rosterless_responder(static_private: [u8; 32]) -> SocketAddr {
+fn spawn_rosterless_responder(
+    static_private: [u8; 32],
+) -> (SocketAddr, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the fake responder");
     let address = listener.local_addr().expect("fake responder address");
-    std::thread::spawn(move || {
+    let responder = std::thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept one dial");
         let deadline = Instant::now() + Duration::from_secs(10);
         let session = responder_handshake(
@@ -178,9 +180,17 @@ fn spawn_rosterless_responder(static_private: [u8; 32]) -> SocketAddr {
                 capabilities: Vec::new(),
             }))
             .expect("hello reply");
-        let _ignored = framed.recv_timeout::<ClientMessage>(Duration::from_secs(1));
+        // A well-behaved dialer refuses before any request arrives: fail
+        // loudly with what arrived, so a dialer that sends first cannot
+        // pass this test with the same log as one that refused.
+        match framed.recv_timeout::<ClientMessage>(Duration::from_secs(1)) {
+            Err(_) => {}
+            Ok(frame) => {
+                panic!("the dialer sent {frame:?} to a far end that cannot speak the roster frame")
+            }
+        }
     });
-    address
+    (address, responder)
 }
 
 /// A far daemon that predates the peer roster does not advertise it, and the
@@ -194,7 +204,7 @@ fn a_dial_refuses_a_far_end_that_does_not_advertise_the_roster() {
     let state = ServerState::new("peer-dial-unsupported".into());
     let keypair = pinned_keypair();
     let private: [u8; 32] = keypair.private.clone().try_into().expect("32 bytes");
-    let address = spawn_rosterless_responder(private);
+    let (address, responder) = spawn_rosterless_responder(private);
     state
         .peer_upsert(dial_row(address.to_string(), &keypair.public))
         .expect("upsert the row");
@@ -202,6 +212,9 @@ fn a_dial_refuses_a_far_end_that_does_not_advertise_the_roster() {
     let error = call_peer(&state, "b", ClientMessage::PeerAgentsList { id: 0 })
         .expect_err("a far end that cannot speak the frame must be refused");
     assert_eq!(error.step(), "unsupported", "{error}");
+    responder
+        .join()
+        .expect("the rosterless responder must see no request");
 }
 
 #[test]

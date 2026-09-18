@@ -107,7 +107,8 @@ fn a_local_connection_answers_its_own_user_scoped() {
 /// outcome carries the scope verdict — `ok` for a served roster,
 /// `unscoped` for the empty answer a device gives when its pairing recorded
 /// no user — so a person reading the table later can tell "saw the roster"
-/// from "was told nothing".
+/// from "was told nothing". The action is the request's own name, the
+/// spelling the gate writes for its refusals, so one query reads the pair.
 #[test]
 fn a_roster_served_to_a_peer_is_audited_with_its_scope() {
     let state = ServerState::new("peer-roster-audit".into());
@@ -143,7 +144,7 @@ fn a_roster_served_to_a_peer_is_audited_with_its_scope() {
         .collect();
     assert!(
         rows.contains(&(
-            "peer_agents_list".to_string(),
+            "PeerAgentsList".to_string(),
             "dev-far".to_string(),
             "daemon".to_string(),
             "ok".to_string()
@@ -152,7 +153,7 @@ fn a_roster_served_to_a_peer_is_audited_with_its_scope() {
     );
     assert!(
         rows.contains(&(
-            "peer_agents_list".to_string(),
+            "PeerAgentsList".to_string(),
             "dev-far".to_string(),
             "daemon".to_string(),
             "unscoped".to_string()
@@ -188,7 +189,54 @@ fn a_local_roster_read_is_not_audited() {
         .map(Result::unwrap)
         .collect();
     assert!(
-        !rows.iter().any(|action| action == "peer_agents_list"),
+        !rows.iter().any(|action| action == "PeerAgentsList"),
         "a local read writes no roster audit row: {rows:?}"
+    );
+}
+
+/// The audit row is written where the outcome is known: a pairing user the
+/// owner rules refuse never becomes a scope, so the peer gets an error and
+/// the trail says `error` — never `ok` for a roster that was not served.
+#[test]
+fn a_roster_that_fails_to_serve_is_audited_as_error() {
+    let state = ServerState::new("peer-roster-error".into());
+    let paired = OwnerId::new("S-1-5-21-paired", "claude").expect("owner");
+    crate::session::insert_test_live_agent(&state.sessions, "s.a.1", paired.clone());
+    // Outside the owner alphabet, so scoping fails before any read happens.
+    let conn = remote_conn(Some("not a user!".to_string()));
+
+    let reply = peer_agents_reply(&state, 12, &conn, &paired);
+    assert!(
+        matches!(reply, DaemonMessage::Error(_)),
+        "an unscopable user is an error, not a roster: {reply:?}"
+    );
+
+    let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+    let connection =
+        rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+    let mut statement = connection
+        .prepare("SELECT action, device_id, role, outcome FROM audit ORDER BY id")
+        .expect("prepare");
+    let rows: Vec<(String, String, String, String)> = statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .expect("query")
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        rows.contains(&(
+            "PeerAgentsList".to_string(),
+            "dev-far".to_string(),
+            "daemon".to_string(),
+            "error".to_string()
+        )),
+        "the failed read is audited as error: {rows:?}"
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.0 == "PeerAgentsList" && row.3 == "ok"),
+        "no row may claim a roster was served when it was not: {rows:?}"
     );
 }

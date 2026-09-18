@@ -391,8 +391,10 @@ pub enum McpToolWire {
 /// - Devices (`devboule_list_devices`) reads this daemon's paired rows, the
 ///   wire read `DevicesList`, the same act `view` names.
 /// - Peer agents (`devboule_list_peer_agents`) dials one named device for
-///   its live roster, the wire read `PeerAgentsList`, the same act `view`
-///   names. One call, one dial — never a fan-out.
+///   its live roster, the wire read `PeerAgentsList`, judged under its own
+///   capability `roster`, never `view`: every pairing holds `view`, and the
+///   roster is the pairing user's whole live surface. One call, one dial —
+///   never a fan-out.
 /// - Activity (`devboule_agent_activity`) reads one of those agents: the same
 ///   wire read, the same act. Kinds and timestamps only, never transcript.
 /// - Profile list (`devboule_list_profiles`) is `Unjudged`: it serves only the
@@ -434,17 +436,21 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             id: 0,
         }]))
     } else if tool == MCP_LIST_DEVICES_TOOL {
-        // The paired-device discovery read: the same rows, the same four-field
-        // projection the wire's `DevicesList` gives a `Daemon` peer, so the
-        // door judges it as that frame — the read `view` names. Scope to the
-        // calling session's own user is applied by the body, never by an
-        // argument, so the capability set alone decides here.
+        // The paired-device discovery read: judged as the wire's `DevicesList`
+        // read under `view`, and safe to so judge because the body returns
+        // less than either wire shape — four naming fields scoped to the
+        // calling session's own user, never the key, the address, the
+        // binding, or the pairing user a `Client` peer's whole row carries.
+        // The scope comes from the body, never from an argument, so the
+        // capability set alone decides here.
         Some(McpToolWire::Judged(vec![ClientMessage::DevicesList {
             id: 0,
         }]))
     } else if tool == MCP_LIST_PEER_AGENTS_TOOL {
         // The one-dial roster read: the wire act is `PeerAgentsList`, judged
-        // like every read under `view`. One call names one device and makes
+        // under its own capability `roster` — every pairing already holds
+        // `view`, so `view` cannot be the word that guards the pairing
+        // user's whole live surface. One call names one device and makes
         // one dial; whose roster answers is the responder's own pairing-user
         // decision, never a caller argument.
         Some(McpToolWire::Judged(vec![ClientMessage::PeerAgentsList {

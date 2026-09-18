@@ -33,12 +33,16 @@ fn an_unknown_device_refuses_by_name_and_is_not_an_empty_roster() {
     let caller = caller();
 
     let error = list_peer_agents(&state, &caller, "dev-x").expect_err("absent refuses");
-    assert_eq!(error.0, -32602);
+    assert_eq!(error.code, -32602);
+    assert_eq!(error.outcome, super::PEER_AGENTS_DENIED);
     assert!(
-        error.1.contains("No paired device named 'dev-x'"),
+        error.sentence.contains("No paired device named 'dev-x'"),
         "{error:?}"
     );
-    assert!(error.1.contains("devboule_list_devices"), "{error:?}");
+    assert!(
+        error.sentence.contains("devboule_list_devices"),
+        "{error:?}"
+    );
 }
 
 /// A row whose pairing recorded no user is a different fact from
@@ -55,17 +59,18 @@ fn a_row_without_a_recorded_user_refuses_as_unscopable() {
         .expect("row");
 
     let error = list_peer_agents(&state, &caller, "dev-anon").expect_err("unscoped refuses");
-    assert_eq!(error.0, -32602);
+    assert_eq!(error.code, -32602);
+    assert_eq!(error.outcome, super::PEER_AGENTS_DENIED);
     assert!(
-        error.1.contains("dev-anon"),
+        error.sentence.contains("dev-anon"),
         "the refusal names the device: {error:?}"
     );
     assert!(
-        error.1.contains("no user recorded"),
+        error.sentence.contains("no user recorded"),
         "the refusal says the pairing cannot be attributed: {error:?}"
     );
     assert!(
-        !error.1.contains("No paired device named"),
+        !error.sentence.contains("No paired device named"),
         "the absent sentence must not fire for a row that exists: {error:?}"
     );
 }
@@ -80,9 +85,10 @@ fn a_revoked_row_refuses_as_a_gone_pairing() {
     state.peer_upsert(record).expect("row");
 
     let error = list_peer_agents(&state, &caller, "dev-gone").expect_err("revoked refuses");
-    assert_eq!(error.0, -32602);
-    assert!(error.1.contains("pairing"), "{error:?}");
-    assert!(error.1.contains("gone"), "{error:?}");
+    assert_eq!(error.code, -32602);
+    assert_eq!(error.outcome, super::PEER_AGENTS_DENIED);
+    assert!(error.sentence.contains("pairing"), "{error:?}");
+    assert!(error.sentence.contains("gone"), "{error:?}");
 }
 
 /// A device that will not answer yields a sentence naming the device and
@@ -97,9 +103,53 @@ fn an_unreachable_device_answers_a_sentence_not_a_debug_string() {
         .expect("row");
 
     let error = list_peer_agents(&state, &caller, "dev-asleep").expect_err("unreachable refuses");
-    assert!(error.1.contains("Device dev-asleep"), "{error:?}");
+    assert_eq!(error.outcome, super::PEER_AGENTS_FAILED);
+    assert!(error.sentence.contains("Device dev-asleep"), "{error:?}");
     assert!(
-        error.1.contains("did not complete the call (connect)"),
+        error
+            .sentence
+            .contains("did not complete the call (connect)"),
+        "{error:?}"
+    );
+}
+
+/// The far side's honest scope refusal keeps its own word on the way back:
+/// an `unscoped` answer is audited as `unscoped`, never as this session's
+/// denial and never as a failed dial.
+#[test]
+fn a_far_side_scope_refusal_keeps_its_own_word() {
+    let keypair = snow::Builder::new(
+        crate::peer_transport::PEER_NOISE_PATTERN
+            .parse()
+            .expect("pattern"),
+    )
+    .generate_keypair()
+    .expect("keypair");
+    let canned = DaemonMessage::PeerAgents {
+        id: 0,
+        scope: devboule_protocol::PeerRosterScope::Unscoped,
+        agents: Vec::new(),
+    };
+    let private: [u8; 32] = keypair.private.clone().try_into().expect("32 bytes");
+    let address = crate::test_support::spawn_canned_noise_responder(
+        private,
+        vec![devboule_protocol::Capability::new(
+            devboule_protocol::caps::PEER_AGENTS,
+        )],
+        canned,
+    );
+
+    let state = ServerState::new("peer-agents-far-unscoped".into());
+    let caller = caller();
+    let mut unscoped_row = row("dev-far", &address.to_string(), Some(caller.user.clone()));
+    unscoped_row.public_key = keypair.public.clone();
+    state.peer_upsert(unscoped_row).expect("row");
+
+    let error = list_peer_agents(&state, &caller, "dev-far").expect_err("far unscoped refuses");
+    assert_eq!(error.code, -32602);
+    assert_eq!(error.outcome, super::PEER_AGENTS_UNSCOPED);
+    assert!(
+        error.sentence.contains("cannot scope its roster"),
         "{error:?}"
     );
 }

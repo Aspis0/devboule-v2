@@ -61,25 +61,29 @@ pub(super) fn peer_agents_reply(
     };
     // The one read that discloses the pairing user's whole live surface is a
     // fact the audit table keeps, beside the peer denials: who read, from
-    // which device and role. The outcome is the scope verdict, not a bare
-    // `ok`: an `unscoped` answer disclosed nothing — an empty roster — and
-    // the table is where that distinction is read back later. A local pipe's
-    // read is its own business, like every other local read.
-    if let (Some(device_id), Some(role)) = (&caller_device, caller_role) {
-        let outcome = match scope {
-            PeerRosterScope::Unscoped => "unscoped",
-            _ => "ok",
-        };
-        state.audit(AuditRecord {
-            device_id: device_id.clone(),
-            role: role.as_str().to_string(),
-            claimed_origin: None,
-            action: "peer_agents_list".to_string(),
-            session_id: None,
-            outcome: outcome.to_string(),
-        });
-    }
+    // which device and role. Every remote attempt lands exactly one row,
+    // written where the outcome is known — never before the fallible work
+    // below, where a failure would leave a row claiming a disclosure that
+    // did not happen. The outcome is the scope verdict, not a bare `ok`:
+    // an `unscoped` answer disclosed nothing, and `error` disclosed nothing
+    // for a different reason. The action is the request's own name, the
+    // same spelling the gate writes for its refusals, so one query reads
+    // the whole pair. A local pipe's read is its own business, like every
+    // other local read.
+    let audit = |outcome: &str| {
+        if let (Some(device_id), Some(role)) = (&caller_device, &caller_role) {
+            state.audit(AuditRecord {
+                device_id: device_id.clone(),
+                role: role.as_str().to_string(),
+                claimed_origin: None,
+                action: "PeerAgentsList".to_string(),
+                session_id: None,
+                outcome: outcome.to_string(),
+            });
+        }
+    };
     let Some(scope_user) = scope_user else {
+        audit(crate::mcp_peer_agents::PEER_AGENTS_UNSCOPED);
         return DaemonMessage::PeerAgents {
             id,
             agents: Vec::new(),
@@ -89,13 +93,18 @@ pub(super) fn peer_agents_reply(
     let scope_owner = match OwnerId::new(scope_user, "roster") {
         Ok(scope_owner) => scope_owner,
         Err(error) => {
+            audit(crate::mcp_peer_agents::PEER_AGENTS_ERROR);
             return DaemonMessage::Error(WireError::new(ErrorCode::Internal, error).with_id(id));
         }
     };
     let entries = match state.sessions.live_agent_entries(&scope_owner) {
         Ok(entries) => entries,
-        Err(error) => return DaemonMessage::Error(error.with_id(id)),
+        Err(error) => {
+            audit(crate::mcp_peer_agents::PEER_AGENTS_ERROR);
+            return DaemonMessage::Error(error.with_id(id));
+        }
     };
+    audit(crate::mcp_peer_agents::PEER_AGENTS_OK);
     let agents = entries
         .iter()
         .map(|entry| peer_agent_value(state, entry))
