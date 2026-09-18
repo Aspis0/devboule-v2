@@ -36,7 +36,16 @@ import { setTimeout as delay } from "node:timers/promises";
 const PORT = Number(process.env.WEBVIEW_DEBUG_PORT ?? 9333);
 // The debug port lists every page the browser process owns. Ours is the one
 // serving the app, so the target is matched rather than assumed to be first.
-const TARGET_URL_MATCH = process.env.WEBVIEW_TARGET_MATCH ?? "localhost:1420";
+// Two origins serve the same app: `pnpm dev` serves it from the vite server and
+// a packaged build serves it from tauri.localhost, so the default accepts both
+// — a default that only knew the dev server made every probe against a real
+// build time out for its full attach window and report an empty port, which
+// reads as a dead app rather than a wrong default. Comma-separated; the
+// environment variable overrides the whole list.
+const TARGET_URL_MATCHES = (process.env.WEBVIEW_TARGET_MATCH ?? "tauri.localhost,localhost:1420")
+  .split(",")
+  .map((entry) => entry.trim())
+  .filter((entry) => entry.length > 0);
 const ATTACH_TIMEOUT_MS = Number(process.env.WEBVIEW_ATTACH_TIMEOUT_MS ?? 180_000);
 
 function usage(message) {
@@ -82,7 +91,7 @@ async function waitForTarget() {
           // match below is what actually picks the document.
           (target.type === "page" || target.type === "iframe") &&
           target.webSocketDebuggerUrl &&
-          String(target.url).includes(TARGET_URL_MATCH),
+          TARGET_URL_MATCHES.some((match) => String(target.url).includes(match)),
       );
       if (page) return page;
     } catch {
@@ -245,7 +254,8 @@ const task = readTask(process.argv.slice(2));
 const target = await waitForTarget();
 if (!target) {
   console.error(
-    `no WebView page matching "${TARGET_URL_MATCH}" on port ${PORT}. Start the app with ` +
+    `no WebView page matching ${TARGET_URL_MATCHES.map((match) => `"${match}"`).join(" or ")} ` +
+      `on port ${PORT}. Start the app with ` +
       `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=${PORT}, and check ` +
       `that nothing else already holds the port — another WebView2 application on it will ` +
       `answer instead of yours.`,
