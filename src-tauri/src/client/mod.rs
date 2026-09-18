@@ -1533,7 +1533,7 @@ fn run_supervisor_loop<C, Connect, Connected, Sleep, Now>(
 where
     Connect: FnMut() -> Result<C, String>,
     Connected: FnMut(C) -> StatusLoopExit,
-    Sleep: FnMut(Duration) -> bool,
+    Sleep: FnMut(Duration, Option<&str>) -> bool,
     Now: Fn() -> Instant,
 {
     let mut brake = CrashLoopBrake::default();
@@ -1567,7 +1567,7 @@ where
                         match brake.backoff_delay() {
                             None => continue,
                             Some(delay) => {
-                                if !sleep(delay) {
+                                if !sleep(delay, None) {
                                     return SupervisorLoopExit::Stopped;
                                 }
                             }
@@ -1576,18 +1576,40 @@ where
                     StatusLoopExit::Stopped => return SupervisorLoopExit::Stopped,
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 // A refused connect is a fast failure too: the spawn died
                 // before serving anyone. The flat period stands until the
                 // brake's tolerance is used up.
                 brake.observe_fast_failure();
                 let delay = brake.backoff_delay().unwrap_or(PING_PERIOD);
-                if !sleep(delay) {
+                if !sleep(delay, Some(error.as_str())) {
                     return SupervisorLoopExit::Stopped;
                 }
             }
         }
     }
+}
+
+fn retry_status_message(delay: Duration, cause: Option<&str>) -> Option<String> {
+    if delay <= PING_PERIOD {
+        return None;
+    }
+    Some(match cause {
+        Some(cause) => {
+            // Preserve the cause verbatim; choose the separator and case from
+            // its final punctuation instead of trimming characters from it.
+            let (separator, retrying) = match cause.chars().last() {
+                Some('.') | Some('!') | Some('?') => (" ", "Retrying"),
+                Some(':') | Some(';') | Some(',') => (" ", "retrying"),
+                _ => (". ", "Retrying"),
+            };
+            format!("{cause}{separator}{retrying} in {}s", delay.as_secs())
+        }
+        None => format!(
+            "the daemon keeps stopping right after starting; retrying in {}s",
+            delay.as_secs()
+        ),
+    })
 }
 
 fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
@@ -1705,15 +1727,9 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
         // the loop is the reconnect path it always was; above it, the daemon
         // is crash-looping and the status says so instead of silently
         // spinning between "connecting" flashes.
-        |delay| {
-            if delay > PING_PERIOD {
-                set_status(
-                    &inner.status,
-                    UiDaemonStatus::error(format!(
-                        "the daemon keeps stopping right after starting; retrying in {}s",
-                        delay.as_secs()
-                    )),
-                );
+        |delay, cause| {
+            if let Some(message) = retry_status_message(delay, cause) {
+                set_status(&inner.status, UiDaemonStatus::error(message));
             }
             sleep_interruptible(&stop, delay)
         },
@@ -2658,13 +2674,75 @@ mod tests {
                     StatusLoopExit::Stopped
                 }
             },
-            |_: Duration| true,
+            |_: Duration, _| true,
             Instant::now,
         );
 
         assert_eq!(outcome, SupervisorLoopExit::Stopped);
         assert_eq!(connect_attempts, 2);
         assert_eq!(connected_runs, 2);
+    }
+
+    #[test]
+    fn retry_status_message_joins_a_complete_cause_sentence() {
+        let cause = "Devboule daemon not found. Set DEVBOULE_DAEMON or install devboule-daemon.exe beside the app.";
+
+        assert_eq!(
+            retry_status_message(Duration::from_secs(60), Some(cause)).as_deref(),
+            Some("Devboule daemon not found. Set DEVBOULE_DAEMON or install devboule-daemon.exe beside the app. Retrying in 60s")
+        );
+        assert_eq!(
+            retry_status_message(Duration::from_secs(60), None).as_deref(),
+            Some("the daemon keeps stopping right after starting; retrying in 60s")
+        );
+        assert_eq!(retry_status_message(PING_PERIOD, Some(cause)), None);
+    }
+
+    #[test]
+    fn a_failed_connect_passes_its_cause_to_backoff_sleep() {
+        let stop = AtomicBool::new(false);
+        let cause = "distinctive connect failure";
+        let mut delays = Vec::new();
+        let mut received_cause = None;
+        let outcome = run_supervisor_loop(
+            &stop,
+            || Err::<(), _>(cause.to_string()),
+            |_| StatusLoopExit::Stopped,
+            |delay, error| {
+                if delay > PING_PERIOD {
+                    received_cause = error.map(|error| error.to_string());
+                }
+                delays.push(delay);
+                delays.len() < 5
+            },
+            Instant::now,
+        );
+
+        assert_eq!(outcome, SupervisorLoopExit::Stopped);
+        assert_eq!(received_cause.as_deref(), Some(cause));
+    }
+
+    #[test]
+    fn an_immediate_connected_loss_passes_no_cause_to_backoff_sleep() {
+        let stop = AtomicBool::new(false);
+        let mut delays = Vec::new();
+        let mut received_cause = None;
+        let outcome = run_supervisor_loop(
+            &stop,
+            || Ok::<(), String>(()),
+            |_| StatusLoopExit::ConnectionLost,
+            |delay, error| {
+                if delay > PING_PERIOD {
+                    received_cause = error.map(|error| error.to_string());
+                }
+                delays.push(delay);
+                delays.len() < 5
+            },
+            Instant::now,
+        );
+
+        assert_eq!(outcome, SupervisorLoopExit::Stopped);
+        assert!(received_cause.is_none());
     }
 
     /// A clock the test advances by a whole number of seconds per call, so
@@ -2715,7 +2793,7 @@ mod tests {
                     StatusLoopExit::ConnectionLost
                 }
             },
-            |delay| {
+            |delay, _| {
                 delays.push(delay);
                 delays.len() < 2
             },
@@ -2761,7 +2839,7 @@ mod tests {
                     StatusLoopExit::ConnectionLost
                 }
             },
-            |delay| {
+            |delay, _| {
                 delays.push(delay);
                 delays.len() < 8
             },
@@ -2820,7 +2898,7 @@ mod tests {
                     StatusLoopExit::ConnectionLost
                 }
             },
-            |delay| {
+            |delay, _| {
                 delays.push(delay);
                 true
             },
@@ -2870,7 +2948,7 @@ mod tests {
                     StatusLoopExit::ConnectionLost
                 }
             },
-            |_| {
+            |_, _| {
                 sleep_calls += 1;
                 false
             },
