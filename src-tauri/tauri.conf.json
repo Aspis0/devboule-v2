@@ -7,7 +7,13 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "cargo build -p devboule-daemon && pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    // The app spawns the daemon and looks for it beside its own executable, so a
+    // build that produces only `devboule.exe` produces an app that cannot start
+    // one — and says so in a footer sentence nobody can act on. The dev command
+    // has always built it; the release command must too, or `target/release`
+    // holds half an application. Packaging proper (`bundle.active` is false: the
+    // repo has never produced an installer) is a separate decision.
+    "beforeBuildCommand": "cargo build --release -p devboule-daemon && pnpm build"
   },
   "app": {
     "windows": [
