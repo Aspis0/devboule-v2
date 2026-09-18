@@ -58,7 +58,9 @@ impl std::fmt::Display for DeviceIdentityError {
             Self::KeyMissing => write!(
                 formatter,
                 "device.json exists but the Noise static key is not in the secret store; \
-                 refusing to generate a new key silently"
+                 refusing to generate a new key silently, which would orphan every pairing. \
+                 Restore the key from a backup or delete device.json and the stored secret to \
+                 start over — the pairings will have to be made again"
             ),
             Self::Envelope(message) => write!(
                 formatter,
@@ -653,6 +655,22 @@ mod tests {
         );
         assert!(RemoteState::KeyMissing.addresses().is_empty());
         assert_eq!(RemoteState::KeyMissing.port(), None);
+    }
+
+    #[test]
+    fn a_missing_key_names_the_way_out_and_its_cost() {
+        // The sibling `Envelope` variant tells the person what to do; the
+        // refusal to mint a key must do the same, because a Retry button on
+        // this sentence fails identically forever.
+        let rendered = DeviceIdentityError::KeyMissing.to_string();
+        assert!(
+            rendered.contains("device.json") && rendered.contains("secret"),
+            "the message must name both halves of the state: {rendered}"
+        );
+        assert!(
+            rendered.contains("pair"),
+            "the message must say the pairings have to be made again: {rendered}"
+        );
     }
 
     #[test]
