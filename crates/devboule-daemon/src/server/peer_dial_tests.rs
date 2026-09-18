@@ -143,6 +143,67 @@ fn call_peer_answers_one_request_through_the_paired_row() {
     }
 }
 
+/// A responder that completes the handshake and answers the hello **without**
+/// advertising the peer-roster capability — the hello of a daemon that
+/// predates the frame. After the hello it waits briefly and hangs up: a
+/// well-behaved dialer refuses before any request arrives.
+fn spawn_rosterless_responder(static_private: [u8; 32]) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the fake responder");
+    let address = listener.local_addr().expect("fake responder address");
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept one dial");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let session = responder_handshake(
+            &stream,
+            deadline,
+            &static_private,
+            PEER_PROLOGUE,
+            None,
+            PEER_NOISE_PATTERN,
+        )
+        .expect("fake responder handshake");
+        let (reader, writer, closer) = split_session(&stream, session).expect("split");
+        let framed = Framed::from_stream(reader, writer, closer);
+        let hello: ClientMessage = framed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the dial's hello");
+        assert!(matches!(hello, ClientMessage::Hello(_)));
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello {
+                protocol_version: PROTOCOL_VERSION,
+                min_protocol_version: PROTOCOL_MIN_VERSION,
+                daemon_version: "test".to_string(),
+                instance_id: "fake-responder".to_string(),
+                pid: std::process::id(),
+                capabilities: Vec::new(),
+            }))
+            .expect("hello reply");
+        let _ignored = framed.recv_timeout::<ClientMessage>(Duration::from_secs(1));
+    });
+    address
+}
+
+/// A far daemon that predates the peer roster does not advertise it, and the
+/// dial refuses before the request leaves: the old daemon's reader could not
+/// deserialize the frame, and the connection would die on it. Compatibility
+/// rides the negotiated protocol capability (`caps::PEER_AGENTS`) — a
+/// different mechanism from the peer's authorization capability, which says
+/// nothing about whether the frame can be spoken at all.
+#[test]
+fn a_dial_refuses_a_far_end_that_does_not_advertise_the_roster() {
+    let state = ServerState::new("peer-dial-unsupported".into());
+    let keypair = pinned_keypair();
+    let private: [u8; 32] = keypair.private.clone().try_into().expect("32 bytes");
+    let address = spawn_rosterless_responder(private);
+    state
+        .peer_upsert(dial_row(address.to_string(), &keypair.public))
+        .expect("upsert the row");
+
+    let error = call_peer(&state, "b", ClientMessage::PeerAgentsList { id: 0 })
+        .expect_err("a far end that cannot speak the frame must be refused");
+    assert_eq!(error.step(), "unsupported", "{error}");
+}
+
 #[test]
 fn a_revoked_row_is_not_dialable() {
     let state = ServerState::new("peer-dial-revoked".into());

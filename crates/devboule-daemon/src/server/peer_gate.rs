@@ -289,6 +289,8 @@ pub(super) fn peer_mode_refusal(
         ClientMessage::ProviderUpdate { .. } => None,
         ClientMessage::Invoke { .. } => None,
         ClientMessage::DevicesList { .. } => None,
+        // A roster read names a device, never a mode: nothing to vet.
+        ClientMessage::PeerAgentsList { .. } => None,
         ClientMessage::PairingStart { .. } => None,
         ClientMessage::PairingComplete { .. } => None,
         ClientMessage::PairingConfirm { .. } => None,
@@ -504,6 +506,8 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::ProviderUpdate { .. }
         | ClientMessage::Invoke { .. }
         | ClientMessage::DevicesList { .. }
+        // Names a device, not a session on this device.
+        | ClientMessage::PeerAgentsList { .. }
         | ClientMessage::PairingStart { .. }
         | ClientMessage::PairingComplete { .. }
         | ClientMessage::PairingConfirm { .. }

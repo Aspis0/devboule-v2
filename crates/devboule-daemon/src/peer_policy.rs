@@ -33,12 +33,18 @@ pub enum PeerDecision {
 
 /// The capability names this gate reads, spelled once. `PEER_CAPS` in the
 /// protocol crate is the wire set a `PeerSetCaps` may name; the test below
-/// pins these four to it so a rename cannot leave the gate enforcing a
+/// pins these five to it so a rename cannot leave the gate enforcing a
 /// capability nobody can hold.
 pub const CAP_VIEW: &str = "view";
 pub const CAP_SEND: &str = "send";
 pub const CAP_ANSWER_PERMISSIONS: &str = "answer_permissions";
 pub const CAP_CREATE_SESSIONS: &str = "create_sessions";
+/// The peer roster (`PeerAgentsList`) has a capability of its own, and it is
+/// deliberately **absent from `PEER_DEFAULT_CAPS`**: `view` is one every
+/// pairing already holds, and reading the pairing user's whole live roster is
+/// a disclosure no pairing should carry silently. Nothing changes for an
+/// existing device until a person grants this per device.
+pub const CAP_ROSTER: &str = "roster";
 
 /// The audit outcome for a request refused because it would run a session
 /// without asking the user's permission (`DESIGN-remote-agents.md` §8b A5).
@@ -117,6 +123,15 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // Role-projected at the dispatch site; a `Daemon` peer sees only
         // `{device_id, display_name, role, online}` (design §8b A13).
         ClientMessage::DevicesList { .. } => with_capability(caps, CAP_VIEW),
+        // The live agent roster of the responding device, scoped on the
+        // responder to the user that approved the pairing (`paired_by_user`,
+        // a fact the responding daemon wrote itself). Reading a roster is
+        // observation, but it is a disclosure `view` does not cover — every
+        // pairing holds `view`, and the roster is the pairing user's whole
+        // live surface — so it rides its own capability, absent from
+        // `PEER_DEFAULT_CAPS` and granted per device. Who answers is not
+        // decided in this arm; the capability set alone decides.
+        ClientMessage::PeerAgentsList { .. } => with_capability(caps, CAP_ROSTER),
 
         // Slice 3: the five session variants a paired device may reach, each
         // under the capability that names the act. `view` is what makes a peer
@@ -373,6 +388,11 @@ pub enum McpToolWire {
 ///
 /// - Roster (`devboule_list_agents`) reads the owner's live agents: the wire
 ///   read `SessionsList`, the act `view` names.
+/// - Devices (`devboule_list_devices`) reads this daemon's paired rows, the
+///   wire read `DevicesList`, the same act `view` names.
+/// - Peer agents (`devboule_list_peer_agents`) dials one named device for
+///   its live roster, the wire read `PeerAgentsList`, the same act `view`
+///   names. One call, one dial — never a fan-out.
 /// - Activity (`devboule_agent_activity`) reads one of those agents: the same
 ///   wire read, the same act. Kinds and timestamps only, never transcript.
 /// - Profile list (`devboule_list_profiles`) is `Unjudged`: it serves only the
@@ -406,11 +426,28 @@ pub enum McpToolWire {
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
-        MCP_LIST_PROFILES_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL,
-        MCP_STOP_AGENT_TOOL,
+        MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_ROSTER_TOOL,
+        MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
     };
     if tool == MCP_ROSTER_TOOL {
         Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
+            id: 0,
+        }]))
+    } else if tool == MCP_LIST_DEVICES_TOOL {
+        // The paired-device discovery read: the same rows, the same four-field
+        // projection the wire's `DevicesList` gives a `Daemon` peer, so the
+        // door judges it as that frame — the read `view` names. Scope to the
+        // calling session's own user is applied by the body, never by an
+        // argument, so the capability set alone decides here.
+        Some(McpToolWire::Judged(vec![ClientMessage::DevicesList {
+            id: 0,
+        }]))
+    } else if tool == MCP_LIST_PEER_AGENTS_TOOL {
+        // The one-dial roster read: the wire act is `PeerAgentsList`, judged
+        // like every read under `view`. One call names one device and makes
+        // one dial; whose roster answers is the responder's own pairing-user
+        // decision, never a caller argument.
+        Some(McpToolWire::Judged(vec![ClientMessage::PeerAgentsList {
             id: 0,
         }]))
     } else if tool == MCP_ACTIVITY_TOOL {
@@ -611,11 +648,64 @@ pub(crate) mod tests {
             CAP_SEND,
             CAP_ANSWER_PERMISSIONS,
             CAP_CREATE_SESSIONS,
+            CAP_ROSTER,
         ])
     }
 
+    /// The peer roster has a capability of its own, absent from
+    /// `PEER_DEFAULT_CAPS`: every pairing holds `view`, and the roster is the
+    /// pairing user's whole live surface, so `view` alone must not open it.
+    /// Nothing changes for an existing pairing until a person grants this.
     #[test]
-    fn the_four_capability_names_are_the_protocol_list() {
+    fn the_peer_roster_has_a_capability_of_its_own() {
+        let roster = ClientMessage::PeerAgentsList { id: 1 };
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            // The default grant (view only) does not open the roster.
+            assert_eq!(
+                peer_allows(role, &default_caps(), &roster),
+                PeerDecision::Deny(CAP_ROSTER),
+                "{role:?} holding only the default `view` must not read the roster"
+            );
+            // Even everything a pairing could hold before this capability
+            // existed does not.
+            let pre_roster_world = caps(&[
+                CAP_VIEW,
+                CAP_SEND,
+                CAP_ANSWER_PERMISSIONS,
+                CAP_CREATE_SESSIONS,
+            ]);
+            assert_eq!(
+                peer_allows(role, &pre_roster_world, &roster),
+                PeerDecision::Deny(CAP_ROSTER),
+                "{role:?} holding every pre-roster capability must not read the roster"
+            );
+            // The capability of its own does, and nothing else about it.
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_VIEW, CAP_ROSTER]), &roster),
+                PeerDecision::Allow
+            );
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_ROSTER]), &roster),
+                PeerDecision::Allow
+            );
+            // And holding it opens nothing else: the roster read is the act
+            // it names.
+            let send = ClientMessage::AgentMessageSend {
+                id: 1,
+                from_session: "s.a.1".to_string(),
+                to_session: "s.b.2".to_string(),
+                text: "hi".to_string(),
+                idempotency_key: None,
+            };
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_ROSTER]), &send),
+                PeerDecision::Deny(CAP_SEND)
+            );
+        }
+    }
+
+    #[test]
+    fn the_capability_names_are_the_protocol_list() {
         // The gate enforces these strings; the wire accepts exactly
         // `PEER_CAPS`. Pinning them here means a rename on either side fails
         // loudly instead of leaving a capability nobody can hold.
@@ -624,6 +714,7 @@ pub(crate) mod tests {
             CAP_SEND,
             CAP_ANSWER_PERMISSIONS,
             CAP_CREATE_SESSIONS,
+            CAP_ROSTER,
         ];
         named.sort_unstable();
         let mut listed = devboule_protocol::PEER_CAPS;
@@ -1232,6 +1323,32 @@ pub(crate) mod tests {
                 mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_ACTIVITY_TOOL),
                 None
             );
+            // The devices read is the roster's act: this daemon's own paired
+            // rows, refused without `view`, allowed with it.
+            assert_eq!(
+                mcp_tool_denial(role, &none, MCP_LIST_DEVICES_TOOL),
+                Some(CAP_VIEW)
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_LIST_DEVICES_TOOL),
+                None
+            );
+            // The peer roster is judged under its own capability, not `view`:
+            // every pairing holds `view`, and the roster is the pairing
+            // user's whole live surface.
+            assert_eq!(
+                mcp_tool_denial(role, &none, MCP_LIST_PEER_AGENTS_TOOL),
+                Some(CAP_ROSTER)
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_LIST_PEER_AGENTS_TOOL),
+                Some(CAP_ROSTER),
+                "{role:?} holding only `view` must not reach the roster tool"
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_ROSTER]), MCP_LIST_PEER_AGENTS_TOOL),
+                None
+            );
             // The ticked list performs nothing judged: allowed even holding
             // nothing, for both roles.
             assert_eq!(mcp_tool_denial(role, &none, MCP_LIST_PROFILES_TOOL), None);
@@ -1351,6 +1468,11 @@ pub(crate) mod tests {
             ClientMessage::SessionsList { .. } | ClientMessage::DevicesList { .. } => {
                 under(CAP_VIEW)
             }
+            // The peer roster is a read, but a disclosure of its own: it
+            // rides the roster capability, not `view` — every pairing holds
+            // `view`, and the roster is the pairing user's whole live
+            // surface.
+            ClientMessage::PeerAgentsList { .. } => under(CAP_ROSTER),
             ClientMessage::SessionAttach { .. } => under(CAP_VIEW),
             ClientMessage::SessionCreate { .. } => under(CAP_CREATE_SESSIONS),
             ClientMessage::SessionSend { .. } | ClientMessage::SessionSetMode { .. } => {
@@ -1416,7 +1538,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 51;
+    pub(crate) const VARIANT_COUNT: usize = 52;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -1463,6 +1585,7 @@ pub(crate) mod tests {
             ClientMessage::ProviderUpdate { .. } => "ProviderUpdate",
             ClientMessage::Invoke { .. } => "Invoke",
             ClientMessage::DevicesList { .. } => "DevicesList",
+            ClientMessage::PeerAgentsList { .. } => "PeerAgentsList",
             ClientMessage::PairingStart { .. } => "PairingStart",
             ClientMessage::PairingComplete { .. } => "PairingComplete",
             ClientMessage::PairingConfirm { .. } => "PairingConfirm",
@@ -1654,6 +1777,7 @@ pub(crate) mod tests {
                 payload: None,
             },
             ClientMessage::DevicesList { id: 1 },
+            ClientMessage::PeerAgentsList { id: 1 },
             ClientMessage::PairingStart {
                 id: 1,
                 role: PeerRole::Client,

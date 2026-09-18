@@ -176,6 +176,7 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::SessionsWatch { .. }
         | ClientMessage::SessionsUnwatch { .. }
         | ClientMessage::SessionsPresence { .. }
+        | ClientMessage::PeerAgentsList { .. }
         | ClientMessage::SessionResume { .. }
         | ClientMessage::SessionReportAgent { .. } => {
             if !sessions_ok {

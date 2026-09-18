@@ -87,6 +87,10 @@ use peer_gate::*;
 mod peer_dial;
 pub use peer_dial::{call_peer, dial_peer, DialError};
 
+#[path = "server/peer_roster.rs"]
+mod peer_roster;
+use peer_roster::*;
+
 #[path = "server/journal_domain.rs"]
 mod journal_domain;
 use journal_domain::*;

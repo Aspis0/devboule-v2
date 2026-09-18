@@ -8711,6 +8711,10 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::SessionDetach { .. } => None,
         ClientMessage::SessionReportAgent { .. } => None,
         ClientMessage::SessionsList { .. } => None,
+        // Names no session of this daemon: it asks for the roster itself,
+        // and its ownership rule is the pairing-user scope in
+        // `peer_roster.rs`, covered there.
+        ClientMessage::PeerAgentsList { .. } => None,
         ClientMessage::SessionsWatch { .. } => None,
         ClientMessage::SessionsUnwatch { .. } => None,
         ClientMessage::SessionsPresence { .. } => None,

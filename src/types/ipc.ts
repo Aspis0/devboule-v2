@@ -1380,10 +1380,14 @@ export type PeerRole = "client" | "daemon";
 
 /**
  * One grant a `client` peer may hold. `view` is always on: a paired client can
- * always see its own sessions. `daemon` peers are origin-scoped by the daemon
- * and are not toggled from here.
+ * always see its own sessions. `roster` is deliberately off by default: the
+ * daemon grants it only when the person turns it on per device, because
+ * reading the roster discloses the pairing user's live agents on this
+ * machine. `daemon` peers are origin-scoped by the daemon and are not toggled
+ * from here. Mirrors `PEER_CAPS` in `crates/devboule-protocol/src/messages.rs`
+ * (the DevicesPanel walker test reads that literal so the two cannot drift).
  */
-export type Cap = "view" | "send" | "answer_permissions" | "create_sessions";
+export type Cap = "view" | "send" | "answer_permissions" | "create_sessions" | "roster";
 
 /** Where the daemon keeps its Noise static key. Reported in `Status`. */
 export type SecretStore = "keyring" | "file";

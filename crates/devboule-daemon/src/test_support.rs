@@ -39,6 +39,64 @@ pub(crate) fn steer_through_the_turn(
     })
 }
 
+/// A canned Noise responder for loopback peer dials: completes the responder
+/// handshake, answers the hello advertising exactly `capabilities`, and sends
+/// `reply` as the answer to whatever request arrives. Loopback is a test-only
+/// dial target (`is_tailnet_or_test_loopback`). One helper for every test
+/// that dials, so the handshake choreography is written once.
+#[cfg(test)]
+pub(crate) fn spawn_canned_noise_responder(
+    static_private: [u8; 32],
+    capabilities: Vec<devboule_protocol::Capability>,
+    reply: devboule_protocol::DaemonMessage,
+) -> std::net::SocketAddr {
+    use crate::framing::Framed;
+    use crate::peer_transport::{
+        responder_handshake, split_session, HANDSHAKE_DEADLINE, PEER_NOISE_PATTERN, PEER_PROLOGUE,
+    };
+    use devboule_protocol::{
+        ClientMessage, DaemonHello, DaemonMessage, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
+    };
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the fake responder");
+    let address = listener.local_addr().expect("fake responder address");
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept one dial");
+        let session = responder_handshake(
+            &stream,
+            Instant::now() + HANDSHAKE_DEADLINE,
+            &static_private,
+            PEER_PROLOGUE,
+            None,
+            PEER_NOISE_PATTERN,
+        )
+        .expect("fake responder handshake");
+        let (reader, writer, closer) = split_session(&stream, session).expect("split");
+        let framed = Framed::from_stream(reader, writer, closer);
+        let hello: ClientMessage = framed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the dial's hello");
+        assert!(matches!(hello, ClientMessage::Hello(_)));
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello {
+                protocol_version: PROTOCOL_VERSION,
+                min_protocol_version: PROTOCOL_MIN_VERSION,
+                daemon_version: "test".to_string(),
+                instance_id: "fake-responder".to_string(),
+                pid: std::process::id(),
+                capabilities,
+            }))
+            .expect("hello reply");
+        let _request: ClientMessage = framed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the dial's request");
+        framed.send(&reply).expect("send the canned reply");
+    });
+    address
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

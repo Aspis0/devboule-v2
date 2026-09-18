@@ -103,11 +103,11 @@ pub use messages::{
     validate_display_name, AgentMessageState, AgentProfile, AgentProfilesDocument,
     AttachmentReference, ClientMessage, DaemonMessage, DaemonStatusBody, DelegationSource,
     JournalLimits, JournalRetention, JournalSessionUsage, JournalStats, JournalUsage,
-    PairingSecret, PeerRole, PeerRow, PendingPairing, PromptAttachment, ProviderInfo, RemoteState,
-    RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource, SelfInfo,
-    SessionEventEnvelope, ToolDescriptor, ToolPolicyEntry, Unreclaimable, VocabularyModels,
-    VocabularyModes, VocabularyOrigin, VocabularySource, VocabularyState, PEER_CAPS,
-    PEER_DEFAULT_CAPS,
+    PairingSecret, PeerAgent, PeerRole, PeerRosterScope, PeerRow, PendingPairing, PromptAttachment,
+    ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource,
+    SelfInfo, SessionEventEnvelope, ToolDescriptor, ToolPolicyEntry, Unreclaimable,
+    VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource, VocabularyState,
+    PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -244,6 +244,18 @@ pub mod caps {
     /// `peer_allows`, not this list: a paired device is refused both requests
     /// whichever capability it holds.
     pub const PERMISSION_DELEGATION: &str = "permission_delegation";
+
+    /// The peer agent roster (`PeerAgentsList`/`PeerAgents`).
+    ///
+    /// A peer dial must not send `PeerAgentsList` to a daemon that predates
+    /// it: the old daemon's reader cannot deserialize the variant and the
+    /// connection would fail on a frame it never knew. The dialer checks this
+    /// name in the responder's hello and refuses before the request leaves.
+    /// Whether a *device* may read a roster at all is the `peers` row's
+    /// `roster` capability — a different mechanism, and deliberately not this
+    /// name: this one says whether the frame can be spoken, that one says
+    /// whether reading is allowed.
+    pub const PEER_AGENTS: &str = "peer_agents";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -594,6 +606,11 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // serves `DelegationGet`/`DelegationSet` rather than asking a daemon that
     // would refuse.
     capabilities.push(Capability::new(caps::PERMISSION_DELEGATION));
+    // Same pairing again, for the peer roster: the daemon offers the name so
+    // the intersection keeps it, and a peer dial reads the responder's hello
+    // to refuse a far end that predates `PeerAgentsList` before the frame can
+    // fail its reader.
+    capabilities.push(Capability::new(caps::PEER_AGENTS));
     capabilities
 }
 
@@ -637,6 +654,11 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // intersection keeps it, and reads it before asking a daemon that predates
     // `DelegationGet`/`DelegationSet`.
     capabilities.push(Capability::new(caps::PERMISSION_DELEGATION));
+    // The peer-roster dial offers the name so the intersection keeps it
+    // between two current daemons; the dialer reads the responder's hello to
+    // refuse a peer that predates the frame before the frame can kill the
+    // connection.
+    capabilities.push(Capability::new(caps::PEER_AGENTS));
     capabilities
 }
 

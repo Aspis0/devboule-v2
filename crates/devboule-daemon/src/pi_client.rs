@@ -81,6 +81,18 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_ROSTER_TOOL,
         requires_confirmation: false,
     },
+    // Devices: the paired-device discovery read, answered from the daemon's
+    // own rows; the calling session's own user scopes it, never an argument.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_LIST_DEVICES_TOOL,
+        requires_confirmation: false,
+    },
+    // Peer agents: the one-dial roster read; one call names one device and
+    // the responder scopes the answer to the pairing user, never an argument.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL,
+        requires_confirmation: false,
+    },
     // Profile list: the ticked subset the human enabled for agents; without it
     // `devboule_create_agent` (which names a profile and nothing else) is
     // undiscoverable.
@@ -187,7 +199,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// `pi.registerTool` per broker tool (nine today), closed schemas matching the
+/// `pi.registerTool` per broker tool (eleven today), closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -336,6 +348,35 @@ export default function (pi) {
     async execute(_toolCallId, _params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_list_agents", arguments: {} }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_list_devices",
+    label: "List paired Devboule devices",
+    description: `Lists the devices this machine is paired with: each device's id (the name to use when referring to it), its display name, its role, and whether it currently has a live connection to this machine. Answers locally, without contacting the other devices.`,
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_toolCallId, _params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_list_devices", arguments: {} }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_list_peer_agents",
+    label: "List agents on a paired device",
+    description: `Lists the agents running right now on one paired device, named by deviceId from devboule_list_devices. Each agent is identified by the pair of device id and session id, and carries its name, provider, model, state and creation depth. This is what is live on that device at the moment of the call, not a stored list, and the device is dialled once per call; a cold connection can take several seconds.`,
+    parameters: Type.Object(
+      {
+        deviceId: Type.String({ description: "The id of one paired device, from devboule_list_devices." }),
+      },
+      { required: ["deviceId"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_list_peer_agents", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });
@@ -3239,7 +3280,7 @@ mod tests {
     fn pi_broker_tools_are_unmediated_and_walked() {
         // S3 walking test: every tool the broker serves is classified exactly
         // once by the same constants the extension renders — unmediated with a
-        // reason (all nine today), never silently inheriting either answer. An
+        // reason (all eleven today), never silently inheriting either answer. An
         // eighth broker tool with no row here fails the first assertion; a
         // `devboule_*` name missing from the unmediated set fails the second.
         for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {

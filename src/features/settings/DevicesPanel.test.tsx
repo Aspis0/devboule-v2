@@ -36,6 +36,7 @@ import type {
   SelfInfo,
 } from "../../types/ipc";
 import {
+  CAP_ORDER,
   DevicesPanel,
   formatDuration,
   groupFingerprint,
@@ -63,6 +64,9 @@ const SELF: SelfInfo = {
   protocolVersion: 5,
   remote: { state: "enabled", reason: null },
 };
+
+/** The roster switch's label: what the grant discloses, not its wire name. */
+const ROSTER_LABEL = "read this device's live agent roster";
 
 const CLIENT_PEER: PeerRow = {
   deviceId: "9f6b0f2e-6f1c-4a1e-9c62-1e2f7d59a9c3",
@@ -641,6 +645,49 @@ describe("devices panel", () => {
 
     expect(peerSetCaps).toHaveBeenCalledWith(CLIENT_PEER.deviceId, ["view", "send"]);
     // The daemon stores what it is given, so the array carries `view` too.
+    expect(checkboxByLabel("send").checked).toBe(true);
+  });
+  it("walks the daemon's PEER_CAPS against the panel's capability table", () => {
+    // The producer is the protocol crate's `PEER_CAPS` literal; this test
+    // reads the Rust source so a new capability cannot land there and stay
+    // invisible here — the failure mode that hid `roster` from the panel.
+    const source = readFileSync(join("crates", "devboule-protocol", "src", "messages.rs"), "utf8");
+    const block = source.match(/pub const PEER_CAPS: \[&str; \d+\] = \[([^\]]*)\]/);
+    if (block === null) throw new Error("PEER_CAPS literal not found in the protocol crate");
+    const wireCaps = [...block[1].matchAll(/"([a-z_]+)"/g)].map((match) => match[1]);
+    expect(wireCaps.length).toBeGreaterThan(0);
+    expect([...CAP_ORDER].sort()).toEqual([...wireCaps].sort());
+  });
+
+  it("renders a switch for a roster capability the row holds, labelled with what it discloses", async () => {
+    vi.mocked(devicesList).mockResolvedValue(
+      replyWith({ peers: [{ ...CLIENT_PEER, caps: ["view", "roster"] }] }),
+    );
+    await renderPanel();
+
+    const roster = checkboxByLabel(ROSTER_LABEL);
+    expect(roster.checked).toBe(true);
+  });
+
+  it("does not drop a held capability when toggling a gated one", async () => {
+    // The silent-strip: `roster` is not one of the switches the panel used to
+    // know, so rebuilding the array from the gated table dropped it on the
+    // next toggle. What the panel sends back must carry every capability the
+    // row held, named or not.
+    vi.mocked(devicesList).mockResolvedValue(
+      replyWith({ peers: [{ ...CLIENT_PEER, caps: ["view", "roster"] }] }),
+    );
+    await renderPanel();
+
+    await act(async () => {
+      checkboxByLabel("send").click();
+      await Promise.resolve();
+    });
+
+    // The array is in the panel's own switch order; `roster` rides along
+    // because the row held it, not because a switch was touched.
+    expect(peerSetCaps).toHaveBeenCalledWith(CLIENT_PEER.deviceId, ["view", "send", "roster"]);
+    // And the daemon's answer keeps the switch drawn as on.
     expect(checkboxByLabel("send").checked).toBe(true);
   });
 

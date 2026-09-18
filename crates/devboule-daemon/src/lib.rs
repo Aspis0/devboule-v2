@@ -43,6 +43,10 @@ mod login_shell_env;
 #[cfg(feature = "server")]
 mod mcp_broker;
 #[cfg(feature = "server")]
+mod mcp_device_roster;
+#[cfg(feature = "server")]
+mod mcp_peer_agents;
+#[cfg(feature = "server")]
 mod outbound;
 #[cfg(feature = "server")]
 mod pairing;
@@ -54,6 +58,7 @@ mod peer_transport;
 #[cfg(feature = "server")]
 mod pi_view;
 mod process_tree;
+#[cfg(feature = "server")]
 mod profile_delivery;
 pub mod provider_catalog;
 #[cfg(feature = "server")]

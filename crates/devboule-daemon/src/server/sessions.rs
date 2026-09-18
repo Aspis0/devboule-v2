@@ -265,6 +265,12 @@ pub(super) fn dispatch_session(
             Ok(sessions) => DaemonMessage::Sessions { id, sessions },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
+        // The live roster a peer dials for. Scope is the connection's pairing
+        // user, decided inside `peer_agents_reply` — a `Daemon`-role
+        // connection's own `SessionsList` projection answers "what did you
+        // create here"; this answers "what runs here for your pairing user",
+        // and the two stay different verbs.
+        ClientMessage::PeerAgentsList { id } => peer_agents_reply(state, id, conn, owner),
         ClientMessage::SessionReportAgent {
             id,
             session_id,

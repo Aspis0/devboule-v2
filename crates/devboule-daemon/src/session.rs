@@ -7958,8 +7958,10 @@ fn agent_quiet_envelope(
 
 /// One header line per child-chosen value: a newline in it would impersonate
 /// frame structure, so it becomes a space before anything else runs. The cap
-/// bounds the frame, not the card.
-fn single_line_header(text: &str) -> String {
+/// bounds the frame, not the card. `pub(crate)` because the peer-roster
+/// boundary (`mcp_peer_agents`) composes the same two passes the card path
+/// composes rather than growing a second neutraliser.
+pub(crate) fn single_line_header(text: &str) -> String {
     let normalised = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
     normalised.chars().take(TITLE_LINE_MAX_CHARS).collect()
 }
@@ -8007,7 +8009,7 @@ fn agent_permission_request_envelope(
 /// The most characters one child-chosen header line may carry, after
 /// newlines became spaces. A card title is provider text of unbounded shape;
 /// this bounds the frame, not the card.
-const TITLE_LINE_MAX_CHARS: usize = 256;
+pub(crate) const TITLE_LINE_MAX_CHARS: usize = 256;
 
 /// The excerpt cap (§4.3): 512 Unicode **scalar values**, counted on the raw
 /// text after CR/LF normalisation and before any escaping, cut at a scalar
@@ -8186,8 +8188,10 @@ fn agent_message_envelope(origin: &str, role: &str, from_session: &str, text: &s
 /// cure has to be here.
 ///
 /// Escaping rather than stripping: the text still reads the way its author
-/// wrote it, minus the delimiter it was trying to be.
-fn neutralise_envelope_text(text: &str) -> String {
+/// wrote it, minus the delimiter it was trying to be. `pub(crate)` because
+/// the peer-roster boundary (`mcp_peer_agents`) composes the same two passes
+/// the card path composes rather than growing a second neutraliser.
+pub(crate) fn neutralise_envelope_text(text: &str) -> String {
     let normalised = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut neutral = String::with_capacity(normalised.len());
     let mut cursor = 0;

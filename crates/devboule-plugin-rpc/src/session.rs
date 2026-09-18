@@ -252,6 +252,10 @@ impl PluginSession {
                         // is exhaustive on purpose, and the compiler is what
                         // tells us a new variant needs a decision here.
                         | DaemonMessage::Devices { id, .. }
+                        // The peer roster answers a peer dial, which a plugin
+                        // backend never makes. It carries an id like every
+                        // other reply; listed, not swept.
+                        | DaemonMessage::PeerAgents { id, .. }
                         | DaemonMessage::PairingCode { id, .. }
                         | DaemonMessage::PairingPending { id, .. }
                         | DaemonMessage::PairingDone { id, .. }

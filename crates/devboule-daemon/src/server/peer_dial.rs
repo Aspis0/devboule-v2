@@ -109,6 +109,10 @@ pub(crate) enum DialStep {
     Send,
     /// No reply came back in time.
     Reply,
+    /// The far end cannot speak this frame: its hello did not advertise the
+    /// protocol capability the request needs, so sending it would fail the
+    /// far reader and kill the connection. The dial refuses instead.
+    Unsupported,
 }
 
 impl DialStep {
@@ -125,6 +129,7 @@ impl DialStep {
             Self::Hello => "hello",
             Self::Send => "send",
             Self::Reply => "reply",
+            Self::Unsupported => "unsupported",
         }
     }
 }
@@ -259,7 +264,25 @@ fn exchange(
         )
         .map_err(|error| DialError::at(DialStep::Send, error.to_string()))?;
     match framed.recv_timeout::<DaemonMessage>(DIAL_REPLY_TIMEOUT) {
-        Ok(DaemonMessage::Hello(_)) => {}
+        Ok(DaemonMessage::Hello(hello)) => {
+            // Frame compatibility, checked on the far end's own announcement:
+            // a daemon that predates `PeerAgentsList` cannot deserialize it,
+            // and sending it would fail the far reader and kill the
+            // connection. The `peers` row's `roster` capability decides
+            // whether reading is *allowed*; this says only whether the frame
+            // can be spoken at all.
+            if matches!(request, ClientMessage::PeerAgentsList { .. })
+                && !hello
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability.as_str() == devboule_protocol::caps::PEER_AGENTS)
+            {
+                return Err(DialError::at(
+                    DialStep::Unsupported,
+                    "the far daemon does not advertise the peer roster",
+                ));
+            }
+        }
         Ok(DaemonMessage::Error(error)) => {
             return Err(DialError::at(DialStep::Hello, error.message))
         }

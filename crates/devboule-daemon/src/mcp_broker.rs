@@ -1460,6 +1460,82 @@ fn handle_rpc(
                         })))
                     }
                 }
+            } else if tool_name == Some(crate::provider_catalog::MCP_LIST_DEVICES_TOOL) {
+                // Deliberately do not read params.arguments, like the roster
+                // tool: the calling session's own user scopes the list, and
+                // the answer never leaves this process — no dial, ever.
+                let document = match crate::mcp_device_roster::list_devices_document(
+                    state,
+                    &registration.owner,
+                ) {
+                    Ok(document) => document,
+                    Err(message) => {
+                        return Ok(Some(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {"code": -32603, "message": message},
+                        })))
+                    }
+                };
+                let text = serde_json::to_string(&document).map_err(|error| {
+                    json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": format!("Could not encode device list: {error}")}})
+                })?;
+                Ok(Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{"type": "text", "text": text}],
+                        "structuredContent": document,
+                        "isError": false,
+                    },
+                })))
+            } else if tool_name == Some(crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL) {
+                // One dial, one device, named by argument; the calling
+                // session's own rows decide which names are dialable.
+                let device_id = message
+                    .pointer("/params/arguments/deviceId")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty());
+                let Some(device_id) = device_id else {
+                    return Ok(Some(rpc_error(id, -32602, "deviceId is required")));
+                };
+                // This is the tool that dials other machines and comes back
+                // with their roster, so both outcomes are audited with the
+                // caller, like the answer and move tools.
+                let audit = |outcome_label: &str| {
+                    audit_mcp_tool(
+                        state,
+                        &caller,
+                        crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL,
+                        &registration.session_id,
+                        outcome_label,
+                    );
+                };
+                match crate::mcp_peer_agents::list_peer_agents(
+                    state,
+                    &registration.owner,
+                    device_id,
+                ) {
+                    Ok(document) => {
+                        audit("ok");
+                        let text = serde_json::to_string(&document).map_err(|error| {
+                            json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": format!("Could not encode peer agents: {error}")}})
+                        })?;
+                        Ok(Some(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{"type": "text", "text": text}],
+                                "structuredContent": document,
+                                "isError": false,
+                            },
+                        })))
+                    }
+                    Err((code, sentence)) => {
+                        audit("denied");
+                        Ok(Some(rpc_error(id, code, &sentence)))
+                    }
+                }
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -1618,6 +1694,18 @@ fn enabled_tool_list(
                 // named by id or display name, the profile by its name, and
                 // nothing a caller could state as identity is offered at all.
                 crate::provider_catalog::agent_set_profile_input_schema()
+            } else if *name == crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL {
+                // Closed like its siblings: the device is named by the id
+                // `devboule_list_devices` answered, and there is deliberately
+                // no scope argument — whose roster answers is the responder's
+                // own pairing-user fact.
+                crate::provider_catalog::peer_agents_input_schema()
+            } else if *name == crate::provider_catalog::MCP_LIST_DEVICES_TOOL {
+                // Spelled in its own arm rather than left to the default arm
+                // at the bottom: a parameterless tool's schema is a claim
+                // about the tool, and nothing walks this table to keep a
+                // silent default true.
+                json!({"type": "object", "properties": {}, "additionalProperties": false})
             } else if *name == crate::provider_catalog::MCP_ACTIVITY_TOOL {
                 crate::provider_catalog::agent_activity_input_schema()
             } else if *name == crate::provider_catalog::MCP_STOP_AGENT_TOOL
@@ -5011,6 +5099,267 @@ mod tests {
         assert!(mcp_peer_door(&caller, None, &json!(1)).is_none());
     }
 
+    /// The discovery tool answers from this daemon's own rows, scoped to the
+    /// calling session's own user. Its schema lives in its own
+    /// `enabled_tool_list` arm, and the assertions below pin the shape that
+    /// arm claims, so a default-arm change cannot silently reshape it.
+    #[test]
+    fn the_devices_tool_answers_scoped_from_this_daemons_rows() {
+        let state = ServerState::new("mcp-devices-tool".to_string());
+        let owner = owner("S-1-5-21-devtool", "mcp-devices-client");
+        crate::session::insert_test_live_agent(&state.sessions, "session", owner.clone());
+        state
+            .peer_upsert(crate::journal::PeerRecord {
+                device_id: "dev-mine".to_string(),
+                display_name: "Work laptop".to_string(),
+                role: "daemon".to_string(),
+                public_key: vec![7u8; 32],
+                paired_by_user: Some(owner.user.clone()),
+                binding_kind: "tailnet".to_string(),
+                binding_stable_id: Some("nstable".to_string()),
+                binding_node_name: None,
+                binding_login_name: None,
+                address: "100.64.0.2:47831".to_string(),
+                paired_at: 1,
+                revoked_at: None,
+                caps: vec![crate::peer_policy::CAP_VIEW.to_string()],
+            })
+            .expect("peer row");
+        let guard = state
+            .mcp
+            .register("session", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let listed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        let listed_body = response_json(&listed);
+        let tool = listed_body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == crate::provider_catalog::MCP_LIST_DEVICES_TOOL)
+            .expect("the devices tool is listed")
+            .clone();
+        assert_eq!(tool["inputSchema"]["type"], "object");
+        assert_eq!(
+            tool["inputSchema"]["properties"],
+            serde_json::json!({}),
+            "the tool takes no arguments, and the schema says so"
+        );
+
+        let call = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_list_devices","arguments":{}}}"#,
+        );
+        let body = response_json(&call);
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        let devices = body["result"]["structuredContent"]["devices"]
+            .as_array()
+            .expect("devices array");
+        assert_eq!(devices.len(), 1, "{body}");
+        assert_eq!(devices[0]["deviceId"], "dev-mine");
+        assert_eq!(devices[0]["displayName"], "Work laptop");
+        assert_eq!(devices[0]["role"], "daemon");
+        assert_eq!(devices[0]["online"], false);
+
+        drop(guard);
+        drop(server);
+    }
+
+    /// The one-dial roster tool, over the real broker: its schema demands
+    /// `deviceId`, a device outside the calling session's own rows refuses
+    /// by name — absent is never an empty roster — and the refusal carries a
+    /// sentence, not a debug string.
+    #[test]
+    fn the_peer_agents_tool_refuses_an_unknown_device_by_name() {
+        let state = ServerState::new("mcp-peer-agents".to_string());
+        let owner = owner("S-1-5-21-peeragents", "mcp-peer-agents-client");
+        crate::session::insert_test_live_agent(&state.sessions, "session", owner.clone());
+        let guard = state
+            .mcp
+            .register("session", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let listed = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        let listed_body = response_json(&listed);
+        let tool = listed_body["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL)
+            .expect("the peer agents tool is listed")
+            .clone();
+        assert_eq!(
+            tool["inputSchema"]["required"],
+            serde_json::json!(["deviceId"])
+        );
+
+        let missing = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"devboule_list_peer_agents","arguments":{}}}"#,
+        );
+        assert_eq!(
+            response_json(&missing).pointer("/error/message"),
+            Some(&json!("deviceId is required"))
+        );
+
+        let unknown = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"devboule_list_peer_agents","arguments":{"deviceId":"dev-nowhere"}}}"#,
+        );
+        let body = response_json(&unknown);
+        assert_eq!(body.pointer("/error/code"), Some(&json!(-32602)), "{body}");
+        let sentence = body
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .expect("a sentence");
+        assert!(
+            sentence.contains("No paired device named 'dev-nowhere'"),
+            "{sentence}"
+        );
+        assert!(
+            sentence.contains("devboule_list_devices"),
+            "the sentence names the discovery tool: {sentence}"
+        );
+
+        // The refused call names its actor in the audit table: this is the
+        // tool that dials other machines, so even its refusals are facts.
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        let connection =
+            rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+        let mut statement = connection
+            .prepare("SELECT action, session_id, outcome FROM audit ORDER BY id")
+            .expect("prepare");
+        let rows: Vec<(String, Option<String>, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query")
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            rows.contains(&(
+                crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL.to_string(),
+                Some("session".to_string()),
+                "denied".to_string()
+            )),
+            "the refused roster call is audited as denied: {rows:?}"
+        );
+
+        drop(guard);
+        drop(server);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
+    /// A roster call that goes out is audited with its actor: the tool opens
+    /// an outbound connection to another machine and comes back with that
+    /// machine's roster, which is exactly what the audit table exists to
+    /// remember.
+    #[test]
+    fn a_roster_call_that_dials_is_audited_with_its_actor() {
+        let keypair = snow::Builder::new(
+            crate::peer_transport::PEER_NOISE_PATTERN
+                .parse()
+                .expect("pattern"),
+        )
+        .generate_keypair()
+        .expect("keypair");
+        let canned = devboule_protocol::DaemonMessage::PeerAgents {
+            id: 0,
+            scope: devboule_protocol::PeerRosterScope::PairingUser,
+            agents: vec![devboule_protocol::PeerAgent {
+                session_id: "s.far.1".to_string(),
+                name: "Builder".to_string(),
+                provider: Some("claude".to_string()),
+                model: None,
+                state: devboule_protocol::AgentTaskState::Working,
+                depth: 1,
+            }],
+        };
+        let private: [u8; 32] = keypair.private.clone().try_into().expect("32 bytes");
+        let address = crate::test_support::spawn_canned_noise_responder(
+            private,
+            vec![devboule_protocol::Capability::new(
+                devboule_protocol::caps::PEER_AGENTS,
+            )],
+            canned,
+        );
+
+        let state = ServerState::new("mcp-peer-agents-audit".to_string());
+        let owner = owner("S-1-5-21-peeragents-audit", "mcp-peer-agents-client");
+        crate::session::insert_test_live_agent(&state.sessions, "session", owner.clone());
+        state
+            .peer_upsert(crate::journal::PeerRecord {
+                device_id: "dev-audit".to_string(),
+                display_name: "Far daemon".to_string(),
+                role: "daemon".to_string(),
+                public_key: keypair.public.clone(),
+                paired_by_user: Some(owner.user.clone()),
+                binding_kind: "tailnet".to_string(),
+                binding_stable_id: None,
+                binding_node_name: None,
+                binding_login_name: None,
+                address: address.to_string(),
+                paired_at: 1,
+                revoked_at: None,
+                caps: vec![crate::peer_policy::CAP_ROSTER.to_string()],
+            })
+            .expect("peer row");
+        let guard = state
+            .mcp
+            .register("session", &owner, &SessionKind::Acp)
+            .expect("registration")
+            .expect("MCP guard");
+        let token = state.mcp.test_token("session").expect("token");
+        let server = state.mcp.start(&state).expect("MCP server");
+
+        let call = http_request(
+            &state.mcp.url,
+            Some(&format!("Bearer {token}")),
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"devboule_list_peer_agents","arguments":{"deviceId":"dev-audit"}}}"#,
+        );
+        let body = response_json(&call);
+        assert_eq!(body["result"]["isError"], false, "{body}");
+
+        let runtime_dir = state.sessions.runtime_dir().to_path_buf();
+        let connection =
+            rusqlite::Connection::open(runtime_dir.join("journal.db")).expect("journal db");
+        let mut statement = connection
+            .prepare("SELECT action, session_id, outcome FROM audit ORDER BY id")
+            .expect("prepare");
+        let rows: Vec<(String, Option<String>, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query")
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            rows.contains(&(
+                crate::provider_catalog::MCP_LIST_PEER_AGENTS_TOOL.to_string(),
+                Some("session".to_string()),
+                "ok".to_string()
+            )),
+            "the dialled roster call is audited as ok with its actor: {rows:?}"
+        );
+
+        drop(guard);
+        drop(server);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+    }
+
     /// A bearer with no readable row is refused, but retryably: an agent's first
     /// call can land before its own commit, and a reaped session's in-flight
     /// calls outlive its row, and the ecosystem retries exactly this sentence.
@@ -5836,10 +6185,11 @@ mod tests {
         );
 
         // And `tools/list` for the same session still reports every tool the
-        // session is served: the roster, the profile list, the sender, the
-        // creation tool, the delegated permission answer, the profile move,
-        // the activity read, and the stop/close pair. Disabling one does not
-        // shrink the other rows, which is the point of this test.
+        // session is served: the roster, the device list, the peer-agents
+        // read, the profile list, the sender, the creation tool, the
+        // delegated permission answer, the profile move, the activity read,
+        // and the stop/close pair. Disabling one does not shrink the other
+        // rows, which is the point of this test.
         let listed = http_request(
             &state.mcp.url,
             Some(&format!("Bearer {token}")),
@@ -5850,7 +6200,7 @@ mod tests {
                 .pointer("/result/tools")
                 .and_then(Value::as_array)
                 .map(|tools| tools.len()),
-            Some(9)
+            Some(11)
         );
         let runtime_dir = state.sessions.runtime_dir().to_path_buf();
         drop(server);

@@ -30,7 +30,19 @@ pub(crate) const MAX_EXTERNAL_VERSION_CHARS: usize = 64;
 /// stripped rather than replaced because version labels have no legitimate
 /// control characters, and replacement could change the apparent version.
 pub(crate) fn cap_external_version(value: &str) -> Option<String> {
-    let capped: String = value
+    let capped = strip_control_and_bidi(value)
+        .chars()
+        .take(MAX_EXTERNAL_VERSION_CHARS)
+        .collect::<String>();
+    (!capped.is_empty()).then_some(capped)
+}
+
+/// The characters an externally supplied string may keep: no control
+/// characters, no bidi overrides. [`cap_external_version`] applies this to
+/// version labels; the peer-roster boundary (`mcp_peer_agents`) applies the
+/// same set to a far daemon's roster text, so there is one table and not two.
+pub(crate) fn strip_control_and_bidi(value: &str) -> String {
+    value
         .chars()
         .filter(|character| {
             !character.is_control()
@@ -39,9 +51,7 @@ pub(crate) fn cap_external_version(value: &str) -> Option<String> {
                     '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
                 )
         })
-        .take(MAX_EXTERNAL_VERSION_CHARS)
-        .collect();
-    (!capped.is_empty()).then_some(capped)
+        .collect()
 }
 
 /// A known CLI name and its aliases, with the ACP invocation when supported.
@@ -202,6 +212,14 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         "Lists live Devboule agent sessions known by the daemon, with their display name, the session that created them, their lifecycle state and their creation depth.",
     ),
     (
+        MCP_LIST_DEVICES_TOOL,
+        "Lists the devices this machine is paired with: each device's id (the name to use when referring to it), its display name, its role, and whether it currently has a live connection to this machine. Answers locally, without contacting the other devices.",
+    ),
+    (
+        MCP_LIST_PEER_AGENTS_TOOL,
+        "Lists the agents running right now on one paired device, named by deviceId from devboule_list_devices. Each agent is identified by the pair of device id and session id, and carries its name, provider, model, state and creation depth. This is what is live on that device at the moment of the call, not a stored list, and the device is dialled once per call; a cold connection can take several seconds.",
+    ),
+    (
         MCP_LIST_PROFILES_TOOL,
         "Lists the agent profiles the human enabled for agents, in the human's own order, with the note that says when to use each one. Call this before devboule_create_agent. Each profile's unattended field is a prediction: \"yes\" means a session created from it approves its own permission prompts, \"no\" means it asks the human, \"unknown\" means Devboule cannot promise either way - the child may stop on its first permission card.",
     ),
@@ -239,6 +257,17 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
 /// disable: an agent that cannot list its siblings cannot be steered at all,
 /// and the tool reads only its own bearer's roster.
 pub const MCP_ROSTER_TOOL: &str = "devboule_list_agents";
+/// The read-only paired-device discovery tool: the answer that lets an agent
+/// name a device at all. Answered from this daemon's own `peers` rows — never
+/// dialled — and scoped to the calling session's own user, with the key, the
+/// address and the binding fields withheld: an agent needs to name a device,
+/// not to audit it.
+pub const MCP_LIST_DEVICES_TOOL: &str = "devboule_list_devices";
+/// The one-dial peer roster tool: name one paired device, ask it for the
+/// agents it is running now. The dial is bounded by the outbound transport's
+/// own deadlines, and the answer is a liveness snapshot — never a stored
+/// object, and never a fan-out: one call names one device and makes one dial.
+pub const MCP_LIST_PEER_AGENTS_TOOL: &str = "devboule_list_peer_agents";
 pub const MCP_SEND_MESSAGE_TOOL: &str = "devboule_send_message";
 /// The creation tool (`S5`).
 ///
@@ -426,6 +455,28 @@ pub(crate) fn agent_end_input_schema() -> serde_json::Value {
             }
         },
         "required": ["session"],
+        "additionalProperties": false
+    })
+}
+
+/// The `tools/list` input schema of [`MCP_LIST_PEER_AGENTS_TOOL`].
+///
+/// Closed on purpose, like the create schema: the device is named by the id
+/// `devboule_list_devices` answered, and nothing else is a parameter. There
+/// is deliberately no user, owner or scope argument — whose roster the
+/// responder answers with is the responder's own fact (the user that
+/// approved the pairing), never something a caller could widen.
+#[cfg(feature = "server")]
+pub(crate) fn peer_agents_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "deviceId": {
+                "type": "string",
+                "description": "The id of one paired device, from devboule_list_devices."
+            }
+        },
+        "required": ["deviceId"],
         "additionalProperties": false
     })
 }
@@ -945,6 +996,7 @@ pub(crate) const AGENT_PRESETS: &[AgentPreset] = &[
 /// rows included because a debug daemon serves them. This is the enumeration
 /// the provider registry binds its implementations through (`provider.rs`):
 /// the catalog stays the one list of names.
+#[cfg(feature = "server")]
 pub(crate) fn catalog_provider_rows() -> impl Iterator<Item = &'static KnownAgent> {
     KNOWN_AGENTS
         .iter()

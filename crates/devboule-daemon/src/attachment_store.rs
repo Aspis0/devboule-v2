@@ -889,8 +889,8 @@ impl AttachmentStore {
 /// at.
 ///
 /// No field is read outside the tests yet. The deposit reply is built by the
-/// `SessionDeposit` arm in `session.rs`, the piece still to land — the same
-/// reason the block that returns this carries a dead-code marker.
+/// `SessionDeposit` arm in `session.rs` (`session_deposit`, which has landed)
+/// — the same reason the block that returns this carries a dead-code marker.
 /// `Debug` is derived rather than written by hand, unlike `PromptAttachment`'s:
 /// nothing here is the attachment's content. A digest, a byte count and a path
 /// are the identifiers this store already puts in its own error text, so a

@@ -1682,6 +1682,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         // would silence the compiler and hang the caller forever.
         DaemonMessage::ProviderVocabulary { id, .. }
         | DaemonMessage::Devices { id, .. }
+        | DaemonMessage::PeerAgents { id, .. }
         | DaemonMessage::PairingCode { id, .. }
         | DaemonMessage::PairingPending { id, .. }
         | DaemonMessage::PairingDone { id, .. }

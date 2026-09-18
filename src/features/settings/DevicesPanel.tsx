@@ -63,13 +63,25 @@ const ROLE_OPTIONS: readonly { value: PeerRole; label: string; hint: string }[] 
   },
 ];
 
-const CAP_ORDER: readonly Cap[] = ["view", "send", "answer_permissions", "create_sessions"];
+/** The panel's capability table, in switch order. The one runtime
+ * enumeration a new grant must join — the PEER_CAPS walker test reads it. */
+export const CAP_ORDER: readonly Cap[] = [
+  "view",
+  "send",
+  "answer_permissions",
+  "create_sessions",
+  "roster",
+];
 
 const CAP_LABELS: Record<Cap, string> = {
   view: "view",
   send: "send",
   answer_permissions: "answer permissions",
   create_sessions: "create sessions",
+  // The one label that names what the grant discloses, not just the act:
+  // a person deciding on `roster` is deciding who may see the live agents
+  // of the user who approved the pairing.
+  roster: "read this device's live agent roster",
 };
 
 const DEVICES_DESCRIPTION =

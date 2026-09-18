@@ -8,8 +8,9 @@ use crate::error::WireError;
 use crate::handshake::{ClientHello, DaemonHello};
 use crate::project::{Project, Workspace, WorkspaceIsolation};
 use crate::session::{
-    ActiveTurnBehavior, AgentActivityState, Cursor, PermissionOutcome, Persistence, ResumeResult,
-    Session, SessionEvent, SessionKind, SessionModeView, SessionModel, SubscriptionId,
+    ActiveTurnBehavior, AgentActivityState, AgentTaskState, Cursor, PermissionOutcome, Persistence,
+    ResumeResult, Session, SessionEvent, SessionKind, SessionModeView, SessionModel,
+    SubscriptionId,
 };
 
 /// The role a device is paired as, on the wire as `"client"` or `"daemon"`.
@@ -48,8 +49,17 @@ impl std::fmt::Display for PeerRole {
 }
 
 /// The capability names a paired peer may hold. The set is closed on the wire:
-/// an unknown name is an error, never a silently dropped entry.
-pub const PEER_CAPS: [&str; 4] = ["view", "send", "answer_permissions", "create_sessions"];
+/// an unknown name is an error, never a silently dropped entry. `roster` is
+/// deliberately absent from [`PEER_DEFAULT_CAPS`]: reading the pairing user's
+/// whole live agent roster is a disclosure no pairing carries until a person
+/// grants it per device.
+pub const PEER_CAPS: [&str; 5] = [
+    "view",
+    "send",
+    "answer_permissions",
+    "create_sessions",
+    "roster",
+];
 /// Every new pairing starts here (design §8b A11: only "view" is on).
 pub const PEER_DEFAULT_CAPS: [&str; 1] = ["view"];
 
@@ -481,6 +491,14 @@ pub enum ClientMessage {
     DevicesList {
         id: u64,
     },
+    /// Ask the responding daemon which agents it is running **right now**,
+    /// for the user who approved this pairing. Answered live from the
+    /// responder's registry — never from journal rows — and nothing is
+    /// stored: a reply is a snapshot that is stale the moment it is read,
+    /// and a session id in it is unique only within the responding daemon.
+    PeerAgentsList {
+        id: u64,
+    },
     /// Show a pairing code on **this** device. `role` is the role this device
     /// will have in the pairing.
     PairingStart {
@@ -666,6 +684,7 @@ impl ClientMessage {
             | Self::ProviderUpdate { id, .. }
             | Self::Invoke { id, .. }
             | Self::DevicesList { id }
+            | Self::PeerAgentsList { id }
             | Self::PairingStart { id, .. }
             | Self::PairingComplete { id, .. }
             | Self::PairingConfirm { id, .. }
@@ -738,6 +757,7 @@ impl ClientMessage {
             | Self::WorkspaceDelete { .. }
             | Self::Invoke { .. }
             | Self::DevicesList { .. }
+            | Self::PeerAgentsList { .. }
             | Self::PairingStart { .. }
             | Self::PairingComplete { .. }
             | Self::PairingConfirm { .. }
@@ -796,6 +816,7 @@ impl ClientMessage {
             Self::ProviderUpdate { .. } => "ProviderUpdate",
             Self::Invoke { .. } => "Invoke",
             Self::DevicesList { .. } => "DevicesList",
+            Self::PeerAgentsList { .. } => "PeerAgentsList",
             Self::PairingStart { .. } => "PairingStart",
             Self::PairingComplete { .. } => "PairingComplete",
             Self::PairingConfirm { .. } => "PairingConfirm",
@@ -832,6 +853,7 @@ impl ClientMessage {
             | Self::WorkspacesList { .. }
             | Self::ProvidersList { .. }
             | Self::DevicesList { .. }
+            | Self::PeerAgentsList { .. }
             | Self::ToolPolicyGet { .. }
             | Self::AgentProfilesGet { .. }
             | Self::ProviderVocabularyGet { .. }
@@ -1021,6 +1043,21 @@ pub enum DaemonMessage {
         /// `PairingPending` reaches the owner: the panel polls `DevicesList`.
         #[serde(default)]
         pending: Vec<PendingPairing>,
+    },
+    /// The reply to [`ClientMessage::PeerAgentsList`]: the agents the
+    /// responder is running **now**, and `scope` — whose roster this is.
+    /// An empty `agents` list with scope `pairing_user` or `local_user`
+    /// means that user has no live agents. Scope `unscoped` means the
+    /// responder's pairing row recorded no user (a platform without user
+    /// ids, or a pairing that predates the recording), so it cannot say
+    /// whose roster it would be exposing and refuses to guess: `agents` is
+    /// empty there too, and the two absences must never be collapsed —
+    /// "no agents" and "cannot scope" are different facts about the far
+    /// machine. A reply is a liveness snapshot, never a stored object.
+    PeerAgents {
+        id: u64,
+        agents: Vec<PeerAgent>,
+        scope: PeerRosterScope,
     },
     PairingCode {
         id: u64,
@@ -1329,6 +1366,50 @@ pub struct PeerRow {
     pub paired_by_user: Option<String>,
     /// Whether this peer has a live connection right now.
     pub online: bool,
+}
+
+/// Whose roster a `PeerAgents` reply answers for — or whether the responder
+/// could scope it at all. Three values on purpose, never collapsed:
+/// `pairing_user` — the user at the responding machine who approved the
+/// pairing; `local_user` — a local pipe's own user; `unscoped` — the pairing
+/// row recorded no user (a platform without user ids, or a pairing that
+/// predates the recording), so the responder cannot say whose roster it
+/// would be exposing and answers with an **empty** list. `unscoped` is not
+/// "no agents"; it is the third state, and the dialer renders it as its own
+/// sentence.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerRosterScope {
+    PairingUser,
+    LocalUser,
+    Unscoped,
+}
+
+/// One agent running now on the responding device, as the peer roster
+/// carries it.
+///
+/// Deliberately narrow, and deliberately **not** protocol [`Session`]: a
+/// `Session` carries `cwd` and workspace ids, and a filesystem path is a
+/// disclosure that has nothing to do with naming an agent. An entry is
+/// identified by the pair (the responder's device id, `session_id`) — a
+/// session id is unique only within one daemon, so the device half of the
+/// pair is not optional. `state` is the A2A word, the same vocabulary the
+/// local roster answers with.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerAgent {
+    pub session_id: String,
+    /// The name the agent is shown under; a session a person started falls
+    /// back to its title.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub state: AgentTaskState,
+    /// How far the agent is from a human root: 0 for a session a person
+    /// started, 1 for its child, 2 for a grandchild.
+    pub depth: u32,
 }
 
 /// A Client-role pairing parked on this device, awaiting a local decision.
@@ -2270,8 +2351,28 @@ mod tests {
         assert_eq!(PEER_DEFAULT_CAPS, ["view"]);
         assert_eq!(
             PEER_CAPS,
-            ["view", "send", "answer_permissions", "create_sessions"]
+            [
+                "view",
+                "send",
+                "answer_permissions",
+                "create_sessions",
+                "roster"
+            ]
         );
+        // The roster capability is grantable but never default: reading the
+        // pairing user's whole live roster is a disclosure no pairing carries
+        // until a person grants it per device.
+        assert!(!PEER_DEFAULT_CAPS.contains(&"roster"));
+        // Frame compatibility is the negotiated protocol capability
+        // `peer_agents`, a different mechanism advertised in both hello
+        // lists; it is deliberately not a peer capability name.
+        assert!(crate::m3a_daemon_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::PEER_AGENTS));
+        assert!(crate::m3a_client_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::PEER_AGENTS));
+        assert!(!PEER_CAPS.contains(&crate::caps::PEER_AGENTS));
     }
 
     #[test]
