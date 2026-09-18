@@ -18,6 +18,7 @@ const coreMocks = vi.hoisted(() => {
     bracketedPaste: false,
     lineWrap: true,
   };
+  let activeChannel: { onmessage?: (event: unknown) => void } | null = null;
   const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
     if (command === "sessions_list") return [];
     if (command === "session_create") {
@@ -33,12 +34,14 @@ const coreMocks = vi.hoisted(() => {
     if (command === "session_attach") {
       // The daemon already streams over the channel before the attach confirms.
       const channel = args?.ch as { onmessage?: (event: unknown) => void } | undefined;
+      activeChannel = channel ?? null;
       channel?.onmessage?.(snapshotEvent);
       return 17;
     }
     return undefined;
   });
-  return { invoke };
+  const emit = (event: unknown): void => activeChannel?.onmessage?.(event);
+  return { invoke, emit };
 });
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -219,5 +222,58 @@ describe("TerminalSurface observer wiring", () => {
       "session_resize",
       expect.objectContaining({ id: "session-1", subscriptionId: 17, cols: 80, rows: 24 }),
     ]);
+  });
+
+  it("reattaches when a recovered terminal is reopened into a new generation", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          observedState={{
+            type: "recovered",
+            generation: 2,
+            integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+          }}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      coreMocks.emit({
+        type: "recovered",
+        integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+      });
+    });
+
+    expect(container.querySelector(".workspace-terminal-banner")?.textContent).toContain(
+      "The previous terminal process is gone.",
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>(".workspace-terminal-interrupt")?.disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          observedState={{ type: "live", generation: 3 }}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "session_attach"),
+    ).toHaveLength(2);
+    expect(container.querySelector(".workspace-terminal-banner")).toBeNull();
+    expect(container.querySelector(".workspace-terminal-status")?.textContent).toBe(
+      "Connected to the local shell",
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>(".workspace-terminal-interrupt")?.disabled,
+    ).toBe(false);
   });
 });

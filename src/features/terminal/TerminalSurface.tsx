@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { memo, useEffect, useRef, useState } from "react";
-import type { PermissionRequest, PermissionResolved } from "../../types/ipc";
+import type { PermissionRequest, PermissionResolved, SessionState } from "../../types/ipc";
 import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
 import { terminalSessionRegistry } from "./terminalRegistry";
@@ -8,6 +8,7 @@ import { terminalSessionRegistry } from "./terminalRegistry";
 interface TerminalSurfaceProps {
   workspaceId: string | null;
   sessionId: string;
+  observedState?: SessionState | null;
   cwd?: string;
   id?: string;
   onClosed?: () => void;
@@ -86,6 +87,7 @@ export function bannerText(banner: TerminalBanner): string | null {
 export const TerminalSurface = memo(function TerminalSurface({
   workspaceId,
   sessionId,
+  observedState,
   cwd,
   id,
   onClosed,
@@ -98,6 +100,10 @@ export const TerminalSurface = memo(function TerminalSurface({
   const [banner, setBanner] = useState<TerminalBanner>(null);
   const [ctrlCArmed, setCtrlCArmed] = useState(false);
 
+  // A terminal attachment is valid for exactly one `(sessionId, generation)`
+  // pair. Resume keeps the id but increments the generation, so this is the
+  // signal that the surface's attachment is dead and must be rebuilt. Generation
+  // moves only on resume, so this cannot remount under someone mid-turn.
   useEffect(() => {
     const host = hostRef.current;
     if (host === null) return;
@@ -144,7 +150,14 @@ export const TerminalSurface = memo(function TerminalSurface({
       if (sessionRef.current === session) sessionRef.current = null;
       session.dispose();
     };
-  }, [workspaceId, sessionId, onExited, onPermissionRequest, onPermissionResolved]);
+  }, [
+    workspaceId,
+    sessionId,
+    onExited,
+    onPermissionRequest,
+    onPermissionResolved,
+    observedState?.generation,
+  ]);
 
   useEffect(() => {
     const host = hostRef.current;
