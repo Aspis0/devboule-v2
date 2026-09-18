@@ -19,6 +19,7 @@ import type {
   RemoteState,
 } from "../../types/ipc";
 import { SettingsHeading } from "./SettingsSurface";
+import { nextCaps } from "./peerCaps";
 import "./settings.css";
 
 /**
@@ -642,9 +643,7 @@ export function DevicesPanel() {
   async function toggleCap(row: PeerRow, cap: Cap, next: boolean) {
     if (rowBusy !== null) return;
     const current = capOverrides[row.deviceId] ?? row.caps;
-    const wanted = next
-      ? CAP_ORDER.filter((candidate) => candidate === cap || current.includes(candidate))
-      : CAP_ORDER.filter((candidate) => candidate !== cap && current.includes(candidate));
+    const wanted = nextCaps(current, cap, next, CAP_ORDER);
     // Optimistic: the checkbox flips now, and the daemon's answer is what stays.
     nextEpoch();
     setCapOverrides((prev) => ({ ...prev, [row.deviceId]: [...wanted] }));
