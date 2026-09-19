@@ -7,10 +7,21 @@ use devboule_protocol::ATTACHMENT_MIME_TYPES;
 struct TempDir(PathBuf);
 
 impl TempDir {
+    /// The store hardens every session folder it creates, and a hardened
+    /// folder is one `Drop` below cannot remove — so these directories
+    /// outlive the run that made them. A pid and a counter that restarts at 1
+    /// name the same one again once Windows recycles that pid: then
+    /// `create_dir_all` succeeds on the inherited folder and the first write
+    /// into it fails with `Access is denied`, in whatever test drew the short
+    /// straw. Name it with the clock so no run can inherit another's.
     fn new() -> Self {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or_default();
         let dir = std::env::temp_dir().join(format!(
-            "devboule-attachments-{}-{}",
+            "devboule-attachments-{}-{nonce}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));

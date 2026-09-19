@@ -467,6 +467,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// The ids the impls bind by, the same source production validation uses.
     fn natives() -> Vec<String> {
@@ -486,10 +487,20 @@ mod tests {
         )
     }
 
+    /// A pid and a counter that restarts at 1 every run name the same
+    /// directory again the next time Windows recycles that pid, and these
+    /// tests leave one behind with a *directory* where `providers.json`
+    /// belongs. Writing the seed file then fails with `Access is denied`,
+    /// in a test that has nothing to do with unreadable files. Name the
+    /// directory with the clock too, so no run can inherit another's.
     fn temp_dir() -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or_default();
         let dir = std::env::temp_dir().join(format!(
-            "devboule-user-providers-{}-{}",
+            "devboule-user-providers-{}-{nonce}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
@@ -859,6 +870,8 @@ mod tests {
             "a read error never empties the catalogue"
         );
 
+        // The directory above is what poisons a reused name: leave none.
+        let _ = std::fs::remove_dir_all(&dir);
         crate::session::apply_user_rows(BTreeMap::new());
         drop(gate);
     }
