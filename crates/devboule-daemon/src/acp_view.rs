@@ -88,10 +88,11 @@ fn view_from_session_update(
             Some(SessionEvent::AgentUserMessage {
                 message_id,
                 text: text.to_string(),
-                // Historical provider echoes predate authorship: they read
-                // back as the human default, preserving old rendering.
+                // A provider chunk carries no transcript role. This replay
+                // compatibility path must let the legacy parser classify
+                // historical rows; current A2A delivery is an AgentReport.
                 author: UserMessageAuthor::Human,
-                message_kind: UserMessageKind::Composer,
+                message_kind: UserMessageKind::Unknown,
             })
         }
         Some("agent_thought_chunk") => {
@@ -1240,7 +1241,7 @@ mod tests {
                 message_id: None,
                 text: "Reply with exactly one word: PONG".to_string(),
                 author: UserMessageAuthor::Human,
-                message_kind: UserMessageKind::Composer,
+                message_kind: UserMessageKind::Unknown,
             }
         );
         assert_eq!(
