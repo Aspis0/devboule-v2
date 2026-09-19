@@ -870,6 +870,25 @@ describe("ACP agent session", () => {
     await expect(harness.session.send("try again")).resolves.toBe(true);
   });
 
+  it("ends the session when the send reports connection_lost", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_send") {
+        return Promise.reject({ code: "connection_lost", message: "daemon connection was lost" });
+      }
+      return undefined;
+    });
+
+    await expect(harness.session.send("hello")).resolves.toBe(false);
+
+    expect(harness.session.getState().status).toBe("error");
+    expect(harness.session.getState().items.at(-1)).toMatchObject({
+      role: "error",
+      text: "Could not send the message: daemon connection was lost",
+    });
+  });
+
   it("stays usable when the send is refused as unauthorized — a refused steer is a live-session refusal", async () => {
     // The daemon raises unauthorized for a refused steer on a paired device
     // (session.rs:5710): a refused message, not a gone view.

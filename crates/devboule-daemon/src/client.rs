@@ -112,7 +112,7 @@ impl DaemonClient {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::Status { id })? {
             DaemonMessage::Status { body, .. } => Ok(body),
-            DaemonMessage::Error(error) if error.code == ErrorCode::Io => {
+            DaemonMessage::Error(error) if error.code == ErrorCode::ConnectionLost => {
                 Err(DaemonError::ConnectionLost)
             }
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
@@ -1685,7 +1685,7 @@ fn fail_connection(inner: &ClientInner, error: DaemonError) {
         .drain()
         .map(|(_, tx)| tx)
         .collect();
-    let error = DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()));
+    let error = DaemonMessage::Error(WireError::new(ErrorCode::ConnectionLost, error.to_string()));
     for tx in pending {
         let _ = tx.send(error.clone());
     }
@@ -1764,15 +1764,16 @@ fn pairing_reply_mismatch<T>() -> Result<T, DaemonError> {
 
 #[cfg(all(test, feature = "server"))]
 mod tests {
-    use super::{PROVIDER_UPDATE_RPC_TIMEOUT, RPC_TIMEOUT};
+    use super::{fail_connection, ClientInner, PROVIDER_UPDATE_RPC_TIMEOUT, RPC_TIMEOUT};
+    use crate::error::DaemonError;
     use crate::framing::Framed;
     use crate::provider_update::UPDATE_TIMEOUT;
     #[cfg(windows)]
     use crate::transport::{Listener, NamedPipeListener};
-    use devboule_protocol::{ClientMessage, DaemonHello, DaemonMessage, SessionEvent};
+    use devboule_protocol::{ClientMessage, DaemonHello, DaemonMessage, ErrorCode, SessionEvent};
+    use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
-    use std::sync::mpsc;
-    use std::sync::Arc;
+    use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::Duration;
 
@@ -1784,6 +1785,41 @@ mod tests {
         // constants protect the deadline relationship directly.
         assert!(PROVIDER_UPDATE_RPC_TIMEOUT > UPDATE_TIMEOUT + Duration::from_secs(30));
         assert_eq!(RPC_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn connection_failure_answers_pending_requests_with_connection_lost_code() {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        let mut pending = HashMap::new();
+        pending.insert(41, reply_tx);
+        let inner = ClientInner {
+            framed: Framed::new(
+                std::fs::File::open(std::env::current_exe().expect("exe")).expect("open exe"),
+            ),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+            next_subscription_id: std::sync::atomic::AtomicU64::new(1),
+            pending: Mutex::new(pending),
+            pending_subscriptions: Mutex::new(HashMap::new()),
+            subscriptions: Mutex::new(HashMap::new()),
+            default_subscriptions: Mutex::new(HashMap::new()),
+            session_state_subscription: Mutex::new(None),
+            delegation_subscription: Mutex::new(None),
+            stop: AtomicBool::new(false),
+            hello: DaemonHello::plugin_backend("connection-loss-test", std::process::id()),
+            server_pid: None,
+        };
+
+        fail_connection(&inner, DaemonError::ConnectionLost);
+
+        let DaemonMessage::Error(error) = reply_rx.recv().expect("pending reply") else {
+            panic!("connection failure must answer the pending request with an error");
+        };
+        assert_eq!(error.code, ErrorCode::ConnectionLost);
+        assert_eq!(
+            serde_json::to_value(error.code).expect("code json"),
+            "connection_lost"
+        );
+        assert_eq!(error.message, "daemon connection was lost");
     }
 
     #[test]

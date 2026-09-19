@@ -37,6 +37,8 @@ pub enum ErrorCode {
     WorkspaceConfinementRefused,
     Internal,
     Io,
+    /// The daemon transport ended while a request was still in flight.
+    ConnectionLost,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -670,6 +672,7 @@ mod tests {
             WorkspaceConfinementRefused,
             Internal,
             Io,
+            ConnectionLost,
         )
     }
 }

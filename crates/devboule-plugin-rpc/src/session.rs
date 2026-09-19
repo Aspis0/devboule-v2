@@ -366,7 +366,9 @@ impl PluginSession {
         let framed = self.framed();
         framed.send(&message)?;
         match self.wait_reply_on(&framed, id, timeout) {
-            Ok(DaemonMessage::Error(error)) if error.code == ErrorCode::Io => {
+            Ok(DaemonMessage::Error(error))
+                if matches!(error.code, ErrorCode::Io | ErrorCode::ConnectionLost) =>
+            {
                 Err(PluginError::ProcessExited)
             }
             other => other,

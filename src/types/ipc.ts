@@ -968,7 +968,8 @@ export type ErrorCode =
   | "workspace_unavailable"
   | "workspace_confinement_refused"
   | "internal"
-  | "io";
+  | "io"
+  | "connection_lost";
 
 /** Matches `ErrorDetails` in the protocol crate. Field names stay snake_case. */
 export type ErrorDetails =

@@ -205,6 +205,8 @@ function eventError(error: unknown): string {
  *   view on it go with it.
  * - `protocol_version_mismatch` — the bridge and the daemon cannot speak to
  *   each other; the view cannot be delivered through the connection.
+ * - `connection_lost` — the daemon transport ended while this send was in
+ *   flight; the view cannot speak for the session until it is reattached.
  *
  * Deliberately absent: `io` (carries DaemonError::TimedOut — a send that
  * timed out after the client's 30s may still have been delivered) and
@@ -219,6 +221,7 @@ const FATAL_SEND_CODES: ReadonlySet<ErrorCode> = new Set([
   "session_generation_mismatch",
   "shutting_down",
   "protocol_version_mismatch",
+  "connection_lost",
 ]);
 
 function sendFailureKillsSession(error: unknown): boolean {
