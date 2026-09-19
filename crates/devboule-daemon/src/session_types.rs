@@ -167,6 +167,9 @@ pub(crate) struct AttachmentKey {
 pub(super) struct Attachment {
     pub(super) outbound: Arc<ConnOut>,
     pub(super) typed_permissions: bool,
+    /// The replay seam's stored manifest. A matching live copy may have
+    /// started publishing before the seam but reached this queue after it.
+    pub(super) suppressed_manifest: Option<SessionEvent>,
     pub(super) pending: VecDeque<PendingItem>,
     pub(super) pending_bytes: usize,
     pub(super) pending_frames: u64,

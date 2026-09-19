@@ -46,11 +46,13 @@ fn remove_replayed_agent_items(
     queue: &mut VecDeque<PendingItem>,
     from_seq: u64,
     replayed_seqs: &HashSet<u64>,
+    replace_manifest: bool,
 ) {
     queue.retain(|item| match item {
         PendingItem::Agent { seq, event, .. } => {
             let replayed = seq.is_some_and(|seq| seq <= from_seq || replayed_seqs.contains(&seq));
-            let drop_manifest = matches!(event, SessionEvent::SessionManifest { .. }) && replayed;
+            let drop_manifest =
+                replace_manifest && matches!(event, SessionEvent::SessionManifest { .. });
             !replayed && !drop_manifest
         }
         PendingItem::Output { .. } | PendingItem::Snapshot { .. } => true,
@@ -2228,9 +2230,17 @@ impl SessionRuntime {
         key: AttachmentKey,
         from_seq: u64,
         replayed_seqs: &HashSet<u64>,
-    ) -> u64 {
+    ) -> (u64, Option<SessionEvent>) {
+        // Publication stores a manifest before it queues the live event. Take
+        // the snapshot in that order so the replay copy and the late-queue
+        // suppression below describe the same summary.
+        let manifest_guard = self.session_manifest.lock().ok();
+        let manifest = manifest_guard
+            .as_ref()
+            .and_then(|stored| stored.as_ref().cloned());
+        let replace_manifest = manifest.is_some();
         let Ok(mut stream) = self.lock_stream() else {
-            return 0;
+            return (0, manifest);
         };
         let current_seq = stream.next_seq.saturating_sub(1);
         // The stream backlog is shared; leave it intact so each observer can
@@ -2238,7 +2248,18 @@ impl SessionRuntime {
         // at the replay seam.
         let backlog = stream.agent_backlog.iter().cloned().collect::<Vec<_>>();
         if let Some(attachment) = stream.observers.get_mut(&key) {
-            remove_replayed_agent_items(&mut attachment.pending, from_seq, replayed_seqs);
+            // The replay seam emits one stored summary below. A queued live
+            // manifest is the same positionless state crossing that seam, so
+            // discard it only when that stored replacement exists. Keep the
+            // value so a publication already past the manifest lock but not
+            // yet past the stream lock is recognized as the same summary.
+            attachment.suppressed_manifest = manifest.clone();
+            remove_replayed_agent_items(
+                &mut attachment.pending,
+                from_seq,
+                replayed_seqs,
+                replace_manifest,
+            );
             for item in backlog {
                 let eligible = match &item {
                     PendingItem::Agent { seq, event, .. } => {
@@ -2270,7 +2291,7 @@ impl SessionRuntime {
             attachment.pending_bytes = pending_bytes;
             attachment.pending_frames = pending_frames;
         }
-        current_seq
+        (current_seq, manifest)
     }
 
     pub(crate) fn replay_journal_agent_page(
@@ -2458,6 +2479,7 @@ impl SessionRuntime {
         let mut attachment = Attachment {
             outbound: Arc::clone(&conn.outbound),
             typed_permissions,
+            suppressed_manifest: None,
             pending: VecDeque::new(),
             pending_bytes: 0,
             pending_frames: 0,
@@ -2863,6 +2885,13 @@ fn enqueue_agent(stream: &mut StreamState, event: SessionEvent, seq: Option<u64>
     for attachment in stream.observers.values_mut() {
         if permission && !attachment.typed_permissions {
             continue;
+        }
+        if attachment.suppressed_manifest.as_ref() == Some(&event) {
+            delivered = true;
+            continue;
+        }
+        if matches!(&event, SessionEvent::SessionManifest { .. }) {
+            attachment.suppressed_manifest = None;
         }
         enqueue_agent_for_attachment(attachment, event.clone(), seq);
         delivered = true;

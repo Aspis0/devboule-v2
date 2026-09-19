@@ -539,7 +539,7 @@ fn pull_live_agent_replay_events(
                 // drop their journal-derived views and append the enriched
                 // stored manifest exactly once after durable conversation
                 // replay. This preserves provider and selected effort.
-                let current_seq = pull.runtime.finish_live_agent_replay(
+                let (current_seq, manifest) = pull.runtime.finish_live_agent_replay(
                     pull.attachment_key,
                     replay.from_seq,
                     &replay.replayed_seqs,
@@ -554,7 +554,7 @@ fn pull_live_agent_replay_events(
                     replay.journal_lagged = true;
                     replay.force_finish = true;
                 }
-                if let Some(manifest) = pull.runtime.session_manifest() {
+                if let Some(manifest) = manifest {
                     replay
                         .pending
                         .push_back((pull.generation, replay.watermark, manifest));
@@ -1929,6 +1929,10 @@ mod tests {
         let outcome = runtime
             .try_attach_with_replay(None, &conn, true)
             .expect("attach live agent");
+        // This is the race window: the observer is armed, but replay has not
+        // started reading its durable prefix yet.
+        let live_manifest = runtime.session_manifest().expect("stored manifest");
+        let _ = runtime.publish_agent_event(live_manifest, None);
         conn.track_with_agent_replay(
             session_id,
             Arc::clone(&runtime),
