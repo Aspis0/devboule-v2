@@ -1,6 +1,5 @@
-//! Characterisation tests for the create road: `create_with_provider_env`
-//! as it stands today. Each test names the mutant it must catch when the
-//! method is split into named phases.
+//! Characterisation tests for the create road: the birth road as it stands,
+//! each test naming the mutant it must catch.
 
 use std::sync::Arc;
 
@@ -13,8 +12,11 @@ use crate::server::ServerState;
 
 use super::{PtyCommand, SessionCreateMeta, WireError};
 
-fn test_owner(user: &str) -> OwnerId {
-    OwnerId::new(user, "create-road-client").expect("owner")
+fn road_state(instance: &str, user: &str) -> (Arc<ServerState>, OwnerId) {
+    (
+        ServerState::new(instance.to_string()),
+        OwnerId::new(user, "create-road-client").expect("owner"),
+    )
 }
 
 fn refused_spawn_command() -> PtyCommand {
@@ -69,7 +71,7 @@ fn create(
     )
 }
 
-fn birth_row(state: &Arc<ServerState>, title: &str) -> SessionRecord {
+fn journal_rows(state: &Arc<ServerState>) -> Vec<SessionRecord> {
     state
         .sessions
         .journal
@@ -77,6 +79,10 @@ fn birth_row(state: &Arc<ServerState>, title: &str) -> SessionRecord {
         .expect("the test state has a journal")
         .list()
         .expect("journal rows")
+}
+
+fn birth_row(state: &Arc<ServerState>, title: &str) -> SessionRecord {
+    journal_rows(state)
         .into_iter()
         .find(|row| row.title == title)
         .expect("the birth row")
@@ -84,10 +90,12 @@ fn birth_row(state: &Arc<ServerState>, title: &str) -> SessionRecord {
 
 /// Mutant: the `meta.cwd` override hoisted above the workspace lookup —
 /// an unknown workspace must still refuse, not start in the carried cwd.
+/// Code and message alone cannot discriminate: the family's spawn-error
+/// mapping answers the same once a row exists, so the refusal must also
+/// leave the journal empty.
 #[test]
 fn an_unknown_workspace_refuses_even_when_the_create_carries_a_cwd() {
-    let state = ServerState::new("create-order-workspace".to_string());
-    let owner = test_owner("S-1-5-21-create-ws");
+    let (state, owner) = road_state("create-order-workspace", "S-1-5-21-create-ws");
     let meta = SessionCreateMeta {
         cwd: Some(std::env::temp_dir()),
         ..SessionCreateMeta::default()
@@ -106,8 +114,14 @@ fn an_unknown_workspace_refuses_even_when_the_create_carries_a_cwd() {
     assert_eq!(error.code, ErrorCode::WorkspaceUnavailable);
     assert!(
         error.message.contains("w.missing"),
-        "the refusal names the workspace: {}",
+        "refusal names ws: {}",
         error.message
+    );
+    let rows = journal_rows(&state);
+    assert!(
+        rows.is_empty(),
+        "the refusal fired before the birth door; no row may exist, found {}",
+        rows.len()
     );
 }
 
@@ -115,8 +129,7 @@ fn an_unknown_workspace_refuses_even_when_the_create_carries_a_cwd() {
 /// a carried (creator's) origin must win over the road the ask arrived on.
 #[test]
 fn a_carried_origin_beats_the_connection_it_arrives_on() {
-    let state = ServerState::new("create-origin-carried".to_string());
-    let owner = test_owner("S-1-5-21-create-origin");
+    let (state, owner) = road_state("create-origin-carried", "S-1-5-21-create-origin");
     let meta = SessionCreateMeta {
         origin: Some(SessionOrigin::local()),
         ..SessionCreateMeta::default()
@@ -140,8 +153,7 @@ fn a_carried_origin_beats_the_connection_it_arrives_on() {
 /// a remote connection's birth row names the paired device and its role.
 #[test]
 fn a_remote_connection_birth_stamps_the_peer_origin() {
-    let state = ServerState::new("create-origin-remote".to_string());
-    let owner = test_owner("S-1-5-21-create-remote");
+    let (state, owner) = road_state("create-origin-remote", "S-1-5-21-create-remote");
     create(
         &state,
         &owner,
@@ -164,8 +176,7 @@ fn a_remote_connection_birth_stamps_the_peer_origin() {
 /// `local`, and an unnamed terminal is titled by its kind.
 #[test]
 fn a_local_terminal_birth_stamps_local_origin_and_the_kind_title() {
-    let state = ServerState::new("create-origin-local".to_string());
-    let owner = test_owner("S-1-5-21-create-local");
+    let (state, owner) = road_state("create-origin-local", "S-1-5-21-create-local");
     create(
         &state,
         &owner,
@@ -186,8 +197,7 @@ fn a_local_terminal_birth_stamps_local_origin_and_the_kind_title() {
 /// title and the row's display name, not just wire metadata.
 #[test]
 fn a_display_name_becomes_the_birth_title() {
-    let state = ServerState::new("create-title-named".to_string());
-    let owner = test_owner("S-1-5-21-create-named");
+    let (state, owner) = road_state("create-title-named", "S-1-5-21-create-named");
     let meta = SessionCreateMeta {
         display_name: Some("Night shell".to_string()),
         ..SessionCreateMeta::default()
@@ -211,8 +221,7 @@ fn a_display_name_becomes_the_birth_title() {
 /// "Agent", not "Terminal", whatever family it started on.
 #[test]
 fn an_unnamed_agent_birth_is_titled_agent() {
-    let state = ServerState::new("create-title-agent".to_string());
-    let owner = test_owner("S-1-5-21-create-agent");
+    let (state, owner) = road_state("create-title-agent", "S-1-5-21-create-agent");
     let error = create(
         &state,
         &owner,
@@ -233,8 +242,7 @@ fn an_unnamed_agent_birth_is_titled_agent() {
 /// `creation_pending` parks its reservation marker; one without notes none.
 #[test]
 fn a_pending_agent_child_is_noted_when_creation_is_pending() {
-    let state = ServerState::new("create-pending".to_string());
-    let owner = test_owner("S-1-5-21-create-pending");
+    let (state, owner) = road_state("create-pending", "S-1-5-21-create-pending");
     let pending_meta = SessionCreateMeta {
         creation_pending: true,
         reservation: Some(4242),
@@ -289,8 +297,7 @@ fn a_pending_agent_child_is_noted_when_creation_is_pending() {
 /// failed spawn must release the marker its start noted.
 #[test]
 fn a_failed_spawn_clears_the_pending_child_it_noted() {
-    let state = ServerState::new("create-pending-clear".to_string());
-    let owner = test_owner("S-1-5-21-create-clear");
+    let (state, owner) = road_state("create-pending-clear", "S-1-5-21-create-clear");
     let meta = SessionCreateMeta {
         creation_pending: true,
         reservation: Some(777),
@@ -323,8 +330,7 @@ fn a_failed_spawn_clears_the_pending_child_it_noted() {
 /// birth write must drop the cached roster so the next read sees the row.
 #[test]
 fn the_birth_row_invalidates_the_journal_roster() {
-    let state = ServerState::new("create-roster".to_string());
-    let owner = test_owner("S-1-5-21-create-roster");
+    let (state, owner) = road_state("create-roster", "S-1-5-21-create-roster");
     state.sessions.journal_roster().expect("warm the roster");
     assert!(
         state
@@ -357,12 +363,11 @@ fn the_birth_row_invalidates_the_journal_roster() {
     );
 }
 
-/// Mutant: the spawn-failure health record ungated — a provider or pipe
+/// Mutant: the failure-arm health record dropped — a provider or pipe
 /// failure (any non-InvalidRequest) must measure the provider's health.
 #[test]
 fn a_provider_spawn_failure_measures_provider_health() {
-    let state = ServerState::new("create-health-io".to_string());
-    let owner = test_owner("S-1-5-21-create-health");
+    let (state, owner) = road_state("create-health-io", "S-1-5-21-create-health");
     let error = create(
         &state,
         &owner,
@@ -387,8 +392,7 @@ fn a_provider_spawn_failure_measures_provider_health() {
 /// health untouched ("unknown"), or healthy providers read unhealthy.
 #[test]
 fn a_profile_refusal_measures_no_provider_health() {
-    let state = ServerState::new("create-health-gate".to_string());
-    let owner = test_owner("S-1-5-21-create-gate");
+    let (state, owner) = road_state("create-health-gate", "S-1-5-21-create-gate");
     let error = state
         .sessions
         .create_with_provider_env(
@@ -417,8 +421,7 @@ fn a_profile_refusal_measures_no_provider_health() {
 /// names, and it must stay loud rather than note an ownerless marker.
 #[test]
 fn a_pending_child_without_a_reservation_panics() {
-    let state = ServerState::new("create-reservation".to_string());
-    let owner = test_owner("S-1-5-21-create-reserve");
+    let (state, owner) = road_state("create-reservation", "S-1-5-21-create-reserve");
     let meta = SessionCreateMeta {
         creation_pending: true,
         ..SessionCreateMeta::default()

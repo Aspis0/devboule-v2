@@ -119,9 +119,9 @@ fn build_birth_record_stamps_the_birth_facts_on_row_and_metadata() {
     assert_eq!(metadata.context_id.as_deref(), Some("s.own.1"));
 }
 
-/// Mutant: the cwd override applied before the workspace lookup, or the
-/// family's provider stamp lost — resolution returns the override cwd and
-/// the family's own stamp for the session.
+/// Mutant: the cwd override dropped from resolution, or the family's
+/// provider stamp lost — resolution returns the override cwd and the
+/// family's own stamp for the session.
 #[test]
 fn resolve_creation_inputs_honours_the_cwd_override_and_family_stamp() {
     let state = ServerState::new("create-phase-resolve".to_string());
@@ -148,6 +148,23 @@ fn resolve_creation_inputs_honours_the_cwd_override_and_family_stamp() {
     assert_eq!(
         resolved.session_provider, None,
         "a terminal carries no provider stamp"
+    );
+    let named = state
+        .sessions
+        .resolve_creation_inputs(
+            &owner,
+            None,
+            SessionKind::Codex,
+            Some("codex".to_string()),
+            None,
+            Some(command_in(PathBuf::from("Z:\\never"))),
+            &SessionCreateMeta::default(),
+        )
+        .expect("resolution of a named provider");
+    assert_eq!(
+        named.session_provider.as_deref(),
+        Some("codex"),
+        "the family stamps its own id on the session"
     );
 }
 
