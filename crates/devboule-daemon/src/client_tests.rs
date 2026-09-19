@@ -1,0 +1,592 @@
+//! Tests for the daemon client: request framing, timeouts and error mapping.
+
+use super::{fail_connection, ClientInner, PROVIDER_UPDATE_RPC_TIMEOUT, RPC_TIMEOUT};
+use crate::error::DaemonError;
+use crate::framing::Framed;
+use crate::provider_update::UPDATE_TIMEOUT;
+#[cfg(windows)]
+use crate::transport::{Listener, NamedPipeListener};
+use devboule_protocol::{ClientMessage, DaemonHello, DaemonMessage, ErrorCode, SessionEvent};
+use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+#[test]
+fn provider_update_deadline_has_install_headroom() {
+    // Keep the RPC deadline above the runner timeout plus 30 seconds: reverting
+    // provider_update to the normal 30-second RPC default would silently cut
+    // off long installs. The complete wiring needs a fake pipe to test; these
+    // constants protect the deadline relationship directly.
+    assert!(PROVIDER_UPDATE_RPC_TIMEOUT > UPDATE_TIMEOUT + Duration::from_secs(30));
+    assert_eq!(RPC_TIMEOUT, Duration::from_secs(30));
+}
+
+#[test]
+fn connection_failure_answers_pending_requests_with_connection_lost_code() {
+    let (reply_tx, reply_rx) = mpsc::channel();
+    let mut pending = HashMap::new();
+    pending.insert(41, reply_tx);
+    let inner = ClientInner {
+        framed: Framed::new(
+            std::fs::File::open(std::env::current_exe().expect("exe")).expect("open exe"),
+        ),
+        next_id: std::sync::atomic::AtomicU64::new(1),
+        next_subscription_id: std::sync::atomic::AtomicU64::new(1),
+        pending: Mutex::new(pending),
+        pending_subscriptions: Mutex::new(HashMap::new()),
+        subscriptions: Mutex::new(HashMap::new()),
+        default_subscriptions: Mutex::new(HashMap::new()),
+        session_state_subscription: Mutex::new(None),
+        delegation_subscription: Mutex::new(None),
+        stop: AtomicBool::new(false),
+        hello: DaemonHello::plugin_backend("connection-loss-test", std::process::id()),
+        server_pid: None,
+    };
+
+    fail_connection(&inner, DaemonError::ConnectionLost);
+
+    let DaemonMessage::Error(error) = reply_rx.recv().expect("pending reply") else {
+        panic!("connection failure must answer the pending request with an error");
+    };
+    assert_eq!(error.code, ErrorCode::ConnectionLost);
+    assert_eq!(
+        serde_json::to_value(error.code).expect("code json"),
+        "connection_lost"
+    );
+    assert_eq!(error.message, "daemon connection was lost");
+}
+
+#[test]
+fn dead_connection_recovery_still_spawns_then_retries() {
+    let paths = crate::paths::RuntimePaths::from_dir("fake-dead-daemon");
+    let hello = devboule_protocol::ClientHello::m3a(
+        super::test_owner("dead-recovery-test").expect("owner"),
+        "dead-recovery-test",
+    );
+    let mut connects = 0;
+    let mut spawns = 0;
+    let result = super::connect_or_spawn_with(
+        &paths,
+        hello,
+        std::path::Path::new("fake-daemon.exe"),
+        |_, _| {
+            connects += 1;
+            if connects == 1 {
+                Err(crate::DaemonError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "dead daemon",
+                )))
+            } else {
+                Ok(42u32)
+            }
+        },
+        |_, _| {
+            spawns += 1;
+            Ok(())
+        },
+    )
+    .expect("the next connection recovers");
+    assert_eq!(result, 42);
+    assert_eq!(connects, 2);
+    assert_eq!(spawns, 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn subscription_events_route_by_their_subscription_id() {
+    let dir = std::env::temp_dir().join(format!(
+        "devboule-client-routing-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let paths = crate::paths::RuntimePaths::from_dir(&dir);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let file = listener.accept().expect("accept");
+        let framed = Framed::new(file);
+        let hello = framed.recv::<ClientMessage>().expect("client hello");
+        assert!(matches!(hello, ClientMessage::Hello(_)));
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                "routing-test",
+                std::process::id(),
+            )))
+            .expect("hello reply");
+
+        let first = framed
+            .recv::<ClientMessage>()
+            .expect("first attach request");
+        let ClientMessage::SessionAttach {
+            id: first_id,
+            subscription_id: first_subscription,
+            ..
+        } = first
+        else {
+            panic!("expected first attach request");
+        };
+        framed
+            .send(&DaemonMessage::SessionAttached {
+                id: first_id,
+                subscription_id: first_subscription,
+            })
+            .expect("first attach reply");
+        framed
+            .send(&DaemonMessage::SubscriptionEvent {
+                subscription_id: first_subscription,
+                envelope: devboule_protocol::SessionEventEnvelope {
+                    session_id: "s.routing".to_string(),
+                    generation: 1,
+                    transcript_seq: None,
+                    event: SessionEvent::AgentMessage {
+                        message_id: None,
+                        text: "a-1".to_string(),
+                        parent_tool_use_id: None,
+                        spawn_depth: None,
+                    },
+                },
+            })
+            .expect("first A event");
+
+        let second = framed
+            .recv::<ClientMessage>()
+            .expect("second attach request");
+        let ClientMessage::SessionAttach {
+            id: second_id,
+            subscription_id: second_subscription,
+            ..
+        } = second
+        else {
+            panic!("expected second attach request");
+        };
+        framed
+            .send(&DaemonMessage::SubscriptionEvent {
+                subscription_id: first_subscription,
+                envelope: devboule_protocol::SessionEventEnvelope {
+                    session_id: "s.routing".to_string(),
+                    generation: 1,
+                    transcript_seq: None,
+                    event: SessionEvent::AgentMessage {
+                        message_id: None,
+                        text: "a-2".to_string(),
+                        parent_tool_use_id: None,
+                        spawn_depth: None,
+                    },
+                },
+            })
+            .expect("remaining A event");
+        framed
+            .send(&DaemonMessage::SessionAttached {
+                id: second_id,
+                subscription_id: second_subscription,
+            })
+            .expect("second attach reply");
+        framed
+            .send(&DaemonMessage::SubscriptionEvent {
+                subscription_id: second_subscription,
+                envelope: devboule_protocol::SessionEventEnvelope {
+                    session_id: "s.routing".to_string(),
+                    generation: 1,
+                    transcript_seq: None,
+                    event: SessionEvent::AgentMessage {
+                        message_id: None,
+                        text: "b-1".to_string(),
+                        parent_tool_use_id: None,
+                        spawn_depth: None,
+                    },
+                },
+            })
+            .expect("B event");
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+    });
+
+    let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let connection = loop {
+        match crate::transport::connect(&paths) {
+            Ok(connection) => break connection,
+            Err(_) if std::time::Instant::now() < connection_deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    };
+    let client = super::handshake(
+        connection,
+        devboule_protocol::ClientHello::m3a(
+            super::test_owner("client-routing-test").expect("owner"),
+            "client-routing-test",
+        ),
+    )
+    .expect("handshake");
+    let (a_tx, a_rx) = mpsc::channel();
+    client
+        .session_attach(
+            "s.routing",
+            None,
+            Arc::new(move |envelope| {
+                let _ = a_tx.send(envelope);
+            }),
+        )
+        .expect("attach A");
+    let (b_tx, b_rx) = mpsc::channel();
+    client
+        .session_attach(
+            "s.routing",
+            None,
+            Arc::new(move |envelope| {
+                let _ = b_tx.send(envelope);
+            }),
+        )
+        .expect("attach B");
+
+    let a_events = [
+        a_rx.recv_timeout(Duration::from_secs(10))
+            .expect("first subscription event")
+            .event,
+        a_rx.recv_timeout(Duration::from_secs(10))
+            .expect("second subscription event")
+            .event,
+    ];
+    let b_events = [b_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("other subscription event")
+        .event];
+    let text = |event: &SessionEvent| match event {
+        SessionEvent::AgentMessage { text, .. } => text.clone(),
+        other => format!("{other:?}"),
+    };
+    assert_eq!(
+        a_events.iter().map(text).collect::<Vec<_>>(),
+        vec!["a-1", "a-2"]
+    );
+    assert_eq!(
+        b_events.iter().map(text).collect::<Vec<_>>(),
+        vec!["b-1"],
+        "the second subscription must not receive the first subscription's events"
+    );
+
+    let _ = release_tx.send(());
+    drop(client);
+    server.join().expect("server joins");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(windows)]
+#[test]
+fn session_detach_removes_only_its_subscription() {
+    let dir = std::env::temp_dir().join(format!(
+        "devboule-client-detach-pending-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let paths = crate::paths::RuntimePaths::from_dir(&dir);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+    let (attach_seen_tx, attach_seen_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let file = listener.accept().expect("accept");
+        let framed = Framed::new(file);
+        let hello = framed.recv::<ClientMessage>().expect("client hello");
+        assert!(matches!(hello, ClientMessage::Hello(_)));
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                "detach-pending-test",
+                std::process::id(),
+            )))
+            .expect("hello reply");
+
+        let attach = framed.recv::<ClientMessage>().expect("attach request");
+        let ClientMessage::SessionAttach {
+            id: attach_id,
+            subscription_id,
+            ..
+        } = attach
+        else {
+            panic!("expected attach request");
+        };
+        attach_seen_tx.send(()).expect("attach seen");
+        framed
+            .send(&DaemonMessage::SessionAttached {
+                id: attach_id,
+                subscription_id,
+            })
+            .expect("attach reply");
+        let detach = framed.recv::<ClientMessage>().expect("detach request");
+        let detach_id = detach.request_id().expect("detach id");
+        framed
+            .send(&DaemonMessage::Ok { id: detach_id })
+            .expect("detach reply");
+        release_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("detach completed");
+        framed
+            .send(&DaemonMessage::SubscriptionEvent {
+                subscription_id,
+                envelope: devboule_protocol::SessionEventEnvelope {
+                    session_id: "s.detach.pending".to_string(),
+                    generation: 1,
+                    transcript_seq: None,
+                    event: SessionEvent::AgentMessage {
+                        message_id: None,
+                        text: "resurrected".to_string(),
+                        parent_tool_use_id: None,
+                        spawn_depth: None,
+                    },
+                },
+            })
+            .expect("late event");
+    });
+
+    let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let connection = loop {
+        match crate::transport::connect(&paths) {
+            Ok(connection) => break connection,
+            Err(_) if std::time::Instant::now() < connection_deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    };
+    let client = Arc::new(
+        super::handshake(
+            connection,
+            devboule_protocol::ClientHello::m3a(
+                super::test_owner("client-detach-pending-test").expect("owner"),
+                "client-detach-pending-test",
+            ),
+        )
+        .expect("handshake"),
+    );
+    let (event_tx, event_rx) = mpsc::channel();
+    let attach_client = Arc::clone(&client);
+    let attach_thread = thread::spawn(move || {
+        attach_client.session_attach(
+            "s.detach.pending",
+            None,
+            Arc::new(move |envelope| {
+                let _ = event_tx.send(envelope);
+            }),
+        )
+    });
+    attach_seen_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("attach reached server");
+    let subscription_id = attach_thread
+        .join()
+        .expect("attach joins")
+        .expect("attach succeeds");
+    client
+        .session_detach_with_subscription("s.detach.pending", subscription_id)
+        .expect("detach roundtrip");
+    release_tx.send(()).expect("release server");
+    assert!(event_rx.recv_timeout(Duration::from_millis(100)).is_err());
+
+    drop(client);
+    server.join().expect("server joins");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A daemon that predates `ToolPolicyGet`/`ToolPolicySet` answers nothing
+/// to them: its reader cannot deserialize the variants. The client helper
+/// therefore has to refuse on the negotiated capability instead of sending
+/// a frame that would kill the connection — this fake daemon replies to no
+/// request at all, so a helper that did send one would sit out the 30
+/// second RPC deadline instead of returning here.
+#[cfg(windows)]
+#[test]
+fn a_daemon_that_did_not_negotiate_tool_policy_is_never_sent_a_policy_rpc() {
+    let dir = std::env::temp_dir().join(format!(
+        "devboule-client-tool-policy-cap-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let paths = crate::paths::RuntimePaths::from_dir(&dir);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let file = listener.accept().expect("accept");
+        let framed = Framed::new(file);
+        let hello = framed.recv::<ClientMessage>().expect("client hello");
+        assert!(matches!(hello, ClientMessage::Hello(_)));
+        // The plugin-backend set: the capabilities of a daemon from before
+        // the tool policy existed.
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                "tool-policy-cap-test",
+                std::process::id(),
+            )))
+            .expect("hello reply");
+
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        // Bounded, so a pipe left open by a bug cannot hang the suite: an
+        // `Ok` here is a policy RPC that should never have been sent, an
+        // `Err` is the closed pipe.
+        let next = framed.recv_timeout::<ClientMessage>(Duration::from_millis(500));
+        assert!(
+            next.is_err(),
+            "a client must not send a policy RPC to a daemon that did not \
+                 advertise the capability, got {next:?}"
+        );
+    });
+
+    let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let connection = loop {
+        match crate::transport::connect(&paths) {
+            Ok(connection) => break connection,
+            Err(_) if std::time::Instant::now() < connection_deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    };
+    let client = super::handshake(
+        connection,
+        devboule_protocol::ClientHello::m3a(
+            super::test_owner("tool-policy-cap-test").expect("owner"),
+            "tool-policy-cap-test",
+        ),
+    )
+    .expect("handshake");
+    assert!(
+        !client
+            .hello()
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == devboule_protocol::caps::TOOL_POLICY),
+        "the fake daemon must not have offered the capability"
+    );
+
+    for error in [
+        client.tool_policy_get().expect_err("get must be refused"),
+        client
+            .tool_policy_set("claude", Some(false), Vec::new())
+            .expect_err("set must be refused"),
+    ] {
+        let crate::DaemonError::Handshake(wire) = error else {
+            panic!("a capability refusal is a wire error, got {error:?}");
+        };
+        assert_eq!(
+            wire.code,
+            devboule_protocol::ErrorCode::CapabilityNotSupported
+        );
+        assert_eq!(wire.message, "capability 'tool_policy' was not negotiated");
+    }
+
+    let _ = release_tx.send(());
+    drop(client);
+    server.join().expect("server joins");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same door as the tool policy's, for the profile store: a client
+/// refuses both RPCs when the handshake did not negotiate
+/// `agent_profiles`, so a daemon that predates them is never sent a frame
+/// its reader cannot deserialize.
+#[cfg(windows)]
+#[test]
+fn a_daemon_that_did_not_negotiate_agent_profiles_is_never_sent_a_profile_rpc() {
+    let dir = std::env::temp_dir().join(format!(
+        "devboule-client-agent-profiles-cap-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let paths = crate::paths::RuntimePaths::from_dir(&dir);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let file = listener.accept().expect("accept");
+        let framed = Framed::new(file);
+        let hello = framed.recv::<ClientMessage>().expect("client hello");
+        assert!(matches!(hello, ClientMessage::Hello(_)));
+        // The plugin-backend set: the capabilities of a daemon from before
+        // the profile store existed.
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                "agent-profiles-cap-test",
+                std::process::id(),
+            )))
+            .expect("hello reply");
+
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        // Bounded, so a pipe left open by a bug cannot hang the suite: an
+        // `Ok` here is a profile RPC that should never have been sent, an
+        // `Err` is the closed pipe.
+        let next = framed.recv_timeout::<ClientMessage>(Duration::from_millis(500));
+        assert!(
+            next.is_err(),
+            "a client must not send a profile RPC to a daemon that did not \
+                 advertise the capability, got {next:?}"
+        );
+    });
+
+    let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let connection = loop {
+        match crate::transport::connect(&paths) {
+            Ok(connection) => break connection,
+            Err(_) if std::time::Instant::now() < connection_deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    };
+    let client = super::handshake(
+        connection,
+        devboule_protocol::ClientHello::m3a(
+            super::test_owner("agent-profiles-cap-test").expect("owner"),
+            "agent-profiles-cap-test",
+        ),
+    )
+    .expect("handshake");
+    assert!(
+        !client
+            .hello()
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == devboule_protocol::caps::AGENT_PROFILES),
+        "the fake daemon must not have offered the capability"
+    );
+
+    for error in [
+        client
+            .agent_profiles_get()
+            .expect_err("get must be refused"),
+        client
+            .agent_profiles_set(devboule_protocol::AgentProfilesDocument::default())
+            .expect_err("set must be refused"),
+    ] {
+        let crate::DaemonError::Handshake(wire) = error else {
+            panic!("a capability refusal is a wire error, got {error:?}");
+        };
+        assert_eq!(
+            wire.code,
+            devboule_protocol::ErrorCode::CapabilityNotSupported
+        );
+        assert_eq!(
+            wire.message,
+            "capability 'agent_profiles' was not negotiated"
+        );
+    }
+
+    let _ = release_tx.send(());
+    drop(client);
+    server.join().expect("server joins");
+    let _ = std::fs::remove_dir_all(&dir);
+}
