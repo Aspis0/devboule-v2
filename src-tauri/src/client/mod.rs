@@ -612,9 +612,7 @@ impl AttachmentRegistry {
                 if entry.binding != Some(binding) || entry.session_id != session_id {
                     return;
                 }
-                if !advance_cursor(entry, &envelope) {
-                    return;
-                }
+                advance_cursor(entry, &envelope);
                 let sink = Arc::clone(&entry.sink);
                 let event = envelope.event;
                 let remove = matches!(
@@ -763,21 +761,23 @@ fn next_binding(state: &mut AttachmentRegistryState) -> u64 {
     state.next_binding
 }
 
-fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) -> bool {
+fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) {
     let Some(seq) = envelope.transcript_seq else {
-        return true;
+        return;
     };
     match entry.cursor {
         Some(cursor) if cursor.generation == envelope.generation => {
-            if seq <= cursor.seq {
-                return false;
-            }
+            // transcript_seq numbers the journal envelope, not each derived row.
+            // claude_client.rs:1698-1712 can publish siblings under one seq, so it
+            // cannot decide row identity. Always forward; at worst the envelope
+            // straddling a connection swap repeats, while dropping it would lose
+            // its siblings.
             if seq > cursor.seq.saturating_add(1) {
                 // TODO: Refetch the missing transcript range before accepting this gap.
             }
             entry.cursor = Some(Cursor {
                 generation: cursor.generation,
-                seq,
+                seq: cursor.seq.max(seq),
             });
         }
         _ => {
@@ -795,7 +795,6 @@ fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) 
             }
         }
     }
-    true
 }
 
 fn terminal_event(state: &SessionState) -> Option<SessionEvent> {
@@ -2137,6 +2136,57 @@ mod tests {
     }
 
     #[test]
+    fn derived_rows_sharing_one_envelope_seq_all_reach_the_sink() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_sink = Arc::clone(&received);
+        let subscription_id = registry.insert(
+            "session-shared-seq",
+            None,
+            Arc::new(move |event| {
+                received_by_sink
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+        );
+        let client = FakeAttachmentClient::default();
+        registry.bind(&client, subscription_id).expect("attach");
+
+        client.emit(
+            "session-shared-seq",
+            agent_envelope("session-shared-seq", 1, Some(17), "thinking"),
+        );
+        client.emit(
+            "session-shared-seq",
+            agent_envelope("session-shared-seq", 1, Some(17), "answer"),
+        );
+
+        assert_eq!(
+            received
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            2,
+            "one journal envelope may produce multiple rows"
+        );
+        let cursor = registry
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .get(&subscription_id)
+            .and_then(|entry| entry.cursor);
+        assert_eq!(
+            cursor,
+            Some(Cursor {
+                generation: 1,
+                seq: 17,
+            })
+        );
+    }
+
+    #[test]
     fn live_terminal_output_cursor_survives_connection_replacement() {
         let registry = Arc::new(AttachmentRegistry::default());
         let old_client = FakeAttachmentClient::default();
@@ -2203,51 +2253,6 @@ mod tests {
                 }),
             )],
             "reattach must send the cursor advanced by live chat"
-        );
-    }
-
-    #[test]
-    fn stale_output_envelope_is_not_forwarded_to_the_sink() {
-        let registry = Arc::new(AttachmentRegistry::default());
-        let received = Arc::new(Mutex::new(Vec::new()));
-        let received_by_sink = Arc::clone(&received);
-        let subscription_id = registry.insert(
-            "session-stale",
-            None,
-            Arc::new(move |event| {
-                received_by_sink
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .push(event);
-            }),
-        );
-        let client = FakeAttachmentClient::default();
-        registry.bind(&client, subscription_id).expect("attach");
-
-        client.emit(
-            "session-stale",
-            devboule_protocol::SessionEventEnvelope {
-                session_id: "session-stale".to_string(),
-                generation: 1,
-                transcript_seq: Some(5),
-                event: devboule_protocol::SessionEvent::Output {
-                    seq: 5,
-                    data: "first".to_string(),
-                },
-            },
-        );
-        client.emit(
-            "session-stale",
-            output_envelope("session-stale", 1, Some(5), 5, "duplicate"),
-        );
-
-        assert_eq!(
-            received
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .len(),
-            1,
-            "a seq at the cursor must not reach the sink"
         );
     }
 

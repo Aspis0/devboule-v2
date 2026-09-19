@@ -508,7 +508,13 @@ fn pull_live_agent_replay_events(
             // History is a record, not a position: it carries its own
             // generation and no transcript position, so neither reader's
             // cursor can be dragged into another generation's numbering.
-            let transcript_seq = (generation == pull.generation).then_some(seq);
+            let transcript_seq = if matches!(&event, SessionEvent::SessionManifest { .. }) {
+                // A stored manifest summarizes runtime state; its replay watermark
+                // is not the position of a transcript row.
+                None
+            } else {
+                (generation == pull.generation).then_some(seq)
+            };
             events.push(wire_event(
                 session_id,
                 pull,
@@ -2902,7 +2908,31 @@ mod tests {
             outcome.generation,
             outcome.live_agent_replay,
         );
-        let events = drain(&conn);
+        let envelopes = {
+            let mut envelopes = Vec::new();
+            loop {
+                let batch = conn.pull_events();
+                if batch.is_empty() {
+                    break envelopes;
+                }
+                for event in &batch {
+                    conn.event_sent(event);
+                }
+                envelopes.extend(batch.into_iter().map(|pending| pending.envelope));
+            }
+        };
+        let events = envelopes
+            .iter()
+            .map(|envelope| envelope.event.clone())
+            .collect::<Vec<_>>();
+        let manifest = envelopes
+            .iter()
+            .find(|envelope| matches!(envelope.event, SessionEvent::SessionManifest { .. }))
+            .expect("replay emits the stored manifest");
+        assert_eq!(
+            manifest.transcript_seq, None,
+            "a manifest summarizes runtime state; it is not a transcript position"
+        );
         assert!(events.iter().any(|event| {
             matches!(event, SessionEvent::SessionManifest { current_model_id, .. } if current_model_id.as_deref() == Some("claude-test"))
         }));
