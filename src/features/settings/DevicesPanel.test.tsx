@@ -380,7 +380,12 @@ describe("devices panel", () => {
   });
 
   it("shows a pairing code with its address and countdown, and Cancel just drops it", async () => {
+    // The fixtures below are built from NOW at module load, so the countdown
+    // reads 5:00 only while the clock still agrees with them. Freezing the
+    // timers alone pins whatever time the suite happened to reach; pin the
+    // clock to NOW so the assertion measures the component, not the machine.
     vi.useFakeTimers();
+    vi.setSystemTime(NOW);
     await renderPanel();
 
     await act(async () => {
