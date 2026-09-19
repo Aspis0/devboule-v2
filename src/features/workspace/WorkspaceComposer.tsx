@@ -13,7 +13,7 @@ const TEXTAREA_MAX_HEIGHT_PX = 160;
 interface WorkspaceComposerProps {
   streaming: boolean;
   disabled?: boolean;
-  disabledReason?: string;
+  disabledReason: string | null;
   availableCommands?: readonly WorkspaceCommand[];
   onSend: (text: string) => void;
   onStop?: () => void;
@@ -32,7 +32,7 @@ function commandQuery(input: string): string | null {
 export const WorkspaceComposer = memo(function WorkspaceComposer({
   streaming,
   disabled = false,
-  disabledReason = "This session is no longer available.",
+  disabledReason,
   availableCommands = [],
   onSend,
   onStop,
@@ -130,7 +130,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
         <div className="workspace-composer-bar">
           <div className="workspace-composer-controls">
             {controls}
-            {disabled ? <span className="workspace-composer-hint">{disabledReason}</span> : null}
+            {disabled && disabledReason !== null ? (
+              <span className="workspace-composer-hint">{disabledReason}</span>
+            ) : null}
           </div>
           {streaming && onStop ? (
             <button

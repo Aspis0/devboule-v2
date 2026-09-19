@@ -4,6 +4,7 @@ import { StrictMode, act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { PermissionRequest, Session, SessionEvent, SessionState } from "../../types/ipc";
+import type { AgentStatus } from "../../lib/agentSession";
 
 const channelHarness = vi.hoisted(() => ({
   emit: null as ((event: SessionEvent) => void) | null,
@@ -146,7 +147,7 @@ import {
   sessionSetModel,
 } from "../../lib/tauri";
 import { setPreferredEffort } from "../../lib/modelPrefs";
-import { AgentChatSurface, excerptRenderFor } from "./AgentChatSurface";
+import { AgentChatSurface, composerDisabledReason, excerptRenderFor } from "./AgentChatSurface";
 
 const LIVE_OBSERVED: SessionState = { type: "live", generation: 1 };
 
@@ -163,6 +164,36 @@ const MODES_MANIFEST: Extract<SessionEvent, { type: "session_manifest" }> = {
     ],
   },
 };
+
+describe("composerDisabledReason", () => {
+  it("covers every agent status and availability fact with one composer decision", () => {
+    const statuses: AgentStatus[] = ["initializing", "idle", "running", "error", "closed"];
+    const reasons = {
+      session: "This session is no longer available.",
+      daemon: "The agent daemon is not connected.",
+      connecting: "Connecting to the agent…",
+    };
+
+    for (const status of statuses) {
+      for (const osGone of [false, true]) {
+        for (const daemonGone of [false, true]) {
+          const reason = composerDisabledReason(osGone, daemonGone, status);
+          const expected =
+            osGone || status === "error" || status === "closed"
+              ? reasons.session
+              : daemonGone
+                ? reasons.daemon
+                : status === "initializing"
+                  ? reasons.connecting
+                  : null;
+
+          expect(reason !== null, `${status}/${osGone}/${daemonGone}`).toBe(expected !== null);
+          expect(reason, `${status}/${osGone}/${daemonGone}`).toBe(expected);
+        }
+      }
+    }
+  });
+});
 
 describe("AgentChatSurface", () => {
   let container: HTMLDivElement;

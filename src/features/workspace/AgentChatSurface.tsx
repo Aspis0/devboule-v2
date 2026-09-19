@@ -28,6 +28,7 @@ import type {
   AgentSubagent,
   AgentSubagentStatusCounts,
   AgentSubagentStatus,
+  AgentStatus,
 } from "../../lib/agentSession";
 import {
   groupToolCalls,
@@ -50,6 +51,28 @@ import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
+
+// One classifier owns both whether input is disabled and the sentence explaining it.
+export function composerDisabledReason(
+  osGone: boolean,
+  daemonGone: boolean,
+  status: AgentStatus,
+): string | null {
+  switch (status) {
+    case "error":
+    case "closed":
+      return "This session is no longer available.";
+    case "initializing":
+      if (osGone) return "This session is no longer available.";
+      if (daemonGone) return "The agent daemon is not connected.";
+      return "Connecting to the agent…";
+    case "idle":
+    case "running":
+      if (osGone) return "This session is no longer available.";
+      if (daemonGone) return "The agent daemon is not connected.";
+      return null;
+  }
+}
 
 interface AgentChatSurfaceProps {
   sessionId: string;
@@ -788,18 +811,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // so this memo recomputes whenever the transcript changes and can never
   // go stale; it only skips work on re-renders with identical items.
   const entries = useMemo(() => groupToolCalls(state.items), [state.items]);
-  const composerDisabled =
-    osGone || daemonGone || (state.status !== "idle" && state.status !== "running");
-  // The session's own terminal verdict outranks the transient daemon states:
-  // a gone session must be named as gone even while a reconnect is pending.
-  const sessionGone = osGone || state.status === "error" || state.status === "closed";
-  const disabledReason = sessionGone
-    ? "This session is no longer available."
-    : daemonGone
-      ? "The agent daemon is not connected."
-      : state.status === "initializing"
-        ? "Connecting to the agent…"
-        : "This session is no longer available.";
+  const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
+  const composerDisabled = disabledReason !== null;
   return (
     <div id={id} className="workspace-agent-shell" role="tabpanel" aria-label="Agent chat">
       <div className="workspace-agent-toolbar">
