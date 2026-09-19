@@ -1908,6 +1908,439 @@ fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
         .expect("close resumed ACP session");
 }
 
+/// Settles a SETUP fact (a stop's end marker landing) before the test's
+/// real assertions. Never used for the retraction itself: that property is
+/// measured by the single immediate read the app itself makes.
+fn wait_for_resumable(test: &AcpTest, id: &str, wanted: bool, what: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let row = test
+            .client
+            .sessions_list()
+            .expect("list sessions")
+            .into_iter()
+            .find(|listed| listed.id == id)
+            .unwrap_or_else(|| panic!("session {id} missing from sessions_list"));
+        if row.resumable == wanted {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "session {id} resumable stuck at {} (wanted {wanted}): {what}",
+            row.resumable
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The journal row's `peer_session_id` column, read through a **fresh**
+/// connection — the restart path's own way in — after forcing the
+/// asynchronous writer to drain.
+fn journal_peer_session_id(test: &AcpTest, session_id: &str) -> Option<String> {
+    test.client.journal_usage().expect("flush journal");
+    let connection = Connection::open(test._harness.paths.journal_file()).expect("open journal");
+    connection
+        .query_row(
+            "SELECT peer_session_id FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .expect("session row")
+}
+
+/// A stopped zero-turn session the stub still owns a handle for, ready for
+/// its resume to fail in the way the test's stub knob decides.
+fn stopped_zero_turn_session(test: &AcpTest) -> devboule_protocol::Session {
+    let session = test.create_session();
+    test.client
+        .session_attach(&session.id, None, Arc::new(|_| {}))
+        .expect("attach ACP session");
+    let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    test.client
+        .session_stop(&session.id)
+        .expect("stop ACP session");
+    wait_until_gone(pid);
+    wait_for_resumable(
+        test,
+        &session.id,
+        true,
+        "the defect precondition: the dead row still offers resume",
+    );
+    session
+}
+
+/// The field defect: a session created and never prompted offers Reopen, the
+/// far agent answers "I do not have this session", and the offer must then
+/// go. The daemon's own sentence comes back unchanged — what changes is that
+/// the row stops offering what cannot work.
+#[test]
+fn a_resume_the_far_agent_disowns_ends_the_offer() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_refusing_load();
+    let session = stopped_zero_turn_session(&test);
+
+    let error = test
+        .client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect_err("the far agent refuses the load");
+    match &error {
+        devboule_daemon::DaemonError::Handshake(wire) => {
+            // The sentence is byte for byte what the field measured (the
+            // answer names the session it lacks), and the code is the one the
+            // caller has always seen for this answer: the classification is
+            // the daemon's internal channel, never a wire statement about a
+            // row this daemon still has.
+            assert_eq!(wire.code, ErrorCode::Io);
+            assert!(
+                wire.message
+                    .contains("ACP request failed (-32002): Resource not found: stub-session"),
+                "the user-visible sentence must be unchanged, got: {}",
+                wire.message
+            );
+        }
+        other => panic!("expected the daemon's own ACP sentence, got {other:?}"),
+    }
+    // What the app does: ONE read, issued the instant the failing resume
+    // returns. A poll would prove an eventual retraction the UI can miss —
+    // the race is the defect, so the single read is the assertion.
+    //
+    // Road scope, plainly: this pins the dispatch-thread road — the one
+    // every real client rides — on a healthy queue, where the bounded rpc
+    // commits before the failing answer leaves. The saturated-queue road
+    // (the detached fallback, which marks first, before the end marker)
+    // cannot be forced from here without sabotaging the queue itself; its
+    // ordering is fixed in the arm's code, and the bounded write's failure
+    // is reported, never swallowed.
+    let row = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("the row the daemon still has");
+    assert!(
+        !row.resumable,
+        "one read, immediately after the failing resume, must already see the retraction"
+    );
+    assert_eq!(
+        row.peer_session_id.as_deref(),
+        Some("stub-session"),
+        "the handle is never destroyed: the refusal is recorded beside it, \
+         because evidence that approximates must not trigger the irreversible"
+    );
+}
+
+/// The classification is not "any failure clears": a load that never got an
+/// answer says nothing about the far session, so the handle and the offer
+/// stay exactly as they were.
+#[test]
+fn a_resume_failure_that_says_nothing_about_the_session_keeps_the_offer() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_exiting_on_load();
+    let session = stopped_zero_turn_session(&test);
+
+    test.client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect_err("the load gets no answer");
+    // Nothing was learned about the far session, so nothing was retracted:
+    // the same one immediate read the app fires sees the offer still standing.
+    let row = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("the row the daemon still has");
+    assert!(
+        row.resumable,
+        "a transport failure must keep the offer on the next read"
+    );
+    assert!(
+        row.peer_session_id.is_some(),
+        "a transport failure must keep the handle on the row"
+    );
+    // And the journal row itself, through a fresh connection after the write
+    // queue drains: the handle is still there.
+    assert!(
+        journal_peer_session_id(&test, &session.id).is_some(),
+        "a transport failure must not clear the handle"
+    );
+}
+
+/// The mark is a journal fact, not registry state, and it destroys nothing:
+/// a fresh read of the row — the restart path's own way in — finds the
+/// handle exactly where it was, with the refusal recorded beside it, and a
+/// restarted daemon reports the offer gone.
+#[test]
+fn a_disowned_handle_stays_retracted_across_a_restart() {
+    let _test_lock = lock_tests();
+    let mut test = AcpTest::new_refusing_load();
+    let session = stopped_zero_turn_session(&test);
+
+    assert!(
+        test.client
+            .session_resume(
+                Persistence {
+                    kind: PersistenceKind::Acp {
+                        handle: session.id.clone(),
+                    },
+                },
+                None,
+            )
+            .is_err(),
+        "the far agent refuses the load"
+    );
+
+    // Give the fallback write every chance to have landed, then insist the
+    // handle was never destroyed.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if journal_peer_session_id(&test, &session.id).is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the disown destroyed the handle instead of recording the refusal"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    test.restart();
+    let row = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("session row after restart");
+    assert!(
+        !row.resumable,
+        "the refusal must survive the restart: the offer stays gone"
+    );
+    assert_eq!(
+        row.peer_session_id.as_deref(),
+        Some("stub-session"),
+        "the handle survives the restart too"
+    );
+}
+
+/// A refusal is about a handle — and a successful resume of that very
+/// handle is the provider taking it back. The success clears the mark, so
+/// the offer returns when the session ends again; without the clear, a mark
+/// could hide a working session with no road left that could correct it,
+/// because only a resume can prove a handle good.
+#[test]
+fn a_successful_resume_clears_a_mark_for_the_handle_it_honoured() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_refusing_load_once();
+    let session = stopped_zero_turn_session(&test);
+    let persistence = Persistence {
+        kind: PersistenceKind::Acp {
+            handle: session.id.clone(),
+        },
+    };
+
+    // The first ask: refused, marked, and the one immediate read sees the
+    // offer gone.
+    let error = test
+        .client
+        .session_resume(persistence.clone(), None)
+        .expect_err("the first ask is refused");
+    match &error {
+        devboule_daemon::DaemonError::Handshake(wire) => assert_eq!(wire.code, ErrorCode::Io),
+        other => panic!("expected the daemon's own ACP sentence, got {other:?}"),
+    }
+    let marked = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("the row the daemon still has");
+    assert!(!marked.resumable, "the refusal hides the offer");
+
+    // The second ask: the provider honours the very handle it refused.
+    let resumed = test
+        .client
+        .session_resume(persistence, None)
+        .expect("the provider honours the handle on the second ask");
+    assert!(matches!(
+        resumed,
+        ResumeResult::Resumed { session: ref r }
+            if r.id == session.id
+                && matches!(r.state, devboule_protocol::SessionState::Live { generation: 3 })
+    ));
+
+    // End the session again and ask the roster question the app asks.
+    test.client
+        .session_attach(&session.id, None, Arc::new(|_| {}))
+        .expect("attach the resumed session");
+    let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    test.client
+        .session_stop(&session.id)
+        .expect("stop the resumed session");
+    wait_until_gone(pid);
+    // The stop's own bookkeeping (EOF cleanup, the end marker) settles
+    // asynchronously, and until it does the row legitimately reads live.
+    // The property under test is the verdict of the SETTLED row: the mark
+    // was already cleared when the successful resume returned.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let row = test
+            .client
+            .sessions_list()
+            .expect("list sessions")
+            .into_iter()
+            .find(|listed| listed.id == session.id)
+            .expect("the row the daemon still has");
+        if matches!(row.state, devboule_protocol::SessionState::Ended { .. }) {
+            assert!(
+                row.resumable,
+                "the honoured handle's refusal was stale: the offer returns"
+            );
+            assert_eq!(
+                row.peer_session_id.as_deref(),
+                Some("stub-session"),
+                "the handle was never destroyed"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the resumed session never settled to an ended row"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A second client that attaches during the spawn window hydrates a
+/// `Transcript` entry from the row as it stood BEFORE the mark — and the
+/// live map wins a roster read, so that entry would serve its stale
+/// `resumable` forever. The failing resume must retire that entry, so the
+/// next read comes from the journal that holds the mark.
+#[test]
+fn an_attach_that_raced_the_spawn_window_sees_the_mark() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_slow_refusing_load();
+    let session = stopped_zero_turn_session(&test);
+
+    let resumer = test._harness.client_named("resumer");
+    let racer = test._harness.client_named("racer");
+    let persistence = Persistence {
+        kind: PersistenceKind::Acp {
+            handle: session.id.clone(),
+        },
+    };
+    let resume_thread = std::thread::spawn(move || resumer.session_resume(persistence, None));
+    // Land inside the widened window: the resumed spawn is mid-handshake,
+    // the registry holds no entry for the id, so this attach hydrates one
+    // from the journal row as it stood before the mark existed.
+    std::thread::sleep(Duration::from_millis(700));
+    racer
+        .session_attach(&session.id, None, Arc::new(|_| {}))
+        .expect("the racing attach lands in the spawn window");
+    let result = resume_thread.join().expect("resume thread completes");
+    assert!(result.is_err(), "the far agent refuses the load");
+
+    // ONE read, the app's own: the window's stale entry must not serve the
+    // old verdict.
+    let row = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("the row the daemon still has");
+    assert!(
+        !row.resumable,
+        "the entry that raced the spawn window must not keep the offer standing"
+    );
+    // Road scope, plainly: on this tree the daemon dispatch serializes the
+    // window — the attach issued mid-window is processed after the mark — so
+    // this test pins the observable contract (a read after the failing
+    // resume is journal-fresh), and cannot by itself distinguish that
+    // ordering from the eviction that retires a stale entry. The eviction
+    // stays as structural defense for any window a future dispatch change
+    // could open.
+}
+
+/// The evidence standard: the code alone proves nothing. `-32002` is the ACP
+/// schema's word for ANY missed resource — this daemon's own host answers it
+/// for terminals and file reads — so an agent whose workspace directory is
+/// gone answers it about that directory while the far conversation is
+/// perfectly alive. Only an answer that names the session we asked to load
+/// may retract the handle.
+#[test]
+fn a_resource_miss_that_does_not_name_the_session_keeps_the_offer() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_refusing_load_other_resource();
+    let session = stopped_zero_turn_session(&test);
+
+    let error = test
+        .client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect_err("the agent refuses the load naming another resource");
+    match &error {
+        devboule_daemon::DaemonError::Handshake(wire) => {
+            assert_eq!(wire.code, ErrorCode::Io);
+            // The fixture echoes the request — session id included — beside
+            // the missed file: the false-positive direction the echo could
+            // take. The sentence the app reads is still the agent's own.
+            assert!(
+                wire.message.contains(
+                    "ACP request failed (-32002): Resource not found: file:///gone/workspace \
+                     (requested sessionId: stub-session)"
+                ),
+                "the user-visible sentence must be unchanged, got: {}",
+                wire.message
+            );
+        }
+        other => panic!("expected the daemon's own ACP sentence, got {other:?}"),
+    }
+    // One immediate read, the app's own: the offer and the handle stand,
+    // because nothing named the session as gone.
+    let row = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("the row the daemon still has");
+    assert!(
+        row.resumable,
+        "a resource miss that is not the session must keep the offer"
+    );
+    assert!(
+        row.peer_session_id.is_some(),
+        "a resource miss that is not the session must keep the handle"
+    );
+    assert!(
+        journal_peer_session_id(&test, &session.id).is_some(),
+        "the handle stays on the journal row"
+    );
+}
+
 #[test]
 fn acp_session_resume_does_not_leave_other_observer_silent() {
     let _test_lock = lock_tests();
@@ -2442,6 +2875,90 @@ impl AcpTest {
         Self::new_with_reject(&[], true)
     }
 
+    /// The stub answers the resume's `session/load` with the ACP
+    /// ResourceNotFound code naming the requested session — the field's own
+    /// "I do not have this session".
+    fn new_refusing_load() -> Self {
+        Self::new_with_options(
+            &["--refuse-load"],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+    }
+
+    /// The stub answers `session/load` with ResourceNotFound naming a
+    /// DIFFERENT resource (a gone workspace directory): the schema's generic
+    /// resource miss, with the far session possibly alive.
+    fn new_refusing_load_other_resource() -> Self {
+        Self::new_with_options(
+            &["--refuse-load-other"],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+    }
+
+    /// The stub delays its `session/load` answer long enough for a second
+    /// client's attach to land inside the spawn window, then refuses with
+    /// the field's disown.
+    fn new_slow_refusing_load() -> Self {
+        Self::new_with_options(
+            &["--refuse-load", "--delay-load-2000"],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+    }
+
+    /// The stub refuses the FIRST `session/load` and honours the second:
+    /// the mark a refusal leaves can then meet the resume that proves it
+    /// stale.
+    fn new_refusing_load_once() -> Self {
+        Self::new_with_options(
+            &["--refuse-load-once"],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+    }
+
+    /// The stub leaves without answering `session/load`: a transport failure
+    /// that says nothing about the far session.
+    fn new_exiting_on_load() -> Self {
+        Self::new_with_options(
+            &["--exit-on-load"],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+    }
+
     fn new_without_set_model_push() -> Self {
         Self::new_with_options(&[], false, true, false, false, false, false, false, false)
     }
@@ -2655,6 +3172,29 @@ impl AcpTest {
         if extra_args.contains(&"--reject-config-once") {
             std::env::set_var("DEVBOULE_STUB_REJECT_CONFIG_ONCE", "1");
             env_names.push("DEVBOULE_STUB_REJECT_CONFIG_ONCE");
+        }
+        if extra_args.contains(&"--refuse-load") {
+            std::env::set_var("DEVBOULE_STUB_REFUSE_LOAD", "1");
+            env_names.push("DEVBOULE_STUB_REFUSE_LOAD");
+        }
+        if extra_args.contains(&"--delay-load-2000") {
+            std::env::set_var("DEVBOULE_STUB_DELAY_LOAD_MS", "2000");
+            env_names.push("DEVBOULE_STUB_DELAY_LOAD_MS");
+        }
+        if extra_args.contains(&"--refuse-load-once") {
+            std::env::set_var(
+                "DEVBOULE_STUB_REFUSE_LOAD_ONCE",
+                observation_dir.join("refused once"),
+            );
+            env_names.push("DEVBOULE_STUB_REFUSE_LOAD_ONCE");
+        }
+        if extra_args.contains(&"--refuse-load-other") {
+            std::env::set_var("DEVBOULE_STUB_REFUSE_LOAD_OTHER", "1");
+            env_names.push("DEVBOULE_STUB_REFUSE_LOAD_OTHER");
+        }
+        if extra_args.contains(&"--exit-on-load") {
+            std::env::set_var("DEVBOULE_STUB_EXIT_ON_LOAD", "1");
+            env_names.push("DEVBOULE_STUB_EXIT_ON_LOAD");
         }
         if extra_args.contains(&"--hybrid-vendor-mismatch") {
             std::env::set_var("DEVBOULE_STUB_HYBRID_VENDOR_MISMATCH", "1");
@@ -5020,14 +5560,18 @@ fn a_resumed_session_does_not_re_inject_the_standing_instructions() {
         .session_send(&session.id, "second prompt")
         .expect("send the prompt after the resume");
 
-    // The turn completing is the delivery signal: the provider answered, so
-    // the prompt the daemon wrote it has been journaled and pushed. (The fresh
-    // attach replays the resumed generation, not the pre-resume transcript, so
-    // the first prompt never appears here — the last user message on this
-    // stream is the post-resume one.)
+    // Since `905d70b` a fresh attach replays the whole transcript across
+    // generations, pre-resume history included: this stream carries
+    // generation 1's "Always answer …\n\nfirst prompt" and generation 1's
+    // own `end_turn`, so neither a finished event nor a `last()` read can
+    // tell the live turn from the replay — which is exactly how this test
+    // used to pass and fail on the weather. The one event only the
+    // post-resume turn can supply is its own user message: no earlier
+    // generation ever contained "second prompt". Its arrival is the
+    // delivery signal.
     wait_for(&after, Duration::from_secs(45), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+            matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "second prompt")
         })
     });
     let prompts: Vec<String> = {
@@ -5040,13 +5584,23 @@ fn a_resumed_session_does_not_re_inject_the_standing_instructions() {
             })
             .collect()
     };
-    let post_resume = prompts
-        .last()
-        .expect("the post-resume prompt reaches the transcript");
+    // The property, checked against EVERY user message the stream holds,
+    // replayed or live, not against whichever landed last: the post-resume
+    // prompt is the caller's own text, exactly once, with no standing
+    // instructions and no separator re-attached.
     assert_eq!(
-        post_resume, "second prompt",
-        "the prompt a resumed session receives is the caller's own text: \
-         no standing instructions, no separator"
+        prompts
+            .iter()
+            .filter(|prompt| prompt.as_str() == "second prompt")
+            .count(),
+        1,
+        "the post-resume prompt reaches the transcript exactly once, as the caller sent it"
+    );
+    let re_composed = "Always answer in English and keep the diff small.\n\nsecond prompt";
+    assert!(
+        !prompts.iter().any(|prompt| prompt.as_str() == re_composed),
+        "the daemon must not prefix standing instructions onto a resumed session's prompt: {:?}",
+        prompts
     );
     test.client
         .session_close(&session.id)

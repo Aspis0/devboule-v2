@@ -146,4 +146,42 @@ describe("RecoveredSessionBar", () => {
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("pipe broke");
   });
+
+  it("asks for a roster refresh when the resume fails, and the offer yields to the read-only notice", async () => {
+    vi.mocked(sessionResume).mockRejectedValueOnce(
+      new Error("ACP request failed (-32002): Resource not found"),
+    );
+    const onResumeFailed = vi.fn();
+    // The refresh contract arrives with this change; the cast keeps the red
+    // runnable against the component that does not know the prop yet.
+    const props = {
+      session: recoveredSession(),
+      onReopened: vi.fn(),
+      onResumeFailed,
+    } as Parameters<typeof RecoveredSessionBar>[0];
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<RecoveredSessionBar {...props} />);
+    });
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="recovered-reopen-bar"] button',
+    );
+    if (button === null) throw new Error("Reopen button did not render");
+    await act(async () => button.click());
+
+    expect(onResumeFailed).toHaveBeenCalledTimes(1);
+
+    // The refresh lands: the daemon retracted the verdict, and the read-only
+    // notice takes the button's place.
+    await act(async () => {
+      root.render(
+        <RecoveredSessionBar
+          session={recoveredSession({ resumable: false })}
+          onReopened={vi.fn()}
+        />,
+      );
+    });
+    expect(container.querySelector('[data-testid="recovered-reopen-bar"]')).toBeNull();
+    expect(container.querySelector('[data-testid="recovered-unresumable"]')).not.toBeNull();
+  });
 });

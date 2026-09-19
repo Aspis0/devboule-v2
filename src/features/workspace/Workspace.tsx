@@ -411,6 +411,11 @@ export function Workspace({
     },
     [openSession],
   );
+  // A failed resume leaves the row's verdict changed on the daemon side; the
+  // bar must not keep its offer on the roster data this surface already held.
+  const handleResumeFailed = useCallback(() => {
+    void refreshSessions();
+  }, [refreshSessions]);
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
   const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
   const [providerPicker, setProviderPicker] = useState<ProviderInfo[] | null>(null);
@@ -1205,7 +1210,11 @@ export function Workspace({
 
         {selectedSessionId !== null ? (
           <>
-            <RecoveredSessionBar session={selectedSession} onReopened={handleReopenSession} />
+            <RecoveredSessionBar
+              session={selectedSession}
+              onReopened={handleReopenSession}
+              onResumeFailed={handleResumeFailed}
+            />
             {selectedSession != null && isAgentKind(selectedSession.kind) ? (
               <AgentChatSurface
                 key={selectedSessionId}

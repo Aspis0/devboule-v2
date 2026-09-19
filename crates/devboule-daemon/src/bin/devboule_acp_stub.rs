@@ -439,6 +439,84 @@ fn main() -> io::Result<()> {
                 emit_mcp_ready_if_configured(&mut stdout, &request)?;
             }
             "session/load" => {
+                // A slow load widens the spawn window deterministically: a
+                // second client's attach can land inside it.
+                if let Ok(delay) = std::env::var("DEVBOULE_STUB_DELAY_LOAD_MS") {
+                    if let Ok(delay) = delay.parse::<u64>() {
+                        std::thread::sleep(std::time::Duration::from_millis(delay));
+                    }
+                }
+                // The once-road: refuse the FIRST load and honour the
+                // second. The marker file is the memory, because every
+                // resume spawns a fresh stub process.
+                if let Ok(marker) = std::env::var("DEVBOULE_STUB_REFUSE_LOAD_ONCE") {
+                    if !std::path::Path::new(&marker).exists() {
+                        let _ = std::fs::write(&marker, "refused");
+                        let asked = request
+                            .pointer("/params/sessionId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("stub-session")
+                            .to_string();
+                        respond_error(
+                            &mut stdout,
+                            request.get("id").cloned(),
+                            json!({
+                                "code": -32002,
+                                "message": format!("Resource not found: {asked}")
+                            }),
+                        )?;
+                        continue;
+                    }
+                }
+                // The field's own answer: the ResourceNotFound code with the
+                // message naming the session that was asked for. The name is
+                // the evidence a conforming agent gives that the missing
+                // resource is the session itself.
+                if std::env::var_os("DEVBOULE_STUB_REFUSE_LOAD").is_some() {
+                    let asked = request
+                        .pointer("/params/sessionId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("stub-session")
+                        .to_string();
+                    respond_error(
+                        &mut stdout,
+                        request.get("id").cloned(),
+                        json!({"code": -32002, "message": format!("Resource not found: {asked}")}),
+                    )?;
+                    continue;
+                }
+                // The same code naming a DIFFERENT resource (a workspace
+                // directory that is gone) while echoing the request back —
+                // session id included, as agents that log their input do.
+                // The schema's generic resource miss names a file, not the
+                // session: the far session may be perfectly alive.
+                if std::env::var_os("DEVBOULE_STUB_REFUSE_LOAD_OTHER").is_some() {
+                    let asked = request
+                        .pointer("/params/sessionId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("stub-session")
+                        .to_string();
+                    respond_error(
+                        &mut stdout,
+                        request.get("id").cloned(),
+                        json!({
+                            "code": -32002,
+                            "message": format!(
+                                "Resource not found: file:///gone/workspace (requested sessionId: {asked})"
+                            ),
+                            "data": {
+                                "uri": "file:///gone/workspace",
+                                "request": {"sessionId": asked}
+                            }
+                        }),
+                    )?;
+                    continue;
+                }
+                // Leave without answering: the daemon's load read hits EOF, a
+                // transport failure that says nothing about the far session.
+                if std::env::var_os("DEVBOULE_STUB_EXIT_ON_LOAD").is_some() {
+                    return Ok(());
+                }
                 if config_mode {
                     let result = config_state
                         .clone()

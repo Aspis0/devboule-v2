@@ -549,14 +549,11 @@ impl DiagnosticsReport {
                 devboule_protocol::SessionKind::Pi => sessions.pi += 1,
                 devboule_protocol::SessionKind::Codex => sessions.codex += 1,
             }
-            // The verdict the row already carries, computed from the trait
-            // where the row was materialised — asked, never re-spelled.
-            if crate::session::session_resumable(
-                &session.kind,
-                session.provider.as_deref(),
-                session.peer_session_id.as_deref(),
-                session.state.is_live(),
-            ) {
+            // The verdict the row already carries, computed at
+            // materialisation from the trait with facts (like the recorded
+            // refusal) this wire frame does not repeat — read, never
+            // re-spelled from less information.
+            if session.resumable {
                 sessions.resumable += 1;
             }
         }
@@ -980,6 +977,9 @@ mod tests {
         ];
         source.sessions[3].provider = Some("grok".to_string());
         source.sessions[3].peer_session_id = Some("peer-4".to_string());
+        // The verdict travels on the wire frame, computed at materialisation;
+        // the report reads it.
+        source.sessions[3].resumable = true;
         let report = DiagnosticsReport::new(source);
         assert_eq!(report.sessions.total, 4);
         assert_eq!(report.sessions.live, 1);
@@ -1015,6 +1015,7 @@ mod tests {
         let mut resumable_claude = session("s.1", SessionKind::Claude, recovered(), "one");
         resumable_claude.provider = Some("claude".to_string());
         resumable_claude.peer_session_id = Some("peer-1".to_string());
+        resumable_claude.resumable = true;
         let mut live_claude = session(
             "s.2",
             SessionKind::Claude,

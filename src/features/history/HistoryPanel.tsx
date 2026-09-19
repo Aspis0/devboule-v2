@@ -144,16 +144,23 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
             setActionError(
               result.type === "failed" ? result.message : "This session does not support resume.",
             );
+            // The verdict this row's button rendered may have just been
+            // retracted on the daemon side; re-read the roster so the offer
+            // cannot outlive it.
+            refreshSessions(false);
           }
         } catch (cause) {
-          if (mountedRef.current) setActionError(reasonFromCause(cause));
+          if (mountedRef.current) {
+            setActionError(reasonFromCause(cause));
+            refreshSessions(false);
+          }
         } finally {
           resumeInFlightRef.current = null;
           if (mountedRef.current) setResumingId(null);
         }
       })();
     },
-    [onReopen],
+    [onReopen, refreshSessions],
   );
 
   const usageError = usageRequest.state.status === "error" ? usageRequest.state.message : null;

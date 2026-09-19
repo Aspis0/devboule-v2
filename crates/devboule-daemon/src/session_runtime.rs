@@ -3176,6 +3176,7 @@ mod tests {
                 trimmed_bytes: 0,
                 reaped: false,
                 peer_session_id: None,
+                disowned_peer_session_id: None,
                 origin: devboule_protocol::SessionOrigin::local(),
                 // The row this test reattaches carries no name and no parent:
                 // neither is what the notice path is about.

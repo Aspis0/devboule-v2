@@ -51,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 13;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 14;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -247,6 +247,21 @@ pub struct SessionRecord {
     pub reaped: bool,
     /// Provider-side session id used by a future resume/load handshake.
     pub peer_session_id: Option<String>,
+    /// The handle a provider refused, recorded — never destroyed. Evidence
+    /// for a refusal is approximate (a locked directory reads like a deleted
+    /// conversation; an echoed request can wear a resource miss), so the act
+    /// it triggers must be reversible: the handle stays, this column names
+    /// the refusal, and a later announce of a different handle clears it.
+    /// NULL says nothing happened; a value here is a fact learned from the
+    /// provider about the handle it names.
+    pub disowned_peer_session_id: Option<String>,
+    /// The resume gate (`resume_handle`) deliberately does NOT consult this
+    /// column, and that is the design, not an oversight: the evidence for a
+    /// refusal is approximate, so the mark hides an offer without forbidding
+    /// the act. It is the road by which a wrong mark gets cured — a retry
+    /// that works clears it from the resume's success arm — and a mark that
+    /// both hid the button and refused the call would make a false positive
+    /// permanent, which is exactly what this mechanism exists to avoid.
     /// Who asked for this session (§8 R2). Written once, by the create that
     /// made the row; read by the peer gate and the permission card's
     /// provenance line. Every row that predates v9 is `local`.
@@ -504,13 +519,15 @@ impl SessionRecord {
             unattended: self.unattended_state,
             labels: self.labels.clone(),
             // The verdict the app renders: dead process, admitted family,
-            // both columns present. Computed here, from the trait, so the
-            // wire never re-spells it.
+            // both columns present, and the handle not being the one a
+            // provider refused. Computed here, from the trait, so the wire
+            // never re-spells it.
             resumable: crate::session::session_resumable(
                 &self.kind,
                 self.provider.as_deref(),
                 self.peer_session_id.as_deref(),
                 is_live,
+                self.disowned_peer_session_id.as_deref(),
             ),
         }
     }
@@ -701,6 +718,22 @@ enum JournalCmd {
     SetPeerSessionId {
         session_id: String,
         peer_session_id: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    /// The resume road's disown mark: the provider refused this handle.
+    /// `expected` names the refused handle, so a concurrent respawn's NEWER
+    /// handle is never silenced; the refused handle itself is never
+    /// destroyed.
+    MarkPeerSessionDisowned {
+        session_id: String,
+        expected: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    /// The success road's clear: the provider honoured `handle`, so a
+    /// refusal recorded against it is stale.
+    ClearPeerSessionDisown {
+        session_id: String,
+        handle: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
     /// A `devboule_set_agent_profile` move's recording: the child's profile
@@ -1056,6 +1089,57 @@ impl Journal {
         self.rpc(|reply| JournalCmd::SetPeerSessionId {
             session_id: session_id.to_string(),
             peer_session_id: peer_session_id.to_string(),
+            reply,
+        })
+    }
+
+    /// The failed-resume road's disown mark, issued from the dispatch thread:
+    /// the rpc returns only after the write is committed, so any roster read
+    /// issued after the failing resume's answer is behind it. `expected` is
+    /// the handle the resume tried to load; a row that already carries a
+    /// different handle keeps it and stays unmarked.
+    pub fn mark_peer_session_disowned(
+        &self,
+        session_id: &str,
+        expected: &str,
+    ) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::MarkPeerSessionDisowned {
+            session_id: session_id.to_string(),
+            expected: expected.to_string(),
+            reply,
+        })
+    }
+
+    /// The mark's fallback for a saturated queue, on the failed resume's
+    /// throwaway thread: it waits for queue space like `mark_ended_blocking`
+    /// instead of timing out and leaving the defect's offer standing. It runs
+    /// BEFORE the end marker on that thread, so the fallback — the road that
+    /// matters exactly when the queue is slow — is not stuck behind an
+    /// unbounded wait. Both roads write the same idempotent mark.
+    pub fn mark_peer_session_disowned_blocking(
+        &self,
+        session_id: &str,
+        expected: &str,
+    ) -> Result<(), JournalError> {
+        self.rpc_until_stopped(|reply| JournalCmd::MarkPeerSessionDisowned {
+            session_id: session_id.to_string(),
+            expected: expected.to_string(),
+            reply,
+        })
+    }
+
+    /// The successful resume's clear, issued from the dispatch thread beside
+    /// the health recording: the provider honoured `handle`, so a refusal
+    /// recorded against it is stale and the offer returns on its own when
+    /// the session ends.
+    pub fn clear_peer_session_disown(
+        &self,
+        session_id: &str,
+        handle: &str,
+    ) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::ClearPeerSessionDisown {
+            session_id: session_id.to_string(),
+            handle: handle.to_string(),
             reply,
         })
     }
@@ -1758,10 +1842,56 @@ fn journal_loop(
                 reply,
             } => {
                 let result = set_peer_session_id(&conn, &session_id, &peer_session_id);
+                match &result {
+                    Err(error) => on_write_error(error),
+                    Ok(true) => {
+                        // The handle and its recorded refusal are the roster's
+                        // resume verdict: a changed handle, or a refusal
+                        // cleared by an announce of a different handle, must
+                        // reach the next reader — the same global signal as
+                        // every other roster-visible row write (the cached
+                        // roster is keyed by this revision). An unchanged
+                        // write — the announce-time writers re-persist the
+                        // same id on every frame — changed nothing the roster
+                        // renders, so it costs no rebuild.
+                        session_set_revision.fetch_add(1, Ordering::AcqRel);
+                    }
+                    Ok(false) => {}
+                }
+                let _ = reply.send(result.map(|_| ()));
+            }
+            JournalCmd::MarkPeerSessionDisowned {
+                session_id,
+                expected,
+                reply,
+            } => {
+                let result = mark_peer_session_disowned(&conn, &session_id, &expected);
                 if let Err(error) = &result {
                     on_write_error(error);
                 }
-                let _ = reply.send(result);
+                if matches!(&result, Ok(true)) {
+                    // Same rule as the set: the revision moves only when the
+                    // roster's verdict moved. A mark that matched nothing —
+                    // the handle already moved on, or the row is gone —
+                    // already holds its postcondition.
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
+                }
+                let _ = reply.send(result.map(|_| ()));
+            }
+            JournalCmd::ClearPeerSessionDisown {
+                session_id,
+                handle,
+                reply,
+            } => {
+                let result = clear_peer_session_disown(&conn, &session_id, &handle);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                if matches!(&result, Ok(true)) {
+                    // The verdict moved: a marked row just became unmarked.
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
+                }
+                let _ = reply.send(result.map(|_| ()));
             }
             JournalCmd::SetAgentProfile {
                 session_id,
@@ -2379,7 +2509,7 @@ fn on_write_error(error: &JournalError) {
     eprintln!("journal write failed: {error}");
 }
 
-/// The session row's insert — 33 columns, 32 bindings plus the literal `0`
+/// The session row's insert — 34 columns, 33 bindings plus the literal `0`
 /// for `unsnapshotted_bytes` — shared by the birth insert and the
 /// update-or-insert upsert, so neither can grow a column the other does not
 /// write.
@@ -2389,8 +2519,8 @@ const SESSION_INSERT: &str = "INSERT INTO sessions (
     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
     reaped, peer_session_id, provider, origin_kind, origin_device, origin_role,
     display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-    overlay, depth
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)";
+    overlay, depth, disowned_peer_session_id
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)";
 
 /// The upsert's conflict clause: an existing id is *updated*, with the
 /// never-downward ratchets and the birth-fact protections below.
@@ -2436,7 +2566,12 @@ const SESSION_UPSERT_CLAUSE: &str = "
         -- upserts carry NULL (their records never re-derive them), so the
         -- birth values stay.
         overlay = COALESCE(excluded.overlay, sessions.overlay),
-        depth = COALESCE(excluded.depth, sessions.depth)";
+        depth = COALESCE(excluded.depth, sessions.depth),
+        -- The disown mark is the daemon's own fact about the provider's
+        -- answer. Later upserts never carry it (their records are wire
+        -- metadata), so the recorded refusal stays until the announce road
+        -- clears it.
+        disowned_peer_session_id = COALESCE(excluded.disowned_peer_session_id, sessions.disowned_peer_session_id)";
 
 fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), JournalError> {
     write_session_row(conn, record, true)
@@ -2500,6 +2635,7 @@ fn write_session_row(
             labels,
             overlay,
             record.depth.map(|depth| depth as i64),
+            record.disowned_peer_session_id,
         ],
     )
     .map_err(|error| {
@@ -2853,20 +2989,90 @@ fn mark_closed(conn: &Connection, session_id: &str) -> Result<(), JournalError> 
     }
 }
 
+/// The row's handle for a future resume/load handshake. Returns whether the
+/// stored state changed: the roster revision may only churn when the
+/// roster-visible verdict actually moved, and a missing row stays the error
+/// it has always been. Announcing a handle that differs from the recorded
+/// refusal also clears that refusal — it was about a handle that no longer
+/// applies, and it must not silence the new one.
 fn set_peer_session_id(
     conn: &Connection,
     session_id: &str,
     peer_session_id: &str,
-) -> Result<(), JournalError> {
+) -> Result<bool, JournalError> {
+    // Row presence and column value are two different None-s: a row whose
+    // handle was never set (NULL) is the normal announce-time write, and
+    // only a MISSING row is the error it has always been.
+    let (current, disowned): (Option<String>, Option<String>) = match conn.query_row(
+        "SELECT peer_session_id, disowned_peer_session_id FROM sessions WHERE id = ?1",
+        [session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ) {
+        Ok(value) => value,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(JournalError::SessionNotFound),
+        Err(error) => return Err(error.into()),
+    };
+    // `current` is None for a row whose handle was never set (NULL) — that
+    // is the normal announce-time write — never for a missing row, which the
+    // no-rows arm above already refused.
+    let handle_changed = current.as_deref() != Some(peer_session_id);
+    let mark_cleared = disowned.is_some() && disowned.as_deref() != Some(peer_session_id);
+    if !handle_changed && !mark_cleared {
+        return Ok(false);
+    }
     let n = conn.execute(
-        "UPDATE sessions SET peer_session_id = ?1, updated_at_ms = ?2 WHERE id = ?3",
+        "UPDATE sessions SET peer_session_id = ?1,
+                disowned_peer_session_id = CASE
+                    WHEN disowned_peer_session_id IS NOT NULL AND disowned_peer_session_id <> ?1
+                    THEN NULL ELSE disowned_peer_session_id END,
+                updated_at_ms = ?2
+         WHERE id = ?3",
         params![peer_session_id, now_ms() as i64, session_id],
     )?;
     if n == 0 {
         Err(JournalError::SessionNotFound)
     } else {
-        Ok(())
+        Ok(true)
     }
+}
+
+/// The disown mark: the provider refused this exact handle, recorded beside
+/// it — `peer_session_id` itself is never destroyed, because the evidence
+/// for a refusal is approximate and the handle is the only route back to the
+/// conversation. Conditional on the row still carrying the refused handle, so
+/// a concurrent respawn's newer handle is not retroactively silenced, and
+/// idempotent, so the ordered road and its fallback can both write. Zero rows
+/// — the handle moved on, or the row is gone — is the postcondition already
+/// holding, never an error.
+fn mark_peer_session_disowned(
+    conn: &Connection,
+    session_id: &str,
+    expected: &str,
+) -> Result<bool, JournalError> {
+    let n = conn.execute(
+        "UPDATE sessions SET disowned_peer_session_id = ?1, updated_at_ms = ?2
+         WHERE id = ?3 AND peer_session_id = ?1
+           AND (disowned_peer_session_id IS NULL OR disowned_peer_session_id <> ?1)",
+        params![expected, now_ms() as i64, session_id],
+    )?;
+    Ok(n > 0)
+}
+
+/// The success road's clear: the provider honoured this exact handle, so a
+/// refusal recorded against it is stale and must stop hiding the offer. A
+/// mark about a different handle stays — it is not this resume's to judge.
+/// Zero rows (no such mark, or no row) is already the postcondition.
+fn clear_peer_session_disown(
+    conn: &Connection,
+    session_id: &str,
+    handle: &str,
+) -> Result<bool, JournalError> {
+    let n = conn.execute(
+        "UPDATE sessions SET disowned_peer_session_id = NULL, updated_at_ms = ?2
+         WHERE id = ?3 AND disowned_peer_session_id = ?1",
+        params![handle, now_ms() as i64, session_id],
+    )?;
+    Ok(n > 0)
 }
 
 /// The row half of a `devboule_set_agent_profile` move — see
@@ -3124,6 +3330,8 @@ pub fn new_session_record(
         // No depth either: the birth stamps its own, and a row that predates
         // the column resumes at the closed end of the cap.
         depth: None,
+        // No refusal recorded: a birth has heard nothing from any provider.
+        disowned_peer_session_id: None,
     }
 }
 
@@ -5291,6 +5499,129 @@ mod tests {
         assert_eq!(
             after_refusal, before_refusal,
             "a refusal changes no roster, so it must not bump"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The handle column's writers, in sequence on one row — these are
+    /// sequential rules, exercised one after another; nothing here claims an
+    /// interleaving. The announce persists a changed handle and bumps the
+    /// roster revision; a same-value announce changes nothing and costs no
+    /// rebuild; the disown mark records a refusal beside the handle WITHOUT
+    /// destroying it, only while the row still carries the handle it names;
+    /// and an announce of a DIFFERENT handle clears the mark, because a
+    /// refusal about a retired handle must not silence the fresh one.
+    #[test]
+    fn peer_handle_announce_and_disown_mark_rules_in_sequence() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let mut record = sample_session("s.peer.handle");
+        // The verdict under test needs a family the resume road admits.
+        record.kind = SessionKind::Acp;
+        record.provider = Some("stub".to_string());
+        journal.create_session(record).expect("birth lands");
+        let before = journal.session_set_revision();
+
+        // First announce: NULL -> value is a change, and it bumps.
+        journal
+            .set_peer_session_id("s.peer.handle", "peer-1")
+            .expect("first announce lands");
+        assert!(
+            journal.session_set_revision() > before,
+            "a changed handle must bump the roster revision"
+        );
+        let after_set = journal.session_set_revision();
+
+        // The announce-time writers re-persist the same id on every frame.
+        journal
+            .set_peer_session_id("s.peer.handle", "peer-1")
+            .expect("same-value announce lands");
+        assert_eq!(
+            journal.session_set_revision(),
+            after_set,
+            "an unchanged write changed nothing the roster renders"
+        );
+
+        // The mark names the handle that failed to load. A different
+        // expected handle matches nothing and records nothing.
+        journal
+            .mark_peer_session_disowned("s.peer.handle", "peer-other")
+            .expect("a mark about another handle is a no-op, not an error");
+        assert_eq!(
+            journal.session_set_revision(),
+            after_set,
+            "a no-op mark must not bump"
+        );
+
+        // The matching mark lands — beside the handle, never in its place.
+        journal
+            .mark_peer_session_disowned("s.peer.handle", "peer-1")
+            .expect("the matching mark lands");
+        assert!(
+            journal.session_set_revision() > after_set,
+            "a real mark must bump the roster revision"
+        );
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|record| record.id == "s.peer.handle")
+            .expect("row");
+        assert_eq!(
+            row.peer_session_id.as_deref(),
+            Some("peer-1"),
+            "the refused handle is never destroyed"
+        );
+        assert_eq!(
+            row.disowned_peer_session_id.as_deref(),
+            Some("peer-1"),
+            "the refusal is recorded"
+        );
+        assert!(
+            !row.to_session().resumable,
+            "a row whose handle was refused does not offer the refused resume"
+        );
+
+        // Idempotent: the same refusal twice writes once.
+        let after_mark = journal.session_set_revision();
+        journal
+            .mark_peer_session_disowned("s.peer.handle", "peer-1")
+            .expect("the repeat mark is a no-op");
+        assert_eq!(
+            journal.session_set_revision(),
+            after_mark,
+            "a repeated mark changed nothing"
+        );
+
+        // A fresh handle announced after the refusal clears it — the refusal
+        // was about a handle that no longer applies — and the offer returns
+        // on its own. This is what makes the mechanism reversible.
+        journal
+            .set_peer_session_id("s.peer.handle", "peer-2")
+            .expect("the fresh announce lands");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|record| record.id == "s.peer.handle")
+            .expect("row");
+        assert_eq!(
+            row.disowned_peer_session_id, None,
+            "the mark must not silence a handle it is not about"
+        );
+        assert!(
+            row.to_session().resumable,
+            "a fresh handle restores the offer by itself"
+        );
+
+        // A missing row stays the error it has always been.
+        let missing = journal
+            .set_peer_session_id("s.peer.absent", "peer-1")
+            .expect_err("a missing row is an error");
+        assert!(
+            matches!(missing, JournalError::SessionNotFound),
+            "missing row must read as SessionNotFound: {missing:?}"
         );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);

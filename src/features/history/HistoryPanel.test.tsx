@@ -276,6 +276,33 @@ describe("HistoryPanel", () => {
     expect(reasonFromCause).toHaveBeenCalledWith(cause);
   });
 
+  it("re-reads the roster when a resume fails, so the offer cannot outlive the verdict", async () => {
+    const cause = { code: "io", message: "ACP request failed (-32002): Resource not found" };
+    vi.mocked(sessionResume).mockRejectedValueOnce(cause);
+    const usage = baseUsage();
+    usage.perSession = [usage.perSession[1]];
+    await renderPanel(usage, [resumableSession("session-review")]);
+    expect(sessionsList).toHaveBeenCalledTimes(1);
+
+    // The refreshed roster carries the daemon's retraction.
+    vi.mocked(sessionsList).mockResolvedValueOnce([
+      { ...resumableSession("session-review"), resumable: false },
+    ]);
+    const reopen = container.querySelector<HTMLButtonElement>(".history-reopen-action");
+    if (!reopen) throw new Error("reopen control did not render");
+    await act(async () => reopen.click());
+    await act(async () => undefined);
+
+    try {
+      expect(sessionsList).toHaveBeenCalledTimes(2);
+      expect(container.querySelector(".history-reopen-action")).toBeNull();
+    } finally {
+      // This test's refresh value is queued behind a call only the production
+      // makes; reset instead of leaving the queue to the next test.
+      vi.mocked(sessionsList).mockReset();
+    }
+  });
+
   it("ignores a second Reopen click while resume is in flight", async () => {
     let resolveResume: ((result: ResumeResult) => void) | undefined;
     vi.mocked(sessionResume).mockReturnValue(

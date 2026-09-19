@@ -14,7 +14,7 @@ mod common;
 use std::time::Duration;
 
 use devboule_protocol::{
-    Persistence, PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionState,
+    ErrorCode, Persistence, PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionState,
 };
 use rusqlite::Connection;
 
@@ -174,11 +174,21 @@ fn claude_resume_after_daemon_death_reuses_the_row() {
     client
         .session_send(&session.id, "FOLLOW-UP")
         .expect("prompt after resume");
+    // `905d70b` makes this attach replay generation 1, whose own
+    // `AgentFinished` satisfies any finished-wait instantly — the wait below
+    // once passed on that replay and then read the console before the live
+    // child had spoken. The live turn's answer is the only event that can
+    // carry this generation's echo of the caller's own text: generation 1's
+    // echo quoted "PRIME".
     common::wait_for(
         &events,
         Duration::from_secs(15),
         "second answer",
-        is_finished,
+        |events| {
+            events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text.contains("STUB-ECHO:FOLLOW-UP"))
+        })
+        },
     );
     let console = std::fs::read_to_string(&console_file).expect("stub console");
     assert!(console.contains("FOLLOW-UP"), "the rebound child answers");
@@ -306,6 +316,196 @@ fn claude_resume_refuses_a_deleted_history_by_name() {
     assert!(
         message.contains(peer.as_str()),
         "the refusal names the conversation: {message}"
+    );
+    let _ = std::fs::remove_dir_all(&observation);
+}
+
+/// The strongest evidence there is: the daemon itself confirmed, from its
+/// own filesystem, that the conversation's file is gone — strictly stronger
+/// than an agent's word. So this family retracts too, and its wire answer
+/// stays byte-identical to the refusal it has always given.
+#[test]
+fn claude_resume_of_a_deleted_history_ends_the_offer() {
+    let _test_lock = common::lock_tests();
+    let observation =
+        std::env::temp_dir().join(format!("devboule-claude-resume-{}-4", std::process::id()));
+    std::fs::create_dir_all(&observation).expect("observation dir");
+    let argv_file = observation.join("argv.txt");
+    let console_file = observation.join("console.txt");
+    let home = observation.join("home");
+    std::fs::create_dir_all(&home).expect("fake home");
+    let _env = common::use_stub_cli(&argv_file, &console_file, &home);
+
+    let mut harness = common::Harness::spawn();
+    let client = harness.client();
+    let session = client
+        .session_create(None, SessionKind::Claude, None)
+        .expect("create Claude session");
+    let (events, handler) = common::collect_events();
+    client
+        .session_attach(&session.id, None, handler)
+        .expect("attach Claude session");
+    common::wait_for(&events, Duration::from_secs(15), "manifest", is_manifest);
+    let peer = wait_peer(&client, &session.id);
+
+    harness.restart();
+    let client = harness.client_named("restarted");
+    let precondition = client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("recovered Claude session in the roster");
+    assert!(
+        precondition.resumable,
+        "the dead row with its persisted handle offers resume"
+    );
+    // The human deleted the provider's file: the daemon can prove there is
+    // nothing to resume.
+    let projects = home.join(".claude").join("projects");
+    let mut deleted = false;
+    for slug in std::fs::read_dir(&projects).expect("projects dir") {
+        let candidate = slug.expect("slug dir").path().join(format!("{peer}.jsonl"));
+        if candidate.is_file() {
+            std::fs::remove_file(&candidate).expect("delete history");
+            deleted = true;
+        }
+    }
+    assert!(deleted, "the stub must have filed a history to delete");
+
+    let error = client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Claude {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect_err("a deleted history must refuse");
+    match &error {
+        devboule_daemon::DaemonError::Handshake(wire) => {
+            // The app's answer is byte-identical to what this refusal has
+            // always been: the classification is internal only.
+            assert_eq!(wire.code, ErrorCode::InvalidRequest);
+            assert!(
+                wire.message.contains("has no history file"),
+                "the sentence is the one the field saw: {}",
+                wire.message
+            );
+            assert!(
+                wire.message.contains(peer.as_str()),
+                "the refusal names the conversation: {}",
+                wire.message
+            );
+        }
+        other => panic!("expected the daemon's own refusal, got {other:?}"),
+    }
+    // One read, issued the instant the failing resume returns: the offer is
+    // gone.
+    let row = client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("the row the daemon still has");
+    assert!(
+        !row.resumable,
+        "a positively absent history must end the offer on the next read"
+    );
+    let _ = std::fs::remove_dir_all(&observation);
+}
+
+/// A lookup that could not happen is not a refusal: an antivirus or a backup
+/// tool holding the projects directory for a moment reads as an IO error,
+/// and "I could not look" says nothing about the conversation. The offer
+/// stays, the handle stays, and the wire answer is an honest failure — never
+/// the disown.
+#[test]
+fn claude_resume_of_an_unreadable_history_keeps_the_offer() {
+    let _test_lock = common::lock_tests();
+    let observation =
+        std::env::temp_dir().join(format!("devboule-claude-resume-{}-5", std::process::id()));
+    std::fs::create_dir_all(&observation).expect("observation dir");
+    let argv_file = observation.join("argv.txt");
+    let console_file = observation.join("console.txt");
+    let home = observation.join("home");
+    std::fs::create_dir_all(&home).expect("fake home");
+    let _env = common::use_stub_cli(&argv_file, &console_file, &home);
+
+    let mut harness = common::Harness::spawn();
+    let client = harness.client();
+    let session = client
+        .session_create(None, SessionKind::Claude, None)
+        .expect("create Claude session");
+    let (events, handler) = common::collect_events();
+    client
+        .session_attach(&session.id, None, handler)
+        .expect("attach Claude session");
+    common::wait_for(&events, Duration::from_secs(15), "manifest", is_manifest);
+    let peer = wait_peer(&client, &session.id);
+
+    harness.restart();
+    let client = harness.client_named("restarted");
+    let precondition = client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("recovered Claude session in the roster");
+    assert!(
+        precondition.resumable,
+        "the dead row with its persisted handle offers resume"
+    );
+
+    // The lookup cannot happen: the projects path is a regular file now.
+    let claude_dir = home.join(".claude");
+    std::fs::remove_dir_all(&claude_dir).expect("drop the history tree");
+    std::fs::create_dir_all(&claude_dir).expect("recreate .claude");
+    std::fs::write(claude_dir.join("projects"), "not a directory").expect("block the lookup");
+
+    let error = client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Claude {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect_err("a failed lookup fails the resume");
+    match &error {
+        devboule_daemon::DaemonError::Handshake(wire) => {
+            assert_eq!(
+                wire.code,
+                ErrorCode::Io,
+                "a lookup that could not happen is an IO failure, not a refusal: {}",
+                wire.message
+            );
+            assert!(
+                wire.message
+                    .contains("Could not look up the Claude conversation"),
+                "the sentence says the daemon could not look, got: {}",
+                wire.message
+            );
+        }
+        other => panic!("expected the daemon's own failure, got {other:?}"),
+    }
+    // One immediate read, the app's own: the offer and the handle stand.
+    let row = client
+        .sessions_list()
+        .expect("list sessions")
+        .into_iter()
+        .find(|listed| listed.id == session.id)
+        .expect("the row the daemon still has");
+    assert!(
+        row.resumable,
+        "a lookup that could not happen must keep the offer"
+    );
+    assert_eq!(
+        row.peer_session_id.as_deref(),
+        Some(peer.as_str()),
+        "the handle stays on the row"
     );
     let _ = std::fs::remove_dir_all(&observation);
 }

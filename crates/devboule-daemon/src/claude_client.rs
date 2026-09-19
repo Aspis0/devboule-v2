@@ -387,27 +387,54 @@ fn valid_peer_session_id(peer_session_id: &str) -> bool {
 ///
 /// `home` is a parameter rather than read here so tests pin the rule without
 /// moving the process environment.
-fn find_claude_history(home: &Path, cwd: &Path, peer_session_id: &str) -> Option<PathBuf> {
+/// What one lookup of the conversation file established. Only [`Absent`]
+/// refuses: the naming rule or the directory itself said the file is not
+/// there. [`Unreadable`] is a lookup that could not happen — a locked or
+/// half-taken directory, an antivirus moment — and says NOTHING about the
+/// conversation, so it must never feed the disown mark: the refusal it would
+/// trigger is not reversible, and the lookup it rests on was never made.
+enum ClaudeHistoryLookup {
+    /// The file is there. (The lookup used to return the path; no caller
+    /// ever read it — the `--resume` argv carries the id, not the path.)
+    Found,
+    Absent,
+    Unreadable(std::io::Error),
+}
+
+fn find_claude_history(home: &Path, cwd: &Path, peer_session_id: &str) -> ClaudeHistoryLookup {
     if !valid_peer_session_id(peer_session_id) {
-        return None;
+        // The naming rule cannot produce a file name for this id, so under
+        // the rule the daemon and the CLI share, the file does not exist:
+        // looked, and not there.
+        return ClaudeHistoryLookup::Absent;
     }
     let projects = home.join(".claude").join("projects");
     let file = format!("{peer_session_id}.jsonl");
     let exact = projects.join(claude_projects_slug(cwd)).join(&file);
     if exact.is_file() {
-        return Some(exact);
+        return ClaudeHistoryLookup::Found;
     }
-    let Ok(siblings) = std::fs::read_dir(&projects) else {
-        return None;
+    let siblings = match std::fs::read_dir(&projects) {
+        Ok(siblings) => siblings,
+        Err(error) => return ClaudeHistoryLookup::Unreadable(error),
     };
-    siblings.filter_map(Result::ok).find_map(|sibling| {
-        let candidate = sibling.path().join(&file);
-        candidate.is_file().then_some(candidate)
-    })
+    if siblings
+        .filter_map(Result::ok)
+        .any(|sibling| sibling.path().join(&file).is_file())
+    {
+        return ClaudeHistoryLookup::Found;
+    }
+    ClaudeHistoryLookup::Absent
 }
 
 /// The refusal when there is nothing to resume: it names the conversation
-/// and the file's expected place, not a generic spawn error.
+/// and the file's expected place, not a generic spawn error. The code is
+/// the resume road's **internal** disown sentinel — the daemon has
+/// positively confirmed, from its own filesystem, that there is nothing to
+/// resume, which is stronger evidence than any agent's answer (ACP raises
+/// the same sentinel for its confirmed disowns). The resume arm rewrites it
+/// to the wire's `InvalidRequest` before the caller sees it: the sentence
+/// below is what the app has always read.
 fn missing_history_error(peer_session_id: &str, cwd: &Path, home: &Path) -> WireError {
     let expected = home
         .join(".claude")
@@ -415,7 +442,7 @@ fn missing_history_error(peer_session_id: &str, cwd: &Path, home: &Path) -> Wire
         .join(claude_projects_slug(cwd))
         .join(format!("{peer_session_id}.jsonl"));
     WireError::new(
-        ErrorCode::InvalidRequest,
+        ErrorCode::SessionNotFound,
         format!(
             "Claude conversation '{peer_session_id}' has no history file (expected at {}): it was deleted or rotated, so there is nothing to resume.",
             expected.to_string_lossy()
@@ -485,8 +512,23 @@ pub(super) fn spawn_process_resuming(
             ),
         )
     })?;
-    if find_claude_history(&home, &command.cwd, &peer_session_id).is_none() {
-        return Err(missing_history_error(&peer_session_id, &command.cwd, &home));
+    match find_claude_history(&home, &command.cwd, &peer_session_id) {
+        ClaudeHistoryLookup::Found => {}
+        ClaudeHistoryLookup::Absent => {
+            return Err(missing_history_error(&peer_session_id, &command.cwd, &home))
+        }
+        ClaudeHistoryLookup::Unreadable(error) => {
+            // A lookup that could not happen concludes nothing. It is an
+            // honest failure — not the disown sentinel — so the offer stands
+            // and the human can simply try again when the directory lets go.
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "Could not look up the Claude conversation '{peer_session_id}' under {}: {error}; the resume was not attempted, so nothing was concluded about the conversation.",
+                    home.join(".claude").join("projects").to_string_lossy()
+                ),
+            ));
+        }
     }
     let delivery = ProfileDelivery::none();
     let requested_mode = crate::claude_view::DEFAULT_MODE.to_string();
@@ -2342,20 +2384,48 @@ mod tests {
             .join(claude_projects_slug(cwd));
         std::fs::create_dir_all(&dir).expect("history dir");
         std::fs::write(dir.join("peer-1.jsonl"), "{}\n").expect("history file");
-        assert!(find_claude_history(&home, cwd, "peer-1").is_some());
-        assert!(find_claude_history(&home, cwd, "missing").is_none());
-        assert!(find_claude_history(&home, cwd, "../evil").is_none());
-        assert!(find_claude_history(&home, cwd, "a/b").is_none());
+        assert!(matches!(
+            find_claude_history(&home, cwd, "peer-1"),
+            ClaudeHistoryLookup::Found
+        ));
+        assert!(matches!(
+            find_claude_history(&home, cwd, "missing"),
+            ClaudeHistoryLookup::Absent
+        ));
+        assert!(matches!(
+            find_claude_history(&home, cwd, "../evil"),
+            ClaudeHistoryLookup::Absent
+        ));
+        assert!(matches!(
+            find_claude_history(&home, cwd, "a/b"),
+            ClaudeHistoryLookup::Absent
+        ));
         // A Windows prefix discards the whole base under `Path::join`, with
         // none of the tokens above present — so it refuses at find level too.
-        assert!(find_claude_history(&home, cwd, "C:evil").is_none());
+        assert!(matches!(
+            find_claude_history(&home, cwd, "C:evil"),
+            ClaudeHistoryLookup::Absent
+        ));
         // A conversation filed under another slug still proves the id exists:
         // the CLI resolves `--resume` by id, and our slug rule for an exotic
         // cwd may be the thing that is wrong.
         let elsewhere = home.join(".claude").join("projects").join("C--elsewhere");
         std::fs::create_dir_all(&elsewhere).expect("sibling dir");
         std::fs::write(elsewhere.join("peer-9.jsonl"), "{}\n").expect("sibling file");
-        assert!(find_claude_history(&home, cwd, "peer-9").is_some());
+        assert!(matches!(
+            find_claude_history(&home, cwd, "peer-9"),
+            ClaudeHistoryLookup::Found
+        ));
+        // A directory the lookup cannot read is NOT absence — that is the
+        // whole point of the third state: "could not look" concludes nothing.
+        // Destructive, so it runs last.
+        std::fs::remove_dir_all(home.join(".claude").join("projects")).expect("drop projects");
+        std::fs::write(home.join(".claude").join("projects"), "not a directory")
+            .expect("block the lookup");
+        assert!(matches!(
+            find_claude_history(&home, cwd, "peer-1"),
+            ClaudeHistoryLookup::Unreadable(_)
+        ));
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -2363,7 +2433,10 @@ mod tests {
     fn missing_history_refusal_names_the_peer_and_the_expected_path() {
         let error =
             missing_history_error("peer-9", Path::new(r"C:\work"), Path::new(r"C:\Users\me"));
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        // The internal disown sentinel: the resume arm rewrites it to the
+        // wire's `InvalidRequest`; the sentence is what the app has always
+        // read.
+        assert_eq!(error.code, ErrorCode::SessionNotFound);
         assert!(
             error.message.contains("peer-9"),
             "the refusal names the conversation: {}",

@@ -604,6 +604,12 @@ fn live_session_view(session: &PtySession) -> Session {
             metadata.provider.as_deref(),
             metadata.peer_session_id.as_deref(),
             metadata.state.is_live(),
+            // No mark can apply here: the live view's own metadata was last
+            // stamped by the spawn whose success clears the mark for the
+            // handle it announced, and a live entry shadows the journal row
+            // on a roster read. Terminals reach this arm too, and no
+            // provider refusal ever applies to them.
+            None,
         );
     };
     if session.runtime.terminal_dead.load(Ordering::Acquire) {
@@ -4209,6 +4215,12 @@ impl SessionRegistry {
         // Health is measured per provider id; `provider` is moved into the
         // metadata below, so keep a copy for the spawn outcome recording.
         let health_provider = provider.clone();
+        // The failed-spawn arm below needs both facts this function already
+        // holds, and `record` is consumed by the metadata build: the family
+        // decides which wire code the failure keeps, and the handle the
+        // resume tried to load is what a retraction may name.
+        let resumed_kind = record.kind.clone();
+        let attempted_handle = peer_session_id.clone();
         // Resume does not create a session: echo the journal's original
         // created_at_ms. Re-stamping now would break the staleness check
         // this field exists for.
@@ -4232,9 +4244,80 @@ impl SessionRegistry {
                 mcp_session,
             },
         ) {
-            Ok(()) => state.record_provider_health(&health_provider, Ok(())),
-            Err(error) => {
+            Ok(()) => {
+                state.record_provider_health(&health_provider, Ok(()));
+                // The provider honoured this exact handle: a refusal recorded
+                // against it is stale — the one fact that can prove a mark
+                // wrong — and it is recorded on the same road as the health
+                // it was learned with. Without this clear, a mark could hide
+                // a working session with no road left that could correct it.
+                if let Err(clear_error) =
+                    journal.clear_peer_session_disown(session_id, &attempted_handle)
+                {
+                    eprintln!(
+                        "journal could not clear the disown mark for {session_id}: {clear_error}"
+                    );
+                }
+            }
+            Err(mut error) => {
                 state.session_finished();
+                // The one fact a failed resume can carry: the far side's
+                // handle names a session it does not have. Two families
+                // produce that fact — ACP, whose `session/load` answered
+                // ResourceNotFound naming this very session (`acp_client::
+                // session_disown` raises it as `SessionNotFound`), and
+                // Claude, whose history file the daemon itself proved
+                // absent. A spawn failure, a broken pipe, a timeout, or a
+                // handshake that never got an answer says nothing about the
+                // far session — the handle may still be perfectly good, so
+                // it stays and the offer stays with it.
+                let peer_disowned = error.code == ErrorCode::SessionNotFound;
+                if peer_disowned {
+                    // The classification is a channel the daemon reads, never
+                    // a statement about this daemon's roster: the row exists —
+                    // the mark below is its whole point — and on the wire
+                    // `session_not_found` is the app's word for a row the
+                    // daemon has lost. Each family's caller keeps the code
+                    // and sentence it has always seen for this failure.
+                    error.code = match resumed_kind {
+                        SessionKind::Claude => ErrorCode::InvalidRequest,
+                        _ => ErrorCode::Io,
+                    };
+                    // The mark is issued HERE, ahead of the failing answer
+                    // this arm returns: the bounded rpc returns only after
+                    // the write is committed, so the one roster read the app
+                    // fires the instant the answer arrives is already behind
+                    // it. A healthy queue replies in milliseconds; the bound
+                    // is the journal's ordinary RPC_WAIT, the same wait other
+                    // control traffic on this thread already accepts. The
+                    // handle itself is never destroyed — the refusal is
+                    // recorded beside it.
+                    if let Err(mark_error) =
+                        journal.mark_peer_session_disowned(session_id, &attempted_handle)
+                    {
+                        // The bounded write can time out on a saturated queue
+                        // with the command never enqueued; that failure is
+                        // the detached fallback's whole reason to exist, so
+                        // it is reported, never swallowed.
+                        eprintln!(
+                            "journal could not record the disowned handle for {session_id}: {mark_error}; the detached fallback will retry"
+                        );
+                    }
+                    // A client that attached during the spawn window hydrated
+                    // a `Transcript` entry from the row as it was BEFORE the
+                    // mark — and the live map wins a roster read, so that
+                    // entry would serve its stale `resumable` forever. The
+                    // entry holds no process, so eviction tears nothing down:
+                    // the journal, which now holds the mark and the end
+                    // marker, is the one source of truth for everything it
+                    // cached.
+                    if let Ok(mut map) = self.inner.lock() {
+                        if matches!(map.get(session_id), Some(RegistryEntry::Transcript(_))) {
+                            map.remove(session_id);
+                        }
+                    }
+                    self.invalidate_journal_roster();
+                }
                 // The generation was already started on the journal row; a
                 // failed respawn must end it, or the row stays live and the
                 // roster renders a phantom recovered session. The end marker
@@ -4242,12 +4325,25 @@ impl SessionRegistry {
                 // queue) and must not freeze this dispatch thread (the
                 // blocking send is an unbounded 5 ms busy-loop with no
                 // timeout), so this rare failure path gets a throwaway
-                // thread; the row still ends once the queue drains.
+                // thread; the row still ends once the queue drains. The
+                // mark's fallback rides the same thread and rides FIRST:
+                // this thread exists for the saturated-queue case, and
+                // putting the unbounded end-marker wait ahead of it would
+                // delay exactly the write that cannot afford delay. Both
+                // writes are best effort, and the thread is detached and
+                // unjoined: a daemon that exits in this window — this arm
+                // has already armed the idle shutdown — can lose the fallback
+                // silently; the dispatch-thread write above is the ordered
+                // one.
                 let journal = Arc::clone(journal);
                 let id = session_id.to_string();
+                let handle = attempted_handle;
                 let _ = std::thread::Builder::new()
                     .name("journal-end-marker".into())
                     .spawn(move || {
+                        if peer_disowned {
+                            let _ = journal.mark_peer_session_disowned_blocking(&id, &handle);
+                        }
                         let _ = journal.mark_ended_blocking(&id, generation, None);
                     });
                 state.record_provider_health(&health_provider, Err(&error));
@@ -9799,7 +9895,7 @@ fn resume_handle(
     let peer_session_id = record
         .peer_session_id
         .clone()
-        .ok_or_else(|| cannot_resume("the provider session id was not persisted"))?;
+        .ok_or_else(|| cannot_resume("the row has no provider handle to resume from"))?;
     Ok((provider, peer_session_id))
 }
 

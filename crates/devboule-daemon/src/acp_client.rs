@@ -2286,7 +2286,13 @@ fn handshake(
         ),
     };
     let session_request_id = transport.request(method, params).map_err(acp_io_error)?;
-    let session = read_response(transport, reader, session_request_id, &mut deferred)?;
+    let session = read_session_response(
+        transport,
+        reader,
+        session_request_id,
+        &mut deferred,
+        load_session_id,
+    )?;
     let session_id = match load_session_id {
         Some(session_id) if !session_id.is_empty() => session_id.to_string(),
         _ => session
@@ -2370,6 +2376,129 @@ fn read_response(
         ));
     }
     Ok(value)
+}
+
+/// The handshake's session request (`session/new`, or `session/load` on the
+/// resume road), read with the one classification the resume road needs.
+/// This changes what the caller can tell apart, never what the user reads —
+/// the message is spelled exactly as any other ACP error. Every other
+/// failure (and every failure of a fresh session's `session/new`) answers
+/// nothing about the far session and keeps the generic code.
+fn read_session_response(
+    transport: &AcpTransport,
+    reader: &mut BufReader<ChildStdout>,
+    expected_id: u64,
+    deferred: &mut Vec<serde_json::Value>,
+    load_session_id: Option<&str>,
+) -> Result<serde_json::Value, WireError> {
+    let value = read_response_envelope(transport, reader, expected_id, deferred)?;
+    let Some(error) = value.get("error") else {
+        return Ok(value);
+    };
+    let disowned = load_session_id.is_some_and(|peer| session_disown(error, peer));
+    let code = if disowned {
+        ErrorCode::SessionNotFound
+    } else {
+        ErrorCode::Io
+    };
+    Err(WireError::new(code, acp_request_error_message(error)))
+}
+
+/// The evidence standard for "the far agent does not have this session".
+/// Two gates, both required. The **code**: `-32002` is the schema's word for
+/// ANY missed resource — a file, a terminal; this daemon's own host answers
+/// it for exactly those — so it narrows nothing by itself. The **name**: the
+/// missed RESOURCE must be the session we asked to load — the `data.uri` the
+/// schema gives for the miss, or the message tail after "resource not found"
+/// — as a whole token, because a short handle inside a longer id or a file
+/// name names nothing. An agent that echoes its request (session id
+/// included) beside a missed file therefore fails the gate, exactly like an
+/// agent that refuses without naming anything: the narrowing is allowed to
+/// miss a real disown, never to invent one — the act it feeds records a
+/// refusal, and a wrong record is a lie the row tells forever. Everything
+/// else keeps the handle and the offer: a kept handle costs one wasted
+/// click; a destroyed one cannot be recreated.
+fn session_disown(error: &serde_json::Value, peer_session_id: &str) -> bool {
+    if peer_session_id.is_empty() {
+        return false;
+    }
+    let code = error.get("code").and_then(|value| {
+        value
+            .as_i64()
+            // The number is what the code means, not its encoding: agents
+            // have answered with a JSON float or a numeric string.
+            .or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|number| number.fract() == 0.0)
+                    .map(|number| number as i64)
+            })
+            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+    });
+    if code != Some(i64::from(super::acp_host::RESOURCE_NOT_FOUND)) {
+        return false;
+    }
+    // The schema's own field for the missed resource. A uri that does not
+    // name the session settles the question: whatever else the payload
+    // echoes, the miss was of something else.
+    if let Some(uri) = error
+        .pointer("/data/uri")
+        .and_then(serde_json::Value::as_str)
+    {
+        return uri_names_the_session(uri, peer_session_id);
+    }
+    error
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|message| {
+            let lowered = message.to_ascii_lowercase();
+            lowered
+                .rfind("resource not found")
+                .map(|at| &message[at + "resource not found".len()..])
+        })
+        .is_some_and(|tail| names_whole_token(tail, peer_session_id))
+}
+
+/// Whether the missed resource the uri names is the session itself: the uri
+/// is the id, or the id is its final path segment. Anything longer — a
+/// directory, a file beside the id — is another resource.
+fn uri_names_the_session(uri: &str, peer_session_id: &str) -> bool {
+    let trimmed = uri.trim_end_matches('/');
+    trimmed == peer_session_id
+        || trimmed
+            .rsplit(['/', '\\'])
+            .next()
+            .is_some_and(|segment| segment == peer_session_id)
+}
+
+/// Whole-token containment: every occurrence of the handle must be bounded
+/// by characters that cannot extend it, so `stub-session` inside
+/// `stub-session-2` or `old-stub-session` names neither. A `.` binds too —
+/// `stub-session.jsonl` is a file, not the session — which errs toward a
+/// missed disown, the direction the asymmetry allows.
+fn names_whole_token(haystack: &str, needle: &str) -> bool {
+    let mut from = 0usize;
+    while let Some(at) = haystack[from..].find(needle) {
+        let start = from + at;
+        let end = start + needle.len();
+        let bounded = haystack[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !binds_handle(c))
+            && haystack[end..]
+                .chars()
+                .next()
+                .is_none_or(|c| !binds_handle(c));
+        if bounded {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
+fn binds_handle(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '-' | '_' | '.')
 }
 
 /// The raw response naming `expected_id`: lines that name anything else are

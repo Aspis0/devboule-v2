@@ -47,6 +47,14 @@ pub(super) struct RpcError {
     pub message: String,
 }
 
+/// The ACP schema's generic `ResourceNotFound` ("A given resource, such as
+/// a file, was not found"): the code for **any** missed resource, not a
+/// session code — this host answers it for terminals and file reads. The
+/// client side reads it as evidence of a disowned session only when the
+/// error payload also names the session it was asked to load
+/// (`acp_client::session_disown`).
+pub(super) const RESOURCE_NOT_FOUND: i32 = -32002;
+
 impl RpcError {
     fn invalid_params(message: impl Into<String>) -> Self {
         Self {
@@ -64,7 +72,7 @@ impl RpcError {
 
     fn resource_not_found(message: impl Into<String>) -> Self {
         Self {
-            code: -32002,
+            code: RESOURCE_NOT_FOUND,
             message: message.into(),
         }
     }

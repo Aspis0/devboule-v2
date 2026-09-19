@@ -311,20 +311,27 @@ pub(crate) trait Provider: Send + Sync {
 }
 
 /// The daemon's resume verdict for one session: the process is gone, the
-/// family is resumable, and the provider and peer id were persisted
-/// non-empty. The one projection every surface reads — journal rows, live
-/// views, diagnostics — so the family yes/no stays `Provider::resumable()`
-/// and is never re-spelled beside it.
+/// family is resumable, the provider and peer id were persisted non-empty,
+/// and the peer id is not the one a provider refused. The one projection
+/// every surface reads — journal rows, live views, diagnostics — so the
+/// family yes/no stays `Provider::resumable()` and is never re-spelled
+/// beside it.
 pub(crate) fn session_resumable(
     kind: &SessionKind,
     provider: Option<&str>,
     peer_session_id: Option<&str>,
     is_live: bool,
+    disowned_peer_session_id: Option<&str>,
 ) -> bool {
     !is_live
         && catalog_registry().provider_for_kind(kind).resumable()
         && provider.is_some_and(|id| !id.is_empty())
         && peer_session_id.is_some_and(|id| !id.is_empty())
+        // A fact learned from the provider, not another prediction: this
+        // exact handle is the one a resume was refused for. It rides beside
+        // the handle — which is never destroyed — and the next announce of a
+        // different handle clears it.
+        && peer_session_id != disowned_peer_session_id
 }
 
 /// The ACP family: the fallthrough implementation. Every provider the catalog
@@ -1547,16 +1554,23 @@ mod tests {
         }
     }
 
-    /// The verdict needs all four: a dead process, a resumable family, and
-    /// both persisted columns non-empty. Each missing piece refuses on its
-    /// own, so no surface can offer a resume the gate would not honour.
+    /// The verdict needs all five: a dead process, a resumable family, both
+    /// persisted columns non-empty, and a handle that is not the one a
+    /// provider refused. Each missing piece refuses on its own, so no
+    /// surface can offer a resume the gate would not honour.
     #[test]
     fn session_resumable_needs_a_dead_process_family_and_columns() {
-        let live = session_resumable(&SessionKind::Claude, Some("claude"), Some("peer-1"), true);
+        let live = session_resumable(
+            &SessionKind::Claude,
+            Some("claude"),
+            Some("peer-1"),
+            true,
+            None,
+        );
         assert!(!live, "a running process is never resumable");
         for kind in [SessionKind::Pi, SessionKind::Codex, SessionKind::Terminal] {
             assert!(
-                !session_resumable(&kind, Some("x"), Some("peer-1"), false),
+                !session_resumable(&kind, Some("x"), Some("peer-1"), false, None),
                 "an undesigned family is never resumable ({kind:?})"
             );
         }
@@ -1567,15 +1581,38 @@ mod tests {
             (Some("claude"), Some("")),
         ] {
             assert!(
-                !session_resumable(&SessionKind::Claude, provider, peer, false),
+                !session_resumable(&SessionKind::Claude, provider, peer, false, None),
                 "missing columns are never resumable"
             );
         }
         for kind in [SessionKind::Acp, SessionKind::Claude] {
             assert!(
-                session_resumable(&kind, Some("x"), Some("peer-1"), false),
+                session_resumable(&kind, Some("x"), Some("peer-1"), false, None),
                 "a dead admitted session with its columns is resumable ({kind:?})"
             );
         }
+        // The provider's own refusal, recorded beside the handle: the verdict
+        // is a fact learned from the provider, and it waits for a different
+        // handle — which clears the refusal at the announce.
+        assert!(
+            !session_resumable(
+                &SessionKind::Acp,
+                Some("x"),
+                Some("peer-1"),
+                false,
+                Some("peer-1")
+            ),
+            "a refused handle does not offer the resume that was refused"
+        );
+        assert!(
+            session_resumable(
+                &SessionKind::Acp,
+                Some("x"),
+                Some("peer-2"),
+                false,
+                Some("peer-1")
+            ),
+            "a fresh handle is not silenced by a refusal about another one"
+        );
     }
 }

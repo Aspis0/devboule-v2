@@ -136,7 +136,7 @@ pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, Jou
                 dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                 peer_session_id, provider, origin_kind, origin_device, origin_role,
                 display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-                overlay, depth
+                overlay, depth, disowned_peer_session_id
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
@@ -188,6 +188,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         depth: row
             .get::<_, Option<i64>>(31)?
             .map(|depth| u32::try_from(depth).unwrap_or(crate::session::MAX_AGENT_DEPTH)),
+        disowned_peer_session_id: row.get(32)?,
     })
 }
 
@@ -241,7 +242,7 @@ pub(super) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
                     peer_session_id, provider, origin_kind, origin_device, origin_role,
                     display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-                    overlay, depth
+                    overlay, depth, disowned_peer_session_id
              FROM sessions WHERE id = ?1",
             [session_id],
             row_to_session,

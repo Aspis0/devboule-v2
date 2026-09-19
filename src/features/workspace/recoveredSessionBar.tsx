@@ -7,9 +7,13 @@ import type { Session } from "../../types/ipc";
 export function RecoveredSessionBar({
   session,
   onReopened,
+  onResumeFailed,
 }: {
   session: Session | null;
   onReopened: (session: Session) => void;
+  /** A resume attempt failed. The parent re-reads the roster so this bar
+   * renders the daemon's current verdict, never the stale row it held. */
+  onResumeFailed?: () => void;
 }) {
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,11 +33,14 @@ export function RecoveredSessionBar({
           onReopened(result.session);
         } else if (result.type === "failed") {
           setError(result.message);
+          onResumeFailed?.();
         } else {
           setError("This session does not support resume.");
+          onResumeFailed?.();
         }
       } catch (cause) {
         setError(reasonFromCause(cause));
+        onResumeFailed?.();
       } finally {
         setResuming(false);
       }

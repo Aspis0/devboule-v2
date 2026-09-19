@@ -260,6 +260,27 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // none.
             validate_v13_columns(&tx)?;
         }
+        if version < 14 {
+            // The disown mark (`crates/devboule-daemon/src/session.rs`, the
+            // failed-resume arm). The handle a provider refused is recorded
+            // BESIDE `peer_session_id`, never in place of it: the evidence
+            // for a refusal is approximate, and the handle is the only route
+            // back to the conversation. NULL — every row that predates the
+            // column, and every row no provider has refused — is the honest
+            // "nothing happened"; a value is a fact learned from the
+            // provider, cleared by the next announce of a different handle.
+            if !session_has_column(&tx, "disowned_peer_session_id")? {
+                tx.execute(
+                    "ALTER TABLE sessions ADD COLUMN disowned_peer_session_id TEXT",
+                    [],
+                )?;
+            }
+            // The pre-stamp guard, same ordering as v12 and v13: a colliding
+            // shape must leave the file at 13, openable by the previous
+            // build, rather than stamped 14 — where the first list or replay
+            // would die reading the column on a user's journal.
+            validate_v14_columns(&tx)?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -272,6 +293,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     validate_profile_columns(&conn)?;
     // The v13 columns, checked apart (see [`is_our_overlay_shape`]).
     validate_v13_columns(&conn)?;
+    // The v14 column, the same way (see [`is_our_disowned_shape`]).
+    validate_v14_columns(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -413,6 +436,26 @@ fn is_our_depth_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
         shape,
         Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("integer")
     )
+}
+
+/// The one shape v14 may have: `disowned_peer_session_id` is `TEXT`,
+/// nullable, no default (NULL reads as no refusal recorded). Spelled once,
+/// like its v13 siblings: the v14 pre-stamp guard and the post-commit check
+/// both read this predicate.
+fn is_our_disowned_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
+    matches!(
+        shape,
+        Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")
+    )
+}
+
+fn validate_v14_columns(conn: &Connection) -> Result<(), JournalError> {
+    if !is_our_disowned_shape(column_shape(conn, "disowned_peer_session_id")?) {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected sessions.disowned_peer_session_id column".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_v13_columns(conn: &Connection) -> Result<(), JournalError> {
@@ -2180,6 +2223,23 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
         (dir, path)
     }
 
+    /// The v13 file the v14 migration starts from the version it will find
+    /// on disk.
+    fn v13_journal_with_rows(
+        rows: &[(&str, i64, &str)],
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (dir, path) = v12_journal_with_rows(rows);
+        let conn = Connection::open(&path).expect("v13 journal");
+        conn.execute("ALTER TABLE sessions ADD COLUMN overlay TEXT", [])
+            .expect("v13 overlay column");
+        conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER", [])
+            .expect("v13 depth column");
+        conn.pragma_update(None, "user_version", 13)
+            .expect("v13 version");
+        drop(conn);
+        (dir, path)
+    }
+
     /// A v12 file gains the overlay column on open, and its rows — which
     /// predate the column — read as no overlay, never as an unknown one.
     /// NULL is the one representation of "no overlay": a birth with no
@@ -2298,6 +2358,76 @@ ALTER TABLE workspaces ADD COLUMN branch TEXT;
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("user_version");
         assert_eq!(version, 12);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The v14 migration on a real v13 file: the mark column arrives, and a
+    /// row that predates it reads as "no refusal recorded" — the same bytes
+    /// every fresh row writes.
+    #[test]
+    fn a_v13_journal_gains_the_disown_mark_and_old_rows_read_no_refusal() {
+        let (dir, path) = v13_journal_with_rows(&[("s.before-mark", 0, "profile-x")]);
+        let journal = Journal::open(&path).expect("migrate");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.before-mark")
+            .expect("the old row survived");
+        assert_eq!(
+            row.disowned_peer_session_id, None,
+            "a pre-column row records no refusal"
+        );
+        let check = Connection::open(&path).expect("check migrated schema");
+        let shape = super::column_shape(&check, "disowned_peer_session_id").expect("column shape");
+        assert!(
+            matches!(shape, Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")),
+            "TEXT, nullable, no default — the shape the daemon writes: {shape:?}"
+        );
+        let version: i32 = check
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(version, JOURNAL_SCHEMA_VERSION);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The v14 pre-stamp guard: a v13 file carrying a
+    /// `disowned_peer_session_id` column of the wrong shape is refused with
+    /// `user_version` still **13**. Stamped 14, the first list or replay
+    /// would die reading the column on a user's journal at runtime — the
+    /// convention exists to make it a clean refusal at open instead.
+    #[test]
+    fn a_v14_migration_does_not_stamp_a_colliding_column() {
+        let (dir, path) = v13_journal_with_rows(&[("s.before-mark", 0, "profile-x")]);
+        {
+            let conn = Connection::open(&path).expect("open the v13 journal");
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN disowned_peer_session_id INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .expect("the stray colliding column");
+        }
+        let error = match Journal::open(&path) {
+            Err(error) => error,
+            Ok(journal) => {
+                journal.shutdown();
+                panic!("the colliding column is refused");
+            }
+        };
+        assert!(
+            matches!(error, JournalError::Corrupt(_)),
+            "the corrupt-journal path is the one that refuses it: {error}"
+        );
+        assert!(
+            error.to_string().contains("disowned_peer_session_id"),
+            "the message names the column: {error}"
+        );
+        let version: i32 = Connection::open(&path)
+            .expect("open the refused journal")
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(version, 13);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

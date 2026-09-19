@@ -7958,9 +7958,11 @@ fn resume_refuses_a_session_without_a_persisted_peer_id() {
     record.provider = Some("grok".to_string());
     let error = resume_handle(&record, &owner).expect_err("missing peer id must refuse");
     assert_eq!(error.code, ErrorCode::InvalidRequest);
+    // True for a row that never had a handle and for one whose handle a
+    // disown retracted: there is nothing here to resume from.
     assert!(error
         .message
-        .contains("provider session id was not persisted"));
+        .contains("the row has no provider handle to resume from"));
 }
 
 #[test]
