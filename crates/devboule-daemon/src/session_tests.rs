@@ -11814,7 +11814,8 @@ fn creator_replay(journal: &Arc<Journal>, session_id: &str) -> Vec<SessionEvent>
 /// the two helpers that let a commit land between them are gone.
 #[test]
 fn the_check_and_the_park_are_one_call() {
-    let source = include_str!("session.rs");
+    // The pair moved out of session.rs into its sibling: read it where it is.
+    let source = include_str!("session_children.rs");
     // Built at runtime: the needles must not appear in the source this test
     // is compiled from, or the assertion would match itself.
     let split_check = ["fn child_end_is", "pending("].concat();

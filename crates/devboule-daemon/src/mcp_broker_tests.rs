@@ -183,6 +183,12 @@ fn mcp_predicates_are_provider_facts_not_kind_lists() {
         include_str!("mcp_broker.rs"),
         include_str!("session.rs"),
         include_str!("provider.rs"),
+        // The session runtime's siblings: the walk has to follow the code out of
+        // session.rs, or a gate site that moves file stops being covered.
+        include_str!("session_children.rs"),
+        include_str!("session_envelopes.rs"),
+        include_str!("session_spawn.rs"),
+        include_str!("session_workspaces.rs"),
     ];
     let mut narrow = 0;
     let mut wide = 0;
