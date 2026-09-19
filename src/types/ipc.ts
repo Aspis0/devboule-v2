@@ -52,6 +52,15 @@ export type ActiveTurnBehavior = "steer";
  */
 export type UserMessageAuthor = "human" | "agent" | "creation";
 
+/** What an `agent_user_message` means in the session displaying it. */
+export type UserMessageKind =
+  | "unknown"
+  | "composer"
+  | "outgoing_a2a"
+  | "incoming_a2a"
+  | "system_notice"
+  | "creation";
+
 export type PermissionOutcome = "allow_once" | "deny";
 
 /**
@@ -793,17 +802,17 @@ export type SessionEvent =
   /**
    * Echo of the user prompt, one ACP `user_message_chunk` at a time.
    *
-   * `author` names who spoke, computed by the daemon and rendered by the
-   * app instead of re-derived from the text: `human` is composer input,
-   * `agent` is an agent's outgoing A2A echo, `creation` is a child's
-   * daemon-composed first prompt. Absent on frames predating the field —
-   * read as `human`, the daemon's `#[serde(default)]`.
+   * `author` names who spoke. `messageKind` separately names the part this
+   * text plays in the displaying session; older journal rows omit it and use
+   * the legacy envelope classifier in the webview.
    */
   | {
       type: "agent_user_message";
       messageId: string | null;
       text: string;
       author: UserMessageAuthor;
+      /** Optional for frames written before this field existed. */
+      messageKind?: UserMessageKind;
     }
   /**
    * An agent created a child session (protocol `SessionEvent::AgentCreated`).

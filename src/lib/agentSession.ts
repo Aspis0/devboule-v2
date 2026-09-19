@@ -96,6 +96,12 @@ export type AgentChatItem =
       origin: AgentPeerOrigin;
       /** The sender's message, verbatim — hostile input, rendered as text only. */
       body: string;
+    }
+  | {
+      /** This session's raw echo of a message it sent to another agent. */
+      id: string;
+      role: "a2a_outgoing_message";
+      text: string;
     };
 
 export interface AgentFinished {
@@ -506,104 +512,144 @@ export class AgentSession {
     this.armModeTimeout();
   }
 
+  private handleAgentUserMessage(
+    event: Extract<SessionEvent, { type: "agent_user_message" }>,
+  ): void {
+    switch (event.messageKind) {
+      case "composer":
+        this.appendComposerMessage(event);
+        return;
+      case "outgoing_a2a":
+        this.appendOutgoingA2aMessage(event.text);
+        return;
+      case "incoming_a2a":
+        if (!this.appendPeerMessage(event.text)) this.appendSystemMessage(event.text);
+        return;
+      case "system_notice":
+        if (!this.appendDaemonMessage(event.text)) this.appendSystemMessage(event.text);
+        return;
+      case "creation":
+        this.appendSystemMessage(event.text);
+        return;
+      case "unknown":
+      case undefined:
+        // Legacy rows predate `message_kind`; retain their parser-based
+        // behavior until those stored rows no longer matter.
+        this.handleLegacyAgentUserMessage(event);
+        return;
+    }
+  }
+
+  private appendComposerMessage(
+    event: Extract<SessionEvent, { type: "agent_user_message" }>,
+  ): void {
+    this.ensureTurn();
+    this.closeActiveBlocks();
+    this.appendText("user", event.messageId, event.text);
+  }
+
+  private appendOutgoingA2aMessage(text: string): void {
+    this.closeActiveBlocks();
+    this.update({
+      items: [
+        ...this.state.items,
+        {
+          id: `a2a-outgoing-message-${this.nextItemId++}`,
+          role: "a2a_outgoing_message",
+          text,
+        },
+      ],
+    });
+  }
+
+  private appendPeerMessage(text: string): boolean {
+    const peerMessage = parseAgentPeerMessage(text);
+    if (peerMessage === null) return false;
+    this.closeActiveBlocks();
+    this.update({
+      items: [
+        ...this.state.items,
+        {
+          id: `a2a-message-${this.nextItemId++}`,
+          role: "a2a_message",
+          fromAgent: peerMessage.fromAgent,
+          origin: peerMessage.origin,
+          body: peerMessage.body,
+        },
+      ],
+    });
+    return true;
+  }
+
+  private appendDaemonMessage(text: string): boolean {
+    const permissionRequest = parseAgentPermissionRequest(text);
+    if (permissionRequest !== null) {
+      this.closeActiveBlocks();
+      this.update({
+        items: [
+          ...this.state.items,
+          {
+            id: `permission-request-${this.nextItemId++}`,
+            role: "permission_request",
+            ...permissionRequest,
+          },
+        ],
+      });
+      return true;
+    }
+
+    const daemonNotice = parseAgentDaemonNotice(text);
+    if (daemonNotice === null) return false;
+    this.closeActiveBlocks();
+    this.update({
+      items: [
+        ...this.state.items,
+        {
+          id: `daemon-notice-${this.nextItemId++}`,
+          role: "daemon_notice",
+          notice: daemonNotice,
+        },
+      ],
+    });
+    return true;
+  }
+
+  private handleLegacyAgentUserMessage(
+    event: Extract<SessionEvent, { type: "agent_user_message" }>,
+  ): void {
+    // THE ORDER OF THESE PARSES IS LOAD-BEARING: a permission frame is also
+    // a daemon notice, so the structured permission card must win. This is
+    // the compatibility path for rows written before `message_kind` existed.
+    if (this.appendDaemonMessage(event.text)) return;
+    if (this.appendPeerMessage(event.text)) return;
+    if ((event.author ?? "human") !== "human") {
+      this.appendSystemMessage(event.text);
+      return;
+    }
+    this.appendComposerMessage(event);
+  }
+
+  private appendSystemMessage(text: string): void {
+    this.closeActiveBlocks();
+    this.update({
+      items: [
+        ...this.state.items,
+        {
+          id: `system-${this.nextItemId++}`,
+          role: "system",
+          text,
+          severity: "info",
+        },
+      ],
+    });
+  }
+
   handleEvent(event: SessionEvent): void {
     if (this.disposed) return;
 
     switch (event.type) {
       case "agent_user_message": {
-        // THE ORDER OF THE FIRST TWO PARSES IS LOAD-BEARING: a well-formed
-        // permission frame is also a well-formed notice to
-        // `parseAgentDaemonNotice` — `role: daemon`, and a `kind:` outside
-        // its KNOWN_KINDS, so that parser returns `unformatted()`, not null.
-        // The permission card survives only because its parse runs first;
-        // swapped, every permission card becomes "a notice this version
-        // cannot format" and the child's excerpt drops. Pinned by the
-        // "parser order" test in `agentSession.test.ts`.
-        //
-        // The daemon's own reports reach a creator's transcript through the
-        // send path, so a `<devboule-system>` envelope arrives here as the
-        // echoed user message — one event, whole. A permission-request
-        // envelope is reduced to its structured chat item: the daemon's
-        // fields in system styling, the child's excerpt quoted and labelled
-        // as its own. Any other frame whose fixed header carries both `role:
-        // daemon` and a `kind:` line — a known kind, an unknown one, or a
-        // notice whose closing tag the daemon's size bound cut off — becomes
-        // a readable daemon_notice card, never the raw frame. The relay
-        // envelope — a `from_agent:` and no `kind:` in the fixed header — is
-        // another agent's message, not a notice: it becomes an a2a_message
-        // naming its sender, the envelope stripped. `origin` is not part of
-        // that marker: `origin_line` (`session.rs:8026`) writes the same
-        // three shapes — `local`, `peer:<device>`, `unknown` — for relays
-        // and notices alike, so it travels on the item as provenance.
-        // Everything else falls through by author, its text staying visible.
-        // The daemon names who spoke and the app renders it, never
-        // re-deriving authorship from the text. Absent predates the field
-        // and reads as human.
-        const permissionRequest = parseAgentPermissionRequest(event.text);
-        if (permissionRequest !== null) {
-          this.closeActiveBlocks();
-          this.update({
-            items: [
-              ...this.state.items,
-              {
-                id: `permission-request-${this.nextItemId++}`,
-                role: "permission_request",
-                ...permissionRequest,
-              },
-            ],
-          });
-          return;
-        }
-        const daemonNotice = parseAgentDaemonNotice(event.text);
-        if (daemonNotice !== null) {
-          this.closeActiveBlocks();
-          this.update({
-            items: [
-              ...this.state.items,
-              {
-                id: `daemon-notice-${this.nextItemId++}`,
-                role: "daemon_notice",
-                notice: daemonNotice,
-              },
-            ],
-          });
-          return;
-        }
-        const peerMessage = parseAgentPeerMessage(event.text);
-        if (peerMessage !== null) {
-          this.closeActiveBlocks();
-          this.update({
-            items: [
-              ...this.state.items,
-              {
-                id: `a2a-message-${this.nextItemId++}`,
-                role: "a2a_message",
-                fromAgent: peerMessage.fromAgent,
-                origin: peerMessage.origin,
-                body: peerMessage.body,
-              },
-            ],
-          });
-          return;
-        }
-        if ((event.author ?? "human") !== "human") {
-          this.closeActiveBlocks();
-          this.update({
-            items: [
-              ...this.state.items,
-              {
-                id: `system-${this.nextItemId++}`,
-                role: "system",
-                text: event.text,
-                severity: "info",
-              },
-            ],
-          });
-          return;
-        }
-        this.ensureTurn();
-        this.closeActiveBlocks();
-        this.appendText("user", event.messageId, event.text);
+        this.handleAgentUserMessage(event);
         return;
       }
       case "agent_message":

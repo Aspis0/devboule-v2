@@ -51,6 +51,7 @@ import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
+import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
 
 // One classifier owns both whether input is disabled and the sentence explaining it.
 export function composerDisabledReason(
@@ -673,6 +674,10 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnde
 
   if (item.role === "a2a_message") {
     return <A2aMessageCard key={item.id} item={item} names={a2aNames} />;
+  }
+
+  if (item.role === "a2a_outgoing_message") {
+    return <A2aOutgoingMessageCard key={item.id} item={item} />;
   }
 
   return (

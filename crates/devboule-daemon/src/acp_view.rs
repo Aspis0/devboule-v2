@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::tool_paths::relativize_tool_path;
 use devboule_protocol::{
     AvailableCommandView, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
-    SessionModelEffort, ToolLocation, TurnUsage, UserMessageAuthor,
+    SessionModelEffort, ToolLocation, TurnUsage, UserMessageAuthor, UserMessageKind,
 };
 
 /// Kind of a JSON-RPC line. Requests carry a method *and* an id; treating a
@@ -91,6 +91,7 @@ fn view_from_session_update(
                 // Historical provider echoes predate authorship: they read
                 // back as the human default, preserving old rendering.
                 author: UserMessageAuthor::Human,
+                message_kind: UserMessageKind::Composer,
             })
         }
         Some("agent_thought_chunk") => {
@@ -1179,7 +1180,7 @@ mod tests {
         view_from_envelope_in, AcpLineKind, PromptCapabilities, PromptCapabilityState,
     };
     use devboule_protocol::SessionEvent;
-    use devboule_protocol::UserMessageAuthor;
+    use devboule_protocol::{UserMessageAuthor, UserMessageKind};
 
     const GROK_CAPTURE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1239,6 +1240,7 @@ mod tests {
                 message_id: None,
                 text: "Reply with exactly one word: PONG".to_string(),
                 author: UserMessageAuthor::Human,
+                message_kind: UserMessageKind::Composer,
             }
         );
         assert_eq!(

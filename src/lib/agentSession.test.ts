@@ -2018,37 +2018,124 @@ describe("creator permission-request envelope", () => {
     expect(itemRoleText(items[0]).text).toBe("a plain prompt");
   });
 
-  it("attributes human echoes to the user and agent echoes to the system", async () => {
-    // The defect: a sender's own A2A echo rendered as YOU. One session,
-    // both echoes: the human's composer input stays a user bubble while
-    // the agent's outgoing peer message lands as a system row, never YOU.
+  const composerTextThatLooksLikeAnEnvelope = [
+    "<devboule-system>",
+    "origin: local",
+    "role: client",
+    "from_agent: a.user.pasted",
+    "timestamp: 1789671600000",
+    "the person's literal composer text",
+    "</devboule-system>",
+  ].join("\n");
+
+  it.each([
+    {
+      name: "composer",
+      event: {
+        type: "agent_user_message",
+        author: "human",
+        messageId: "m-composer",
+        text: composerTextThatLooksLikeAnEnvelope,
+        messageKind: "composer",
+      },
+      expectedRole: "user",
+      expectedText: composerTextThatLooksLikeAnEnvelope,
+    },
+    {
+      name: "outgoing A2A",
+      event: {
+        type: "agent_user_message",
+        author: "agent",
+        messageId: "m-outgoing",
+        text: "words sent to another agent",
+        messageKind: "outgoing_a2a",
+      },
+      expectedRole: "a2a_outgoing_message",
+      expectedText: "words sent to another agent",
+    },
+    {
+      name: "incoming A2A",
+      event: {
+        type: "agent_user_message",
+        author: "agent",
+        messageId: "m-incoming",
+        text: [
+          "<devboule-system>",
+          "origin: local",
+          "role: client",
+          "from_agent: s.msg.source",
+          "timestamp: 1789671600000",
+          "words received from another agent",
+          "</devboule-system>",
+        ].join("\n"),
+        messageKind: "incoming_a2a",
+      },
+      expectedRole: "a2a_message",
+      expectedText: "words received from another agent",
+    },
+    {
+      name: "system notice",
+      event: {
+        type: "agent_user_message",
+        author: "agent",
+        messageId: "m-notice",
+        text: [
+          "<devboule-system>",
+          "origin: local",
+          "role: daemon",
+          "from_agent: s.child.7",
+          "kind: agent_finished",
+          "timestamp: 1760000000000",
+          "childSessionId: s.child.7",
+          "state: completed",
+          "</devboule-system>",
+        ].join("\n"),
+        messageKind: "system_notice",
+      },
+      expectedRole: "daemon_notice",
+      expectedText: "agent_finished",
+    },
+    {
+      name: "creation",
+      event: {
+        type: "agent_user_message",
+        author: "creation",
+        messageId: "m-creation",
+        text: "standing instructions\n\npreamble\n\ninitial prompt",
+        messageKind: "creation",
+      },
+      expectedRole: "system",
+      expectedText: "standing instructions\n\npreamble\n\ninitial prompt",
+    },
+    {
+      name: "legacy row without a message kind",
+      event: {
+        type: "agent_user_message",
+        author: "agent",
+        messageId: "m-legacy",
+        text: [
+          "<devboule-system>",
+          "origin: local",
+          "role: client",
+          "from_agent: s.msg.legacy",
+          "timestamp: 1789671600000",
+          "legacy envelope body",
+          "</devboule-system>",
+        ].join("\n"),
+      },
+      expectedRole: "a2a_message",
+      expectedText: "legacy envelope body",
+    },
+  ] as const)("classifies $name by its declared message kind", async (testCase) => {
     const harness = makeHarness();
     await harness.session.start();
-    harness.emit({
-      type: "agent_user_message",
-      author: "human",
-      messageId: "m-human",
-      text: "human composer words",
-    });
-    harness.emit({
-      type: "agent_user_message",
-      author: "agent",
-      messageId: "m-agent",
-      text: "Reply with exactly PING2",
-    });
-    harness.emit({
-      type: "agent_user_message",
-      author: "creation",
-      messageId: "m-creation",
-      text: "standing instructions\n\npreamble\n\ninitial prompt",
-    });
+    harness.emit(testCase.event);
     const items = harness.session.getState().items;
-    expect(items).toHaveLength(3);
-    expect(items[0].role).toBe("user");
-    expect(itemRoleText(items[0]).text).toBe("human composer words");
-    expect(items[1].role).toBe("system");
-    expect(itemRoleText(items[1]).text).toBe("Reply with exactly PING2");
-    expect(items[2].role).toBe("system");
+    expect(items).toHaveLength(1);
+    expect(itemRoleText(items[0])).toEqual({
+      role: testCase.expectedRole,
+      text: testCase.expectedText,
+    });
   });
 
   it("never lets the excerpt past the chat: transcriptItems drops the permission item wholesale", async () => {

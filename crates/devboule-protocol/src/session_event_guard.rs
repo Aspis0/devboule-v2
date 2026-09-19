@@ -58,6 +58,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
             message_id: None,
             text: String::new(),
             author: crate::UserMessageAuthor::Human,
+            message_kind: crate::UserMessageKind::Unknown,
         },
         Steered => SessionEvent::Steered {
             message_id: None,

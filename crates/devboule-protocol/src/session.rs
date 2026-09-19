@@ -727,16 +727,17 @@ pub enum SessionEvent {
     },
     /// Echo of the user prompt, one ACP `user_message_chunk` at a time.
     ///
-    /// `author` names who spoke, computed by the daemon and rendered by the
-    /// app instead of re-derived from the text: `human` is composer input,
-    /// `agent` is an agent's outgoing A2A echo (sender raw text and receiver
-    /// envelope alike), `creation` is a child's daemon-composed first prompt.
-    /// `#[serde(default)]` so frames predating the field read back as human.
+    /// `author` names who spoke, while `message_kind` names the part this text
+    /// plays in this session. The two facts are deliberately independent:
+    /// `agent` covers both an outgoing echo and a received envelope.
     AgentUserMessage {
         message_id: Option<String>,
         text: String,
         #[serde(default)]
         author: UserMessageAuthor,
+        /// Absent on stored rows written before this field existed.
+        #[serde(default)]
+        message_kind: UserMessageKind,
     },
     /// A prompt accepted by a running turn. This is journaled for audit but
     /// intentionally not pushed to live observers; the normal user-message
@@ -1374,6 +1375,22 @@ pub enum UserMessageAuthor {
     Creation,
 }
 
+/// What one `AgentUserMessage` means in the session that displays it. This is
+/// separate from [`UserMessageAuthor`]: an agent can author an outgoing echo,
+/// an incoming relay, or a daemon notice.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UserMessageKind {
+    /// A stored row predating this field; retain the legacy text classifier.
+    #[default]
+    Unknown,
+    Composer,
+    OutgoingA2a,
+    IncomingA2a,
+    SystemNotice,
+    Creation,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1766,6 +1783,33 @@ mod tests {
         );
         let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
         assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn agent_user_message_kind_defaults_for_legacy_rows_and_serializes_current_rows() {
+        let legacy = serde_json::json!({
+            "type": "agent_user_message",
+            "messageId": "m-legacy",
+            "text": "old row",
+            "author": "agent"
+        });
+        let decoded: SessionEvent = serde_json::from_value(legacy).expect("legacy event");
+        assert!(matches!(
+            decoded,
+            SessionEvent::AgentUserMessage {
+                message_kind: UserMessageKind::Unknown,
+                ..
+            }
+        ));
+
+        let current = SessionEvent::AgentUserMessage {
+            message_id: Some("m-current".to_string()),
+            text: "outgoing words".to_string(),
+            author: UserMessageAuthor::Agent,
+            message_kind: UserMessageKind::OutgoingA2a,
+        };
+        let encoded = serde_json::to_value(&current).expect("current event");
+        assert_eq!(encoded["messageKind"], "outgoing_a2a");
     }
 
     #[test]

@@ -3288,6 +3288,64 @@ describe("agent-to-agent message cards", () => {
     });
   }
 
+  async function renderAgentUserMessage(
+    event: Extract<SessionEvent, { type: "agent_user_message" }>,
+  ) {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.(event);
+    });
+  }
+
+  it.each([
+    {
+      name: "the person's composer message",
+      event: {
+        type: "agent_user_message",
+        author: "human",
+        messageId: "m-composer",
+        text: "words from the person",
+        messageKind: "composer",
+      },
+      selector: ".workspace-chat-user .workspace-chat-copy",
+      expectedText: "words from the person",
+    },
+    {
+      name: "this session's outgoing A2A message",
+      event: {
+        type: "agent_user_message",
+        author: "agent",
+        messageId: "m-outgoing",
+        text: "words sent outward",
+        messageKind: "outgoing_a2a",
+      },
+      selector: "[data-testid='agent-a2a-outgoing-message']",
+      expectedText:
+        "Sent to another agentThis session's message to another agent.this session's wordswords sent outward",
+    },
+    {
+      name: "a received A2A message",
+      event: {
+        type: "agent_user_message",
+        author: "agent",
+        messageId: "m-incoming",
+        text: relayEnvelope,
+        messageKind: "incoming_a2a",
+      },
+      selector: "[data-testid='agent-a2a-message']",
+      expectedText: "here is the actual message the other agent wrote",
+    },
+  ] as const)("renders $name as its distinct transcript item", async (testCase) => {
+    await renderAgentUserMessage(testCase.event);
+    const item = container.querySelector(testCase.selector);
+    expect(item).not.toBeNull();
+    expect(item?.textContent).toContain(testCase.expectedText);
+  });
+
   it("renders the relayed envelope as a message from the named agent, envelope gone", async () => {
     await renderEnvelope(relayEnvelope);
     const item = container.querySelector("[data-testid='agent-a2a-message']");

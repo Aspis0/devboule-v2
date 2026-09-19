@@ -2070,6 +2070,7 @@ mod tests {
             message_id: Some("m1".into()),
             text: "gen-1 user".into(),
             author: devboule_protocol::UserMessageAuthor::Human,
+            message_kind: devboule_protocol::UserMessageKind::Unknown,
         };
         let answer_before = SessionEvent::AgentMessage {
             message_id: Some("m2".into()),
@@ -2195,6 +2196,7 @@ mod tests {
             message_id: Some("m1".into()),
             text: "after resume".into(),
             author: devboule_protocol::UserMessageAuthor::Human,
+            message_kind: devboule_protocol::UserMessageKind::Unknown,
         };
         let answer_after = SessionEvent::AgentMessage {
             message_id: Some("m2".into()),
@@ -2312,6 +2314,7 @@ mod tests {
                     message_id: Some("m1".into()),
                     text: "gen-2 user".into(),
                     author: devboule_protocol::UserMessageAuthor::Human,
+                    message_kind: devboule_protocol::UserMessageKind::Unknown,
                 },
                 SessionEvent::AgentMessage {
                     message_id: Some("m2".into()),
@@ -2491,6 +2494,7 @@ mod tests {
                     message_id: Some("m1".into()),
                     text: "gen-1 report".into(),
                     author: devboule_protocol::UserMessageAuthor::Human,
+                    message_kind: devboule_protocol::UserMessageKind::Unknown,
                 },
                 SessionEvent::Output {
                     seq: 6,
@@ -2650,6 +2654,7 @@ mod tests {
                     message_id: Some("m1".into()),
                     text: "gen-1 report".into(),
                     author: devboule_protocol::UserMessageAuthor::Human,
+                    message_kind: devboule_protocol::UserMessageKind::Unknown,
                 },
                 SessionEvent::AgentMessage {
                     message_id: Some("m2".into()),
@@ -2731,6 +2736,7 @@ mod tests {
                     message_id: Some("m1".into()),
                     text: "gen-1 user".into(),
                     author: devboule_protocol::UserMessageAuthor::Human,
+                    message_kind: devboule_protocol::UserMessageKind::Unknown,
                 },
                 SessionEvent::AgentMessage {
                     message_id: Some("m2".into()),

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use devboule_protocol::{
     cursor_replay_ok, AgentActivityState, Attention, AttentionReason, Cursor, ErrorCode,
     NoticeSeverity, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionModel,
-    SessionOrigin, TranscriptIntegrity, UserMessageAuthor, WireError,
+    SessionOrigin, TranscriptIntegrity, UserMessageAuthor, UserMessageKind, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -1182,6 +1182,7 @@ impl SessionRuntime {
         &self,
         text: String,
         author: UserMessageAuthor,
+        message_kind: UserMessageKind,
     ) -> Option<String> {
         // The id is built by the publisher, so the event, the transcript and the
         // journal row that links to it (`Steered`) name one message: the caller
@@ -1191,6 +1192,7 @@ impl SessionRuntime {
             message_id: Some(format!("devboule-user-{generation}-{seq}")),
             text,
             author,
+            message_kind,
         })
         .and_then(|event| match event {
             SessionEvent::AgentUserMessage { message_id, .. } => message_id,

@@ -2772,6 +2772,7 @@ fn the_transcript_store_holds_the_whole_history_whatever_the_cursor_says() {
             message_id: Some("m1".into()),
             text: "gen-1 user".into(),
             author: devboule_protocol::UserMessageAuthor::Human,
+            message_kind: devboule_protocol::UserMessageKind::Unknown,
         },
     )
     .unwrap();
@@ -10083,12 +10084,15 @@ fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
         )
         .expect("the steer is accepted");
 
-    let echoes: Vec<(Option<String>, String)> = drain(&conn)
+    let echoes: Vec<(Option<String>, String, devboule_protocol::UserMessageKind)> = drain(&conn)
         .into_iter()
         .filter_map(|event| match event {
             SessionEvent::AgentUserMessage {
-                message_id, text, ..
-            } => Some((message_id, text)),
+                message_id,
+                text,
+                message_kind,
+                ..
+            } => Some((message_id, text, message_kind)),
             _ => None,
         })
         .collect();
@@ -10096,6 +10100,11 @@ fn an_accepted_steer_echoes_one_user_message_and_journals_one_steered_row() {
     assert_eq!(
         echoes[0].1, "turn left instead",
         "and it is the steered text"
+    );
+    assert_eq!(
+        echoes[0].2,
+        devboule_protocol::UserMessageKind::Composer,
+        "a steer is still the person's composer message"
     );
     let echo_message_id = echoes[0]
         .0
@@ -10471,14 +10480,22 @@ fn a_peer_bearer_with_a_local_source_keeps_the_local_echo() {
             &peer,
         )
         .expect("a local MCP source may message the target");
-    let echoes: Vec<String> = drain(&source_conn)
+    let echoes: Vec<(String, devboule_protocol::UserMessageKind)> = drain(&source_conn)
         .into_iter()
         .filter_map(|event| match event {
-            SessionEvent::AgentUserMessage { text, .. } => Some(text),
+            SessionEvent::AgentUserMessage {
+                text, message_kind, ..
+            } => Some((text, message_kind)),
             _ => None,
         })
         .collect();
-    assert_eq!(echoes, vec!["MCP local source"]);
+    assert_eq!(
+        echoes,
+        vec![(
+            "MCP local source".to_string(),
+            devboule_protocol::UserMessageKind::OutgoingA2a,
+        )]
+    );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -10530,10 +10547,19 @@ fn sender_a2a_echo_is_agent_while_human_composer_echo_is_human() {
     // Live observers, not the journal: `insert_live_agent_*` bypasses the
     // session row `replay` needs, and both echoes are published to the
     // sender's own attachment.
-    let echoes: Vec<(String, devboule_protocol::UserMessageAuthor)> = drain(&conn)
+    let echoes: Vec<(
+        String,
+        devboule_protocol::UserMessageAuthor,
+        devboule_protocol::UserMessageKind,
+    )> = drain(&conn)
         .into_iter()
         .filter_map(|event| match event {
-            SessionEvent::AgentUserMessage { text, author, .. } => Some((text, author)),
+            SessionEvent::AgentUserMessage {
+                text,
+                author,
+                message_kind,
+                ..
+            } => Some((text, author, message_kind)),
             _ => None,
         })
         .collect();
@@ -10544,21 +10570,31 @@ fn sender_a2a_echo_is_agent_while_human_composer_echo_is_human() {
     );
     let human = echoes
         .iter()
-        .find(|(text, _)| text == "human composer words")
+        .find(|(text, _, _)| text == "human composer words")
         .expect("human echo");
     assert_eq!(
         human.1,
         devboule_protocol::UserMessageAuthor::Human,
         "composer input stays human"
     );
+    assert_eq!(
+        human.2,
+        devboule_protocol::UserMessageKind::Composer,
+        "composer input is a composer message"
+    );
     let peer = echoes
         .iter()
-        .find(|(text, _)| text == "Reply with exactly PING2")
+        .find(|(text, _, _)| text == "Reply with exactly PING2")
         .expect("sender echo");
     assert_eq!(
         peer.1,
         devboule_protocol::UserMessageAuthor::Agent,
         "sender A2A echo is not the human"
+    );
+    assert_eq!(
+        peer.2,
+        devboule_protocol::UserMessageKind::OutgoingA2a,
+        "the sender echo is an outgoing A2A message"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);

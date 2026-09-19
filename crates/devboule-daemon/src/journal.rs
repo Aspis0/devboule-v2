@@ -3521,7 +3521,7 @@ fn sample_session(id: &str) -> SessionRecord {
 mod tests {
     use super::*;
     use devboule_protocol::TranscriptIntegrity;
-    use devboule_protocol::UserMessageAuthor;
+    use devboule_protocol::{UserMessageAuthor, UserMessageKind};
     use std::process::Command;
 
     /// §8 R2 / H7: the origin a *row* reads back as. `local` is the pre-v9
@@ -5229,6 +5229,7 @@ mod tests {
             message_id: Some("m1".into()),
             text: "gen-1 user".into(),
             author: UserMessageAuthor::Human,
+            message_kind: UserMessageKind::Unknown,
         };
         let answer_before = SessionEvent::AgentMessage {
             message_id: Some("m2".into()),
@@ -5286,6 +5287,7 @@ mod tests {
             message_id: Some("m1".into()),
             text: "gen-1 user".into(),
             author: UserMessageAuthor::Human,
+            message_kind: UserMessageKind::Unknown,
         };
         journal
             .append_blocking(agent_report_record(id, 1, 1, &frame).unwrap())
@@ -5347,6 +5349,7 @@ mod tests {
             message_id: Some("m1".into()),
             text: "gen-1 user".into(),
             author: UserMessageAuthor::Human,
+            message_kind: UserMessageKind::Unknown,
         };
         let answer_before = SessionEvent::AgentMessage {
             message_id: Some("m2".into()),
@@ -5401,6 +5404,7 @@ mod tests {
             message_id: Some("m1".into()),
             text: "gen-1 user".into(),
             author: UserMessageAuthor::Human,
+            message_kind: UserMessageKind::Unknown,
         };
         let answer_after = SessionEvent::AgentMessage {
             message_id: Some("m2".into()),
