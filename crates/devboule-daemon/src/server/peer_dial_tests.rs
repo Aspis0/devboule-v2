@@ -218,6 +218,34 @@ fn a_dial_refuses_a_far_end_that_does_not_advertise_the_roster() {
 }
 
 #[test]
+fn a_dial_refuses_a_far_end_that_does_not_advertise_agent_messages() {
+    let state = ServerState::new("peer-dial-agent-messages-unsupported".into());
+    let keypair = pinned_keypair();
+    let private: [u8; 32] = keypair.private.clone().try_into().expect("32 bytes");
+    let (address, responder) = spawn_rosterless_responder(private);
+    state
+        .peer_upsert(dial_row(address.to_string(), &keypair.public))
+        .expect("upsert the row");
+
+    let error = call_peer(
+        &state,
+        "b",
+        ClientMessage::AgentMessageSend {
+            id: 0,
+            from_session: "s.far.source".to_string(),
+            to_session: "s.local.target".to_string(),
+            text: "hello".to_string(),
+            idempotency_key: None,
+        },
+    )
+    .expect_err("a far end that cannot speak remote send must be refused");
+    assert_eq!(error.step(), "unsupported", "{error}");
+    responder
+        .join()
+        .expect("the old responder must see no request");
+}
+
+#[test]
 fn a_revoked_row_is_not_dialable() {
     let state = ServerState::new("peer-dial-revoked".into());
     let keypair = pinned_keypair();

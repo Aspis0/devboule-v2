@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { parseAgentPeerMessage } from "./agentPeerMessage";
 
-/** Fixtures built on the producer's own words. `from_agent` is the source
- *  session id (`session.rs:8164` writes `from_agent: {from_session}`; the
- *  daemon's own test asserts the literal `from_agent: s.msg.source`,
- *  `session_tests.rs:10118`). `origin` is one of the three shapes
+/** Fixtures built on the producer's own words. `from_agent` is the local
+ *  source session id or the authenticated peer namespace
+ *  `peer:<device>/<far-id>`; the daemon composes both forms. `origin` is one
+ *  of the three shapes
  *  `origin_line` writes (`session.rs:8026`): `local`, `peer:<device_id>` with
  *  a UUID device (pairing refuses anything `Uuid::parse_str` refuses,
  *  `pairing.rs:1227`), or `unknown`. `role` is `client` for a local caller
@@ -145,6 +145,16 @@ describe("parseAgentPeerMessage", () => {
       origin: { kind: "peer", device: "7c9e6679-7425-40de-944b-e07fc1f90ae7" },
       body: "words from the paired device",
     });
+  });
+
+  it("keeps a namespaced far sender as the sender name", () => {
+    const message = parseAgentPeerMessage(
+      relayEnvelope(["words from a far session"], {
+        origin: "peer:7c9e6679-7425-40de-944b-e07fc1f90ae7",
+        fromAgent: "peer:7c9e6679-7425-40de-944b-e07fc1f90ae7/s.msg.source",
+      }),
+    );
+    expect(message?.fromAgent).toBe("peer:7c9e6679-7425-40de-944b-e07fc1f90ae7/s.msg.source");
   });
 
   it("treats `peer:` with an empty device as a peer that names none, never an empty name", () => {

@@ -6,7 +6,8 @@
  *     origin: local|peer:<device>|unknown  ← provenance, never a gate
  *     role: …                              ← composed from the caller's peer record; not read
  *     from_agent: s.msg.source             ← the marker sender, only BEFORE the
- *                                            timestamp; a session id (`session.rs:8164`)
+ *                                            timestamp; local ids stay raw, while
+ *                                            far ids are `peer:<device>/<id>`
  *     timestamp: …                         ← the header block ends here
  *     …the sender's message…               ← body, verbatim
  *     </devboule-system>

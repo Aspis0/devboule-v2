@@ -6,10 +6,9 @@ import { boundByGraphemes } from "../../lib/graphemeBound";
 type A2aMessageItem = Extract<AgentChatItem, { role: "a2a_message" }>;
 
 /** What the card resolves names against, handed down from the workspace.
-    `from_agent` is a session id and a peer device is a UUID, so both go
-    through the app's own name sources — `sessionTitle`'s roster rows and the
-    pairing `DevicesList` map. Nothing on the wire is trusted for a name: the
-    local roster is what the person at this machine approved. */
+    Local `from_agent` ids go through the app's roster; an authenticated far
+    label stays raw after its redundant `peer:<device>/` namespace is removed.
+    Only the separately authenticated device goes through the pairing map. */
 export interface A2aNameSource {
   sessionById: ReadonlyMap<string, Pick<Session, "displayName" | "id" | "kind" | "title">>;
   deviceNames: ReadonlyMap<string, string>;
@@ -35,7 +34,20 @@ export interface A2aNameSource {
 // stay on the sentence element's `title`.
 const NAME_LIMIT = 200;
 
+function farSenderLabel(item: A2aMessageItem): string | null {
+  if (!item.fromAgent.startsWith("peer:")) return null;
+  if (item.origin.kind !== "peer" || item.origin.device === null) return item.fromAgent;
+
+  const prefix = `peer:${item.origin.device}/`;
+  return item.fromAgent.startsWith(prefix) ? item.fromAgent.slice(prefix.length) : item.fromAgent;
+}
+
 function senderName(item: A2aMessageItem, names: A2aNameSource): string {
+  // A far label is never a local roster key: its namespace is the proof that
+  // its session id belongs to another device, not an id this machine may name.
+  const farLabel = farSenderLabel(item);
+  if (farLabel !== null) return farLabel;
+
   const session = names.sessionById.get(item.fromAgent);
   // `sessionTitle` is the app's one name rule (displayName, then title).
   return session !== undefined ? sessionTitle(session) : item.fromAgent;
@@ -58,6 +70,9 @@ function messageCopy(item: A2aMessageItem, names: A2aNameSource): string {
 }
 
 function titleParts(item: A2aMessageItem): string[] {
+  // Keep the exact wire label and authenticated device in the tooltip for
+  // inspection; the sentence removes only the namespace that repeats that
+  // device for a reader.
   const parts = [item.fromAgent];
   if (item.origin.kind === "peer" && item.origin.device !== null) {
     parts.push(item.origin.device);

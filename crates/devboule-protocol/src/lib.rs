@@ -264,6 +264,9 @@ pub mod caps {
     /// name: this one says whether the frame can be spoken, that one says
     /// whether reading is allowed.
     pub const PEER_AGENTS: &str = "peer_agents";
+
+    /// The remote-sender form of `AgentMessageSend`.
+    pub const AGENT_MESSAGES: &str = "agent_messages";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -624,6 +627,9 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     // to refuse a far end that predates `PeerAgentsList` before the frame can
     // fail its reader.
     capabilities.push(Capability::new(caps::PEER_AGENTS));
+    // `AgentMessageSend` can carry a sender that lives on the far daemon, so
+    // a dialer must refuse a daemon that predates that wire meaning.
+    capabilities.push(Capability::new(caps::AGENT_MESSAGES));
     capabilities
 }
 
@@ -676,6 +682,9 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     // refuse a peer that predates the frame before the frame can kill the
     // connection.
     capabilities.push(Capability::new(caps::PEER_AGENTS));
+    // Keep the frame meaning negotiated on both sides: an older daemon would
+    // otherwise answer a far sender with the wrong local-absence receipt.
+    capabilities.push(Capability::new(caps::AGENT_MESSAGES));
     capabilities
 }
 

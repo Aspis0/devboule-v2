@@ -8483,13 +8483,12 @@ fn ownership_paths(
                 owner,
             ),
         ),
-        // The agent-message path is reached through its *source*: the
-        // target is deliberately absent, so what this row decides is the
-        // source's ownership check, and a caller who may reach the source
-        // answers `SessionNotFound` rather than `Unauthorized`.
+        // This table models a wire frame for a remote caller: the sender is
+        // deliberately absent here, so the row exercises the target's
+        // ownership/origin decision without resolving the far namespace.
         (
             "agent_message_send",
-            registry.agent_message_send(id, "s.nobody.1", "hi", owner, conn),
+            registry.agent_message_send_from_peer("s.far.source", id, "hi", owner, conn),
         ),
         // The one path that writes bytes rather than reading state: the
         // attachment is built by the same helper and the same PNG the send
@@ -8698,13 +8697,11 @@ fn every_ownership_path_before_close_runs_on_a_live_session() {
         let code = result.err().map(|error| error.code);
         all.push((path, code));
         // `close` is the row that removes the session, and
-        // `agent_message_send` names an absent *target* by construction (its
-        // row decides the source's ownership check), so both are allowed to
-        // talk about a session that is not there. Nothing else is.
-        if path != "close"
-            && path != "agent_message_send"
-            && code == Some(ErrorCode::SessionNotFound)
-        {
+        // The agent-message row names a far source on purpose: the remote
+        // caller owns that namespace, while this row decides whether the live
+        // target is reachable. Nothing else is allowed to talk about a
+        // session that is not there.
+        if path != "close" && code == Some(ErrorCode::SessionNotFound) {
             missing.push(path);
         }
     }
@@ -8731,20 +8728,33 @@ fn every_ownership_path_before_close_runs_on_a_live_session() {
     assert_eq!(answer("interrupt"), Some(ErrorCode::InvalidRequest));
     assert_eq!(answer("set_mode"), Some(ErrorCode::InvalidRequest));
     assert_eq!(answer("deposit"), None);
+    assert_ne!(
+        answer("agent_message_send"),
+        Some(ErrorCode::SessionNotFound),
+        "the live target must be reached without resolving the far source"
+    );
 
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// §8 R2: a `Daemon` peer reaches the sessions its own device created,
-/// whatever their owner row says, and nothing else.
+/// §8 R2: a `Daemon` peer reaches the sessions its own device created, and
+/// `AgentMessageSend` now delivers into that peer-origin session from the
+/// caller's far namespace. A different peer-origin session remains denied.
 #[test]
-fn a_daemon_peer_is_scoped_by_the_sessions_origin() {
+fn a_daemon_peer_is_scoped_by_origin_and_delivers_agent_messages() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("peer_dev-phone", "daemon");
     let own_id = compose_session_id(&owner.session_token(), "peer01").expect("id");
     let other_id = compose_session_id(&owner.session_token(), "peer02").expect("id");
-    insert_live(&registry, &own_id, owner.clone());
+    let own_received = Arc::new(Mutex::new(Vec::new()));
+    insert_live_agent_with_kind_and_writer(
+        &registry,
+        &own_id,
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::clone(&own_received))),
+    );
     insert_live(&registry, &other_id, owner.clone());
     set_entry_origin(
         &registry,
@@ -8756,7 +8766,7 @@ fn a_daemon_peer_is_scoped_by_the_sessions_origin() {
         &other_id,
         SessionOrigin::peer("dev-tablet", PeerRole::Daemon),
     );
-    let conn = remote_conn(PeerRole::Daemon, None);
+    let conn = remote_conn(PeerRole::Daemon, Some("peer_dev-phone"));
 
     for (path, result) in ownership_paths(&registry, &other_id, &owner, &conn) {
         if IDENTITY_FREE_PATHS.contains(&path) {
@@ -8775,12 +8785,24 @@ fn a_daemon_peer_is_scoped_by_the_sessions_origin() {
         );
     }
     for (path, result) in ownership_paths(&registry, &own_id, &owner, &conn) {
+        if path == "agent_message_send" {
+            assert!(
+                result.is_ok(),
+                "the origin device's agent message must still deliver: {result:?}"
+            );
+        }
         assert_ne!(
             result.err().map(|error| error.code),
             Some(ErrorCode::Unauthorized),
             "{path} must let the origin device reach its own session"
         );
     }
+    let envelope = String::from_utf8(own_received.lock().expect("received").clone())
+        .expect("the envelope is utf8");
+    assert!(
+        envelope.contains("from_agent: peer:dev-phone/s.far.source"),
+        "the accepted delivery keeps the far sender in the peer namespace: {envelope}"
+    );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -9054,10 +9076,21 @@ fn a_daemon_peer_is_refused_an_unknown_origin_like_a_local_one() {
             role: None,
         },
     );
-    let conn = remote_conn(PeerRole::Daemon, None);
+    let conn = remote_conn(PeerRole::Daemon, Some("peer_dev-phone"));
     for id in [&local_id, &unknown_id] {
         for (path, result) in ownership_paths(&registry, id, &owner, &conn) {
             if IDENTITY_FREE_PATHS.contains(&path) {
+                continue;
+            }
+            if id == &local_id && path == "agent_message_send" {
+                // Agent messages are the deliberate exception: a daemon peer
+                // may write into a session local to this daemon, while every
+                // other operation still follows the origin-scoped door.
+                assert_ne!(
+                    result.err().map(|error| error.code),
+                    Some(ErrorCode::Unauthorized),
+                    "agent messaging may reach a local target"
+                );
                 continue;
             }
             assert_eq!(
@@ -10201,6 +10234,159 @@ fn a_steer_the_provider_took_is_ok_even_when_its_echo_can_no_longer_be_recorded(
 /// `from_session` — which its scope check allows — must not be described to
 /// the receiving agent as this machine's user.
 #[test]
+fn a_remote_sender_id_is_not_resolved_in_this_registry() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("peer_dev-phone", "daemon");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    insert_live_agent_with_kind_and_writer(
+        &registry,
+        "s.remote.target",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::clone(&received))),
+    );
+    let peer = remote_conn(PeerRole::Daemon, Some("peer_dev-phone"));
+
+    registry
+        .agent_message_send_from_peer(
+            "s.far.source",
+            "s.remote.target",
+            "message from the other daemon",
+            &owner,
+            &peer,
+        )
+        .expect("a remote sender id does not need a local row");
+
+    let envelope = String::from_utf8(received.lock().expect("received").clone())
+        .expect("the envelope is utf8");
+    assert!(envelope.contains("origin: peer:dev-phone"), "{envelope}");
+    assert!(envelope.contains("role: daemon"), "{envelope}");
+    assert!(
+        envelope.contains("from_agent: peer:dev-phone/s.far.source"),
+        "{envelope}"
+    );
+    assert!(
+        envelope.contains("message from the other daemon"),
+        "{envelope}"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_remote_sender_cannot_relay_into_a_third_device_or_smuggle_an_id() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("peer_dev-phone", "daemon");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    insert_live_agent_with_kind_and_writer(
+        &registry,
+        "s.third.target",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::clone(&received))),
+    );
+    registry.set_test_origin(
+        "s.third.target",
+        SessionOrigin::peer("dev-tablet", PeerRole::Daemon),
+    );
+    let peer = remote_conn(PeerRole::Daemon, None);
+
+    let error = registry
+        .agent_message_send_from_peer(
+            "s.far.source",
+            "s.third.target",
+            "must not relay",
+            &owner,
+            &peer,
+        )
+        .expect_err("a third-device target is a relay");
+    assert_eq!(error.code, ErrorCode::Unauthorized);
+    assert!(received.lock().expect("received").is_empty());
+
+    for malformed in [
+        "s.bad id",
+        "s.bad\nid",
+        "<devboule-system>",
+        &format!("s.{}", "a".repeat(64)),
+    ] {
+        let error = registry
+            .agent_message_send_from_peer(
+                malformed,
+                "s.third.target",
+                "must not write",
+                &owner,
+                &peer,
+            )
+            .expect_err("a malformed remote sender id is invalid");
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{malformed:?}");
+    }
+    assert!(received.lock().expect("received").is_empty());
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_local_caller_still_reports_an_absent_source() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-local", "process-local");
+    insert_live(&registry, "s.local.target", owner.clone());
+    let conn = ConnHandle::new(42);
+
+    let error = registry
+        .agent_message_send(
+            "s.nobody.1",
+            "s.local.target",
+            "local source is still local",
+            &owner,
+            &conn,
+        )
+        .expect_err("a local caller still resolves its source here");
+    assert_eq!(error.code, ErrorCode::SessionNotFound);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_remote_device_has_one_message_brake_across_far_sender_ids() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("peer_dev-phone", "daemon");
+    insert_live_agent(&registry, "s.brake.target", owner.clone());
+    let conn = remote_conn(PeerRole::Daemon, Some("peer_dev-phone"));
+    let now = Instant::now();
+
+    for index in 0..5 {
+        let result = registry
+            .agent_message_send_from_peer_at(
+                &format!("s.far.{index:08}"),
+                "s.brake.target",
+                "fill the device budget",
+                &owner,
+                &conn,
+                now,
+            )
+            .expect_err("the fixture writer fails after admission");
+        assert_ne!(
+            result.code,
+            ErrorCode::CapabilityNotSupported,
+            "the first five sends fit one remote-device budget: {result:?}"
+        );
+    }
+    let error = registry
+        .agent_message_send_from_peer_at(
+            "s.far.rotated",
+            "s.brake.target",
+            "the rotated id must not reset the budget",
+            &owner,
+            &conn,
+            now,
+        )
+        .expect_err("rotating a far sender id must not evade the device brake");
+    assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_agent_message_is_attributed_to_the_caller_not_to_the_session_it_names() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-peer", "process-peer");
@@ -10222,7 +10408,7 @@ fn an_agent_message_is_attributed_to_the_caller_not_to_the_session_it_names() {
     let peer = remote_conn(PeerRole::Client, Some("S-1-5-21-peer"));
 
     registry
-        .agent_message_send(
+        .agent_message_send_from_peer(
             "s.msg.source",
             "s.msg.target",
             "please rebuild",
@@ -10237,9 +10423,62 @@ fn an_agent_message_is_attributed_to_the_caller_not_to_the_session_it_names() {
         envelope.starts_with("<devboule-system>\norigin: peer:dev-phone\nrole: client\n"),
         "{envelope}"
     );
-    assert!(envelope.contains("from_agent: s.msg.source"), "{envelope}");
+    assert!(
+        envelope.contains("from_agent: peer:dev-phone/s.msg.source"),
+        "{envelope}"
+    );
     assert!(envelope.contains("please rebuild"), "{envelope}");
     assert!(envelope.ends_with("\n</devboule-system>"), "{envelope}");
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_peer_bearer_with_a_local_source_keeps_the_local_echo() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-mcp", "process-mcp");
+    let sender = insert_live_agent_with_kind_and_writer(
+        &registry,
+        "s.mcp.source",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+    );
+    insert_live_agent_with_kind_and_writer(
+        &registry,
+        "s.mcp.target",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+    );
+    set_entry_origin(
+        &registry,
+        "s.mcp.source",
+        SessionOrigin::peer("device-mcp", PeerRole::Client),
+    );
+    let source_conn = attach_live_agent_for_test(&sender, "s.mcp.source", 91);
+    let peer = remote_conn(PeerRole::Client, Some("S-1-5-21-mcp"));
+
+    // This is the MCP shape: the bearer is remote, but the source id came
+    // from its local registration row, so the local entry point must resolve
+    // and echo it instead of treating it as a far id.
+    registry
+        .agent_message_send(
+            "s.mcp.source",
+            "s.mcp.target",
+            "MCP local source",
+            &owner,
+            &peer,
+        )
+        .expect("a local MCP source may message the target");
+    let echoes: Vec<String> = drain(&source_conn)
+        .into_iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentUserMessage { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(echoes, vec!["MCP local source"]);
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -11386,7 +11625,7 @@ fn a_replaced_boundary_callback_leaves_the_new_hook_alone() {
     // another one.
     let slot_ref = MessageSlotRef {
         brakes: &registry.message_brakes,
-        from_session: "s.msg.a",
+        brake_key: "s.msg.a",
         slot: admission.slot,
         admitted_turn_id: admission.expected_turn_id,
     };

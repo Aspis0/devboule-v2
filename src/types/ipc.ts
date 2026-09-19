@@ -1512,10 +1512,11 @@ export type AgentMessageState =
 
 /**
  * Wire mirror of `ClientMessage::AgentMessageSend`: one session hands text to
- * another session's turn. `fromSession` is imposed by the daemon — from the
- * authenticated owner on the pipe path, from the bearer's registered session
- * on the MCP tool path — never from anything the sender sets. `id` is the
- * request id the receipt echoes.
+ * another session's turn. `fromSession` is imposed by the daemon in the
+ * caller's namespace: a local pipe caller names a local session, while a
+ * remote peer's validated far id is rendered with the authenticated device
+ * as `peer:<device>/<id>`. The device is taken from the connection, never
+ * from anything the sender sets. `id` is the request id the receipt echoes.
  *
  * This is the daemon protocol's shape, not a Tauri command payload; the app
  * has no send path for inter-agent messages yet, and the layer that adds one

@@ -184,13 +184,19 @@ pub(super) fn dispatch_session(
             {
                 return reply;
             }
-            let reply = match state.sessions.agent_message_send(
-                &from_session,
-                &to_session,
-                &text,
-                owner,
-                conn,
-            ) {
+            let reply = match if matches!(&conn.conn_peer, Some(ConnPeer::Remote { .. })) {
+                state.sessions.agent_message_send_from_peer(
+                    &from_session,
+                    &to_session,
+                    &text,
+                    owner,
+                    conn,
+                )
+            } else {
+                state
+                    .sessions
+                    .agent_message_send(&from_session, &to_session, &text, owner, conn)
+            } {
                 Ok(()) => {
                     let reply = DaemonMessage::AgentMessageReceipt {
                         id,

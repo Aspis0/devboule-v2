@@ -69,7 +69,7 @@ pub(super) fn run_gate(
                 // recorded as such — a paired device asking for unattended
                 // execution is a different event in the trail from a device
                 // asking for something it may not have.
-                if let Some(reason) = peer_mode_refusal(state, request) {
+                if let Some(reason) = peer_mode_refusal_for_conn(state, request, &conn.conn_peer) {
                     audit_peer_request(state, &conn.conn_peer, request, reason);
                     return Err(Box::new(mode_refused(request.request_id(), reason)));
                 }
@@ -113,11 +113,12 @@ pub(super) fn capability_not_supported(id: Option<u64>, capability: &str) -> Dae
 ///    an `Option`). One predicate, so both forms are refused with the same
 ///    sentence — `peer_policy::PEER_ATTACHMENTS_UNSUPPORTED` — and the refusal
 ///    reads identically whichever frame it arrives on.
-/// 2. A request that names a session has its ownership decided before the mode
-///    lookup (`SessionRegistry::session_scope`), so the policy gate can never
-///    answer "that session exists, and it runs this provider" to a peer that
-///    may not reach it. The denial for a foreign session and the denial for a
-///    session this daemon does not know are the same frame (§8b A1/A3).
+/// 2. A request that names a session has its scope decided before the mode
+///    lookup, so the policy gate can never answer "that session exists, and it
+///    runs this provider" to a peer that may not reach it. An agent message
+///    admits only the authenticated daemon peer's allowed local target; an
+///    unknown target and a target owned by another peer receive the same scope
+///    error, so the gate cannot become an existence oracle (§8b A1/A3).
 ///
 /// Returns the frame to send, when there is one. `dispatch` records the audit
 /// row, so the label stays in one place.
@@ -146,28 +147,33 @@ pub(super) fn peer_refusal_before_mode(
             None => error,
         }));
     }
-    let session_id = match request {
+    let scope = match request {
         ClientMessage::SessionAttach { session_id, .. }
         | ClientMessage::SessionSend { session_id, .. }
-        | ClientMessage::SessionSetMode { session_id, .. } => session_id,
+        | ClientMessage::SessionSetMode { session_id, .. } => {
+            state.sessions.session_scope(session_id, owner, conn_peer)
+        }
         // An agent message names two sessions and its *target* is the one that
-        // receives the prompt, so the target is the one this gate authorizes —
-        // exactly as a `SessionSend` would. The source is decided by the
-        // registry's own ownership check inside `agent_message_send`.
-        ClientMessage::AgentMessageSend { to_session, .. } => to_session,
+        // receives the prompt. The target classifier is the single scope rule:
+        // only the allowed local target proceeds to mode policy, while a relay
+        // is refused here exactly like an unknown id.
+        ClientMessage::AgentMessageSend { to_session, .. } => state
+            .sessions
+            .agent_message_target_scope(to_session, owner, conn_peer),
         // Every other shape: no session to authorize before the mode gate,
         // which only reads a session for these four.
         _ => return None,
     };
-    let error = state
-        .sessions
-        .session_scope(session_id, owner, conn_peer)
-        .err()?;
+    let error = scope.err()?;
     Some(match request.request_id() {
         Some(id) => DaemonMessage::Error(error.with_id(id)),
         None => DaemonMessage::Error(error),
     })
 }
+
+#[cfg(test)]
+#[path = "peer_gate_tests.rs"]
+mod tests;
 
 /// §8b A4/A5/R3: would this request run a session without asking this machine's
 /// user, or name a mode this daemon cannot vet?
@@ -185,20 +191,20 @@ pub(super) fn peer_refusal_before_mode(
 /// says which rule fired: A5's prompt-skipping list, or R3's ACP modes.
 ///
 /// A session this daemon does not know is not a refusal here: the request still
-/// has to pass the ownership check, and the answer for an unknown id is the
-/// ownership denial rather than a policy verdict. The mode lookup runs *after*
-/// the ownership check for the session-naming arms: `dispatch` asks
-/// `SessionRegistry::session_scope` first, so this function never answers a
-/// question about a session the caller may not reach (§8b A1, H6).
+/// has to pass the scope check, and the answer for an unknown id is the scope
+/// denial rather than a policy verdict. Scope-denied agent-message targets skip
+/// this mode lookup so neither their provider mode nor their existence is
+/// disclosed (§8b A1, H6).
 ///
 /// The match below is closed over `ClientMessage` with no `_` arm: a new
 /// variant does not compile until it says whether it carries a mode, which is
 /// what keeps this gate from silently ignoring one. `SessionCreate` takes two
 /// arms because its `mode` is optional; `AgentMessageSend` takes its own arm
 /// because the session it names is its *target*, not a `session_id` field.
-pub(super) fn peer_mode_refusal(
+pub(super) fn peer_mode_refusal_for_conn(
     state: &ServerState,
     request: &ClientMessage,
+    conn_peer: &Option<ConnPeer>,
 ) -> Option<&'static str> {
     match request {
         // A create names its own kind and mode in the frame, and ACP mode ids
@@ -244,9 +250,14 @@ pub(super) fn peer_mode_refusal(
         // receives the prompt, so the target is the session this gate vets,
         // exactly as `SessionSend`'s own session is. Spelled out rather than
         // folded into the arm above: it is the decision this slice adds.
-        ClientMessage::AgentMessageSend { to_session, .. } => {
+        ClientMessage::AgentMessageSend { to_session, .. }
+            if state
+                .sessions
+                .agent_message_target_is_mode_visible(to_session, conn_peer) =>
+        {
             prompt_into_session_refusal(state, to_session)
         }
+        ClientMessage::AgentMessageSend { .. } => None,
         // Every other frame carries no mode, so this gate has no verdict for it
         // — one arm per variant and no `_` arm, because a new `ClientMessage`
         // variant is a decision here. A frame that names a session but no mode
@@ -421,7 +432,7 @@ pub(super) fn audit_peer_request(
 /// both a session kind and a mode, so it is the only one this can classify
 /// without a session lookup — and this gate runs before any session is
 /// touched. A `SessionSetMode` or `SessionSend` refusal is classified by the
-/// decision that made it (`peer_mode_refusal`), which has the registry in hand,
+/// decision that made it (`peer_mode_refusal_for_conn`), which has the registry in hand,
 /// and reaches the trail through this function unchanged. The request is
 /// refused either way; the two outcomes are worth distinguishing because "a
 /// paired machine asked for unattended execution" is a different event in the

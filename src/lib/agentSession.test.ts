@@ -2174,12 +2174,11 @@ describe("creator daemon notice envelopes", () => {
       messageId: "m-12",
       text: [
         "<devboule-system>",
-        // Producer-true: a paired caller's envelope (`session.rs:8164` writes
-        // `from_agent: {from_session}`; `origin_line` writes `peer:<uuid>`,
-        // `session.rs:8026`).
+        // Producer-true: a far sender is namespaced by the authenticated
+        // device, while `origin` carries the same device provenance.
         "origin: peer:7c9e6679-7425-40de-944b-e07fc1f90ae7",
         "role: daemon",
-        "from_agent: s.msg.source",
+        "from_agent: peer:7c9e6679-7425-40de-944b-e07fc1f90ae7/s.msg.source",
         "timestamp: 1789671600000",
         "words the peer sent",
         "</devboule-system>",
@@ -2193,7 +2192,7 @@ describe("creator daemon notice envelopes", () => {
     // origin names the device it came from.
     expect(items[0].role).toBe("a2a_message");
     if (items[0].role !== "a2a_message") return;
-    expect(items[0].fromAgent).toBe("s.msg.source");
+    expect(items[0].fromAgent).toBe("peer:7c9e6679-7425-40de-944b-e07fc1f90ae7/s.msg.source");
     expect(items[0].origin).toEqual({
       kind: "peer",
       device: "7c9e6679-7425-40de-944b-e07fc1f90ae7",

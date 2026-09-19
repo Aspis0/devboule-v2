@@ -36,6 +36,10 @@ pub enum PeerDecision {
 /// pins these five to it so a rename cannot leave the gate enforcing a
 /// capability nobody can hold.
 pub const CAP_VIEW: &str = "view";
+/// `send` names two target scopes: `SessionSend` keeps the peer's existing
+/// own-origin scope, while `AgentMessageSend` lets a daemon-role peer write
+/// only into local sessions of the user who paired that device. The frame's
+/// target rule enforces the latter; this capability still gates the act.
 pub const CAP_SEND: &str = "send";
 pub const CAP_ANSWER_PERMISSIONS: &str = "answer_permissions";
 pub const CAP_CREATE_SESSIONS: &str = "create_sessions";
@@ -136,7 +140,9 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // Slice 3: the five session variants a paired device may reach, each
         // under the capability that names the act. `view` is what makes a peer
         // a viewer at all; it is the one capability `validate_caps` will not
-        // remove from a `Client` (A11).
+        // remove from a `Client` (A11). `SessionSend` keeps the peer's own
+        // origin scope; `AgentMessageSend` uses the pairing user's local
+        // target scope, because its sender may live on the far device.
         ClientMessage::SessionAttach { .. } => with_capability(caps, CAP_VIEW),
         ClientMessage::SessionCreate { .. } => with_capability(caps, CAP_CREATE_SESSIONS),
         ClientMessage::SessionSend { .. } => with_capability(caps, CAP_SEND),
@@ -262,7 +268,7 @@ fn with_capability(caps: &[String], capability: &'static str) -> PeerDecision {
 ///
 /// Called from the peer gate twice: the audit path (`server.rs::peer_outcome`)
 /// labels a denial that asked for one of these modes `prompt_skipping_refused`,
-/// and slice 3's refusal (`server.rs::peer_mode_refusal`) refuses the request
+/// and slice 3's refusal (`peer_gate::peer_mode_refusal_for_conn`) refuses the request
 /// outright — a paired device never drives a session that will not ask this
 /// machine's user.
 ///
@@ -410,7 +416,9 @@ pub enum McpToolWire {
 ///   peer's agents that may create; without the list `create_agent` is
 ///   undiscoverable (its own error sends the caller to the list).
 /// - Send (`devboule_send_message`) puts text into a session: `AgentMessageSend`,
-///   the act `send` names (`SessionSend` is the same capability).
+///   the act `send` names. `SessionSend` keeps the peer's own-origin target
+///   scope; a daemon-role `AgentMessageSend` instead reaches only local
+///   sessions belonging to the user who paired that device.
 /// - Create (`devboule_create_agent`) makes a session on the caller's device
 ///   **and** sends the mandatory `initialPrompt` as that child's first turn
 ///   (`session.rs::create_session_for_agent`, the same send path

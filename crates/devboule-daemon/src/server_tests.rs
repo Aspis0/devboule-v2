@@ -3217,8 +3217,10 @@ fn every_agent_message_receipt_state_is_produced() {
         SessionKind::Pi,
         Box::new(std::io::sink()),
     );
-    // A session of the other account: the paired device may reach the
-    // target but not this source.
+    // A session of the other account: a remote frame's source is far and is
+    // not resolved here. The target below is already in the turn started by
+    // the local send, so this receipt exercises the paired device's refusal
+    // to interrupt that turn, not source ownership.
     let other = OwnerId::new("S-user-b", "test-client").expect("owner");
     crate::session::insert_test_live_agent(&state.sessions, "s.msg.foreign", other);
 
@@ -3260,7 +3262,7 @@ fn every_agent_message_receipt_state_is_produced() {
     assert_eq!(
         receipt("s.msg.foreign", "s.msg.target", &peer),
         Some(AgentMessageState::RejectedDenied),
-        "a paired device refused a source it may not reach"
+        "a paired device cannot interrupt a target turn when steer is refused"
     );
 
     drop(state);
@@ -3269,6 +3271,130 @@ fn every_agent_message_receipt_state_is_produced() {
         rows.contains(&"AgentMessageSend:denied".to_string()),
         "the paired device's refusal is in the trail: {rows:?}"
     );
+    let _ = std::fs::remove_dir_all(path);
+}
+
+#[test]
+fn a_daemon_peer_uses_far_sender_ids_and_refuses_relays_at_the_gate() {
+    let (path, state) = temp_state("agent-message-remote-sender");
+    let owner = OwnerId::new("peer_dev-peer-1", "daemon").expect("owner");
+    let peer = remote_conn_with_caps(
+        PeerRole::Daemon,
+        Some("local-user"),
+        &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_SEND],
+    );
+    let received = crate::session::insert_test_live_agent_with_recording_writer(
+        &state.sessions,
+        "s.remote.local",
+        OwnerId::new("local-user", "local-process").expect("local owner"),
+        SessionKind::Pi,
+    );
+    let third = crate::session::insert_test_live_agent_with_recording_writer(
+        &state.sessions,
+        "s.remote.third",
+        owner.clone(),
+        SessionKind::Pi,
+    );
+    state.sessions.set_test_origin(
+        "s.remote.third",
+        devboule_protocol::SessionOrigin::peer("dev-tablet", PeerRole::Daemon),
+    );
+
+    let accepted = dispatch(
+        &state,
+        &owner,
+        ClientMessage::AgentMessageSend {
+            id: 10,
+            from_session: "s.far.source".to_string(),
+            to_session: "s.remote.local".to_string(),
+            text: "hello from the far daemon".to_string(),
+            idempotency_key: None,
+        },
+        &peer,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the dispatch returns a receipt");
+    assert!(matches!(
+        accepted,
+        DaemonMessage::AgentMessageReceipt {
+            state: AgentMessageState::Accepted,
+            ..
+        }
+    ));
+    let envelope = String::from_utf8(received.lock().expect("received").clone())
+        .expect("the envelope is utf8");
+    assert!(envelope.contains("origin: peer:dev-peer-1"), "{envelope}");
+    assert!(
+        envelope.contains("from_agent: peer:dev-peer-1/s.far.source"),
+        "{envelope}"
+    );
+
+    let denied = dispatch(
+        &state,
+        &owner,
+        ClientMessage::AgentMessageSend {
+            id: 11,
+            from_session: "s.far.source".to_string(),
+            to_session: "s.remote.third".to_string(),
+            text: "must not relay".to_string(),
+            idempotency_key: None,
+        },
+        &peer,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the dispatch returns the gate's denial");
+    assert!(matches!(
+        denied,
+        DaemonMessage::Error(WireError {
+            code: ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert!(third.lock().expect("third target").is_empty());
+    assert_eq!(
+        audit_rows(&path),
+        vec![
+            "AgentMessageSend:ok".to_string(),
+            "AgentMessageSend:denied".to_string(),
+        ],
+        "the relay is denied at the gate without an earlier ok row"
+    );
+
+    let malformed = dispatch(
+        &state,
+        &owner,
+        ClientMessage::AgentMessageSend {
+            id: 12,
+            from_session: "s.bad id".to_string(),
+            to_session: "s.remote.local".to_string(),
+            text: "must not write".to_string(),
+            idempotency_key: None,
+        },
+        &peer,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("the dispatch returns an invalid request");
+    assert!(matches!(
+        malformed,
+        DaemonMessage::Error(WireError {
+            code: ErrorCode::InvalidRequest,
+            ..
+        })
+    ));
+    let envelope_after_malformed = String::from_utf8(received.lock().expect("received").clone())
+        .expect("the envelope is utf8");
+    assert_eq!(envelope_after_malformed, envelope);
+
+    drop(state);
     let _ = std::fs::remove_dir_all(path);
 }
 
@@ -3329,7 +3455,7 @@ fn a_peer_create_in_a_prompt_skipping_mode_is_refused_and_labelled() {
 /// A4/A5/R3, the frame side of the same rule: which frames have a mode
 /// question *at all*.
 ///
-/// The match in `peer_mode_refusal` is closed over `ClientMessage` with no
+/// The match in `peer_mode_refusal_for_conn` is closed over `ClientMessage` with no
 /// `_` arm, so the compiler is what proves every variant has an answer. What
 /// this test adds is the frame list: `peer_policy`'s matrix carries one
 /// sample per variant, pinned by `VARIANT_COUNT`, so walking it here asks
@@ -3392,7 +3518,7 @@ fn only_a_frame_that_names_a_mode_is_vetted_for_one() {
             continue;
         }
         assert_eq!(
-            peer_mode_refusal(&state, &frame),
+            peer_mode_refusal_for_conn(&state, &frame, &None),
             None,
             "{} carries no mode, so this gate has no verdict for it",
             frame.name()
@@ -3433,49 +3559,58 @@ fn the_prompt_skipping_decision_reads_the_frame_and_refuses_unknown_sessions() {
     // The label is part of the answer: the trail and the peer's error name
     // the same rule.
     assert_eq!(
-        peer_mode_refusal(&state, &create(SessionKind::Claude, "bypassPermissions")),
+        peer_mode_refusal_for_conn(
+            &state,
+            &create(SessionKind::Claude, "bypassPermissions"),
+            &None
+        ),
         Some(crate::peer_policy::PROMPT_SKIPPING_REFUSED)
     );
     assert_eq!(
-        peer_mode_refusal(&state, &create(SessionKind::Claude, "auto")),
+        peer_mode_refusal_for_conn(&state, &create(SessionKind::Claude, "auto"), &None),
         Some(crate::peer_policy::PROMPT_SKIPPING_REFUSED)
     );
     assert_eq!(
-        peer_mode_refusal(&state, &create(SessionKind::Codex, "full-access")),
+        peer_mode_refusal_for_conn(&state, &create(SessionKind::Codex, "full-access"), &None),
         Some(crate::peer_policy::PROMPT_SKIPPING_REFUSED)
     );
     // Codex `auto` and Claude's `default` only prompt, so they are not
     // refusals — and a Terminal has no prompt to skip at all.
     assert_eq!(
-        peer_mode_refusal(&state, &create(SessionKind::Codex, "auto")),
+        peer_mode_refusal_for_conn(&state, &create(SessionKind::Codex, "auto"), &None),
         None
     );
     assert_eq!(
-        peer_mode_refusal(&state, &create(SessionKind::Claude, "default")),
+        peer_mode_refusal_for_conn(&state, &create(SessionKind::Claude, "default"), &None),
         None
     );
     assert_eq!(
-        peer_mode_refusal(&state, &create(SessionKind::Terminal, "bypassPermissions")),
+        peer_mode_refusal_for_conn(
+            &state,
+            &create(SessionKind::Terminal, "bypassPermissions"),
+            &None,
+        ),
         None
     );
     // §8b A5/R3, H1: an ACP create may not name *any* mode, because the
     // agent owns the ids and this daemon has no list to vet them against.
     for mode in ["auto_accept", "ask", "default"] {
         assert_eq!(
-            peer_mode_refusal(&state, &create(SessionKind::Acp, mode)),
+            peer_mode_refusal_for_conn(&state, &create(SessionKind::Acp, mode), &None),
             Some(crate::peer_policy::ACP_MODES_UNVETTED_REFUSED),
             "ACP mode {mode:?}"
         );
     }
     // ...and neither may an ACP *session* be switched into one.
     assert_eq!(
-        peer_mode_refusal(
+        peer_mode_refusal_for_conn(
             &state,
             &ClientMessage::SessionSetMode {
                 id: 4,
                 session_id: "s.nobody.1".to_string(),
                 mode_id: "ask".to_string(),
-            }
+            },
+            &None,
         ),
         None,
         "unknown sessions are not a policy verdict here; `dispatch` refuses them first"
@@ -3485,7 +3620,7 @@ fn the_prompt_skipping_decision_reads_the_frame_and_refuses_unknown_sessions() {
     // answer for it is the ownership denial, which `dispatch` produces
     // before this function is consulted (H6).
     assert_eq!(
-        peer_mode_refusal(
+        peer_mode_refusal_for_conn(
             &state,
             &ClientMessage::SessionSend {
                 id: 2,
@@ -3496,7 +3631,8 @@ fn the_prompt_skipping_decision_reads_the_frame_and_refuses_unknown_sessions() {
                 active_turn_behavior: None,
                 attachment_references: Vec::new(),
                 idempotency_key: None,
-            }
+            },
+            &None,
         ),
         None
     );
@@ -3504,13 +3640,14 @@ fn the_prompt_skipping_decision_reads_the_frame_and_refuses_unknown_sessions() {
     // function's verdict, even when the mode named is one §8b A5 refuses
     // for a session the daemon does know.
     assert_eq!(
-        peer_mode_refusal(
+        peer_mode_refusal_for_conn(
             &state,
             &ClientMessage::SessionSetMode {
                 id: 3,
                 session_id: "s.nobody.1".to_string(),
                 mode_id: "bypassPermissions".to_string(),
-            }
+            },
+            &None,
         ),
         None
     );

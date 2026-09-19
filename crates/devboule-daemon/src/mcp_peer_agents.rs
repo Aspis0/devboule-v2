@@ -232,8 +232,8 @@ fn dial_error_sentence(error: &DialError, row: &PeerRecord) -> String {
             "This device's own identity is unavailable, so it cannot make the call.".to_string()
         }
         "unsupported" => format!(
-            "{name} runs a daemon that predates the agent roster, so it cannot answer this \
-             call; update the far daemon first."
+            "{name} runs a daemon that predates a required peer capability, so it cannot answer \
+             this call; update the far daemon first."
         ),
         // connect, handshake, hello, send, reply, unsupported: the far end
         // did not complete the call. The step name is the stable token, not

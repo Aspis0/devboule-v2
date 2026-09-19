@@ -282,6 +282,16 @@ fn exchange(
                     "the far daemon does not advertise the peer roster",
                 ));
             }
+            if matches!(request, ClientMessage::AgentMessageSend { .. })
+                && !hello.capabilities.iter().any(|capability| {
+                    capability.as_str() == devboule_protocol::caps::AGENT_MESSAGES
+                })
+            {
+                return Err(DialError::at(
+                    DialStep::Unsupported,
+                    "the far daemon does not advertise remote agent messages",
+                ));
+            }
         }
         Ok(DaemonMessage::Error(error)) => {
             return Err(DialError::at(DialStep::Hello, error.message))

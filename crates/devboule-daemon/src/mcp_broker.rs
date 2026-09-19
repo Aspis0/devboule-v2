@@ -952,11 +952,13 @@ fn mcp_peer_door(caller: &McpCaller, tool_name: Option<&str>, id: &Value) -> Opt
 /// this machine's. A door-allowed peer must have the act performed and judged
 /// exactly as the same act over the wire would be — the delivery attributes
 /// the message to the true origin (S4-05), the steer-refusal branch reads the
-/// caller for its interrupt authority (S4-01), and the ownership checks apply
-/// the peer's own scope (a `Daemon`-role device reaches only the sessions of
-/// its own origin, §8 R2). A `Local` caller keeps the unmarked connection,
-/// byte-identical to before. `Unknown`/`Absent` never reach a body — the door
-/// refuses them — and keep it too.
+/// caller for its interrupt authority (S4-01), and the ordinary registry
+/// ownership checks apply the peer's own scope. The MCP send body explicitly
+/// supplies a local source namespace, so its owner-scoped target lookup does
+/// not reach the wire-only daemon-peer allowance; that allowance is reached
+/// only by an inbound remote frame. A `Local` caller keeps the unmarked
+/// connection, byte-identical to before. `Unknown`/`Absent` never reach a
+/// body — the door refuses them — and keep it too.
 ///
 /// `paired_by_user` and the transport binding come from the peer's row: the
 /// ownership check for a `Client`-role device compares against the user that
@@ -5921,21 +5923,28 @@ mod tests {
             envelope.contains("origin: peer:device-f4-send"),
             "the delivery must name the device, not this machine: {envelope}"
         );
+        assert!(
+            envelope.contains("from_agent: s.peer.7"),
+            "MCP supplies a local source row, so its sender stays in the local namespace: {envelope}"
+        );
         drop(guard);
         drop(server);
     }
 
-    /// The same identity, judged with the wire's own scope (§8 R2): a
-    /// `Daemon`-role device's reach is the sessions of its own origin, so its
-    /// agent cannot put a message in front of a session it did not create —
-    /// including this machine's own. The old unmarked connection passed this
-    /// call and misattributed it; now the scope check sees the device.
+    /// The live MCP door does not reach the new daemon-peer allowance. Its
+    /// target lookup is scoped by the registration owner; a real daemon peer
+    /// registers as `peer_<device_id>`, while this daemon's local target has
+    /// the pairing user's owner. The lookup stops the call before
+    /// `agent_message_send`, so this is not a test of the target ownership
+    /// rule. Peer-to-peer sending remains an inbound wire-frame path until a
+    /// producer is added.
     #[test]
-    fn a_daemon_role_tool_send_beyond_its_origin_is_refused() {
+    fn a_daemon_role_tool_send_stops_at_owner_scoped_target_lookup() {
         let state = ServerState::new("mcp-f4-scope".to_string());
-        let owner = owner("S-1-5-21-f4d-user", "mcp-f4d-client");
+        let peer_owner = owner("peer_device-f4-scope", "daemon");
+        let local_owner = owner("S-1-5-21-f4d-user", "mcp-f4d-client");
         let creator = "s.peer.8".to_string();
-        crate::session::insert_test_live_agent(&state.sessions, &creator, owner.clone());
+        crate::session::insert_test_live_agent(&state.sessions, &creator, peer_owner.clone());
         state.sessions.set_test_origin(
             &creator,
             SessionOrigin::peer("device-f4-scope", crate::peer_policy::PeerRole::Daemon),
@@ -5943,7 +5952,7 @@ mod tests {
         let received = crate::session::insert_test_live_agent_with_recording_writer(
             &state.sessions,
             "s.f4d.local",
-            owner.clone(),
+            local_owner,
             SessionKind::Pi,
         );
         let mut row = peer_row("device-f4-scope", &["view", "send"]);
@@ -5951,7 +5960,7 @@ mod tests {
         state.peer_upsert(row).expect("store a peer");
         let guard = state
             .mcp
-            .register(&creator, &owner, &SessionKind::Acp)
+            .register(&creator, &peer_owner, &SessionKind::Acp)
             .expect("registration")
             .expect("MCP guard");
         let token = state.mcp.test_token(&creator).expect("token");
@@ -5963,19 +5972,13 @@ mod tests {
         );
         let body = response_json(&reply);
         assert_eq!(
-            body.pointer("/result/isError"),
-            Some(&json!(true)),
-            "a daemon-role device cannot reach a session outside its origin: {body}"
-        );
-        assert!(
-            body.pointer("/result/content/0/text")
-                .and_then(Value::as_str)
-                .is_some_and(|text| text.contains("not authorized")),
-            "the refusal is the ownership sentence: {body}"
+            body.pointer("/error/message"),
+            Some(&json!("target agent not found")),
+            "the MCP roster is scoped by the peer registration owner: {body}"
         );
         assert!(
             received.lock().expect("received").is_empty(),
-            "the refused delivery must deliver nothing"
+            "the target-not-found MCP call writes no local transcript"
         );
         drop(guard);
         drop(server);

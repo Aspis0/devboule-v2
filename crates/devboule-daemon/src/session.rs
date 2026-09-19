@@ -708,6 +708,102 @@ fn peer_entry<'a>(
     Ok(entry)
 }
 
+fn agent_message_target_entry<'a>(
+    map: &'a HashMap<String, RegistryEntry>,
+    session_id: &str,
+    owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
+) -> Result<&'a RegistryEntry, WireError> {
+    let entry = map.get(session_id).ok_or_else(not_found)?;
+    // Scope is decided before the delivery window: a configuring relay must
+    // get the same denial as any other relay, not an existence-shaped answer.
+    check_agent_message_target(entry, owner, conn_peer)?;
+    if entry.is_configuring() {
+        return Err(not_found());
+    }
+    Ok(entry)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentMessageTargetClass {
+    /// The paired daemon may write into this machine's local session.
+    Local,
+    /// The target belongs to the authenticated caller's own peer origin.
+    OwnPeer,
+    /// The target belongs to a different peer and must not be relayed.
+    Relay,
+    /// The target is outside the authenticated caller's scope.
+    Other,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentMessageSourceNamespace {
+    Local,
+    Far,
+}
+
+/// Classify an agent-message target once for the registry, gate, and mode
+/// consumers. The daemon allowance is scoped to the user who paired the
+/// device: `send` is consent to write into that user's local sessions, not
+/// into every owner's sessions on this machine.
+fn classify_agent_message_target(
+    entry: &RegistryEntry,
+    conn_peer: &Option<ConnPeer>,
+) -> AgentMessageTargetClass {
+    let Some(ConnPeer::Remote {
+        device_id,
+        role,
+        paired_by_user,
+        ..
+    }) = conn_peer
+    else {
+        return AgentMessageTargetClass::Other;
+    };
+
+    let origin = entry.origin();
+    match origin.kind {
+        SessionOriginKind::Peer if origin.device_id.as_deref() == Some(device_id.as_str()) => {
+            AgentMessageTargetClass::OwnPeer
+        }
+        SessionOriginKind::Peer => AgentMessageTargetClass::Relay,
+        SessionOriginKind::Local
+            if *role == PeerRole::Daemon
+                && paired_by_user.as_deref() == Some(entry.owner().user.as_str()) =>
+        {
+            AgentMessageTargetClass::Local
+        }
+        SessionOriginKind::Local | SessionOriginKind::Unknown => AgentMessageTargetClass::Other,
+    }
+}
+
+/// The target rule for a message whose sender may live on the far daemon.
+/// This is deliberately separate from [`check_user_owner`]: the shared door
+/// stays strict for every other operation, while the classification above
+/// gives a paired daemon's `send` capability its narrow local-target allowance.
+fn check_agent_message_target(
+    entry: &RegistryEntry,
+    owner: &OwnerId,
+    conn_peer: &Option<ConnPeer>,
+) -> Result<(), WireError> {
+    match classify_agent_message_target(entry, conn_peer) {
+        AgentMessageTargetClass::Relay => {
+            // A remote sender may not turn this daemon into a relay for a
+            // different peer. The caller's authenticated connection proves
+            // which peer the far sender belongs to; the frame carries no
+            // device claim to compare.
+            Err(unauthorized())
+        }
+        AgentMessageTargetClass::Local => {
+            // The classification has already tied this local target to the
+            // user who paired the daemon peer; that is the scope of consent.
+            Ok(())
+        }
+        AgentMessageTargetClass::OwnPeer | AgentMessageTargetClass::Other => {
+            check_user_owner(entry, owner, conn_peer)
+        }
+    }
+}
+
 /// The mutable half of [`peer_entry`].
 fn peer_entry_mut<'a>(
     map: &'a mut HashMap<String, RegistryEntry>,
@@ -2319,7 +2415,7 @@ pub struct SendRequest<'a> {
 /// sender's key in it, and the slot.
 pub(crate) struct MessageSlotRef<'a> {
     pub(crate) brakes: &'a Arc<Mutex<MessageBrakeTable>>,
-    pub(crate) from_session: &'a str,
+    pub(crate) brake_key: &'a str,
     pub(crate) slot: u64,
     /// The turn the admission registered the boundary against (S4-14). The delivery
     /// compares it with the turn that is running when it writes, so a message whose
@@ -5809,12 +5905,93 @@ impl SessionRegistry {
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
-        if from_session == to_session {
+        self.agent_message_send_in_namespace(
+            from_session,
+            to_session,
+            text,
+            owner,
+            conn,
+            AgentMessageSourceNamespace::Local,
+            Instant::now(),
+        )
+    }
+
+    /// The wire frame carries a sender id from the authenticated peer's
+    /// namespace. The connection proves the device; the frame supplies only
+    /// that device-local session label.
+    pub(crate) fn agent_message_send_from_peer(
+        &self,
+        from_session: &str,
+        to_session: &str,
+        text: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
+        self.agent_message_send_in_namespace(
+            from_session,
+            to_session,
+            text,
+            owner,
+            conn,
+            AgentMessageSourceNamespace::Far,
+            Instant::now(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn agent_message_send_from_peer_at(
+        &self,
+        from_session: &str,
+        to_session: &str,
+        text: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        now: Instant,
+    ) -> Result<(), WireError> {
+        self.agent_message_send_in_namespace(
+            from_session,
+            to_session,
+            text,
+            owner,
+            conn,
+            AgentMessageSourceNamespace::Far,
+            now,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn agent_message_send_in_namespace(
+        &self,
+        from_session: &str,
+        to_session: &str,
+        text: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        source_namespace: AgentMessageSourceNamespace,
+        now: Instant,
+    ) -> Result<(), WireError> {
+        let caller_origin = session_origin_for(&conn.conn_peer);
+        let far_sender = source_namespace == AgentMessageSourceNamespace::Far;
+        if far_sender {
+            validate_session_id(from_session)
+                .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        }
+        if !far_sender && from_session == to_session {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "An agent cannot send a message to itself.",
             ));
         }
+        // A remote sender chooses the far session label, so it cannot choose
+        // the brake key: one authenticated device gets one outstanding,
+        // rate, and recipient budget however it spells that label. A local
+        // caller stays keyed by its local session, which it owns and cannot
+        // use to spend another session's budget.
+        let brake_key = if far_sender {
+            caller_origin.device_id.as_deref().unwrap_or_default()
+        } else {
+            from_session
+        };
         // Target admission and the brake slot are one critical section (A2-05).
         // While this holds the session map, no close can take the target out from
         // under the check and no second send of the same sender can take the slot
@@ -5834,16 +6011,32 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let source = peer_entry(&map, from_session, owner, &conn.conn_peer)?;
-            let source = source.as_peer_visible().ok_or_else(process_gone)?;
-            let target = peer_entry(&map, to_session, owner, &conn.conn_peer)?;
+            let (from_runtime, source_origin) = if far_sender {
+                // A wire sender has no transcript on this daemon. Its raw text
+                // is echoed by the sender's own daemon, so the far namespace
+                // deliberately skips local source resolution and echo.
+                (None, None)
+            } else {
+                let source = peer_entry(&map, from_session, owner, &conn.conn_peer)?;
+                let source = source.as_peer_visible().ok_or_else(process_gone)?;
+                (
+                    Some(Arc::clone(&source.runtime)),
+                    Some(source.metadata.origin.clone()),
+                )
+            };
+            let target = if far_sender {
+                agent_message_target_entry(&map, to_session, owner, &conn.conn_peer)?
+            } else {
+                peer_entry(&map, to_session, owner, &conn.conn_peer)?
+            };
             let target = target.as_peer_visible().ok_or_else(process_gone)?;
             // Refused here, inside the same section: a message that would cross
             // two peer hops never reaches the brake table, so the refusal cannot
             // leave a slot behind it.
-            let from_origin = source.metadata.origin.clone();
             let target_origin = target.metadata.origin.clone();
-            if from_origin.kind == SessionOriginKind::Peer
+            if source_origin
+                .as_ref()
+                .is_some_and(|origin| origin.kind == SessionOriginKind::Peer)
                 && target_origin.kind == SessionOriginKind::Peer
             {
                 return Err(WireError::new(
@@ -5853,22 +6046,28 @@ impl SessionRegistry {
             }
             let admission = reserve_message_brake(
                 &self.message_brakes,
-                from_session,
+                brake_key,
                 to_session,
                 Some((&target.runtime, target.runtime.turn_counter())),
-                Instant::now(),
+                now,
             )?;
-            (Arc::clone(&source.runtime), target.owner.clone(), admission)
+            (from_runtime, target.owner.clone(), admission)
         };
         #[cfg(test)]
         self.fire_agent_message_after_admission_hook();
-        // Who is speaking is the *caller's* connection, never the named source
-        // session: a paired device that names one of this machine's own sessions
-        // as `from_session` (its ownership check passes, because the session
-        // belongs to the user that paired it) must not be described to the
-        // receiving agent as `local` (S4-05). The named session is the agent the
-        // text is attributed to, and that is the `from_agent` line.
-        let caller_origin = session_origin_for(&conn.conn_peer);
+        // The entry point states whether this id is local or far. A far id is
+        // namespaced with the authenticated device so a local-looking label
+        // cannot masquerade as this daemon's sibling; a local source keeps the
+        // existing local form (S4-05).
+        let from_agent = if far_sender {
+            format!(
+                "peer:{}/{}",
+                caller_origin.device_id.as_deref().unwrap_or_default(),
+                from_session
+            )
+        } else {
+            from_session.to_string()
+        };
         let origin = match caller_origin.kind {
             SessionOriginKind::Peer => {
                 format!(
@@ -5886,13 +6085,13 @@ impl SessionRegistry {
             Some(PeerRole::Daemon) => "daemon",
             Some(PeerRole::Client) | None => "client",
         };
-        let envelope = agent_message_envelope(&origin, role, from_session, text);
+        let envelope = agent_message_envelope(&origin, role, &from_agent, text);
         let internal_conn = ConnHandle::with_peer(0, None);
         // (S4-10) The slot this delivery holds, so the plain-prompt fallback can
         // re-key its boundary if the turn it was admitted into ends first.
         let slot_ref = MessageSlotRef {
             brakes: &self.message_brakes,
-            from_session,
+            brake_key,
             slot: admission.slot,
             admitted_turn_id: admission.expected_turn_id,
         };
@@ -5927,25 +6126,25 @@ impl SessionRegistry {
             author: UserMessageAuthor::Agent,
         });
         if result.is_ok() {
-            // The sender sees the raw peer message in its own transcript; the
-            // receiver sees the daemon envelope delivered above. The publish is
-            // checked and surfaced like the receiver-side journal: the target
-            // already has the text, so a sender-side recording failure is a
-            // degraded session, never an error the caller could retry (S4-09).
-            if from_runtime
-                .publish_agent_user_message(text.to_string(), UserMessageAuthor::Agent)
-                .is_none()
-            {
-                from_runtime.mark_journal_degraded();
+            if let Some(from_runtime) = from_runtime {
+                // A local source row belongs to this daemon, even when the
+                // bearer connection is a reconstructed remote peer, so MCP
+                // sends keep the sender-side transcript echo.
+                if from_runtime
+                    .publish_agent_user_message(text.to_string(), UserMessageAuthor::Agent)
+                    .is_none()
+                {
+                    from_runtime.mark_journal_degraded();
+                }
             }
             // The delivery returned: the slot now waits only for its boundary,
             // if this admission found one — the turn end it was admitted for.
-            finish_message_delivery(&self.message_brakes, from_session, admission.slot, true);
+            finish_message_delivery(&self.message_brakes, brake_key, admission.slot, true);
         } else {
             // The message is in flight nowhere: give the slot back now instead
             // of holding the sender's budget until a boundary that will never see
             // this message arrives.
-            finish_message_delivery(&self.message_brakes, from_session, admission.slot, false);
+            finish_message_delivery(&self.message_brakes, brake_key, admission.slot, false);
         }
         // The delivery's own id is not what this act answers with: the *sender*
         // is the caller here, and its echo (if any) is published above. The
@@ -8043,6 +8242,63 @@ impl SessionRegistry {
         }
     }
 
+    /// The peer gate's ordering check for `AgentMessageSend`. The target
+    /// classifier is the one rule shared with the registry and mode consumer:
+    /// an allowed local target proceeds, while a relay is refused here with
+    /// the same `Unauthorized` as an unknown id. Local callers keep the
+    /// ordinary ownership check at this door.
+    pub(crate) fn agent_message_target_scope(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_peer: &Option<ConnPeer>,
+    ) -> Result<(), WireError> {
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let entry = map.get(session_id).ok_or_else(unauthorized)?;
+        // Classify before consulting the delivery window so a configuring
+        // relay remains indistinguishable from an unknown target.
+        let result = match classify_agent_message_target(entry, conn_peer) {
+            AgentMessageTargetClass::Local => Ok(()),
+            AgentMessageTargetClass::Relay => {
+                // A third-device target is refused before mode lookup, with
+                // the same frame an unknown target receives; no existence or
+                // provider-mode oracle belongs at this gate.
+                Err(unauthorized())
+            }
+            AgentMessageTargetClass::OwnPeer | AgentMessageTargetClass::Other => {
+                check_user_owner(entry, owner, conn_peer)
+            }
+        };
+        result?;
+        if entry.is_configuring() {
+            return Err(not_found());
+        }
+        Ok(())
+    }
+
+    /// Whether the target's mode may be consulted by the peer gate. A
+    /// scope-denied target is refused before this lookup, without revealing
+    /// its provider or prompt-skipping mode.
+    pub(crate) fn agent_message_target_is_mode_visible(
+        &self,
+        session_id: &str,
+        conn_peer: &Option<ConnPeer>,
+    ) -> bool {
+        let Ok(map) = self.inner.lock() else {
+            return false;
+        };
+        let Some(entry) = map.get(session_id) else {
+            return false;
+        };
+        !matches!(
+            classify_agent_message_target(entry, conn_peer),
+            AgentMessageTargetClass::Relay
+        )
+    }
+
     fn runtime(&self, session_id: &str) -> Result<Arc<SessionRuntime>, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -8377,11 +8633,14 @@ fn bound_finish_envelope(envelope: String) -> String {
 /// a note about who is speaking. That is exactly why the sender's own text must
 /// not be able to write the daemon's delimiters: see
 /// [`neutralise_envelope_text`]. `origin`, `role` and `from_agent` are composed
-/// from daemon state (the caller's authenticated connection, a validated
-/// session id), never from the message text.
-fn agent_message_envelope(origin: &str, role: &str, from_session: &str, text: &str) -> String {
+/// from daemon state (the caller's authenticated connection and a session id
+/// validated either by its local row or by `validate_session_id`), never from
+/// the message text. A local sender is rendered with its local id; a remote
+/// sender is rendered as `peer:<authenticated-device>/<validated-far-id>` so
+/// it cannot collide with the local form.
+fn agent_message_envelope(origin: &str, role: &str, from_agent: &str, text: &str) -> String {
     format!(
-        "<devboule-system>\norigin: {origin}\nrole: {role}\nfrom_agent: {from_session}\ntimestamp: {}\n{}\n</devboule-system>",
+        "<devboule-system>\norigin: {origin}\nrole: {role}\nfrom_agent: {from_agent}\ntimestamp: {}\n{}\n</devboule-system>",
         unix_millis(),
         neutralise_envelope_text(text)
     )
@@ -8533,13 +8792,13 @@ pub(crate) struct MessageAdmission {
 /// serializes it behind the store.
 fn message_slot_boundary(
     brakes: &Arc<Mutex<MessageBrakeTable>>,
-    from_session: &str,
+    brake_key: &str,
     slot: u64,
 ) -> (Arc<dyn Fn() + Send + Sync>, Arc<AtomicU64>) {
     let hook_id = Arc::new(AtomicU64::new(0));
     let callback: Arc<dyn Fn() + Send + Sync> = {
         let brakes = Arc::clone(brakes);
-        let from = from_session.to_string();
+        let from = brake_key.to_string();
         let hook_id = Arc::clone(&hook_id);
         // (S5-01) The cell is handed to the callback, not a value read here: the
         // load happens inside `boundary_reached_message_slot`, under the brakes
@@ -8561,7 +8820,7 @@ fn message_slot_boundary_is_stale(slot: &MessageSlotRef<'_>, entering_turn_id: u
     let Ok(table) = slot.brakes.lock() else {
         return false;
     };
-    let Some(brake) = table.get(slot.from_session) else {
+    let Some(brake) = table.get(slot.brake_key) else {
         return false;
     };
     let Some(entry) = brake
@@ -8591,7 +8850,7 @@ fn rearm_message_slot_boundary(slot: &MessageSlotRef<'_>, runtime: &Arc<SessionR
     let Ok(mut table) = slot.brakes.lock() else {
         return;
     };
-    let Some(brake) = table.get_mut(slot.from_session) else {
+    let Some(brake) = table.get_mut(slot.brake_key) else {
         return;
     };
     let Some(entry) = brake
@@ -8610,7 +8869,7 @@ fn rearm_message_slot_boundary(slot: &MessageSlotRef<'_>, runtime: &Arc<SessionR
     // (S4-15) Registered first, then the id is written back into the cell: the
     // callback compares that id with the one this entry holds, so the hook that
     // was just replaced can no longer unregister its successor.
-    let (boundary, hook_id) = message_slot_boundary(slot.brakes, slot.from_session, slot.slot);
+    let (boundary, hook_id) = message_slot_boundary(slot.brakes, slot.brake_key, slot.slot);
     let armed = runtime.on_turn_end(move || boundary());
     hook_id.store(armed, Ordering::Release);
     entry.release = Some((Arc::downgrade(runtime), armed));
@@ -8638,7 +8897,7 @@ fn rearm_message_slot_boundary(slot: &MessageSlotRef<'_>, runtime: &Arc<SessionR
 /// are testable by moving the clock instead of sleeping through it.
 fn reserve_message_brake(
     brakes: &Arc<Mutex<MessageBrakeTable>>,
-    from_session: &str,
+    brake_key: &str,
     to_session: &str,
     target: Option<(&Arc<SessionRuntime>, u64)>,
     now: Instant,
@@ -8663,7 +8922,7 @@ fn reserve_message_brake(
     if table.sweep_is_due(now) {
         let mut swept: Vec<String> = Vec::new();
         for (other, other_brake) in table.iter_mut() {
-            if other == from_session {
+            if other == brake_key {
                 continue;
             }
             expired.extend(other_brake.prune(now));
@@ -8677,7 +8936,7 @@ fn reserve_message_brake(
         table.note_sweep(now);
     }
     let brake = table
-        .entry(from_session.to_string())
+        .entry(brake_key.to_string())
         .or_insert_with(MessageBrake::new);
     expired.extend(brake.prune(now));
     if now.saturating_duration_since(brake.window_started) >= MESSAGE_RATE_WINDOW {
@@ -8723,7 +8982,7 @@ fn reserve_message_brake(
         // the runtime answers with the hook it registered; the second arm reads the
         // same cell, so whichever hook is live compares itself against the id this
         // entry ends up holding.
-        let (boundary, hook_id) = message_slot_boundary(brakes, from_session, slot);
+        let (boundary, hook_id) = message_slot_boundary(brakes, brake_key, slot);
         let release = target.map(|(runtime, expected_turn)| {
             let target = Arc::downgrade(runtime);
             let armed = {
@@ -8807,7 +9066,7 @@ fn reserve_message_brake(
 /// hook here would leave the slot without a boundary.
 fn boundary_reached_message_slot(
     brakes: &Arc<Mutex<MessageBrakeTable>>,
-    from_session: &str,
+    brake_key: &str,
     slot: u64,
     hook_id: &AtomicU64,
 ) {
@@ -8823,7 +9082,7 @@ fn boundary_reached_message_slot(
         let hook_id = hook_id.load(Ordering::Acquire);
         let mut to_session = None;
         let mut drop_sender = false;
-        if let Some(brake) = table.get_mut(from_session) {
+        if let Some(brake) = table.get_mut(brake_key) {
             let mut remove_slot = false;
             if let Some(entry) = brake
                 .outstanding
@@ -8851,7 +9110,7 @@ fn boundary_reached_message_slot(
             drop_sender = brake.is_idle();
         }
         if drop_sender {
-            table.remove(from_session);
+            table.remove(brake_key);
         }
     }
     for (runtime, hook) in hooks {
@@ -8870,7 +9129,7 @@ fn boundary_reached_message_slot(
 /// still ahead releases it when it arrives.
 fn finish_message_delivery(
     brakes: &Arc<Mutex<MessageBrakeTable>>,
-    from_session: &str,
+    brake_key: &str,
     slot: u64,
     delivered: bool,
 ) {
@@ -8881,7 +9140,7 @@ fn finish_message_delivery(
         };
         let mut to_session = None;
         let mut drop_sender = false;
-        if let Some(brake) = table.get_mut(from_session) {
+        if let Some(brake) = table.get_mut(brake_key) {
             let mut remove_slot = false;
             if let Some(entry) = brake
                 .outstanding
@@ -8905,7 +9164,7 @@ fn finish_message_delivery(
             drop_sender = brake.is_idle();
         }
         if drop_sender {
-            table.remove(from_session);
+            table.remove(brake_key);
         }
     }
     for (runtime, hook) in hooks {

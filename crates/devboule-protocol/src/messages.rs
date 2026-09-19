@@ -2411,6 +2411,13 @@ mod tests {
             .iter()
             .any(|capability| capability.as_str() == crate::caps::PEER_AGENTS));
         assert!(!PEER_CAPS.contains(&crate::caps::PEER_AGENTS));
+        assert!(crate::m3a_daemon_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::AGENT_MESSAGES));
+        assert!(crate::m3a_client_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::AGENT_MESSAGES));
+        assert!(!PEER_CAPS.contains(&crate::caps::AGENT_MESSAGES));
     }
 
     #[test]
