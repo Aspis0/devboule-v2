@@ -189,6 +189,7 @@ fn mcp_predicates_are_provider_facts_not_kind_lists() {
         include_str!("session_envelopes.rs"),
         include_str!("session_spawn.rs"),
         include_str!("session_workspaces.rs"),
+        include_str!("session_messaging.rs"),
     ];
     let mut narrow = 0;
     let mut wide = 0;

@@ -62,14 +62,17 @@ describe("parseAttachmentReference", () => {
   });
 
   it("walks the daemon's url literal against the scheme this parser expects", () => {
-    // The producer is `deposit_child_message` in the daemon's `session.rs`;
+    // The producer is `deposit_child_message` in the daemon's `session_messaging.rs`;
     // this test reads the Rust source so a changed scheme or separator
     // cannot land there and stay invisible here — nothing else makes the
     // two agree and no compiler sees the seam.
-    const source = readFileSync(join("crates", "devboule-daemon", "src", "session.rs"), "utf8");
+    const source = readFileSync(
+      join("crates", "devboule-daemon", "src", "session_messaging.rs"),
+      "utf8",
+    );
     const literal = source.match(/format!\(\s*"(devboule-attachment:)\{\}(\/)\{\}"/);
     if (literal === null) {
-      throw new Error("attachment url literal not found in session.rs");
+      throw new Error("attachment url literal not found in session_messaging.rs");
     }
     expect(literal[1]).toBe(ATTACHMENT_URL_SCHEME);
     expect(literal[2]).toBe("/");
