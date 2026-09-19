@@ -1660,6 +1660,7 @@ fn fail_connection(inner: &ClientInner, error: DaemonError) {
         handler(SessionEventEnvelope {
             session_id,
             generation: 0,
+            transcript_seq: None,
             event: SessionEvent::Exit { code: None },
         });
     }
@@ -1667,6 +1668,7 @@ fn fail_connection(inner: &ClientInner, error: DaemonError) {
         handler(SessionEventEnvelope {
             session_id,
             generation: 0,
+            transcript_seq: None,
             event: SessionEvent::Exit { code: None },
         });
     }
@@ -1869,6 +1871,7 @@ mod tests {
                     envelope: devboule_protocol::SessionEventEnvelope {
                         session_id: "s.routing".to_string(),
                         generation: 1,
+                        transcript_seq: None,
                         event: SessionEvent::AgentMessage {
                             message_id: None,
                             text: "a-1".to_string(),
@@ -1896,6 +1899,7 @@ mod tests {
                     envelope: devboule_protocol::SessionEventEnvelope {
                         session_id: "s.routing".to_string(),
                         generation: 1,
+                        transcript_seq: None,
                         event: SessionEvent::AgentMessage {
                             message_id: None,
                             text: "a-2".to_string(),
@@ -1917,6 +1921,7 @@ mod tests {
                     envelope: devboule_protocol::SessionEventEnvelope {
                         session_id: "s.routing".to_string(),
                         generation: 1,
+                        transcript_seq: None,
                         event: SessionEvent::AgentMessage {
                             message_id: None,
                             text: "b-1".to_string(),
@@ -2058,6 +2063,7 @@ mod tests {
                     envelope: devboule_protocol::SessionEventEnvelope {
                         session_id: "s.detach.pending".to_string(),
                         generation: 1,
+                        transcript_seq: None,
                         event: SessionEvent::AgentMessage {
                             message_id: None,
                             text: "resurrected".to_string(),

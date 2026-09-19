@@ -85,9 +85,9 @@ fn wire_event(
         envelope: SessionEventEnvelope {
             session_id: session_id.to_string(),
             generation: envelope_generation,
+            transcript_seq,
             event,
         },
-        transcript_seq,
     }
 }
 
@@ -394,9 +394,8 @@ impl ConnHandle {
     }
 
     /// Record delivery only after the corresponding envelope was written to
-    /// the connection. Only the transcript replay cursor advances here: live
-    /// screen state is synchronised by snapshots, so an Output written to a
-    /// live stream must not look like a replay position.
+    /// the connection. Positioned current-generation frames advance the
+    /// transcript cursor; positionless markers do not.
     pub(crate) fn event_sent(&self, event: &PendingEvent) -> Option<String> {
         let mut map = self
             .attached
@@ -409,9 +408,8 @@ impl ConnHandle {
             }
             match &event.envelope.event {
                 SessionEvent::Output { seq, .. } | SessionEvent::AgentReported { seq, .. } => {
-                    // These events carry their own seq, but a history row's
-                    // seq belongs to another numbering space: only a
-                    // current-generation row is a position in this stream.
+                    // A history row's seq belongs to another numbering space:
+                    // only a current-generation row is a position here.
                     if event.envelope.generation == pull.generation {
                         if let Some(cursor) = pull.transcript_cursor.as_mut() {
                             *cursor = (*cursor).max(*seq);
@@ -445,9 +443,10 @@ impl ConnHandle {
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. } => {
-                    if let (Some(cursor), Some(seq)) =
-                        (pull.transcript_cursor.as_mut(), event.transcript_seq)
-                    {
+                    if let (Some(cursor), Some(seq)) = (
+                        pull.transcript_cursor.as_mut(),
+                        event.envelope.transcript_seq,
+                    ) {
                         *cursor = (*cursor).max(seq);
                     }
                     false
@@ -836,12 +835,20 @@ fn emit_live_items(
     drained: Vec<PendingItem>,
 ) {
     for item in drained {
-        let event = match item {
-            PendingItem::Snapshot { as_of_seq, screen } => snapshot_event(as_of_seq, screen),
-            PendingItem::Output { seq, data } => SessionEvent::Output { seq, data },
-            PendingItem::Agent { event, .. } => event,
+        let (event, transcript_seq) = match item {
+            PendingItem::Snapshot { as_of_seq, screen } => {
+                (snapshot_event(as_of_seq, screen), Some(as_of_seq))
+            }
+            PendingItem::Output { seq, data } => (SessionEvent::Output { seq, data }, Some(seq)),
+            PendingItem::Agent { seq, event, .. } => (event, seq),
         };
-        events.push(wire_event(session_id, pull, pull.generation, event, None));
+        events.push(wire_event(
+            session_id,
+            pull,
+            pull.generation,
+            event,
+            transcript_seq,
+        ));
     }
 }
 
@@ -2248,7 +2255,7 @@ mod tests {
         let history: Vec<(u64, Option<u64>)> = batch
             .iter()
             .filter(|pending| matches!(pending.envelope.event, SessionEvent::AgentReported { .. }))
-            .map(|pending| (pending.envelope.generation, pending.transcript_seq))
+            .map(|pending| (pending.envelope.generation, pending.envelope.transcript_seq))
             .collect();
         assert_eq!(
             history,
@@ -2258,7 +2265,7 @@ mod tests {
         let current: Vec<(u64, Option<u64>)> = batch
             .iter()
             .filter(|pending| matches!(pending.envelope.event, SessionEvent::AgentMessage { .. }))
-            .map(|pending| (pending.envelope.generation, pending.transcript_seq))
+            .map(|pending| (pending.envelope.generation, pending.envelope.transcript_seq))
             .collect();
         assert_eq!(
             current,
@@ -2369,6 +2376,91 @@ mod tests {
             Some(0),
             "history must not advance the transcript cursor"
         );
+    }
+
+    /// One live agent attachment — no screen, no journal — with a single
+    /// published chat row at `seq`. The queue item is the only place that
+    /// position exists: no journal row was written under it.
+    fn live_agent_with_one_chat_row(
+        session_id: &str,
+        seq: u64,
+    ) -> (Arc<SessionRuntime>, Arc<ConnHandle>) {
+        let runtime = Arc::new(SessionRuntime::with_journal(session_id.to_string(), None));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = seq.saturating_add(1);
+            stream.last_applied_seq = seq;
+        }
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach live agent");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            Some(0),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        runtime.publish_agent_event_with_seq(
+            SessionEvent::AgentMessage {
+                message_id: Some("live".to_string()),
+                text: "live row".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
+            },
+            None,
+            Some(seq),
+        );
+        (runtime, conn)
+    }
+
+    fn delivered_chat_row(conn: &ConnHandle) -> PendingEvent {
+        conn.pull_events()
+            .into_iter()
+            .find(|pending| matches!(pending.envelope.event, SessionEvent::AgentMessage { .. }))
+            .expect("the live chat row reaches the wire")
+    }
+
+    /// A live row has no journal row behind it yet, so the position the queue
+    /// carries is the only one its envelope can hold. Without it the row
+    /// reaches the client positionless, indistinguishable from a marker.
+    #[test]
+    fn a_live_agent_row_carries_its_position_on_the_envelope() {
+        let (runtime, conn) = live_agent_with_one_chat_row("s.live.position", 7);
+        let pending = delivered_chat_row(&conn);
+        let wire = serde_json::to_value(&pending.envelope).expect("envelope json");
+        assert_eq!(
+            wire["transcriptSeq"].as_u64(),
+            Some(7),
+            "a live row must carry the position its queue handed it: {wire}"
+        );
+        drop(runtime);
+    }
+
+    /// The transcript cursor is what a reattach presents. A delivered live
+    /// chat row is progress this reader must keep, or every reconnect replays
+    /// the conversation from the attach position.
+    #[test]
+    fn a_live_chat_row_moves_the_transcript_cursor() {
+        let (runtime, conn) = live_agent_with_one_chat_row("s.live.cursor", 7);
+        let pending = delivered_chat_row(&conn);
+        conn.event_sent(&pending);
+        let cursor = conn
+            .attached
+            .lock()
+            .expect("attached")
+            .get(&conn.id)
+            .and_then(|pull| pull.transcript_cursor);
+        assert_eq!(
+            cursor,
+            Some(7),
+            "a delivered live row is progress this reader must keep: {cursor:?}"
+        );
+        drop(runtime);
     }
 
     /// A reattach to a multi-generation transcript with a non-zero cursor is
@@ -3317,6 +3409,93 @@ mod tests {
             events.last(),
             Some(SessionEvent::Exit { code: Some(0) })
         ));
+    }
+
+    #[test]
+    fn live_terminal_positions_survive_connection_replacement() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = ConnHandle::new(1);
+        let generation = attach_tracked(&runtime, &conn);
+
+        let initial = conn.pull_events();
+        let snapshot = initial
+            .iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::Snapshot { as_of_seq, .. } => {
+                    Some((as_of_seq, event.envelope.transcript_seq))
+                }
+                _ => None,
+            })
+            .expect("live terminal attach has a snapshot");
+        assert_eq!(
+            snapshot.1,
+            Some(snapshot.0),
+            "the live snapshot must carry its stream position"
+        );
+        for event in &initial {
+            conn.event_sent(event);
+        }
+
+        runtime.publish_output("before replacement");
+        let first = conn.pull_events();
+        let output_seq = first
+            .iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::Output { seq, .. } => Some((seq, event.envelope.transcript_seq)),
+                _ => None,
+            })
+            .expect("live terminal output reaches the connection");
+        assert_eq!(
+            output_seq.1,
+            Some(output_seq.0),
+            "live output must carry its stream position"
+        );
+        for event in &first {
+            conn.event_sent(event);
+        }
+        let cursor = conn
+            .attached
+            .lock()
+            .expect("attached")
+            .get(&conn.id)
+            .and_then(|pull| pull.transcript_cursor)
+            .expect("live output advances the cursor");
+        assert_eq!(cursor, output_seq.0);
+
+        runtime.detach_if_conn(conn.id);
+        let replacement = ConnHandle::new(2);
+        let outcome = runtime
+            .try_attach_with_replay(
+                Some(Cursor {
+                    generation,
+                    seq: cursor,
+                }),
+                &replacement,
+                false,
+            )
+            .expect("replacement attach");
+        replacement.track_with_agent_replay(
+            "s.a.1",
+            Arc::clone(&runtime),
+            false,
+            Some(cursor),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        runtime.publish_output("after replacement");
+        let second = replacement.pull_events();
+        let output_seqs = second
+            .iter()
+            .filter_map(|event| match event.envelope.event {
+                SessionEvent::Output { seq, .. } => Some(seq),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            output_seqs,
+            vec![output_seq.0 + 1],
+            "replacement must deliver only output after the live cursor"
+        );
     }
 
     #[test]

@@ -1867,6 +1867,12 @@ impl RemoteState {
 pub struct SessionEventEnvelope {
     pub session_id: String,
     pub generation: u64,
+    /// Journal seq of `event` inside `generation`. Absent on a frame that
+    /// holds no position in the stream — a marker, a daemon-local card, a row
+    /// from another generation's numbering — so a reader treats absence as
+    /// "no position", never as position zero.
+    #[serde(default)]
+    pub transcript_seq: Option<u64>,
     pub event: SessionEvent,
 }
 
@@ -2897,6 +2903,7 @@ mod tests {
         let message = DaemonMessage::Event(SessionEventEnvelope {
             session_id: String::new(),
             generation: 0,
+            transcript_seq: None,
             event: SessionEvent::SessionsSnapshot {
                 sessions: vec![SessionStateSnapshot {
                     id: "s.client.1".to_string(),
@@ -2979,6 +2986,7 @@ mod tests {
             envelope: SessionEventEnvelope {
                 session_id: "s.a.1".to_string(),
                 generation: 1,
+                transcript_seq: None,
                 event: SessionEvent::AgentMessage {
                     message_id: None,
                     text: "hello".to_string(),
@@ -3103,6 +3111,7 @@ mod tests {
         let event = DaemonMessage::Event(SessionEventEnvelope {
             session_id: "s.a.1".to_string(),
             generation: 1,
+            transcript_seq: None,
             event: SessionEvent::PermissionResolved {
                 tool_call_id: "tool-1".to_string(),
                 selected_option_id: Some("allow-once".to_string()),
@@ -3151,6 +3160,7 @@ mod tests {
             DaemonMessage::Event(SessionEventEnvelope {
                 session_id: "s.a.1".to_string(),
                 generation: 1,
+                transcript_seq: None,
                 event: SessionEvent::PermissionResolved {
                     tool_call_id: "tool-1".to_string(),
                     selected_option_id: None,

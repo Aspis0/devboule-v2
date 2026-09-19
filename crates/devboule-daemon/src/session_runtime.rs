@@ -2619,6 +2619,7 @@ impl SessionRuntime {
                         envelope: SessionEventEnvelope {
                             session_id: self.session_id.clone(),
                             generation,
+                            transcript_seq: None,
                             event: SessionEvent::Detached,
                         },
                     },

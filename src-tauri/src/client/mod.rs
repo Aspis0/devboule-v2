@@ -612,7 +612,9 @@ impl AttachmentRegistry {
                 if entry.binding != Some(binding) || entry.session_id != session_id {
                     return;
                 }
-                advance_cursor(entry, &envelope);
+                if !advance_cursor(entry, &envelope) {
+                    return;
+                }
                 let sink = Arc::clone(&entry.sink);
                 let event = envelope.event;
                 let remove = matches!(
@@ -761,21 +763,22 @@ fn next_binding(state: &mut AttachmentRegistryState) -> u64 {
     state.next_binding
 }
 
-fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) {
-    let seq = match &envelope.event {
-        SessionEvent::Output { seq, .. }
-        | SessionEvent::AgentReported { seq, .. }
-        | SessionEvent::Snapshot { as_of_seq: seq, .. } => Some(*seq),
-        _ => None,
+fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) -> bool {
+    let Some(seq) = envelope.transcript_seq else {
+        return true;
     };
     match entry.cursor {
         Some(cursor) if cursor.generation == envelope.generation => {
-            if let Some(seq) = seq {
-                entry.cursor = Some(Cursor {
-                    generation: cursor.generation,
-                    seq: cursor.seq.max(seq),
-                });
+            if seq <= cursor.seq {
+                return false;
             }
+            if seq > cursor.seq.saturating_add(1) {
+                // TODO: Refetch the missing transcript range before accepting this gap.
+            }
+            entry.cursor = Some(Cursor {
+                generation: cursor.generation,
+                seq,
+            });
         }
         _ => {
             // Cross-generation transcript replay shares the dispatch path
@@ -787,11 +790,12 @@ fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) 
             if !regress {
                 entry.cursor = Some(Cursor {
                     generation: envelope.generation,
-                    seq: seq.unwrap_or(0),
+                    seq,
                 });
             }
         }
     }
+    true
 }
 
 fn terminal_event(state: &SessionState) -> Option<SessionEvent> {
@@ -1850,6 +1854,7 @@ mod tests {
         let history = SessionEventEnvelope {
             session_id: "s.1".to_string(),
             generation: 1,
+            transcript_seq: None,
             event: SessionEvent::AgentReported {
                 seq: 100,
                 source: "devboule:stub".to_string(),
@@ -2094,6 +2099,199 @@ mod tests {
         }
     }
 
+    fn agent_envelope(
+        session_id: &str,
+        generation: u64,
+        transcript_seq: Option<u64>,
+        text: &str,
+    ) -> devboule_protocol::SessionEventEnvelope {
+        devboule_protocol::SessionEventEnvelope {
+            session_id: session_id.to_string(),
+            generation,
+            transcript_seq,
+            event: devboule_protocol::SessionEvent::AgentMessage {
+                message_id: None,
+                text: text.to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
+            },
+        }
+    }
+
+    fn output_envelope(
+        session_id: &str,
+        generation: u64,
+        transcript_seq: Option<u64>,
+        seq: u64,
+        data: &str,
+    ) -> devboule_protocol::SessionEventEnvelope {
+        devboule_protocol::SessionEventEnvelope {
+            session_id: session_id.to_string(),
+            generation,
+            transcript_seq,
+            event: devboule_protocol::SessionEvent::Output {
+                seq,
+                data: data.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn live_terminal_output_cursor_survives_connection_replacement() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let old_client = FakeAttachmentClient::default();
+        let new_client = FakeAttachmentClient::default();
+        let subscription_id = registry.insert("session-terminal", None, Arc::new(|_| {}));
+        registry
+            .bind(&old_client, subscription_id)
+            .expect("initial attach");
+
+        old_client.emit(
+            "session-terminal",
+            output_envelope("session-terminal", 4, Some(17), 17, "before replacement"),
+        );
+
+        registry.begin_replacement();
+        registry.reattach_all(&new_client);
+
+        assert_eq!(
+            new_client
+                .calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            &[(
+                "session-terminal".to_string(),
+                Some(devboule_protocol::Cursor {
+                    generation: 4,
+                    seq: 17,
+                }),
+            )],
+            "terminal reattach must ask only for output after the live cursor"
+        );
+    }
+
+    #[test]
+    fn live_chat_cursor_survives_connection_replacement() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let old_client = FakeAttachmentClient::default();
+        let new_client = FakeAttachmentClient::default();
+        let subscription_id = registry.insert("session-chat", None, Arc::new(|_| {}));
+        registry
+            .bind(&old_client, subscription_id)
+            .expect("initial attach");
+
+        old_client.emit(
+            "session-chat",
+            agent_envelope("session-chat", 4, Some(17), "live chat"),
+        );
+
+        registry.begin_replacement();
+        registry.reattach_all(&new_client);
+
+        assert_eq!(
+            new_client
+                .calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            &[(
+                "session-chat".to_string(),
+                Some(devboule_protocol::Cursor {
+                    generation: 4,
+                    seq: 17,
+                }),
+            )],
+            "reattach must send the cursor advanced by live chat"
+        );
+    }
+
+    #[test]
+    fn stale_output_envelope_is_not_forwarded_to_the_sink() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_sink = Arc::clone(&received);
+        let subscription_id = registry.insert(
+            "session-stale",
+            None,
+            Arc::new(move |event| {
+                received_by_sink
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+        );
+        let client = FakeAttachmentClient::default();
+        registry.bind(&client, subscription_id).expect("attach");
+
+        client.emit(
+            "session-stale",
+            devboule_protocol::SessionEventEnvelope {
+                session_id: "session-stale".to_string(),
+                generation: 1,
+                transcript_seq: Some(5),
+                event: devboule_protocol::SessionEvent::Output {
+                    seq: 5,
+                    data: "first".to_string(),
+                },
+            },
+        );
+        client.emit(
+            "session-stale",
+            output_envelope("session-stale", 1, Some(5), 5, "duplicate"),
+        );
+
+        assert_eq!(
+            received
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            1,
+            "a seq at the cursor must not reach the sink"
+        );
+    }
+
+    #[test]
+    fn unpositioned_envelope_is_forwarded_without_advancing() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_sink = Arc::clone(&received);
+        let subscription_id = registry.insert(
+            "session-marker",
+            None,
+            Arc::new(move |event| {
+                received_by_sink
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+        );
+        let client = FakeAttachmentClient::default();
+        registry.bind(&client, subscription_id).expect("attach");
+
+        client.emit(
+            "session-marker",
+            agent_envelope("session-marker", 1, None, "marker"),
+        );
+
+        assert_eq!(
+            received
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            1,
+            "an unpositioned envelope must still reach the sink"
+        );
+        let cursor = registry
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .get(&subscription_id)
+            .and_then(|entry| entry.cursor);
+        assert_eq!(cursor, None, "an absent position must not create progress");
+    }
+
     #[test]
     fn attached_session_reattaches_with_the_cursor_received_before_replacement() {
         let registry = Arc::new(AttachmentRegistry::default());
@@ -2117,6 +2315,7 @@ mod tests {
             devboule_protocol::SessionEventEnvelope {
                 session_id: "session-1".to_string(),
                 generation: 4,
+                transcript_seq: Some(17),
                 event: devboule_protocol::SessionEvent::Output {
                     seq: 17,
                     data: "before replacement".to_string(),
@@ -2130,6 +2329,7 @@ mod tests {
             devboule_protocol::SessionEventEnvelope {
                 session_id: "session-1".to_string(),
                 generation: 0,
+                transcript_seq: None,
                 event: devboule_protocol::SessionEvent::Exit { code: None },
             },
         );
@@ -2162,6 +2362,7 @@ mod tests {
             devboule_protocol::SessionEventEnvelope {
                 session_id: "session-1".to_string(),
                 generation: 4,
+                transcript_seq: Some(18),
                 event: devboule_protocol::SessionEvent::Output {
                     seq: 18,
                     data: "after replacement".to_string(),
@@ -2173,6 +2374,7 @@ mod tests {
             devboule_protocol::SessionEventEnvelope {
                 session_id: "session-1".to_string(),
                 generation: 4,
+                transcript_seq: Some(99),
                 event: devboule_protocol::SessionEvent::Output {
                     seq: 99,
                     data: "late old-client event".to_string(),
@@ -2231,6 +2433,7 @@ mod tests {
         let event = devboule_protocol::SessionEventEnvelope {
             session_id: "shared".to_string(),
             generation: 1,
+            transcript_seq: None,
             event: SessionEvent::AgentMessage {
                 message_id: None,
                 text: "shared event".to_string(),
@@ -2265,6 +2468,7 @@ mod tests {
             devboule_protocol::SessionEventEnvelope {
                 session_id: "session-2".to_string(),
                 generation: 4,
+                transcript_seq: Some(17),
                 event: devboule_protocol::SessionEvent::Output {
                     seq: 17,
                     data: "old generation".to_string(),
@@ -2390,6 +2594,7 @@ mod tests {
             devboule_protocol::SessionEventEnvelope {
                 session_id: "good".to_string(),
                 generation: 1,
+                transcript_seq: None,
                 event: devboule_protocol::SessionEvent::AgentMessage {
                     message_id: None,
                     text: "still live".to_string(),
@@ -2433,6 +2638,7 @@ mod tests {
             devboule_protocol::SessionEventEnvelope {
                 session_id: "retry".to_string(),
                 generation: 1,
+                transcript_seq: None,
                 event: devboule_protocol::SessionEvent::AgentMessage {
                     message_id: None,
                     text: "recovered".to_string(),
@@ -2472,6 +2678,7 @@ mod tests {
             devboule_protocol::SessionEventEnvelope {
                 session_id: "closed".to_string(),
                 generation: 1,
+                transcript_seq: None,
                 event: devboule_protocol::SessionEvent::Exit { code: Some(0) },
             },
         );

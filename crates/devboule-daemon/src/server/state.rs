@@ -195,6 +195,7 @@ pub(super) fn session_state_event(
         // roster event; attachment events always carry both values.
         session_id: String::new(),
         generation: 0,
+        transcript_seq: None,
         event: SessionEvent::SessionsSnapshot { sessions },
     }
 }
