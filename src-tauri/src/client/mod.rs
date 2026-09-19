@@ -640,11 +640,11 @@ impl AttachmentRegistry {
             .as_ref()
             .and_then(|roster| roster.get(session_id))
         else {
-            return Some(cursor);
+            return Some(cursor_before_replacement(cursor));
         };
         let generation = snapshot.state.generation();
         if cursor.generation == generation {
-            Some(cursor)
+            Some(cursor_before_replacement(cursor))
         } else {
             // Sequence numbers restart for a new process generation. Never
             // send the old generation's seq to the daemon; a zero cursor for
@@ -769,9 +769,9 @@ fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) 
         Some(cursor) if cursor.generation == envelope.generation => {
             // transcript_seq numbers the journal envelope, not each derived row.
             // claude_client.rs:1698-1712 can publish siblings under one seq, so it
-            // cannot decide row identity. Always forward; at worst the envelope
-            // straddling a connection swap repeats, while dropping it would lose
-            // its siblings.
+            // cannot decide row identity. Always forward. Rebind backs off one
+            // envelope so strict-after replay redelivers the boundary whole;
+            // shown rows may repeat, but siblings cannot be lost.
             if seq > cursor.seq.saturating_add(1) {
                 // TODO: Refetch the missing transcript range before accepting this gap.
             }
@@ -794,6 +794,13 @@ fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) 
                 });
             }
         }
+    }
+}
+
+fn cursor_before_replacement(cursor: Cursor) -> Cursor {
+    Cursor {
+        generation: cursor.generation,
+        seq: cursor.seq.saturating_sub(1),
     }
 }
 
@@ -2187,6 +2194,72 @@ mod tests {
     }
 
     #[test]
+    fn reattach_redelivers_every_row_from_the_boundary_envelope() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_sink = Arc::clone(&received);
+        let subscription_id = registry.insert(
+            "session-boundary",
+            None,
+            Arc::new(move |event| {
+                received_by_sink
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+        );
+        let old_client = FakeAttachmentClient::default();
+        let new_client = FakeAttachmentClient::default();
+        registry
+            .bind(&old_client, subscription_id)
+            .expect("initial attach");
+
+        for text in ["thinking", "answer"] {
+            old_client.emit(
+                "session-boundary",
+                agent_envelope("session-boundary", 1, Some(17), text),
+            );
+        }
+
+        registry.begin_replacement();
+        registry.reattach_all(&new_client);
+
+        assert_eq!(
+            new_client
+                .calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            &[(
+                "session-boundary".to_string(),
+                Some(devboule_protocol::Cursor {
+                    generation: 1,
+                    seq: 16,
+                }),
+            )],
+            "reattach must back off one envelope so a boundary envelope is replayed whole"
+        );
+
+        for text in ["thinking", "answer"] {
+            new_client.emit(
+                "session-boundary",
+                agent_envelope("session-boundary", 1, Some(17), text),
+            );
+        }
+
+        let texts = received
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .filter_map(|event| match event {
+                devboule_protocol::SessionEvent::AgentMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(texts, ["thinking", "answer", "thinking", "answer"]);
+    }
+
+    #[test]
     fn live_terminal_output_cursor_survives_connection_replacement() {
         let registry = Arc::new(AttachmentRegistry::default());
         let old_client = FakeAttachmentClient::default();
@@ -2214,7 +2287,7 @@ mod tests {
                 "session-terminal".to_string(),
                 Some(devboule_protocol::Cursor {
                     generation: 4,
-                    seq: 17,
+                    seq: 16,
                 }),
             )],
             "terminal reattach must ask only for output after the live cursor"
@@ -2249,7 +2322,7 @@ mod tests {
                 "session-chat".to_string(),
                 Some(devboule_protocol::Cursor {
                     generation: 4,
-                    seq: 17,
+                    seq: 16,
                 }),
             )],
             "reattach must send the cursor advanced by live chat"
@@ -2358,7 +2431,7 @@ mod tests {
                 "session-1".to_string(),
                 Some(devboule_protocol::Cursor {
                     generation: 4,
-                    seq: 17,
+                    seq: 16,
                 }),
             )]
         );

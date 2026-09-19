@@ -53,6 +53,8 @@ export type ActiveTurnBehavior = "steer";
 export type UserMessageAuthor = "human" | "agent" | "creation";
 
 /** What an `agent_user_message` means in the session displaying it. */
+// Keep aligned with protocol::UserMessageKind; the protocol crate tests the
+// serde names against this union.
 export type UserMessageKind =
   | "unknown"
   | "composer"

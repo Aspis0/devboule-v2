@@ -1393,6 +1393,8 @@ pub enum UserMessageKind {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeSet, path::PathBuf};
+
     use super::*;
 
     #[test]
@@ -1810,6 +1812,101 @@ mod tests {
         };
         let encoded = serde_json::to_value(&current).expect("current event");
         assert_eq!(encoded["messageKind"], "outgoing_a2a");
+    }
+
+    #[test]
+    fn user_message_kind_matches_frontend_union() {
+        let path = frontend_ipc_ts_path();
+        if !path.is_file() {
+            panic!(
+                "TypeScript UserMessageKind union not found at {}. \
+                 Refusing to skip: this test is the guard that keeps UserMessageKind aligned with src/types/ipc.ts.",
+                path.display()
+            );
+        }
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("failed to read {}: {err}", path.display());
+        });
+        let ts_names = user_message_kinds_in_typescript_union(&source);
+
+        let mut rust_names = BTreeSet::new();
+        for kind in every_user_message_kind() {
+            let value = serde_json::to_value(kind).expect("json");
+            let Some(name) = value.as_str() else {
+                panic!("{kind:?} serialized to {value}, expected a string");
+            };
+            rust_names.insert(name.to_owned());
+        }
+
+        assert_eq!(
+            rust_names, ts_names,
+            "UserMessageKind serde names and the TypeScript UserMessageKind union in src/types/ipc.ts drifted"
+        );
+    }
+
+    fn frontend_ipc_ts_path() -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop();
+        path.pop();
+        path.push("src");
+        path.push("types");
+        path.push("ipc.ts");
+        path
+    }
+
+    fn user_message_kinds_in_typescript_union(source: &str) -> BTreeSet<String> {
+        const MARKER: &str = "export type UserMessageKind";
+        let Some(marker_at) = source.find(MARKER) else {
+            panic!(
+                "src/types/ipc.ts has no `{MARKER}` alias; cannot check alignment with UserMessageKind"
+            );
+        };
+        let after_marker = &source[marker_at + MARKER.len()..];
+        let Some(eq_at) = after_marker.find('=') else {
+            panic!("`{MARKER}` has no `=`");
+        };
+        let after_eq = &after_marker[eq_at + 1..];
+        let Some(semi_at) = after_eq.find(';') else {
+            panic!("`{MARKER}` has no terminating `;`");
+        };
+        let body = &after_eq[..semi_at];
+
+        let mut names = BTreeSet::new();
+        let mut rest = body;
+        while let Some(start) = rest.find('"') {
+            rest = &rest[start + 1..];
+            let Some(end) = rest.find('"') else {
+                panic!("unterminated string in `{MARKER}` union");
+            };
+            names.insert(rest[..end].to_owned());
+            rest = &rest[end + 1..];
+        }
+        if names.is_empty() {
+            panic!("`{MARKER}` union contains no string literals");
+        }
+        names
+    }
+
+    fn every_user_message_kind() -> Vec<UserMessageKind> {
+        macro_rules! variants {
+            ($($variant:ident),+ $(,)?) => {{
+                let kinds = vec![$(UserMessageKind::$variant),+];
+                for kind in &kinds {
+                    match kind {
+                        $(UserMessageKind::$variant => {})+
+                    }
+                }
+                kinds
+            }};
+        }
+        variants!(
+            Unknown,
+            Composer,
+            OutgoingA2a,
+            IncomingA2a,
+            SystemNotice,
+            Creation
+        )
     }
 
     #[test]

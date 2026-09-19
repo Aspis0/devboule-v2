@@ -2126,6 +2126,26 @@ describe("creator permission-request envelope", () => {
       expectedRole: "a2a_message",
       expectedText: "legacy envelope body",
     },
+    {
+      name: "legacy row with an explicit unknown kind",
+      event: {
+        type: "agent_user_message",
+        author: "agent",
+        messageId: "m-unknown",
+        text: [
+          "<devboule-system>",
+          "origin: local",
+          "role: client",
+          "from_agent: s.msg.unknown",
+          "timestamp: 1789671600000",
+          "unknown-kind envelope body",
+          "</devboule-system>",
+        ].join("\n"),
+        messageKind: "unknown",
+      },
+      expectedRole: "a2a_message",
+      expectedText: "unknown-kind envelope body",
+    },
   ] as const)("classifies $name by its declared message kind", async (testCase) => {
     const harness = makeHarness();
     await harness.session.start();
@@ -2135,6 +2155,33 @@ describe("creator permission-request envelope", () => {
     expect(itemRoleText(items[0])).toEqual({
       role: testCase.expectedRole,
       text: testCase.expectedText,
+    });
+  });
+
+  it("routes an unrecognized message kind through the legacy classifier", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_user_message",
+      author: "agent",
+      messageId: "m-future-kind",
+      text: [
+        "<devboule-system>",
+        "origin: local",
+        "role: client",
+        "from_agent: s.msg.future",
+        "timestamp: 1789671600000",
+        "future-kind envelope body",
+        "</devboule-system>",
+      ].join("\n"),
+      messageKind: "future_kind",
+    } as unknown as SessionEvent);
+
+    const items = harness.session.getState().items;
+    expect(items).toHaveLength(1);
+    expect(itemRoleText(items[0])).toEqual({
+      role: "a2a_message",
+      text: "future-kind envelope body",
     });
   });
 

@@ -537,6 +537,11 @@ export class AgentSession {
         // behavior until those stored rows no longer matter.
         this.handleLegacyAgentUserMessage(event);
         return;
+      default:
+        // A newer daemon may add a kind this webview does not know yet. Keep
+        // the row visible through the same compatibility classifier.
+        this.handleLegacyAgentUserMessage(event);
+        return;
     }
   }
 
