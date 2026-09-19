@@ -225,6 +225,18 @@ pub use session_items::{
     COALESCE_FLUSH, COALESCE_MAX_BYTES, PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES,
     SESSION_OS_SWEEP_INTERVAL, SESSION_SILENCE_THRESHOLD,
 };
+/// The create road's named phases: `create_with_provider_env` in the parent
+/// is the thin sequence, and this sibling holds the phases it composes. A
+/// rewrite rather than a move — its proof is the characterisation tests in
+/// `session_create_tests.rs`, not a byte comparison.
+#[path = "session_create.rs"]
+mod session_create;
+#[cfg(test)]
+#[path = "session_create_phase_tests.rs"]
+mod session_create_phase_tests;
+#[cfg(test)]
+#[path = "session_create_tests.rs"]
+mod session_create_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
@@ -1244,155 +1256,25 @@ impl SessionRegistry {
         // liveness rule the profile store states for itself. A read that
         // finds nothing to change swaps nothing.
         crate::user_providers::refresh_user_rows(self.runtime_dir());
-        let workspace_id_ref = workspace_id.as_deref();
-        let workspace_cwd = workspace_id_ref
-            .map(|workspace_id| self.workspace_cwd(workspace_id))
-            .transpose()?;
-        // A created child may start in a subdirectory of the creator's
-        // workspace. It was resolved and confined on the way in
-        // (`confined_child_cwd`), so a path that reaches here is already inside
-        // the workspace, canonical, and an existing directory.
-        let workspace_cwd = match meta.cwd.clone() {
-            Some(cwd) => Some(cwd),
-            None => workspace_cwd,
-        };
-        let id = match meta.session_id.clone() {
-            Some(id) => id,
-            None => compose_session_id(&owner.session_token(), &mint_session_unique())
-                .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?,
-        };
-        let (kind, provider, provenance) =
-            Self::resolve_session_provider(kind, provider, env_provider);
-        let mut command = match command {
-            Some(command) => command,
-            None => {
-                // The command road is the registry's to resolve: the kind
-                // names its family, the family resolves its own command —
-                // the ACP family's named road consults the catalog, the
-                // native families run their fixed roads, the terminal road
-                // resolves the shell.
-                let family = provider::catalog_registry().provider_for_kind(&kind);
-                // The npx consent gate is catalog policy (design §3.3.5) and
-                // stays in this file; it keys on the one family whose named
-                // road can resolve a catalog wrapper, not on the kind. Same
-                // refusals as the kind-keyed arm it replaces, and no new
-                // catalog read on any road that never had one.
-                if let Some(id) = provider.as_deref() {
-                    if family.resolves_named_from_catalog() {
-                        Self::reject_env_npx_wrapper(id, provenance, &self.paths)?;
-                    }
-                }
-                family.resolve_command(&self.paths, provider.as_deref())?
-            }
-        };
-        if let Some(cwd) = workspace_cwd {
-            command.cwd = cwd;
-        }
-        let session_provider = provider::catalog_registry()
-            .provider_for_kind(&kind)
-            .stamp_session_provider(provider.clone(), command.provider_id.clone());
-        // One clock read: the journal row and the wire metadata must carry
-        // the same instant so a caller can compare them.
-        //
-        // A created child inherits its creator's stored origin and never
-        // re-derives one from the connection this thread happens to hold: the
-        // MCP connection of a peer's session is a loopback socket, and reading
-        // *it* would label a peer's child as this machine's own (S5 checklist).
-        let origin = meta
-            .origin
-            .clone()
-            .unwrap_or_else(|| session_origin_for(conn_peer));
-        let title = match meta.display_name.clone() {
-            Some(name) => name,
-            // S9: agent-ness is one protocol predicate, not a kind list — the
-            // same four kinds `hosts_mcp` serves, spelled once in the protocol.
-            None => {
-                if kind.is_agent() {
-                    "Agent".to_string()
-                } else {
-                    "Terminal".to_string()
-                }
-            }
-        };
-        let mut record = new_session_record(
-            id.clone(),
-            owner.user.clone(),
-            workspace_id.clone(),
-            kind.clone(),
+        let resolved = self.resolve_creation_inputs(
+            owner,
+            workspace_id.as_deref(),
+            kind,
+            provider,
+            env_provider,
+            command,
+            meta,
+        )?;
+        let (origin, title) = session_create::birth_stamps(meta, conn_peer, &resolved.kind);
+        let (record, metadata, record_generation) = session_create::build_birth_record(
+            &resolved,
+            owner,
+            workspace_id,
+            &delivery,
+            meta,
+            origin,
             title,
         );
-        record.provider = session_provider.clone();
-        // The name a human reads and the session that asked for this one are
-        // the row's, not just the wire metadata's (audit S5-12): an app that
-        // attaches to this daemon after a restart lists its sessions from the
-        // journal, and a child that came back without its name and its parent
-        // would be a different session than the one that was created.
-        record.display_name = meta.display_name.clone();
-        record.created_by = meta.created_by.clone();
-        // The creation-from-profile facts, written once, here, and never
-        // re-derived from the store afterwards (v11). A create that resolved no
-        // profile — the human's provider picker, a terminal — leaves them at
-        // their defaults, and a create that did leaves the daemon's own record
-        // of it: the profile's **stable id** (a rename later cannot make this
-        // child misreport what it was started from), the labels the creation
-        // stamped, and the context this session belongs to.
-        record.profile_id = meta.profile_id.clone();
-        // The overlay the creation resolved at birth, written here with the
-        // other birth facts and never re-resolved: the profile it came from
-        // may be edited or deleted afterwards, and the child's powers were
-        // decided when it was born.
-        record.overlay = Some(meta.overlay.clone());
-        // The child's own depth, same rule: the cap must survive a restart,
-        // and re-deriving it by walking `created_by` would trust a chain
-        // the retention sweep may have cut.
-        record.depth = Some(meta.depth);
-        // The marker, derived here from the **delivered** mode (R2b): this is
-        // the one place the kind and the delivery the child is started on meet
-        // the row, so the marker is the delivery's own judgement — a profile's
-        // feature tick is not an input, and a create that resolved no profile
-        // is judged by its family's own default. ACP vocabularies are the
-        // agent's own prose, so they answer `unknown` unless the daemon's
-        // broker itself answers the delivered id.
-        let unattended_state =
-            crate::peer_policy::unattended_mode(kind.clone(), delivery.mode_id.as_deref());
-        record.unattended_state = unattended_state;
-        record.labels = meta.labels.clone();
-        // Its own id, unless its creator's context came in with the creation:
-        // that inheritance is the whole rule, and it is applied once, here, so
-        // every reader — the roster, the journal, the A2A answer — sees one
-        // value.
-        let context_id = meta.context_id.clone().unwrap_or_else(|| id.clone());
-        record.context_id = Some(context_id.clone());
-        record.status = PersistStatus::Live;
-        // The origin is a property of the create, not of the spawn: it is
-        // recorded before the row is journaled, so a create that dies during
-        // spawn still reads back as the device that asked for it.
-        record.origin = origin.clone();
-        let record_generation = record.generation;
-        let metadata = Session {
-            id: id.clone(),
-            workspace_id,
-            cwd: Some(crate::workspace::display_path(
-                &command.cwd.to_string_lossy(),
-            )),
-            kind: kind.clone(),
-            title: record.title.clone(),
-            provider: session_provider.clone(),
-            peer_session_id: None,
-            state: SessionState::Live { generation: 1 },
-            elapsed_ms: Some(0),
-            created_at_ms: record.created_at_ms,
-            origin,
-            display_name: meta.display_name.clone(),
-            created_by: meta.created_by.clone(),
-            profile_id: meta.profile_id.clone(),
-            context_id: Some(context_id),
-            unattended: unattended_state,
-            labels: meta.labels.clone(),
-            // Born live: the process exists, so resume is refused. Views
-            // recompute on every serve.
-            resumable: false,
-        };
         // The birth door: the row is created, not upserted, so an id the
         // journal already holds refuses the create loudly instead of merging
         // two sessions into one row — whichever road supplied the id, minted
@@ -1402,23 +1284,26 @@ impl SessionRegistry {
         // before spawn also keeps the old guarantee — a short-lived command
         // (cmd /c echo) can EOF and enqueue MarkEnded before spawn returns,
         // and the journal thread must then see a live session, not a missing
-        // one (recovered-as-killed on reopen).
+        // one (recovered-as-killed on reopen). The row write stays beside the
+        // env injection and the spawn: separating the durable boundary from
+        // the sequence that fulfils it is the one split with no meaning.
         if let Some(journal) = &self.journal {
             journal.create_session(record).map_err(WireError::from)?;
             self.invalidate_journal_roster();
         }
+        let mut command = resolved.command;
         crate::agent_env::inject_session_env(
             &mut command,
             &metadata.id,
             metadata.workspace_id.as_deref(),
             &self.paths,
         );
-        let mcp_session = if crate::mcp_broker::hosts_mcp(&kind) {
+        let mcp_session = if crate::mcp_broker::hosts_mcp(&resolved.kind) {
             match state.mcp.register_with_provider(
                 &metadata.id,
                 owner,
-                &kind,
-                session_provider.as_deref(),
+                &resolved.kind,
+                resolved.session_provider.as_deref(),
                 crate::mcp_broker::AgentLineage {
                     depth: meta.depth,
                     overlay: meta.overlay.clone(),
@@ -1432,7 +1317,7 @@ impl SessionRegistry {
                     // throwaway thread like the resume path. The revision bump
                     // on the end wakes roster readers once it lands.
                     if let Some(journal) = &self.journal {
-                        spawn_async_end_marker(journal, &id, record_generation);
+                        spawn_async_end_marker(journal, &resolved.id, record_generation);
                     }
                     return Err(error);
                 }
@@ -1440,16 +1325,7 @@ impl SessionRegistry {
         } else {
             None
         };
-        // An agent's child is a creation that has not committed yet (audit-2
-        // §2): its end can arrive before the link exists, so the end is parked
-        // for the commit rather than run against a link that is not there.
-        if meta.creation_pending {
-            self.note_pending_child(
-                &id,
-                meta.reservation
-                    .expect("an agent child holds a reservation"),
-            );
-        }
+        self.note_pending_child_if_creation_pending(&resolved.id, meta);
         // The journal row above is the durable product boundary. A failed
         // spawn must end that row, or the next roster render resurrects a
         // phantom recovered session with zero events.
@@ -1467,7 +1343,7 @@ impl SessionRegistry {
                 // `spawn_measures_health`, read through the registry; the
                 // per-family reasons live there.
                 if provider::catalog_registry()
-                    .provider_for_kind(&kind)
+                    .provider_for_kind(&resolved.kind)
                     .spawn_measures_health()
                 {
                     if let Some(provider_id) = &metadata.provider {
@@ -1476,33 +1352,13 @@ impl SessionRegistry {
                 }
             }
             Err(error) => {
-                // The token rollback clears what the reservation noted: the
-                // creation never became a child, so nothing is owed to anyone
-                // (audit-2 §2).
-                self.clear_pending_child(&metadata.id);
-                if let Some(journal) = &self.journal {
-                    // Same rule as the MCP path and the resume path: no blocking
-                    // journal wait on this thread. The pre-existing sync comment
-                    // names a real phantom window and I agree it is the same
-                    // violation — a wedged writer turns that window into a dead
-                    // pipe plus a shutdown that never returns, so the async end
-                    // still lands once the queue drains.
-                    spawn_async_end_marker(journal, &metadata.id, record_generation);
-                }
-                if let Some(provider_id) = &metadata.provider {
-                    // Only a failure of the provider or the pipe says
-                    // anything about the provider's health. A creation-time
-                    // refusal the profile alone decides — an unknown model
-                    // or mode, an `autoAccept` contradiction, an agent
-                    // refusing the delivered switch — is `InvalidRequest` by
-                    // convention across the clients, and a profile mistake
-                    // must not mark a healthy provider unhealthy (the R2a
-                    // audit's F6).
-                    if spawn_failure_is_provider_health(&error) {
-                        state.record_provider_health(provider_id, Err(&error));
-                    }
-                }
-                return Err(error);
+                return Err(self.fail_spawn(
+                    state,
+                    &metadata.id,
+                    record_generation,
+                    metadata.provider.as_deref(),
+                    error,
+                ));
             }
         }
         Ok(metadata)
