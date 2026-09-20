@@ -278,6 +278,18 @@ mod session_child_profile_phase_tests;
 #[path = "session_child_profile_tests.rs"]
 mod session_child_profile_tests;
 use session_child_permission::child_answer_caps_refusal;
+/// The agent-activity-and-quiet-notice tests carved out of `session_tests` (its
+/// lines 6813-7208 at `f1c42d0`): the derived headline telling working, blocked
+/// and idle apart while a live hook row wins, the derived state and the
+/// published hook sharing one session, the quiet notice firing once per spell
+/// and leaving the child alone, a refused notice never steering and leaving the
+/// creator's turn and cards alone, a failed delivery keeping the spell owed, a
+/// stranger's session refused without saying which, and a resolved card
+/// re-arming the quiet clock. A move, not a rewrite - its proof is the byte
+/// comparison against `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_activity_quiet_tests.rs"]
+mod session_activity_quiet_tests;
 /// The attachment-and-deposit tests carved out of `session_tests` (its lines
 /// 2862-3745 at `1c6b03e`): the owner's deposit answered with the reference of
 /// the file the store wrote, the unauthorised, oversized and
