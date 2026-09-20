@@ -2658,6 +2658,19 @@ fn last_detach_keeps_runtime_and_allows_later_attach() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("S-1-5-21-last-detach", "process-last-detach");
     let session_id = "s.last-detach.1";
+    // `insert_live` seats the runtime but writes no `sessions` row, so every
+    // frame this session appended failed ("No session with that id.") and only
+    // the observation of the failure raced the writer. The row is what makes
+    // the assertion below about delivery instead of about that race.
+    journal
+        .upsert_blocking(crate::journal::new_session_record(
+            session_id,
+            owner.user.clone(),
+            None,
+            SessionKind::Terminal,
+            "Terminal",
+        ))
+        .expect("journal row");
     insert_live(&registry, session_id, owner.clone());
     let runtime = registry.runtime(session_id).expect("runtime");
     let first = ConnHandle::new(5);
@@ -2685,7 +2698,8 @@ fn last_detach_keeps_runtime_and_allows_later_attach() {
         vec![SessionEvent::Output {
             seq: 1,
             data: "after-detach".to_string(),
-        }]
+        }],
+        "the frame reached a durable session: no degradation frame follows it"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);

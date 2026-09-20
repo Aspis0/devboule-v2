@@ -241,11 +241,21 @@ impl ServerState {
         // is refused, and `load` quarantines the WHOLE document: the user
         // loses every profile and their standing instructions on a restart,
         // for a configuration that is legitimate.
-        crate::user_providers::refresh_user_rows(&paths.dir);
-        // Read at startup like the tool policy, and read again at every
-        // creation: the store holds the document, the creation path asks it for
-        // one, and nothing in a session keeps a copy.
-        let agent_profiles = Arc::new(crate::agent_profiles::AgentProfilesStore::load(&paths.dir));
+        //
+        // The two steps are one critical section. The rows are a process
+        // global — a refresh from a directory with no providers file retires
+        // every row it did not load — so a second thread's refresh landing
+        // between them retires the row this load is about to validate: the
+        // same quarantine, with no error to retry. Nothing else closes that
+        // window, and production is one statement order away from it.
+        let agent_profiles = {
+            let mut rows = crate::user_providers::lock_rows_state();
+            crate::user_providers::refresh_user_rows_with(&mut rows, &paths.dir);
+            // Read at startup like the tool policy, and read again at every
+            // creation: the store holds the document, the creation path asks it for
+            // one, and nothing in a session keeps a copy.
+            Arc::new(crate::agent_profiles::AgentProfilesStore::load(&paths.dir))
+        };
         // The delegation switch loads the same way: the store holds the
         // boolean, every consumer asks it at the moment it decides (the
         // read-cadence rule is stated at the store), and a corrupt file
