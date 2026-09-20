@@ -278,6 +278,17 @@ mod session_child_profile_phase_tests;
 #[path = "session_child_profile_tests.rs"]
 mod session_child_profile_tests;
 use session_child_permission::child_answer_caps_refusal;
+/// The attention-and-suppression tests carved out of `session_tests` (its lines
+/// 2527-2797 at `902f3ed`): priority preserving permission while allowing
+/// escalation, a clear that cannot complete inside the suppression decision,
+/// focus that suppresses attention while presence clears it, presence that
+/// raises unless the second connection looks elsewhere, and a prompt or an
+/// answer that acknowledges attention. A move, not a rewrite - its proof is the
+/// byte comparison against `session_tests.rs` at the commit before it, not a
+/// test.
+#[cfg(test)]
+#[path = "session_attention_tests.rs"]
+mod session_attention_tests;
 #[cfg(test)]
 #[path = "session_child_permission_phase_tests.rs"]
 mod session_child_permission_phase_tests;
