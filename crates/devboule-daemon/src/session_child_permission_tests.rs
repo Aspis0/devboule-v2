@@ -1,0 +1,283 @@
+//! Characterisation tests for the delegated answer road
+//! (`answer_child_permission`), each naming the mutant it must catch. The
+//! nine tests in `session_tests.rs` and `mcp_broker_tests.rs` keep their
+//! per-check coverage; this file covers what they do not — the missing
+//! caller's row, the ambiguity guard's place **before** the switch, the
+//! owner scope of the card scan, and the attention tail (P6), which the
+//! publish path can raise for real.
+
+use super::tests::{insert_child, insert_live_agent};
+use super::*;
+
+pub(super) fn registry_with_journal() -> (std::path::PathBuf, SessionRegistry, Arc<Journal>) {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let process_id = std::process::id();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "devboule-child-perm-{process_id}-{stamp}-{counter}"
+    ));
+    std::fs::create_dir(&dir).expect("tmp dir");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
+    (dir, registry, journal)
+}
+
+pub(super) fn test_owner(user: &str) -> OwnerId {
+    OwnerId::new(user, "child-permission-client").expect("owner")
+}
+
+pub(super) fn park_card(runtime: &Arc<SessionRuntime>, card_id: &str) {
+    let broker = runtime.permission_broker().expect("broker");
+    broker
+        .register(1, permission_broker::permission(card_id), runtime)
+        .expect("the card parks");
+}
+
+pub(super) fn answer(
+    registry: &SessionRegistry,
+    creator: &str,
+    card_id: &str,
+    outcome: PermissionOutcome,
+    caps: Vec<String>,
+) -> Result<(), String> {
+    registry.answer_child_permission(creator, card_id, outcome, &|_device| caps.clone())
+}
+
+/// Raise attention the way the publish path does — the only raiser — so the
+/// answer's attention tail has something real to clear.
+pub(super) fn raise_permission_attention(runtime: &Arc<SessionRuntime>) {
+    runtime.publish_agent_event(
+        SessionEvent::PermissionRequest {
+            tool_call_id: "tool-c3-attention".to_string(),
+            title: "Run attention test".to_string(),
+            description: None,
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            options: Vec::new(),
+            origin: SessionOrigin::local(),
+            create_agent: None,
+        },
+        None,
+    );
+}
+
+/// Mutant: P1's absent-row refusal skipped — the caller's OWN row must be
+/// the one read; a first-row fallback answers with some other owner's
+/// identity and reaches the switch check with a stranger's scope, which is
+/// a different refusal.
+#[test]
+fn an_unregistered_caller_is_refused_by_name() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("c3-p1-ghost");
+    let bystander = test_owner("c3-p1-bystander");
+    let bystander_session = compose_session_id(&bystander.session_token(), "bye").expect("id");
+    insert_live_agent(&registry, &bystander_session, bystander);
+    let ghost = compose_session_id(&owner.session_token(), "ghost").expect("id");
+    let error = answer(&registry, &ghost, "card-1", PermissionOutcome::Deny, vec![])
+        .expect_err("no row for the caller");
+    assert_eq!(
+        error, "the calling session is not registered on this daemon",
+        "P1's own refusal, not a card-shaped sentence: {error}"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Mutant: the ambiguity guard moved below the broker's switch check (or
+/// into it) — with the switch off, an ambiguous id must still be refused
+/// ambiguous, not told the delegation is off.
+#[test]
+fn an_ambiguous_card_is_ambiguous_even_with_the_switch_off() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("c3-p3-order");
+    let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+    let child_a = compose_session_id(&owner.session_token(), "cha").expect("id");
+    let child_b = compose_session_id(&owner.session_token(), "chb").expect("id");
+    let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    registry.attach_delegation(Arc::clone(&store));
+    insert_live_agent(&registry, &creator, owner.clone());
+    let runtime_a = insert_child(&registry, &child_a, owner.clone(), &creator);
+    let runtime_b = insert_child(&registry, &child_b, owner.clone(), &creator);
+    park_card(&runtime_a, "card-dup");
+    park_card(&runtime_b, "card-dup");
+
+    let error = answer(
+        &registry,
+        &creator,
+        "card-dup",
+        PermissionOutcome::Deny,
+        vec![],
+    )
+    .expect_err("two children hold the same card id");
+    assert!(
+        error.contains("more than one of your live children"),
+        "the ambiguity guard runs before the switch is ever read: {error}"
+    );
+    for (name, runtime) in [("a", &runtime_a), ("b", &runtime_b)] {
+        assert_eq!(
+            runtime.permission_broker().expect("broker").pending_len(),
+            1,
+            "child {name}'s card stays pending for the human"
+        );
+    }
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Mutant: the scan's owner scope dropped — a card on another owner's child
+/// would be found and then refused at the child check as "not your child",
+/// telling the caller the card exists; the scan must not find it at all.
+#[test]
+fn a_card_on_another_owners_session_is_unknown_not_not_your_child() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner_a = test_owner("c3-p2-owner-a");
+    let owner_b = test_owner("c3-p2-owner-b");
+    let creator_a = compose_session_id(&owner_a.session_token(), "cr1").expect("id");
+    let creator_b = compose_session_id(&owner_b.session_token(), "cr2").expect("id");
+    let child_b = compose_session_id(&owner_b.session_token(), "chb").expect("id");
+    let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    registry.attach_delegation(Arc::clone(&store));
+    store.set(true).expect("set on");
+    insert_live_agent(&registry, &creator_a, owner_a);
+    insert_live_agent(&registry, &creator_b, owner_b.clone());
+    let child_b_runtime = insert_child(&registry, &child_b, owner_b, &creator_b);
+    park_card(&child_b_runtime, "card-other");
+
+    let error = answer(
+        &registry,
+        &creator_a,
+        "card-other",
+        PermissionOutcome::Deny,
+        vec![],
+    )
+    .expect_err("the card belongs to another owner's session");
+    assert_eq!(
+        error, "unknown permission card card-other",
+        "the scan never saw the other owner's card: {error}"
+    );
+    assert_eq!(
+        child_b_runtime
+            .permission_broker()
+            .expect("broker")
+            .pending_len(),
+        1,
+        "the other owner's card is untouched"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Mutants: the attention tail dropped, its `clear_attention` dropped, or
+/// its transition push dropped — the attention a parked card raised is the
+/// tail's to clear, and the client is owed the transition.
+#[test]
+fn the_attention_a_parked_card_raised_clears_when_the_delegated_answer_lands() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("c3-p6-clear");
+    let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+    let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+    let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    registry.attach_delegation(Arc::clone(&store));
+    store.set(true).expect("set on");
+    insert_live_agent(&registry, &creator, owner.clone());
+    let child_runtime = insert_child(&registry, &child, owner.clone(), &creator);
+    raise_permission_attention(&child_runtime);
+    assert!(
+        child_runtime.attention().is_some(),
+        "the raise worked, or the tail has nothing to clear"
+    );
+    park_card(&child_runtime, "card-p6");
+    // Installed after the park, so only the answer's own pushes are
+    // counted: the park's surfacing to the creator raises attention of its
+    // own, which is not the tail's doing.
+    let sink_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let fired = Arc::clone(&sink_log);
+    registry.set_transition_sink(Arc::new(move |pushed| {
+        fired.lock().expect("sink log").push(pushed.user.clone());
+    }));
+    answer(
+        &registry,
+        &creator,
+        "card-p6",
+        PermissionOutcome::AllowOnce,
+        vec![],
+    )
+    .expect("the answer lands");
+    assert!(
+        child_runtime.attention().is_none(),
+        "the tail cleared the attention the card raised"
+    );
+    assert_eq!(
+        *sink_log.lock().expect("sink log"),
+        vec![owner.user.clone()],
+        "the tail pushed exactly one transition for the owner"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Mutant: the tail consuming the remembered child before the broker
+/// returns — the child check runs before the capability check, so a refused
+/// answer still leaves the cell filled; only an `Ok` may clear the
+/// attention the card was waiting under.
+#[test]
+fn a_refused_answer_leaves_the_childs_attention_up() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("c3-p6-refused");
+    let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+    let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+    let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    registry.attach_delegation(Arc::clone(&store));
+    store.set(true).expect("set on");
+    insert_live_agent(&registry, &creator, owner.clone());
+    let child_runtime = insert_child(&registry, &child, owner.clone(), &creator);
+    {
+        let mut map = registry.inner.lock().expect("registry");
+        let live = map
+            .get_mut(&creator)
+            .and_then(RegistryEntry::as_peer_visible_mut)
+            .expect("creator entry");
+        live.metadata.origin = SessionOrigin::peer("device-c3", PeerRole::Client);
+    }
+    raise_permission_attention(&child_runtime);
+    park_card(&child_runtime, "card-refused");
+    // Same discipline: the sink sees only what the answer itself does.
+    let sink_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let fired = Arc::clone(&sink_log);
+    registry.set_transition_sink(Arc::new(move |pushed| {
+        fired.lock().expect("sink log").push(pushed.user.clone());
+    }));
+    let error = answer(
+        &registry,
+        &creator,
+        "card-refused",
+        PermissionOutcome::AllowOnce,
+        vec!["view".to_string()],
+    )
+    .expect_err("the device holds no answer_permissions");
+    assert!(error.contains("answer_permissions"), "{error}");
+    assert_eq!(
+        child_runtime
+            .permission_broker()
+            .expect("broker")
+            .pending_len(),
+        1,
+        "the card stays pending for the human"
+    );
+    assert!(
+        child_runtime.attention().is_some(),
+        "a refused answer must not clear the attention the card raised"
+    );
+    assert!(
+        sink_log.lock().expect("sink log").is_empty(),
+        "a refused answer pushes no transition"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

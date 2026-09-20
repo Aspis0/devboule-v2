@@ -543,6 +543,11 @@ mod tests {
             // the child-profile move tests: same reader again, a test store
             // attached to a test registry (the C2 slice, no new reader)
             "session_child_profile_tests.rs",
+            // the delegated-answer tests: same reader again, a test store
+            // attached to a test registry (the C3 slice, no new reader —
+            // the switch read stays in `session.rs`'s thin sequence)
+            "session_child_permission_tests.rs",
+            "session_child_permission_phase_tests.rs",
             "delegation_store.rs",
             "lib.rs",
         ];

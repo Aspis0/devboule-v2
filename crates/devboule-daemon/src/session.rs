@@ -244,12 +244,26 @@ mod session_create_phase_tests;
 #[path = "session_create_tests.rs"]
 mod session_create_tests;
 use session_child_profile::{manifest_arrived, model_ask_needed};
+/// The delegated answer's named phases: `answer_child_permission` in the
+/// parent is the thin sequence, and this sibling holds the phases it
+/// composes. A rewrite rather than a move — its proof is the
+/// characterisation tests in `session_child_permission_tests.rs`, not a
+/// byte comparison.
+#[path = "session_child_permission.rs"]
+mod session_child_permission;
 #[cfg(test)]
 #[path = "session_child_profile_phase_tests.rs"]
 mod session_child_profile_phase_tests;
 #[cfg(test)]
 #[path = "session_child_profile_tests.rs"]
 mod session_child_profile_tests;
+use session_child_permission::child_answer_caps_refusal;
+#[cfg(test)]
+#[path = "session_child_permission_phase_tests.rs"]
+mod session_child_permission_phase_tests;
+#[cfg(test)]
+#[path = "session_child_permission_tests.rs"]
+mod session_child_permission_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
@@ -1982,66 +1996,11 @@ impl SessionRegistry {
         outcome: PermissionOutcome,
         device_caps: &dyn Fn(&str) -> Vec<String>,
     ) -> Result<(), String> {
-        // The caller's own row: its owner scopes the card scan, its origin
-        // decides whether the capability check applies. The MCP registration
-        // guarantees the caller is live, so an absent row is a refusal, not a
-        // panic.
-        let (owner_user, creator_origin) = {
-            let map = self
-                .inner
-                .lock()
-                .map_err(|_| "session state is unavailable".to_string())?;
-            let entry = map.get(creator_session_id).ok_or_else(|| {
-                "the calling session is not registered on this daemon".to_string()
-            })?;
-            (entry.owner().user.clone(), entry.to_session().origin)
-        };
-        // Locate the broker that holds the card. The scan is read-only:
-        // locating is not answering, and every check still runs below.
-        //
-        // Owner-scoped, so a card that exists on one of the owner's sessions
-        // but not on a child's stays "found" and the chain's child check
-        // answers it with the not-your-child sentence — a state distinct
-        // from "unknown card" (§1.5's three states). But the id is
-        // provider-chosen and carries no session qualifier, so the holder
-        // that answers must be the caller's own child: a child holder is
-        // preferred over a non-child one, and more than one child holding
-        // the same id is refused ambiguous rather than answered against
-        // whichever session the map yields first.
-        let (found, child_holders) = {
-            let map = self
-                .inner
-                .lock()
-                .map_err(|_| "session state is unavailable".to_string())?;
-            let mut found: Option<std::sync::Arc<permission_broker::PermissionBroker>> = None;
-            let mut found_is_child = false;
-            let mut child_holders: usize = 0;
-            for entry in map
-                .values()
-                .filter(|entry| entry.owner().user == owner_user)
-            {
-                let Some(broker) = entry.runtime().permission_broker() else {
-                    continue;
-                };
-                if !matches!(
-                    broker.peek_delegated(card_id),
-                    permission_broker::DelegatedPeek::Found { .. }
-                ) {
-                    continue;
-                }
-                let is_child = entry.as_peer_visible().is_some_and(|live| {
-                    is_child_of(live.metadata.created_by.as_deref(), creator_session_id)
-                });
-                if is_child {
-                    child_holders += 1;
-                }
-                if found.is_none() || (is_child && !found_is_child) {
-                    found = Some(std::sync::Arc::clone(&broker));
-                    found_is_child = is_child;
-                }
-            }
-            (found, child_holders)
-        };
+        let (owner_user, creator_origin) = self.caller_identity(creator_session_id)?;
+        let (found, child_holders) =
+            self.find_card_holder(&owner_user, creator_session_id, card_id)?;
+        // The ambiguity guard runs before any broker check, so an ambiguous
+        // id is refused as ambiguous even with the switch off.
         if child_holders > 1 {
             return Err(format!(
                 "more than one of your live children holds permission card {card_id}; the cards stay pending for the human"
@@ -2049,74 +2008,18 @@ impl SessionRegistry {
         }
         // Check 2's closure: the switch, read at the moment the check runs.
         let switch_on = || self.delegation_enabled();
-        // Check 3's closure: a resolved card is a row in the ledger replay
-        // reads back. A journal that cannot answer reads `false` — the
-        // sentence becomes "unknown", which is inert in both cases.
-        let resolved_elsewhere = |request_id: &str| {
-            self.journal
-                .as_ref()
-                .map(|journal| journal.permission_was_recorded(request_id).unwrap_or(false))
-                .unwrap_or(false)
-        };
-        // Check 4's closure: the card's session is a **live child of the
-        // caller** — `created_by` equals the bearer's session, and the view
-        // exists. A sibling, a grandchild, a human-started session or a dead
-        // one fails here without learning which session owns the card. The
-        // session that passed the check is remembered so the attention it was
-        // waiting under clears when the answer lands.
+        // Check 3's closure: the ledger, read per request id.
+        let resolved_elsewhere = |request_id: &str| self.permission_already_recorded(request_id);
+        // Check 4's closure: the session that passes the check is remembered
+        // so the attention it was waiting under clears when the answer lands.
         let answered_child: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
         let child_check = |card_session: &str| -> Result<(), String> {
-            let Some((session, _runtime, _owner)) = self.child_view(card_session) else {
-                return Err(format!(
-                    "permission card {card_id} is not pending on one of your live sessions"
-                ));
-            };
-            if !is_child_of(session.created_by.as_deref(), creator_session_id) {
-                return Err(format!(
-                    "permission card {card_id} belongs to a session that is not your child; it stays pending for whoever may answer it"
-                ));
-            }
-            *answered_child.borrow_mut() = Some(card_session.to_string());
+            let target = self.child_answer_target(card_session, creator_session_id)?;
+            *answered_child.borrow_mut() = Some(target);
             Ok(())
         };
-        // Check 5's closure: a creator whose stored origin is a paired
-        // device answers only what the peer gate allows — judged with the same
-        // `peer_allows` function the dispatcher uses, on the same wire message
-        // the broker door names for this tool (`SessionPermissionRespond`), never
-        // a copy of its conclusions. A local creator is the person at this
-        // machine's own agent. A peer-shaped row without a device or role is
-        // an unknown, and the unknown never renders as the benign one.
-        let caps_check = |_: &str| -> Result<(), String> {
-            if creator_origin.kind == SessionOriginKind::Peer {
-                let (Some(device_id), Some(role)) =
-                    (creator_origin.device_id.as_deref(), creator_origin.role)
-                else {
-                    return Err(
-                        "the calling session's origin is unknown; the card stays pending"
-                            .to_string(),
-                    );
-                };
-                let caps = device_caps(device_id);
-                let request = devboule_protocol::ClientMessage::SessionPermissionRespond {
-                    id: 0,
-                    session_id: String::new(),
-                    subscription_id: 0,
-                    request_id: String::new(),
-                    outcome: devboule_protocol::PermissionOutcome::Deny,
-                    option_id: None,
-                    idempotency_key: None,
-                };
-                if let crate::peer_policy::PeerDecision::Deny(reason) =
-                    crate::peer_policy::peer_allows(role, &caps, &request)
-                {
-                    return Err(format!(
-                        "{}; the card stays pending",
-                        crate::peer_policy::capability_refusal_message(reason)
-                    ));
-                }
-            }
-            Ok(())
-        };
+        // Check 5's closure: the peer gate, judged with the caller's origin.
+        let caps_check = |_: &str| child_answer_caps_refusal(&creator_origin, device_caps);
         permission_broker::PermissionBroker::answer_delegated_on(
             found.as_deref(),
             card_id,
@@ -2127,14 +2030,11 @@ impl SessionRegistry {
             &caps_check,
             creator_session_id,
         )?;
-        // The child may have been waiting in attention for this answer: the
-        // card that just resolved was the reason it was raised.
+        // The cell may be consumed only after the chain returned Ok: the
+        // child check runs before the capability check, so a refused answer
+        // can leave here with the cell filled and the card still pending.
         if let Some(child) = answered_child.into_inner() {
-            if let Some((_session, runtime, owner)) = self.child_view(&child) {
-                if runtime.clear_attention() {
-                    self.notify_session_transition(&owner, &child);
-                }
-            }
+            self.clear_child_attention_after_answer(&child);
         }
         Ok(())
     }
