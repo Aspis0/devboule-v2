@@ -187,43 +187,62 @@ use session_messaging::{
 mod session_items;
 #[path = "session_messaging.rs"]
 mod session_messaging;
+/// The attachment and prompt planning carved out of `session_items`: the path
+/// lines a prompt carries, the reference resolution behind them, and the ACP
+/// prompt plan. A move, not a rewrite - its proof is the byte comparison
+/// against `session_items.rs` at `7235ff8`, not a test.
+#[path = "session_prompt_planning.rs"]
+mod session_prompt_planning;
+/// The registry's standing state carved out of `session_items`: the caches it
+/// holds, the message brake table and the agent creation table with its guards,
+/// tickets and records. A move, not a rewrite - same proof.
+#[path = "session_registry_state.rs"]
+mod session_registry_state;
 #[path = "session_spawn.rs"]
 mod session_spawn;
 #[cfg(test)]
 pub(crate) use session_items::session_unique_for_test;
 use session_items::{
     agent_message_target_entry, check_attached, check_resize_owner, check_user_owner,
-    classify_agent_message_target, compose_first_prompt, is_child_of, live_session_view,
-    mint_session_unique, not_found_while_configuring, owner_from_session_id, peer_entry,
-    peer_entry_mut, plan_structured_prompt, process_gone, prompt_text_with_fallback_paths,
-    push_reference_path_lines, resolve_attachment_references, session_metadata_for_resume,
-    unauthorized, with_attachment_paths, write_child_stdin, AcpImageBlock, AcpPromptSink,
-    AgentChild, AgentCreationTable, AgentCreatorCaps, AgentMessageSourceNamespace,
-    AgentMessageTargetClass, ConnectionPresence, CreationGate, CreationKeyHold, DeferredChildEnd,
-    ImageDelivery, JournalRosterCache, MessageBrake, MessageBrakeTable, MessageSlotRef,
-    OutstandingMessage, PlannedStaticPrompt, ProviderProvenance, PtyKiller, PtySession,
-    PtyWaitableChild, Recipient, SendRequest, SessionCreateMeta, TerminalReaderDispatch,
-    TransitionSink, UnsupportedSteerer, WorkspacePathCache, COALESCE_EAGER_BYTES, EXIT_DRAIN,
-    INITIAL_COLS, INITIAL_ROWS, MAX_CREATIONS_PER_WINDOW, MAX_LIVE_AGENT_SESSIONS,
-    MAX_LIVE_CHILDREN_PER_CREATOR, MAX_MESSAGE_OUTSTANDING, MAX_MESSAGE_RECIPIENTS,
-    MAX_MESSAGE_SENT_PER_WINDOW, MESSAGE_RATE_WINDOW, MESSAGE_SLOT_EXPIRY, PULL_BATCH,
+    classify_agent_message_target, is_child_of, live_session_view, mint_session_unique,
+    not_found_while_configuring, owner_from_session_id, peer_entry, peer_entry_mut, process_gone,
+    session_metadata_for_resume, unauthorized, write_child_stdin, AgentMessageSourceNamespace,
+    AgentMessageTargetClass, PtyKiller, PtySession, PtyWaitableChild, TerminalReaderDispatch,
+    UnsupportedSteerer, COALESCE_EAGER_BYTES, EXIT_DRAIN, INITIAL_COLS, INITIAL_ROWS, PULL_BATCH,
     READER_JOIN_BUDGET, READ_CHUNK,
 };
 #[cfg(test)]
-use session_items::{
-    check_owner, elapsed_ms_since_last_life, session_nonce, session_unique,
-    AgentMessageAfterAdmissionHook, DepositAfterOwnershipHook, JournalRosterAfterListHook,
-    CREATION_WINDOW, DEFERRED_SLOT_EXPIRY, WORKSPACE_PATH_CACHE_CAP,
-};
+use session_items::{check_owner, elapsed_ms_since_last_life, session_nonce, session_unique};
 pub(crate) use session_items::{
-    session_origin_for, AgentCreation, AgentCreationTicket, AgentCreator, ChildProfileFacts,
-    LiveAgentEntry, ModelSwitcher, PermissionResponse, ReaderDispatch, SessionKiller,
-    SessionSteerer, SpawnedSession, StaticImageSink, StderrSource, StdioWaitableChild,
-    MAX_AGENT_ARTIFACT_BYTES, MAX_AGENT_DEPTH,
+    session_origin_for, ModelSwitcher, ReaderDispatch, SessionKiller, SessionSteerer,
+    SpawnedSession, StderrSource, StdioWaitableChild,
 };
 pub use session_items::{
     COALESCE_FLUSH, COALESCE_MAX_BYTES, PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES,
     SESSION_OS_SWEEP_INTERVAL, SESSION_SILENCE_THRESHOLD,
+};
+pub(crate) use session_prompt_planning::StaticImageSink;
+use session_prompt_planning::{
+    plan_structured_prompt, prompt_text_with_fallback_paths, push_reference_path_lines,
+    resolve_attachment_references, with_attachment_paths, AcpImageBlock, AcpPromptSink,
+    ImageDelivery, PlannedStaticPrompt,
+};
+use session_registry_state::{
+    compose_first_prompt, AgentChild, AgentCreationTable, AgentCreatorCaps, ConnectionPresence,
+    CreationGate, CreationKeyHold, DeferredChildEnd, JournalRosterCache, MessageBrake,
+    MessageBrakeTable, MessageSlotRef, OutstandingMessage, ProviderProvenance, Recipient,
+    SendRequest, SessionCreateMeta, TransitionSink, WorkspacePathCache, MAX_CREATIONS_PER_WINDOW,
+    MAX_LIVE_AGENT_SESSIONS, MAX_LIVE_CHILDREN_PER_CREATOR, MAX_MESSAGE_OUTSTANDING,
+    MAX_MESSAGE_RECIPIENTS, MAX_MESSAGE_SENT_PER_WINDOW, MESSAGE_RATE_WINDOW, MESSAGE_SLOT_EXPIRY,
+};
+pub(crate) use session_registry_state::{
+    AgentCreation, AgentCreationTicket, AgentCreator, ChildProfileFacts, LiveAgentEntry,
+    PermissionResponse, MAX_AGENT_ARTIFACT_BYTES, MAX_AGENT_DEPTH,
+};
+#[cfg(test)]
+use session_registry_state::{
+    AgentMessageAfterAdmissionHook, DepositAfterOwnershipHook, JournalRosterAfterListHook,
+    CREATION_WINDOW, DEFERRED_SLOT_EXPIRY, WORKSPACE_PATH_CACHE_CAP,
 };
 /// The move road's named phases: `set_agent_child_profile` in the parent is
 /// the thin sequence, and this sibling holds the phases it composes. A

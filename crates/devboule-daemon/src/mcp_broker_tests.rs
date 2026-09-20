@@ -191,6 +191,13 @@ fn mcp_predicates_are_provider_facts_not_kind_lists() {
         include_str!("session_workspaces.rs"),
         include_str!("session_messaging.rs"),
         include_str!("session_items.rs"),
+        // The two halves carved out of `session_items.rs` by its seam split:
+        // same walk rule as the siblings above. The registry-state half
+        // carries the `SessionKind` placeholder that
+        // `AgentCreator::may_create_sessions` builds its probe from, so it is
+        // exactly the kind of site this walk exists to follow.
+        include_str!("session_prompt_planning.rs"),
+        include_str!("session_registry_state.rs"),
         // The resume road's phases, carved out of `session.rs` by the C4
         // slice: same walk rule as the siblings above.
         include_str!("session_resume.rs"),
