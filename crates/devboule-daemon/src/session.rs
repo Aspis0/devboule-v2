@@ -307,6 +307,21 @@ mod session_child_permission_phase_tests;
 #[cfg(test)]
 #[path = "session_child_permission_tests.rs"]
 mod session_child_permission_tests;
+/// The restricted-child tests carved out of `session_tests` (its lines
+/// 8255-8894 at `f104df1`), the two fixtures at their head included: a
+/// restricted child keeps both denials across a restart and after its profile
+/// changes, an orphaned resume keeps the birth restriction, a row without a
+/// recorded depth resumes unable to delegate, an unreadable overlay cell
+/// refuses the resume but not the roster, a birth write carries the overlay and
+/// the depth even when the spawn fails, a later upsert without birth facts
+/// keeps them - and on the close/stop side, the child predicate, an agent
+/// closing only its own children, a stop that refuses what a close refuses, and
+/// a stop that ends the whole job tree. A move, not a rewrite - its proof is the
+/// byte comparison against `session_tests.rs` at the commit before it, not a
+/// test.
+#[cfg(test)]
+#[path = "session_child_scope_tests.rs"]
+mod session_child_scope_tests;
 #[cfg(test)]
 #[path = "session_child_slot_tests.rs"]
 mod session_child_slot_tests;
