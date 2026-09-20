@@ -608,14 +608,13 @@ impl TransportBinding {
     }
 }
 
-/// What the daemon knows about the far end of one connection. `Local` keeps
-/// the kernel-derived `PeerIdentity` that `session.rs` reads through
-/// `ConnHandle.peer`; `Remote` is the Noise-authenticated peer, and its
-/// `paired_by_user` is copied from the `peers` row at handshake time so no
-/// journal lookup happens at dispatch.
+/// What the daemon knows about the far end of one connection: `Some` is the
+/// Noise-authenticated peer, and its `paired_by_user` is copied from the
+/// `peers` row at handshake time so no journal lookup happens at dispatch. A
+/// pipe connection carries `None`, and its kernel-derived identity stays in
+/// `ConnHandle.peer`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnPeer {
-    Local(crate::agent_report::PeerIdentity),
     Remote {
         device_id: String,
         role: PeerRole,
@@ -627,14 +626,12 @@ pub enum ConnPeer {
 impl ConnPeer {
     pub fn device_id(&self) -> Option<&str> {
         match self {
-            Self::Local(_) => None,
             Self::Remote { device_id, .. } => Some(device_id),
         }
     }
 
     pub fn role(&self) -> Option<PeerRole> {
         match self {
-            Self::Local(_) => None,
             Self::Remote { role, .. } => Some(*role),
         }
     }
@@ -1989,12 +1986,6 @@ pub(crate) mod tests {
         };
         assert_eq!(peer.device_id(), Some("dev-1"));
         assert_eq!(peer.role(), Some(PeerRole::Daemon));
-        let local = ConnPeer::Local(crate::agent_report::PeerIdentity {
-            user: "S-1-5-21-1".to_string(),
-            pid: 42,
-        });
-        assert!(local.device_id().is_none());
-        assert!(local.role().is_none());
     }
 
     #[test]

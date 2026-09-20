@@ -126,10 +126,10 @@ pub struct ConnHandle {
     /// ownership checks. `Some` for a named-pipe client, `None` for a remote
     /// (Noise) peer, whose identity is [`ConnHandle::conn_peer`].
     pub peer: Option<PeerIdentity>,
-    /// The connection-level peer: `Local` for the pipe, `Remote` for a peer
-    /// whose Noise static key matched a pinned `peers` row. Kept in addition
-    /// to `peer` so `session.rs` does not have to learn a second type while
-    /// the dispatch gate still needs the remote identity.
+    /// The connection-level peer: `None` for the pipe, `Some(Remote)` for a
+    /// peer whose Noise static key matched a pinned `peers` row. Kept in
+    /// addition to `peer` so `session.rs` does not have to learn a second type
+    /// while the dispatch gate still needs the remote identity.
     pub conn_peer: Option<ConnPeer>,
     /// The capability set of that peer, resolved from its `peers` row once, at
     /// connect. Empty for a local connection. The gate reads it on every

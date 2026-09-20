@@ -358,6 +358,7 @@ fn concurrent_read_and_write_on_one_session_do_not_deadlock() {
     let (initiator_private, _) = keypair(PEER_NOISE_PATTERN);
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind");
     let address = listener.local_addr().expect("addr");
+    let (client_read_all_tx, client_read_all_rx) = std::sync::mpsc::channel::<()>();
 
     let server = std::thread::spawn(move || {
         let (stream, _) = accept_bounded(&listener);
@@ -385,10 +386,16 @@ fn concurrent_read_and_write_on_one_session_do_not_deadlock() {
             let read = reader
                 .read_plaintext(&mut chunk, Some(deadline))
                 .expect("read");
-            assert_ne!(read, 0);
             seen += chunk[..read].iter().filter(|byte| **byte == b'\n').count();
         }
         join_bounded(writer_thread, "the server's concurrent writer");
+        // The 320 pong bytes are in this socket's send buffer, not in the
+        // peer's. A close here can be aborted (RST) on Windows and take the
+        // peer's whole response buffer with it, so this socket outlives the
+        // peer's read.
+        client_read_all_rx
+            .recv_timeout(bound::THREAD)
+            .expect("the client must have read every pong before this socket closes");
         seen
     });
 
@@ -415,12 +422,26 @@ fn concurrent_read_and_write_on_one_session_do_not_deadlock() {
     let mut chunk = [0u8; 4096];
     let mut read_bytes = 0usize;
     while read_bytes < 64 * 5 {
-        let read = reader
-            .read_plaintext(&mut chunk, Some(deadline))
-            .expect("read");
-        assert_ne!(read, 0, "peer closed early");
+        // A peer close arrives as `Err`, never as `Ok(0)`: `read_plaintext`
+        // reserves zero for an empty buffer, so the loop body has no
+        // early-close value to test.
+        let read = match reader.read_plaintext(&mut chunk, Some(deadline)) {
+            Ok(read) => read,
+            Err(error) => {
+                // Release the server so its own outcome is reported here
+                // instead of abandoned with its `JoinHandle`.
+                let _ = client_read_all_tx.send(());
+                let seen = join_bounded(server, "the concurrent peer reader");
+                panic!(
+                    "client read failed after {read_bytes} bytes: {error}; the server saw {seen} frames"
+                );
+            }
+        };
         read_bytes += read;
     }
+    client_read_all_tx
+        .send(())
+        .expect("the server thread is still waiting");
     join_bounded(writer_thread, "the concurrent peer writer");
     assert_eq!(join_bounded(server, "the concurrent peer reader"), 64);
 }

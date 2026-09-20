@@ -687,10 +687,10 @@ pub(super) fn is_child_of(created_by: Option<&str>, creator_session_id: &str) ->
 
 /// The origin a create from this connection writes.
 ///
-/// A local connection — and a `Local` peer identity — is the person at this
-/// machine. A remote one is the paired device with the role it was paired as,
-/// so the stored origin can be rendered on a permission card and scoped on by
-/// the `Daemon` role's ownership branch.
+/// A connection with no peer identity is the person at this machine. A remote
+/// one is the paired device with the role it was paired as, so the stored
+/// origin can be rendered on a permission card and scoped on by the `Daemon`
+/// role's ownership branch.
 pub(crate) fn session_origin_for(conn_peer: &Option<ConnPeer>) -> SessionOrigin {
     match conn_peer {
         Some(ConnPeer::Remote {
