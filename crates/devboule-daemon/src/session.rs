@@ -505,6 +505,22 @@ mod session_terminal_ownership_tests;
 #[cfg(test)]
 #[path = "session_terminal_silence_tests.rs"]
 mod session_terminal_silence_tests;
+/// The terminal-attach, flood and transcript tests carved out of "session_tests"
+/// (its lines 1065-1871 at `4b8bb76`): an attach whose snapshot and live stream
+/// meet at an exact boundary, a flood that never duplicates or skips a frame and
+/// leaves a reattached client equal to a fresh emulator, the pending queue's byte
+/// and frame budget, a DSR reply written straight to the PTY, a control path that
+/// stays responsive under flood, two observers receiving one stream while a
+/// detach clears only its own connection, a permission card reaching a late
+/// observer once, the last transcript detach removing the idle registry entry,
+/// the transcript store holding the whole history whatever the cursor says, a
+/// stale generation rejected, the journal keeping drain bytes after a reap, the
+/// coalesce constants small enough for an echo, and a PTY error exposing only the
+/// OS code. A move, not a rewrite - its proof is the byte comparison against
+/// `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_terminal_transcript_tests.rs"]
+mod session_terminal_transcript_tests;
 /// The workspace road's tests carved out of `session_tests` (its lines
 /// 2072-2599 at `085f4e4`): the spawn error's workspace id and display path,
 /// the local workspace's cwd and the cache in front of it, the resume road's
