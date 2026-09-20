@@ -264,6 +264,9 @@ mod session_child_permission_phase_tests;
 #[cfg(test)]
 #[path = "session_child_permission_tests.rs"]
 mod session_child_permission_tests;
+#[cfg(test)]
+#[path = "session_child_slot_tests.rs"]
+mod session_child_slot_tests;
 /// The resume road's named phases: `resume` in the parent is the thin
 /// sequence, and this sibling holds the phases it composes. A rewrite rather
 /// than a move — its proof is the characterisation tests in
@@ -2177,13 +2180,23 @@ impl SessionRegistry {
     /// Close one of the caller's own children (`devboule_close_agent`): the
     /// live session ends, the transcript stays in history. What a finished
     /// child's creator does when it no longer needs the child.
+    ///
+    /// The removal is this road's own, so it releases the idle-shutdown slot
+    /// the child's creation took (`create_session_for_agent`): the wire
+    /// `SessionClose` handler that pairs the client road's closes is not on
+    /// this road.
     pub fn close_agent_child(
         &self,
+        state: &Arc<ServerState>,
         creator_session_id: &str,
         target: &str,
     ) -> Result<bool, WireError> {
         let (child_id, owner) = self.resolve_own_child(creator_session_id, target)?;
-        self.close(&child_id, &owner, &None)
+        let removed = self.close(&child_id, &owner, &None)?;
+        if removed {
+            state.session_finished();
+        }
+        Ok(removed)
     }
 
     pub fn stop(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {

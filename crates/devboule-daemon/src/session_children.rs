@@ -375,6 +375,16 @@ impl super::SessionRegistry {
         creation: AgentCreation,
         ticket: AgentCreationTicket<'_>,
     ) -> Result<Session, WireError> {
+        // The wire create road's gate (`server/sessions.rs`), for the road that
+        // has no client frame: an agent child is a live daemon-owned session,
+        // and its entry holds an idle-shutdown slot from here until a removal
+        // path gives it back.
+        if !state.session_started() {
+            return Err(WireError::new(
+                ErrorCode::ShuttingDown,
+                "daemon is shutting down",
+            ));
+        }
         let creator_owner = creation.creator.owner.clone();
         let mut meta = SessionCreateMeta::for_agent_child(
             &creation.creator_session_id,
@@ -405,7 +415,7 @@ impl super::SessionRegistry {
         // `SessionCreateMeta::session_id` stays None: the spawn composes the
         // child's id (see `commit_agent_creation`).
         let kind = crate::provider_catalog::session_kind_for(&creation.provider);
-        let child = self.create_with_provider_env(
+        let child = match self.create_with_provider_env(
             state,
             &creation.creator.owner,
             creation.workspace_id.clone(),
@@ -419,7 +429,16 @@ impl super::SessionRegistry {
             &None,
             None,
             &meta,
-        )?;
+        ) {
+            Ok(child) => child,
+            Err(error) => {
+                // The creation failed: the slot taken at the gate goes back,
+                // as it does on the wire create road's own `Err` arm
+                // (`server/sessions.rs`).
+                state.session_finished();
+                return Err(error);
+            }
+        };
         // The ticket's `Drop` releases the reservation; the journal row a failed
         // spawn leaves behind is ended by `create_with_provider_env` itself.
         let (committed, deferred) = self.commit_agent_creation(
@@ -432,8 +451,13 @@ impl super::SessionRegistry {
             // The creator closed while its child was starting (audit S5B-09):
             // a session nobody owns is not a creation that succeeded, so the
             // child is closed again and the caller is told why. The ticket's
-            // `Drop` gives the reservation back.
-            self.abandon_uncommitted_child(&child.id, &creator_owner);
+            // `Drop` gives the reservation back. The close is not the wire
+            // handler that releases the slot, so the release is here — and
+            // only when it really removed the entry, because an end that beat
+            // it released the slot already.
+            if self.abandon_uncommitted_child(&child.id, &creator_owner) {
+                state.session_finished();
+            }
             return Err(WireError::new(ErrorCode::InvalidRequest, "creator closed"));
         }
         // The reservation is a child now: nothing is given back on this path.
@@ -492,7 +516,11 @@ impl super::SessionRegistry {
             message_kind: UserMessageKind::Creation,
         });
         if let Err(error) = sent {
-            let _ = self.close(&child.id, &owner, &None);
+            // The same pairing as the abandon above: the close removes an
+            // entry this road counted, and it is not the wire handler.
+            if self.close(&child.id, &owner, &None).unwrap_or(false) {
+                state.session_finished();
+            }
             return Err(error);
         }
         Ok(child)
@@ -587,9 +615,11 @@ impl super::SessionRegistry {
     /// The clear comes first and under its own lock: the close can end the child,
     /// and an end that found the marker still set would park a second deferred
     /// entry that no commit is left to consume.
-    pub(super) fn abandon_uncommitted_child(&self, child: &str, owner: &OwnerId) {
+    /// Answers whether the close removed a live entry, which is what the
+    /// caller's slot release pairs with; a refusal removed nothing.
+    pub(super) fn abandon_uncommitted_child(&self, child: &str, owner: &OwnerId) -> bool {
         self.clear_pending_child(child);
-        let _ = self.close(child, owner, &None);
+        self.close(child, owner, &None).unwrap_or(false)
     }
 
     pub(crate) fn clear_pending_child(&self, child: &str) {

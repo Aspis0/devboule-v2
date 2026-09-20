@@ -13211,7 +13211,12 @@ fn the_child_predicate_answers_created_by_alone() {
 
 #[test]
 fn an_agent_closes_only_its_own_children() {
-    let (dir, registry, journal) = tmp_delete_registry();
+    // A real state, not a bare registry: `close_agent_child` releases the
+    // child's idle-shutdown slot on the state the registry belongs to.
+    let state = ServerState::new("end-children".to_string());
+    let dir = state.sessions.runtime_dir().to_path_buf();
+    let registry = state.sessions.clone();
+    let journal = state.sessions.journal.clone().expect("journal");
     let owner = test_owner("end-children-user", "end-children-client");
     let stranger = test_owner("end-children-stranger", "end-children-stranger-client");
     let parent = compose_session_id(&owner.session_token(), "end-par").expect("id");
@@ -13228,7 +13233,7 @@ fn an_agent_closes_only_its_own_children() {
     // The parent: refused, row intact — a child cannot end the session
     // that made it, and this refusal is the scope check doing its work.
     let parent_refusal = registry
-        .close_agent_child(&caller, &parent)
+        .close_agent_child(&state, &caller, &parent)
         .expect_err("closing its parent is refused");
     assert!(
         registry
@@ -13242,7 +13247,7 @@ fn an_agent_closes_only_its_own_children() {
     // Itself: refused with its own sentence — the caller's MCP client is
     // the process waiting on this reply.
     let self_refusal = registry
-        .close_agent_child(&caller, &caller)
+        .close_agent_child(&state, &caller, &caller)
         .expect_err("closing itself is refused");
     assert_eq!(
         self_refusal.code,
@@ -13281,13 +13286,13 @@ fn an_agent_closes_only_its_own_children() {
         );
     };
     let human_refusal = registry
-        .close_agent_child(&caller, &human)
+        .close_agent_child(&state, &caller, &human)
         .expect_err("a session it did not create is refused");
     let foreign_refusal = registry
-        .close_agent_child(&caller, &foreign)
+        .close_agent_child(&state, &caller, &foreign)
         .expect_err("a stranger's session is refused");
     let invented = registry
-        .close_agent_child(&caller, "end-invented")
+        .close_agent_child(&state, &caller, "end-invented")
         .expect_err("an invented id is refused");
     refused_as_not_child("the parent", &parent_refusal, &parent);
     refused_as_not_child("a human-started session", &human_refusal, &human);
@@ -13296,7 +13301,7 @@ fn an_agent_closes_only_its_own_children() {
 
     // The green path: the caller's own child goes, and only it does.
     registry
-        .close_agent_child(&caller, &child)
+        .close_agent_child(&state, &caller, &child)
         .expect("the caller closes its own child");
     {
         let map = registry.inner.lock().expect("registry");

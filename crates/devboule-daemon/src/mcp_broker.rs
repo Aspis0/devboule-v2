@@ -1433,7 +1433,7 @@ fn handle_rpc(
                 } else {
                     state
                         .sessions
-                        .close_agent_child(&registration.session_id, session_arg)
+                        .close_agent_child(state, &registration.session_id, session_arg)
                         .map(|_| ())
                 };
                 match action {
