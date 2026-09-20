@@ -359,3 +359,90 @@ fn a_resume_over_a_transcript_row_unpins_the_row_it_replaces() {
     );
     fixture.finish();
 }
+
+/// The register arm's own error: the broker is stopped here, which is a
+/// production state (`McpServerHandle::drop` sets the flag), so the arm needs
+/// no seam — only a handle that was started and dropped.
+/// Mutant: the register arm's `session_finished` dropped — the slot the gate
+/// took is never given back and idle shutdown never re-arms.
+#[test]
+fn a_stopped_broker_gives_back_the_slot_the_resume_took() {
+    let fixture = ResumeFixture::new("mcp-stopped");
+    let id = fixture.id("stopped");
+    fixture.write_row(acp_row(&id, &fixture.owner, "handle-stopped"));
+    let _env = AcpEnv::missing_agent();
+    take_bystander_slot(&fixture.state);
+    let server = fixture.state.mcp.start(&fixture.state).expect("MCP server");
+    drop(server);
+
+    let error = fixture
+        .resume(&id, &fixture.conn())
+        .expect_err("a stopped broker refuses the registration");
+    assert_eq!(error.code, ErrorCode::Io, "the arm's own code: {error:?}");
+    assert_eq!(
+        error.message, "The MCP broker is stopped.",
+        "the refusal comes from the stop flag, not another register failure: {error:?}"
+    );
+    assert_eq!(
+        fixture.state.live_session_count(),
+        1,
+        "the slot the gate took came back"
+    );
+    assert_eq!(
+        fixture.row(&id).generation,
+        1,
+        "the arm is before the generation is opened"
+    );
+    fixture.finish();
+}
+
+/// The generation arm's own error, with the refusal installed by the test:
+/// the production trigger — the row vanishing between `list()` and the UPDATE
+/// — is a race no single thread can force, so a `BEFORE UPDATE` trigger on the
+/// journal file stands in for it. The arm cannot tell the two apart; its whole
+/// content is "give the slot back, revoke the registration, return".
+/// Mutant: the generation arm's `session_finished` dropped — the slot the gate
+/// took is never given back.
+#[test]
+fn a_refused_generation_start_gives_back_the_slot_the_resume_took() {
+    let fixture = ResumeFixture::new("generation");
+    let id = fixture.id("generation");
+    fixture.write_row(acp_row(&id, &fixture.owner, "handle-generation"));
+    let _env = AcpEnv::missing_agent();
+    take_bystander_slot(&fixture.state);
+    let db = rusqlite::Connection::open(fixture.dir.join("journal.db")).expect("journal file");
+    db.execute_batch(&format!(
+        "CREATE TRIGGER refuse_generation BEFORE UPDATE ON sessions \
+         WHEN OLD.id = '{id}' BEGIN SELECT RAISE(ABORT, 'refused'); END;"
+    ))
+    .expect("the refusal trigger");
+
+    let error = fixture
+        .resume(&id, &fixture.conn())
+        .expect_err("the generation cannot be opened");
+    assert_eq!(
+        error.code,
+        ErrorCode::Journal,
+        "the trigger's refusal, not the missing-row race: {error:?}"
+    );
+    assert!(
+        error.message.contains("refused"),
+        "the arm surfaced the refused write: {error:?}"
+    );
+    assert_eq!(
+        fixture.state.live_session_count(),
+        1,
+        "the slot the gate took came back"
+    );
+    assert_eq!(
+        fixture.row(&id).generation,
+        1,
+        "the refused UPDATE opened no generation"
+    );
+    assert!(
+        !fixture.state.mcp.is_registered(&id),
+        "the registration the arm already minted was revoked"
+    );
+    drop(db);
+    fixture.finish();
+}

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use devboule_protocol::{ErrorCode, OwnerId, SessionKind, SessionOrigin};
 
-use crate::journal::SessionRecord;
+use crate::journal::{PersistStatus, SessionRecord};
 use crate::peer_policy::{ConnPeer, PeerRole, TransportBinding};
 use crate::profile_delivery::ProfileDelivery;
 use crate::server::ServerState;
@@ -449,4 +449,32 @@ fn a_pending_child_without_a_reservation_panics() {
         })
         .expect("a string panic payload");
     assert!(message.contains("reservation"), "{message}");
+    // The panic is after the durable boundary. These assertions pin what that
+    // position costs today — a live row nothing will end, no live entry, no
+    // noted marker — so moving the guard without changing them is a red test,
+    // not a silent change of the cost.
+    let row = birth_row(&state, "Terminal");
+    assert_eq!(
+        row.status,
+        PersistStatus::Live,
+        "the birth row stays live: nothing ends it on the panic path"
+    );
+    assert!(
+        !state
+            .sessions
+            .inner
+            .lock()
+            .expect("registry")
+            .contains_key(&row.id),
+        "the panic lands before the spawn, so no live entry exists"
+    );
+    let creations = state
+        .sessions
+        .creations
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    assert!(
+        !creations.pending_children.contains_key(&row.id),
+        "the guard fires before the marker is noted"
+    );
 }
