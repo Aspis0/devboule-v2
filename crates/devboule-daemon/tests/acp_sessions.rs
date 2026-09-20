@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Barrier, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_daemon::{
     connect, current_user_sid, spawn_daemon, spawn_daemon_with_env, DaemonClient, EventHandler,
@@ -85,13 +85,28 @@ fn stub_bin() -> PathBuf {
     );
 }
 
+/// A directory no other run can hand back.
+///
+/// `process::id()` plus a per-process counter is not unique across runs:
+/// Windows recycles pids, and `create_dir_all` reuses a directory it finds
+/// without clearing it, so a recycled pid used to hand this run the previous
+/// run's observation files — which `wait_for_observations` reads whole.
+/// The nonce makes the name unrepeatable; the removal covers the directory a
+/// crashed earlier run could still own.
 fn unique_dir() -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock past the epoch")
+        .as_nanos();
     let dir = std::env::temp_dir().join(format!(
-        "devboule acp {}-{}",
+        "devboule acp {}-{}-{nonce}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     std::fs::create_dir_all(&dir).expect("runtime directory with spaces");
     dir
 }
@@ -3479,6 +3494,15 @@ struct Slice5Test {
     dir: PathBuf,
     harness: Harness,
     client: DaemonClient,
+}
+
+impl Drop for Slice5Test {
+    fn drop(&mut self) {
+        // The observation files live here and `Harness` removes only its own
+        // runtime directory: this is the one fixture that used to leak a
+        // directory per construction (measured: 28 per suite run).
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// One profile, as the Settings form saves it: the stub provider, the model
