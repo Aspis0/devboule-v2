@@ -225,6 +225,12 @@ pub use session_items::{
     COALESCE_FLUSH, COALESCE_MAX_BYTES, PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES,
     SESSION_OS_SWEEP_INTERVAL, SESSION_SILENCE_THRESHOLD,
 };
+/// The move road's named phases: `set_agent_child_profile` in the parent is
+/// the thin sequence, and this sibling holds the phases it composes. A
+/// rewrite rather than a move — its proof is the characterisation tests in
+/// `session_child_profile_tests.rs`, not a byte comparison.
+#[path = "session_child_profile.rs"]
+mod session_child_profile;
 /// The create road's named phases: `create_with_provider_env` in the parent
 /// is the thin sequence, and this sibling holds the phases it composes. A
 /// rewrite rather than a move — its proof is the characterisation tests in
@@ -237,6 +243,13 @@ mod session_create_phase_tests;
 #[cfg(test)]
 #[path = "session_create_tests.rs"]
 mod session_create_tests;
+use session_child_profile::{manifest_arrived, model_ask_needed};
+#[cfg(test)]
+#[path = "session_child_profile_phase_tests.rs"]
+mod session_child_profile_phase_tests;
+#[cfg(test)]
+#[path = "session_child_profile_tests.rs"]
+mod session_child_profile_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
@@ -2171,85 +2184,8 @@ impl SessionRegistry {
         profile_name: &str,
         resolve_profile: &dyn Fn(&str) -> Result<ChildProfileFacts, String>,
     ) -> Result<(), String> {
-        // Check 1: the caller's row. Its owner scopes the scan below; the
-        // registry is the only place "mine" is a fact.
-        let caller_owner = {
-            let map = self
-                .inner
-                .lock()
-                .map_err(|_| "session state is unavailable".to_string())?;
-            let entry = map.get(creator_session_id).ok_or_else(|| {
-                "the calling session is not registered on this daemon".to_string()
-            })?;
-            entry.owner().clone()
-        };
-        if target == creator_session_id {
-            return Err("a session is not its own child; name a session you created".to_string());
-        }
-        // The name a child is addressed by, the same one the roster shows:
-        // the display name a creation gave it, or the title beneath it.
-        let display = |session: &Session| {
-            session
-                .display_name
-                .clone()
-                .unwrap_or_else(|| session.title.clone())
-        };
-        // Check 2: resolve among the caller's own live children only. The scan
-        // is read-only; nothing is asked of any provider until a profile and a
-        // mode have both been agreed.
-        let (child_session, child_runtime, child_owner) = {
-            let map = self
-                .inner
-                .lock()
-                .map_err(|_| "session state is unavailable".to_string())?;
-            let mut matches: Vec<(Session, Arc<SessionRuntime>, OwnerId)> = map
-                .values()
-                .filter(|entry| entry.owner().user == caller_owner.user)
-                .filter_map(|entry| {
-                    let live = entry.as_peer_visible()?;
-                    Some((
-                        live_session_view(live),
-                        Arc::clone(&live.runtime),
-                        entry.owner().clone(),
-                    ))
-                })
-                .filter(|(session, _, _)| {
-                    is_child_of(session.created_by.as_deref(), creator_session_id)
-                })
-                .filter(|(session, _, _)| session.id == target || display(session) == target)
-                .collect();
-            match matches.len() {
-                1 => Ok(matches.pop().expect("exactly one match")),
-                0 => {
-                    // What this owner's own live roster distinguishes is
-                    // distinguished: a live session of theirs that is not the
-                    // caller's child is told what it is. Everything else — an
-                    // invented name, a dead child, a stranger's session — is
-                    // one refusal, because the daemon cannot and must not say
-                    // which.
-                    let not_child = map.values().any(|entry| {
-                        entry.owner().user == caller_owner.user
-                            && entry.as_peer_visible().is_some_and(|live| {
-                                let session = live_session_view(live);
-                                !is_child_of(session.created_by.as_deref(), creator_session_id)
-                                    && (session.id == target || display(&session) == target)
-                            })
-                    });
-                    if not_child {
-                        Err(format!(
-                            "'{target}' is not your child; only a session you created can be moved onto a profile"
-                        ))
-                    } else {
-                        Err(format!(
-                            "none of your live children is called '{target}'; devboule_list_agents names them"
-                        ))
-                    }
-                }
-                _ => Err(format!(
-                    "more than one of your live children is called '{target}'; use the session id"
-                )),
-            }
-        }?;
+        let (child_session, child_runtime, child_owner) =
+            self.resolve_own_live_child(creator_session_id, target)?;
         // Check 3: the profile, read at the moment of the call — the closure
         // owns the store and the three refusals §1.2 names.
         let facts = resolve_profile(profile_name)?;
@@ -2257,7 +2193,7 @@ impl SessionRegistry {
         // mode is unavailable" — it is "the daemon cannot say yet", and the
         // refusal withholds. A manifest that arrived and names no modes is the
         // provider's own say-so, and `set_mode`'s sentence for it stands.
-        if child_runtime.session_manifest().is_none() {
+        if !manifest_arrived(&child_runtime) {
             return Err(format!(
                 "the daemon cannot say yet whether mode '{}' is available on this child: its provider has not reported the session's manifest; ask again once the child is up",
                 facts.mode_id
@@ -2276,37 +2212,14 @@ impl SessionRegistry {
         // nothing — there is no ask to make — and every other combination is
         // asserted on the provider's own wire, Claude's effort validation
         // included where it applies.
-        let current_model = child_runtime
-            .session_manifest()
-            .and_then(|event| match event {
-                SessionEvent::SessionManifest {
-                    current_model_id, ..
-                } => current_model_id,
-                _ => None,
-            });
-        let model_ask_needed = current_model.as_deref() != Some(facts.model.as_str())
-            || facts.thinking_option_id.is_some();
-        if model_ask_needed {
+        if model_ask_needed(child_runtime.session_manifest().as_ref(), &facts) {
             if let Err(error) = self.set_model(
                 &child_session.id,
                 &child_owner,
                 Some(&facts.model),
                 facts.thinking_option_id.as_deref(),
             ) {
-                // The partial state: the mode landed, the model ask did not.
-                // The ratchet still fires — the child has been able to run in
-                // that mode, and that cannot be un-lived — but **no** profile
-                // change is recorded, and the answer says exactly what stands.
-                self.record_child_profile_move(
-                    &child_session.id,
-                    &child_session.kind,
-                    &facts.mode_id,
-                    None,
-                );
-                return Err(format!(
-                    "the mode was switched to '{}', but the model ask was refused: {}. the child runs in mode '{}' on its previous model, and no profile change is recorded",
-                    facts.mode_id, error.message, facts.mode_id
-                ));
+                return self.record_partial_move(&child_session, &facts, &error.message);
             }
         }
         // Full success: record the profile and raise the marker through the
