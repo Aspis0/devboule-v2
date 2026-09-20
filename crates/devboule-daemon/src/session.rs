@@ -475,6 +475,14 @@ mod session_spawn_refusal_tests;
 #[cfg(test)]
 #[path = "session_static_route_tests.rs"]
 mod session_static_route_tests;
+/// The terminal-input tests carved out of `session_tests` (its lines 2261-2383
+/// at `6d29bc3`): several observers sending complete inputs concurrently through
+/// one writer without interleaving, and only the resize owner being allowed to
+/// resize the terminal. A move, not a rewrite - its proof is the byte comparison
+/// against `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_terminal_input_tests.rs"]
+mod session_terminal_input_tests;
 /// The terminal-ownership tests carved out of `session_tests` (its lines
 /// 3625-4268 at `5c22b34`): a terminal send never publishes an agent user
 /// message, the same user's attached client may send, resize and answer a
