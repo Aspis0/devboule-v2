@@ -374,6 +374,18 @@ mod session_spawn_first_prompt_tests;
 #[cfg(test)]
 #[path = "session_spawn_refusal_tests.rs"]
 mod session_spawn_refusal_tests;
+/// The terminal-ownership tests carved out of `session_tests` (its lines
+/// 3625-4268 at `5c22b34`): a terminal send never publishes an agent user
+/// message, the same user's attached client may send, resize and answer a
+/// permission card while an unattached client or a different user may not, a
+/// failed or poisoned writer still records the error the client sees, and
+/// `delete_session` admits a journal-only or dead entry for the same user while
+/// refusing another user's row and a live session. A move, not a rewrite - its
+/// proof is the byte comparison against `session_tests.rs` at the commit before
+/// it, not a test.
+#[cfg(test)]
+#[path = "session_terminal_ownership_tests.rs"]
+mod session_terminal_ownership_tests;
 /// The silence-and-liveness tests carved out of `session_tests` (its lines
 /// 1067-1262 at `d00145f`): the threshold transition emitted once, the queued
 /// silence dropped when output or an exit lands first, the ACP roster notice on
