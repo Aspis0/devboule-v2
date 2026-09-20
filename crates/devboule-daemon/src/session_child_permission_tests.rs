@@ -281,3 +281,94 @@ fn a_refused_answer_leaves_the_childs_attention_up() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Mutant: the refusal bound to the pending card's session id instead of
+/// the card id the caller passed — the C3 regression the audit caught. The
+/// broker hands check 4 `pending.session_id`; the sentence must name the
+/// tool call id the chain looked the card up by, which is the only card id
+/// the caller has ever seen.
+#[test]
+fn a_not_your_child_refusal_names_the_card_id_the_caller_passed() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("c3-pin-c4");
+    let creator_a = compose_session_id(&owner.session_token(), "cra").expect("id");
+    let creator_b = compose_session_id(&owner.session_token(), "crb").expect("id");
+    let child_of_b = compose_session_id(&owner.session_token(), "chb").expect("id");
+    let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    registry.attach_delegation(Arc::clone(&store));
+    store.set(true).expect("set on");
+    insert_live_agent(&registry, &creator_a, owner.clone());
+    let child_b_runtime = insert_child(&registry, &child_of_b, owner.clone(), &creator_b);
+    park_card(&child_b_runtime, "card-b1");
+
+    let error = answer(
+        &registry,
+        &creator_a,
+        "card-b1",
+        PermissionOutcome::Deny,
+        vec![],
+    )
+    .expect_err("the card belongs to a stranger's child");
+    assert_eq!(
+        error,
+        "permission card card-b1 belongs to a session that is not your child; \
+         it stays pending for whoever may answer it",
+        "the caller's own card id in the sentence: {error}"
+    );
+    assert_eq!(
+        child_b_runtime
+            .permission_broker()
+            .expect("broker")
+            .pending_len(),
+        1,
+        "the card stays pending for whoever may answer it"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The card's session is not a peer-visible view when check 4 runs, while
+/// the scan still found the broker through the entry's runtime. Reachable
+/// through the road: a card parked on a not-yet-visible (configuring) child
+/// answers here, and so does a child that ends in the window between the
+/// scan and the check — the two take separate `inner` holds on purpose.
+/// Mutant: the sentence bound to the pending card's session id instead of
+/// the caller's card id.
+#[test]
+fn a_card_whose_session_is_not_live_names_the_callers_card_id() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("c3-pin-gone");
+    let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+    let gone = compose_session_id(&owner.session_token(), "gone").expect("id");
+    let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    registry.attach_delegation(Arc::clone(&store));
+    store.set(true).expect("set on");
+    insert_live_agent(&registry, &creator, owner.clone());
+    let gone_runtime = insert_live_agent(&registry, &gone, owner.clone());
+    park_card(&gone_runtime, "card-gone");
+    {
+        let mut map = registry.inner.lock().expect("registry");
+        let entry = map.remove(&gone).expect("the holder's entry");
+        match entry {
+            RegistryEntry::Live(session) => {
+                map.insert(gone.clone(), RegistryEntry::Configuring(session));
+            }
+            _ => panic!("the entry that parked the card was live"),
+        }
+    }
+
+    let error = answer(
+        &registry,
+        &creator,
+        "card-gone",
+        PermissionOutcome::Deny,
+        vec![],
+    )
+    .expect_err("the card's session is not a live view");
+    assert_eq!(
+        error, "permission card card-gone is not pending on one of your live sessions",
+        "the caller's own card id in the sentence: {error}"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

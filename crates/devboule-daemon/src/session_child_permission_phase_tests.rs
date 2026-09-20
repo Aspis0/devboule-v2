@@ -184,7 +184,9 @@ fn find_card_holder_scopes_the_owner_and_prefers_a_child() {
 
 /// Mutants: the live-view guard dropped (a dead session would pass as the
 /// card's session), the child predicate dropped or flipped (any visible
-/// session would pass), or the two refusal sentences swapped.
+/// session would pass), the two refusal sentences swapped, or a sentence
+/// bound to the card's session id instead of the caller's card id (the C3
+/// regression the audit caught).
 #[test]
 fn child_answer_target_names_each_miss_and_resolves_a_live_child() {
     let (dir, registry, journal) = registry_with_journal();
@@ -196,32 +198,32 @@ fn child_answer_target_names_each_miss_and_resolves_a_live_child() {
     insert_child(&registry, &child, owner.clone(), &creator);
     insert_live_agent(&registry, &sibling, owner.clone());
 
+    // The sentences name `card_id` — what the caller passed; `card_session`
+    // is only the lookup key and the remembered id.
     let target = registry
-        .child_answer_target(&child, &creator)
+        .child_answer_target("card-mine", &child, &creator)
         .expect("a live child resolves");
     assert_eq!(target, child, "the remembered id is the card's session");
 
     let error = registry
-        .child_answer_target(&sibling, &creator)
+        .child_answer_target("card-sib", &sibling, &creator)
         .expect_err("a same-owner non-child is not the caller's child");
     assert_eq!(
         error,
-        format!(
-            "permission card {sibling} belongs to a session that is not your child; \
-             it stays pending for whoever may answer it"
-        ),
+        "permission card card-sib belongs to a session that is not your child; \
+         it stays pending for whoever may answer it",
         "{error}"
     );
     let error = registry
-        .child_answer_target(&creator, &creator)
+        .child_answer_target("card-self", &creator, &creator)
         .expect_err("the caller itself is not its own child");
     assert!(error.contains("not your child"), "{error}");
 
     let error = registry
-        .child_answer_target("s.nowhere.1", &creator)
+        .child_answer_target("card-ghost", "s.nowhere.1", &creator)
         .expect_err("an invented id matches no view");
     assert_eq!(
-        error, "permission card s.nowhere.1 is not pending on one of your live sessions",
+        error, "permission card card-ghost is not pending on one of your live sessions",
         "{error}"
     );
     journal.shutdown();

@@ -2014,7 +2014,7 @@ impl SessionRegistry {
         // so the attention it was waiting under clears when the answer lands.
         let answered_child: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
         let child_check = |card_session: &str| -> Result<(), String> {
-            let target = self.child_answer_target(card_session, creator_session_id)?;
+            let target = self.child_answer_target(card_id, card_session, creator_session_id)?;
             *answered_child.borrow_mut() = Some(target);
             Ok(())
         };

@@ -85,20 +85,25 @@ impl super::SessionRegistry {
     /// caller** — the view exists, and `created_by` equals the bearer's
     /// session. A sibling, a grandchild, a human-started session or a dead
     /// one fails here without learning which session owns the card. The
-    /// resolved id is what the answer remembers for its attention tail.
+    /// sentences name the card id the caller passed (`card_id`, the tool
+    /// call id the chain looked the card up by), never `card_session` — the
+    /// session id the broker hands back is an id the caller has never
+    /// seen. The resolved session id is what the answer remembers for its
+    /// attention tail.
     pub(super) fn child_answer_target(
         &self,
+        card_id: &str,
         card_session: &str,
         creator_session_id: &str,
     ) -> Result<String, String> {
         let Some((session, _runtime, _owner)) = self.child_view(card_session) else {
             return Err(format!(
-                "permission card {card_session} is not pending on one of your live sessions"
+                "permission card {card_id} is not pending on one of your live sessions"
             ));
         };
         if !is_child_of(session.created_by.as_deref(), creator_session_id) {
             return Err(format!(
-                "permission card {card_session} belongs to a session that is not your child; it stays pending for whoever may answer it"
+                "permission card {card_id} belongs to a session that is not your child; it stays pending for whoever may answer it"
             ));
         }
         Ok(card_session.to_string())
