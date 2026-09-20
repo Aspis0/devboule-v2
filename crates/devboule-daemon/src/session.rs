@@ -286,6 +286,15 @@ mod session_child_permission_tests;
 #[cfg(test)]
 #[path = "session_child_slot_tests.rs"]
 mod session_child_slot_tests;
+/// The delegated-answer tests carved out of `session_tests` (its lines 49-457
+/// at `8408a37`): the switch read at the answer rather than at the park, the
+/// unknown and already-resolved refusals, the not-the-callers-child and
+/// row-shape refusals, the caller-origin pair, and the no-cap, no-pause shape.
+/// A move, not a rewrite - its proof is the byte comparison against
+/// `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_delegated_answer_tests.rs"]
+mod session_delegated_answer_tests;
 /// The envelope-grammar tests carved out of `session_tests` (its lines
 /// 1378-1508 at `9a8c667`): the header-and-fence grammar the app parses, a
 /// hostile excerpt that must not close its fence, and the excerpt cap counted

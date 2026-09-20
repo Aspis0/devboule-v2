@@ -540,6 +540,10 @@ mod tests {
             // the session test module's own file: same readers, moved out of
             // `session.rs` by the pass-1 test split (no new reader)
             "session_tests.rs",
+            // the delegated answer's switch road, moved out of
+            // `session_tests.rs` by the split of that file: the same test store
+            // attached to a test registry, no new reader
+            "session_delegated_answer_tests.rs",
             // the child-profile move tests: same reader again, a test store
             // attached to a test registry (the C2 slice, no new reader)
             "session_child_profile_tests.rs",
