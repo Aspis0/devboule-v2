@@ -339,6 +339,19 @@ mod session_child_slot_tests;
 #[cfg(test)]
 #[path = "session_creation_caps_tests.rs"]
 mod session_creation_caps_tests;
+/// The creation-race tests carved out of `session_tests` (its lines 7236-7856 at
+/// `a9b31af`), the two fixtures at their head included: the structural check
+/// that the creation check and its park are one call, a commit racing an end
+/// releasing the child once, a creation whose creator is gone leaving nothing
+/// parked, a creation slower than the slot expiry keeping its marker, the
+/// creation record published before a parked end runs, a readmitted child
+/// keeping what it already spent, standing instructions before the preset
+/// preamble, and the session-id mint. A move, not a rewrite - its proof is the
+/// byte comparison against `session_tests.rs` at the commit before it, not a
+/// test.
+#[cfg(test)]
+#[path = "session_creation_race_tests.rs"]
+mod session_creation_race_tests;
 /// The delegated-answer tests carved out of `session_tests` (its lines 49-457
 /// at `8408a37`): the switch read at the answer rather than at the park, the
 /// unknown and already-resolved refusals, the not-the-callers-child and
