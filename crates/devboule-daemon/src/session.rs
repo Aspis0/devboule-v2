@@ -310,6 +310,20 @@ mod session_child_permission_tests;
 #[cfg(test)]
 #[path = "session_child_slot_tests.rs"]
 mod session_child_slot_tests;
+/// The creation-budget tests carved out of `session_tests` (its lines
+/// 1894-2506 at `141bdfa`): one live child per creator and eight daemon-wide,
+/// depth judged on the child's own depth, the creation card owed once per
+/// creator session, the ten-an-hour window and the sweep that rolls it, a
+/// reservation released once by its identity, a commit registering the child
+/// the spawn named, the in-flight creation key, an end that arrives before its
+/// commit, a child resumed twice counted once, a report surviving a steerer
+/// that errors, a child's end claiming its report once, and a pending card
+/// refusing a concurrent creation. A move, not a rewrite - its proof is the
+/// byte comparison against `session_tests.rs` at the commit before it, not a
+/// test.
+#[cfg(test)]
+#[path = "session_creation_caps_tests.rs"]
+mod session_creation_caps_tests;
 /// The delegated-answer tests carved out of `session_tests` (its lines 49-457
 /// at `8408a37`): the switch read at the answer rather than at the park, the
 /// unknown and already-resolved refusals, the not-the-callers-child and
