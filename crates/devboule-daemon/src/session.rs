@@ -306,6 +306,14 @@ mod session_resume_spawn_tests;
 #[cfg(test)]
 #[path = "session_resume_tests.rs"]
 mod session_resume_tests;
+/// The refused-spawn tests carved out of `session_tests` (its lines 1510-1862):
+/// the journal row an ordinary spawn failure must end before the refusal
+/// returns, its non-blocking variant, the two creation-time profile refusals
+/// and the pre-card tick refusal. A move, not a rewrite - its proof is the
+/// byte comparison against `session_tests.rs` at `8b37de9`, not a test.
+#[cfg(test)]
+#[path = "session_spawn_refusal_tests.rs"]
+mod session_spawn_refusal_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
