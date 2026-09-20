@@ -424,6 +424,19 @@ mod session_resume_spawn_tests;
 #[cfg(test)]
 #[path = "session_resume_tests.rs"]
 mod session_resume_tests;
+/// The peer-id, session-access and roster-cache tests carved out of
+/// `session_tests` (its lines 3011-3398 at `a5e1e69`): a learned peer session id
+/// that is durable and restored on hydration, attach, close and stop admitting a
+/// previous-run or dead-client session of the same user while refusing another
+/// user's, the roster and history themselves user-scoped and carrying
+/// previous-run rows, a live transition that neither requeries the journal roster
+/// nor caches rows under a revision that changed after the list, a push-only row
+/// carrying the child's name and creator, and a live transition that does not
+/// rebuild a large roster. A move, not a rewrite - its proof is the byte
+/// comparison against `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_roster_access_tests.rs"]
+mod session_roster_access_tests;
 /// The first-prompt-and-MCP-wait tests carved out of `session_tests` (its lines
 /// 2807-2926 at `040e890`): Pi and Codex each deliver the first prompt without
 /// waiting on the MCP handshake, the resume handle refuses the families it was
