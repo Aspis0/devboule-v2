@@ -301,6 +301,19 @@ mod session_attachment_tests;
 #[cfg(test)]
 #[path = "session_attention_tests.rs"]
 mod session_attention_tests;
+/// The agent-message attribution tests carved out of `session_tests` (its lines
+/// 5700-6121 at `fff9df6`): a remote sender id is not resolved in this registry,
+/// a remote sender cannot relay into a third device or smuggle an id, a local
+/// caller still reports an absent source, one brake spans a remote device's far
+/// sender ids, an agent message is attributed to the caller and not to the
+/// session it names, a peer bearer with a local source keeps the local echo, a
+/// sender's a2a echo is agent while a human composer's is human, the envelope's
+/// delimiters cannot be forged, and a sixth message is refused while five are
+/// still in flight. A move, not a rewrite - its proof is the byte comparison
+/// against `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_attribution_tests.rs"]
+mod session_attribution_tests;
 #[cfg(test)]
 #[path = "session_child_permission_phase_tests.rs"]
 mod session_child_permission_phase_tests;
