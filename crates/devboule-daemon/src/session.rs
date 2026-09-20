@@ -465,6 +465,16 @@ mod session_spawn_first_prompt_tests;
 #[cfg(test)]
 #[path = "session_spawn_refusal_tests.rs"]
 mod session_spawn_refusal_tests;
+/// The static-route tests carved out of `session_tests` (its lines 2261-2514 at
+/// `54be819`), the section marker at their head included: a static route sending
+/// its own frame and leaving the plain-text writer alone, the route's plan text
+/// carrying the reference lines too, and a route that declines keeping the
+/// legacy write byte for byte, with the route and plan doubles and their
+/// constructor in front of them. A move, not a rewrite - its proof is the byte
+/// comparison against `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_static_route_tests.rs"]
+mod session_static_route_tests;
 /// The terminal-ownership tests carved out of `session_tests` (its lines
 /// 3625-4268 at `5c22b34`): a terminal send never publishes an agent user
 /// message, the same user's attached client may send, resize and answer a
