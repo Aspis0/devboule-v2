@@ -114,9 +114,10 @@ pub(crate) use session_runtime::{
 };
 #[path = "acp_client.rs"]
 mod acp_client;
-/// One function out of a private module, under test only: the four tests that
-/// write the ACP override environment live in three different files and must
-/// serialise against each other.
+/// One function out of a private module, under test only: `DEVBOULE_ACP_COMMAND`
+/// and `DEVBOULE_ACP_PROVIDER_ID` are process-global, so every writer - the
+/// ACP tests in `pi_client_tests`, `server_tests` and the session test files,
+/// and the resume fixture's `AcpEnv` - must hold this lock for the span it owns.
 #[cfg(test)]
 pub(crate) use acp_client::lock_acp_env;
 #[path = "acp_host.rs"]
@@ -341,6 +342,16 @@ mod session_resume_tests;
 #[cfg(test)]
 #[path = "session_spawn_refusal_tests.rs"]
 mod session_spawn_refusal_tests;
+/// The workspace road's tests carved out of `session_tests` (its lines
+/// 2072-2599 at `085f4e4`): the spawn error's workspace id and display path,
+/// the local workspace's cwd and the cache in front of it, the resume road's
+/// created-at and record-own kind, the ACP override refusal, and the delete
+/// rules for a local workspace, a worktree and a project folder already gone.
+/// A move, not a rewrite - its proof is the byte comparison against
+/// `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_workspace_tests.rs"]
+mod session_workspace_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
