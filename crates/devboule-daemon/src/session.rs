@@ -286,6 +286,14 @@ mod session_child_permission_tests;
 #[cfg(test)]
 #[path = "session_child_slot_tests.rs"]
 mod session_child_slot_tests;
+/// The envelope-grammar tests carved out of `session_tests` (its lines
+/// 1378-1508 at `9a8c667`): the header-and-fence grammar the app parses, a
+/// hostile excerpt that must not close its fence, and the excerpt cap counted
+/// in scalars. A move, not a rewrite - its proof is the byte comparison
+/// against `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_envelope_card_tests.rs"]
+mod session_envelope_card_tests;
 /// The resume road's named phases: `resume` in the parent is the thin
 /// sequence, and this sibling holds the phases it composes. A rewrite rather
 /// than a move — its proof is the characterisation tests in
