@@ -342,6 +342,16 @@ mod session_resume_tests;
 #[cfg(test)]
 #[path = "session_spawn_refusal_tests.rs"]
 mod session_spawn_refusal_tests;
+/// The silence-and-liveness tests carved out of `session_tests` (its lines
+/// 1067-1262 at `d00145f`): the threshold transition emitted once, the queued
+/// silence dropped when output or an exit lands first, the ACP roster notice on
+/// leaving silent, the OS liveness probe that marks an exit without EOF, and an
+/// elapsed time that keeps a recovered session's unknown life unknown. A move,
+/// not a rewrite - its proof is the byte comparison against `session_tests.rs`
+/// at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_terminal_silence_tests.rs"]
+mod session_terminal_silence_tests;
 /// The workspace road's tests carved out of `session_tests` (its lines
 /// 2072-2599 at `085f4e4`): the spawn error's workspace id and display path,
 /// the local workspace's cwd and the cache in front of it, the resume road's
