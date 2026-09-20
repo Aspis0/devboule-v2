@@ -75,6 +75,14 @@ pub(super) fn live_view_of(
     (live.profile_id, live.unattended)
 }
 
+/// The child's recorded profile and its live unattended marker: the pair one
+/// roster row asserts.
+type RosterFacts = (Option<String>, devboule_protocol::UnattendedState);
+
+/// One transition-sink read: the child's row as the roster served it at push
+/// time, or `None` when the push named a child the roster did not carry.
+type SinkRead = Option<RosterFacts>;
+
 /// Mutant: the caller-row lookup swapped for any row of the map — a ghost
 /// caller would inherit a stranger's owner and the scan would answer
 /// "none of your live children" instead of naming the missing row.
@@ -97,10 +105,10 @@ fn a_move_from_an_unregistered_caller_names_the_missing_row() {
 }
 
 /// Mutants: the landed move's push dropped (the sink stays silent), or the
-/// live-metadata write dropped (the roster serves the pre-move facts). Not
-/// claimed: dropping the explicit roster-cache invalidation — the journal
-/// invalidation just above it chains to the same clear, so no test can
-/// tell the two lines apart.
+/// live-metadata write dropped (the roster serves the pre-move facts). The
+/// roster clear itself is not claimed: the journal invalidation above it is
+/// the one that drops the cache, and the explicit second clear was redundant
+/// and is gone.
 #[test]
 fn a_landed_move_pushes_the_fresh_row_to_the_transition_sink() {
     let (dir, registry, journal) = registry_with_journal();
@@ -153,6 +161,61 @@ fn a_landed_move_pushes_the_fresh_row_to_the_transition_sink() {
         2,
         "the move invalidated the cached roster, so the read rebuilds \
          instead of serving the pre-move row"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Mutant: the transition push hoisted above the journal write and the live
+/// metadata — a reader running inside the sink then sees the child still at
+/// `profile_id: None`, so the push announces a move the row does not carry
+/// yet. Every other sink in the tree only logs the pushed user; this one
+/// reads the window it is standing in.
+#[test]
+fn the_sink_reads_the_moved_row_the_push_announces() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("s5b-mv-sink-state");
+    let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+    let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+    insert_live_agent(&registry, &creator, owner.clone());
+    let (_runtime, _mode_calls, _model_calls, _order) = insert_move_child(
+        &registry,
+        &journal,
+        &child,
+        owner.clone(),
+        &creator,
+        "Worker",
+        &["bypass"],
+        Some("model-a"),
+        true,
+        false,
+        false,
+    );
+    // The app holds this roster already: the sink's read must hit whatever
+    // the cache holds rather than a rebuild that erases the window.
+    let _ = registry.state_snapshots(&owner);
+    let seen: Arc<Mutex<Vec<SinkRead>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let reader = registry.clone();
+    let watched = child.clone();
+    registry.set_transition_sink(Arc::new(move |pushed| {
+        let found = reader
+            .state_snapshots(&pushed)
+            .into_iter()
+            .find(|row| row.id == watched)
+            .map(|row| (row.profile_id, row.unattended));
+        recorded.lock().expect("sink record").push(found);
+    }));
+    registry
+        .set_agent_child_profile(&creator, "Worker", "Solo", &solo_resolve)
+        .expect("the move lands");
+    assert_eq!(
+        seen.lock().expect("sink record").as_slice(),
+        &[Some((
+            Some("p-1".to_string()),
+            devboule_protocol::UnattendedState::Yes
+        ))],
+        "the sink reads the state the push announces, not the row the move had not written"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);

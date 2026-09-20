@@ -1597,7 +1597,6 @@ impl SessionRegistry {
             return Err(error.into());
         }
         self.readmit_agent_child(session_id, resumed_child.as_deref(), owner);
-        self.invalidate_journal_roster();
         // Health is measured per provider id; `provider` is moved into the
         // metadata below, so keep a copy for the spawn outcome recording.
         let health_provider = provider.clone();
@@ -1702,6 +1701,9 @@ impl SessionRegistry {
                             map.remove(session_id);
                         }
                     }
+                    // The eviction is a live-map change, not a journal write:
+                    // a repeated mark answers `Ok(false)` and moves no revision,
+                    // so only this clear drops the cached row the eviction removed.
                     self.invalidate_journal_roster();
                 }
                 // The generation was already started on the journal row; a
@@ -2087,7 +2089,6 @@ impl SessionRegistry {
             }
         }
         self.invalidate_journal_roster();
-        self.invalidate_state_roster_cache();
         if let Some((_session, _runtime, owner)) = self.child_view(child_id) {
             self.notify_session_transition(&owner, child_id);
         }

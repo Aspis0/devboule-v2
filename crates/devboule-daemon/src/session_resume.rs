@@ -23,13 +23,54 @@ fn resume_evict_stale_transcript(
     journal.unpin(session_id);
 }
 
+/// The order test's one-shot rendezvous: the phase test arms it for one
+/// session id and that session's detached thread fires it between the two
+/// writes. Keyed by id so a concurrent resume of another session cannot take
+/// it; unarmed, the road pays one lock and nothing else.
+#[cfg(test)]
+static BETWEEN_WRITES_HOOK: Mutex<Option<(String, BetweenWritesHook)>> = Mutex::new(None);
+
+#[cfg(test)]
+type BetweenWritesHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+pub(super) fn arm_between_writes_hook(session_id: &str, hook: impl FnOnce() + Send + 'static) {
+    let armed = (session_id.to_string(), Box::new(hook) as BetweenWritesHook);
+    *BETWEEN_WRITES_HOOK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = Some(armed);
+}
+
+#[cfg(test)]
+fn fire_between_writes_hook(session_id: &str) {
+    let hook = {
+        let mut armed = BETWEEN_WRITES_HOOK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let armed_for_this_session = armed
+            .as_ref()
+            .is_some_and(|(armed_id, _)| armed_id == session_id);
+        if armed_for_this_session {
+            armed.take().map(|(_, hook)| hook)
+        } else {
+            None
+        }
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// The failed respawn's end marker, on a throwaway thread: the blocking send
 /// is an unbounded busy-loop with no timeout, so it must not freeze the
 /// dispatch thread, and the disown fallback rides it FIRST — this thread
 /// exists for the saturated-queue case, where delaying that write is exactly
-/// the harm. Both writes are best effort and the thread is detached and
-/// unjoined: a daemon that exits in this window can lose the fallback
-/// silently; the dispatch-thread write it backs up is the ordered one.
+/// the harm. The order is load-bearing and pinned by
+/// `the_disown_mark_lands_before_the_end_marker`: the half-state it avoids,
+/// `{status = ended, disowned = NULL}`, still reads `resumable: true`. Both
+/// writes are best effort and the thread is detached and unjoined: a daemon
+/// that exits in this window can lose the fallback silently; the
+/// dispatch-thread write it backs up is the ordered one.
 pub(super) fn resume_end_generation_detached(
     journal: &Arc<Journal>,
     session_id: &str,
@@ -45,6 +86,8 @@ pub(super) fn resume_end_generation_detached(
             if peer_disowned {
                 let _ = journal.mark_peer_session_disowned_blocking(&id, &attempted_handle);
             }
+            #[cfg(test)]
+            fire_between_writes_hook(&id);
             let _ = journal.mark_ended_blocking(&id, generation, None);
         });
 }

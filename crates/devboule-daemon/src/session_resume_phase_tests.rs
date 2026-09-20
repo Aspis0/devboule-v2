@@ -4,6 +4,7 @@
 //! They characterise the extraction, not the behaviour it preserved — the
 //! road tests are the ones that predate the helpers.
 
+use super::session_resume::arm_between_writes_hook;
 use super::session_resume_fixture::{
     acp_row, entry_present, insert_transcript, until_row, AcpEnv, ResumeFixture,
 };
@@ -271,9 +272,11 @@ fn exit_event_generation(fixture: &ResumeFixture, id: &str) -> u64 {
 
 /// Mutants: the end marker dropped (the row stays live and the roster
 /// renders a phantom recovered session), the disown fallback dropped, or the
-/// marker given the wrong generation. The fallback's *order* — before the
-/// unbounded end-marker wait — is not observable in the final state: the two
-/// writes are separate columns, and either order leaves both set.
+/// marker given the wrong generation. The final state is order-blind — the
+/// two writes touch separate columns and either order leaves both set — but
+/// the half-states are not: `{status = ended, disowned = NULL}` still reads
+/// `resumable: true` and replays an `Exit` tail, so the order the code has is
+/// pinned by `the_disown_mark_lands_before_the_end_marker` below.
 #[test]
 fn resume_end_generation_detached_writes_the_end_and_the_disown_fallback() {
     let fixture = ResumeFixture::new("end-marker");
@@ -316,5 +319,42 @@ fn resume_end_generation_detached_writes_the_end_and_the_disown_fallback() {
         Some("handle-disowned"),
         "the fallback marked the handle it was given"
     );
+    fixture.finish();
+}
+
+/// Mutant: the two detached writes swapped — the hook reads the row between
+/// them, and `(Ended, None)` is the half-state that still offers the refused
+/// handle for resume.
+#[test]
+fn the_disown_mark_lands_before_the_end_marker() {
+    let fixture = ResumeFixture::new("end-marker-order");
+    let id = fixture.id("end-marker-order");
+    fixture.write_row(acp_row(&id, &fixture.owner, "handle-order"));
+    let journal = Arc::clone(fixture.journal());
+    let watched = id.clone();
+    let (sender, reader) = std::sync::mpsc::channel();
+    arm_between_writes_hook(&id, move || {
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == watched)
+            .expect("the row");
+        sender
+            .send((row.status, row.disowned_peer_session_id.clone()))
+            .expect("the test is listening");
+    });
+    resume_end_generation_detached(fixture.journal(), &id, 5, true, "handle-order".to_string());
+    let (status, disowned) = reader
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the hook ran between the two writes");
+    assert_eq!(
+        (status, disowned.as_deref()),
+        (PersistStatus::Live, Some("handle-order")),
+        "the mark is committed before the end marker: no reader sees the row ended and unmarked"
+    );
+    until_row(&fixture, &id, "the end marker followed the hook", |row| {
+        row.status != PersistStatus::Live
+    });
     fixture.finish();
 }
