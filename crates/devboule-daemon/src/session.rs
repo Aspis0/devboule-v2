@@ -404,6 +404,17 @@ mod session_envelope_card_tests;
 #[cfg(test)]
 #[path = "session_envelope_finish_tests.rs"]
 mod session_envelope_finish_tests;
+/// The stored-reference tests carved out of `session_tests` (its lines
+/// 2261-2567 at `774478c`): a deposited reference reaching the provider as a
+/// path line, a reference whose stored bytes disagree with the file refused, a
+/// reference naming another session refused by the wire's own rule before the
+/// store is asked, a reference whose digest was never deposited refused rather
+/// than dropped, and inline attachments and references in one send keeping the
+/// client's order. A move, not a rewrite - its proof is the byte comparison
+/// against `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_reference_tests.rs"]
+mod session_reference_tests;
 /// The resume road's named phases: `resume` in the parent is the thin
 /// sequence, and this sibling holds the phases it composes. A rewrite rather
 /// than a move — its proof is the characterisation tests in
