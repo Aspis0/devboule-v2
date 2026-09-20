@@ -278,6 +278,18 @@ mod session_child_profile_phase_tests;
 #[path = "session_child_profile_tests.rs"]
 mod session_child_profile_tests;
 use session_child_permission::child_answer_caps_refusal;
+/// The attachment-and-deposit tests carved out of `session_tests` (its lines
+/// 2862-3745 at `1c6b03e`): the owner's deposit answered with the reference of
+/// the file the store wrote, the unauthorised, oversized and
+/// close-inside-a-deposit refusals, the count, per-file, total and text-cap
+/// limits, the path line a fallback session writes and the one a terminal
+/// session never writes, and the structured prompt an inline image plans beside
+/// the path line a refused or unknown session keeps. A move, not a rewrite - its
+/// proof is the byte comparison against `session_tests.rs` at the commit before
+/// it, not a test.
+#[cfg(test)]
+#[path = "session_attachment_tests.rs"]
+mod session_attachment_tests;
 /// The attention-and-suppression tests carved out of `session_tests` (its lines
 /// 2527-2797 at `902f3ed`): priority preserving permission while allowing
 /// escalation, a clear that cannot complete inside the suppression decision,
