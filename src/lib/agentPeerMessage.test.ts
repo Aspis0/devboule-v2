@@ -5,10 +5,10 @@ import { parseAgentPeerMessage } from "./agentPeerMessage";
  *  source session id or the authenticated peer namespace
  *  `peer:<device>/<far-id>`; the daemon composes both forms. `origin` is one
  *  of the three shapes
- *  `origin_line` writes (`session.rs:8026`): `local`, `peer:<device_id>` with
- *  a UUID device (pairing refuses anything `Uuid::parse_str` refuses,
- *  `pairing.rs:1227`), or `unknown`. `role` is `client` for a local caller
- *  and `daemon` only for a paired daemon caller (`session.rs:5679-5680`).
+ *  `origin_line` writes (`session_envelopes.rs`): `local`, `peer:<device_id>`
+ *  with a UUID device (`local_peer_record` refuses anything `Uuid::parse_str`
+ *  refuses), or `unknown`. `role` is `client` for a local caller and `daemon`
+ *  only for a paired daemon caller (`agent_message_send_in_namespace`).
  *  `timestamp` is unix millis, as `unix_millis()` writes. `mainframe` is
  *  invented: a value the daemon never writes. Check these against the
  *  producer; do not trust them. */
@@ -75,7 +75,7 @@ describe("parseAgentPeerMessage", () => {
     // `from_agent:` and all — planted inside the body stays bytes the sender
     // wrote. It cannot promote itself into a second card and cannot change
     // the named sender. NOTE: the daemon already escapes any `<devboule-system`
-    // in a sender's text (`neutralise_envelope_text`, `session.rs:8190`), so
+    // in a sender's text (`neutralise_envelope_text`), so
     // the honest send path never delivers this shape today. The test stays:
     // the frontend must not depend on a guarantee made in another language by
     // another process.
@@ -158,7 +158,7 @@ describe("parseAgentPeerMessage", () => {
   });
 
   it("treats `peer:` with an empty device as a peer that names none, never an empty name", () => {
-    // Reachable: `unwrap_or_default()` in `origin_line` (`session.rs:8026`).
+    // Reachable: `unwrap_or_default()` in `origin_line`.
     const message = parseAgentPeerMessage(relayEnvelope(["words"], { origin: "peer:" }));
     expect(message).toEqual({
       fromAgent: "s.msg.source",
@@ -180,7 +180,7 @@ describe("parseAgentPeerMessage", () => {
   });
 
   it("does not read the role as a marker: a daemon-role relay is still the peer's message", () => {
-    // `role:` is composed from the caller's peer record (`session.rs:5679`):
+    // `role:` is composed from the caller's peer record (`agent_message_send_in_namespace`):
     // a paired daemon caller reads `daemon` while carrying another agent's
     // words. It claims nothing about the frame, so it is not part of the
     // marker.

@@ -512,7 +512,7 @@ export function sessionDelegationTakeBack(session: Pick<Session, "delegation">):
  * `input_required` is not a roster fact. The daemon reports the task state of a
  * created child to its **creator**, in the finish envelope's `state:` line and
  * in the structured `child_finished` event that mirrors it
- * (`crates/devboule-daemon/src/session.rs`, `agent_input_required_envelope`);
+ * (`crates/devboule-daemon/src/session_envelopes.rs`, `agent_input_required_envelope`);
  * the parked-child notice has no event of its own, and `SessionStateSnapshot`
  * (`crates/devboule-protocol/src/session.rs`) carries no task state at all. The
  * one roster-level fact behind "this child is parked on a card a person has to

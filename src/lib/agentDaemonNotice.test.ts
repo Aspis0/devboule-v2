@@ -108,7 +108,7 @@ describe("parseAgentDaemonNotice", () => {
 
   it("returns null for an agent-to-agent echo, even when its composed role is daemon", () => {
     // `role:` is NOT the notice marker. The daemon composes it from the
-    // CALLER's peer record (`session.rs:5574`), so an echo sent by a session
+    // CALLER's peer record (`agent_message_send_in_namespace`), so an echo sent by a session
     // a paired daemon created says `role: daemon` while carrying another
     // agent's words. The marker is `kind:` inside the fixed header: all four
     // notices carry one, this echo deliberately carries none. Treating role

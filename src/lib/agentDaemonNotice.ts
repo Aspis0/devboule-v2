@@ -20,7 +20,7 @@
  *   timestamp line and composes `role:` from the caller's peer record. A
  *   `kind:` line counts only inside that header block. See `headerBlock`.
  * - `role:` ALONE DOES NOT MARK A NOTICE. The daemon composes it from the
- *   CALLER's peer record (`session.rs:5574`), so an echo sent by a session a
+ *   CALLER's peer record (`agent_message_send_in_namespace`), so an echo sent by a session a
  *   paired daemon created reads `role: daemon` while carrying another
  *   agent's words. The marker is a `kind:` line in the fixed header: all
  *   four notices carry one, the echo carries none. A frame missing either
@@ -218,7 +218,7 @@ export function parseAgentDaemonNotice(text: string): AgentDaemonNotice | null {
   if (headerLinesValue(header, "role") !== DAEMON_ROLE) return null;
 
   // `role:` is not the notice marker. The daemon composes it from the
-  // CALLER's peer record (`session.rs:5574`), so an agent-to-agent echo sent
+  // CALLER's peer record (`agent_message_send_in_namespace`), so an agent-to-agent echo sent
   // by a session a paired daemon created reads `role: daemon` while its body
   // is another agent's words. `kind:` inside the fixed header is the marker:
   // every notice the daemon builds carries one, the echo carries none.

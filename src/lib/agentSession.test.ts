@@ -848,7 +848,7 @@ describe("ACP agent session", () => {
   });
 
   it("stays usable when the send times out — io establishes nothing about delivery", async () => {
-    // DaemonError::TimedOut maps to io (backend/error.rs:54): the client gave
+    // DaemonError::TimedOut maps to io (`CommandError::from(DaemonError)`): the client gave
     // up waiting after 30s, and a timed-out send may even have been
     // delivered. Refusing the message is not the view dying.
     const harness = makeHarness();
@@ -891,7 +891,7 @@ describe("ACP agent session", () => {
 
   it("stays usable when the send is refused as unauthorized — a refused steer is a live-session refusal", async () => {
     // The daemon raises unauthorized for a refused steer on a paired device
-    // (session.rs:5710): a refused message, not a gone view.
+    // (`send_with_subscription_timeout`): a refused message, not a gone view.
     const harness = makeHarness();
     await harness.session.start();
     (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
@@ -2370,10 +2370,11 @@ describe("creator daemon notice envelopes", () => {
 
 describe("agent-to-agent relay envelopes", () => {
   // Producer-true fixture values: `from_agent` is the source session id
-  // (`session.rs:8164`; the daemon's own test asserts the literal
-  // `from_agent: s.msg.source`, `session_tests.rs:10118`); `origin` is a
-  // shape `origin_line` writes (`session.rs:8026`); `role: client` for a
-  // local caller (`session.rs:5679-5680`); `timestamp` unix millis. Check
+  // (`agent_message_envelope`; the daemon's own test
+  // `a_peer_tool_send_is_attributed_to_the_peer` pins the raw local form for
+  // another id, `from_agent: s.peer.7`); `origin` is a shape `origin_line`
+  // writes (`session_envelopes.rs`); `role: client` for a local caller
+  // (`agent_message_send_in_namespace`); `timestamp` unix millis. Check
   // these against the producer; do not trust them.
   const relayEnvelope = [
     "<devboule-system>",

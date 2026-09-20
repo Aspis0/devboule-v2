@@ -90,7 +90,7 @@ export type AgentChatItem =
       role: "a2a_message";
       /** The sender the daemon's fixed header names. */
       fromAgent: string;
-      /** What the frame's origin line commits to (`session.rs:8026`): this
+      /** What the frame's origin line commits to (`origin_line`): this
           machine, a paired device and its name when it names one, or
           nothing. */
       origin: AgentPeerOrigin;
@@ -337,7 +337,7 @@ export class AgentSession {
    *
    * A steer does not open a turn: the daemon writes the text into the turn in
    * flight and publishes the same `AgentUserMessage` echo every send produces
-   * (`session.rs` publishes it for the whole send path, steer included), so the
+   * (`publish_agent_user_message` publishes it for the whole send path, steer included), so the
    * transcript gains one inline user bubble inside the running turn. Bumping
    * the turn counter or appending a second bubble here would split the
    * assistant stream that is still arriving — the sender must not render the

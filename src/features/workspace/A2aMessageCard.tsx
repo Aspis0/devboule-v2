@@ -58,8 +58,8 @@ function messageCopy(item: A2aMessageItem, names: A2aNameSource): string {
   if (item.origin.kind === "local") return `Message from ${name} — this machine.`;
   if (item.origin.kind === "peer" && item.origin.device !== null) {
     // The device id is peer-supplied: bound like the name. `peer:` with
-    // nothing after the colon (reachable via `unwrap_or_default()`,
-    // `session.rs:8026`) is a peer that names none — never an empty device.
+    // nothing after the colon (reachable via `unwrap_or_default()` in
+    // `origin_line`) is a peer that names none — never an empty device.
     const device = boundByGraphemes(
       names.deviceNames.get(item.origin.device) ?? item.origin.device,
       NAME_LIMIT,

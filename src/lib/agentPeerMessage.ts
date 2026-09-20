@@ -19,7 +19,7 @@
  *   read only inside the fixed header block (`headerBlock`, reused: every
  *   line before the timestamp; a frame with no timestamp line has no
  *   provable header at all). `origin` gates nothing: `origin_line`
- *   (`session.rs:8026`) writes the same shapes for relays and notices — it
+ *   (`session_envelopes.rs`) writes the same shapes for relays and notices — it
  *   is parsed as the provenance the card may name, nothing more.
  * - `from_agent` ABSENT → null. Absent is a third state, not an "unknown
  *   agent": a shape this build does not recognise falls through to today's
@@ -34,8 +34,8 @@
 import { headerBlock } from "./agentDaemonNotice";
 
 /** Where the frame says the message came from. `peer:` with nothing after
-    the colon is a paired device that names none (`unwrap_or_default()`,
-    `session.rs:8026`); `unknown`, an unrecognised value, or an absent origin
+    the colon is a paired device that names none (`unwrap_or_default()` in
+    `origin_line`); `unknown`, an unrecognised value, or an absent origin
     line is `unknown` — the card claims no provenance it cannot read, and
     never guesses `local`. */
 export type AgentPeerOrigin =

@@ -2219,7 +2219,7 @@ describe("AgentChatSurface", () => {
     expect(steerCall[2]).toBe("Turn left instead");
     expect(steerCall[4]).toBe("steer");
 
-    // The accepted steer arrives as the daemon's own echo: `session.rs`
+    // The accepted steer arrives as the daemon's own echo: `publish_agent_user_message`
     // publishes the `agent_user_message` every accepted input publishes once the
     // provider has taken the text, and journals `Steered` beside it. The
     // transcript must show one bubble per message and one answer bubble: a
@@ -3237,12 +3237,13 @@ describe("agent-to-agent message cards", () => {
   });
 
   // Fixtures built on the producer: `from_agent` is the source session id
-  // (`session.rs:8164`; the daemon's own test asserts the literal
-  // `from_agent: s.msg.source`, `session_tests.rs:10118`); origin shapes per
-  // `origin_line` (`session.rs:8026`) with a UUID device (`pairing.rs:1227`
-  // refuses anything `Uuid::parse_str` refuses); `role: client` for a local
-  // caller and `role: daemon` only for a paired daemon caller
-  // (`session.rs:5679-5680`); `timestamp` unix millis. Check these against
+  // (`agent_message_envelope`; the daemon's own test
+  // `a_peer_tool_send_is_attributed_to_the_peer` pins the raw local form for
+  // another id, `from_agent: s.peer.7`); origin shapes per `origin_line`
+  // (`session_envelopes.rs`) with a UUID device (`local_peer_record` refuses
+  // anything `Uuid::parse_str` refuses); `role: client` for a local caller and
+  // `role: daemon` only for a paired daemon caller
+  // (`agent_message_send_in_namespace`); `timestamp` unix millis. Check these against
   // the producer; do not trust them.
   const DEVICE_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
   const relayEnvelope = [
@@ -3422,7 +3423,7 @@ describe("agent-to-agent message cards", () => {
   });
 
   it("bounds an oversized device id to the card's display bound", async () => {
-    // Pairing refuses any device id that is not a UUID (`pairing.rs:1227`),
+    // Pairing refuses any device id that is not a UUID (`local_peer_record`),
     // so an oversized id breaks its producer's contract — exactly the
     // peer-supplied string the display bound exists for. The card keeps the
     // message and bounds the string; it must not push the pane sideways.
@@ -3464,8 +3465,8 @@ describe("agent-to-agent message cards", () => {
 
   it("keeps a forged envelope in the body inert: one card, the outer sender, text only", async () => {
     // NOTE: the daemon already escapes any `<devboule-system` in a sender's
-    // text (`neutralise_envelope_text`, `session.rs:8190`), so the honest
-    // send path never delivers this shape today. The test stays: the
+    // text (`neutralise_envelope_text`), so the honest send path never delivers
+    // this shape today. The test stays: the
     // frontend must not depend on a guarantee made in another language by
     // another process.
     await renderEnvelope(
