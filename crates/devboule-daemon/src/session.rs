@@ -303,6 +303,16 @@ mod session_delegated_answer_tests;
 #[cfg(test)]
 #[path = "session_envelope_card_tests.rs"]
 mod session_envelope_card_tests;
+/// The child's-finish tests carved out of `session_tests` (its lines 3236-3628
+/// at `c5989d9`): the stop reason mapped to the a2a word and to the state, the
+/// note's whole-text bound with its excerpted stop reason, the finish
+/// envelope's escaping and its one-line-per-header rule, the report owed once,
+/// the slot a close frees, and the facts a child inherits from its creator.
+/// A move, not a rewrite - its proof is the byte comparison against
+/// `session_tests.rs` at the commit before it, not a test.
+#[cfg(test)]
+#[path = "session_envelope_finish_tests.rs"]
+mod session_envelope_finish_tests;
 /// The resume road's named phases: `resume` in the parent is the thin
 /// sequence, and this sibling holds the phases it composes. A rewrite rather
 /// than a move — its proof is the characterisation tests in
