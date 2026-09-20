@@ -6,26 +6,10 @@
 use super::session_child_profile::manifest_arrived;
 use super::session_child_profile::model_ask_needed;
 use super::session_child_profile_tests::{
-    facts, journal_row_of, registry_with_journal, test_owner,
+    facts, journal_row_of, live_view_of, registry_with_journal, test_owner,
 };
 use super::tests::{insert_live_agent, insert_move_child};
 use super::*;
-
-fn live_view_of(
-    registry: &SessionRegistry,
-    id: &str,
-) -> (Option<String>, devboule_protocol::UnattendedState) {
-    let live = registry
-        .inner
-        .lock()
-        .expect("registry")
-        .get(id)
-        .and_then(RegistryEntry::as_peer_visible)
-        .expect("live entry")
-        .metadata
-        .clone();
-    (live.profile_id, live.unattended)
-}
 
 /// Mutant: the predicate flipped — a manifest-less runtime would count as
 /// arrived and the "cannot say yet" refusal would never fire.

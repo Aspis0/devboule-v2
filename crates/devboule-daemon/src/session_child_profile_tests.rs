@@ -3,8 +3,9 @@
 //! eight tests in `session_tests.rs` keep the per-refusal coverage; this
 //! file covers what they do not — the missing caller's row, the push a
 //! landed move owes the transition sink, the roster's delegation column,
-//! and the addressing fallback to the title. The extracted phases are
-//! called directly in `session_child_profile_phase_tests.rs`.
+//! the addressing fallback to the title, and the live half of the marker
+//! ratchet against lowering. The extracted phases are called directly in
+//! `session_child_profile_phase_tests.rs`.
 
 use super::tests::{insert_live_agent, insert_move_child};
 use super::*;
@@ -56,6 +57,22 @@ pub(super) fn journal_row_of(journal: &Arc<Journal>, id: &str) -> SessionRecord 
         .into_iter()
         .find(|record| record.id == id)
         .expect("the child's row")
+}
+
+pub(super) fn live_view_of(
+    registry: &SessionRegistry,
+    id: &str,
+) -> (Option<String>, devboule_protocol::UnattendedState) {
+    let live = registry
+        .inner
+        .lock()
+        .expect("registry")
+        .get(id)
+        .and_then(RegistryEntry::as_peer_visible)
+        .expect("live entry")
+        .metadata
+        .clone();
+    (live.profile_id, live.unattended)
 }
 
 /// Mutant: the caller-row lookup swapped for any row of the map — a ghost
@@ -273,6 +290,58 @@ fn the_profile_refusal_comes_before_the_manifest_cannot_say_yet() {
         mode_calls.load(Ordering::Acquire),
         0,
         "nothing is asked of the child before the profile resolves"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Mutant: the live ratchet assigned the delivery's own judgement instead
+/// of comparing ranks — a child already marked `Yes` that moves onto an
+/// unjudgeable mode (`unknown`) must keep `Yes` in the live metadata the
+/// snapshot serves; the journal's SQL MAX cannot catch this half, which is
+/// why the assertion reads the live copy and not the row.
+#[test]
+fn the_live_marker_ratchet_never_lowers_for_a_lower_judging_delivery() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("s5b-mv-ratchet-live");
+    let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+    let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+    insert_live_agent(&registry, &creator, owner.clone());
+    let (_runtime, _mode_calls, _model_calls, _order) = insert_move_child(
+        &registry,
+        &journal,
+        &child,
+        owner.clone(),
+        &creator,
+        "Worker",
+        &["bypass", "deep-work"],
+        Some("model-a"),
+        true,
+        false,
+        false,
+    );
+    let resolve = |name: &str| match name {
+        "Solo" => Ok(facts("bypass", "model-b", "p-yes")),
+        "Deep" => Ok(facts("deep-work", "model-a", "p-unknown")),
+        other => Err(format!("unknown profile ({other})")),
+    };
+    registry
+        .set_agent_child_profile(&creator, "Worker", "Solo", &resolve)
+        .expect("the move onto the auto-answering mode lands");
+    registry
+        .set_agent_child_profile(&creator, "Worker", "Deep", &resolve)
+        .expect("the move onto the unjudgeable mode lands");
+    let (profile_id, unattended) = live_view_of(&registry, &child);
+    assert_eq!(
+        profile_id.as_deref(),
+        Some("p-unknown"),
+        "the lower-judging move itself landed"
+    );
+    assert_eq!(
+        unattended,
+        devboule_protocol::UnattendedState::Yes,
+        "the live marker stays at what the child earned: a delivery judged \
+         unknown must not lower it"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
