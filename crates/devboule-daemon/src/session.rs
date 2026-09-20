@@ -264,9 +264,30 @@ mod session_child_permission_phase_tests;
 #[cfg(test)]
 #[path = "session_child_permission_tests.rs"]
 mod session_child_permission_tests;
+/// The resume road's named phases: `resume` in the parent is the thin
+/// sequence, and this sibling holds the phases it composes. A rewrite rather
+/// than a move — its proof is the characterisation tests in
+/// `session_resume_tests.rs`, not a byte comparison.
+#[path = "session_resume.rs"]
+mod session_resume;
+/// Test support for the resume road's three characterisation files: the
+/// fixture they share and the ACP override harness the spawn arms drive.
+#[cfg(test)]
+#[path = "session_resume_fixture.rs"]
+mod session_resume_fixture;
+#[cfg(test)]
+#[path = "session_resume_phase_tests.rs"]
+mod session_resume_phase_tests;
+#[cfg(test)]
+#[path = "session_resume_spawn_tests.rs"]
+mod session_resume_spawn_tests;
+#[cfg(test)]
+#[path = "session_resume_tests.rs"]
+mod session_resume_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
+use session_resume::resume_end_generation_detached;
 
 pub use event_pull::ConnHandle;
 pub(crate) use session_types::PendingEvent;
@@ -1518,90 +1539,10 @@ impl SessionRegistry {
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<Session, WireError> {
-        // The resume road answers "which providers exist" too: the row a
-        // session was created under must still resolve here, so the file is
-        // refreshed at the boundary like the create road's.
-        crate::user_providers::refresh_user_rows(self.runtime_dir());
-        validate_session_id(session_id)
-            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
-        let record = journal
-            .list()?
-            .into_iter()
-            .find(|record| record.id == session_id)
-            .ok_or_else(not_found)?;
+        let (journal, record) = self.resume_locate_record(session_id)?;
         let (provider, peer_session_id) = resume_handle(&record, owner)?;
-        // The persisted provider is the original explicit provider choice.
-        // In particular, a persisted npx wrapper is allowed through this
-        // named path because its original create already supplied consent.
-        // Resolved through the record's own family, not the ACP road: an ACP
-        // row takes the named catalog row exactly as before, a Claude row its
-        // fixed stream-json command.
-        let family = provider::catalog_registry().provider_for_kind(&record.kind);
-        let mut command = family.resolve_command(&self.paths, Some(&provider))?;
-        self.apply_workspace_cwd(record.workspace_id.as_deref(), &mut command)?;
-        let generation = record.generation.saturating_add(1);
-
-        // A previous-run transcript is replaced. A stopped live entry is also
-        // replaced, but only after it has been observed dead; resuming a still
-        // live process would create two writers for one session id.
-        let (old_entry, had_live_slot) = {
-            let mut map = self
-                .inner
-                .lock()
-                .map_err(|_| internal("Session state is unavailable."))?;
-            if let Some(entry) = map.get(session_id) {
-                check_user_owner(entry, owner, &conn.conn_peer)?;
-                // *"Is the child that holds this entry still running?"* —
-                // asked over `as_child_process`, because a `Configuring`
-                // entry is a running child the same way a `Live` one is.
-                // Over the peer-visibility accessor the refusal silently
-                // stopped covering the delivery window, and a resume there
-                // replaced a running child out from under its in-flight
-                // create (the re-audit's P2-1).
-                if entry
-                    .as_child_process()
-                    .is_some_and(|session| !session.runtime.process_exited())
-                {
-                    return Err(WireError::new(
-                        ErrorCode::InvalidRequest,
-                        "This session cannot be resumed while its process is running.",
-                    ));
-                }
-            }
-            let old_entry = map.remove(session_id);
-            let had_live_slot = matches!(
-                old_entry,
-                Some(RegistryEntry::Live(_)) | Some(RegistryEntry::Configuring(_))
-            );
-            (old_entry, had_live_slot)
-        };
-        if let Some(old_entry) = old_entry {
-            match old_entry {
-                RegistryEntry::Live(session) | RegistryEntry::Configuring(session) => {
-                    // A resume replaces a live entry: the process that held it
-                    // is gone, so this is a child's end like any other (`S5`
-                    // decisions 7 and 8, audit S5-01) — reported once and its
-                    // slot released, whether the resume then succeeds or fails.
-                    // A resumed session is not a creation, so the session that
-                    // comes back has no row to release later.
-                    self.child_ended_with(
-                        session_id,
-                        Some(&session.metadata),
-                        Some(&session.runtime),
-                        Some(owner),
-                    );
-                    session.runtime.detach_if_conn(conn.id);
-                    session.runtime.notify_generation_replaced(conn.id);
-                    teardown_session_for_resume(*session);
-                }
-                RegistryEntry::Transcript(session) => {
-                    session.runtime.detach_if_conn(conn.id);
-                    session.runtime.notify_generation_replaced(conn.id);
-                    journal.unpin(session_id);
-                }
-            }
-        }
+        let (command, generation) = self.resume_stage_command(&record, &provider)?;
+        let had_live_slot = self.resume_evict_previous(&journal, session_id, owner, conn)?;
         conn.untrack_session(session_id);
 
         if !had_live_slot && !state.session_started() {
@@ -1765,43 +1706,19 @@ impl SessionRegistry {
                 }
                 // The generation was already started on the journal row; a
                 // failed respawn must end it, or the row stays live and the
-                // roster renders a phantom recovered session. The end marker
-                // must not be silently lost (try_send drops on a saturated
-                // queue) and must not freeze this dispatch thread (the
-                // blocking send is an unbounded 5 ms busy-loop with no
-                // timeout), so this rare failure path gets a throwaway
-                // thread; the row still ends once the queue drains. The
-                // mark's fallback rides the same thread and rides FIRST:
-                // this thread exists for the saturated-queue case, and
-                // putting the unbounded end-marker wait ahead of it would
-                // delay exactly the write that cannot afford delay. Both
-                // writes are best effort, and the thread is detached and
-                // unjoined: a daemon that exits in this window — this arm
-                // has already armed the idle shutdown — can lose the fallback
-                // silently; the dispatch-thread write above is the ordered
-                // one.
-                let journal = Arc::clone(journal);
-                let id = session_id.to_string();
-                let handle = attempted_handle;
-                let _ = std::thread::Builder::new()
-                    .name("journal-end-marker".into())
-                    .spawn(move || {
-                        if peer_disowned {
-                            let _ = journal.mark_peer_session_disowned_blocking(&id, &handle);
-                        }
-                        let _ = journal.mark_ended_blocking(&id, generation, None);
-                    });
+                // roster renders a phantom recovered session.
+                resume_end_generation_detached(
+                    &journal,
+                    session_id,
+                    generation,
+                    peer_disowned,
+                    attempted_handle,
+                );
                 state.record_provider_health(&health_provider, Err(&error));
                 return Err(error);
             }
         }
-        let map = self
-            .inner
-            .lock()
-            .map_err(|_| internal("Session state is unavailable."))?;
-        map.get(session_id)
-            .map(RegistryEntry::to_session)
-            .ok_or_else(|| internal("resumed session was not registered"))
+        self.resume_read_registered(session_id)
     }
 
     fn hydrate_transcript(
