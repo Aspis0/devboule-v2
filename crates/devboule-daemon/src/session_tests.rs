@@ -3878,6 +3878,53 @@ fn agent_message_sweep_count(brakes: &Arc<Mutex<MessageBrakeTable>>) -> u64 {
     brakes.lock().expect("brakes").sweeps
 }
 
+/// An agent message that panics between its admission and its delivery still
+/// gives the sender's slot back.
+///
+/// The plain statements the window used to be released on are skipped by the
+/// unwind, so the slot stays counted — and the only thing that would end it is
+/// the expiry sweep, which no later admission has to run for up to
+/// `MESSAGE_SLOT_EXPIRY`. The guard releases it on the way out instead. The
+/// recipient entry stays, deliberately: the window is the fan-out brake
+/// (S4-01) and outlives the slot it was counted for.
+#[test]
+fn a_panicking_agent_message_delivery_releases_the_brake_slot() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-brake-panic", "process-brake-panic");
+    insert_live_agent_with_kind_and_writer(
+        &registry,
+        "s.msg.a",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+    );
+    insert_live_agent_with_kind_and_writer(
+        &registry,
+        "s.msg.b",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+    );
+    registry.set_agent_message_after_admission_hook(Arc::new(|| panic!("the delivery panicked")));
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        registry.agent_message_send("s.msg.a", "s.msg.b", "hello", &owner, &ConnHandle::new(0))
+    }));
+    assert!(outcome.is_err(), "the fixture must have panicked");
+    assert_eq!(
+        agent_message_slots(&registry.message_brakes, "s.msg.a"),
+        0,
+        "the slot the admission took must be gone"
+    );
+    assert_eq!(
+        agent_message_recipients(&registry.message_brakes, "s.msg.a"),
+        1,
+        "the recipient stays inside its window: that is the fan-out brake (S4-01)"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// S4-03: the slot a message holds ends with the turn that message went into,
 /// so a sender whose messages have been answered can send again.
 ///

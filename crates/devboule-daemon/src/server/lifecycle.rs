@@ -173,25 +173,27 @@ fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) 
         }
         match listener.accept() {
             Ok(stream) => {
-                if !state.client_connected() {
+                let Some(slot) = state.admit_client() else {
                     reject_shutting_down(stream);
                     break;
-                }
+                };
                 let conn_state = Arc::clone(&state);
-                match std::thread::Builder::new()
+                // A spawn that never started drops the closure with the slot
+                // inside it, so a failure releases through the guard as well.
+                if let Ok(handle) = std::thread::Builder::new()
                     .name("daemon-client".into())
                     .spawn(move || {
+                        // Held for the whole connection, and released by `Drop`
+                        // even if `handle_client` unwinds.
+                        let _slot = slot;
                         if let Err(error) =
                             handle_client(Framed::new(stream), conn_state.clone(), None)
                         {
                             eprintln!("daemon client connection failed: {error}");
                         }
-                        conn_state.client_disconnected();
-                    }) {
-                    Ok(handle) => threads.push(handle),
-                    Err(_) => {
-                        state.client_disconnected();
-                    }
+                    })
+                {
+                    threads.push(handle);
                 }
             }
             Err(_) if state.stop.load(Ordering::SeqCst) => break,

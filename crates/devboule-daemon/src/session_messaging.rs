@@ -7,6 +7,7 @@
 //! caller in the parent module, its sibling modules or its tests reaches in for.
 
 use super::*;
+use crate::release_guard::ReleaseGuard;
 
 impl super::SessionRegistry {
     /// Store one prompt attachment for a session and answer the reference the
@@ -468,6 +469,15 @@ impl super::SessionRegistry {
             )?;
             (from_runtime, target.owner.clone(), admission)
         };
+        // The slot is taken, so its release is owed here whatever happens
+        // between this line and the delivery's outcome: `finish_message_delivery`
+        // is the only thing that gives the slot back, and a panic before it
+        // leaves the slot counted against the sender's budget until the expiry
+        // sweep — which only a later admission runs, up to `MESSAGE_SLOT_EXPIRY`
+        // later.
+        let release = ReleaseGuard::armed(|completed: bool| {
+            finish_message_delivery(&self.message_brakes, brake_key, admission.slot, completed)
+        });
         #[cfg(test)]
         self.fire_agent_message_after_admission_hook();
         // The entry point states whether this id is local or far. A far id is
@@ -559,12 +569,12 @@ impl super::SessionRegistry {
             }
             // The delivery returned: the slot now waits only for its boundary,
             // if this admission found one — the turn end it was admitted for.
-            finish_message_delivery(&self.message_brakes, brake_key, admission.slot, true);
+            release.release(true);
         } else {
             // The message is in flight nowhere: give the slot back now instead
             // of holding the sender's budget until a boundary that will never see
             // this message arrives.
-            finish_message_delivery(&self.message_brakes, brake_key, admission.slot, false);
+            release.release(false);
         }
         // The delivery's own id is not what this act answers with: the *sender*
         // is the caller here, and its echo (if any) is published above. The

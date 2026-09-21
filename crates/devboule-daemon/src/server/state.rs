@@ -4,6 +4,7 @@
 //! inline test-only branches stay inside their methods).
 
 use super::*;
+use crate::release_guard::ReleaseGuard;
 
 /// The accept path's cached `peers` snapshot.
 struct PeerTableView {
@@ -503,9 +504,26 @@ impl ServerState {
             .unwrap_or(u32::MAX)
     }
 
+    /// Admit a client and hand back the slot that releases it.
+    ///
+    /// Both accept paths take their slot here, so the pipe loop and the Noise
+    /// loop cannot drift apart again. The release rides the guard's `Drop`: a
+    /// panic in the connection's own thread cannot leave the count raised, and
+    /// a `clients` that never returns to zero stops the idle exit from ever
+    /// arming again for the life of the daemon.
+    pub(crate) fn admit_client(self: &Arc<Self>) -> Option<ReleaseGuard<impl FnOnce(bool)>> {
+        if !self.client_connected() {
+            return None;
+        }
+        let state = Arc::clone(self);
+        Some(ReleaseGuard::armed(move |_completed: bool| {
+            state.client_disconnected()
+        }))
+    }
+
     /// Admit a client unless shutdown has started. A reconnect that wins this
     /// lock invalidates any idle timer armed by the previous connection.
-    pub(crate) fn client_connected(&self) -> bool {
+    pub(super) fn client_connected(&self) -> bool {
         let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         if lifecycle.shutting_down {
             return false;
@@ -515,7 +533,7 @@ impl ServerState {
         true
     }
 
-    pub(crate) fn client_disconnected(self: &Arc<Self>) {
+    pub(super) fn client_disconnected(self: &Arc<Self>) {
         let generation = {
             let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
             lifecycle.clients = lifecycle.clients.saturating_sub(1);

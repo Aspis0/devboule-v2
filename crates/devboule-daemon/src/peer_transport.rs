@@ -1416,21 +1416,21 @@ fn serve_noise_peer(
     // a connected peer must keep the daemon up, or the idle exit the app arms
     // when it detaches hangs up on a paired device a second later. Taken here,
     // after the handshake and the binding check — counting before the Noise
-    // exchange would let a connect flood park the daemon.
-    if !state.client_connected() {
+    // exchange would let a connect flood park the daemon. The slot is held for
+    // the whole connection, panic included.
+    let Some(_slot) = state.admit_client() else {
         // Shutting down: `handle_client` would answer `ShuttingDown` and return,
         // so there is nothing to serve and no slot to hold.
         return Ok(());
-    }
+    };
     // Step 6. The remote identity is decided above; `handle_client` must never
     // ask for a pipe handle on this path.
-    let result = handle_client(
+    handle_client(
         crate::framing::Framed::from_stream(reader, writer, closer),
         Arc::clone(state),
         Some(conn_peer),
-    );
-    state.client_disconnected();
-    result.map_err(|error| PeerError::Io(error.to_string()))
+    )
+    .map_err(|error| PeerError::Io(error.to_string()))
 }
 
 /// Whether this framing helper is the one the reader expects. Kept out of the

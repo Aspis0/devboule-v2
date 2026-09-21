@@ -496,6 +496,28 @@ fn connected_client_prevents_idle_shutdown() {
     wait_for_shutdown(&state);
 }
 
+/// The client slot comes back when the connection's own thread panics: the
+/// guard releases on unwind, so `clients` cannot stay above zero forever,
+/// where it would keep the idle exit from arming again for the rest of the
+/// daemon's life.
+#[test]
+fn a_panicking_connection_releases_its_client_slot() {
+    let state = state();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
+        let state = Arc::clone(&state);
+        move || {
+            let _slot = state.admit_client().expect("the connection is admitted");
+            panic!("the connection thread panicked");
+        }
+    }));
+    assert!(outcome.is_err(), "the fixture must have panicked");
+    assert_eq!(
+        state.live_client_count(),
+        0,
+        "the slot must come back on the way out, a panic included"
+    );
+}
+
 #[test]
 fn live_session_prevents_shutdown_even_without_a_client() {
     let state = state();

@@ -70,6 +70,8 @@ mod raster_metadata;
 #[cfg(feature = "server")]
 mod registry;
 #[cfg(feature = "server")]
+mod release_guard;
+#[cfg(feature = "server")]
 mod screen;
 #[cfg(feature = "server")]
 mod secret_store;

@@ -1260,9 +1260,9 @@ fn a_connected_peer_is_a_client_for_the_idle_exit() {
     }
 
     // The app connects and detaches with no session live: the transition to
-    // zero clients that arms the idle timer.
-    assert!(state.client_connected(), "the app is admitted");
-    state.client_disconnected();
+    // zero clients that arms the idle timer. The slot comes from the same
+    // admission the pipe accept loop takes (`ServerState::admit_client`).
+    drop(state.admit_client().expect("the app is admitted"));
 
     std::thread::sleep(crate::IDLE_SHUTDOWN_GRACE + Duration::from_millis(400));
     assert!(
