@@ -73,7 +73,8 @@ pub enum ExitReason {
     Idle,
     /// Someone asked: the `Shutdown` RPC.
     Requested,
-    /// Read but never written by this build — a reason a later version knew.
+    /// A reason this build cannot name: one a later version wrote, or one
+    /// written here by a shutdown path that forgot to set its own.
     Unknown,
 }
 

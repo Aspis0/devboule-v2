@@ -44,13 +44,16 @@ impl BoundDaemon {
     fn start(paths: RuntimePaths) -> Self {
         let mut record =
             DaemonRecord::starting(std::process::id(), "lifecycle-instance", &paths.pipe_name);
-        record.listening();
+        // Starting record first, `ready` after the bind: the order the daemon
+        // itself uses, so a probe that trusts `ready` finds a listener behind it.
         std::fs::write(&paths.lock_file, record.body()).expect("record");
 
         let state = ServerState::with_paths("lifecycle-instance".to_string(), paths.clone())
             .expect("state");
         let (listener, shutdown) =
             transport::bind(&paths, Arc::clone(&state.stop)).expect("bind listener");
+        record.listening();
+        std::fs::write(&paths.lock_file, record.body()).expect("listening record");
         let accept_state = Arc::clone(&state);
         let accept = std::thread::Builder::new()
             .name("lifecycle-test-accept".into())
