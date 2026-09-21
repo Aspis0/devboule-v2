@@ -30,6 +30,49 @@ const SPAWN_ATTEMPTS: u32 = 50;
 const SPAWN_SLEEP: Duration = Duration::from_millis(100);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
 
+/// The budget `session_resume` carries, and why it is not [`RPC_TIMEOUT`].
+///
+/// The daemon answers this RPC only after it has run a provider startup
+/// inline: `initialize` is awaited with
+/// `session::acp_client::ACP_FIRST_RESPONSE_TIMEOUT` (120 s, the bound widened
+/// for the measured 20.7 s cold `npx` start) and the `session/load` or
+/// `session/new` behind it with `session::acp_client::ACP_RESPONSE_TIMEOUT`
+/// (15 s). The recovery road adds the journal read and the replacement
+/// session's own startup, which carries the same two bounds. Measured
+/// 2026-09-21 in the app: the window showed `timed out: waiting for a daemon
+/// reply` at 30 s while the daemon answered at 36 s — the client gave up on
+/// work the daemon was still doing and threw the answer away.
+///
+/// 180 s sits above the 135 s those two bounds add up to, with room for the
+/// road's own journal work, and below [`PROVIDER_UPDATE_RPC_TIMEOUT`], whose
+/// work is a package install. The number the measurement supports is 36 s;
+/// 180 is a declared product judgement on top of it, not a measurement of its
+/// own.
+const SESSION_RESUME_RPC_TIMEOUT: Duration = Duration::from_secs(180);
+
+// One test's own deadline for the resume road, so the wiring can be proved
+// without waiting out the production window. A thread-local rather than an
+// environment variable: the test harness runs each test on its own thread, so
+// one test's deadline cannot reach another's connection. `///` above the macro
+// documents nothing, hence the `//` line.
+#[cfg(test)]
+thread_local! {
+    static SESSION_RESUME_DEADLINE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The deadline [`DaemonClient::session_resume`] sends with. Read here rather
+/// than at the call site so a test can pull this one road's budget down and
+/// watch the control plane keep [`RPC_TIMEOUT`]; nothing sets it outside a
+/// test.
+fn session_resume_deadline() -> Duration {
+    #[cfg(test)]
+    if let Some(deadline) = SESSION_RESUME_DEADLINE.with(std::cell::Cell::get) {
+        return deadline;
+    }
+    SESSION_RESUME_RPC_TIMEOUT
+}
+
 pub type EventHandler = Arc<dyn Fn(SessionEventEnvelope) + Send + Sync>;
 pub type SessionStateHandler = Arc<dyn Fn(Vec<SessionStateSnapshot>) + Send + Sync>;
 /// The daemon-pushed delegation switch (`DelegationChanged`): the stored
@@ -682,11 +725,14 @@ impl DaemonClient {
         idempotency_key: Option<String>,
     ) -> Result<ResumeResult, DaemonError> {
         let id = self.alloc_id();
-        match self.roundtrip(ClientMessage::SessionResume {
-            id,
-            persistence,
-            idempotency_key,
-        })? {
+        match self.roundtrip_with_deadline(
+            ClientMessage::SessionResume {
+                id,
+                persistence,
+                idempotency_key,
+            },
+            session_resume_deadline(),
+        )? {
             DaemonMessage::Resume { result, .. } => Ok(result),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),

@@ -1,12 +1,19 @@
 //! Tests for the daemon client: request framing, timeouts and error mapping.
 
-use super::{fail_connection, ClientInner, PROVIDER_UPDATE_RPC_TIMEOUT, RPC_TIMEOUT};
+use super::{
+    fail_connection, ClientInner, PROVIDER_UPDATE_RPC_TIMEOUT, RPC_TIMEOUT,
+    SESSION_RESUME_RPC_TIMEOUT,
+};
 use crate::error::DaemonError;
 use crate::framing::Framed;
 use crate::provider_update::UPDATE_TIMEOUT;
+use crate::session::{ACP_FIRST_RESPONSE_TIMEOUT, ACP_RESPONSE_TIMEOUT};
 #[cfg(windows)]
 use crate::transport::{Listener, NamedPipeListener};
-use devboule_protocol::{ClientMessage, DaemonHello, DaemonMessage, ErrorCode, SessionEvent};
+use devboule_protocol::{
+    ClientMessage, DaemonHello, DaemonMessage, ErrorCode, Persistence, PersistenceKind,
+    ResumeResult, SessionEvent,
+};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc, Mutex};
@@ -21,6 +28,31 @@ fn provider_update_deadline_has_install_headroom() {
     // constants protect the deadline relationship directly.
     assert!(PROVIDER_UPDATE_RPC_TIMEOUT > UPDATE_TIMEOUT + Duration::from_secs(30));
     assert_eq!(RPC_TIMEOUT, Duration::from_secs(30));
+}
+
+/// The resume road's budget, checked against the daemon's own.
+///
+/// The daemon cannot answer `session_resume` before the provider startup it
+/// runs inline has finished, and that startup carries two bounds: `initialize`
+/// (the first-answer window) and the `session/load` or `session/new` behind
+/// it. A client on the control-plane default gives up 30 seconds in — the
+/// measured defect of 2026-09-21, where the daemon answered at 36 s.
+///
+/// Mutant: the road back on `RPC_TIMEOUT` (or the constant lowered under the
+/// daemon's own bounds) — this assertion fails.
+#[test]
+fn session_resume_deadline_covers_the_provider_startup_it_waits_for() {
+    assert!(SESSION_RESUME_RPC_TIMEOUT > ACP_FIRST_RESPONSE_TIMEOUT + ACP_RESPONSE_TIMEOUT);
+}
+
+/// The default stays the default: everything that is not a provider startup
+/// still surrenders at 30 seconds, because a client that waits silently is
+/// how a dead daemon turns into a frozen window.
+#[test]
+fn only_the_named_roads_leave_the_thirty_second_default() {
+    assert_eq!(RPC_TIMEOUT, Duration::from_secs(30));
+    assert!(SESSION_RESUME_RPC_TIMEOUT > RPC_TIMEOUT);
+    assert!(PROVIDER_UPDATE_RPC_TIMEOUT > RPC_TIMEOUT);
 }
 
 #[test]
@@ -589,4 +621,177 @@ fn a_daemon_that_did_not_negotiate_agent_profiles_is_never_sent_a_profile_rpc() 
     drop(client);
     server.join().expect("server joins");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One client on a fake daemon that runs `serve` against the connection, plus
+/// the teardown both deadline tests need: they differ only in what the far
+/// side does with the frames and when.
+#[cfg(windows)]
+fn with_a_fake_daemon(
+    label: &str,
+    serve: impl FnOnce(Framed) + Send + 'static,
+    body: impl FnOnce(&super::DaemonClient),
+) {
+    let dir = std::env::temp_dir().join(format!(
+        "devboule-client-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let paths = crate::paths::RuntimePaths::from_dir(&dir);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+    let server_label = label.to_string();
+    let server = thread::spawn(move || {
+        let file = listener.accept().expect("accept");
+        let framed = Framed::new(file);
+        let hello = framed.recv::<ClientMessage>().expect("client hello");
+        assert!(matches!(hello, ClientMessage::Hello(_)));
+        framed
+            .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                &server_label,
+                std::process::id(),
+            )))
+            .expect("hello reply");
+        serve(framed);
+    });
+    let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let connection = loop {
+        match crate::transport::connect(&paths) {
+            Ok(connection) => break connection,
+            Err(_) if std::time::Instant::now() < connection_deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    };
+    let client = super::handshake(
+        connection,
+        devboule_protocol::ClientHello::m3a(super::test_owner(label).expect("owner"), label),
+    )
+    .expect("handshake");
+    body(&client);
+    drop(client);
+    server.join().expect("server joins");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The resume road's deadline is its own and the control plane keeps the
+/// short one, proved on one connection under one silence.
+///
+/// The fake daemon sits on both replies for 400 ms. The test pulls the resume
+/// road's deadline down to 120 ms through the seam: the resume must time out,
+/// while the `ping` behind it — still on [`RPC_TIMEOUT`] — rides the same
+/// silence out and answers.
+///
+/// Mutants: the road back on `roundtrip` (the resume no longer times out, so
+/// `expect_err` fails), and the short deadline wired into the generic path
+/// instead of the resume road (the ping times out and its own assert fails).
+#[cfg(windows)]
+#[test]
+fn a_resume_wait_is_the_resume_roads_and_the_ping_keeps_the_default() {
+    let slow = Duration::from_millis(400);
+    let short = Duration::from_millis(120);
+    with_a_fake_daemon(
+        "resume-deadline",
+        move |framed| {
+            while let Ok(request) = framed.recv_timeout::<ClientMessage>(Duration::from_secs(10)) {
+                let id = request.request_id().expect("request id");
+                let reply = match request {
+                    ClientMessage::SessionResume { .. } => DaemonMessage::Resume {
+                        id,
+                        result: ResumeResult::NotSupported,
+                    },
+                    ClientMessage::Ping { .. } => DaemonMessage::Pong { id, ts_ms: 7 },
+                    other => panic!("unexpected request on this connection: {other:?}"),
+                };
+                thread::sleep(slow);
+                framed.send(&reply).expect("reply");
+            }
+        },
+        move |client| {
+            super::SESSION_RESUME_DEADLINE.with(|slot| slot.set(Some(short)));
+            let resume = client.session_resume(
+                Persistence {
+                    kind: PersistenceKind::Acp {
+                        handle: "handle-1".to_string(),
+                    },
+                },
+                None,
+            );
+            let ping = client.ping();
+            super::SESSION_RESUME_DEADLINE.with(|slot| slot.set(None));
+            let error =
+                resume.expect_err("a resume the daemon answers late must wait its own budget");
+            assert!(matches!(&error, DaemonError::TimedOut(_)), "got {error:?}");
+            assert_eq!(ping.expect("the control plane keeps the default"), 7);
+        },
+    );
+}
+
+/// A client that gives up on a resume writes nothing else: no cancel request,
+/// no close, and the next request travels on the same connection.
+///
+/// The fake daemon never answers the `SessionResume` frame and reads what
+/// follows it. An abandon frame of any kind would arrive between the abandoned
+/// request and the caller's next one, and the ping's own reply is what proves
+/// the connection survived the abandon.
+///
+/// Mutant: a frame added to the timeout arm of `roundtrip_with_deadline` (or a
+/// detach/close sent by an abandoning client).
+#[cfg(windows)]
+#[test]
+fn giving_up_on_a_resume_writes_nothing_and_leaves_the_connection_usable() {
+    let slow = Duration::from_millis(400);
+    let short = Duration::from_millis(120);
+    with_a_fake_daemon(
+        "resume-abandon",
+        move |framed| {
+            let first = framed
+                .recv_timeout::<ClientMessage>(Duration::from_secs(10))
+                .expect("the resume request");
+            assert!(
+                matches!(first, ClientMessage::SessionResume { .. }),
+                "expected the resume, got {first:?}"
+            );
+            let next = framed
+                .recv_timeout::<ClientMessage>(Duration::from_secs(10))
+                .expect("the frame after the abandoned request");
+            let ClientMessage::Ping { id } = next else {
+                panic!("an abandoned resume must be followed by the caller's next request, got {next:?}");
+            };
+            framed
+                .send(&DaemonMessage::Pong { id, ts_ms: 3 })
+                .expect("pong");
+            let trailing = framed.recv_timeout::<ClientMessage>(slow);
+            assert!(
+                trailing.is_err(),
+                "nothing else may travel on the wire: {trailing:?}"
+            );
+        },
+        move |client| {
+            super::SESSION_RESUME_DEADLINE.with(|slot| slot.set(Some(short)));
+            let resume = client.session_resume(
+                Persistence {
+                    kind: PersistenceKind::Acp {
+                        handle: "handle-1".to_string(),
+                    },
+                },
+                None,
+            );
+            let ping = client.ping();
+            super::SESSION_RESUME_DEADLINE.with(|slot| slot.set(None));
+            let error = resume.expect_err("an unanswered resume must time out");
+            let DaemonError::TimedOut(what) = &error else {
+                panic!("expected the timeout the window renders, got {error:?}");
+            };
+            assert_eq!(what, "waiting for a daemon reply");
+            assert_eq!(
+                ping.expect("the connection survives the abandoned request"),
+                3
+            );
+        },
+    );
 }

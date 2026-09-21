@@ -68,7 +68,7 @@ const COMMAND_PROVIDER_ENV: &str = "DEVBOULE_ACP_PROVIDER_ID";
 pub const ACP_TURN_SILENCE: Duration = Duration::from_secs(60);
 const TURN_TIMEOUT_ENV: &str = "DEVBOULE_ACP_TURN_TIMEOUT_MS";
 const MAX_ACP_PERMISSION_LINE_BYTES: usize = 256 * 1024;
-const ACP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const ACP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
 
 /// The bound on the provider's **first** answer — its `initialize` reply.
@@ -88,10 +88,12 @@ const RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
 /// every wait the product's own family documents (60 s for a client rpc and a
 /// run's start, 65 s for the phone's history sync, 90 s to list importable
 /// sessions). That is a declared **product judgement, not a measurement of its
-/// own** — no cold start was timed through the daemon — and it is the whole
-/// window a person waits: the app's `sessionResume` carries no client timeout
-/// (`src/lib/tauri.ts:543-546`), so nothing else bounds it.
-const ACP_FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
+/// own** — no cold start was timed through the daemon — and it is not the
+/// whole window a person waits: the app's client library carries the road's
+/// own budget on top of it (`crate::client::SESSION_RESUME_RPC_TIMEOUT`, 180 s
+/// for `session_resume`), which is where a `src/lib/tauri.ts` read finds
+/// nothing. The window that matters is the one in the layer that waits.
+pub(crate) const ACP_FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 const FIRST_RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_FIRST_RESPONSE_TIMEOUT_MS";
 
 type AcpModeResponses = Arc<Mutex<HashMap<u64, Sender<Result<(), String>>>>>;

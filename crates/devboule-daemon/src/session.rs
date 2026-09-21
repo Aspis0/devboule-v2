@@ -120,6 +120,12 @@ mod acp_client;
 /// and the resume fixture's `AcpEnv` - must hold this lock for the span it owns.
 #[cfg(test)]
 pub(crate) use acp_client::lock_acp_env;
+/// The two bounds on a provider startup, out of a private module: the client's
+/// `session_resume` budget is sized against them (`crate::client`), and a
+/// number that decides another layer's deadline must be read here rather than
+/// copied there.
+#[cfg(test)]
+pub(crate) use acp_client::{ACP_FIRST_RESPONSE_TIMEOUT, ACP_RESPONSE_TIMEOUT};
 #[path = "acp_host.rs"]
 mod acp_host;
 #[path = "claude_client.rs"]
