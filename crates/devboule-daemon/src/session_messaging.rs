@@ -864,8 +864,22 @@ impl super::SessionRegistry {
         // The store is read *now*, at the moment of the first prompt, and never
         // cached on the session: an edit to the standing instructions takes effect
         // on the next session the daemon starts, not at the next restart.
-        let first_prompt = (is_agent && !text.is_empty() && runtime.take_first_prompt())
-            .then(|| compose_first_prompt(&self.standing_instructions(), preset_preamble, text));
+        //
+        // The **recovered conversation** of a replacement session
+        // (`session_recovery.rs`) rides the same prompt, in front of it and
+        // behind the standing instructions: it is context for the agent and not
+        // a message the human just wrote, which is exactly what the preamble
+        // slot is for. Taken inside the closure, so the one prompt that gets it
+        // is the one that consumes it.
+        let first_prompt =
+            (is_agent && !text.is_empty() && runtime.take_first_prompt()).then(|| {
+                let recovered = runtime.take_recovered_context();
+                let preamble = crate::session::session_recovery::preamble_with_recovered(
+                    preset_preamble,
+                    recovered.as_deref(),
+                );
+                compose_first_prompt(&self.standing_instructions(), preamble.as_deref(), text)
+            });
         let text = first_prompt.as_deref().unwrap_or(text);
         // (S4-10, S4-14) The last thing before the write: the slot's boundary must
         // be the turn this text actually enters. The admission registered it

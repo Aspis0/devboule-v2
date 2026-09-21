@@ -404,6 +404,15 @@ mod session_envelope_card_tests;
 #[cfg(test)]
 #[path = "session_envelope_finish_tests.rs"]
 mod session_envelope_finish_tests;
+/// The road a session that cannot be reopened is replaced by: a new session of
+/// the same family carrying the conversation read back from the journal. A
+/// sibling like the resume phases, and taken only where the resume road proves
+/// the provider cannot be asked at all.
+#[path = "session_recovery.rs"]
+mod session_recovery;
+#[cfg(test)]
+#[path = "session_recovery_tests.rs"]
+mod session_recovery_tests;
 /// The stored-reference tests carved out of `session_tests` (its lines
 /// 2261-2567 at `774478c`): a deposited reference reaching the provider as a
 /// path line, a reference whose stored bytes disagree with the file refused, a
@@ -1788,7 +1797,21 @@ impl SessionRegistry {
     ) -> Result<Session, WireError> {
         let (journal, record) = self.resume_locate_record(session_id)?;
         let (provider, peer_session_id) = resume_handle(&record, owner)?;
-        let (command, generation) = self.resume_stage_command(&record, &provider)?;
+        let (command, generation) = match self.resume_stage_command(&record, &provider) {
+            Ok(staged) => staged,
+            // The folder this session worked in is gone (the pre-flight's own
+            // refusal, or the workspace store naming a folder it cannot
+            // reach). No provider call can bring this session back — the
+            // measured answer to a load with a missing `cwd` is
+            // `Invalid params`, 42 ms later — so the conversation goes to a
+            // session that can start. Nothing has been spawned, evicted or
+            // journalled at this point: the refusal is the first phase of the
+            // road, and the replacement is built from the row as it stands.
+            Err(error) if error.code == ErrorCode::WorkspaceUnavailable => {
+                return self.recover_session(state, &record, &error, owner, conn);
+            }
+            Err(error) => return Err(error),
+        };
         let had_live_slot = self.resume_evict_previous(&journal, session_id, owner, conn)?;
         conn.untrack_session(session_id);
 

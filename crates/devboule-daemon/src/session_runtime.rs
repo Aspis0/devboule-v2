@@ -237,6 +237,19 @@ pub(crate) struct SessionRuntime {
     /// with a transcript already had a first prompt — the instructions were on
     /// it, or it predates them — so a resume never re-injects them.
     first_prompt_owed: AtomicBool,
+    /// The conversation a **recovered** session carries into its first prompt
+    /// (`session_recovery.rs`). `None` for every session that is not a
+    /// replacement for one the provider could not reopen, and taken rather
+    /// than read for the same reason [`Self::first_prompt_owed`] is: two
+    /// prompts racing for the first one cannot both carry it.
+    ///
+    /// In memory, deliberately: a daemon that dies between the recovery and
+    /// the human's first line loses it, and the notice the session's
+    /// transcript already carries is what says so. The alternative — re-reading
+    /// the source journal's events on the dispatch thread at prompt time — puts
+    /// a blocking journal read on the send path for a fact that is only ever
+    /// needed once.
+    recovered_context: Mutex<Option<String>>,
     /// Bounded recent event kinds for the activity answer. Metadata only;
     /// every publish appends, the oldest drops past the cap, and no payload
     /// text is ever kept here.
@@ -500,6 +513,7 @@ impl SessionRuntime {
             // A live session being started: nobody has sent it a prompt yet, so
             // the first one carries the standing instructions.
             first_prompt_owed: AtomicBool::new(true),
+            recovered_context: Mutex::new(None),
             activity_feed: Mutex::new(VecDeque::new()),
         }
     }
@@ -520,6 +534,24 @@ impl SessionRuntime {
     /// this; a fresh session keeps the flag `with_journal` set.
     pub(crate) fn clear_first_prompt_owed(&self) {
         self.first_prompt_owed.store(false, Ordering::Release);
+    }
+
+    /// Hand this session the conversation a session it replaces could not hand
+    /// over itself (`session_recovery.rs`). Set once, right after that session
+    /// is created and before anyone can send it a prompt.
+    pub(crate) fn set_recovered_context(&self, text: String) {
+        if let Ok(mut slot) = self.recovered_context.lock() {
+            *slot = Some(text);
+        }
+    }
+
+    /// Take it, once: the recovered conversation rides exactly one prompt, the
+    /// session's first — the same rule the standing instructions follow.
+    pub(crate) fn take_recovered_context(&self) -> Option<String> {
+        self.recovered_context
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
     }
 
     pub(crate) fn require_mcp(&self) {
