@@ -54,6 +54,12 @@
 
 .history-row {
   display: flex;
+  /* The actions are `flex: none` and one of their labels is a sentence (the
+     disabled delete button says why it cannot act). Without wrapping, the copy
+     is the row's only shrinkable child and absorbs the whole deficit: measured
+     on a live row, it was left 0 px wide and the meta came out one character per
+     line, 785 px tall, with the action overflowing the row horizontally. */
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
   min-width: 0;
@@ -87,6 +93,10 @@
 
 .history-delete-action {
   flex: none;
+  /* `nowrap` made the archive-first explanation a 248 px unshrinkable box in a
+     210 px row: the sentence was clipped mid-word and the row scrolled
+     sideways. It wraps now, capped to the row's own width. */
+  max-width: 100%;
   min-height: 24px;
   padding: 3px 5px;
   color: var(--silence);
@@ -95,7 +105,7 @@
   border-radius: 7px;
   cursor: pointer;
   font-size: 10px;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .history-reopen-action {
