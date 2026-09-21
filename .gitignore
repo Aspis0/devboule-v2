@@ -24,9 +24,16 @@ src-tauri/gen/
 /*.md
 !/README.md
 !/THIRD_PARTY.md
-# Vouched for on 2026-09-13: a reading of the code as it is built, with a
-# file:line behind every structural claim, and no reference to any document
+# Vouched for on 2026-09-13: a reading of the code as it is built, with the
+# file — and, since 2026-09-21, the symbol inside it — behind every structural
+# claim, and no reference to any document
 # that does not ship here. The allowlist grows one vouched file at a time.
+# The symbol form is the durable half: `session.rs:7253` died when the file was
+# split into 47 siblings, while `provider.rs`, `open_pty_session` says the same
+# thing after the split as before it. A surviving line number is one whose
+# target has no name to give — a comment, a match arm, a table row, a value —
+# and every one of them was resolved and printed by the re-measuring script the
+# 2026-09-21 pass ran against this tree.
 !/ARCHITECTURE.md
 
 # The same documents, should they ever be written into a subdirectory.

@@ -1,7 +1,20 @@
 # Devboule architecture
 
-How Devboule is built at `f3647ee`. Every structural claim below carries a `file:line` that was read
-in this tree; where a statement is a code reading rather than a runtime observation, it says so.
+How Devboule is built. Every structural claim below carries the **file, and the symbol inside it**, that
+was read in this tree; where a line number is printed instead, it is because the subject has no name
+of its own (a comment, a match arm, a table row, a value), and that number was re-read and printed by
+`scout/cleanup-docs/remeasure.py` in the tree that ships it. Where a statement is a code reading
+rather than a runtime observation, it says so.
+
+This document is a reading, not an artefact of one commit. Until 21 September 2026 it opened by naming
+`f3647ee` as its verification point, and that line had stopped being true: it was written against a
+17,859-line `crates/devboule-daemon/src/session.rs` on 13 September, extended twice since (`a417b57`,
+17 September) without re-deriving its numbers, and by the time it was corrected two refactors were
+behind it — `session.rs` had become one module of a 47-file family, and `server.rs` had become a
+`server/` directory of 16 submodules. Seven of the anchors it claimed had been verified at `f3647ee`
+were already wrong at `f3647ee` itself. The 21 September pass converted every anchor that could take a
+symbol to one, re-measured the rest against the tree, and is recorded here rather than silently
+applied: the numbers below are the tree at `00b0042`.
 
 Two conventions:
 
@@ -10,6 +23,9 @@ Two conventions:
   repository. That measurement was taken while four daemon files were being edited, so **every line
   number reproduced here was re-checked against a quiet tree** and the verified number is the one
   printed.
+- A bare filename beside a symbol (`session.rs`) resolves against the full path given for that sentence
+  group; where a name exists in more than one crate — `session.rs`, `lib.rs`, `server.rs`, `spawn.rs`
+  and `mod.rs` all do — the path is written out in full instead.
 
 ## 1. The shape
 
@@ -28,16 +44,18 @@ mounts one surface at a time from a registry (`src/types/surface.ts:22`, `src/ap
 
 The protocol crate is the only place the wire types are declared, and the dependency is deliberate:
 `src-tauri/Cargo.toml:28` ("Shared wire types. The daemon and this crate must not declare their own
-copies"). Protocol version 5 (`crates/devboule-protocol/src/lib.rs:144`), with `PROTOCOL_MIN_VERSION`
-also 5 — the two are equal so a v4 peer is refused at the handshake instead of dying at the first frame.
+copies"). Protocol version 5 (`crates/devboule-protocol/src/lib.rs`, `PROTOCOL_VERSION`), with
+`PROTOCOL_MIN_VERSION` also 5 — the two are equal so a v4 peer is refused at the handshake instead of
+dying at the first frame.
 
 ### The daemon is a separate process
 
 The GUI never runs the server in-process. That is stated in the manifest
 (`src-tauri/Cargo.toml:31`, which pulls `devboule-daemon` with `default-features = false`, with the
 comment "the GUI never runs the server in-process") and enforced by the build: the whole serving half
-of the daemon crate is behind the `server` feature (`crates/devboule-daemon/src/lib.rs:6-83`), and
-`main.rs:17-18` makes a binary built without it a compile error rather than an in-process server.
+of the daemon crate is behind the `server` feature (the `#[cfg(feature = "server")]` module block in
+`crates/devboule-daemon/src/lib.rs`), and `crates/devboule-daemon/src/main.rs:17-18` makes a binary built without it a compile
+error rather than an in-process server.
 
 They meet on a Windows named pipe. The pipe name is derived, not configured: the runtime directory is
 normalised (separators and case) and hashed with FNV-1a into sixteen hex characters, giving
@@ -45,14 +63,15 @@ normalised (separators and case) and hashed with FNV-1a into sixteen hex charact
 deliberately not used, because it is seeded per process and would put the two ends on different pipes
 (`paths.rs:5-8`). The pipe is created with a current-user-only security descriptor, `PIPE_TYPE_BYTE`,
 and `PIPE_REJECT_REMOTE_CLIENTS`, with up to sixteen instances
-(`crates/devboule-daemon/src/transport/windows_pipe.rs:80-112`, `:49`, `:105`).
+(`crates/devboule-daemon/src/transport/windows_pipe.rs`, `NamedPipeListener::bind`,
+`PipeSecurity::current_user_only`, `CreateNamedPipeW`, `MAX_INSTANCES`).
 
 The daemon binary is found by the app at start-up: an explicit `DEVBOULE_DAEMON`, else a sibling of
 the app executable, else `target/{debug,release}/devboule-daemon.exe`
-(`src-tauri/src/client/mod.rs:1498-1528`; the daemon's own client has the same rule at
+(`src-tauri/src/client/mod.rs`, `locate_daemon_binary`; the daemon's own client has the same rule at
 `crates/devboule-daemon/src/spawn.rs:20-37`). In development the daemon is built before the frontend
 runs (`src-tauri/tauri.conf.json:9`, `beforeDevCommand`); there is no bundling step
-(`tauri.conf.json:70-71`, `bundle.active = false`).
+(`bundle.active: false` in `src-tauri/tauri.conf.json`).
 
 ### What the daemon owns that the app does not
 
@@ -60,10 +79,10 @@ runs (`src-tauri/tauri.conf.json:9`, `beforeDevCommand`); there is no bundling s
   (`crates/devboule-daemon/src/provider.rs`, `open_pty_session`, for a PTY), each in a Windows Job
   Object (§2).
 - **The journal.** SQLite, WAL mode, `journal.db` beside the lock file
-  (`crates/devboule-daemon/src/paths.rs:51-55`), schema version 13
+  (`crates/devboule-daemon/src/paths.rs:51-55`), schema version 14
   (`crates/devboule-daemon/src/journal.rs:54`).
 - **The MCP broker.** A loopback HTTP listener with one bearer token per session
-  (`crates/devboule-daemon/src/mcp_broker.rs:1-7`, `:40`, `:228`).
+  (`crates/devboule-daemon/src/mcp_broker.rs:1-7`, `MCP_PATH`, `McpLaunchConfig`).
 - **The peer listener.** A TCP listener on the tailnet, everything inside Noise
   (`crates/devboule-daemon/src/peer_transport.rs:1-6`), started best-effort at boot
   (`crates/devboule-daemon/src/server/lifecycle.rs`, `try_start_remote_listener`).
@@ -86,28 +105,30 @@ are asserted by the code's own comments and API choices rather than observed on 
 
 **Who spawns the daemon.** The app. `DaemonBridge::start()` is managed state built at Tauri build
 time (`src-tauri/src/lib.rs:20`) and it spawns a `daemon-client` supervisor thread
-(`src-tauri/src/client/mod.rs:792-812`). The supervisor's connect step is `connect_once`, which builds
-the owner from the current user's SID plus `app-<pid>`, resolves the daemon binary, and calls
-`connect_or_spawn` with that binary (`src-tauri/src/client/mod.rs:1486-1496`).
+(`src-tauri/src/client/mod.rs`, `supervisor`). The supervisor's connect step is `connect_once`, which
+builds the owner from the current user's SID plus `app-<pid>`, resolves the daemon binary through
+`locate_daemon_binary`, and calls `connect_or_spawn` with that binary
+(`src-tauri/src/client/mod.rs`, `connect_once`).
 
 **How an already-running daemon is found.** By connecting, not by looking for a process. The
 connect-or-spawn loop tries to connect *first* and spawns only if that fails
-(`crates/devboule-daemon/src/client.rs:1274-1283`); the address is the deterministic pipe name
-(`paths.rs:75-77`). A second daemon is harmless: the single-instance lock is an exclusive
-`LockFileEx` on `daemon.lock` (`crates/devboule-daemon/src/lock.rs:26-38`), and the loser of that lock
-prints a human sentence and **exits 0**, because "nothing to do" is not "failure"
-(`crates/devboule-daemon/src/main.rs:23-32`). Note the lock file's existence is not the lock — the OS
-releases it when the process dies, so a stale file is not a deadlock (`lock.rs:1-2`).
+(`crates/devboule-daemon/src/client.rs`, `connect_or_spawn_with`); the address is the deterministic
+pipe name (`paths.rs:75-77`). A second daemon is harmless: the single-instance lock is an exclusive
+`LockFileEx` on `daemon.lock` (`crates/devboule-daemon/src/lock.rs`, `SingleInstanceLock::acquire`,
+`try_lock_exclusive`), and the loser of that lock prints a human sentence and **exits 0**, because
+"nothing to do" is not "failure" (`crates/devboule-daemon/src/main.rs:23-32`). Note the lock file's
+existence is not the lock — the OS releases it when the process dies, so a stale file is not a
+deadlock (`lock.rs:1-2`).
 
 **The spawn itself.** `spawn_daemon` sets `DEVBOULE_RUNTIME_DIR`, nulls the three standard streams and
 passes `CREATE_NO_WINDOW` (`crates/devboule-daemon/src/spawn.rs:41-43`, `:61-82`). The retry budget is
-50 attempts 100 ms apart (`client.rs:29-30`, `:1295`), and the handshake has its own 2 s timeout
-(`client.rs:26`).
+`SPAWN_ATTEMPTS` (50) sleeps of `SPAWN_SLEEP` (100 ms) apart
+(`crates/devboule-daemon/src/client.rs`), and the handshake has its own 2 s timeout (`client.rs:26`).
 
 **On quit.** One `RunEvent::Exit` handler calls `oracle.shutdown()`, `DaemonBridge::shutdown()` and
-`PluginRuntime::stop_all()` (`src-tauri/src/lib.rs:118-125`). The bridge stops its thread, sends the
-`Shutdown` RPC and joins with a 1.5 s budget (`src-tauri/src/client/mod.rs:874-893`, `:27`);
-`DaemonClient::shutdown` requires `accepted: true` (`crates/devboule-daemon/src/client.rs:130-137`);
+`PluginRuntime::stop_all()` (`src-tauri/src/lib.rs:126-131`). The bridge stops its thread, sends the
+`Shutdown` RPC and joins within `JOIN_BUDGET` (`src-tauri/src/client/mod.rs`, `DaemonBridge::shutdown`);
+`DaemonClient::shutdown` requires `accepted: true` (`crates/devboule-daemon/src/client.rs`, `shutdown`);
 the daemon's dispatch **flushes the journal before it accepts**, so the reply is the app's last
 guarantee that the transcript is on disk (`crates/devboule-daemon/src/server/dispatch.rs`, the
 `ClientMessage::Shutdown` arm). `run_windows` then wakes from `wait_until_shutdown`
@@ -120,13 +141,16 @@ shows.
 
 **On a crash, and on losing the pipe.** Two different mechanisms on the two sides.
 
-- *App side.* Liveness is checked only here: a `Status` RPC every 2 s, and after
+- *App side.* Liveness is checked only here: a `Status` RPC every `PING_PERIOD` (2 s), and after
   `STATUS_FAILURE_THRESHOLD = 3` consecutive failures the reported state becomes `unresponsive`
-  (`src-tauri/src/client/mod.rs:26`, `:1207`, `:1294`). A lost connection is treated as the normal
-  handoff back to the connect path, not as an exit (`client/mod.rs:1339-1369`), which is what
-  re-spawns a daemon that died. **There is no crash-loop brake**: a daemon that dies immediately after
-  spawn is re-spawned on the next loop iteration, paced only by the loop sleep and the 50 × 100 ms
-  connect retries.
+  (`src-tauri/src/client/mod.rs`, `StatusFailureTracker`, `run_status_loop`). A lost connection is
+  treated as the normal handoff back to the connect path, not as an exit
+  (`src-tauri/src/client/mod.rs`, `run_supervisor_loop`), which is what re-spawns a daemon that died.
+  **Young deaths are braked, old ones are not**: a connected phase shorter than `HEALTHY_CONNECTED`
+  counts as a fast failure, and past `FAST_FAILURE_TOLERANCE` the supervisor waits a doubling
+  `BACKOFF_BASE…MAX_BACKOFF` before the next attempt, resetting the count once a connection has
+  lasted (`src-tauri/src/client/crash_loop.rs`, `CrashLoopBrake`). The loop sleep and the
+  `SPAWN_ATTEMPTS` × `SPAWN_SLEEP` connect retries are unchanged underneath.
 - *Daemon side.* The daemon never pings the client; it discovers the loss from the failing pipe. One
   cleanup path serves normal disconnects, read/write errors, shutdown and the idle exit: stop the
   request reader, close the outbound queue, flush final events, detach the connection, clear presence,
@@ -155,23 +179,24 @@ shows.
 2. **Provider sessions are never re-spawned after a restart: the transcript survives, the process does
    not.** The processes were killed by 1. At the next journal open, rows still marked `live` are
    rewritten — `reaped = 1` → `ended`, otherwise `interrupted`
-   (`crates/devboule-daemon/src/journal_schema.rs:184-194`) — and `to_session()` maps those to
-   `Ended` / `Recovered` with a transcript-integrity verdict (`journal.rs:398-418`); the replay emits
-   `Recovered` and no exit event (`journal_replay.rs:374-392`). The transcript is then replayed from
-   the journal on attach (§3). Starting the provider again is an explicit, separate act: `resume` is
+   (`crates/devboule-daemon/src/journal_schema.rs`, `open_connection`) — and `to_session()` maps those
+   to `Ended` / `Recovered` with a transcript-integrity verdict (`journal.rs`, `to_session`); the
+   replay emits `Recovered` and no exit event (`journal_replay.rs`, `replay_session`). The transcript
+   is then replayed from the journal on attach (§3). Starting the provider again is an explicit, separate act: `resume` is
    the only path, and the gate admits **four** families — ACP, Claude, Codex and Pi
    (`crates/devboule-daemon/src/session.rs`, `resume_handle`; the per-family fact is
    `Provider::resumable`, `crates/devboule-daemon/src/provider.rs:240`, answered `true` by
    `AcpProvider`, `ClaudeProvider`, `CodexProvider` and `PiProvider` and `false` by Terminal).
    Claude resumes by handing the CLI back its own history: the daemon finds the
    transcript file for the provider's session id under the Claude home, refuses with a named error
-   when it is not there, and passes `--resume` (`claude_client.rs:390`, `:411`, `:429`). The id it
+   when it is not there, and passes `--resume` (`crates/devboule-daemon/src/claude_client.rs`,
+   `find_claude_history`, `missing_history_error`, `push_resume_flag`). The id it
    builds that path from is validated against a closed alphabet first, because a session id that
    could contain a separator is a path that could leave its root. Codex resumes by
    `thread/resume { threadId }` on the app-server (`codex_client.rs`, the `ThreadRoad`
    handshake): the thread id is the handle the row already stores, the rollout under the human's
    Codex home is the conversation, and no journal history is re-sent. Pi resumes by
-   `--session <id>` (`pi_client.rs:913`, `spawn_process_resuming`): the id is the `sessionId`
+   `--session <id>` (`crates/devboule-daemon/src/pi_client.rs`, `spawn_process_resuming`): the id is the `sessionId`
    the handshake reports and the row already stores, pi resolves it against its own session
    directory for the workspace cwd (under the human's `~/.pi`), and no journal history rides
    the launch line either.
@@ -187,19 +212,20 @@ should prove the daemon is gone before exiting, is an open question, and is not 
 here.
 
 Two smaller facts that belong to this section. There is **no updater in the tree** (`bundle.active =
-false`, `tauri.conf.json:70-71`; no updater plugin in `src-tauri/Cargo.toml:21-33`), so "restart the
-daemon for an app update" has no implementation; a daemon speaking another protocol version is
-*refused* with a sentence telling the user to reinstall, not replaced
+false` in `src-tauri/tauri.conf.json`; no updater plugin in `src-tauri/Cargo.toml:21-33`), so
+"restart the daemon for an app update" has no implementation; a daemon speaking another protocol
+version is *refused* with a sentence telling the user to reinstall, not replaced
 (`crates/devboule-protocol/src/handshake.rs:110-131`). And attachment folders left by sessions that
 never closed are swept at daemon start (`crates/devboule-daemon/src/server/lifecycle.rs`,
 `run_windows`).
 
 **There is also an explicit way to kill the daemon**, and it refuses to shoot the wrong process.
-`daemon_restart` in the app (`src-tauri/src/client/mod.rs:1199-1205`) calls
-`DaemonClient::restart_daemon` (`crates/devboule-daemon/src/client.rs:142-170`), which requires the
-server PID captured at handshake and re-checks the pipe's identity immediately before terminating; a
-changed identity is an error rather than a risk, because a PID alone can be recycled between the query
-and the kill (`crates/devboule-daemon/src/transport/windows_pipe.rs:295-324`, `:257`).
+`daemon_restart` in the app (`src-tauri/src/client/mod.rs`, `daemon_restart`) calls
+`DaemonClient::restart_daemon` (`crates/devboule-daemon/src/client.rs`, `restart_daemon`), which
+requires the server PID captured at handshake and re-checks the pipe's identity immediately before
+terminating; a changed identity is an error rather than a risk, because a PID alone can be recycled
+between the query and the kill (`crates/devboule-daemon/src/transport/windows_pipe.rs`,
+`terminate_server_process_if_identity_matches`, `terminate_after_pipe_identity_check`).
 
 ## 3. Sessions and the journal
 
@@ -242,11 +268,11 @@ carries a `generation`, and that is what lets a deferred intent belong to an *in
 rather than to its id: a row that died and came back is not the row the intent was taken against.
 
 **The journal.** SQLite in WAL mode at `<runtime dir>/journal.db`, beside the lock file
-(`crates/devboule-daemon/src/paths.rs:51-55`), schema version 13
+(`crates/devboule-daemon/src/paths.rs:51-55`), schema version 14
 (`crates/devboule-daemon/src/journal.rs:54`). One writer thread owns it
-(`crates/devboule-daemon/src/journal.rs:1398`) with a bounded queue of 1024 commands (`:63`) and a
-snapshot of the screen emulator every 64 KiB of output (`:66`). Rows are appended per session
-sequence number, so a replay is ordered by the same counter the live events carry.
+(`crates/devboule-daemon/src/journal.rs`, `open_with_limits`) with a bounded queue of 1024 commands
+(`:63`) and a snapshot of the screen emulator every 64 KiB of output (`:66`). Rows are appended per
+session sequence number, so a replay is ordered by the same counter the live events carry.
 
 **Replay on attach.** A session that is not live is hydrated from the journal instead of being
 spawned: `attach`/`attach_with_subscription` call `hydrate_transcript`
@@ -261,17 +287,20 @@ transcript available.
 **`Recovered` is a conclusion, not a guess.** At journal open the daemon rewrites what it cannot
 vouch for: a row still `live` with `reaped = 1` becomes `ended` — the child's exit was observed, the
 daemon died during drain — and any other `live` row becomes `interrupted`
-(`crates/devboule-daemon/src/journal_schema.rs:184-194`). `to_session()` turns those into `Ended` and
-`Recovered` respectively, each with a transcript-integrity verdict (`journal.rs:398-418`), and the
+(`crates/devboule-daemon/src/journal_schema.rs`, `open_connection`). `to_session()` turns those into
+`Ended` and `Recovered` respectively, each with a transcript-integrity verdict
+(`crates/devboule-daemon/src/journal.rs`, `to_session`), and the
 replay emits `SessionEvent::Recovered` in place of an exit event
-(`journal_replay.rs:374-392`). `Recovered` therefore means "the process was lost unobserved", which is
-a stronger and more honest claim than "the session ended".
+(`crates/devboule-daemon/src/journal_replay.rs`, `replay_session`). `Recovered` therefore means "the
+process was lost unobserved", which is a stronger and more honest claim than "the session ended".
 
 **Three ways a session stops being on your screen, and they are not the same act.** `SessionDetach`
-gives up one subscription and leaves everything running (`messages.rs:255`). `SessionStop` kills the
-process and **keeps the session and its transcript** (`:272`); it carries a `subscription_id` because
+gives up one subscription and leaves everything running
+(`crates/devboule-protocol/src/messages.rs`, `ClientMessage::SessionDetach`). `SessionStop` kills the
+process and **keeps the session and its transcript** (`ClientMessage::SessionStop`); it carries a
+`subscription_id` because
 the caller must be an observer of the session it is stopping. `SessionClose` destroys the session
-(`:266`), and it carries an idempotency key rather than a subscription, because closing twice must not
+(`ClientMessage::SessionClose`), and it carries an idempotency key rather than a subscription, because closing twice must not
 mean closing something else.
 
 `SessionStop` kills the *tree*, not the root. After `killer.kill()` the daemon also calls
@@ -305,10 +334,12 @@ none, and `src/lib/agentDaemonNotice.ts` requires both. A header line counts onl
 (`crates/devboule-daemon/src/journal.rs:72-83`): 512 MiB per session, 8 GiB total, 10 000 sessions,
 and an age limit of `0` — off. The app exposes them as `journal_usage`,
 `journal_retention_get`/`_set` and `session_delete` (`src-tauri/src/lib.rs:68-71`). Deletion is
-byte- and count-driven, not idle-driven (`journal_retention.rs:263-322`), each deletion writes a
-tombstone into `deleted_sessions` so a deliberate loss of history is on record (`:406`), and the age
-rule skips ACP sessions (`:285-295`). The global scan is amortised rather than run per write: it runs
-at most once per MiB of journal written (`:14-17`).
+byte- and count-driven, not idle-driven (`crates/devboule-daemon/src/journal_retention.rs`,
+`retain_global`), each deletion writes a
+tombstone into `deleted_sessions` so a deliberate loss of history is on record (`delete_session`), and
+the age rule skips ACP, Pi and Codex sessions (`retain_global`). The global scan is amortised rather
+than run per write: it runs at most once per MiB of journal written
+(`crates/devboule-daemon/src/journal_retention.rs`, `RETENTION_GLOBAL_SWEEP_BYTES`).
 
 **Two details worth knowing before you touch any of this.** Child liveness is not derived from pipe
 EOF: a sweeper every 2 s duplicates the process handle and waits non-blockingly, so a provider killed
@@ -325,10 +356,11 @@ unbounded memory or an unbounded journal.
 **The catalog** is a static table plus a `PATH` scan. A `KnownAgent` row carries the id, its aliases,
 and up to four launch shapes — `acp_args`, `stream_json_args`, `rpc_args`, `app_server_args` — each
 `Option`, so "this agent speaks that dialect" is a fact in one row
-(`crates/devboule-daemon/src/provider_catalog.rs:47-61`). `KNOWN_AGENTS`
-(`provider_catalog.rs:87`) holds claude, codex, grok, pi, qwen and the rest; two debug-only rows are
-compiled in under `debug_assertions` so a test can reach "provider not installed" without depending on
-the machine (`:166-192`). The header records what was borrowed: the alias table and the
+(`crates/devboule-daemon/src/provider_catalog.rs`, `KnownAgent`). `KNOWN_AGENTS` (same file) holds
+claude, codex, grok, pi, qwen and the rest; two debug-only rows are compiled in under
+`debug_assertions` so a test can reach "provider not installed" without depending on the machine (the
+`#[cfg(debug_assertions)]` block in the same file). The header records what was borrowed: the alias
+table and the
 executable-file check are adapted from herdr under Apache-2.0; the launch resolver — PATHEXT
 following, then unwrapping an npm `.cmd` shim to `node` plus the package script so `CreateProcess`
 never goes through `cmd.exe` — is Devboule's own (`provider_catalog.rs:1-16`).
@@ -338,24 +370,30 @@ kind enum mirrors them (`crates/devboule-protocol/src/session.rs:17-23`):
 
 | Provider | Dialect | Catalog evidence | Adapter |
 | --- | --- | --- | --- |
-| Claude | `stream-json` | `CLAUDE_STREAM_JSON_ARGS` `provider_catalog.rs:69-85` | `claude_client.rs`, `claude_view.rs` |
-| Codex | app-server | `app_server_args: Some(&["app-server"])` `:103` | `codex_client.rs`, `codex_view.rs` |
-| pi | RPC | `rpc_args: Some(&["--mode", "rpc"])` `:122` | `pi_client.rs`, `pi_view.rs` |
-| everything else | ACP | grok `:109`, qwen `:132` | `acp_client.rs`, `acp_host.rs`, `acp_view.rs` |
+| Claude | `stream-json` | `CLAUDE_STREAM_JSON_ARGS` | `claude_client.rs`, `claude_view.rs` |
+| Codex | app-server | `app_server_args: Some(&["app-server"])` in the codex row of `KNOWN_AGENTS` | `codex_client.rs`, `codex_view.rs` |
+| pi | RPC | `rpc_args: Some(&["--mode", "rpc"])` in the pi row of `KNOWN_AGENTS` | `pi_client.rs`, `pi_view.rs` |
+| everything else | ACP | the grok and qwen rows of `KNOWN_AGENTS` | `acp_client.rs`, `acp_host.rs`, `acp_view.rs` |
 
 The decision is made per installed agent by `chat_protocol`
-(`provider_catalog.rs:983-998`), which returns `codex-app-server`, `acp`, `stream-json` or `pi-rpc`
+(`crates/devboule-daemon/src/provider_catalog.rs`), which returns `codex-app-server`, `acp`,
+`stream-json` or `pi-rpc`
 and `None` for a CLI that is installed but not chat-capable, with the explicit tie-break comment
 "An agent with both launches is offered as ACP: ACP is the road, stream-json the exception"
-(`:982`). Among ACP agents the default is a separate, explicit preference order — grok, then qwen,
-then gemini — with the reason recorded as a measurement (`:730-735`, `first_acp_available:1001-1010`).
+(the doc comment above `chat_protocol`). Among ACP agents the default is a separate, explicit
+preference order — grok, then qwen,
+then gemini — with the reason recorded as a measurement
+(`crates/devboule-daemon/src/provider_catalog.rs`, `ACP_PREFERENCE`, `first_acp_available`).
 
 Three registry wrappers are covered by a better native provider and are therefore visible in Settings
 but not offered in the workspace picker: `claude-acp`, `codex-acp`, `pi-acp`
-(`provider_catalog.rs:711-728`). The reason for `pi-acp` is the useful one to know: the wrapper speaks
+(`crates/devboule-daemon/src/provider_catalog.rs`, `REGISTRY_NATIVE_CHAT_COVERAGE`). The reason for
+`pi-acp` is the useful one to know: the wrapper
+speaks
 ACP and reports models, but does not emit `session/request_permission` for native tools, and "a
-measured write completed with zero permission requests" (`:718-722`). On the wire this is
-`ProviderInfo.pickable` (`crates/devboule-protocol/src/messages.rs:1087-1090`).
+measured write completed with zero permission requests" (the doc comment above
+`REGISTRY_NATIVE_CHAT_COVERAGE`). On the wire this is
+`ProviderInfo.pickable` (`crates/devboule-protocol/src/messages.rs`, `ProviderInfo`).
 
 **Where modes and features come from.** Not from the catalog. A provider's modes are whatever the
 provider declares at run time: `SessionModeStateView` carries a current mode id and an
@@ -368,17 +406,21 @@ provider
 is narrower and only
 concerns *created* agents: the preset cell names the mode a child is started in (§7), and the
 classifier that decides which mode ids mean "answers in place of the human" is per family —
-`mode_is_unattended` (`provider_catalog.rs:361-374`) — because Codex's `auto` and Claude's `auto` are
-one word apart and mean opposite things (`:350-357`).
+`mode_is_unattended` (`crates/devboule-daemon/src/provider_catalog.rs`) — because Codex's `auto` and
+Claude's `auto` are
+one word apart and mean opposite things (the comment above `mode_is_unattended`).
 
-**The inventory on the wire** is `ProviderInfo` (`crates/devboule-protocol/src/messages.rs:1064-1101`):
+**The inventory on the wire** is `ProviderInfo` (`crates/devboule-protocol/src/messages.rs`):
 executable, `acp_available`, the chat `protocol`, how the row was obtained
-(`user-binary` / `npx-wrapper`, `provider_catalog.rs:745-748`), the registry launch arguments,
+(`user-binary` / `npx-wrapper`, `crates/devboule-daemon/src/provider_catalog.rs`,
+`ProviderOrigin::as_wire`), the registry launch arguments,
 `pickable`, and installed-versus-latest versions. Authentication is deliberately never probed: an
 executable on `PATH` is "installed, status unknown", and the status enum has exactly one variant,
-`Unknown` (`messages.rs:1064-1065`; `provider_catalog.rs:737-741`). Settings can refresh the catalog
-and install or update an npm-supplied wrapper (`provider_update.rs:27`; the app's commands
-`providers_list`, `providers_refresh`, `provider_update` at `src-tauri/src/lib.rs:88-90`).
+`Unknown` (`messages.rs`, `ProviderInfo`; `provider_catalog.rs`, `AuthenticationStatus`). Settings can
+refresh the catalog
+and install or update an npm-supplied wrapper (`crates/devboule-daemon/src/provider_update.rs`,
+`NpmInstallRunner`; the app's commands are `src-tauri/src/lib.rs:95-97`'s `providers_list`,
+`providers_refresh` and `provider_update`).
 
 ## 5. Permissions
 
@@ -388,18 +430,22 @@ event: `SessionEvent::PermissionRequest` (`crates/devboule-protocol/src/session.
 `PermissionRequest` variant) carrying the
 tool call id, a title, the agent's own description of the command, the options the provider offered,
 and an origin stamp. The daemon publishes it on the attached subscription and the app renders it —
-`src/components/PermissionCard.tsx`, mounted at `src/features/workspace/Workspace.tsx:819` and
-`src/features/design/DesignSurface.tsx:3087`. The answer returns as
+`src/components/PermissionCard.tsx`, mounted at `src/features/workspace/Workspace.tsx`
+(`WorkspacePermissionCard`) and `src/features/design/DesignSurface.tsx` (the `PermissionCard`
+call). The answer returns as
 `ClientMessage::SessionPermissionRespond`, which the daemon accepts only from a client that negotiated
 the `typed_permissions` capability (`crates/devboule-daemon/src/server/dispatch.rs`,
 `typed_permissions_ok`; `crates/devboule-daemon/src/server/connection.rs`, where the capability is
 read off the handshake).
 
 **The card is bounded, and the bound is per device.** At most 32 undecided ACP cards exist at once
-(`permission_broker.rs:14`), and a paired device may hold at most 3
-(`:29`). That count is deliberately daemon-wide rather than per session or per broker: the slot is
+(`crates/devboule-daemon/src/permission_broker.rs`, `MAX_PENDING_ACP_PERMISSIONS`), and a paired
+device may hold at most 3
+(`MAX_PENDING_FOR_PEER`, same file). That count is deliberately daemon-wide rather than per session or
+per broker: the slot is
 reserved *before* the card is inserted, so two cards cannot both see the last slot free, and a
-per-session counter once gave a device three cards per session (`:18-29`, `:56-60`). A slot is
+per-session counter once gave a device three cards per session (the comments on
+`MAX_PENDING_ACP_PERMISSIONS` and `MAX_PENDING_FOR_PEER`). A slot is
 released when the card is decided, when it is cancelled, and when the connection dies — the
 disconnect path hands back whatever the device still held (`permission_broker.rs`,
 `release_card_slot`, `release_peer_card`; `crates/devboule-daemon/src/server/connection.rs`,
@@ -408,24 +454,29 @@ disconnect path hands back whatever the device still held (`permission_broker.rs
 **Provenance is on the card, in its own element.** A request raised for, or by, a paired device is
 stamped so the card can render a `peer` line; the app's contract says the request's own text must
 never be able to imitate it, and that a `local` origin renders no line while an absent one renders
-`Origin: unknown` (`src/types/ipc.ts:105-115`; the daemon side is
-`permission_broker.rs:700-750`).
+`Origin: unknown` (`src/types/ipc.ts`, the `origin` field of `PermissionRequest`; the daemon side is
+the `origin` stamp on the event, `crates/devboule-daemon/src/permission_broker.rs`, `take`).
 
 **The per-provider tool policy** decides which of the daemon's MCP broker tools a provider's sessions
 are served (`crates/devboule-daemon/src/tool_policy.rs:1-2`), and it is the mechanism a person uses to
 turn agent-to-agent capability off for one provider without touching the others. It is one JSON file
-beside the journal, `tool-policies.json` (`tool_policy.rs:30`), written the way the MCP config is
+beside the journal, `tool-policies.json` (`tool_policy.rs`, `POLICY_FILE`), written the way the MCP
+config is
 written: a create-new temp file, a current-user-only DACL applied before its first byte, then a rename
 over the target, so a crash leaves either the old policy or the new one and the file is never briefly
-readable by another user (`:8-13`, `:457-470`). A file that will not parse is quarantined under a
-nonce-bearing name rather than deleted (`:391-448`). **The read cadence is the point:** the broker
+readable by another user (the module header, `:8-13`, and `write_policies`). A file that will not
+parse is quarantined under a
+nonce-bearing name rather than deleted (`crates/devboule-daemon/src/tool_policy.rs`, `quarantine`).
+**The read cadence is the point:** the broker
 reads the store on every `tools/list` and on every `tools/call`, so a toggle takes effect on the
-provider's next call rather than at the next session (`:3-7`; the enforcement sites are
-`mcp_broker.rs:98-100`). A policy is per device and is not propagated to paired peers, because what
+provider's next call rather than at the next session (`tool_policy.rs:3-7`; the enforcement sites are
+`mcp_broker.rs`, `enabled_tool_list` and `tool_call_refusal`). A policy is per device and is not
+propagated to paired peers, because what
 this machine hands to an agent is a local decision (`tool_policy.rs:15-17`). One name cannot be
 disabled: the roster tool, since an agent that cannot list its siblings cannot be steered at all
-(`provider_catalog.rs:214-217`). The app writes the file through `tool_policy_get` / `tool_policy_set`
-(`src-tauri/src/lib.rs:86-87`, `src-tauri/src/backend/tool_policy.rs`).
+(`crates/devboule-daemon/src/provider_catalog.rs`, `MCP_ROSTER_TOOL`, and the comment above it). The
+app writes the file through `tool_policy_get` / `tool_policy_set`
+(`src-tauri/src/lib.rs:88-89`, `src-tauri/src/backend/tool_policy.rs`).
 
 ## 6. Peers
 
@@ -446,31 +497,38 @@ missing key leaves the daemon local-only and says why in `Status.remote`
 (`crates/devboule-daemon/src/server/lifecycle.rs`, `try_start_remote_listener`). It is also not a
 one-shot attempt — the same
 function is retried, so a user who starts Tailscale and shows a code again gets a listener rather than
-the same refusal until the daemon restarts (`server.rs:1371-1374`).
+the same refusal until the daemon restarts (the same function, reached from `pairing_address`).
 
 **This device's identity** is a random `device_id`, a Noise static keypair, and a display name
 (`crates/devboule-daemon/src/device_identity.rs:1-3`). The id is what peers pin; the key is the
 credential bound to it, so a key rotation can keep the id (`:4-5`). The private half never touches
 `device.json` or the journal — it lives in the secret store — and its absence is a distinct state,
 `RemoteState::KeyMissing`, rather than a reason to mint a new key and silently orphan every pairing
-(`:6-8`, `:113`). `device.json` holds the id, the public key and the name (`:100`;
-`crates/devboule-daemon/src/paths.rs:14-17`); a fingerprint is derived for display (`:205`) and
-display names are validated and bounded to 64 characters (`:236`, `:270`).
+(`:6-8`, the `RemoteState::KeyMissing` variant). `device.json` holds the id, the public key and the
+name (the `DeviceFile` struct;
+`crates/devboule-daemon/src/paths.rs:14-17`); a fingerprint is derived for display
+(`crates/devboule-daemon/src/device_identity.rs`, `key_fingerprint`)
+and
+display names are validated and bounded to 64 characters (`MAX_DISPLAY_NAME_CHARS`,
+`validate_display_name`).
 
 **Pairing** is a short code, a PAKE, and one mutually authenticated exchange
 (`crates/devboule-daemon/src/pairing.rs:1-2`). The device that *displays* the code is the responder;
 the one that *types* it is the initiator (`:3-4`). The code is 8 characters from a 32-symbol alphabet
-with `0`, `1`, `I` and `O` removed, so it can be read off a screen and typed correctly (`:53-56`); it
-lives 300 s (`:62`), a confirmation must be answered within 60 s (`:64`), at most 2 pairings are
-parked at once (`:67`), and 3 wrong codes from one source or 12 in total kill the code (`:70-77`). The
+with `0`, `1`, `I` and `O` removed, so it can be read off a screen and typed correctly
+(`crates/devboule-daemon/src/pairing.rs`, `CODE_ALPHABET`); it
+lives 300 s (`CODE_LIFETIME`), a confirmation must be answered within 60 s (`CONFIRM_WINDOW`), at
+most 2 pairings are
+parked at once (`MAX_PENDING_PAIRINGS`), and 3 wrong codes from one source or 12 in total kill the
+code (`WRONG_PER_SOURCE`, `WRONG_TOTAL`, all five in the same file). The
 wire is SPAKE2, then HKDF-SHA256 of the PAKE key into a 32-byte PSK, then Noise `XXpsk3` with each
 side's long-term static and the prologue `devboule-pair-v1`; inside Noise each side sends
 `{device_id, display_name, role, public_key}` and the responder answers `{accepted, reason}`
 (`:5-12`). The PAKE is what makes an 8-character code worth its 40 bits: a passive eavesdropper learns
 nothing, and an active attacker gets exactly one guess per attempt, each counted against the lockout
-(`:14-16`). The exchange is deliberately not a blocked thread: a pairing that needs the local user's
+(`:20-23`). The exchange is deliberately not a blocked thread: a pairing that needs the local user's
 answer parks the socket with a deadline and waits on a channel
-(`pairing.rs:23-30`).
+(the `# Not a blocked thread` header section).
 
 **How a peer's identity is established on every later connection** — six steps, in this order
 (`peer_transport.rs:17-31`):
@@ -490,45 +548,64 @@ handshake slot, which is why the slot budgets are separate from the connection c
 deadline is `HANDSHAKE_DEADLINE = 10 s` (`:71`).
 
 **What a capability is.** A capability names an *act* a paired device may ask for. The list is one
-constant on the wire: `PEER_CAPS = ["view", "send", "answer_permissions", "create_sessions"]`
-(`crates/devboule-protocol/src/messages.rs:52`). It is deliberately not a scope: which sessions an
+constant on the wire: `PEER_CAPS` is five names — `view`, `send`, `answer_permissions`,
+`create_sessions` and `roster` (`crates/devboule-protocol/src/messages.rs`, `PEER_CAPS`), with
+`roster` deliberately absent from `PEER_DEFAULT_CAPS`, so no pairing carries it until a person grants
+it per device. It is deliberately not a scope: which sessions an
 allowed request reaches is decided elsewhere, by the owner projection in `server.rs` and the origin
-branch of `check_user_owner` (`peer_policy.rs:14-16`). The gate itself is a closed match with **no
+branch of `check_user_owner` (`peer_policy.rs:14-18`). The gate itself is a closed match with **no
 `_` arm** over every `ClientMessage` variant, so adding a variant without deciding its peer policy is
-a compile error (`peer_policy.rs:1-8`, `:101`). Consequences of that design, all in the same file:
-`view` is the one capability `validate_caps` refuses to strip (`:123-125`); `Status`, pairing,
+a compile error (`peer_policy.rs:1-8`, `peer_allows`). Consequences of that design, all in the same
+file:
+`view` is the one capability `validate_caps` refuses to strip (`crates/devboule-daemon/src/pairing.rs`,
+`validate_caps`); `Status`, pairing,
 capability changes and the tool bridge stay refused to a peer *whatever it holds*, because no
-capability names those acts (`:12-14`); and the role a device was paired as does not decide anything
-here — the capability set does (`:96-101`).
+capability names those acts (`peer_policy.rs:12-17`); and the role a device was paired as does not
+decide anything
+here — the capability set does (the `peer_allows` doc comment).
 
-A peer's set is stored per device in the journal's `peers` table (`crates/devboule-daemon/src/journal.rs:1872`,
-`upsert_peer:1917`, `set_peer_caps:2014`, `revoke_peer:1999`). Revocation holds at the last place a
+A peer's set is stored per device in the journal's `peers` table
+(`crates/devboule-daemon/src/journal.rs`, `peers_list`, `upsert_peer`, `set_peer_caps`,
+`revoke_peer`). Revocation holds at the last place a
 frame could still leave: a connection whose caps were dropped or that was just revoked gets no closing
 flush at all (`crates/devboule-daemon/src/server/connection.rs`, `handle_client`, the `revoked` flag
 it passes to `flush_final_events`).
 
 **In the app**, all of this is the Devices panel in Settings
-(`src/features/settings/DevicesPanel.tsx:24-26`): this device's identity and fingerprint, the two
+(`src/features/settings/DevicesPanel.tsx`, the module doc above `DevicesPanel`): this device's identity
+and fingerprint, the two
 pairing directions — show a code, or type one — the confirmations this device still owes, and the
-paired list with online/offline, role, per-device capability toggles and an inline revoke (`:216-300`,
-`:519-670`). The daemon owns every fact; the panel never derives a device id from a name, never
+paired list with online/offline, role, per-device capability toggles and an inline revoke (`showCode`,
+`copyFingerprint`, and the pending-confirmation block in `DevicesPanel`). The daemon owns every fact;
+the panel never derives a device id from a name, never
 invents a reason string, and never answers a permission or a pairing on the far side's behalf
-(`:33-35`). It polls `devices_list` every 2 s, and every 1 s while a code is on screen or a
-confirmation is pending, because those are the states that change under the user's eyes (`:28-39`).
-The capability labels are exactly the wire names (`:66-73`), and the two roles are described in the
+(the same module doc). It polls `devices_list` every 2 s, and every 1 s while a code is on screen or a
+confirmation is pending, because those are the states that change under the user's eyes
+(`src/features/settings/DevicesPanel.tsx`, `POLL_IDLE_MS`, `POLL_ACTIVE_MS`).
+The capability labels are exactly the wire names (`CAP_ORDER`, `CAP_LABELS`, same file), and the two
+roles are
+described in the
 panel as "a phone or laptop of yours that views and steers this device" and "another devboule that
-this one may talk to as a machine" (`:53-64`).
+this one may talk to as a machine" (`ROLE_OPTIONS`).
 
 **Plainly: what a paired device can and cannot do.**
 
 - *Can* — with `view`: list sessions, attach to one, and list devices
-  (`peer_policy.rs:116`, `:119`, `:125`). With `send`: send a prompt, steer a running turn, send an
-  agent message, deposit an attachment, and change a session's mode (`:127-142`). With
-  `answer_permissions`: answer permission cards — under the per-device budget of three from §5. With
-  `create_sessions`: create sessions. Every one of these is a per-device toggle the user can revoke.
+  (`ClientMessage::SessionsList`, `ClientMessage::SessionAttach`, `ClientMessage::DevicesList` in
+  `peer_policy.rs`). With `send`: send a prompt, steer a running turn, send an
+  agent message, deposit an attachment, and change a session's mode (`ClientMessage::SessionSend`,
+  `ClientMessage::AgentMessageSend`, `ClientMessage::SessionDeposit`,
+  `ClientMessage::SessionSetMode`). With
+  `answer_permissions`: answer permission cards (`ClientMessage::SessionPermissionRespond`) — under the
+  per-device budget of three from §5. With
+  `create_sessions`: create sessions (`ClientMessage::SessionCreate`). With `roster`: list the peer's
+  own live agents (`ClientMessage::PeerAgentsList`) — the fifth name, and the only one this section
+  did not carry before. Every one of these is a per-device toggle the user can revoke.
 - *Cannot* — anything no capability names, which is the whole administrative surface: `Status`,
   pairing itself, changing capabilities, the MCP tool bridge, journal retention and deletion, and the
-  app-only commands (`peer_policy.rs:12-14`, `:147`). A peer also does not inherit anything local: a
+  app-only commands (`peer_policy.rs:12-17` and the `PeerDecision::Deny` arms for `PairingStart`,
+  `PeerRevoke`, `PeerSetCaps`, `ToolPolicyGet`, `JournalRetentionGet`, and the rest). A peer also does
+  not inherit anything local: a
   tool policy is this machine's own decision and is never propagated to a peer
   (`tool_policy.rs:15-17`).
 - *Scope* is separate from permission: an allowed request still has to reach a session, and which
@@ -576,51 +653,63 @@ in a `devboule-codex-home-<…>` tree, and the daemon's own startup sweep delete
 the next start (`crates/devboule-daemon/src/mcp_broker.rs`, `cleanup_stale_configs`). There is no
 migration, so for those rows the history shows and the resume button cannot honestly be offered.
 
-**Nine tools**, in `tools/list` order, from one table that the Settings panel reads too, so the panel
-and the wire cannot disagree (`provider_catalog.rs:199`):
+**Eleven tools**, in `tools/list` order, from one table that the Settings panel reads too, so the panel
+and the wire cannot disagree (`crates/devboule-daemon/src/provider_catalog.rs`, `MCP_BROKER_TOOLS`):
 
 | Tool | Names | Disableable by policy? |
 | --- | --- | --- |
-| `devboule_list_agents` | the roster: siblings, their state, their creator, their depth | **No** — an agent that cannot list its siblings cannot be steered at all (`:214-217`) |
+| `devboule_list_agents` | the roster: siblings, their state, their creator, their depth | **No** — an agent that cannot list its siblings cannot be steered at all (the `MCP_ROSTER_TOOL` comment, and `is_tool_enabled`) |
+| `devboule_list_devices` | the paired devices this machine knows: id, name, role, online — answered from the daemon's own `peers` rows, never dialled | Yes |
+| `devboule_list_peer_agents` | the agents running right now on one paired device, by `deviceId`: one dial per call | Yes |
+| `devboule_list_profiles` | the ticked profiles agents may create from | **No** — without it creation is undiscoverable (`is_tool_enabled` is the other always-on name) |
 | `devboule_send_message` | send to one live session | Yes |
-| `devboule_create_agent` | create a child from a preset and give it an initial prompt | Yes, deliberately (`:219-226`) |
-| `devboule_list_profiles` | the ticked profiles agents may create from | **No** — without it creation is undiscoverable |
-| `devboule_answer_permission` | answer one delegated permission card | Yes |
+| `devboule_create_agent` | create a child from a ticked profile and give it an initial prompt | Yes, deliberately (`MCP_BROKER_TOOLS`) |
 | `devboule_set_agent_profile` | move a child onto a ticked profile | Yes |
+| `devboule_answer_permission` | answer one delegated permission card | Yes |
 | `devboule_agent_activity` | one agent's derived activity plus recent kinds, metadata only | Yes |
 | `devboule_stop_agent` | kill one own child's process tree, keeping its row and transcript | Yes |
 | `devboule_close_agent` | end one own child's session; history keeps the transcript | Yes |
 
 **The creation call.** The caller is the session whose bearer authenticated the connection — "there is
-no `from_session` parameter to lie about" (`mcp_broker.rs:1108-1110`). The order is fixed and stated
-in the code: resolve the preset from the closed table (the mode and the overlay come from there and
-never from the caller), reserve the budget, raise the creation card once per creator session, create
+no `from_session` parameter to lie about" (the doc on `create_agent`, `crates/devboule-daemon/src/mcp_broker.rs`).
+The order is fixed and stated
+in the code: resolve the **profile** the caller named from the profiles the human ticked, read now
+(the provider, the model, the mode, the features and the tool overlay come from there and never from
+the caller), reserve the budget, raise the creation card once per creator session, create
 through the ordinary `SessionCreate` path with the creator's own origin and owner, and answer
-`{sessionId, displayName, state: "submitted"}` (`:1112-1116`). Details that matter:
+`{sessionId, taskId, contextId, displayName, state: "submitted"}`
+(`crates/devboule-daemon/src/mcp_broker.rs`, `create_agent`, `resolve_profile`, `created_result`).
+Details that matter:
 
 - **Depth comes from the registration, not the request**: a session at depth 2 may not create
   whatever it says (`create_agent`; the cap is `MAX_AGENT_DEPTH` in
   `crates/devboule-daemon/src/session_registry_state.rs`).
 - **The child runs where the caller does**: a workspace must be the caller's own or the call is
   refused, and the resolved working directory must stay inside it, before anything is spent
-  (`:1179-1195`).
+  (`create_agent`, `resolve_child_cwd`).
 - **A retry creates nothing.** An MCP `tools/call` has no idempotency parameter, so a retry is
   identified by the frame's own id plus a fingerprint of everything the answer depends on; a key
   reused with a different payload is a conflict, not a retry, and the key is held *before* the store is
-  read so a second in-flight call is refused without spending a slot (`:1137-1178`).
+  read so a second in-flight call is refused without spending a slot (`create_agent`,
+  `creation_retry_key`, `hold_creation_key`).
 - **The input schema is closed on purpose** (`additionalProperties: false`), and there is deliberately
-  no `mode` parameter: the preset chooses the mode (`:228-235`).
+  no `mode` parameter: the profile chooses the mode (`agent_create_input_schema`, and the
+  `additionalProperties: false` schema block in `mcp_broker.rs`).
 
-**Presets are a closed table.** `AGENT_PRESETS` (`provider_catalog.rs:567`) holds exactly `worker`
-and `design` (`:467-469`); an unknown preset is refused by name rather than resolved by default
-(`:564-566`). Each preset is a list of provider cells — pi/`ask`, codex/`auto`, claude/`default`, and
-`default` for the ACP providers the catalog publishes (`:482-522`, `:524-562`). `design` uses the same
-modes with the design tool overlay. Worker carries one preamble, and it is worth reading: *"You were
-created by another agent; report your result in your final message."* (`:478-480`) — it says nothing
+**Profiles are the table a creation names; presets are the retired one.** `AGENT_PRESETS`
+(`crates/devboule-daemon/src/provider_catalog.rs`) still holds exactly `worker` and `design`, and an
+unknown preset is refused by name rather than resolved by default — but nothing on the creation path
+reads it any more: the tool's only identity parameter is `profile`, resolved through `resolve_profile`
+against the store the human ticked, and `AGENT_PRESETS` is exercised by the catalog's own tests. Each
+legacy preset was a list of provider cells — pi/`ask`, codex/`auto`, claude/`default`, and
+`default` for the ACP providers the catalog publishes. `design` used the same
+modes with the design tool overlay. Worker carried one preamble, and it is worth reading: *"You were
+created by another agent; report your result in your final message."* (the `PRESET_WORKER_CELLS`
+preamble) — it says nothing
 about files on purpose, because the finish hook deposits the message itself and a preamble that told
 the child to write files would be asking for the same artifact twice, in the one place the child can
-put it out of reach (`:471-477`). Design has no frozen preamble at all: the app composes it per
-request and it travels in `initialPrompt` (`:524-529`).
+put it out of reach. A design creation has no frozen preamble at all: the app composes it per
+request and it travels in `initialPrompt` (`agent_create_input_schema`).
 
 **The caps.** Four limits, all daemon constants, all enforced at admission before the card exists:
 
@@ -654,33 +743,37 @@ is `CreateAgentCard` in
 thinking, features, the auto-accept judgement, the labels and every cap as `n of m`, and two options,
 "Create once" and "Deny" (`creation_card`). The
 caps are in the text *and* in the payload, both from one reservation, "the text is what a person reads,
-the payload is what a surface renders" (`:1311-1313`).
+the payload is what a surface renders" (the `creation_card` comment; the payload type is
+`CreateAgentCaps` in the protocol crate).
 
 One honest gap to know about: the typed `createAgent` payload exists on the wire and in the TypeScript
-types (`src/types/ipc.ts:116-137`) but **no component reads it** — the card renders through the
+types (`src/types/ipc.ts`, `CreateAgentCard` and `CreateAgentCaps`) but **no component reads it** — the
+card renders through the
 ordinary `PermissionCard`, so what a person actually sees is the daemon's description sentence and the
 card's own allow/deny buttons.
 
-**The agent profile store.** A creation names a *preset* today, but the list that will replace
-presets already exists: `crates/devboule-daemon/src/agent_profiles.rs` holds the ordered list of
-profiles a human ticked, plus one block of standing instructions. It is one JSON document beside the
+**The agent profile store, and the table it replaced.** A creation names a **profile** from the list
+`crates/devboule-daemon/src/agent_profiles.rs` holds — the ordered list a human ticked, plus one block
+of standing instructions, described in that module's own header. It is one JSON document beside the
 journal, written the way the tool policy file is written — a create-new temp file, a current-user-only
-DACL applied on Windows **before its first byte**, then a rename over the target (`:11-12`). A crash
-therefore leaves the old list or the new one and never half of either, and a document that decides
-what an agent may do is never briefly readable by another user.
+DACL applied on Windows **before its first byte**, then a rename over the target (the same module
+header). A crash therefore leaves the old list or the new one and never half of either, and a document
+that decides what an agent may do is never briefly readable by another user.
 
 It is read **at the moment it is used** — at the moment a creation resolves a profile, and at the
-moment the standing instructions apply (`:6`) — so a human's edit takes effect on the next creation
-rather than on the next session. Both are capped: 8 KiB of standing instructions
-(`MAX_STANDING_INSTRUCTIONS_BYTES`, `:72`), well under the frame cap (`:59`).
+moment the standing instructions apply (the module header) — so a human's edit takes effect on the
+next creation rather than on the next session. Both are capped: 8 KiB of standing instructions
+(`MAX_STANDING_INSTRUCTIONS_BYTES` in that file), well under the frame cap.
 
 The failure direction is the part worth keeping in mind. A document that cannot be read, parsed or
 admitted is **quarantined** exactly as a corrupt tool-policy file is — renamed aside first, never
-deleted (`:144`, `:157-169`, `:501`) — and the store then holds an **empty list and empty standing
-instructions**, never the last good copy (`:22-25`). An unreadable file means "no agent may be created
-and no standing instructions", not "carry on with what we had": see §5, where the permission dimension
-is closed on purpose. A profile's **id** is what a running child records, so a rename cannot move a
-running child onto a different profile (`:331`).
+deleted (`crates/devboule-daemon/src/agent_profiles.rs:144`, the doc on `load`, and `load` itself) —
+and the store then holds an **empty list and empty standing instructions**, never the last good copy
+(`crates/devboule-daemon/src/agent_profiles.rs`, the `load` doc). An unreadable file means "no agent
+may be created and no standing instructions", not "carry on with what we had": see §5, where the
+permission dimension is closed on purpose. A profile's **id** is what a running child records, so a
+rename cannot move a running child onto a different profile
+(`crates/devboule-daemon/src/agent_profiles.rs`, the comment in `check_profile`).
 
 **The finish report and the deposit.** When a child finishes, the daemon reports to the creator
 (`crates/devboule-daemon/src/session_children.rs`, `report_child_finish`, `report_child_finish_with`),
@@ -698,7 +791,8 @@ is exactly the reference type the wire carries (`FinishArtifact { artifact_id, p
 `crates/devboule-protocol/src/session.rs:669-674`, its parts at `:644-665`; the event is
 `SessionEvent::ChildFinished`). The Design surface records a
 finished child in history by that reference rather than a second copy
-(`src/features/design/childFinishedHistory.ts:80`).
+(`src/features/design/childFinishedHistory.ts`, the module doc above
+`recordChildFinishedHistory`).
 
 **Supervision: what a creator can see, and one notice it is sent.** `devboule_agent_activity` answers
 for one live agent of the same owner — the roster's scope, because reading is not destroying and the
@@ -750,8 +844,10 @@ that will be wrong in one of them. Both verbs are local by construction: the too
 and a test walks the closed capability table for both roles rather than sampling one name.
 
 **Lineage is daemon-written.** `created_by` is deliberately absent from `SessionCreate` so no client
-can claim a parent, and `display_name` is set once at creation and is not renamable
-(`crates/devboule-protocol/src/session.rs:220-235`).
+can claim a parent — the field is not there, and the comment that stands where it would be says so —
+and `display_name` is set once at creation and is not renamable
+(`crates/devboule-protocol/src/messages.rs`, the `SessionCreate` variant and the two comments on its
+`display_name` field).
 
 **A child's powers are a birth fact, and they survive the daemon.** A creation resolves a tool
 overlay — a deny-list of tool names the child will not be offered and cannot call — and the journal
@@ -793,11 +889,11 @@ characters before any string may be joined to a path (`:75-80`), and the four st
 
 | Limit | Value | Where |
 | --- | --- | --- |
-| one store (one account) | 20 MiB | `crates/devboule-protocol/src/lib.rs:354` |
-| attachments per prompt | 4 | `lib.rs:233` |
-| one attachment's base64 data | 192 KiB | `lib.rs:242` |
-| a prompt's inline attachments together | 384 KiB | `lib.rs:305` |
-| stored references per prompt | 200 | `lib.rs:331` |
+| one store (one account) | 20 MiB | `crates/devboule-protocol/src/lib.rs`, `MAX_ATTACHMENT_OWNER_BYTES` |
+| attachments per prompt | 4 | `lib.rs`, `MAX_ATTACHMENT_COUNT` |
+| one attachment's base64 data | 192 KiB | `lib.rs`, `MAX_ATTACHMENT_DATA_BYTES` |
+| a prompt's inline attachments together | 384 KiB | `lib.rs`, `MAX_ATTACHMENTS_TOTAL_BYTES` |
+| stored references per prompt | 200 | `lib.rs`, `MAX_ATTACHMENT_REFERENCES` |
 
 "This store" is one account's store: the runtime directory is `%LOCALAPPDATA%\Devboule`, so the budget
 is per-user by construction and needs no key at all (`attachment_store.rs:22-29`). The header records
@@ -809,13 +905,16 @@ composition is `crates/devboule-protocol/src/ids.rs:59-71`, and §3 warns about 
 
 The running total is held in memory rather than walked per question, because a forty-page deck is two
 hundred deposits and walking the store under its single write lock would put every session's attachment
-work behind that walk; the tree stays the truth and the cache is derived from it (`:39-44`). A folder
+work behind that walk; the tree stays the truth and the cache is derived from it
+(`crates/devboule-daemon/src/attachment_store.rs:39-44`, the doc on `StoreState`). A folder
 the walk could not read makes the total *unknown* rather than zero, and an unknown total is refused —
-"a number below the truth admits the bytes the limit exists to refuse" (`:44-47`).
+"a number below the truth admits the bytes the limit exists to refuse"
+(`crates/devboule-daemon/src/attachment_store.rs:44-47`).
 
 **How a prompt names a stored file.** Inline bytes are `PromptAttachment { name, mime_type, data }`,
 where `data` is base64 and the comment is explicit: "Never a path"
-(`crates/devboule-protocol/src/messages.rs:110-115`). A stored file is named by reference instead, in
+(`crates/devboule-protocol/src/messages.rs`, `PromptAttachment`). A stored file is named by reference
+instead, in
 exactly one spelling — `devboule-attachment:<sessionId>/<digest>`
 (the reference `crates/devboule-protocol/src/session.rs` spells in the `FinishArtifact` doc) — carried
 on the request as
@@ -865,9 +964,10 @@ back.
 `<app_config_dir>/surface-settings/<surfaceId>.json`; the backend never inspects the value's shape — it
 stores whatever JSON arrives, verbatim, and hands it back unchanged
 (`src-tauri/src/surface_settings.rs:1-7`). Surface ids are validated and the payload is size-bounded
-(`:60`, `:109-115`), and the commands are `surface_settings_get` / `surface_settings_set`
-(`src-tauri/src/lib.rs:106-107`). A malformed file is an error that preserves the file rather than a
-silent reset (`src-tauri/src/surface_settings.rs` tests, `:213`).
+(`:60`, `:109-115`, where the payload cap is `MAX_SURFACE_SETTINGS_BYTES`), and the commands are
+`surface_settings_get` / `surface_settings_set`
+(`src-tauri/src/lib.rs:113-114`). A malformed file is an error that preserves the file rather than a
+silent reset (`src-tauri/src/surface_settings.rs:213`, the malformed-file test).
 
 **What Design is.** Design is a chat grounded in the repository that drives the *same* daemon and the
 same agent CLIs the Workspace uses, with a canvas that renders what the agent produced inside a
@@ -896,9 +996,9 @@ the client's only reader thread*, so if a handler synchronously calls `sessions_
 client, the call waits for a reply that its own reader thread must read. The verdict was that
 the daemon keeps sending and the client simply stops reading — "the apparent 'daemon stopped
 publishing' boundary is the handler call". In this tree the reader is the single
-`client_read_loop` (`crates/devboule-daemon/src/client.rs:1351`), the handler calls are inline at
-`:1372` (roster snapshots) and `:1400` (event envelopes), and the blocking roundtrip a handler would
-enter is `roundtrip_with_deadline` (`:1055-1091`). The recommended fix is to enqueue to a
+`client_read_loop` (`crates/devboule-daemon/src/client.rs`), which calls each handler inline from that
+loop (the roster-snapshot arm and the event-envelope arm), and the blocking roundtrip a handler would
+enter is `roundtrip_with_deadline` (same file). The recommended fix is to enqueue to a
 dedicated dispatcher instead of invoking handlers on the reader; a documentation-only prohibition is
 insufficient for the attached Workspace flow. **As far as this tree shows, that fix has not been
 made.**
@@ -916,7 +1016,7 @@ registry fetchers and the npm runner (`transport.rs:35`, `crates/devboule-daemon
 `secret_store.rs:52`, `registry.rs:45`).
 
 **There is no updater, so there is no update path.** No updater plugin in
-`src-tauri/Cargo.toml:21-33`, `bundle.active = false` (`src-tauri/tauri.conf.json:70-71`). A daemon
+`src-tauri/Cargo.toml:21-33`, `bundle.active` is `false` in `src-tauri/tauri.conf.json`. A daemon
 speaking a different protocol version is refused rather than replaced
 (`crates/devboule-protocol/src/handshake.rs:110-131`).
 
@@ -941,9 +1041,10 @@ Six further questions that no code here answers. They are recorded as questions 
 
 1. **App update vs a running older daemon.** With no updater and no "kill on version mismatch" path,
    what is supposed to happen when a newer app is installed while an older daemon still owns the pipe?
-2. **Whose Job Object the daemon is in.** `spawn.rs:39-40` says the daemon "is allowed to die when
-   Windows tears down this job", but no code in `src-tauri/src` creates a job or assigns the daemon to
-   one — the spawn path sets only `CREATE_NO_WINDOW` (`spawn.rs:76-80`). If the app is not itself in
+2. **Whose Job Object the daemon is in.** `crates/devboule-daemon/src/spawn.rs:39-40` says the daemon
+   "is allowed to die when Windows tears down this job", but no code in `src-tauri/src` creates a job
+   or assigns the daemon to one — the spawn path sets only `CREATE_NO_WINDOW`
+   (`crates/devboule-daemon/src/spawn.rs:76-80`). If the app is not itself in
    such a job, a killed app is expected to leave the daemon running with its live sessions.
 3. **Reattach after an undelivered `Shutdown`.** The app waits `JOIN_BUDGET` (1.5 s)
    (`src-tauri/src/client/mod.rs`) and then exits; the daemon, holding a live session, never
@@ -958,7 +1059,8 @@ Six further questions that no code here answers. They are recorded as questions 
    policy is still to be written, is not stated anywhere in the tree.
 5. **Two app instances.** A second app process computes the same pipe name and connects first
    (`paths.rs:75-77`), the daemon accepts up to sixteen pipe instances
-   (`transport/windows_pipe.rs:49`), and sessions are scoped to the owner user. Whether a second app
+   (`transport/windows_pipe.rs:49`, `MAX_INSTANCES`), and sessions are scoped to the owner user.
+   Whether a second app
    instance should see and drive the first one's sessions, or "one app at a time" is assumed somewhere
    outside this code, is not stated.
 6. **The spawn-then-assign window.** A child is assigned to its job right after spawn; closing the
@@ -968,8 +1070,9 @@ Six further questions that no code here answers. They are recorded as questions 
    or is accepted, is not recorded.
 
 One more gap, found while reading and not from a report: the typed `createAgent` payload has no
-consumer in the UI (§7), and the MCP broker — and therefore every agent-to-agent feature — is
-registered for ACP and Claude sessions only (`session.rs:3217`, `:7449`).
+consumer in the UI (§7), and the MCP broker — and therefore every agent-to-agent feature — reaches
+every agent family except `Terminal` (`crates/devboule-daemon/src/mcp_broker.rs`, `hosts_mcp`; the
+distinction between hosting tools and gating the first prompt on them is §7's).
 
 ---
 

@@ -363,7 +363,7 @@ Bridge integrity: every inbound message is checked at THREE checkpoints —
 (1) `origin` AND `event.source === iframe.contentWindow` match,
 (2) the method must appear in the manifest's declared capabilities,
 (3) the Rust side re-checks the grant at invoke time
-(`method_is_granted`, `crates/devboule-plugin-rpc/src/session.rs:166/195` —
+(`method_is_granted`, `crates/devboule-plugin-rpc/src/session.rs` —
 the grant travels in the handshake from the target plugin's manifest).
 Precise trust boundary: the check binds the method to the TARGET plugin's
 own manifest; `plugin_invoke` has no caller-identity concept (the caller is
@@ -466,7 +466,8 @@ what exists, what is missing, and the proposed capability additions.
 ### The capability roadmap (proposed)
 
 The protocol already declares the intent — `AGENT_RUN` exists as a capability
-constant (`protocol/lib.rs:141`) but is granted nowhere. The platform needs
+constant (`crates/devboule-protocol/src/lib.rs`, `caps::AGENT_RUN`) but is granted nowhere. The
+platform needs
 these host-side additions, in this order:
 
 1. **`providers.list` (bridge method)** — read-only provider catalog through
