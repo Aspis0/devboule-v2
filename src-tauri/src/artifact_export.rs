@@ -13,6 +13,7 @@ use std::path::Path;
 
 use devboule_protocol::ErrorCode;
 
+use crate::backend::blocking::off_main_thread;
 use crate::backend::error::CommandError;
 
 /// A failed write names the operation and the path. A bare `os error 5` tells
@@ -45,9 +46,13 @@ fn write_artifact_file_inner(path: &str, contents: &str) -> Result<String, Comma
 /// path. An empty path is rejected before it reaches the filesystem; any other
 /// failure (missing parent directory, permissions, a directory at the target)
 /// comes back as an `io` error naming the operation and the path.
+///
+/// The write is local, but it is not free: the document is the whole exported
+/// artifact and the disk under it can be busy, so the write leaves the window's
+/// thread the way the daemon roads do.
 #[tauri::command]
-pub fn artifact_write_file(path: String, contents: String) -> Result<String, CommandError> {
-    write_artifact_file_inner(&path, &contents)
+pub async fn artifact_write_file(path: String, contents: String) -> Result<String, CommandError> {
+    off_main_thread(move || write_artifact_file_inner(&path, &contents)).await
 }
 
 #[cfg(test)]

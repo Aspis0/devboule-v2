@@ -1,5 +1,5 @@
 pub mod agent_profiles;
-mod blocking;
+pub(crate) mod blocking;
 pub mod delegation;
 pub mod devices;
 pub mod error;

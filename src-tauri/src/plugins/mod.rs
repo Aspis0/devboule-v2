@@ -23,6 +23,7 @@ use std::sync::Mutex;
 use devboule_protocol::ErrorCode;
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::backend::blocking::off_main_thread;
 use crate::backend::error::CommandError;
 use discovery::{scan, PluginInventory, Scan};
 
@@ -184,13 +185,25 @@ pub async fn plugins_rescan(app: AppHandle) -> PluginInventory {
 /// it did not, and the caller has an action to report on rather than a readout
 /// to draw. Every refusal shares one code — nothing branches on it, the sentence
 /// is the payload, and a taxonomy no caller reads would be decoration.
+///
+/// The copy, the digest pass and the rescan are blocking work — a plugin is a
+/// folder of files, not a handful of bytes — so they run on the blocking pool
+/// rather than on the async worker that would sit inside the copy.
 #[tauri::command]
 pub async fn plugin_install(
     app: AppHandle,
     id: String,
     source: String,
 ) -> Result<PluginInventory, CommandError> {
-    let Some(root) = plugins_root(&app) else {
+    off_main_thread(move || install_and_rescan(&app, &id, &source)).await
+}
+
+fn install_and_rescan(
+    app: &AppHandle,
+    id: &str,
+    source: &str,
+) -> Result<PluginInventory, CommandError> {
+    let Some(root) = plugins_root(app) else {
         return Err(CommandError::new(
             ErrorCode::Internal,
             "this machine did not say where application data belongs, so there is nowhere to \
@@ -203,7 +216,7 @@ pub async fn plugin_install(
             .installs
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        install::install_from_directory(&root, &id, std::path::Path::new(&source))
+        install::install_from_directory(&root, id, std::path::Path::new(source))
             .map_err(|reason| CommandError::new(ErrorCode::InvalidRequest, reason))?;
     }
     // The cache is now a description of a directory that changed underneath it.
