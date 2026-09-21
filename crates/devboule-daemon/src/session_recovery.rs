@@ -228,9 +228,13 @@ impl SessionRegistry {
     /// Every birth fact the row carries goes with it (creator, depth, overlay,
     /// profile, context): the replacement is the same session under a new id,
     /// and a child that came back as a root would be the escalation the lineage
-    /// columns exist to stop. The one fact that cannot come along is the
-    /// directory — the road is only taken because it is gone — so the new
-    /// session starts where a fresh one does, with no workspace.
+    /// columns exist to stop. The directory is the one fact that depends on
+    /// what is still on disk: a workspace row can be deleted while its folder
+    /// stays (`workspace_delete` never checks who points at it), and then the
+    /// recorded `cwd` brings the conversation back to the place it worked.
+    /// When even that is gone the new session has no folder of its own, and
+    /// the notice names the path that is missing rather than leaving the human
+    /// with a workspace id to guess about.
     pub(super) fn recover_session(
         &self,
         state: &Arc<ServerState>,
@@ -254,12 +258,19 @@ impl SessionRegistry {
             return Err(reason.clone());
         };
         let lineage = Self::resumed_lineage(Some(record))?;
+        // The directory the old session was launched in is read back, and used
+        // when it is still a directory: the road is taken for a workspace whose
+        // row was deleted as much as for one whose folder is gone, and only the
+        // second case has to start without it.
+        let recorded_dir = record.cwd.as_deref().map(Path::new);
+        let working_dir = recorded_dir.filter(|path| path.is_dir());
         let recovered_name = record
             .display_name
             .clone()
             .unwrap_or_else(|| record.title.clone());
         let env_provider = std::env::var("DEVBOULE_AGENT_PROVIDER").ok();
         let meta = SessionCreateMeta {
+            cwd: working_dir.map(Path::to_path_buf),
             display_name: Some(format!("{recovered_name} (recovered)")),
             created_by: record.created_by.clone(),
             depth: lineage.depth,
@@ -286,8 +297,12 @@ impl SessionRegistry {
         // The notice comes first: the human is looking at the new session's
         // transcript, and the one thing it must say before anything else is
         // which session they did not get and why.
+        let starts_in = match working_dir {
+            Some(path) => RecoveredDir::Kept(path),
+            None => RecoveredDir::Gone(recorded_dir),
+        };
         runtime.publish_session_notice(
-            recovered_notice(&record.id, &reason.message, &context),
+            recovered_notice(&record.id, &reason.message, &context, &starts_in),
             NoticeSeverity::Info,
         );
         runtime.set_recovered_context(context.text);
@@ -295,7 +310,44 @@ impl SessionRegistry {
     }
 }
 
-fn recovered_notice(session_id: &str, reason: &str, context: &RecoveredContext) -> String {
+/// Where the replacement session starts, for the one sentence the human reads.
+enum RecoveredDir<'a> {
+    /// The directory the row recorded is still there, and the new session is
+    /// launched in it.
+    Kept(&'a Path),
+    /// Nothing of the old directory survives. The path, when the row recorded
+    /// one, is what the human is told is gone.
+    Gone(Option<&'a Path>),
+}
+
+impl RecoveredDir<'_> {
+    /// The half of the notice that answers "and where does my new session
+    /// work?". Said with a path a human can check, because the daemon's reason
+    /// can name a workspace id instead (`it does not exist`) and nobody can
+    /// look at a folder they were never told.
+    fn sentence(&self) -> String {
+        match self {
+            Self::Kept(path) => format!(
+                " It starts in the directory the old session was launched in: {}.",
+                crate::workspace::display_path(&path.to_string_lossy())
+            ),
+            Self::Gone(Some(path)) => format!(
+                " It has no folder of its own to work in: {} is gone.",
+                crate::workspace::display_path(&path.to_string_lossy())
+            ),
+            Self::Gone(None) => " It has no folder of its own to work in: the one the old \
+                 session used is gone, and this row does not record its path."
+                .to_string(),
+        }
+    }
+}
+
+fn recovered_notice(
+    session_id: &str,
+    reason: &str,
+    context: &RecoveredContext,
+    dir: &RecoveredDir<'_>,
+) -> String {
     let cut = if context.declares_a_cut() {
         format!(
             " {RECOVERED_CUT_MARKER} to fit the context budget ({} of {} turns travelled whole).",
@@ -307,7 +359,8 @@ fn recovered_notice(session_id: &str, reason: &str, context: &RecoveredContext) 
     };
     format!(
         "This session could not be reopened ({reason}), so a new one was started with the \
-         conversation recovered from the journal: it travels with the first prompt.{cut} \
-         The session that was clicked is '{session_id}'; it and its transcript are untouched."
+         conversation recovered from the journal: it travels with the first prompt.{cut}{} \
+         The session that was clicked is '{session_id}'; it and its transcript are untouched.",
+        dir.sentence()
     )
 }

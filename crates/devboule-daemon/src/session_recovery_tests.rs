@@ -239,17 +239,6 @@ fn a_preset_preamble_comes_before_the_recovered_conversation() {
     );
 }
 
-/// Record one turn of the old session's conversation in the journal, the way
-/// the runtime writes it: one `agent_report` row per event.
-fn record_turn(fixture: &ResumeFixture, id: &str, seq: u64, event: &SessionEvent) {
-    let record = crate::journal::agent_report_record(id.to_string(), 1, seq, event)
-        .expect("the event is reportable");
-    fixture
-        .journal()
-        .append_blocking(record)
-        .expect("the turn lands");
-}
-
 fn wait_for_prompt(path: &std::path::Path) -> String {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -296,8 +285,8 @@ fn a_resume_for_a_gone_directory_recovers_the_conversation_into_a_new_session() 
             .into_owned(),
     );
     fixture.write_row(row);
-    record_turn(&fixture, &id, 1, &user("did you check the tests?"));
-    record_turn(&fixture, &id, 2, &agent("yes — and the gate too"));
+    fixture.record_turn(&id, 1, &user("did you check the tests?"));
+    fixture.record_turn(&id, 2, &agent("yes — and the gate too"));
     take_bystander_slot(&fixture.state);
 
     let session = fixture
@@ -385,7 +374,7 @@ fn a_recovered_session_journals_why_it_replaced_the_session_that_was_clicked() {
     let mut row = acp_row(&id, &fixture.owner, "handle-notice");
     row.cwd = Some(gone.to_string_lossy().into_owned());
     fixture.write_row(row);
-    record_turn(&fixture, &id, 1, &user("did you check the tests?"));
+    fixture.record_turn(&id, 1, &user("did you check the tests?"));
     take_bystander_slot(&fixture.state);
 
     let session = fixture

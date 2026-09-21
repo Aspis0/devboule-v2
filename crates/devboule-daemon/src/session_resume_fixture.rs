@@ -54,6 +54,16 @@ impl ResumeFixture {
         ConnHandle::new(7)
     }
 
+    /// One turn of the old session's conversation in the journal, the way the
+    /// runtime writes it: one `agent_report` row per event.
+    pub(super) fn record_turn(&self, id: &str, seq: u64, event: &SessionEvent) {
+        let record = crate::journal::agent_report_record(id.to_string(), 1, seq, event)
+            .expect("the event is reportable");
+        self.journal()
+            .append_blocking(record)
+            .expect("the turn lands");
+    }
+
     pub(super) fn finish(self) {
         self.journal().shutdown();
         let _ = std::fs::remove_dir_all(&self.dir);

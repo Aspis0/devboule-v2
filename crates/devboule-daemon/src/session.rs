@@ -410,6 +410,11 @@ mod session_envelope_finish_tests;
 /// the provider cannot be asked at all.
 #[path = "session_recovery.rs"]
 mod session_recovery;
+/// The folder question, apart from the renderer: which directory the
+/// replacement session is launched in and what the notice says about it.
+#[cfg(test)]
+#[path = "session_recovery_dir_tests.rs"]
+mod session_recovery_dir_tests;
 #[cfg(test)]
 #[path = "session_recovery_tests.rs"]
 mod session_recovery_tests;
