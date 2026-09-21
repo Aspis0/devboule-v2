@@ -190,6 +190,26 @@ pub fn collect_events() -> (Arc<Mutex<Vec<SessionEvent>>>, EventHandler) {
     (events, handler)
 }
 
+/// An event with the generation it was delivered under. A resumed session
+/// moves to the next generation while a replayed row keeps the generation it
+/// was written under, so a follow-up can be read without its history.
+pub struct Observed {
+    pub generation: u64,
+    pub event: SessionEvent,
+}
+
+pub fn collect_observed() -> (Arc<Mutex<Vec<Observed>>>, EventHandler) {
+    let events = Arc::new(Mutex::new(Vec::<Observed>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(Observed {
+            generation: envelope.generation,
+            event: envelope.event,
+        });
+    });
+    (events, handler)
+}
+
 pub fn wait_for(
     events: &Mutex<Vec<SessionEvent>>,
     timeout: Duration,
