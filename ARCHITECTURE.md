@@ -57,7 +57,8 @@ runs (`src-tauri/tauri.conf.json:9`, `beforeDevCommand`); there is no bundling s
 ### What the daemon owns that the app does not
 
 - **Every child process and its lifetime.** PTY terminals and provider CLIs are spawned by the daemon
-  (`crates/devboule-daemon/src/session.rs:7253-7283` for a PTY), each in a Windows Job Object (§2).
+  (`crates/devboule-daemon/src/provider.rs`, `open_pty_session`, for a PTY), each in a Windows Job
+  Object (§2).
 - **The journal.** SQLite, WAL mode, `journal.db` beside the lock file
   (`crates/devboule-daemon/src/paths.rs:51-55`), schema version 13
   (`crates/devboule-daemon/src/journal.rs:54`).
@@ -154,9 +155,10 @@ tree, so "closing the last window quits the app" is not something this code show
    `Recovered` and no exit event (`journal_replay.rs:374-392`). The transcript is then replayed from
    the journal on attach (§3). Starting the provider again is an explicit, separate act: `resume` is
    the only path, and the gate admits **four** families — ACP, Claude, Codex and Pi
-   (`resume_handle`, `session.rs:3188`; the per-family fact is `Provider::resumable`,
-   `provider.rs:240`, answered `true` by `AcpProvider`, `ClaudeProvider`, `CodexProvider` and
-   `PiProvider` and `false` by Terminal). Claude resumes by handing the CLI back its own history: the daemon finds the
+   (`crates/devboule-daemon/src/session.rs`, `resume_handle`; the per-family fact is
+   `Provider::resumable`, `crates/devboule-daemon/src/provider.rs:240`, answered `true` by
+   `AcpProvider`, `ClaudeProvider`, `CodexProvider` and `PiProvider` and `false` by Terminal).
+   Claude resumes by handing the CLI back its own history: the daemon finds the
    transcript file for the provider's session id under the Claude home, refuses with a named error
    when it is not there, and passes `--resume` (`claude_client.rs:390`, `:411`, `:429`). The id it
    builds that path from is validated against a closed alphabet first, because a session id that
@@ -206,7 +208,7 @@ One field is an answer rather than a property: `resumable` (`:314-321`). The dae
 row can be started again and says so on the wire; the app never re-derives it from kind, state or
 columns, and `#[serde(default)]` makes a frame from an older daemon read back as `false`, so the
 button stays hidden rather than offered on a guess. The single source is `session_resumable`
-(`crates/devboule-daemon/src/provider.rs:318`), which answers `true` only when four things hold at
+(`crates/devboule-daemon/src/provider.rs:319`), which answers `true` only when four things hold at
 once: the session is not live, its family is resumable, and both the provider id and the provider's
 own session id are present and non-empty.
 
@@ -220,11 +222,13 @@ Session ids are composed, not random: `s.<first 16 chars of the owner token>.<un
 `Silent { generation }` (still running, no output for the silence threshold — never an exit),
 `Ended { generation, code, integrity }` (the process exited while this daemon was alive) and
 `Recovered { generation, integrity }` (the daemon that owned the process is gone). The silence
-threshold is 300 s (`crates/devboule-daemon/src/session.rs:200`) and it produces a banner event, not a
-kill (`crates/devboule-daemon/src/session_runtime.rs:1916`).
+threshold is 300 s
+(`crates/devboule-daemon/src/session_items.rs`, `SESSION_SILENCE_THRESHOLD`) and it produces a banner
+event, not a kill (`crates/devboule-daemon/src/session_runtime.rs`, `mark_silent_if_due`).
 
 `Recovered` used to mean "replay only". It no longer does: the variant's own doc now reads "replay
-always; resume when the family is resumable" (`session.rs:475`). Replay is free — journal bytes, no
+always; resume when the family is resumable" (`crates/devboule-protocol/src/session.rs:475`). Replay is
+free — journal bytes, no
 process — so it happens by itself; resume allocates a process and stays a deliberate act. Every state
 carries a `generation`, and that is what lets a deferred intent belong to an *instance* of a session
 rather than to its id: a row that died and came back is not the row the intent was taken against.
@@ -238,11 +242,13 @@ sequence number, so a replay is ordered by the same counter the live events carr
 
 **Replay on attach.** A session that is not live is hydrated from the journal instead of being
 spawned: `attach`/`attach_with_subscription` call `hydrate_transcript`
-(`crates/devboule-daemon/src/session.rs:3307-3338`, `:3567`), and a live agent's replay is pulled one
-bounded journal page at a time by cursor, with the live attachment queue left alone until the durable
-watermark is complete (`crates/devboule-daemon/src/event_pull.rs:476-485`). The roster that the app
-sees is the merge of live entries and journal rows (`session.rs:5064`), which is why a session whose
-process is gone is still listed, in `Recovered` state, with its transcript available.
+(`crates/devboule-daemon/src/session.rs`, `attach`, `attach_with_subscription`, `hydrate_transcript`),
+and a live agent's replay is pulled one bounded journal page at a time by cursor, with the live
+attachment queue left alone until the durable watermark is complete
+(`crates/devboule-daemon/src/event_pull.rs`, `pull_events`). The roster that the app sees is the merge
+of live entries and journal rows (`crates/devboule-daemon/src/session.rs`, `SessionRegistry::list`),
+which is why a session whose process is gone is still listed, in `Recovered` state, with its
+transcript available.
 
 **`Recovered` is a conclusion, not a guess.** At journal open the daemon rewrites what it cannot
 vouch for: a row still `live` with `reaped = 1` becomes `ended` — the child's exit was observed, the
@@ -261,14 +267,15 @@ the caller must be an observer of the session it is stopping. `SessionClose` des
 mean closing something else.
 
 `SessionStop` kills the *tree*, not the root. After `killer.kill()` the daemon also calls
-`job.terminate()` on the session's own Job Object (`session.rs:4945-4949` for the agent-facing stop,
-`:4992-4995` for the subscribed one), because the session is being preserved and its job therefore
-stays open — nothing else would reap the descendants a CLI left behind. This mirrors what the
-on-OS-death handler already did (`:9020-9022`). A killed-but-kept session is
-the one the app calls *archive*: the row and its transcript survive, the process does not.
+`job.terminate()` on the session's own Job Object (`crates/devboule-daemon/src/session.rs`, `stop`, for
+the agent-facing one; `stop_with_subscription` for the subscribed one), because the session is being
+preserved and its job therefore stays open — nothing else would reap the descendants a CLI left
+behind. This mirrors what the on-OS-death handler already did
+(`crates/devboule-daemon/src/session_spawn.rs`, the `set_on_os_death` closure). A killed-but-kept
+session is the one the app calls *archive*: the row and its transcript survive, the process does not.
 
 **The wire names who wrote a user message.** `UserMessageAuthor`
-(`crates/devboule-protocol/src/session.rs:1364`) is `human`, `agent` or `creation`, and it is neither
+(`crates/devboule-protocol/src/session.rs:1371`) is `human`, `agent` or `creation`, and it is neither
 the session's `origin` (where the session came from) nor the envelope's `role`/`from_agent` (the
 delivery's connection facts): it names whose words the echo carries. `creation` is its own value even
 when a human wrote the initial text, because that line is daemon-composed — standing instructions plus
@@ -277,7 +284,8 @@ absent predates the field and reads as `human`.
 
 **`role:` is not the daemon's claim about itself.** The daemon composes that line from the *caller's*
 peer record: a session created by a peer paired in the `Daemon` role writes `role: daemon` on the
-agent-to-agent envelope it sends, around another agent's words (`session.rs:5574`). So the app must
+agent-to-agent envelope it sends, around another agent's words
+(`crates/devboule-daemon/src/session_envelopes.rs`, `agent_message_envelope`). So the app must
 not read `role: daemon` as "the daemon is speaking" — it did, briefly, and rendered a relayed message
 as a daemon notice while dropping the message text. The marker for a notice is a `kind:` line inside
 the fixed header: all four notice builders write one, the agent-to-agent envelope deliberately writes
@@ -297,9 +305,11 @@ at most once per MiB of journal written (`:14-17`).
 **Two details worth knowing before you touch any of this.** Child liveness is not derived from pipe
 EOF: a sweeper every 2 s duplicates the process handle and waits non-blockingly, so a provider killed
 from Task Manager is noticed even while its descendants still hold the pipe open
-(`crates/devboule-daemon/src/session.rs:185`, `:7085-7105`). And the per-attachment output budgets
+(`crates/devboule-daemon/src/session_items.rs`, `SESSION_OS_SWEEP_INTERVAL`;
+`crates/devboule-daemon/src/session_spawn.rs`, `spawn_os_liveness_sweeper`, `sweep_os_liveness`). And
+the per-attachment output budgets
 (`PENDING_OUTPUT_BUDGET_BYTES`, `PENDING_OUTPUT_BUDGET_FRAMES`, `COALESCE_*`,
-`crates/devboule-daemon/src/session.rs:146-172`) are what keep a chatty agent from turning into
+`crates/devboule-daemon/src/session_items.rs`) are what keep a chatty agent from turning into
 unbounded memory or an unbounded journal.
 
 ## 4. Providers
@@ -341,10 +351,13 @@ measured write completed with zero permission requests" (`:718-722`). On the wir
 
 **Where modes and features come from.** Not from the catalog. A provider's modes are whatever the
 provider declares at run time: `SessionModeStateView` carries a current mode id and an
-`available_modes` list (`crates/devboule-protocol/src/session.rs:992-998`), populated from the ACP
-session state (`acp_client.rs:1062`, `:1683-1711`) or from Claude's control protocol
-(`claude_client.rs:172`), and a mode change is an RPC to the provider
-(`acp_client.rs:1226`, `:1331`; `claude_client.rs:1032`). The catalog's part is narrower and only
+`available_modes` list (`crates/devboule-protocol/src/session.rs`, `SessionModeStateView`), populated
+from the ACP
+session state (`acp_client.rs`, `remember_mode`) or from Claude's control protocol
+(`crates/devboule-daemon/src/claude_view.rs`, `mode_state`), and a mode change is an RPC to the
+provider
+(`acp_client.rs`, `request_set_mode`, `set_mode`; `claude_client.rs`, `set_mode`). The catalog's part
+is narrower and only
 concerns *created* agents: the preset cell names the mode a child is started in (§7), and the
 classifier that decides which mode ids mean "answers in place of the human" is per family —
 `mode_is_unattended` (`provider_catalog.rs:361-374`) — because Codex's `auto` and Claude's `auto` are
@@ -363,7 +376,8 @@ and install or update an npm-supplied wrapper (`provider_update.rs:27`; the app'
 
 **One broker, two providers.** The permission broker is shared by ACP and Claude stream-json sessions
 (`crates/devboule-daemon/src/permission_broker.rs:1`). A provider's ask becomes an ordinary wire
-event: `SessionEvent::PermissionRequest` (`crates/devboule-protocol/src/session.rs:708`) carrying the
+event: `SessionEvent::PermissionRequest` (`crates/devboule-protocol/src/session.rs`, the
+`PermissionRequest` variant) carrying the
 tool call id, a title, the agent's own description of the command, the options the provider offered,
 and an origin stamp. The daemon publishes it on the attached subscription and the app renders it —
 `src/components/PermissionCard.tsx`, mounted at `src/features/workspace/Workspace.tsx:819` and
@@ -513,11 +527,40 @@ this one may talk to as a machine" (`:53-64`).
 
 **The channel is the MCP broker.** Each live session that is allowed one gets a bearer token and a
 loopback HTTP MCP endpoint (`/mcp`), served by the daemon
-(`crates/devboule-daemon/src/mcp_broker.rs:1-7`, `:40`, `:228`); the config is written for the
-provider, never read from the client (`:236-239`). It is registered for `SessionKind::Acp` and
-`SessionKind::Claude` only (`crates/devboule-daemon/src/session.rs:3217`, `:7449`), so a pi or codex
-agent gets no MCP tools today; the catalog says so and keeps the cells anyway, "so adding a non-ACP
-transport does not silently change a decision" (`provider_catalog.rs:440-446`).
+(`crates/devboule-daemon/src/mcp_broker.rs:1-7`, `MCP_PATH`, `McpLaunchConfig`); the config is written
+for the
+provider, never read from the client (the `mcp_launch` doc on `McpLaunchConfig`). Registration is the
+provider's own answer, one answer for every site that asks: `Provider::hosts_mcp`
+(`crates/devboule-daemon/src/provider.rs:217`) is `true` for **four** of the five families —
+`AcpProvider`, `ClaudeProvider`, `CodexProvider` and `PiProvider` — and `false` for `Terminal`, and
+`hosts_mcp(kind)` (`crates/devboule-daemon/src/mcp_broker.rs:139`) is the single shim the gates read,
+so a pi or codex agent does host the daemon's MCP tools today. What stays narrower on purpose is the
+*first prompt*: `mcp_gates_first_prompt` (`mcp_broker.rs:154`) is ACP and Claude only, because a
+carrier that is best-effort and slow (Codex measured ~7.4 s against a dead broker) must not make an
+outage of the broker an outage of a healthy child. The catalog keeps the cells anyway, "so adding a
+non-ACP transport does not silently change a decision" (the comment above the preset cells in
+`crates/devboule-daemon/src/provider_catalog.rs`).
+
+**What a Codex child inherits by running in the human's home.** A Codex session keeps the human's
+real `~/.codex`: the daemon deliberately mints **no** per-session `CODEX_HOME`, because a redirected
+home carries no `auth.json` (measured: every turn answers 401 "Missing bearer or basic
+authentication") and the rollout this family resumes lives under the home that wrote it
+(`crates/devboule-daemon/src/codex_client.rs`, the `mcp_launch` doc and `spawn_process`). Three
+consequences follow, and they are the operational price of resumable Codex threads:
+
+- MCP servers the user has already configured in that home stay available to the Devboule session,
+  beside the Devboule override the launch line adds as `-c mcp_servers.<name>.url=...`.
+- The provider's history and rollout are **not** isolated per Devboule session: they live where the
+  human's own Codex runs live.
+- Codex **can** rewrite `~/.codex/auth.json` during authentication operations — that is Codex
+  writing to its own home, not the daemon writing to it, and it is not something that happens on
+  every session: the daemon never touches that file itself.
+
+And the older rows do not come back. A Codex row created while the retired per-session home existed
+is still **re-readable** — the journal holds its transcript — but **not resumable**: its rollout sits
+in a `devboule-codex-home-<…>` tree, and the daemon's own startup sweep deletes every one of those on
+the next start (`crates/devboule-daemon/src/mcp_broker.rs`, `cleanup_stale_configs`). There is no
+migration, so for those rows the history shows and the resume button cannot honestly be offered.
 
 **Nine tools**, in `tools/list` order, from one table that the Settings panel reads too, so the panel
 and the wire cannot disagree (`provider_catalog.rs:199`):
@@ -542,7 +585,8 @@ through the ordinary `SessionCreate` path with the creator's own origin and owne
 `{sessionId, displayName, state: "submitted"}` (`:1112-1116`). Details that matter:
 
 - **Depth comes from the registration, not the request**: a session at depth 2 may not create
-  whatever it says (`:1196-1198`).
+  whatever it says (`create_agent`; the cap is `MAX_AGENT_DEPTH` in
+  `crates/devboule-daemon/src/session_registry_state.rs`).
 - **The child runs where the caller does**: a workspace must be the caller's own or the call is
   refused, and the resolved working directory must stay inside it, before anything is spent
   (`:1179-1195`).
@@ -568,27 +612,33 @@ request and it travels in `initialPrompt` (`:524-529`).
 
 | Cap | Value | Where |
 | --- | --- | --- |
-| live children per creator | 3 | `session.rs:1473`, enforced `:5249` |
-| creations per one-hour window | 10 | `session.rs:1475-1477`, enforced `:5255` |
-| live agent sessions, daemon-wide | 8 | `session.rs:1482`, enforced `:5236` |
-| nesting depth | 2 | `session.rs:1480`, enforced `:5222` |
+| live children per creator | 3 | `session_registry_state.rs`, `MAX_LIVE_CHILDREN_PER_CREATOR`; enforced in `session_children.rs`, `reserve_agent_creation` |
+| creations per one-hour window | 10 | `session_registry_state.rs`, `MAX_CREATIONS_PER_WINDOW` (`CREATION_WINDOW` is the hour); enforced in `reserve_agent_creation` |
+| live agent sessions, daemon-wide | 8 | `session_registry_state.rs`, `MAX_LIVE_AGENT_SESSIONS`; enforced in `reserve_agent_creation` |
+| nesting depth | 2 | `session_registry_state.rs`, `MAX_AGENT_DEPTH`; enforced in `reserve_agent_creation` |
 
 The slot is taken **before** the card is raised, so two creations racing on one session cannot both see
 the third slot free, and the in-flight reservations are keyed by the child session id they reserved —
-so releasing one can never subtract a neighbour's creation (`session.rs:1518-1541`). The numbers the
-card shows are read from that same reservation (`:5300-5311`), which is the point: a person decides
+so releasing one can never subtract a neighbour's creation (`session_registry_state.rs`,
+`AgentCreationTicket`; `session_children.rs`, `reserve_agent_creation`, `release_agent_creation`,
+`note_pending_child`). The numbers the
+card shows are read from that same reservation (the `max_*` fields `reserve_agent_creation` copies into
+the request), which is the point: a person decides
 against the budget that is actually about to be spent rather than against a configuration claim
-(`crates/devboule-protocol/src/session.rs:419-424`). Depth is judged on the child's own depth
-(`:9715-9721`), and the once-per-creator-session accept lives in the same locked entry
-(`session.rs:1532-1536`).
+(`crates/devboule-protocol/src/session.rs`, `CreateAgentCaps`). Depth is judged on the child's own
+depth
+(`reserve_agent_creation`), and the once-per-creator-session accept lives in the same locked entry
+(`session_children.rs`, `accept_agent_creation`).
 
 **The creation card is an ordinary permission card.** It is a `SessionEvent::PermissionRequest` with
 the `create_agent` payload filled in — the same pending entry, the same allow/deny frame, the same
 origin stamp and the same per-device budget as any other card — because a second variant would have to
-re-implement all of that (`mcp_broker.rs:1307-1313`; the payload type is
-`crates/devboule-protocol/src/session.rs:438-459`). The daemon composes the title
-`Create an agent: <title> (<preset>)`, a description sentence that states the provider, preset, mode
-and every cap as `n of m`, and two options, "Create once" and "Deny" (`mcp_broker.rs:1314-1360`). The
+re-implement all of that (`crates/devboule-daemon/src/mcp_broker.rs`, `creation_card`; the payload type
+is `CreateAgentCard` in
+`crates/devboule-protocol/src/session.rs:598`). The daemon composes the title
+`Create an agent: <title> (<profile>)`, a description sentence that states the provider, model, mode,
+thinking, features, the auto-accept judgement, the labels and every cap as `n of m`, and two options,
+"Create once" and "Deny" (`creation_card`). The
 caps are in the text *and* in the payload, both from one reservation, "the text is what a person reads,
 the payload is what a surface renders" (`:1311-1313`).
 
@@ -619,13 +669,20 @@ is closed on purpose. A profile's **id** is what a running child records, so a r
 running child onto a different profile (`:331`).
 
 **The finish report and the deposit.** When a child finishes, the daemon reports to the creator
-(`crates/devboule-daemon/src/session.rs:6009`, `:6027`), publishes `ChildFinished` (`:6106`, envelope
-`:6351`, with the state derived from the child provider's own stop reason `:6433`) and deposits the
-child's whole last `AgentMessage` into the **creator's** folder (`:4246`) as markdown named
-`agent-finished.md` (`:4260-4264`), refusing anything over the artifact cap (`:4254`). The artifact is
-named by reference and never by path: `devboule-attachment:<sessionId>/<digest>` (`:4269-4272`), which
+(`crates/devboule-daemon/src/session_children.rs`, `report_child_finish`, `report_child_finish_with`),
+publishes `ChildFinished` (`crates/devboule-daemon/src/session_runtime.rs`, `publish_child_finished`;
+the envelope, the state derived from the child provider's own stop reason, and the two functions that
+derive it are all in `crates/devboule-daemon/src/session_envelopes.rs`:
+`agent_finished_envelope`, `child_finish_state`, `stop_reason_state`) and deposits the
+child's whole last `AgentMessage` into the **creator's** folder
+(`crates/devboule-daemon/src/session_messaging.rs`, `deposit_child_message`) as markdown named
+`agent-finished.md`, refusing anything over the artifact cap (`MAX_AGENT_ARTIFACT_BYTES` in
+`crates/devboule-daemon/src/session_registry_state.rs`). The artifact is
+named by reference and never by path: `devboule-attachment:<sessionId>/<digest>` (the reference
+`deposit_child_message` builds), which
 is exactly the reference type the wire carries (`FinishArtifact { artifact_id, parts }`,
-`crates/devboule-protocol/src/session.rs:669-672`, its parts at `:644-659`; the event at `:853`). The Design surface records a
+`crates/devboule-protocol/src/session.rs:669-674`, its parts at `:644-665`; the event is
+`SessionEvent::ChildFinished`). The Design surface records a
 finished child in history by that reference rather than a second copy
 (`src/features/design/childFinishedHistory.ts:80`).
 
@@ -637,13 +694,16 @@ recent event *kinds* with their sequence numbers and timestamps. No transcript t
 headline is derived from facts the daemon holds — liveness, a running turn, a parked permission card
 — and never merged with the hook map, which keeps its own `seq` discipline
 (`crates/devboule-daemon/src/agent_activity.rs`). The recent tail is an in-memory ring of 64 marks,
-not a journal query: the read takes two locks and touches no rows.
+not a journal query: the read takes two locks and touches no rows. `devboule_agent_activity` is served
+by `agent_activity` in `crates/devboule-daemon/src/session_children.rs`.
 
 A child that has been *working* with nothing published for `CHILD_QUIET_AFTER` (20 minutes) earns its
 creator one envelope, `kind: agent_quiet`, once per quiet spell; movement re-arms it. It is a notice
 and never an action: the child's turn, its cards and its brakes are untouched, and the test asserts
 exactly that. This is also why it is delivered without steering. A steer's *refusal* path is an
-interrupt, and an ACP creator cannot take a steer (`acp_client.rs` does not override `clone_steerer`),
+interrupt, and an ACP creator cannot take a steer — nothing in `crates/devboule-daemon/src/acp_client.rs`
+overrides `clone_steerer`, whose trait declaration and default live in
+`crates/devboule-daemon/src/session_items.rs` and which Claude, Codex and Pi all override —
 so routing a routine notice through the steer path would have cancelled the creator's own turn and
 dropped its pending cards — the most destructive act in the system, on the wrong session, every twenty
 minutes. `deliver_notice_to_creator` exists so that cannot be reached by passing the wrong boolean.
@@ -654,7 +714,8 @@ wedged process look identical from outside, which is the whole reason it reports
 **Supervision's acting half, and the scope it is not allowed to exceed.** `devboule_stop_agent` kills
 one child's process tree and keeps its row and transcript; `devboule_close_agent` ends the session and
 leaves the transcript in history. Reading is scoped to the roster, but acting is **narrower on
-purpose**: both resolve their target through `resolve_own_child` (`session.rs:4847`), which admits
+purpose**: both resolve their target through `resolve_own_child`
+(`crates/devboule-daemon/src/session.rs`), which admits
 only live sessions whose `created_by` is the caller. A grandchild is not a child, a sibling is not a
 child, and a parent is certainly not.
 
@@ -667,7 +728,8 @@ that has exited but not been reaped is still `Live`, so it resolves and answers 
 existence was never a secret these sentences kept. They are kept because they stay right if the roster
 ever narrows.
 
-The predicate behind all of it is written once (`is_child_of`, `session.rs:720`) and called from every
+The predicate behind all of it is written once (`crates/devboule-daemon/src/session_items.rs`,
+`is_child_of`) and called from every
 site that needs it. It had been four textual copies; a scope rule spelled five times is a scope rule
 that will be wrong in one of them. Both verbs are local by construction: the tool door judges them as
 `SessionStop` and `SessionClose`, which every peer is denied unconditionally whatever its capabilities,
@@ -823,27 +885,36 @@ dedicated dispatcher instead of invoking handlers on the reader; a documentation
 insufficient for the attached Workspace flow. **As far as this tree shows, that fix has not been
 made.**
 
-**`session.rs` is one file of about 17,900 lines with no provider trait.** There are separate client
-and view modules per provider family (`claude_client.rs`, `codex_client.rs`, `pi_client.rs`,
-`acp_client.rs` and their `*_view.rs` counterparts), but the registry and everything kind-dependent
-live in a single file that branches on `SessionKind` (`crates/devboule-daemon/src/session.rs:3167`,
-`:4616`, `:6201`). The traits the daemon does define are for transports, the secret store, the
-registry fetchers and the npm runner (`transport.rs:35`, `peer_transport.rs:702`,
-`secret_store.rs:52`, `registry.rs:45`) — none of them is a provider abstraction. Anything that
-touches all providers is therefore a search across 17,859 lines.
+**`session.rs` is one module in a family, and the provider trait exists.** The split moved the
+registry's kind-dependent code out of the old single file: `crates/devboule-daemon/src/session.rs` is
+3,418 lines today, with 47 `session*.rs` siblings beside it (`#[path]` modules, 32,801 lines across
+the family). And the class-level seam is real:
+`crates/devboule-daemon/src/provider.rs:121` declares a `Provider` trait, with one implementation per
+spawn family — ACP, Claude, Pi, Codex and Terminal — and a `ProviderRegistry` the spawn road resolves
+through, so "anything that touches all providers" is a call through that trait rather than a search
+across the tree. The traits the daemon also defines are for transports, the secret store, the
+registry fetchers and the npm runner (`transport.rs:35`, `crates/devboule-daemon/src/peer_transport.rs`,
+`PeerTransport`,
+`secret_store.rs:52`, `registry.rs:45`).
 
 **There is no updater, so there is no update path.** No updater plugin in
 `src-tauri/Cargo.toml:21-33`, `bundle.active = false` (`src-tauri/tauri.conf.json:70-71`). A daemon
 speaking a different protocol version is refused rather than replaced
 (`crates/devboule-protocol/src/handshake.rs:110-131`).
 
-**There is no crash-loop brake.** A daemon that dies immediately after spawn is re-spawned by the
-supervisor on its next iteration, paced only by the loop sleep and the 50 × 100 ms connect retries
-(`src-tauri/src/client/mod.rs:1339-1369`; `crates/devboule-daemon/src/client.rs:29-30`).
+**Young daemon deaths are braked.** A daemon that dies soon after each spawn is re-spawned by the
+supervisor, but past `FAST_FAILURE_TOLERANCE` consecutive fast failures the loop waits a doubling
+`BACKOFF_BASE`…`MAX_BACKOFF` before the next attempt, and a connected phase that lasted
+`HEALTHY_CONNECTED` resets the count (`src-tauri/src/client/crash_loop.rs`, `CrashLoopBrake`;
+called from `src-tauri/src/client/mod.rs`, `run_supervisor_loop`). The loop sleep and the
+`SPAWN_ATTEMPTS` × `SPAWN_SLEEP` connect retries sit underneath it
+(`crates/devboule-daemon/src/client.rs`).
 
-**`resume` exists for ACP, Claude and Codex.** `resume_handle` admits the three resumable families
-and excludes Pi deliberately (`crates/devboule-daemon/src/session.rs:8039-8065`): a Pi session that
-was lost with its process cannot be brought back by the app — only replayed. Codex resume loads the
+**`resume` exists for four families: ACP, Claude, Codex and Pi.** `resume_handle` admits every family
+whose `Provider::resumable()` answers `true`, and Terminal is the one that answers `false`
+(`crates/devboule-daemon/src/session.rs`, `resume_handle`; `crates/devboule-daemon/src/provider.rs`,
+`resumable`). Pi resumes by `--session <id>` against its own session directory, which is why §2 names
+it with the other three. Codex resume loads the
 thread by `threadId` from the human's real Codex home, which is also why that family keeps no
 per-session `CODEX_HOME` and writes no carrier file (the broker rides `-c` overrides on the launch
 line).
@@ -861,8 +932,10 @@ Six further questions that no code here answers. They are recorded as questions 
    idle-exits (`server.rs:415`), so the next start rejoins it. Intended, or should the app prove the
    daemon is gone first?
 4. **What ends a running session.** In this code only an explicit `SessionStop` / `SessionClose`
-   (`session.rs:3729`, `:3827`) or the process dying does. There is no idle or quota policy for live
-   sessions; silence produces a banner, not an end (`session.rs:182`). Whether that is the rule, or a
+   (`crates/devboule-daemon/src/session.rs`, `stop`, `close`) or the process dying does. There is no
+   idle or quota policy for live
+   sessions; silence produces a banner, not an end (`crates/devboule-daemon/src/session_items.rs`,
+   `SESSION_SILENCE_THRESHOLD`). Whether that is the rule, or a
    policy is still to be written, is not stated anywhere in the tree.
 5. **Two app instances.** A second app process computes the same pipe name and connects first
    (`paths.rs:75-77`), the daemon accepts up to sixteen pipe instances
@@ -871,7 +944,8 @@ Six further questions that no code here answers. They are recorded as questions 
    outside this code, is not stated.
 6. **The spawn-then-assign window.** A child is assigned to its job right after spawn; closing the
    window completely would need `CREATE_SUSPENDED`, which portable-pty does not expose
-   (`session.rs:7253-7257`). Whether that window is covered by a test that kills the daemon inside it,
+   (`crates/devboule-daemon/src/provider.rs`, `open_pty_session`). Whether that window is covered by a
+   test that kills the daemon inside it,
    or is accepted, is not recorded.
 
 One more gap, found while reading and not from a report: the typed `createAgent` payload has no
