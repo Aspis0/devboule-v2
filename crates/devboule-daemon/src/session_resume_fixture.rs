@@ -44,6 +44,17 @@ impl ResumeFixture {
             .expect("the row")
     }
 
+    /// Every id this fixture's journal holds: the shape a "no session was
+    /// born" claim is made against.
+    pub(super) fn row_ids(&self) -> Vec<String> {
+        self.journal()
+            .list()
+            .expect("list")
+            .into_iter()
+            .map(|record| record.id)
+            .collect()
+    }
+
     pub(super) fn resume(&self, id: &str, conn: &ConnHandle) -> Result<Session, WireError> {
         self.state
             .sessions

@@ -176,7 +176,7 @@ fn resume_preserves_the_original_created_at_ms() {
     let command = PtyCommand::new("cmd.exe", Vec::new(), std::env::temp_dir(), Vec::new());
     let session = session_metadata_for_resume(
         "s.client.1",
-        record,
+        &record,
         &command,
         "grok".to_string(),
         "peer-1".to_string(),
@@ -222,7 +222,7 @@ fn resume_metadata_kind_is_the_records_own_kind_not_the_provider_string() {
         );
         let session = session_metadata_for_resume(
             "s.client.1",
-            record,
+            &record,
             &command,
             provider_id.to_string(),
             "peer-1".to_string(),
@@ -246,7 +246,7 @@ fn resume_metadata_kind_is_the_records_own_kind_not_the_provider_string() {
     );
     let session = session_metadata_for_resume(
         "s.client.2",
-        record,
+        &record,
         &command,
         "pi".to_string(),
         "peer-1".to_string(),

@@ -23,6 +23,24 @@ pub(super) fn session_folder_gone(path: &str) -> WireError {
     )
 }
 
+/// The same sentence for the other refusal a recovery follows: the far side
+/// answered that it does not have this session. The daemon's fact comes first
+/// and the provider's own words are quoted after it, the shape
+/// [`session_folder_gone`] established — the notice a recovered session shows
+/// is where a human reads *why* the session they clicked could not be
+/// reopened, and the folder sentence would be a lie here.
+///
+/// The code is the internal disown sentinel and never reaches the caller: the
+/// refused handle keeps its original error, remapped to the wire code its
+/// family has always answered, so this value travels only as far as the notice
+/// and the recovered prompt.
+pub(super) fn provider_refused_session(message: &str) -> WireError {
+    WireError::new(
+        ErrorCode::SessionNotFound,
+        format!("the provider no longer has this session: {message}"),
+    )
+}
+
 /// A previous-run transcript is replaced without a teardown — it holds no
 /// process — but the pin it took when a client read it must go with it, or
 /// the row is never reclaimable again and nothing fails.

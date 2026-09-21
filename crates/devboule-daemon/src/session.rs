@@ -421,6 +421,13 @@ mod session_recovery;
 #[cfg(test)]
 #[path = "session_recovery_dir_tests.rs"]
 mod session_recovery_dir_tests;
+/// The refusal road of the recovery: the provider answers that it does not have
+/// the handle, so the conversation goes to a session that can start — and the
+/// negative control that keeps a transient failure from being papered over by
+/// one.
+#[cfg(test)]
+#[path = "session_recovery_refusal_tests.rs"]
+mod session_recovery_refusal_tests;
 #[cfg(test)]
 #[path = "session_recovery_tests.rs"]
 mod session_recovery_tests;
@@ -554,7 +561,7 @@ mod session_workspace_tests;
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
-use session_resume::resume_end_generation_detached;
+use session_resume::{provider_refused_session, resume_end_generation_detached};
 
 pub use event_pull::ConnHandle;
 pub(crate) use session_types::PendingEvent;
@@ -1881,9 +1888,9 @@ impl SessionRegistry {
         // metadata below, so keep a copy for the spawn outcome recording.
         let health_provider = provider.clone();
         // The failed-spawn arm below needs both facts this function already
-        // holds, and `record` is consumed by the metadata build: the family
-        // decides which wire code the failure keeps, and the handle the
-        // resume tried to load is what a retraction may name.
+        // holds, and each is copied off the row before the spawn moves what it
+        // takes: the family decides which wire code the failure keeps, and the
+        // handle the resume tried to load is what a retraction may name.
         let resumed_kind = record.kind.clone();
         let attempted_handle = peer_session_id.clone();
         // Resume does not create a session: echo the journal's original
@@ -1891,7 +1898,7 @@ impl SessionRegistry {
         // this field exists for.
         let metadata = session_metadata_for_resume(
             session_id,
-            record,
+            &record,
             &command,
             provider,
             peer_session_id.clone(),
@@ -1936,6 +1943,17 @@ impl SessionRegistry {
                 // handshake that never got an answer says nothing about the
                 // far session — the handle may still be perfectly good, so
                 // it stays and the offer stays with it.
+                //
+                // That asymmetry is the rule the recovery road below reads,
+                // and this predicate is the whole of it: the fallback runs
+                // when the provider says it does not have this session, never
+                // when the provider fails to answer. It is a clean line on
+                // this road — the two disown proofs above are the *only*
+                // producers of this code here (Codex' and Pi's respawns answer
+                // `Io` and `InvalidRequest` only) — so a provider that timed
+                // out, a pipe that broke, or a process that never started
+                // cannot be mistaken for a refused session and hidden behind
+                // a new one.
                 let peer_disowned = error.code == ErrorCode::SessionNotFound;
                 if peer_disowned {
                     // The classification is a channel the daemon reads, never
@@ -1997,6 +2015,28 @@ impl SessionRegistry {
                     attempted_handle,
                 );
                 state.record_provider_health(&health_provider, Err(&error));
+                // A refused handle is not a dead end: the conversation is in
+                // this daemon's journal, so it goes to a session of the same
+                // family that can start. Both facts stay true at once — the
+                // old row keeps the mark (that provider will not reopen this
+                // handle, and the offer is gone with it) and beside it the
+                // recovered session exists.
+                if peer_disowned {
+                    let reason = provider_refused_session(&error.message);
+                    match self.recover_session(state, &record, &reason, owner, conn) {
+                        Ok(session) => return Ok(session),
+                        // Nothing was ever said in this session, or the
+                        // replacement could not be built: the refusal is what
+                        // the app has always read for this answer, and it
+                        // stands exactly as it did, with only this line to
+                        // say the recovery did not happen.
+                        Err(recovery_error) => eprintln!(
+                            "session {session_id} was not recovered from the journal after its \
+                             provider refused the handle: {}",
+                            recovery_error.message
+                        ),
+                    }
+                }
                 return Err(error);
             }
         }

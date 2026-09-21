@@ -161,10 +161,15 @@ fn a_failed_respawn_ends_the_generation_and_gives_back_its_slot() {
 /// thread *and* on the fallback thread — the two roads write the same
 /// idempotent column), and a cached `Transcript` entry hydrated during the
 /// spawn window is evicted so it cannot serve a stale `resumable`.
+///
+/// It is also the refusal road's lowest bound: this handle is refused and the
+/// row has nothing said in it, so there is no conversation for a replacement to
+/// carry and the refusal stands, with no second row born.
 /// Mutants: the classification read off the error code (a dropped
 /// `SessionNotFound` test leaves the family's own wire code and writes no
 /// mark), the stale-transcript eviction dropped, the end-marker thread
-/// dropped.
+/// dropped, the recovery triggered without a conversation to recover (a second
+/// row appears and the `row_ids` assertion dies).
 #[test]
 fn a_disowned_handle_is_marked_and_the_stale_transcript_entry_is_evicted() {
     let fixture = ResumeFixture::new("disowned");
@@ -220,6 +225,11 @@ fn a_disowned_handle_is_marked_and_the_stale_transcript_entry_is_evicted() {
         row.disowned_peer_session_id.as_deref(),
         Some("handle-disowned"),
         "the mark names the handle the resume tried to load"
+    );
+    assert_eq!(
+        fixture.row_ids(),
+        vec![id.clone()],
+        "a refused handle with nothing to recover is not replaced by a new session"
     );
     fixture.finish();
 }

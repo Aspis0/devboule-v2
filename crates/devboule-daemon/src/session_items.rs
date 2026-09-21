@@ -379,20 +379,24 @@ pub(super) fn elapsed_ms_since_last_life(
 /// Wire metadata for a resumed session. `created_at_ms` is copied from the
 /// journal row — resume does not mint a new session, and a fresh timestamp
 /// would make a stored `(id, created_at_ms)` pair look stale.
+///
+/// The row is borrowed, not consumed: the failed-spawn arm rebuilds a session
+/// from that same row when the provider refuses the handle, so `resume` keeps
+/// it for the length of the call.
 pub(super) fn session_metadata_for_resume(
     session_id: &str,
-    record: SessionRecord,
+    record: &SessionRecord,
     command: &PtyCommand,
     provider: String,
     peer_session_id: String,
     generation: u64,
 ) -> Session {
-    // Read before the record is consumed field by field below.
+    // Read before the fields are copied out below.
     let context_id = record.context();
     let kind = record.kind.clone();
     Session {
         id: session_id.to_string(),
-        workspace_id: record.workspace_id,
+        workspace_id: record.workspace_id.clone(),
         cwd: Some(crate::workspace::display_path(
             &command.cwd.to_string_lossy(),
         )),
@@ -415,7 +419,7 @@ pub(super) fn session_metadata_for_resume(
         // every ACP row AND stays right for a future family, because that
         // family's rows carry its own kind.
         kind,
-        title: record.title,
+        title: record.title.clone(),
         provider: Some(provider),
         peer_session_id: Some(peer_session_id),
         state: SessionState::Live { generation },
@@ -427,17 +431,17 @@ pub(super) fn session_metadata_for_resume(
         // Both of these are the journal's now (audit S5-12): a resumed session
         // is the same session, so it comes back under the name the human saw
         // and with the parent it was created by.
-        display_name: record.display_name,
-        created_by: record.created_by,
+        display_name: record.display_name.clone(),
+        created_by: record.created_by.clone(),
         // And so are the creation-from-profile facts (v11): the profile it was
         // started from, the context it belongs to, the marker it was born with
         // and its labels. A resume is not a creation, so none of them is
         // re-derived here — a child born `yes` comes back `yes` even if its
         // profile has been un-ticked or edited in the meantime.
-        profile_id: record.profile_id,
+        profile_id: record.profile_id.clone(),
         context_id: Some(context_id),
         unattended: record.unattended_state,
-        labels: record.labels,
+        labels: record.labels.clone(),
         // Live under a new generation: resume-while-running is refused, so a
         // just-resumed row never offers it. Views recompute on every serve.
         resumable: false,
