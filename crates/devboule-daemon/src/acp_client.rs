@@ -71,6 +71,23 @@ const MAX_ACP_PERMISSION_LINE_BYTES: usize = 256 * 1024;
 const ACP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
 
+/// The bound on the provider's **first** answer — its `initialize` reply.
+///
+/// Every other awaited rpc is agent work on a child that has already spoken,
+/// so fifteen seconds is the same patience the rest of the daemon carries.
+/// The first one is not agent work: it is the provider's own startup, and for
+/// an `npx` wrapper that means a package download the daemon can neither see
+/// nor hurry. Measured 2026-09-21 against
+/// `npx -y @agentclientprotocol/claude-agent-acp@0.79.0` by hand: 2.4 s warm,
+/// 14.1 s with a fresh npm cache, and 20.7 s on a run whose cache was already
+/// warm — the same command, twenty seconds of startup with nothing on stderr.
+/// The fifteen-second bound is below that spread, and it was read by the
+/// committente as *"the ACP did not answer within 15s"* for an agent that was
+/// only downloading. Two minutes is three times the slowest start measured
+/// and stops short of leaving a person in front of a dead window.
+const ACP_FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
+const FIRST_RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_FIRST_RESPONSE_TIMEOUT_MS";
+
 type AcpModeResponses = Arc<Mutex<HashMap<u64, Sender<Result<(), String>>>>>;
 
 fn turn_silence() -> Duration {
@@ -93,6 +110,18 @@ fn response_timeout() -> Duration {
         .map(Duration::from_millis)
         .filter(|duration| !duration.is_zero())
         .unwrap_or(ACP_RESPONSE_TIMEOUT)
+}
+
+/// See [`ACP_FIRST_RESPONSE_TIMEOUT`]. Read through its own variable so a test
+/// that needs a mute provider bounds that wait without touching the fifteen
+/// seconds every other awaited rpc keeps.
+fn first_response_timeout() -> Duration {
+    std::env::var(FIRST_RESPONSE_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(Duration::from_millis)
+        .filter(|duration| !duration.is_zero())
+        .unwrap_or(ACP_FIRST_RESPONSE_TIMEOUT)
 }
 
 /// Whether the child's stdout can be read without blocking.
@@ -162,6 +191,7 @@ fn stdout_blocks_until_bytes(_reader: &BufReader<ChildStdout>) -> Result<bool, (
 fn read_line_bounded(
     reader: &mut BufReader<ChildStdout>,
     deadline: Instant,
+    budget: Duration,
 ) -> Result<String, WireError> {
     let mut line: Vec<u8> = Vec::new();
     loop {
@@ -174,7 +204,7 @@ fn read_line_bounded(
                 ErrorCode::Io,
                 format!(
                     "the ACP agent did not answer within {}s; the creation is refused rather than awaited without end",
-                    response_timeout().as_secs()
+                    budget.as_secs()
                 ),
             ));
         }
@@ -766,8 +796,10 @@ fn spawn_process_with_load(
             // the teardown, through the same pre-kill poll the delivery arm
             // uses: a post-kill `try_wait` sees our own kill's cached status
             // and names every handshake failure an exit, including one the
-            // daemon caused on a live agent.
-            let exited = provider_exited_before_teardown(&process);
+            // daemon caused on a live agent. The arm also carries the code the
+            // child left with: "the agent is gone" and "the agent is gone with
+            // 1" are different facts, and only the second one can be acted on.
+            let exited = provider_exit_before_teardown(&process);
             let mut killer = AcpKiller {
                 process: Arc::clone(&process),
                 transport: Arc::clone(&transport),
@@ -784,7 +816,7 @@ fn spawn_process_with_load(
             }
             let stderr_lines = stderr_source.discard_and_join();
             drop(process_job);
-            if exited {
+            if let Some(code) = exited {
                 // The boundary is *named* on top of the provider's own words:
                 // a caller reads "provider exited during startup" and the
                 // provider's last line stays in the message for the human.
@@ -792,8 +824,9 @@ fn spawn_process_with_load(
                     WireError::new(
                         error.code,
                         format!(
-                            "provider exited during startup: {}",
-                            bounded_excerpt(&error.message, MAX_HANDSHAKE_MESSAGE_BYTES)
+                            "provider exited during startup: {}{}",
+                            bounded_excerpt(&error.message, MAX_HANDSHAKE_MESSAGE_BYTES),
+                            exit_code_suffix(code)
                         ),
                     ),
                     &stderr_lines,
@@ -837,7 +870,7 @@ fn spawn_process_with_load(
         // with an error and was then torn down.
         // The same pre-kill read the handshake arm makes: a live agent that
         // answered with an error must not be named as an exited provider.
-        let exited = provider_exited_before_teardown(&process);
+        let exited = provider_exit_before_teardown(&process);
         let mut killer = AcpKiller {
             process: Arc::clone(&process),
             transport: Arc::clone(&transport),
@@ -854,13 +887,14 @@ fn spawn_process_with_load(
         }
         let stderr_lines = stderr_source.discard_and_join();
         drop(process_job);
-        if exited {
+        if let Some(code) = exited {
             return Err(redact_handshake_error(
                 WireError::new(
                     error.code,
                     format!(
-                        "provider exited during startup: {}",
-                        bounded_excerpt(&error.message, MAX_HANDSHAKE_MESSAGE_BYTES)
+                        "provider exited during startup: {}{}",
+                        bounded_excerpt(&error.message, MAX_HANDSHAKE_MESSAGE_BYTES),
+                        exit_code_suffix(code)
                     ),
                 ),
                 &stderr_lines,
@@ -2076,33 +2110,54 @@ fn apply_profile_delivery(
     Ok(())
 }
 
+/// Whether the provider is gone before the teardown, and the code it left
+/// with.
+///
+/// The read happens **before** the teardown: after the kill the exit status is
+/// ours, and naming from a post-kill read would fire for every refusal,
+/// including an agent that answered with an error and was then torn down —
+/// which is exactly what the handshake arm's old post-kill read did (the
+/// re-audit's P3-1 note). A child whose stdout the daemon just read EOF from is
+/// on its way out: its exit becomes observable a beat after the pipe closes,
+/// hence the short bounded poll rather than one `try_wait`.
+///
+/// `None` — still running (a live agent that answered an error, or one that is
+/// merely slow). `Some(None)` — gone with no code to name (killed, or a status
+/// this platform does not report as a code). `Some(Some(code))` — gone, and the
+/// code is the provider's own last word about why.
+fn provider_exit_before_teardown(process: &Arc<Mutex<std::process::Child>>) -> Option<Option<i32>> {
+    for _ in 0..40 {
+        let status = process
+            .lock()
+            .ok()
+            .and_then(|mut process| process.try_wait().ok().flatten());
+        if let Some(status) = status {
+            return Some(status.code());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    None
+}
+
+/// The exit code as the sentence's own tail, or nothing when there is none.
+/// A provider killed by a signal reports no code, and "exit code 0" would be a
+/// lie about it: the absence is stated by saying nothing rather than by a
+/// number nobody measured.
+fn exit_code_suffix(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!(" (the child's exit code was {code})"),
+        None => String::new(),
+    }
+}
+
 /// The creation-time switch confirmation, primary and follow-up: each
 /// response is read on the spot and its pending entries retired here,
 /// because the reader that would dispatch them never sees this response. An
 /// error answer — or a peer that dies waiting — is the creation's refusal.
-/// Whether the provider has already exited on its own, read **before** the
-/// teardown: after the kill the exit status is ours, and naming from a
-/// post-kill read would fire for every refusal, including an agent that
-/// answered with an error and was then torn down — which is exactly what the
-/// handshake arm's old post-kill read did (the re-audit's P3-1 note). A child
-/// whose stdout the daemon just read EOF from is on its way out: its exit
-/// becomes observable a beat after the pipe closes, hence the short bounded
-/// poll rather than one `try_wait`.
-fn provider_exited_before_teardown(process: &Arc<Mutex<std::process::Child>>) -> bool {
-    for _ in 0..40 {
-        let exited = process
-            .lock()
-            .ok()
-            .and_then(|mut process| process.try_wait().ok().flatten())
-            .is_some();
-        if exited {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    false
-}
-
+///
+/// (The paragraph sat on `provider_exit_before_teardown` until the recovery
+/// slice: it describes this function, and the exit status it mentions is the
+/// one the handshake arm reads.)
 fn confirm_switch(
     transport: &Arc<AcpTransport>,
     reader: &mut BufReader<ChildStdout>,
@@ -2136,7 +2191,7 @@ fn confirm_one_switch(
     id: u64,
     delivery: &ProfileDelivery,
 ) -> Result<(), WireError> {
-    let response = read_response_envelope(transport, reader, id, deferred);
+    let response = read_response_envelope(transport, reader, id, deferred, response_timeout());
     transport.remove_pending_id(id);
     transport.remove_model_switch(id);
     let response = response?;
@@ -2245,7 +2300,13 @@ fn handshake(
     let initialize_id = transport
         .request("initialize", advertised_initialize_params()?)
         .map_err(acp_io_error)?;
-    let initialize = read_response(transport, reader, initialize_id, &mut deferred)?;
+    let initialize = read_response(
+        transport,
+        reader,
+        initialize_id,
+        &mut deferred,
+        first_response_timeout(),
+    )?;
     let negotiated = initialize
         .get("result")
         .and_then(|result| result.get("protocolVersion"))
@@ -2292,6 +2353,7 @@ fn handshake(
         session_request_id,
         &mut deferred,
         load_session_id,
+        response_timeout(),
     )?;
     let session_id = match load_session_id {
         Some(session_id) if !session_id.is_empty() => session_id.to_string(),
@@ -2350,7 +2412,13 @@ fn handshake(
                     }),
                 )
                 .map_err(acp_io_error)?;
-            let _ = read_response(transport, reader, request_id, &mut deferred)?;
+            let _ = read_response(
+                transport,
+                reader,
+                request_id,
+                &mut deferred,
+                response_timeout(),
+            )?;
         }
         if let Some(SessionEvent::SessionManifest {
             modes: Some(modes), ..
@@ -2367,8 +2435,9 @@ fn read_response(
     reader: &mut BufReader<ChildStdout>,
     expected_id: u64,
     deferred: &mut Vec<serde_json::Value>,
+    budget: Duration,
 ) -> Result<serde_json::Value, WireError> {
-    let value = read_response_envelope(transport, reader, expected_id, deferred)?;
+    let value = read_response_envelope(transport, reader, expected_id, deferred, budget)?;
     if let Some(error) = value.get("error") {
         return Err(WireError::new(
             ErrorCode::Io,
@@ -2390,8 +2459,9 @@ fn read_session_response(
     expected_id: u64,
     deferred: &mut Vec<serde_json::Value>,
     load_session_id: Option<&str>,
+    budget: Duration,
 ) -> Result<serde_json::Value, WireError> {
-    let value = read_response_envelope(transport, reader, expected_id, deferred)?;
+    let value = read_response_envelope(transport, reader, expected_id, deferred, budget)?;
     let Some(error) = value.get("error") else {
         return Ok(value);
     };
@@ -2512,13 +2582,15 @@ fn read_response_envelope(
     reader: &mut BufReader<ChildStdout>,
     expected_id: u64,
     deferred: &mut Vec<serde_json::Value>,
+    budget: Duration,
 ) -> Result<serde_json::Value, WireError> {
     // One deadline per awaited response: every read below is made against
-    // it, so the handshake rpcs and the confirm share the bound (the
-    // re-audit's P2-2).
-    let deadline = Instant::now() + response_timeout();
+    // it, so an rpc's own wait is the whole of what it is given (the
+    // re-audit's P2-2). `budget` is the caller's: the first answer covers
+    // the provider's startup, every later one the agent's own work.
+    let deadline = Instant::now() + budget;
     loop {
-        let line = read_line_bounded(reader, deadline)?;
+        let line = read_line_bounded(reader, deadline, budget)?;
         let line = line.trim_end_matches('\n').trim_end_matches('\r');
         let value = match serde_json::from_str::<serde_json::Value>(line) {
             Ok(value) => value,

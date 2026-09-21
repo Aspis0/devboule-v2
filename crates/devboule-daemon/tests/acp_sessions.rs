@@ -6036,3 +6036,163 @@ fn a_grandchild_shares_the_context_of_the_human_session_it_came_from() {
     );
     assert_eq!(grandchild.created_by.as_deref(), Some(child.id.as_str()));
 }
+
+/// Extra stub knobs for one test, cleared when it ends.
+///
+/// `AcpTest::new_with_options` takes flags and clears its own variables; the
+/// leaves below need knobs that carry a *value* (a message, a code), so they
+/// are set here — before the daemon is spawned, because the daemon and the
+/// provider it launches inherit this process's environment — and removed on
+/// drop, in the same way the harness's own guard removes its own.
+struct StubKnobs(Vec<&'static str>);
+
+impl StubKnobs {
+    fn set(extra: &[(&'static str, String)]) -> Self {
+        for (name, value) in extra {
+            std::env::set_var(name, value);
+        }
+        Self(extra.iter().map(|(name, _)| *name).collect())
+    }
+}
+
+impl Drop for StubKnobs {
+    fn drop(&mut self) {
+        for name in self.0.drain(..) {
+            std::env::remove_var(name);
+        }
+    }
+}
+
+fn resume_error(test: &AcpTest, session_id: &str) -> devboule_protocol::WireError {
+    let error = test
+        .client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session_id.to_string(),
+                },
+            },
+            None,
+        )
+        .expect_err("the resume is refused");
+    match error {
+        devboule_daemon::DaemonError::Handshake(wire) => wire,
+        other => panic!("expected the daemon's own ACP sentence, got {other:?}"),
+    }
+}
+
+/// The truth the app was missing (measured 2026-09-21): the agent answers
+/// `session/load` in 42 ms with a JSON-RPC error naming the folder that is
+/// gone, and the human must read **that** — code, message, path — not a
+/// deadline the agent never missed.
+///
+/// Mutants: the error object dropped for the generic transport sentence (the
+/// message would be the EOF or the timeout text instead of the provider's);
+/// `acp_request_error_message` serialising the whole object (the code and the
+/// diagnosis would arrive as JSON).
+#[test]
+fn a_provider_refusal_on_load_reaches_the_human_in_the_providers_own_words() {
+    let _test_lock = lock_tests();
+    let message = concat!(
+        "Invalid params: `cwd` does not exist on the machine running the agent: ",
+        "C:",
+        r"\gone-worktree\src-tauri"
+    );
+    let _knobs = StubKnobs::set(&[
+        ("DEVBOULE_STUB_ERROR_LOAD_MESSAGE", message.to_string()),
+        ("DEVBOULE_STUB_ERROR_LOAD_CODE", "-32602".to_string()),
+    ]);
+    let test = AcpTest::new(&[]);
+    let session = stopped_zero_turn_session(&test);
+
+    let wire = resume_error(&test, &session.id);
+    assert_eq!(
+        wire.code,
+        ErrorCode::Io,
+        "the provider answered: this is not a missing session: {wire:?}"
+    );
+    assert!(
+        wire.message
+            .starts_with(&format!("ACP request failed (-32602): {message}")),
+        "the agent's own words, with its code, and the provider's stderr after them: {}",
+        wire.message
+    );
+    assert!(
+        !wire.message.contains("did not answer within"),
+        "an agent that answered in 42 ms is not a silent one: {}",
+        wire.message
+    );
+}
+
+/// The second branch of the same precedence: the child is **gone**, so the
+/// sentence names the code it left with, and its last words travel with it.
+/// "The agent is gone" and "the agent is gone with 1" are different facts, and
+/// only the second one can be acted on.
+///
+/// Mutants: the exit code dropped (`provider_exit_before_teardown` back to a
+/// bool — the message says the provider exited and nothing about why); the
+/// stderr excerpt dropped (`redact_handshake_error` not called — the marker the
+/// child wrote is what names the failure, and the test dies on it).
+#[test]
+fn a_provider_that_dies_on_load_is_named_with_its_exit_code_and_its_last_words() {
+    let _test_lock = lock_tests();
+    let _knobs = StubKnobs::set(&[("DEVBOULE_STUB_DIE_ON_LOAD", "1".to_string())]);
+    let test = AcpTest::new(&[]);
+    let session = stopped_zero_turn_session(&test);
+
+    let wire = resume_error(&test, &session.id);
+    assert!(
+        wire.message.contains("provider exited during startup: "),
+        "the death is named as a death, not as a protocol fault: {}",
+        wire.message
+    );
+    assert!(
+        wire.message.contains("(the child's exit code was 1)"),
+        "the code the child left with: {}",
+        wire.message
+    );
+    assert!(
+        wire.message.contains("stub-agent died on session/load"),
+        "the child's own last line is what names the failure: {}",
+        wire.message
+    );
+}
+
+/// The third branch, and only the third: no answer, no exit — the provider is
+/// alive and mute. Then the deadline sentence is the truth, it names the budget
+/// that actually fired, and that budget is the **first answer's** (the ordinary
+/// one is set four times shorter here, so a message saying "within 0s" is the
+/// wrong budget wearing the right sentence).
+///
+/// Mutants: the first-answer budget dropped from the `initialize` read (the
+/// ordinary budget fires and the sentence names it); the silence arm turned
+/// into the JSON-RPC error arm (a mute provider would be reported as refusing).
+#[test]
+fn a_mute_provider_is_refused_by_the_first_answer_budget_and_says_which_one_fired() {
+    let _test_lock = lock_tests();
+    let _knobs = StubKnobs::set(&[
+        ("DEVBOULE_STUB_IGNORE_INITIALIZE", "1".to_string()),
+        ("DEVBOULE_ACP_RESPONSE_TIMEOUT_MS", "250".to_string()),
+        ("DEVBOULE_ACP_FIRST_RESPONSE_TIMEOUT_MS", "1500".to_string()),
+    ]);
+    let test = AcpTest::new(&[]);
+
+    let error = test
+        .client
+        .session_create(None, SessionKind::Acp, None)
+        .expect_err("a provider that never answers never becomes a session");
+    let wire = match error {
+        devboule_daemon::DaemonError::Handshake(wire) => wire,
+        other => panic!("expected the daemon's own ACP sentence, got {other:?}"),
+    };
+    assert!(
+        wire.message.contains("did not answer within 1s"),
+        "the first answer's own budget, in whole seconds: {}",
+        wire.message
+    );
+    assert!(
+        !wire.message.contains("did not answer within 0s"),
+        "the ordinary budget's 250 ms is not what bounded the first answer: {}",
+        wire.message
+    );
+}

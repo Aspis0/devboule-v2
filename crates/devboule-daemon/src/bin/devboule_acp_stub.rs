@@ -307,6 +307,13 @@ fn main() -> io::Result<()> {
                     eprintln!("stub-agent startup failure stderr marker");
                     return Ok(());
                 }
+                // A provider that is still starting: the request is read and
+                // nothing is answered. The daemon's bound is then the only
+                // thing that can end the wait, which is what this knob exists
+                // to exercise.
+                if std::env::var_os("DEVBOULE_STUB_IGNORE_INITIALIZE").is_some() {
+                    continue;
+                }
                 respond(
                     &mut stdout,
                     request.get("id").cloned(),
@@ -509,6 +516,29 @@ fn main() -> io::Result<()> {
                                 "request": {"sessionId": asked}
                             }
                         }),
+                    )?;
+                    continue;
+                }
+                // Leave without answering, and with a code: the daemon's load
+                // read hits EOF on a child that is already gone, which is the
+                // one case the exit code has to explain.
+                if std::env::var_os("DEVBOULE_STUB_DIE_ON_LOAD").is_some() {
+                    eprintln!("stub-agent died on session/load: stderr marker");
+                    std::process::exit(1);
+                }
+                // Any error the test needs, verbatim. Real peers refuse a
+                // session whose working directory is gone with InvalidParams
+                // and the path in the message, and the daemon must repeat that
+                // message instead of inventing a deadline for it.
+                if let Ok(message) = std::env::var("DEVBOULE_STUB_ERROR_LOAD_MESSAGE") {
+                    let code = std::env::var("DEVBOULE_STUB_ERROR_LOAD_CODE")
+                        .ok()
+                        .and_then(|value| value.parse::<i64>().ok())
+                        .unwrap_or(-32602);
+                    respond_error(
+                        &mut stdout,
+                        request.get("id").cloned(),
+                        json!({"code": code, "message": message}),
                     )?;
                     continue;
                 }
@@ -832,6 +862,20 @@ fn main() -> io::Result<()> {
                     .and_then(|prompt| prompt.get("text"))
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                // The verbatim prompt, when a test asks for it. The stdin file
+                // records method names only, which cannot tell *what* the
+                // daemon wrote; a test that asserts on the prompt's text needs
+                // the agent's own copy of it, not the daemon's transcript.
+                if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_PROMPT_FILE") {
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&file)
+                        .and_then(|mut handle| {
+                            use std::io::Write;
+                            writeln!(handle, "{prompt_text}")
+                        });
+                }
                 if prompt_text.contains("block") {
                     continue;
                 }
