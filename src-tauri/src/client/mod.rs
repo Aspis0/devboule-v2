@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use devboule_daemon::{
     connect_or_spawn, current_user_sid, daemon_file_name, DaemonClient, DaemonError, DaemonState,
-    EventHandler, RuntimePaths, SessionStateHandler,
+    EventHandler, ExitReason, RuntimePaths, SessionStateHandler,
 };
 use devboule_protocol::{
     ClientHello, Cursor, DaemonStatusBody, ErrorCode, SessionEvent, SessionEventEnvelope,
@@ -1490,9 +1490,28 @@ enum StatusLoopExit {
     Stopped,
 }
 
-/// Whether the record on disk says the daemon left on purpose. One function
-/// for the two callers: the connect that was refused, and the connection that
-/// was lost after the daemon had been serving.
+/// Whether the record says the daemon was *asked* to stop, which is a decision
+/// of someone else's — the app does not overrule it.
+///
+/// `Idle` is not that decision. It is the daemon concluding that nobody was
+/// using it, and it is dated a second after the connection this process just
+/// lost: when the app is here asking, the daemon was wrong about being alone,
+/// and the answer is to bring it back rather than to disappear.
+fn record_declares_a_requested_exit(paths: &RuntimePaths) -> bool {
+    matches!(
+        DaemonState::read(&paths.lock_file),
+        DaemonState::Stopped(_, ExitReason::Requested)
+    )
+}
+
+/// Whether the record says the daemon left at all, whatever the reason: a
+/// daemon that wrote a goodbye did not crash, so the connect it refused must
+/// not be charged to the brake.
+///
+/// An `Idle` goodbye is a yes here and a no above, because the two callers ask
+/// different questions — "was that departure a crash?" and "must the app stand
+/// down?". Both read the record through `DaemonState::read`, which cannot
+/// disturb the daemon: it is a file, not a connection.
 fn record_declares_exit(paths: &RuntimePaths) -> bool {
     matches!(
         DaemonState::read(&paths.lock_file),
@@ -1506,9 +1525,10 @@ fn record_declares_exit(paths: &RuntimePaths) -> bool {
 /// The two are one event at the wire — a pipe that is not there — and they do
 /// not want the same answer: a daemon that recorded why it stopped is not a
 /// crash-loop symptom, so it must not feed the brake. The record is read here
-/// at the failed connect; the supervisor's lost-connection arm asks the same
-/// question through `daemon_declared_exit`. Reading cannot disturb the daemon:
-/// it is a file, not a connection.
+/// at the failed connect; the supervisor's lost-connection arm asks the
+/// narrower question — a stop someone *requested* — through
+/// `daemon_declared_exit`. Reading cannot disturb the daemon: it is a file,
+/// not a connection.
 pub(super) struct ConnectFailure {
     message: String,
     declared_exit: bool,
@@ -1649,9 +1669,11 @@ where
                     // then the brake delays, ceilinged. Only a deliberate
                     // stop terminates the supervisor itself.
                     StatusLoopExit::ConnectionLost => {
-                        // A daemon that said why it left did not crash, and
+                        // A daemon that was *asked* to stop did not crash, and
                         // starting it again would overrule a decision the app
-                        // did not make. Stop, as a deliberate stop does.
+                        // did not make. Stop, as a deliberate stop does. An
+                        // idle exit is not that decision — see
+                        // `record_declares_a_requested_exit`.
                         if declared() {
                             return SupervisorLoopExit::Stopped;
                         }
@@ -1713,10 +1735,10 @@ fn retry_status_message(delay: Duration, cause: Option<&str>) -> Option<String> 
     })
 }
 
-/// The same record question for a connection that was lost: a runtime folder
-/// that cannot be resolved has no goodbye to report.
+/// The record question for a connection that was lost: a runtime folder that
+/// cannot be resolved has no goodbye to report.
 fn daemon_declared_exit() -> bool {
-    RuntimePaths::from_env().is_ok_and(|paths| record_declares_exit(&paths))
+    RuntimePaths::from_env().is_ok_and(|paths| record_declares_a_requested_exit(&paths))
 }
 
 fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {

@@ -1454,6 +1454,89 @@ fn a_record_that_says_the_daemon_left_is_read_off_disk_not_guessed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A record on disk for a connection that was lost, written by this test and
+/// dated by the write. The folder name says nothing about the reason, so only
+/// the record can decide the answer.
+fn lost_connection_record(reason: ExitReason) -> (RuntimePaths, PathBuf) {
+    static COUNTER: AtomicUsize = AtomicUsize::new(1);
+    let dir = std::env::temp_dir().join(format!(
+        "devboule lost connection {}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let paths = RuntimePaths::from_dir(dir.clone());
+    let mut record = devboule_daemon::DaemonRecord::starting(1, "1-1", &paths.pipe_name);
+    record.stopped(reason);
+    std::fs::write(&paths.lock_file, record.body()).expect("write record");
+    (paths, dir)
+}
+
+/// The production answer, asked of a real record: a stop someone requested is
+/// the one goodbye that ends the supervisor instead of bringing the daemon
+/// back.
+#[test]
+fn a_requested_goodbye_on_disk_ends_the_lost_connection_loop() {
+    let (paths, dir) = lost_connection_record(ExitReason::Requested);
+    let stop = AtomicBool::new(false);
+    let mut connect_attempts = 0;
+    let mut sleeps = 0;
+    let outcome = run_supervisor_loop(
+        &stop,
+        || {
+            connect_attempts += 1;
+            Ok(())
+        },
+        || record_declares_a_requested_exit(&paths),
+        |_| StatusLoopExit::ConnectionLost,
+        |_, _| {
+            sleeps += 1;
+            sleeps < 4
+        },
+        Instant::now,
+    );
+
+    assert_eq!(outcome, SupervisorLoopExit::Stopped);
+    assert_eq!(connect_attempts, 1, "a requested goodbye is not respawned");
+    assert_eq!(sleeps, 0, "and it does not go back to the connect path");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The mirror, and the reason the filter exists: an idle goodbye is the daemon
+/// concluding nobody was using it, dated a second after the connection this
+/// app just lost. The loop goes back to connecting, as it did before this path
+/// read the record at all; stopping here is what left the app with no daemon
+/// until it was restarted.
+#[test]
+fn an_idle_goodbye_on_disk_does_not_end_the_lost_connection_loop() {
+    let (paths, dir) = lost_connection_record(ExitReason::Idle);
+    let stop = AtomicBool::new(false);
+    let mut connect_attempts = 0;
+    let mut sleeps = 0;
+    let outcome = run_supervisor_loop(
+        &stop,
+        || {
+            connect_attempts += 1;
+            Ok(())
+        },
+        || record_declares_a_requested_exit(&paths),
+        |_| StatusLoopExit::ConnectionLost,
+        |_, _| {
+            sleeps += 1;
+            sleeps < 4
+        },
+        Instant::now,
+    );
+
+    assert_eq!(outcome, SupervisorLoopExit::Stopped);
+    assert!(
+        connect_attempts > 1,
+        "an idle goodbye must not stop the loop: it connected {connect_attempts} time(s)"
+    );
+    assert!(sleeps > 0, "and it went back through the reconnect path");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn an_immediate_connected_loss_passes_no_cause_to_backoff_sleep() {
     let stop = AtomicBool::new(false);
