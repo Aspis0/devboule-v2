@@ -83,8 +83,14 @@ const RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
 /// warm — the same command, twenty seconds of startup with nothing on stderr.
 /// The fifteen-second bound is below that spread, and it was read by the
 /// committente as *"the ACP did not answer within 15s"* for an agent that was
-/// only downloading. Two minutes is three times the slowest start measured
-/// and stops short of leaving a person in front of a dead window.
+/// only downloading. The two minutes are **5.8×** the slowest start measured:
+/// the margin a machine several times slower than this one gets, and above
+/// every wait the product's own family documents (60 s for a client rpc and a
+/// run's start, 65 s for the phone's history sync, 90 s to list importable
+/// sessions). That is a declared **product judgement, not a measurement of its
+/// own** — no cold start was timed through the daemon — and it is the whole
+/// window a person waits: the app's `sessionResume` carries no client timeout
+/// (`src/lib/tauri.ts:543-546`), so nothing else bounds it.
 const ACP_FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 const FIRST_RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_FIRST_RESPONSE_TIMEOUT_MS";
 
