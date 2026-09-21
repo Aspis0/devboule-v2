@@ -63,8 +63,20 @@ pub const STALE_AFTER: Duration =
 /// outlives the process that wrote it — but not the record's authority: past
 /// this window the reason is history, not an instruction. Keeping it deciding
 /// would let a body nobody has touched in minutes disarm the crash brake
-/// forever. The window is the heartbeat window: one age rule for the file.
+/// forever. The window is the heartbeat window: one age rule for the file, and
+/// [`GOODBYE_CLOCK_SLACK`] is the only other side of it.
 pub const GOODBYE_TRUSTED_FOR: Duration = STALE_AFTER;
+
+/// How far ahead of this clock a goodbye may be dated and still be believed.
+///
+/// The date is written on this machine, on this clock, so the only thing a
+/// future date can be is a correction that moved the clock between the write
+/// and the read: a few seconds is as far as that goes, and a date further
+/// ahead is one this clock cannot vouch for. Without the bound `heartbeat_age`
+/// reads a future date as the freshest possible goodbye — `duration_since`
+/// fails and the failure is read as zero — so the record would decide at any
+/// distance, and start deciding again every time now caught up with it.
+pub const GOODBYE_CLOCK_SLACK: Duration = Duration::from_secs(5);
 
 /// Why a daemon stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,11 +223,10 @@ impl DaemonState {
         let Some(record) = DaemonRecord::parse(&body) else {
             return Self::Absent;
         };
-        let age = heartbeat_age(&metadata);
         match record.exit {
-            Some(reason) if age <= GOODBYE_TRUSTED_FOR => Self::Stopped(record, reason),
+            Some(reason) if goodbye_decides(&metadata) => Self::Stopped(record, reason),
             Some(_) => Self::Stale(record),
-            None if age <= STALE_AFTER => Self::Live(record),
+            None if heartbeat_age(&metadata) <= STALE_AFTER => Self::Live(record),
             None => Self::Stale(record),
         }
     }
@@ -238,6 +249,30 @@ impl DaemonState {
     }
 }
 
+/// Whether a goodbye is dated close enough to now to still decide.
+///
+/// Only the goodbye gets the two-sided window. A future date on a *beat* means
+/// a live daemon and is benign; a goodbye dated ahead is not an instruction
+/// this clock can date, and `heartbeat_age`'s saturation to zero would
+/// otherwise make it the freshest goodbye there is for as long as it sits
+/// ahead of now.
+fn goodbye_decides(metadata: &std::fs::Metadata) -> bool {
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    let now = SystemTime::now();
+    match now.duration_since(modified) {
+        Ok(age) => age <= GOODBYE_TRUSTED_FOR,
+        Err(_) => modified
+            .duration_since(now)
+            .is_ok_and(|ahead| ahead <= GOODBYE_CLOCK_SLACK),
+    }
+}
+
+/// The age a beat is judged by. A modification time that cannot be read, or
+/// one ahead of now, reads as zero — "just beat" — which is the benign
+/// direction for liveness and the reason a goodbye is dated by
+/// [`goodbye_decides`] instead.
 fn heartbeat_age(metadata: &std::fs::Metadata) -> Duration {
     metadata
         .modified()

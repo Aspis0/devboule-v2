@@ -34,6 +34,14 @@ fn age(path: &Path, age: Duration) {
     file.set_modified(SystemTime::now() - age).expect("age");
 }
 
+/// Move the record's modification time ahead of now, which no beat and no
+/// shutdown path ever does: it stands in for a clock that was corrected
+/// between the write and the read.
+fn date_ahead(path: &Path, ahead: Duration) {
+    let file = OpenOptions::new().write(true).open(path).expect("open");
+    file.set_modified(SystemTime::now() + ahead).expect("date");
+}
+
 fn write_record(dir: &Path, record: &DaemonRecord) -> PathBuf {
     let path = dir.join("daemon.lock");
     std::fs::write(&path, record.body()).expect("write record");
@@ -184,6 +192,46 @@ fn a_goodbye_that_aged_out_is_history_not_a_decision() {
             "the reason is still written down, it just no longer decides"
         ),
         other => panic!("an aged goodbye must not keep deciding, got {other:?}"),
+    }
+}
+
+/// A goodbye dated ahead of this clock is not an instruction this clock can
+/// date. Without the lower bound the age reads as zero — the freshest goodbye
+/// there is — at any distance, so the record would decide forever and start
+/// deciding again every time now caught up with it.
+#[test]
+fn a_goodbye_dated_ahead_of_the_clock_is_not_believed() {
+    let (dir, _guard) = unique_dir();
+    let mut record = running(999_999);
+    record.stopped(ExitReason::Requested);
+    let path = write_record(&dir, &record);
+    date_ahead(&path, GOODBYE_CLOCK_SLACK + Duration::from_secs(1));
+
+    match DaemonState::read(&path) {
+        DaemonState::Stale(record) => assert_eq!(
+            record.exit,
+            Some(ExitReason::Requested),
+            "the reason is still written down, it just cannot be dated"
+        ),
+        other => panic!("a goodbye dated ahead must not decide, got {other:?}"),
+    }
+}
+
+/// The other side of the same bound, so the slack cannot be removed or read as
+/// zero: a clock correction moves by a little, and a date barely ahead is
+/// still a goodbye. A fix that disbelieved every future date would pass the
+/// test above and break this one.
+#[test]
+fn a_goodbye_a_little_ahead_of_the_clock_is_still_a_decision() {
+    let (dir, _guard) = unique_dir();
+    let mut record = running(999_999);
+    record.stopped(ExitReason::Requested);
+    let path = write_record(&dir, &record);
+    date_ahead(&path, Duration::from_secs(1));
+
+    match DaemonState::read(&path) {
+        DaemonState::Stopped(_, reason) => assert_eq!(reason, ExitReason::Requested),
+        other => panic!("a small clock correction is not a reason to doubt it, got {other:?}"),
     }
 }
 
