@@ -478,6 +478,21 @@
   padding: 0 12px;
 }
 
+/* The tabs scroll; they never shrink. Each tab is a swipe surface that clips its
+   own reveal (`overflow: hidden` below), and a flex item whose overflow is not
+   `visible` has no automatic minimum size — so with no scrollport the row
+   squeezed every tab to a sliver, and the clipped content carried Archive and
+   Delete outside their own hit boxes. `overflow-y: hidden` is not decoration:
+   a lone `overflow-x: auto` computes the other axis to `auto`. The add button
+   stays outside this box, because a button that scrolls away is a regression. */
+.workspace-session-tabs-scroll {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 .workspace-session-tab {
   display: flex;
   align-items: center;
@@ -2417,6 +2432,7 @@
 .session-swipe {
   position: relative;
   display: flex;
+  flex: none;
   align-items: center;
   border-radius: 9px;
   overflow: hidden;

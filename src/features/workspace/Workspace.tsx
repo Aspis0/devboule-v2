@@ -995,136 +995,142 @@ export function Workspace({
 
       <main className="workspace-center-panel">
         <div className="workspace-session-tabs" role="tablist" aria-label="Sessions">
-          {visibleSessions.map((session) => {
-            const originBadge = sessionOriginBadge(session, peerNames);
-            // A badge for a session the daemon described as a peer's, or the
-            // unknown one for a session it did not describe at all. The two are
-            // told apart by their words and by the mark on the unknown pill.
-            const originUnknown = sessionOriginUnknown(session);
-            // Identity badge: who created this session, in the same pill the
-            // peer device uses. Null for a session a person started.
-            // No `input_required` badge belongs here: the A2A task state is
-            // reported to the creator (finish envelope + `child_finished`), not
-            // to the roster, and the parked card a person must answer is what
-            // the attention pill below already names. See
-            // `workspaceSessions.ts` for the measurement before re-adding one.
-            const creatorBadge = sessionCreatorBadge(session, sessionNames);
-            // The delegation ledger, in pills: nothing for a session that is
-            // not an agent-created child, the loud unattended pill for one that
-            // asks nobody, the quiet answering pill for one whose creator
-            // answers, the softer cannot-establish marker where the daemon
-            // honestly could not.
-            const delegationBadges = cachedDelegationBadges(session);
-            // The take-back lives on the row that can act, beside its pill:
-            // qualifying rows only, while the one switch is on.
-            const rowTakeBack = takeBackAvailable && sessionDelegationTakeBack(session);
-            // Two directions, two acts: right-to-left archives (the process
-            // stops, every message stays), left-to-right deletes (the session
-            // is destroyed). Both schedule — the daemon call fires only when
-            // the undo window expires — and both have the named buttons below
-            // as their keyboard and screen-reader path.
-            const tabTitle = sessionTitle(session);
-            const archiveLabel = isAgentKind(session.kind)
-              ? `Archive ${tabTitle}. This will archive 1 agent. The process stops; every message stays in History.`
-              : `Archive ${tabTitle}. Any running process in this terminal will be stopped. Every message stays in History.`;
-            const deleteLabel = `Delete ${tabTitle}. Destroys the session and stops its running process immediately.`;
-            return (
-              <SessionTabSwipe
-                key={session.id}
-                onCommit={(direction) => scheduleSessionAction(session, direction)}
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  id={`workspace-session-tab-${session.id}`}
-                  aria-selected={selectedSessionId === session.id}
-                  aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
-                  className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
-                  onClick={() => selectSession(session.id)}
+          {/* The row of tabs scrolls; the add button below it stays outside the
+              scrollport, so a full strip cannot carry it off screen. One more
+              box between the tablist and its tabs, hence presentational like the
+              swipe boxes in `SessionTabSwipe`. */}
+          <div className="workspace-session-tabs-scroll workspace-scroll" role="presentation">
+            {visibleSessions.map((session) => {
+              const originBadge = sessionOriginBadge(session, peerNames);
+              // A badge for a session the daemon described as a peer's, or the
+              // unknown one for a session it did not describe at all. The two are
+              // told apart by their words and by the mark on the unknown pill.
+              const originUnknown = sessionOriginUnknown(session);
+              // Identity badge: who created this session, in the same pill the
+              // peer device uses. Null for a session a person started.
+              // No `input_required` badge belongs here: the A2A task state is
+              // reported to the creator (finish envelope + `child_finished`), not
+              // to the roster, and the parked card a person must answer is what
+              // the attention pill below already names. See
+              // `workspaceSessions.ts` for the measurement before re-adding one.
+              const creatorBadge = sessionCreatorBadge(session, sessionNames);
+              // The delegation ledger, in pills: nothing for a session that is
+              // not an agent-created child, the loud unattended pill for one that
+              // asks nobody, the quiet answering pill for one whose creator
+              // answers, the softer cannot-establish marker where the daemon
+              // honestly could not.
+              const delegationBadges = cachedDelegationBadges(session);
+              // The take-back lives on the row that can act, beside its pill:
+              // qualifying rows only, while the one switch is on.
+              const rowTakeBack = takeBackAvailable && sessionDelegationTakeBack(session);
+              // Two directions, two acts: right-to-left archives (the process
+              // stops, every message stays), left-to-right deletes (the session
+              // is destroyed). Both schedule — the daemon call fires only when
+              // the undo window expires — and both have the named buttons below
+              // as their keyboard and screen-reader path.
+              const tabTitle = sessionTitle(session);
+              const archiveLabel = isAgentKind(session.kind)
+                ? `Archive ${tabTitle}. This will archive 1 agent. The process stops; every message stays in History.`
+                : `Archive ${tabTitle}. Any running process in this terminal will be stopped. Every message stays in History.`;
+              const deleteLabel = `Delete ${tabTitle}. Destroys the session and stops its running process immediately.`;
+              return (
+                <SessionTabSwipe
+                  key={session.id}
+                  onCommit={(direction) => scheduleSessionAction(session, direction)}
                 >
-                  <span
-                    className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
-                  />
-                  <span className="workspace-tab-label">{sessionTitle(session)}</span>
-                  {originBadge !== null ? (
+                  <button
+                    type="button"
+                    role="tab"
+                    id={`workspace-session-tab-${session.id}`}
+                    aria-selected={selectedSessionId === session.id}
+                    aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
+                    className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
+                    onClick={() => selectSession(session.id)}
+                  >
                     <span
-                      className={
-                        originUnknown
-                          ? "workspace-session-origin-badge workspace-session-origin-badge-unknown"
-                          : "workspace-session-origin-badge"
-                      }
-                      title={originBadge}
+                      className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
+                    />
+                    <span className="workspace-tab-label">{sessionTitle(session)}</span>
+                    {originBadge !== null ? (
+                      <span
+                        className={
+                          originUnknown
+                            ? "workspace-session-origin-badge workspace-session-origin-badge-unknown"
+                            : "workspace-session-origin-badge"
+                        }
+                        title={originBadge}
+                      >
+                        {originBadge}
+                      </span>
+                    ) : null}
+                    {creatorBadge !== null ? (
+                      <span className="workspace-session-origin-badge" title={creatorBadge}>
+                        {creatorBadge}
+                      </span>
+                    ) : null}
+                    {delegationBadges.map((badge) => (
+                      <span
+                        // Tone alone is not unique: two unknown-tone markers
+                        // (a delegation ledger the daemon could not describe
+                        // beside an unattended mode it could not establish)
+                        // are exactly the row the honesty rules can produce.
+                        key={`${badge.tone}:${badge.label}`}
+                        className={`workspace-tab-delegation workspace-tab-delegation-${badge.tone}`}
+                        title={badge.label}
+                      >
+                        {badge.label}
+                      </span>
+                    ))}
+                    <span className="workspace-tab-meta">
+                      {sessionStateLabel(session.state, session.elapsedMs)}
+                    </span>
+                    {session.attention ? (
+                      <span
+                        className={`workspace-tab-attention workspace-attention-${session.attention.reason}`}
+                      >
+                        {sessionAttentionLabel(session.attention.reason)}
+                      </span>
+                    ) : null}
+                  </button>
+                  <span className="session-swipe-actions">
+                    <button
+                      type="button"
+                      className="workspace-tab-archive"
+                      aria-label={archiveLabel}
+                      title={archiveLabel}
+                      onClick={() => scheduleSessionAction(session, "archive")}
                     >
-                      {originBadge}
-                    </span>
-                  ) : null}
-                  {creatorBadge !== null ? (
-                    <span className="workspace-session-origin-badge" title={creatorBadge}>
-                      {creatorBadge}
-                    </span>
-                  ) : null}
-                  {delegationBadges.map((badge) => (
-                    <span
-                      // Tone alone is not unique: two unknown-tone markers
-                      // (a delegation ledger the daemon could not describe
-                      // beside an unattended mode it could not establish)
-                      // are exactly the row the honesty rules can produce.
-                      key={`${badge.tone}:${badge.label}`}
-                      className={`workspace-tab-delegation workspace-tab-delegation-${badge.tone}`}
-                      title={badge.label}
+                      Archive
+                    </button>
+                    <button
+                      type="button"
+                      className="workspace-tab-delete"
+                      aria-label={deleteLabel}
+                      title={deleteLabel}
+                      onClick={() => scheduleSessionAction(session, "delete")}
                     >
-                      {badge.label}
-                    </span>
-                  ))}
-                  <span className="workspace-tab-meta">
-                    {sessionStateLabel(session.state, session.elapsedMs)}
+                      Delete
+                    </button>
                   </span>
-                  {session.attention ? (
-                    <span
-                      className={`workspace-tab-attention workspace-attention-${session.attention.reason}`}
+                  {rowTakeBack ? (
+                    <button
+                      type="button"
+                      className="workspace-tab-takeback"
+                      // A sibling of its tab, never a control inside one: the
+                      // tab is a button, and a button cannot answer inside
+                      // another. Global scope is the control's whole honesty —
+                      // it takes back the power everywhere, not on this row.
+                      aria-label="Take back — stops every agent from answering for its children"
+                      title="Take back — stops every agent from answering for its children"
+                      onClick={takeBack}
                     >
-                      {sessionAttentionLabel(session.attention.reason)}
-                    </span>
+                      Take back
+                    </button>
                   ) : null}
-                </button>
-                <span className="session-swipe-actions">
-                  <button
-                    type="button"
-                    className="workspace-tab-archive"
-                    aria-label={archiveLabel}
-                    title={archiveLabel}
-                    onClick={() => scheduleSessionAction(session, "archive")}
-                  >
-                    Archive
-                  </button>
-                  <button
-                    type="button"
-                    className="workspace-tab-delete"
-                    aria-label={deleteLabel}
-                    title={deleteLabel}
-                    onClick={() => scheduleSessionAction(session, "delete")}
-                  >
-                    Delete
-                  </button>
-                </span>
-                {rowTakeBack ? (
-                  <button
-                    type="button"
-                    className="workspace-tab-takeback"
-                    // A sibling of its tab, never a control inside one: the
-                    // tab is a button, and a button cannot answer inside
-                    // another. Global scope is the control's whole honesty —
-                    // it takes back the power everywhere, not on this row.
-                    aria-label="Take back — stops every agent from answering for its children"
-                    title="Take back — stops every agent from answering for its children"
-                    onClick={takeBack}
-                  >
-                    Take back
-                  </button>
-                ) : null}
-              </SessionTabSwipe>
-            );
-          })}
+                </SessionTabSwipe>
+              );
+            })}
+          </div>
           <div
             className="workspace-session-add-wrap"
             ref={providerAnchor?.kind === "strip" ? providerPickerRef : undefined}

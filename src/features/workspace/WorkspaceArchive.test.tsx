@@ -202,6 +202,8 @@ describe("Workspace session archive", () => {
 
   it("undo before expiry restores the tab and never calls the daemon", async () => {
     await renderWorkspace();
+    // A programmatic click dispatches on the node and skips hit-testing, so this
+    // stays green even while the strip clips the button out of the pointer's reach.
     const archive = container.querySelector<HTMLButtonElement>(
       'button[aria-label^="Archive shell one"]',
     );
@@ -227,6 +229,8 @@ describe("Workspace session archive", () => {
 
   it("schedules delete through session_close with the heavier copy", async () => {
     await renderWorkspace();
+    // Same as the archive click above: this proves the handler, never that a
+    // pointer can reach the button.
     const del = container.querySelector<HTMLButtonElement>(
       'button[aria-label^="Delete shell two"]',
     );
