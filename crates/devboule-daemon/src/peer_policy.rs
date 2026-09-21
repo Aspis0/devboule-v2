@@ -7,8 +7,9 @@
 //! `ALL_SAMPLES` iteration would only restate what the compiler already
 //! enforces.
 //!
-//! The 1a surface was deliberately tiny; slice 3 opens exactly five session
-//! variants, each under the capability that names the act (`view`, `send`,
+//! The 1a surface was deliberately tiny; slice 3 opened five session variants
+//! and later slices added two more (deposits and agent-to-agent messages),
+//! each under the capability that names the act (`view`, `send`,
 //! `answer_permissions`, `create_sessions` — §8b A9/A11/A12). `Status`,
 //! pairing, capability changes and the tool bridge stay refused to a peer
 //! whatever it holds, because no capability names those acts. Scope — *which*
@@ -61,8 +62,8 @@ pub const PROMPT_SKIPPING_REFUSED: &str = "prompt_skipping_refused";
 /// and a paired device may not choose one at all.
 pub const ACP_MODES_UNVETTED_REFUSED: &str = "acp_modes_unvetted_refused";
 
-/// What a peer is told when it names an ACP mode. One spelling: the gate
-/// (`server.rs`) and the sessions layer (`session.rs`) both refuse it.
+/// What a peer is told when it names an ACP mode. One spelling: `mode_refusal`
+/// produces the reason, and the peer gate (`server/peer_gate.rs`) renders it.
 pub const ACP_MODES_UNVETTED_MESSAGE: &str =
     "ACP session modes are defined by the agent, so a paired device cannot choose one.";
 
@@ -98,10 +99,15 @@ pub(crate) fn budget_for(origin: &SessionOrigin) -> u64 {
 
 /// May `role`, holding `caps`, send `request`?
 ///
-/// `caps` is the peer's own capability set, read from its `peers` row. The
-/// four names are the whole permission model for a paired device (§8b A9/A11):
-/// a variant that no capability names is refused to every peer, and a variant
-/// that one names is allowed exactly when the peer holds it.
+/// `caps` is the peer's own capability set, read from its `peers` row. Five
+/// names are the whole permission model for a paired device (§8b A9/A11):
+/// `view` (`SessionsList`, `DevicesList`, `SessionAttach`), `send`
+/// (`SessionSend`, `AgentMessageSend`, `SessionDeposit`, `SessionSetMode`),
+/// `answer_permissions` (`SessionPermissionRespond`), `create_sessions`
+/// (`SessionCreate`) and `roster` (`PeerAgentsList`, the one capability no new
+/// pairing holds — it is absent from `PEER_DEFAULT_CAPS`). A variant that no
+/// capability names is refused to every peer, and a variant that one names is
+/// allowed exactly when the peer holds it.
 ///
 /// `role` does not decide permission here: the capability set does. It stays
 /// in the signature because it decides *scope* one layer down (the owner
@@ -117,9 +123,9 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // stays exhaustive and every decision stays visible in one place.
         ClientMessage::Hello(_) => PeerDecision::Allow,
         ClientMessage::Ping { .. } => PeerDecision::Allow,
-        // The two list acts are reads, and every read on this surface is
-        // `view` (§8b A11): `SessionsList` and `DevicesList` are how a paired
-        // device sees anything at all, so a peer stripped of `view` — only a
+        // The two list acts are reads, and both ride `view` (§8b A11):
+        // `SessionsList` and `DevicesList` are how a paired device sees
+        // anything at all, so a peer stripped of `view` — only a
         // `Daemon` peer can be, since `validate_caps` will not remove it from a
         // `Client` — reaches neither. Both were unconditional `Allow` before
         // the slice-3 fix pass, which made "no capability" a capability.
@@ -137,7 +143,8 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // decided in this arm; the capability set alone decides.
         ClientMessage::PeerAgentsList { .. } => with_capability(caps, CAP_ROSTER),
 
-        // Slice 3: the five session variants a paired device may reach, each
+        // The seven session variants a paired device may reach — five opened by
+        // slice 3, with the deposit and agent-message arms joining later — each
         // under the capability that names the act. `view` is what makes a peer
         // a viewer at all; it is the one capability `validate_caps` will not
         // remove from a `Client` (A11). `SessionSend` keeps the peer's own
@@ -1529,7 +1536,7 @@ pub(crate) mod tests {
 
     /// §8b A9/A11/A12 as a table: one row per `ClientMessage` variant, holding
     /// the decision a peer with **no** capability gets and the decision a peer
-    /// with **all four** gets.
+    /// with **all five** gets.
     ///
     /// Closed match with no `_` arm, exactly like `peer_allows` itself: a new
     /// variant does not compile until it has a row here. `VARIANT_COUNT` and
