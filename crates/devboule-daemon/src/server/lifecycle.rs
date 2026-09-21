@@ -2,7 +2,7 @@
 //! (`run`), the accept loops, and the idle-shutdown arming.
 
 use super::*;
-use crate::daemon_record::{DaemonRecord, Heartbeat};
+use crate::daemon_record::{DaemonRecord, ExitReason, Heartbeat};
 
 /// Begin shutdown only if the lifecycle snapshot that armed this timer is
 /// still current. The lifecycle mutex makes the final check and the shutdown
@@ -23,6 +23,7 @@ pub(super) fn arm_idle_shutdown(state: Arc<ServerState>, generation: u64) {
                     && !lifecycle.shutting_down;
                 if should_shutdown {
                     lifecycle.shutting_down = true;
+                    lifecycle.exit_reason = Some(ExitReason::Idle);
                     lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
                 }
                 should_shutdown
@@ -119,7 +120,16 @@ fn run_windows() -> Result<(), DaemonError> {
     }
     bounded_join(accept, JOIN_SLICE);
     drop(mcp_server);
+    // The beat stops before the goodbye: a beat landing after it would date
+    // the record to a moment the daemon was already gone.
     drop(heartbeat);
+    record.stopped(state.exit_reason().unwrap_or(ExitReason::Unknown));
+    if let Err(error) = lock.write_body(&record.body()) {
+        // The record is how the next process tells a deliberate exit from a
+        // crash. Failing to write it is worth a line, not a failed exit: the
+        // daemon did what it was asked.
+        eprintln!("daemon could not record why it stopped: {error}");
+    }
     drop(lock);
     Ok(())
 }

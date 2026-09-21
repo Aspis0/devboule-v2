@@ -11,8 +11,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
-    connect_or_spawn, current_user_sid, daemon_file_name, DaemonClient, DaemonError, EventHandler,
-    RuntimePaths, SessionStateHandler,
+    connect_or_spawn, current_user_sid, daemon_file_name, DaemonClient, DaemonError, DaemonState,
+    EventHandler, RuntimePaths, SessionStateHandler,
 };
 use devboule_protocol::{
     ClientHello, Cursor, DaemonStatusBody, ErrorCode, SessionEvent, SessionEventEnvelope,
@@ -1490,6 +1490,57 @@ enum StatusLoopExit {
     Stopped,
 }
 
+/// A failed connect, and whether the daemon it failed against had said it was
+/// leaving.
+///
+/// The two are one event at the wire — a pipe that is not there — and they do
+/// not want the same answer: a daemon that recorded why it stopped is not a
+/// crash-loop symptom, so it must not feed the brake. The record is read only
+/// on this path, and reading it cannot disturb the daemon: it is a file, not a
+/// connection.
+pub(super) struct ConnectFailure {
+    message: String,
+    declared_exit: bool,
+}
+
+impl ConnectFailure {
+    fn fault(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            declared_exit: false,
+        }
+    }
+
+    /// A declared exit as the record reports it, built without a file so the
+    /// supervisor's own tests can script the sequence.
+    #[cfg(test)]
+    fn after_a_declared_exit(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            declared_exit: true,
+        }
+    }
+
+    fn after(paths: &RuntimePaths, error: DaemonError) -> Self {
+        Self {
+            message: error.to_string(),
+            declared_exit: matches!(
+                DaemonState::read(&paths.lock_file),
+                DaemonState::Stopped(..)
+            ),
+        }
+    }
+}
+
+/// The owner id is built before any connect is attempted, so its failure is a
+/// fault by construction: no daemon was reached and none can have said why it
+/// left.
+impl From<String> for ConnectFailure {
+    fn from(message: String) -> Self {
+        Self::fault(message)
+    }
+}
+
 enum StatusUpdate {
     Connected(DaemonStatusBody),
     Failure(StatusSignal),
@@ -1560,7 +1611,7 @@ fn run_supervisor_loop<C, Connect, Connected, Sleep, Now>(
     now: Now,
 ) -> SupervisorLoopExit
 where
-    Connect: FnMut() -> Result<C, String>,
+    Connect: FnMut() -> Result<C, ConnectFailure>,
     Connected: FnMut(C) -> StatusLoopExit,
     Sleep: FnMut(Duration, Option<&str>) -> bool,
     Now: Fn() -> Instant,
@@ -1605,13 +1656,18 @@ where
                     StatusLoopExit::Stopped => return SupervisorLoopExit::Stopped,
                 }
             }
-            Err(error) => {
+            Err(failure) => {
                 // A refused connect is a fast failure too: the spawn died
                 // before serving anyone. The flat period stands until the
-                // brake's tolerance is used up.
-                brake.observe_fast_failure();
+                // brake's tolerance is used up. A daemon that left on purpose
+                // is not evidence of a crash loop, so it is not counted: the
+                // brake is for daemons that keep dying young, and this one
+                // did what it was asked.
+                if !failure.declared_exit {
+                    brake.observe_fast_failure();
+                }
                 let delay = brake.backoff_delay().unwrap_or(PING_PERIOD);
-                if !sleep(delay, Some(error.as_str())) {
+                if !sleep(delay, Some(failure.message.as_str())) {
                     return SupervisorLoopExit::Stopped;
                 }
             }
@@ -1696,7 +1752,7 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                             },
                         );
                     } else {
-                        set_status(&inner.status, UiDaemonStatus::error(error.clone()));
+                        set_status(&inner.status, UiDaemonStatus::error(error.message.clone()));
                     }
                     Err(error)
                 }
@@ -1766,16 +1822,18 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
     );
 }
 
-fn connect_once() -> Result<DaemonClient, String> {
-    let paths = RuntimePaths::from_env().map_err(|error| error.to_string())?;
+fn connect_once() -> Result<DaemonClient, ConnectFailure> {
+    let paths =
+        RuntimePaths::from_env().map_err(|error| ConnectFailure::fault(error.to_string()))?;
     let owner = {
-        let user = current_user_sid().map_err(|error| error.to_string())?;
+        let user = current_user_sid().map_err(|error| ConnectFailure::fault(error.to_string()))?;
         let client = format!("app-{}", std::process::id());
         devboule_protocol::OwnerId::new(user, client)?
     };
     let hello = ClientHello::m3a(owner, "devboule-app");
     let binary = locate_daemon_binary()?;
-    connect_or_spawn(&paths, hello, Some(&binary)).map_err(|error| error.to_string())
+    connect_or_spawn(&paths, hello, Some(&binary))
+        .map_err(|error| ConnectFailure::after(&paths, error))
 }
 
 fn locate_daemon_binary() -> Result<PathBuf, String> {

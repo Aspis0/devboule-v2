@@ -4,6 +4,7 @@
 //! inline test-only branches stay inside their methods).
 
 use super::*;
+use crate::daemon_record::ExitReason;
 use crate::release_guard::ReleaseGuard;
 
 /// The accept path's cached `peers` snapshot.
@@ -29,6 +30,9 @@ pub(super) struct Lifecycle {
     pub(super) sessions: u32,
     pub(super) shutting_down: bool,
     pub(super) idle_generation: u64,
+    /// Why the shutdown began. It has to be recorded here rather than inferred
+    /// on the way out: by then the only witness is this flag.
+    pub(super) exit_reason: Option<ExitReason>,
 }
 
 pub struct ServerState {
@@ -446,9 +450,18 @@ impl ServerState {
         {
             let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
             lifecycle.shutting_down = true;
+            lifecycle.exit_reason = Some(ExitReason::Requested);
             lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
         }
         self.signal_shutdown();
+    }
+
+    /// Why this daemon is stopping, or `None` while it has not decided to.
+    pub(super) fn exit_reason(&self) -> Option<ExitReason> {
+        self.lifecycle
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .exit_reason
     }
 
     pub(super) fn signal_shutdown(&self) {

@@ -1259,7 +1259,7 @@ fn a_failed_connect_passes_its_cause_to_backoff_sleep() {
     let mut received_cause = None;
     let outcome = run_supervisor_loop(
         &stop,
-        || Err::<(), _>(cause.to_string()),
+        || Err::<(), _>(ConnectFailure::fault(cause)),
         |_| StatusLoopExit::Stopped,
         |delay, error| {
             if delay > PING_PERIOD {
@@ -1275,6 +1275,106 @@ fn a_failed_connect_passes_its_cause_to_backoff_sleep() {
     assert_eq!(received_cause.as_deref(), Some(cause));
 }
 
+/// The negative control that makes the other half of this pair mean
+/// something: a crash is still a crash and still starts the brake.
+///
+/// A deliberate exit and a crash are one event at the wire, so a classifier
+/// that called every failure deliberate would pass the first half of this
+/// test on its own. The crash in the middle is what stops it: the brake count
+/// here starts at zero and only the real failures can move it, so the fourth
+/// real failure — not the fourth failure overall — is the one that backs off.
+#[test]
+fn a_declared_exit_is_not_charged_to_the_crash_brake_and_a_crash_still_is() {
+    // Longer than the brake's tolerance of three, so a declared exit that was
+    // charged anyway shows up as *growth*: the first three delays a charged
+    // implementation produces are the flat period too, because `BACKOFF_BASE`
+    // and `PING_PERIOD` are both two seconds.
+    const DECLARED: u32 = 6;
+    let stop = AtomicBool::new(false);
+    let mut attempt = 0;
+    let mut waited = 0;
+    let mut delays = Vec::new();
+    let outcome = run_supervisor_loop(
+        &stop,
+        || {
+            attempt += 1;
+            if attempt <= DECLARED {
+                Err::<(), _>(ConnectFailure::after_a_declared_exit(
+                    "the daemon exited on purpose",
+                ))
+            } else {
+                Err::<(), _>(ConnectFailure::fault("the daemon died"))
+            }
+        },
+        |_| StatusLoopExit::Stopped,
+        |delay, _| {
+            delays.push(delay);
+            waited += 1;
+            waited < DECLARED + 8
+        },
+        Instant::now,
+    );
+
+    assert_eq!(outcome, SupervisorLoopExit::Stopped);
+    assert!(
+        delays[..DECLARED as usize]
+            .iter()
+            .all(|delay| *delay == PING_PERIOD),
+        "a daemon that said why it left must not slow the reconnect down: {delays:?}"
+    );
+    assert!(
+        delays[DECLARED as usize..DECLARED as usize + 3]
+            .iter()
+            .all(|delay| *delay == PING_PERIOD),
+        "the tolerance still holds for the first real crashes: {delays:?}"
+    );
+    // The flat period and the brake's first step are both two seconds, so the
+    // only delay that can tell a counted crash from an uncounted one is the
+    // one after it. This is the assertion a classifier that called every
+    // failure deliberate cannot pass, and it is also the one an
+    // always-charging classifier cannot pass.
+    assert_eq!(
+        delays[DECLARED as usize + 3..DECLARED as usize + 7],
+        [
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+            Duration::from_secs(8),
+            Duration::from_secs(16),
+        ],
+        "the real crashes start the count from zero and still grow: {delays:?}"
+    );
+}
+
+/// The classifier reads the record, not the error text: a runtime folder whose
+/// daemon recorded a deliberate exit is the case the brake must not see.
+#[test]
+fn a_record_that_says_the_daemon_left_is_read_off_disk_not_guessed() {
+    let dir = std::env::temp_dir().join(format!("devboule connect failure {}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let paths = RuntimePaths::from_dir(dir.clone());
+    let error = || DaemonError::ConnectionLost;
+
+    assert!(
+        !ConnectFailure::after(&paths, error()).declared_exit,
+        "no record at all is not an excuse"
+    );
+
+    let mut record = devboule_daemon::DaemonRecord::starting(1, "1-1", &paths.pipe_name);
+    std::fs::write(&paths.lock_file, record.body()).expect("write");
+    assert!(
+        !ConnectFailure::after(&paths, error()).declared_exit,
+        "a daemon that is merely there has said nothing about leaving"
+    );
+
+    record.stopped(devboule_daemon::ExitReason::Idle);
+    std::fs::write(&paths.lock_file, record.body()).expect("write");
+    assert!(
+        ConnectFailure::after(&paths, error()).declared_exit,
+        "the goodbye on disk is what the supervisor reads"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn an_immediate_connected_loss_passes_no_cause_to_backoff_sleep() {
     let stop = AtomicBool::new(false);
@@ -1282,7 +1382,7 @@ fn an_immediate_connected_loss_passes_no_cause_to_backoff_sleep() {
     let mut received_cause = None;
     let outcome = run_supervisor_loop(
         &stop,
-        || Ok::<(), String>(()),
+        || Ok::<(), ConnectFailure>(()),
         |_| StatusLoopExit::ConnectionLost,
         |delay, error| {
             if delay > PING_PERIOD {
