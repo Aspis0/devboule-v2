@@ -266,6 +266,16 @@ pub mod caps {
     pub const PEER_AGENTS: &str = "peer_agents";
 
     /// The remote-sender form of `AgentMessageSend`.
+    ///
+    /// A dialer must not send that frame to a daemon that predates the
+    /// far-sender meaning: the old reader would take the remote sender for a
+    /// local one. So `peer_dial` refuses on this name before the frame leaves,
+    /// and that refusal is the name's only reader. No production caller dials
+    /// the frame today — `call_peer`'s one production call sends
+    /// `PeerAgentsList` — so the name is reserved for the caller that will, and
+    /// the guard exists before it does. Whether a device may *receive* an agent
+    /// message is the `send` peer capability, a different mechanism; this name
+    /// is deliberately not one (`PEER_CAPS`).
     pub const AGENT_MESSAGES: &str = "agent_messages";
 }
 

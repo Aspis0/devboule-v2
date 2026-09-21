@@ -491,9 +491,21 @@ impl ServerState {
             .unwrap_or(u32::MAX)
     }
 
+    /// Test-only face of the lifecycle client count, for the same reason as
+    /// [`Self::live_session_count`]: a connection that never releases its slot
+    /// keeps `clients` above zero forever, and the idle exit can then never arm
+    /// again for the life of the process.
+    #[cfg(test)]
+    pub(crate) fn live_client_count(&self) -> u32 {
+        self.lifecycle
+            .lock()
+            .map(|lifecycle| lifecycle.clients)
+            .unwrap_or(u32::MAX)
+    }
+
     /// Admit a client unless shutdown has started. A reconnect that wins this
     /// lock invalidates any idle timer armed by the previous connection.
-    pub(super) fn client_connected(&self) -> bool {
+    pub(crate) fn client_connected(&self) -> bool {
         let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         if lifecycle.shutting_down {
             return false;
@@ -503,7 +515,7 @@ impl ServerState {
         true
     }
 
-    pub(super) fn client_disconnected(self: &Arc<Self>) {
+    pub(crate) fn client_disconnected(self: &Arc<Self>) {
         let generation = {
             let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
             lifecycle.clients = lifecycle.clients.saturating_sub(1);

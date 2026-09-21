@@ -1188,6 +1188,96 @@ fn many_connects_share_one_peer_table_load() {
     join_bounded(accept, "the peer accept loop");
 }
 
+/// A peer connection is a client for the idle exit, exactly as a pipe
+/// connection is.
+///
+/// The reachable sequence: the app had a session, the session ended, the app
+/// detached, and a paired device is still connected. `client_disconnected`
+/// then sees `clients == 0 && sessions == 0` and arms the idle timer; one
+/// second later the daemon begins shutdown and closes the peer's socket with
+/// no shutdown frame. The peer path never took the slot, so nothing bumped
+/// `idle_generation` to invalidate the armed timer.
+///
+/// The assertion is the daemon's own shutdown flag, not the counter: a counter
+/// assert would also pass with the increment in the wrong branch. Without the
+/// fix the timer fires inside the margin and this goes red.
+#[test]
+fn a_connected_peer_is_a_client_for_the_idle_exit() {
+    use devboule_protocol::{ClientHello, ClientMessage, DaemonMessage, OwnerId};
+
+    let transport = Arc::new(TestTransport::default());
+    let (address, state, stop, accept) = spawn_accept_loop(
+        transport,
+        Arc::new(PairingDisabled) as Arc<dyn PairingHook>,
+        "peer-counts-as-client",
+    );
+
+    // A paired device, in the shape pairing writes: the row pins the static
+    // key the client proves, and the binding the test transport answers with.
+    let (client_private, client_public) = keypair(PEER_NOISE_PATTERN);
+    state
+        .peer_upsert(PeerRecord {
+            device_id: "phone".to_string(),
+            display_name: "phone".to_string(),
+            role: "client".to_string(),
+            public_key: client_public,
+            paired_by_user: None,
+            binding_kind: "tailnet".to_string(),
+            binding_stable_id: Some("nstable".to_string()),
+            binding_node_name: None,
+            binding_login_name: None,
+            address: address.to_string(),
+            paired_at: 1,
+            revoked_at: None,
+            caps: vec!["view".to_string()],
+        })
+        .expect("upsert the peer row");
+
+    let stream = connect_bounded(address);
+    let session = initiator_handshake(
+        &stream,
+        Instant::now() + bound::READ,
+        &client_private,
+        None,
+        PEER_PROLOGUE,
+        None,
+        PEER_NOISE_PATTERN,
+    )
+    .expect("the peer handshake");
+    let (reader, writer, closer) = split_session(&stream, session).expect("split");
+    let framed = crate::framing::Framed::from_stream(reader, writer, closer);
+    framed
+        .send(&ClientMessage::Hello(ClientHello::m3a(
+            OwnerId::new("peer_phone", "devboule-daemon").expect("owner"),
+            "devboule-daemon",
+        )))
+        .expect("the peer hello");
+    // The daemon's own hello is the barrier: it is written from inside
+    // `handle_client`, so a slot taken before that call is held by now.
+    match framed.recv_timeout::<DaemonMessage>(Duration::from_secs(5)) {
+        Ok(DaemonMessage::Hello(_)) => {}
+        other => panic!("the authenticated peer was not served: {other:?}"),
+    }
+
+    // The app connects and detaches with no session live: the transition to
+    // zero clients that arms the idle timer.
+    assert!(state.client_connected(), "the app is admitted");
+    state.client_disconnected();
+
+    std::thread::sleep(crate::IDLE_SHUTDOWN_GRACE + Duration::from_millis(400));
+    assert!(
+        !state.stop_flag().load(Ordering::SeqCst),
+        "the daemon signalled shutdown while a paired device was connected and no session was \
+         live (clients: {}); the peer connection was not counted",
+        state.live_client_count()
+    );
+
+    drop(framed);
+    drop(stream);
+    stop_accept_loop(&state, &stop);
+    join_bounded(accept, "the peer accept loop");
+}
+
 /// C11: while a code is active, an off-tailnet source must be closed
 /// **without being peeked**.
 ///

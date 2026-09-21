@@ -379,7 +379,17 @@ pub(super) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                         }
                     }
                 }
-                None => {}
+                // A kind this binary does not know is a row written by a
+                // writer it is not — a downgrade, most likely. The row has no
+                // other reader: skipping it leaves `last_seq` claiming a
+                // transcript that runs past a hole while `TranscriptIntegrity`
+                // still reads `Complete`, so this fails closed, as the paged
+                // agent read and `parse_kind` above already do.
+                None => {
+                    return Err(JournalError::Corrupt(format!(
+                        "unknown agent event kind {kind:?} at {session_id} seq {seq}"
+                    )))
+                }
             }
         }
 

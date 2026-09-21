@@ -930,6 +930,63 @@ fn uncommitted_write_is_not_visible_after_reopen() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A row whose `kind` no writer in this binary knows must fail the replay
+/// rather than vanish from it.
+///
+/// The read is followed by a verdict the hole cannot reach: `last_seq` is the
+/// sessions row's own value and `TranscriptIntegrity` is computed from the
+/// session's columns, so a skipped row leaves the transcript short by one and
+/// still reporting `Complete`. A foreign writer (a downgrade, above all) is
+/// the only way to get such a row; the daemon's own writers cannot skip it.
+#[test]
+fn an_unknown_event_kind_fails_the_replay_instead_of_vanishing() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    journal
+        .upsert_blocking(sample_session("s.foreign-kind"))
+        .expect("upsert");
+    journal
+        .append_blocking(output_record("s.foreign-kind", 1, 1, b"kept"))
+        .expect("output");
+    journal
+        .append_blocking(output_record("s.foreign-kind", 1, 2, b"foreign"))
+        .expect("the row a later build writes with a kind this one does not know");
+    journal.try_mark_ended("s.foreign-kind", 1, Some(0));
+    journal.flush().expect("flush ended");
+    // The verdict the skip hides behind: a terminated session with no dropped
+    // frame and no trimmed byte says `Complete` about a transcript that is
+    // short by one row.
+    let intact = journal.replay("s.foreign-kind").expect("replay");
+    assert_eq!(
+        intact.integrity,
+        TranscriptIntegrity::Complete,
+        "the fixture's own verdict must be the one the skip masks"
+    );
+    drop(journal);
+    // Only the kind is rewritten, by hand: the checksum covers the payload, so
+    // this is byte-for-byte what a downgraded build reads.
+    let conn = Connection::open(&path).expect("raw");
+    let rewritten = conn
+        .execute(
+            "UPDATE events SET kind = 'agent_report_x'
+                 WHERE session_id = 's.foreign-kind' AND generation = 1 AND seq = 2",
+            [],
+        )
+        .expect("rewrite the kind");
+    assert_eq!(rewritten, 1, "the fixture rewrote exactly one row");
+    drop(conn);
+
+    let journal = Journal::open(&path).expect("reopen");
+    let error = journal
+        .replay("s.foreign-kind")
+        .expect_err("an unknown event kind must not be skipped in silence");
+    assert!(
+        matches!(error, JournalError::Corrupt(ref message) if message.contains("agent_report_x")),
+        "the refusal names the row: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn drain_output_after_process_exit_is_not_dropped() {
     // ConPTY keeps delivering after Child::wait.
