@@ -1256,6 +1256,27 @@ impl super::SessionRegistry {
                 .unwrap_or_else(|| live.metadata.id.clone()),
         })
     }
+
+    /// The workspace root the calling session's own row names, for a read that
+    /// must be scoped to the caller (`S5`).
+    ///
+    /// The path comes from the session's `workspace_id` and a journal lookup,
+    /// never from a request field, so a caller cannot name another project's
+    /// folder. Fail-closed like [`Self::agent_creator`]: an unknown or unowned
+    /// session is the same `session_not_found`, and a session whose row carries
+    /// no workspace answers `None` so the caller refuses instead of reading
+    /// whatever directory happens to be current.
+    pub(crate) fn session_workspace_root(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+    ) -> Result<Option<PathBuf>, WireError> {
+        let creator = self.agent_creator(session_id, owner)?;
+        let Some(workspace_id) = creator.workspace_id.as_deref() else {
+            return Ok(None);
+        };
+        self.workspace_cwd(workspace_id).map(Some)
+    }
 }
 
 /// What one admission answered: the slot it took, and whether the message went

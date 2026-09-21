@@ -149,6 +149,22 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_CLOSE_AGENT_TOOL,
         requires_confirmation: false,
     },
+    // Project graph: read-only queries of the graph the indexer wrote for the
+    // caller's own workspace. They add nothing a local agent cannot already
+    // read (the files are in its cwd), so no generic confirm would have
+    // anything to ask about; the origin door refuses every peer.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_NEIGHBORHOOD_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_IMPORTS_TOOL,
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_IMPORTERS_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -199,7 +215,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// `pi.registerTool` per broker tool (eleven today), closed schemas matching the
+/// `pi.registerTool` per broker tool (fourteen today), closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -518,6 +534,59 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_close_agent", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_project_neighborhood",
+    label: "Read Devboule project graph",
+    description: `Walks the project's code-knowledge graph from one node and answers the nodes reachable within a number of edges, each with its shortest distance from the node you named. The graph belongs to the calling session's own workspace: the indexer builds it from that folder's files, and a node id is a repository-relative path (a file) or that path with a '#start-end-index' suffix (a symbol inside it). depth is 1 to 4 edges (default 1); kind filters on the graph's two edge kinds, IMPORT and CONTAIN. Topology only: no source text, no symbol bodies, no semantic search. A node the graph does not contain answers with an empty list, exactly like a node with no edges. Fails when the session has no workspace, and when that workspace has no graph yet - never by reading another project's graph.`,
+    parameters: Type.Object(
+      {
+        node: Type.String({ description: "The node to start from: a repository-relative file path, or that path with a '#start-end-index' suffix for a symbol." }),
+        depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 4, description: "How many edges to walk, 1 to 4. Default 1." })),
+        kind: Type.Optional(Type.Union([Type.Literal("IMPORT"), Type.Literal("CONTAIN")], { description: "Restrict the walk to one edge kind. Omit for both." })),
+      },
+      { required: ["node"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_project_neighborhood", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_project_imports",
+    label: "Read Devboule project imports",
+    description: `Answers which files one file imports, from the project's code-knowledge graph in the calling session's own workspace. file is named by its repository-relative path as the graph spells it; a symbol id names a symbol rather than a file and answers with an empty list, as does a path the graph does not know. Import edges only: the file-to-file dependencies the indexer resolved inside the indexed set, never a guess at the filesystem. For the reverse direction use devboule_project_importers; this tool answers no source text and no semantic search.`,
+    parameters: Type.Object(
+      {
+        file: Type.String({ description: "A repository-relative file path as the graph spells it." }),
+      },
+      { required: ["file"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_project_imports", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_project_importers",
+    label: "Read Devboule project importers",
+    description: `Answers which files import one file - the reverse of devboule_project_imports, read from the project's code-knowledge graph in the calling session's own workspace. file is named by its repository-relative path as the graph spells it. Import edges only, never call edges: 'who calls this function' is a question this graph cannot answer, and this tool does not answer it with an empty list that would look like 'nobody does'.`,
+    parameters: Type.Object(
+      {
+        file: Type.String({ description: "A repository-relative file path as the graph spells it." }),
+      },
+      { required: ["file"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_project_importers", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });

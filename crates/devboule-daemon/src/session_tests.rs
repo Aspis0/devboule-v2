@@ -1266,7 +1266,8 @@ pub(super) fn insert_live_agent_with_kind_and_writer(
 
 /// The insert every other helper goes through, with the collaborators the
 /// steer path decides with — the killer a refused steer may fall back to, and
-/// the steerer itself — plus the optional structured prompt routes.
+/// the steerer itself — plus the optional structured prompt routes. The
+/// workspace is absent, which is the world every other test lives in.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn insert_live_agent_with_turn_control(
     registry: &SessionRegistry,
@@ -1279,9 +1280,58 @@ pub(super) fn insert_live_agent_with_turn_control(
     killer: Box<dyn SessionKiller>,
     steerer: Box<dyn SessionSteerer>,
 ) -> Arc<SessionRuntime> {
+    insert_live_agent_full(
+        registry,
+        id,
+        owner,
+        kind,
+        writer,
+        image_sink,
+        static_image_sink,
+        killer,
+        steerer,
+        None,
+    )
+}
+
+/// A live agent whose row names a workspace: the fact the project-graph tools
+/// scope themselves by, and the one the default insert above leaves absent.
+pub(super) fn insert_live_agent_in_workspace(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    workspace_id: &str,
+) -> Arc<SessionRuntime> {
+    insert_live_agent_full(
+        registry,
+        id,
+        owner,
+        SessionKind::Acp,
+        Box::new(FailingWriter) as Box<dyn Write + Send>,
+        None,
+        None,
+        Box::new(NoopKiller),
+        Box::new(UnsupportedSteerer),
+        Some(workspace_id.to_string()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_live_agent_full(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    kind: SessionKind,
+    writer: Box<dyn Write + Send>,
+    image_sink: Option<Arc<AcpPromptSink>>,
+    static_image_sink: Option<Arc<dyn StaticImageSink>>,
+    killer: Box<dyn SessionKiller>,
+    steerer: Box<dyn SessionSteerer>,
+    workspace_id: Option<String>,
+) -> Arc<SessionRuntime> {
     let metadata = Session {
         id: id.to_string(),
-        workspace_id: None,
+        workspace_id,
         cwd: None,
         kind,
         title: "Agent".to_string(),

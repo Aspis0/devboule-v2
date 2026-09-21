@@ -3270,6 +3270,18 @@ pub(crate) fn insert_test_live_agent(
     tests::insert_live_agent(registry, id, owner)
 }
 
+/// Test-only live agent whose row names a workspace: the row the project-graph
+/// tools resolve the project from.
+#[cfg(test)]
+pub(crate) fn insert_test_live_agent_in_workspace(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    workspace_id: &str,
+) -> Arc<SessionRuntime> {
+    tests::insert_live_agent_in_workspace(registry, id, owner, workspace_id)
+}
+
 /// Test-only live agent that is somebody's child: `created_by` is the fact
 /// the stop/close scope reads, so a test can build a real parent-child pair.
 #[cfg(test)]

@@ -48,6 +48,8 @@ mod mcp_device_roster;
 #[cfg(feature = "server")]
 mod mcp_peer_agents;
 #[cfg(feature = "server")]
+mod mcp_project_graph;
+#[cfg(feature = "server")]
 mod outbound;
 #[cfg(feature = "server")]
 mod pairing;

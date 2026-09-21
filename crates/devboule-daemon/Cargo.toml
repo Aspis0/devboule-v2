@@ -20,7 +20,7 @@ default = ["server"]
 # -p devboule-daemon` builds no stub binary and exports no test API. The
 # daemon's own test run enables this feature.
 test-support = []
-server = ["dep:portable-pty", "dep:rusqlite", "dep:alacritty_terminal", "dep:reqwest", "dep:uuid", "dep:base64", "dep:sha2", "dep:snow", "dep:keyring", "dep:zeroize", "dep:spake2", "dep:getrandom", "dep:hkdf"]
+server = ["dep:portable-pty", "dep:rusqlite", "dep:alacritty_terminal", "dep:reqwest", "dep:uuid", "dep:base64", "dep:sha2", "dep:snow", "dep:keyring", "dep:zeroize", "dep:spake2", "dep:getrandom", "dep:hkdf", "dep:oracle-core"]
 
 [lib]
 name = "devboule_daemon"
@@ -48,6 +48,13 @@ required-features = ["server", "test-support"]
 
 [dependencies]
 devboule-protocol = { path = "../devboule-protocol" }
+# The project's code-knowledge graph, for the broker's three `devboule_project_*`
+# tools. Optional behind `server` like the rest: the GUI process links this
+# crate with `default-features = false` and must not acquire a database reader.
+# `city` — not default/`full` — because these tools read the CKG and nothing
+# else; the slice is anyhow + rusqlite + regex, so the daemon never pulls
+# ort/onnx (polis-backend and devboule-augur link it the same way).
+oracle-core = { path = "../oracle-core", default-features = false, features = ["city"], optional = true }
 # Direct because this crate serializes protocol frames to JSON. The daemon
 # owns the ACP transport, so this is a new direct dependency of this crate.
 serde = { version = "=1.0.229", features = ["derive"] }

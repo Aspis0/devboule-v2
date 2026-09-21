@@ -249,6 +249,18 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_CLOSE_AGENT_TOOL,
         "Ends one of your own live child sessions: the live session goes away and its transcript stays in history. Use this to finish with a child you created and no longer need. Name the child by id or display name; you can only close a session you created yourself.",
     ),
+    (
+        MCP_NEIGHBORHOOD_TOOL,
+        "Walks the project's code-knowledge graph from one node and answers the nodes reachable within a number of edges, each with its shortest distance from the node you named. The graph belongs to the calling session's own workspace: the indexer builds it from that folder's files, and a node id is a repository-relative path (a file) or that path with a '#start-end-index' suffix (a symbol inside it). depth is 1 to 4 edges (default 1); kind filters on the graph's two edge kinds, IMPORT and CONTAIN. Topology only: no source text, no symbol bodies, no semantic search. A node the graph does not contain answers with an empty list, exactly like a node with no edges. Fails when the session has no workspace, and when that workspace has no graph yet - never by reading another project's graph.",
+    ),
+    (
+        MCP_IMPORTS_TOOL,
+        "Answers which files one file imports, from the project's code-knowledge graph in the calling session's own workspace. file is named by its repository-relative path as the graph spells it; a symbol id names a symbol rather than a file and answers with an empty list, as does a path the graph does not know. Import edges only: the file-to-file dependencies the indexer resolved inside the indexed set, never a guess at the filesystem. For the reverse direction use devboule_project_importers; this tool answers no source text and no semantic search.",
+    ),
+    (
+        MCP_IMPORTERS_TOOL,
+        "Answers which files import one file - the reverse of devboule_project_imports, read from the project's code-knowledge graph in the calling session's own workspace. file is named by its repository-relative path as the graph spells it. Import edges only, never call edges: 'who calls this function' is a question this graph cannot answer, and this tool does not answer it with an empty list that would look like 'nobody does'.",
+    ),
 ];
 
 /// The read-only roster tool, and the one name a tool policy can never
@@ -325,6 +337,21 @@ pub const MCP_CLOSE_AGENT_TOOL: &str = "devboule_close_agent";
 /// away — and it is why [`crate::tool_policy::is_tool_enabled`] answers for
 /// this name before it reads a policy.
 pub const MCP_LIST_PROFILES_TOOL: &str = "devboule_list_profiles";
+/// The three project-graph tools: the code-knowledge graph the indexer writes
+/// for the calling session's own workspace, read-only.
+///
+/// Local by construction. The graph is derived from the files of a workspace,
+/// and a local agent already reads those files (its cwd is that workspace), so
+/// the tools hand it no reach it did not have; a paired device's agent does not
+/// read this machine's files, so the same read would disclose the project's
+/// structure over the wire. The door judges them as the wire's workspace
+/// inventory read, which no capability names - see `peer_policy::mcp_tool_wire`.
+/// The workspace comes from the caller's session row, never from an argument.
+pub const MCP_NEIGHBORHOOD_TOOL: &str = "devboule_project_neighborhood";
+/// Which files one file imports, from the same workspace graph.
+pub const MCP_IMPORTS_TOOL: &str = "devboule_project_imports";
+/// Which files import one file: the reverse direction, same graph.
+pub const MCP_IMPORTERS_TOOL: &str = "devboule_project_importers";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`] (`S5` §2).
 ///

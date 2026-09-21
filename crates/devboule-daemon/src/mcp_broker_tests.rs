@@ -3295,8 +3295,8 @@ fn a_disabled_tool_is_refused_at_call_time_and_the_roster_still_answers() {
     // session is served: the roster, the device list, the peer-agents
     // read, the profile list, the sender, the creation tool, the
     // delegated permission answer, the profile move, the activity read,
-    // and the stop/close pair. Disabling one does not shrink the other
-    // rows, which is the point of this test.
+    // the stop/close pair, and the project-graph trio. Disabling one does
+    // not shrink the other rows, which is the point of this test.
     let listed = http_request(
         &state.mcp.url,
         Some(&format!("Bearer {token}")),
@@ -3307,7 +3307,7 @@ fn a_disabled_tool_is_refused_at_call_time_and_the_roster_still_answers() {
             .pointer("/result/tools")
             .and_then(Value::as_array)
             .map(|tools| tools.len()),
-        Some(11)
+        Some(14)
     );
     let runtime_dir = state.sessions.runtime_dir().to_path_buf();
     drop(server);

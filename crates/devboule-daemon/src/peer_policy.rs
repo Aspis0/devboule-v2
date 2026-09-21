@@ -440,8 +440,9 @@ pub enum McpToolWire {
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
-        MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL, MCP_LIST_PROFILES_TOOL, MCP_ROSTER_TOOL,
-        MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
+        MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
+        MCP_LIST_PROFILES_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
+        MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
     };
     if tool == MCP_ROSTER_TOOL {
         Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
@@ -548,6 +549,29 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             id: 0,
             session_id: String::new(),
             idempotency_key: None,
+        }]))
+    } else if tool == MCP_NEIGHBORHOOD_TOOL
+        || tool == MCP_IMPORTS_TOOL
+        || tool == MCP_IMPORTERS_TOOL
+    {
+        // The three project-graph tools, local-only by construction.
+        //
+        // The caller decides the severity, and both categories pass through
+        // this one arm. A *local* session already reads the workspace's files
+        // (its cwd is the workspace root, and the graph is derived from those
+        // files), so the tools hand it nothing it could not read itself. A
+        // paired device's agent does not read this machine's files: for it the
+        // graph is the project's internal structure travelling the wire. Judged
+        // for the more severe of the two, and the wire read is the workspace
+        // inventory (`WorkspacesList`), which no capability names - so every
+        // peer is refused and the tools stay local by construction, exactly
+        // like the stop and close verbs. The graph discloses more per
+        // workspace than that inventory does, not less, so it cannot be the
+        // read that opens where the inventory is closed. Whose graph is read
+        // comes from the caller's own session row, never from an argument.
+        Some(McpToolWire::Judged(vec![ClientMessage::WorkspacesList {
+            id: 0,
+            project_id: String::new(),
         }]))
     } else {
         None

@@ -618,6 +618,13 @@ impl McpBroker {
                 .map(|entry| entry.bearer.clone())
         })
     }
+
+    /// The loopback URL this broker answers on, for the tool test modules that
+    /// drive the wire from outside this module.
+    #[cfg(test)]
+    pub(crate) fn url(&self) -> &str {
+        &self.url
+    }
 }
 
 impl Drop for McpBroker {
@@ -1541,6 +1548,38 @@ fn handle_rpc(
                         Ok(Some(rpc_error(id, error.code, &error.sentence)))
                     }
                 }
+            } else if tool_name == Some(crate::provider_catalog::MCP_NEIGHBORHOOD_TOOL) {
+                // The caller's own workspace decides the graph; the bearer is
+                // the identity, and no argument names a path.
+                project_graph_reply(
+                    &id,
+                    crate::mcp_project_graph::neighborhood(
+                        state,
+                        &registration.session_id,
+                        &registration.owner,
+                        &project_graph_arguments(message),
+                    ),
+                )
+            } else if tool_name == Some(crate::provider_catalog::MCP_IMPORTS_TOOL) {
+                project_graph_reply(
+                    &id,
+                    crate::mcp_project_graph::imports(
+                        state,
+                        &registration.session_id,
+                        &registration.owner,
+                        &project_graph_arguments(message),
+                    ),
+                )
+            } else if tool_name == Some(crate::provider_catalog::MCP_IMPORTERS_TOOL) {
+                project_graph_reply(
+                    &id,
+                    crate::mcp_project_graph::importers(
+                        state,
+                        &registration.session_id,
+                        &registration.owner,
+                        &project_graph_arguments(message),
+                    ),
+                )
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -1705,6 +1744,32 @@ fn enabled_tool_list(
                 // no scope argument — whose roster answers is the responder's
                 // own pairing-user fact.
                 crate::provider_catalog::peer_agents_input_schema()
+            } else if *name == crate::provider_catalog::MCP_NEIGHBORHOOD_TOOL {
+                // Closed like its siblings, and bounded: `depth` is capped at
+                // the walk the engine is willing to do (the tools' own parser
+                // refuses anything wider), and `kind` is the graph's whole edge
+                // vocabulary.
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "node": {"type": "string"},
+                        "depth": {"type": "integer", "minimum": 1, "maximum": 4},
+                        "kind": {"type": "string", "enum": ["IMPORT", "CONTAIN"]},
+                    },
+                    "required": ["node"],
+                    "additionalProperties": false,
+                })
+            } else if *name == crate::provider_catalog::MCP_IMPORTS_TOOL
+                || *name == crate::provider_catalog::MCP_IMPORTERS_TOOL
+            {
+                // One closed document for both directions: they differ in
+                // which way they read the edge, not in what they accept.
+                json!({
+                    "type": "object",
+                    "properties": {"file": {"type": "string"}},
+                    "required": ["file"],
+                    "additionalProperties": false,
+                })
             } else if *name == crate::provider_catalog::MCP_LIST_DEVICES_TOOL {
                 // Spelled in its own arm rather than left to the default arm
                 // at the bottom: a parameterless tool's schema is a claim
@@ -2553,6 +2618,49 @@ fn provider_is_launchable(provider: &str) -> bool {
         .user_row_for(provider)
         .is_some()
         || crate::provider_catalog::find_available(provider).is_some()
+}
+
+/// The arguments of a project-graph call, absent when the request carries
+/// none: the tools' own parser is the one place that decides what their closed
+/// argument set is, exactly as the create tool's parser does.
+fn project_graph_arguments(message: &Value) -> Value {
+    message
+        .pointer("/params/arguments")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// One reply shape for the three project-graph tools: their own document on
+/// success, `-32602` for a malformed request, and a tool error (`isError: true`)
+/// carrying the sentence that names the missing fact when the graph cannot be
+/// read. An unreadable graph is deliberately not an empty document: `[]` would
+/// read as "this node has no neighbours".
+fn project_graph_reply(
+    id: &Value,
+    result: Result<Value, crate::mcp_project_graph::GraphError>,
+) -> Result<Option<Value>, Value> {
+    match result {
+        Ok(document) => {
+            let text = serde_json::to_string(&document).map_err(|error| {
+                json!({"jsonrpc":"2.0", "id": id, "error": {"code": -32603, "message": format!("Could not encode project graph: {error}")}})
+            })?;
+            Ok(Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{"type": "text", "text": text}],
+                    "structuredContent": document,
+                    "isError": false,
+                },
+            })))
+        }
+        Err(crate::mcp_project_graph::GraphError::Invalid(message)) => {
+            Ok(Some(rpc_error(id.clone(), -32602, &message)))
+        }
+        Err(crate::mcp_project_graph::GraphError::Refused(message)) => {
+            Ok(Some(tool_error(id, &message)))
+        }
+    }
 }
 
 fn tool_error(id: &Value, message: &str) -> Value {
