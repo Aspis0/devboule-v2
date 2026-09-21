@@ -414,10 +414,12 @@ export interface Session {
   elapsedMs: number | null;
   /**
    * The directory the process was actually given, echoed back by the daemon in
-   * display form. Absent means the daemon does not know it — a journal-only
-   * transcript whose process died in a previous run. The frontend must render
-   * it or say nothing; it must never substitute a guess, and it must never
-   * send a cwd of its own: the daemon resolves the path from `workspaceId`.
+   * display form. A live session reports it from the command it launched; a
+   * journal-only transcript reports the directory its birth recorded (journal
+   * schema v15) and is absent only for a row that predates that column or was
+   * never launched. The frontend must render it or say nothing; it must never
+   * substitute a guess, and it must never send a cwd of its own: the daemon
+   * resolves the path from `workspaceId`, or from the row's own record.
    */
   cwd?: string;
   /**

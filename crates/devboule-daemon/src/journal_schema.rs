@@ -281,6 +281,25 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // would die reading the column on a user's journal.
             validate_v14_columns(&tx)?;
         }
+        if version < 15 {
+            // The directory the session's process was launched in
+            // (`crates/devboule-daemon/src/session_resume.rs`, the resume's
+            // pre-flight). NULL — every row that predates the column — reads
+            // as "nobody recorded it", and the resume then does exactly what
+            // it did before this column existed: it launches the provider
+            // and lets it answer. No backfill: the directory a dead process
+            // received cannot be re-derived from a workspace id that may
+            // point somewhere else now, and a guessed path would be worse
+            // than none.
+            if !session_has_column(&tx, "cwd")? {
+                tx.execute("ALTER TABLE sessions ADD COLUMN cwd TEXT", [])?;
+            }
+            // The pre-stamp guard, same ordering as v12 to v14: a colliding
+            // shape must leave the file at 14, openable by the previous
+            // build, rather than stamped 15 — where the first list or replay
+            // would die reading the column on a user's journal.
+            validate_v15_columns(&tx)?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -295,6 +314,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     validate_v13_columns(&conn)?;
     // The v14 column, the same way (see [`is_our_disowned_shape`]).
     validate_v14_columns(&conn)?;
+    // The v15 column, the same way (see [`is_our_cwd_shape`]).
+    validate_v15_columns(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -447,6 +468,26 @@ fn is_our_disowned_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
         shape,
         Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")
     )
+}
+
+/// The one shape v15 may have: `cwd` is `TEXT`, nullable, no default (NULL
+/// reads as no directory recorded, which is every row that predates it).
+/// Spelled once, like its siblings: the v15 pre-stamp guard and the
+/// post-commit check both read this predicate.
+fn is_our_cwd_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
+    matches!(
+        shape,
+        Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")
+    )
+}
+
+fn validate_v15_columns(conn: &Connection) -> Result<(), JournalError> {
+    if !is_our_cwd_shape(column_shape(conn, "cwd")?) {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected sessions.cwd column".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_v14_columns(conn: &Connection) -> Result<(), JournalError> {

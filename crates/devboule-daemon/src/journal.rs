@@ -51,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 14;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 15;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -226,6 +226,19 @@ pub struct SessionRecord {
     pub id: String,
     pub owner: String,
     pub workspace_id: Option<String>,
+    /// The directory the session's process was **actually launched in**, as
+    /// the daemon passed it to the child — the workspace's own path, an
+    /// agent child's confined subdirectory, or whatever a session with no
+    /// workspace was started from. `None` for every row that predates v15,
+    /// which is the honest "nobody recorded it": such a row resumes exactly
+    /// as it did before the column existed.
+    ///
+    /// This is not a second source of truth for a workspace session: the
+    /// workspace is resolved from its id, as it always was. It is the only
+    /// record at all for a session that has no workspace — and the one fact
+    /// a resume can check before spawning, so a folder that is gone is
+    /// refused in words instead of in a provider's crash.
+    pub cwd: Option<String>,
     pub kind: SessionKind,
     /// Catalog provider id used to start an ACP/Claude session. NULL means
     /// this row predates provider persistence or was not resumable.
@@ -497,10 +510,13 @@ impl SessionRecord {
         Session {
             id: self.id.clone(),
             workspace_id: self.workspace_id.clone(),
-            // The journal has no cwd column. The process is gone, and
-            // re-deriving a path from workspace_id would report a directory
-            // the dead process may never have received.
-            cwd: None,
+            // The recorded directory, in the same display form the creation
+            // echoed: it is what the process really received, and the resume
+            // reads it back rather than re-deriving it from `workspace_id` —
+            // a session with no workspace has no other record of where it
+            // worked, and a workspace whose folder moved would send the next
+            // process somewhere the dead one never was.
+            cwd: self.cwd.as_deref().map(crate::workspace::display_path),
             kind: self.kind.clone(),
             title: self.title.clone(),
             provider: self.provider.clone(),
@@ -2519,8 +2535,8 @@ const SESSION_INSERT: &str = "INSERT INTO sessions (
     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
     reaped, peer_session_id, provider, origin_kind, origin_device, origin_role,
     display_name, created_by, profile_id, context_id, unattended, unattended_state, labels,
-    overlay, depth, disowned_peer_session_id
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)";
+    overlay, depth, disowned_peer_session_id, cwd
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)";
 
 /// The upsert's conflict clause: an existing id is *updated*, with the
 /// never-downward ratchets and the birth-fact protections below.
@@ -2571,7 +2587,13 @@ const SESSION_UPSERT_CLAUSE: &str = "
         -- answer. Later upserts never carry it (their records are wire
         -- metadata), so the recorded refusal stays until the announce road
         -- clears it.
-        disowned_peer_session_id = COALESCE(excluded.disowned_peer_session_id, sessions.disowned_peer_session_id)";
+        disowned_peer_session_id = COALESCE(excluded.disowned_peer_session_id, sessions.disowned_peer_session_id),
+        -- The directory is a birth fact like the overlay above: it is written
+        -- once, by the row's own creation, and a later upsert carries NULL
+        -- because the records it builds are wire metadata with no directory
+        -- of their own. Without the ratchet an end marker would erase the one
+        -- record of where the session worked.
+        cwd = COALESCE(excluded.cwd, sessions.cwd)";
 
 fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), JournalError> {
     write_session_row(conn, record, true)
@@ -2636,6 +2658,7 @@ fn write_session_row(
             overlay,
             record.depth.map(|depth| depth as i64),
             record.disowned_peer_session_id,
+            record.cwd,
         ],
     )
     .map_err(|error| {
@@ -3291,6 +3314,10 @@ pub fn new_session_record(
         id: id.into(),
         owner: owner.into(),
         workspace_id,
+        // Nobody has launched this session yet, so no directory has been
+        // handed to a process: the creation stamps this when it stages the
+        // command it is about to run.
+        cwd: None,
         kind,
         provider: None,
         title: title.into(),

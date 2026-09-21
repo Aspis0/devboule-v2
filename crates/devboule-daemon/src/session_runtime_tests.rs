@@ -177,6 +177,7 @@ fn session_notice_survives_detach_and_reattach() {
             id: "s.notice.reattach".to_string(),
             owner: "owner".to_string(),
             workspace_id: None,
+            cwd: None,
             kind: SessionKind::Acp,
             provider: None,
             title: "Notice".to_string(),

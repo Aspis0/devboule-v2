@@ -446,3 +446,68 @@ fn a_refused_generation_start_gives_back_the_slot_the_resume_took() {
     drop(db);
     fixture.finish();
 }
+
+/// The pre-flight at the road's own level: a session whose recorded directory
+/// is gone, and which has **no conversation to recover**, is refused in words
+/// and nothing is launched for it. The stub's pid file is the evidence — it is
+/// written by the stub's `main`, so a file that never appears is a provider
+/// that never ran (the brief's "not only the text").
+///
+/// Mutants: the pre-flight dropped (the spawn goes ahead, the pid file appears
+/// and the provider answers for us); the refusal turned into a replacement
+/// session that has nothing to carry; the row evicted anyway.
+#[test]
+fn a_resume_for_a_gone_directory_and_an_empty_transcript_refuses_without_spawning() {
+    let fixture = ResumeFixture::new("gone-dir");
+    let id = fixture.id("gone-dir");
+    let gone = fixture.dir.join("removed-worktree");
+    let pids = fixture.dir.join("stub pids.txt");
+    let _env = AcpEnv::stub(&[(
+        "DEVBOULE_ACP_STUB_PIDS_FILE",
+        pids.to_string_lossy().into_owned(),
+    )]);
+    let mut row = acp_row(&id, &fixture.owner, "handle-gone");
+    row.cwd = Some(gone.to_string_lossy().into_owned());
+    fixture.write_row(row);
+    take_bystander_slot(&fixture.state);
+
+    let outcome = fixture.resume(&id, &fixture.conn());
+    // The stub writes its pid file in `main`, before it reads a single frame, so
+    // the check is the file and not a timing window — and it is made **first**,
+    // because the claim it carries is the one a road that refused *and* spawned
+    // anyway would otherwise pass while the sentence looked right.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !pids.exists(),
+        "no provider was launched for a folder that does not exist"
+    );
+    let error = outcome.expect_err("nothing can be launched in a directory that is gone");
+    assert_eq!(
+        error.code,
+        ErrorCode::WorkspaceUnavailable,
+        "the pre-flight's own code: {error:?}"
+    );
+    assert_eq!(
+        error.message,
+        format!(
+            "the folder this session worked in no longer exists: {}",
+            crate::workspace::display_path(&gone.to_string_lossy())
+        ),
+        "the sentence names the path it looked for: {error:?}"
+    );
+    assert_eq!(
+        fixture.state.live_session_count(),
+        1,
+        "the refusal takes no slot"
+    );
+    assert!(
+        !entry_present(fixture.registry(), &id),
+        "no entry was registered for the refused resume"
+    );
+    assert_eq!(
+        fixture.row(&id).generation,
+        1,
+        "the row was never opened for a new generation"
+    );
+    fixture.finish();
+}

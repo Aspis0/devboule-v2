@@ -2206,3 +2206,37 @@ fn abandoned_birth_leaves_no_row() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The directory a session's process was launched in is a **birth fact**: the
+/// row carries it, and a later upsert — every end marker is one — must not
+/// erase it, because the resume's pre-flight reads exactly this cell to answer
+/// "does the folder this session worked in still exist" before it spawns
+/// anything.
+#[test]
+fn a_recorded_directory_survives_a_later_upsert_that_does_not_carry_it() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    let mut row = sample_session("s.cwd");
+    row.cwd = Some(r"C:\gone\workspace".to_string());
+    journal.upsert_blocking(row).expect("birth write");
+
+    let mut later = sample_session("s.cwd");
+    later.status = PersistStatus::Ended;
+    later.generation = 2;
+    journal.upsert_blocking(later).expect("end marker");
+    journal.flush().expect("flush");
+
+    let written = journal
+        .list()
+        .expect("list")
+        .into_iter()
+        .find(|row| row.id == "s.cwd")
+        .expect("the row");
+    assert_eq!(
+        written.cwd.as_deref(),
+        Some(r"C:\gone\workspace"),
+        "the birth directory is not the end marker's to erase"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

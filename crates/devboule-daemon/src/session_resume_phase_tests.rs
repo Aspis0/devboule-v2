@@ -358,3 +358,70 @@ fn the_disown_mark_lands_before_the_end_marker() {
     });
     fixture.finish();
 }
+
+/// The directory a session was launched in is read back and **used**: a session
+/// with no workspace has no other record of where it worked, and this road
+/// pointed every one of them at the daemon's own working directory.
+///
+/// Mutants, one per claim: the recorded directory ignored (the command keeps
+/// the daemon's cwd); the existence check dropped (the resume goes on to spawn
+/// for a folder that is not there, and the provider's `Invalid params` becomes
+/// the human's answer); the wrong code (a folder that is gone is not an
+/// internal failure).
+#[test]
+fn resume_stage_command_uses_the_recorded_directory_and_refuses_a_missing_one() {
+    let fixture = ResumeFixture::new("stage-cwd");
+    let id = fixture.id("stage-cwd");
+    let _env = AcpEnv::missing_agent();
+
+    let born_in = fixture.dir.join("born-here");
+    std::fs::create_dir_all(&born_in).expect("the directory the session was born in");
+    let mut row = acp_row(&id, &fixture.owner, "handle-cwd");
+    row.cwd = Some(born_in.to_string_lossy().into_owned());
+    let (command, _) = fixture
+        .registry()
+        .resume_stage_command(&row, "devboule-acp-stub")
+        .expect("a directory that is there stages");
+    assert_eq!(
+        command.cwd, born_in,
+        "the process is launched in the directory the session really worked in"
+    );
+
+    let gone = fixture.dir.join("gone-worktree");
+    let mut row = acp_row(&id, &fixture.owner, "handle-cwd");
+    row.cwd = Some(gone.to_string_lossy().into_owned());
+    let error = match fixture
+        .registry()
+        .resume_stage_command(&row, "devboule-acp-stub")
+    {
+        Ok(_) => panic!("a directory that is gone refuses the resume"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.code,
+        ErrorCode::WorkspaceUnavailable,
+        "the folder is the app's own unavailable-workspace case: {error:?}"
+    );
+    assert_eq!(
+        error.message,
+        format!(
+            "the folder this session worked in no longer exists: {}",
+            crate::workspace::display_path(&gone.to_string_lossy())
+        ),
+        "the sentence names the path it looked for: {error:?}"
+    );
+
+    // A row that records no directory keeps the road it had before the column
+    // existed: nothing to check, so nothing is refused.
+    let row = acp_row(&id, &fixture.owner, "handle-cwd");
+    let (command, _) = fixture
+        .registry()
+        .resume_stage_command(&row, "devboule-acp-stub")
+        .expect("a row with no recorded directory stages as it always did");
+    assert_eq!(
+        command.cwd,
+        std::env::current_dir().expect("the daemon's own directory"),
+        "an unrecorded directory stays the command's own default"
+    );
+    fixture.finish();
+}

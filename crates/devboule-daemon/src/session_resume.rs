@@ -9,6 +9,20 @@
 
 use super::*;
 
+/// The sentence a resume answers with when the directory the session worked in
+/// is gone. Spelled once, because the same words have to reach a human two
+/// ways: as the refusal a session with nothing to recover gets, and inside the
+/// notice a recovered session carries in its own transcript.
+pub(super) fn session_folder_gone(path: &str) -> WireError {
+    WireError::new(
+        ErrorCode::WorkspaceUnavailable,
+        format!(
+            "the folder this session worked in no longer exists: {}",
+            crate::workspace::display_path(path)
+        ),
+    )
+}
+
 /// A previous-run transcript is replaced without a teardown — it holds no
 /// process — but the pin it took when a client read it must go with it, or
 /// the row is never reclaimable again and nothing fails.
@@ -128,7 +142,37 @@ impl SessionRegistry {
     ) -> Result<(PtyCommand, u64), WireError> {
         let family = provider::catalog_registry().provider_for_kind(&record.kind);
         let mut command = family.resolve_command(&self.paths, Some(provider))?;
-        self.apply_workspace_cwd(record.workspace_id.as_deref(), &mut command)?;
+        match record.workspace_id.as_deref() {
+            // The workspace road, unchanged: the store resolves the id and
+            // answers `WorkspaceUnavailable` when its folder is gone, in the
+            // words the app already renders for that case.
+            Some(workspace_id) => {
+                self.apply_workspace_cwd(Some(workspace_id), &mut command)?;
+            }
+            // A session with no workspace has no other record of where it
+            // worked than the directory its birth wrote down. When that
+            // directory is gone the resume is refused **here, in words**, and
+            // nothing is spawned: the provider's answer to a `cwd` that does
+            // not exist is `Invalid params` — the measured case, 42 ms after
+            // the request — and a child launched to deliver it is a process,
+            // an npx wrapper and a handshake spent on a question the daemon
+            // could answer itself.
+            //
+            // A row with no recorded directory — every row that predates v15,
+            // and every row nothing ever launched — keeps the command's own
+            // default, which is exactly what this road did before the column
+            // existed: the resume is not made stricter by a fact nobody
+            // recorded.
+            None => {
+                if let Some(cwd) = record.cwd.as_deref() {
+                    let path = PathBuf::from(cwd);
+                    if !path.is_dir() {
+                        return Err(session_folder_gone(cwd));
+                    }
+                    command.cwd = path;
+                }
+            }
+        }
         Ok((command, record.generation.saturating_add(1)))
     }
 

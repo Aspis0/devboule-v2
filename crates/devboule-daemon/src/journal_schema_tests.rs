@@ -1584,3 +1584,97 @@ fn stored_trigger(conn: &Connection, name: &str) -> String {
     )
     .unwrap_or_else(|error| panic!("trigger {name} is not in sqlite_master: {error}"))
 }
+
+/// The v15 file the cwd migration starts from: a v13 file with the v14
+/// column, stamped 14.
+fn v14_journal_with_rows(rows: &[(&str, i64, &str)]) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (dir, path) = v13_journal_with_rows(rows);
+    let conn = Connection::open(&path).expect("v14 journal");
+    conn.execute(
+        "ALTER TABLE sessions ADD COLUMN disowned_peer_session_id TEXT",
+        [],
+    )
+    .expect("v14 column");
+    conn.pragma_update(None, "user_version", 14)
+        .expect("v14 version");
+    drop(conn);
+    (dir, path)
+}
+
+/// The v15 migration on a real v14 file: the directory column arrives, a row
+/// that predates it reads as "no directory recorded", and nothing is
+/// backfilled. That NULL is the whole reason a pre-column session resumes
+/// exactly the way it did before the column existed — the resume's pre-flight
+/// has no directory to check and so spawns as it always did.
+#[test]
+fn a_v14_journal_gains_the_cwd_column_and_old_rows_read_no_directory() {
+    let (dir, path) = v14_journal_with_rows(&[("s.before-cwd", 0, "profile-x")]);
+    let journal = Journal::open(&path).expect("migrate");
+    let row = journal
+        .list()
+        .expect("list")
+        .into_iter()
+        .find(|row| row.id == "s.before-cwd")
+        .expect("the old row survived");
+    assert_eq!(row.cwd, None, "a pre-column row records no directory");
+    let check = Connection::open(&path).expect("check migrated schema");
+    let shape = super::column_shape(&check, "cwd").expect("column shape");
+    assert!(
+        matches!(shape, Some((ref kind, 0, None)) if kind.eq_ignore_ascii_case("text")),
+        "TEXT, nullable, no default — the shape the daemon writes: {shape:?}"
+    );
+    let raw: Option<String> = check
+        .query_row(
+            "SELECT cwd FROM sessions WHERE id = 's.before-cwd'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("raw cell");
+    assert_eq!(raw, None, "no backfill invents a directory");
+    let version: i32 = check
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user_version");
+    assert_eq!(version, JOURNAL_SCHEMA_VERSION);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The v15 pre-stamp guard: a v14 file carrying a `cwd` column of the wrong
+/// shape is refused with `user_version` still **14**, so the file stays
+/// openable by the previous build instead of stamped 15 and openable by none.
+#[test]
+fn a_v15_migration_does_not_stamp_a_colliding_cwd_column() {
+    let (dir, path) = v14_journal_with_rows(&[("s.before-cwd", 0, "profile-x")]);
+    {
+        let conn = Connection::open(&path).expect("open the v14 journal");
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN cwd INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .expect("the stray colliding column");
+    }
+    let error = match Journal::open(&path) {
+        Err(error) => error,
+        Ok(journal) => {
+            journal.shutdown();
+            panic!("the colliding column is refused");
+        }
+    };
+    assert!(
+        matches!(error, JournalError::Corrupt(_)),
+        "the corrupt-journal path is the one that refuses it: {error}"
+    );
+    assert!(
+        error.to_string().contains("cwd"),
+        "the message names the column: {error}"
+    );
+    let version: i32 = Connection::open(&path)
+        .expect("open the refused journal")
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user_version");
+    assert_eq!(
+        version, 14,
+        "the stamp never commits — refused, not bricked"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

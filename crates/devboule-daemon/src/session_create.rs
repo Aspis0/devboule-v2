@@ -184,6 +184,12 @@ pub(super) fn build_birth_record(
         title,
     );
     record.provider = session_provider.clone();
+    // The directory this session is about to be launched in, recorded at
+    // birth: the one fact that lets a later resume check where it worked
+    // before it spawns anything. Raw, not the display form — this value is
+    // handed back to a process one day (the brief's "the cwd the daemon really
+    // used"), and only `to_session` renders it.
+    record.cwd = Some(resolved.command.cwd.to_string_lossy().into_owned());
     // The name a human reads and the session that asked for this one are
     // the row's, not just the wire metadata's (audit S5-12): an app that
     // attaches to this daemon after a restart lists its sessions from the
