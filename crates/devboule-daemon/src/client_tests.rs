@@ -48,26 +48,37 @@ fn session_resume_deadline_covers_the_provider_startups_it_waits_for() {
     assert!(SESSION_RESUME_RPC_TIMEOUT > 2 * (ACP_FIRST_RESPONSE_TIMEOUT + ACP_RESPONSE_TIMEOUT));
 }
 
-/// The create road's budget, checked against the daemon's own.
+/// The create road's budget, checked against the daemon's own reads.
 ///
 /// The daemon cannot answer `session_create` before the same inline provider
 /// startup `session_resume` waits for — `acp_client::spawn_process` runs the
-/// handshake — and a profile's delivery confirmation adds one more awaited
-/// reply. The control-plane default gives up at 30 seconds, under the
-/// measured cold start of 20.7 s with nothing left for a slower machine.
+/// handshake — and a creation can cross **five** awaited replies: `initialize`
+/// on the first-answer bound, then `session/new`, the `session/set_mode` a
+/// creation with a mode owes when the agent declares standard modes, and the
+/// delivery's confirmation, which reads the primary reply and, when the
+/// switch needs a follow-up, a second one. The four behind `initialize` each
+/// wait the response bound, so the ceiling is 180 s — and the budget must
+/// keep the journal and queue margin **above** it, or the client surrenders in
+/// the instant the daemon's worst case ends, which is the defect this budget
+/// exists to remove.
 ///
 /// The pair of assertions lives here rather than in
 /// [`only_the_named_roads_leave_the_thirty_second_default`] because that pin
 /// is the resume road's proof and stays as it was; the default is checked
 /// here too, so this road's own size cannot quietly become the default.
 ///
-/// Mutant: the road back on `RPC_TIMEOUT` (or the constant lowered under the
-/// daemon's own bounds) — this assertion fails.
+/// Mutant: the road back on `RPC_TIMEOUT`, or the budget lowered onto the
+/// ceiling (180 s) with the margin gone — this assertion fails.
 #[test]
 fn session_create_deadline_covers_the_provider_startup_it_waits_for() {
-    // Three bounds, not two: `initialize`, the `session/new` behind it, and
-    // the delivery's confirmation when the creation carries a profile.
-    assert!(SESSION_CREATE_RPC_TIMEOUT > ACP_FIRST_RESPONSE_TIMEOUT + 2 * ACP_RESPONSE_TIMEOUT);
+    const MARGIN: Duration = Duration::from_secs(30);
+    // Four response-bound reads behind `initialize`: `session/new`, the mode
+    // switch, and the delivery's primary and follow-up confirmations.
+    let ceiling = ACP_FIRST_RESPONSE_TIMEOUT + 4 * ACP_RESPONSE_TIMEOUT;
+    assert!(
+        SESSION_CREATE_RPC_TIMEOUT >= ceiling + MARGIN,
+        "a create budget of {SESSION_CREATE_RPC_TIMEOUT:?} leaves no margin over the {ceiling:?} ceiling the daemon's own reads declare"
+    );
     assert_eq!(RPC_TIMEOUT, Duration::from_secs(30));
     assert!(SESSION_CREATE_RPC_TIMEOUT > RPC_TIMEOUT);
 }

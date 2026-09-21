@@ -56,19 +56,21 @@ const SESSION_RESUME_RPC_TIMEOUT: Duration = Duration::from_secs(300);
 /// The budget `session_create` carries, and why it is not [`RPC_TIMEOUT`].
 ///
 /// The daemon cannot answer `SessionCreate` before the provider startup it
-/// runs inline has finished: `acp_client::spawn_process` performs the whole
-/// handshake — `initialize` under `ACP_FIRST_RESPONSE_TIMEOUT` (120 s) and
-/// the `session/new` behind it under `ACP_RESPONSE_TIMEOUT` (15 s) — and a
-/// profile that names a model or an effort adds one more awaited reply, the
-/// delivery's confirmation, on the same 15 s bound. The ceiling those three
-/// bounds declare is 150 s; the control-plane default gives up at 30, and the
-/// slowest cold `npx` start measured in the house is 20.7 s — two thirds of
-/// it with nothing left for a slower machine or an agent that answers
-/// slowly. 180 s is the 150 s of bounds the create road can cross plus the
-/// 30 s of journal and queue work it adds, the shape
-/// [`SESSION_RESUME_RPC_TIMEOUT`] had before the recovery doubled it; the
-/// measurement supports far less, and this is a declared ceiling, not one.
-const SESSION_CREATE_RPC_TIMEOUT: Duration = Duration::from_secs(180);
+/// runs inline has finished, and that startup can cross **five** awaited
+/// replies: `initialize` under `ACP_FIRST_RESPONSE_TIMEOUT` (120 s), the
+/// `session/new` behind it under `ACP_RESPONSE_TIMEOUT` (15 s), the
+/// `session/set_mode` a creation with a mode owes when the agent declares
+/// standard modes (15 s), and the delivery's confirmation — `confirm_switch`
+/// reads the primary reply and, when the switch needs a follow-up, a second
+/// one (15 s each). The ceiling those reads declare is 180 s; the
+/// control-plane default gives up at 30, and the slowest cold `npx` start
+/// measured in the house is 20.7 s — two thirds of it with nothing left for
+/// a slower machine or an agent that answers slowly. 210 s is that 180 s
+/// ceiling plus the same 30 s of journal and queue work
+/// [`SESSION_RESUME_RPC_TIMEOUT`] counts, so the client does not surrender in
+/// the instant the daemon's worst case ends. The measurement supports far
+/// less, and this is a declared ceiling, not one.
+const SESSION_CREATE_RPC_TIMEOUT: Duration = Duration::from_secs(210);
 
 // One test's own deadline for the resume road, so the wiring can be proved
 // without waiting out the production window. A thread-local rather than an
