@@ -187,4 +187,43 @@ mod tests {
         assert!(paths.dir.to_string_lossy().contains(' '));
         SingleInstanceLock::acquire(&paths).expect("spaces");
     }
+
+    /// The offset is an agreement between two versions, not a detail of this
+    /// one: this build leaves the record readable and takes the byte after it,
+    /// and a later build that took a different byte would let both hold the
+    /// lock at once — same pipe name, two servers, split clients. The byte is
+    /// taken here by its literal number, so moving `RECORD_CAPACITY` reddens
+    /// this test before it ships the split.
+    #[test]
+    fn the_lock_is_taken_at_the_literal_byte_4096() {
+        let (paths, _guard) = unique_dir();
+        paths.ensure_dir().expect("dir");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&paths.lock_file)
+            .expect("open");
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        overlapped.Anonymous.Anonymous.Offset = 4096;
+        let held = unsafe {
+            LockFileEx(
+                file.as_raw_handle() as HANDLE,
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                1,
+                0,
+                &mut overlapped,
+            )
+        };
+        assert_ne!(held, 0, "the fixture could not take byte 4096");
+        match SingleInstanceLock::acquire(&paths) {
+            Err(DaemonError::AlreadyRunning) => {}
+            Ok(_) => {
+                panic!("this build did not take byte 4096: two versions would both hold the lock")
+            }
+            Err(error) => panic!("expected AlreadyRunning, got {error}"),
+        }
+    }
 }
