@@ -230,11 +230,29 @@ interface PeerCardProps {
   onRevoke: () => void;
 }
 
+/**
+ * The one switch a row may not turn off, and the daemon's own reason it is
+ * held: `validate_caps` refuses a `Client` without `view`, and refuses an
+ * empty set for every role. A `Daemon`-role row's `view` is not special — the
+ * daemon forces that name only for a client, so the panel does not force it
+ * either; any single capability is enough to keep the row usable.
+ */
+function heldCap(row: PeerRow, caps: readonly Cap[]): { cap: Cap; note: string } | null {
+  if (row.role === "client") {
+    return { cap: "view", note: "Client peers can always view their own sessions" };
+  }
+  const last = caps[0];
+  return caps.length === 1 && last !== undefined
+    ? { cap: last, note: "A device must keep at least one capability" }
+    : null;
+}
+
 /** One paired device, with its capability toggles and its inline revoke. */
 function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCardProps) {
   // Which revoke copy is armed on this row, if any. Local to the row so a
   // half-answered revoke on one device is not shown as armed on another.
   const [armed, setArmed] = useState<"revoke" | "lost" | null>(null);
+  const held = heldCap(row, caps);
   return (
     <div className="settings-card settings-device-card device-peer">
       <div className="device-peer-head">
@@ -251,30 +269,25 @@ function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCa
         {row.bindingNodeName === null ? "" : ` · ${row.bindingNodeName}`}
       </span>
       <span className="settings-card-meta">paired {relativeTime(row.pairedAt, now)}</span>
-      {row.role === "client" ? (
-        <fieldset className="device-caps">
-          <legend className="device-caps-legend">This client may</legend>
-          {CAP_ORDER.map((cap) => (
-            <label className="device-cap" key={cap}>
-              <input
-                type="checkbox"
-                checked={caps.includes(cap)}
-                disabled={busy || cap === "view"}
-                onChange={(event) => onToggleCap(cap, event.target.checked)}
-              />
-              <span>{CAP_LABELS[cap]}</span>
-              {cap === "view" ? (
-                <span className="device-cap-note">
-                  Client peers can always view their own sessions
-                </span>
-              ) : null}
-            </label>
-          ))}
-        </fieldset>
-      ) : (
+      <fieldset className="device-caps">
+        <legend className="device-caps-legend">This device may</legend>
+        {CAP_ORDER.map((cap) => (
+          <label className="device-cap" key={cap}>
+            <input
+              type="checkbox"
+              checked={caps.includes(cap)}
+              disabled={busy || held?.cap === cap}
+              onChange={(event) => onToggleCap(cap, event.target.checked)}
+            />
+            <span>{CAP_LABELS[cap]}</span>
+            {held?.cap === cap ? <span className="device-cap-note">{held.note}</span> : null}
+          </label>
+        ))}
+      </fieldset>
+      {row.role === "client" ? null : (
         <p className="device-copy">
-          A daemon peer is scoped by the daemon: it reaches the sessions it created on this device
-          and nothing else.
+          A daemon peer reaches the sessions it created on this device; this machine's own sessions
+          are not in its list.
         </p>
       )}
       {error === undefined ? null : (
@@ -965,7 +978,13 @@ export function DevicesPanel() {
           </h3>
           {activePeers.length === 0 ? (
             <p className="device-copy">Nothing is paired with this device yet.</p>
-          ) : null}
+          ) : (
+            <p className="device-copy">
+              A new pairing starts with every switch on. A device paired before 21 September 2026
+              keeps whatever set it had then: nothing grants it the new default on its own, and its
+              admin switch stays off until a person turns it on.
+            </p>
+          )}
           {activePeers.map((row) => (
             <PeerCard
               key={row.deviceId}

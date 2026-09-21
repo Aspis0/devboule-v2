@@ -1391,13 +1391,14 @@ export interface PluginInventory {
 export type PeerRole = "client" | "daemon";
 
 /**
- * One grant a `client` peer may hold. `view` is always on: a paired client can
- * always see its own sessions. `roster` is deliberately off by default: the
- * daemon grants it only when the person turns it on per device, because
- * reading the roster discloses the pairing user's live agents on this
- * machine. `daemon` peers are origin-scoped by the daemon and are not toggled
- * from here. Mirrors `PEER_CAPS` in `crates/devboule-protocol/src/messages.rs`
- * (the DevicesPanel walker test reads that literal so the two cannot drift).
+ * One grant a paired device may hold, and one switch in the Devices panel for
+ * every role. `view` is the one name `validate_caps` refuses to strip from a
+ * `client` peer (the panel holds that switch on); a `daemon` peer may be left
+ * with any single one. Every new pairing starts holding all of them
+ * (`PEER_DEFAULT_CAPS`, the 2026-09-21 parity decision), so the switches are
+ * how a person narrows a device and how a grant is put back. Mirrors
+ * `PEER_CAPS` in `crates/devboule-protocol/src/messages.rs` (the DevicesPanel
+ * walker test reads that literal so the two cannot drift).
  */
 export type Cap = "view" | "send" | "answer_permissions" | "create_sessions" | "roster" | "admin";
 

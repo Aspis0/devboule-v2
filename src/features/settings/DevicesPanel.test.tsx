@@ -755,14 +755,72 @@ describe("devices panel", () => {
     expect(alert.textContent).toBe("no such peer");
   });
 
-  it("does not toggle capabilities on a daemon peer", async () => {
+  it("draws the capability switches for a daemon peer and drops the false scope sentence", async () => {
+    // A daemon peer is born holding the whole set (the 2026-09-21 parity
+    // decision), so a panel that drew it no switches and said it "reaches the
+    // sessions it created and nothing else" described a device that no longer
+    // exists: it reaches Shutdown, the settings stores, and the rest of the
+    // surface the `admin` switch names.
     vi.mocked(devicesList).mockResolvedValue(
-      replyWith({ peers: [{ ...CLIENT_PEER, role: "daemon" }] }),
+      replyWith({ peers: [{ ...CLIENT_PEER, role: "daemon", caps: [...CAP_ORDER] }] }),
     );
     await renderPanel();
 
-    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
-    expect(container.textContent).toContain("scoped by the daemon");
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(CAP_ORDER.length);
+    expect(checkboxByLabel(ADMIN_LABEL).checked).toBe(true);
+    // `view` is a client's to keep, not a daemon's: the daemon refuses to strip
+    // it from a client and says nothing about a daemon row.
+    expect(checkboxByLabel("view").disabled).toBe(false);
+    expect(container.textContent).not.toContain("and nothing else");
+    expect(container.textContent).not.toContain("scoped by the daemon");
+    expect(container.textContent).toContain(
+      "A daemon peer reaches the sessions it created on this device; this machine's own sessions are not in its list.",
+    );
+    // The one fact a person cannot read off the switches: the default is
+    // granted at pairing, so a row paired earlier keeps what it had then.
+    expect(container.textContent).toContain("A device paired before 21 September 2026");
+  });
+
+  it("narrows a daemon peer through the daemon and keeps the daemon's answer", async () => {
+    // The switch has to be a valve, not a decoration: it asks the daemon to
+    // change that device's stored set, and what stays on screen is the set the
+    // daemon answered with. A box that flips and changes nothing would be
+    // worse than no box, because it would look like a protection.
+    const peer: PeerRow = { ...CLIENT_PEER, role: "daemon", caps: [...CAP_ORDER] };
+    vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [peer] }));
+    vi.mocked(peerSetCaps).mockResolvedValue({
+      ...peer,
+      caps: CAP_ORDER.filter((cap) => cap !== "admin"),
+    });
+    await renderPanel();
+
+    await act(async () => {
+      checkboxByLabel(ADMIN_LABEL).click();
+      await Promise.resolve();
+    });
+
+    expect(peerSetCaps).toHaveBeenCalledWith(peer.deviceId, [
+      "view",
+      "send",
+      "answer_permissions",
+      "create_sessions",
+      "roster",
+    ]);
+    expect(checkboxByLabel(ADMIN_LABEL).checked).toBe(false);
+  });
+
+  it("holds a daemon peer's last capability so the daemon never refuses an empty set", async () => {
+    // `validate_caps` refuses a peer left with no capability at all. The panel
+    // holds the last switch instead of sending a set the daemon will refuse.
+    vi.mocked(devicesList).mockResolvedValue(
+      replyWith({ peers: [{ ...CLIENT_PEER, role: "daemon", caps: ["admin"] }] }),
+    );
+    await renderPanel();
+
+    const admin = checkboxByLabel(ADMIN_LABEL);
+    expect(admin.checked).toBe(true);
+    expect(admin.disabled).toBe(true);
+    expect(container.textContent).toContain("A device must keep at least one capability");
   });
 
   it("asks for a second click before revoking", async () => {
