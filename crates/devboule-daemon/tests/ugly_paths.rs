@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use devboule_daemon::{
     connect, connect_or_spawn, current_user_sid, dacl_is_current_user_only, spawn_daemon,
-    DaemonClient, RuntimePaths, IDLE_SHUTDOWN_GRACE,
+    DaemonClient, DaemonState, RuntimePaths, IDLE_SHUTDOWN_GRACE,
 };
 use devboule_protocol::{ClientHello, ClientMessage, ErrorCode, OwnerId, PROTOCOL_VERSION};
 
@@ -87,12 +87,17 @@ impl Harness {
         harness
     }
 
+    /// Wait for the daemon by reading its record, not by connecting.
+    ///
+    /// The connection this used to make was a client as far as the daemon was
+    /// concerned: `admit_client` took a slot and re-armed the idle timer, so
+    /// the instrument that measures the idle exit was the one thing keeping
+    /// the daemon awake. `ready=1` is written after the listener is bound, so a
+    /// probe that sees it may connect.
     fn wait_until_up(&mut self) {
-        let hello = test_hello("wait");
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if let Ok(client) = connect(&self.paths, hello.clone()) {
-                drop(client);
+            if DaemonState::read(&self.paths.lock_file).is_ready() {
                 return;
             }
             if let Some(child) = &mut self.child {
@@ -100,9 +105,12 @@ impl Harness {
                     panic!("daemon exited before listen: {status}");
                 }
             }
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(25));
         }
-        panic!("daemon did not accept within 5s at {}", self.dir.display());
+        panic!(
+            "daemon was not listening within 5s at {}",
+            self.dir.display()
+        );
     }
 
     fn client(&self, name: &str) -> DaemonClient {

@@ -106,3 +106,7 @@ pub(crate) use sessions::{
 #[cfg(test)]
 #[path = "server_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "server/lifecycle_tests.rs"]
+mod lifecycle_tests;

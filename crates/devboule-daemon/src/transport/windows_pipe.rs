@@ -73,18 +73,30 @@ pub struct NamedPipeListener {
     security: PipeSecurity,
     stop: Arc<AtomicBool>,
     first: bool,
+    /// The instance `bind` created, waiting for its first client. Kept as a
+    /// plain integer because the listener is built on one thread and moved to
+    /// another, and a raw handle is not `Send`.
+    pending: Option<usize>,
 }
 
 #[cfg(feature = "server")]
 impl NamedPipeListener {
     pub fn bind(paths: &RuntimePaths, stop: Arc<AtomicBool>) -> io::Result<Self> {
         let security = PipeSecurity::current_user_only()?;
-        Ok(Self {
+        let mut listener = Self {
             pipe_name: paths.pipe_name.clone(),
             security,
             stop,
             first: true,
-        })
+            pending: None,
+        };
+        // The instance is created here, not in the first `accept`. A name with
+        // no instance on it is the same thing to a client as a daemon that is
+        // not running (`ERROR_FILE_NOT_FOUND`), so a listener that has not
+        // created one yet has not bound anything yet: it only made a promise
+        // that the next `accept` will keep.
+        listener.pending = Some(listener.create_instance()? as usize);
+        Ok(listener)
     }
 
     fn create_instance(&mut self) -> io::Result<HANDLE> {
@@ -139,7 +151,10 @@ impl Listener for NamedPipeListener {
                 "listener shutting down",
             ));
         }
-        let handle = self.create_instance()?;
+        let handle = match self.pending.take() {
+            Some(pending) => pending as HANDLE,
+            None => self.create_instance()?,
+        };
         let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
         if event.is_null() {
             unsafe {
@@ -340,6 +355,14 @@ pub fn peer_identity(file: &File) -> io::Result<crate::agent_report::PeerIdentit
 impl Drop for NamedPipeListener {
     fn drop(&mut self) {
         let _ = self.shutdown();
+        if let Some(handle) = self.pending.take() {
+            // SAFETY: `create_instance` produced this owned handle and nothing
+            // else took it — `accept` takes it out of the field, so a handle
+            // still here is one nobody connected to.
+            unsafe {
+                CloseHandle(handle as HANDLE);
+            }
+        }
     }
 }
 
