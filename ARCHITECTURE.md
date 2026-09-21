@@ -66,7 +66,7 @@ runs (`src-tauri/tauri.conf.json:9`, `beforeDevCommand`); there is no bundling s
   (`crates/devboule-daemon/src/mcp_broker.rs:1-7`, `:40`, `:228`).
 - **The peer listener.** A TCP listener on the tailnet, everything inside Noise
   (`crates/devboule-daemon/src/peer_transport.rs:1-6`), started best-effort at boot
-  (`crates/devboule-daemon/src/server.rs:1369-1375`).
+  (`crates/devboule-daemon/src/server/lifecycle.rs`, `try_start_remote_listener`).
 - **Attachments**, under the runtime directory (`crates/devboule-daemon/src/attachment_store.rs:3-8`).
 - **The per-provider tool policy** (`crates/devboule-daemon/src/tool_policy.rs:1-13`).
 - **Provider discovery**, which is a `PATH` scan plus a launch resolver
@@ -109,11 +109,14 @@ passes `CREATE_NO_WINDOW` (`crates/devboule-daemon/src/spawn.rs:41-43`, `:61-82`
 `Shutdown` RPC and joins with a 1.5 s budget (`src-tauri/src/client/mod.rs:874-893`, `:27`);
 `DaemonClient::shutdown` requires `accepted: true` (`crates/devboule-daemon/src/client.rs:130-137`);
 the daemon's dispatch **flushes the journal before it accepts**, so the reply is the app's last
-guarantee that the transcript is on disk (`crates/devboule-daemon/src/server.rs:2258-2263`).
-`run_windows` then wakes from `wait_until_shutdown` (`server.rs:379-390`), flushes again, shuts the
-listener, stops the peer listener and bounded-joins the accept thread (`server.rs:1377-1392`), and
-`main` returns (`main.rs:21-22`). There is no window-close or exit-requested handler anywhere in the
-tree, so "closing the last window quits the app" is not something this code shows.
+guarantee that the transcript is on disk (`crates/devboule-daemon/src/server/dispatch.rs`, the
+`ClientMessage::Shutdown` arm). `run_windows` then wakes from `wait_until_shutdown`
+(`crates/devboule-daemon/src/server/lifecycle.rs`, `run_windows`;
+`crates/devboule-daemon/src/server/state.rs`, `ServerState::wait_until_shutdown`), flushes again, shuts
+the listener, stops the peer listener and bounded-joins the accept thread (the teardown block in
+`run_windows`), and `main` returns (`crates/devboule-daemon/src/main.rs:21-22`). There is no window-close or exit-requested
+handler anywhere in the tree, so "closing the last window quits the app" is not something this code
+shows.
 
 **On a crash, and on losing the pipe.** Two different mechanisms on the two sides.
 
@@ -128,11 +131,12 @@ tree, so "closing the last window quits the app" is not something this code show
   cleanup path serves normal disconnects, read/write errors, shutdown and the idle exit: stop the
   request reader, close the outbound queue, flush final events, detach the connection, clear presence,
   and give back the permission card slots the device was holding
-  (`crates/devboule-daemon/src/server.rs:1815-1848`). Then `client_disconnected` decrements the client
-  count and arms the idle exit **only** when `clients == 0 && sessions == 0` (`server.rs:411-425`);
-  the grace is `IDLE_SHUTDOWN_GRACE = 1 s` (`crates/devboule-daemon/src/lib.rs:149`) and the timer
-  re-checks its generation under the lock, so a reconnect or a newly created session cancels it
-  (`server.rs:1167-1191`).
+  (`crates/devboule-daemon/src/server/connection.rs`, `handle_client`). Then `client_disconnected`
+  decrements the client count and arms the idle exit **only** when `clients == 0 && sessions == 0`
+  (`crates/devboule-daemon/src/server/state.rs`, `client_disconnected`); the grace is
+  `IDLE_SHUTDOWN_GRACE = 1 s` (`crates/devboule-daemon/src/lib.rs:175`) and the timer re-checks its
+  generation under the lock, so a reconnect or a newly created session cancels it
+  (`crates/devboule-daemon/src/server/lifecycle.rs`, `arm_idle_shutdown`).
 
 **The two things that surprise people.**
 
@@ -140,12 +144,13 @@ tree, so "closing the last window quits the app" is not something this code show
    `JobObject::new()` sets `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, `assign()` puts a child in it, and
    `Drop` closes the handle — which closes the job and terminates its members
    (`crates/devboule-daemon/src/process_tree.rs:37-59`, `:77-83`, `:151-155`). Every agent and
-   terminal is assigned immediately after spawn: ACP `acp_client.rs:456-467`, Claude
-   `claude_client.rs:221-232`, Codex `codex_client.rs:185-196`, Pi `pi_client.rs:305-317`, a PTY
-   `session.rs:7282-7283`; the daemon holds a job of its own too (`server.rs:242`). "No orphans" is
-   therefore a kernel guarantee, not a cleanup step. The window between `spawn_command` and the
-   assignment is known and accepted: closing it completely would need `CREATE_SUSPENDED`, which
-   portable-pty does not expose (`session.rs:7253-7257`).
+   terminal is assigned immediately after spawn: ACP
+   `acp_client.rs`, `claude_client.rs`, `codex_client.rs` and `pi_client.rs` each call `assign`
+   right after their own spawn, and a PTY assigns in `provider.rs`, `open_pty_session`; the daemon
+   holds a job of its own too (`crates/devboule-daemon/src/server/state.rs`, `JobObject::new`). "No
+   orphans" is therefore a kernel guarantee, not a cleanup step. The window between `spawn_command`
+   and the assignment is known and accepted: closing it completely would need `CREATE_SUSPENDED`,
+   which portable-pty does not expose (the comment in `provider.rs`, `open_pty_session`).
 
 2. **Provider sessions are never re-spawned after a restart: the transcript survives, the process does
    not.** The processes were killed by 1. At the next journal open, rows still marked `live` are
@@ -171,20 +176,23 @@ tree, so "closing the last window quits the app" is not something this code show
    directory for the workspace cwd (under the human's `~/.pi`), and no journal history rides
    the launch line either.
 
-**The daemon can outlive the app.** Because the idle exit requires `sessions == 0` (`server.rs:415`),
-a daemon whose app went away without delivering `Shutdown` — a kill, a crash — keeps running with its
-live sessions, and the next app start *rejoins* it instead of restarting it, since the connect is
-attempted first (`client.rs:1274-1283`). The app's own exit path waits only 1.5 s for its shutdown
-frame (`src-tauri/src/client/mod.rs:27`, `:884-892`), so "the frame was not delivered" is reachable.
-Whether that reattach is intended, or whether the app should prove the daemon is gone before exiting,
-is an open question, and is not answered by any code here.
+**The daemon can outlive the app.** Because the idle exit requires `sessions == 0`
+(`crates/devboule-daemon/src/server/state.rs`, `client_disconnected`), a daemon whose app went away
+without delivering `Shutdown` — a kill, a crash — keeps running with its live sessions, and the next
+app start *rejoins* it instead of restarting it, since the connect is attempted first
+(`crates/devboule-daemon/src/client.rs`, `connect_or_spawn_with`). The app's own exit path waits only
+`JOIN_BUDGET` (1.5 s) for its shutdown frame (`src-tauri/src/client/mod.rs`, `DaemonBridge::shutdown`),
+so "the frame was not delivered" is reachable. Whether that reattach is intended, or whether the app
+should prove the daemon is gone before exiting, is an open question, and is not answered by any code
+here.
 
 Two smaller facts that belong to this section. There is **no updater in the tree** (`bundle.active =
 false`, `tauri.conf.json:70-71`; no updater plugin in `src-tauri/Cargo.toml:21-33`), so "restart the
 daemon for an app update" has no implementation; a daemon speaking another protocol version is
 *refused* with a sentence telling the user to reinstall, not replaced
 (`crates/devboule-protocol/src/handshake.rs:110-131`). And attachment folders left by sessions that
-never closed are swept at daemon start (`server.rs:1346-1360`).
+never closed are swept at daemon start (`crates/devboule-daemon/src/server/lifecycle.rs`,
+`run_windows`).
 
 **There is also an explicit way to kill the daemon**, and it refuses to shoot the wrong process.
 `daemon_restart` in the app (`src-tauri/src/client/mod.rs:1199-1205`) calls
@@ -383,7 +391,9 @@ and an origin stamp. The daemon publishes it on the attached subscription and th
 `src/components/PermissionCard.tsx`, mounted at `src/features/workspace/Workspace.tsx:819` and
 `src/features/design/DesignSurface.tsx:3087`. The answer returns as
 `ClientMessage::SessionPermissionRespond`, which the daemon accepts only from a client that negotiated
-the `typed_permissions` capability (`crates/devboule-daemon/src/server.rs:1601`, `:2249`).
+the `typed_permissions` capability (`crates/devboule-daemon/src/server/dispatch.rs`,
+`typed_permissions_ok`; `crates/devboule-daemon/src/server/connection.rs`, where the capability is
+read off the handshake).
 
 **The card is bounded, and the bound is per device.** At most 32 undecided ACP cards exist at once
 (`permission_broker.rs:14`), and a paired device may hold at most 3
@@ -391,7 +401,9 @@ the `typed_permissions` capability (`crates/devboule-daemon/src/server.rs:1601`,
 reserved *before* the card is inserted, so two cards cannot both see the last slot free, and a
 per-session counter once gave a device three cards per session (`:18-29`, `:56-60`). A slot is
 released when the card is decided, when it is cancelled, and when the connection dies — the
-disconnect path hands back whatever the device still held (`:95-102`, `server.rs:1845-1847`).
+disconnect path hands back whatever the device still held (`permission_broker.rs`,
+`release_card_slot`, `release_peer_card`; `crates/devboule-daemon/src/server/connection.rs`,
+`handle_client`).
 
 **Provenance is on the card, in its own element.** A request raised for, or by, a paired device is
 stamped so the card can render a `peer` line; the app's contract says the request's own text must
@@ -431,7 +443,8 @@ HTTP/1.1 GET with a 2 s budget, because the daemon is std threads and blocking I
 
 The listener is **best-effort and never blocks start-up**: no Tailscale, no tailnet address or a
 missing key leaves the daemon local-only and says why in `Status.remote`
-(`crates/devboule-daemon/src/server.rs:1369-1375`). It is also not a one-shot attempt — the same
+(`crates/devboule-daemon/src/server/lifecycle.rs`, `try_start_remote_listener`). It is also not a
+one-shot attempt — the same
 function is retried, so a user who starts Tailscale and shows a code again gets a listener rather than
 the same refusal until the daemon restarts (`server.rs:1371-1374`).
 
@@ -491,7 +504,8 @@ here — the capability set does (`:96-101`).
 A peer's set is stored per device in the journal's `peers` table (`crates/devboule-daemon/src/journal.rs:1872`,
 `upsert_peer:1917`, `set_peer_caps:2014`, `revoke_peer:1999`). Revocation holds at the last place a
 frame could still leave: a connection whose caps were dropped or that was just revoked gets no closing
-flush at all (`crates/devboule-daemon/src/server.rs:1821-1829`).
+flush at all (`crates/devboule-daemon/src/server/connection.rs`, `handle_client`, the `revoked` flag
+it passes to `flush_final_events`).
 
 **In the app**, all of this is the Devices panel in Settings
 (`src/features/settings/DevicesPanel.tsx:24-26`): this device's identity and fingerprint, the two
@@ -803,12 +817,16 @@ the walk could not read makes the total *unknown* rather than zero, and an unkno
 where `data` is base64 and the comment is explicit: "Never a path"
 (`crates/devboule-protocol/src/messages.rs:110-115`). A stored file is named by reference instead, in
 exactly one spelling — `devboule-attachment:<sessionId>/<digest>`
-(`crates/devboule-protocol/src/session.rs:465`) — carried on the request as
-`attachment_references` (`messages.rs:297`) and validated before use, including a total-size check
-against the same 20 MiB budget (`crates/devboule-protocol/src/attachments.rs:210-248`). A deposit is
-`ClientMessage::SessionDeposit` (`messages.rs:324`) and answers `SessionDeposited` with that reference
-(`messages.rs:887`), which is the value the finish artifact of §7 reuses. Folders left by sessions that
-never closed are swept at daemon start (`crates/devboule-daemon/src/server.rs:1346-1360`).
+(the reference `crates/devboule-protocol/src/session.rs` spells in the `FinishArtifact` doc) — carried
+on the request as
+`attachment_references` (`messages.rs`, `ClientMessage::SessionDeposit`) and validated before use,
+including a total-size check
+against the same 20 MiB budget (`crates/devboule-protocol/src/attachments.rs`, the validation that
+compares against `MAX_ATTACHMENT_OWNER_BYTES`). A deposit is
+`ClientMessage::SessionDeposit` and answers `SessionDeposited` with that reference
+(`messages.rs`, `DaemonMessage::SessionDeposited`), which is the value the finish artifact of §7 reuses.
+Folders left by sessions that
+never closed are swept at daemon start (`crates/devboule-daemon/src/server/lifecycle.rs`, `run_windows`).
 
 ## 9. Surfaces
 
@@ -927,9 +945,10 @@ Six further questions that no code here answers. They are recorded as questions 
    Windows tears down this job", but no code in `src-tauri/src` creates a job or assigns the daemon to
    one — the spawn path sets only `CREATE_NO_WINDOW` (`spawn.rs:76-80`). If the app is not itself in
    such a job, a killed app is expected to leave the daemon running with its live sessions.
-3. **Reattach after an undelivered `Shutdown`.** The app waits 1.5 s
-   (`src-tauri/src/client/mod.rs:27`) and then exits; the daemon, holding a live session, never
-   idle-exits (`server.rs:415`), so the next start rejoins it. Intended, or should the app prove the
+3. **Reattach after an undelivered `Shutdown`.** The app waits `JOIN_BUDGET` (1.5 s)
+   (`src-tauri/src/client/mod.rs`) and then exits; the daemon, holding a live session, never
+   idle-exits (`crates/devboule-daemon/src/server/state.rs`, `client_disconnected`), so the next start
+   rejoins it. Intended, or should the app prove the
    daemon is gone first?
 4. **What ends a running session.** In this code only an explicit `SessionStop` / `SessionClose`
    (`crates/devboule-daemon/src/session.rs`, `stop`, `close`) or the process dying does. There is no
