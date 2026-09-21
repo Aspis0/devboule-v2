@@ -2,7 +2,7 @@
 
 use super::{
     fail_connection, ClientInner, PROVIDER_UPDATE_RPC_TIMEOUT, RPC_TIMEOUT,
-    SESSION_RESUME_RPC_TIMEOUT,
+    SESSION_CREATE_RPC_TIMEOUT, SESSION_RESUME_RPC_TIMEOUT,
 };
 use crate::error::DaemonError;
 use crate::framing::Framed;
@@ -12,7 +12,7 @@ use crate::session::{ACP_FIRST_RESPONSE_TIMEOUT, ACP_RESPONSE_TIMEOUT};
 use crate::transport::{Listener, NamedPipeListener};
 use devboule_protocol::{
     ClientMessage, DaemonHello, DaemonMessage, ErrorCode, Persistence, PersistenceKind,
-    ResumeResult, SessionEvent,
+    ResumeResult, SessionEvent, SessionKind,
 };
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -46,6 +46,30 @@ fn session_resume_deadline_covers_the_provider_startups_it_waits_for() {
     // resume the provider refuses, and the replacement session the daemon then
     // builds to keep the conversation.
     assert!(SESSION_RESUME_RPC_TIMEOUT > 2 * (ACP_FIRST_RESPONSE_TIMEOUT + ACP_RESPONSE_TIMEOUT));
+}
+
+/// The create road's budget, checked against the daemon's own.
+///
+/// The daemon cannot answer `session_create` before the same inline provider
+/// startup `session_resume` waits for — `acp_client::spawn_process` runs the
+/// handshake — and a profile's delivery confirmation adds one more awaited
+/// reply. The control-plane default gives up at 30 seconds, under the
+/// measured cold start of 20.7 s with nothing left for a slower machine.
+///
+/// The pair of assertions lives here rather than in
+/// [`only_the_named_roads_leave_the_thirty_second_default`] because that pin
+/// is the resume road's proof and stays as it was; the default is checked
+/// here too, so this road's own size cannot quietly become the default.
+///
+/// Mutant: the road back on `RPC_TIMEOUT` (or the constant lowered under the
+/// daemon's own bounds) — this assertion fails.
+#[test]
+fn session_create_deadline_covers_the_provider_startup_it_waits_for() {
+    // Three bounds, not two: `initialize`, the `session/new` behind it, and
+    // the delivery's confirmation when the creation carries a profile.
+    assert!(SESSION_CREATE_RPC_TIMEOUT > ACP_FIRST_RESPONSE_TIMEOUT + 2 * ACP_RESPONSE_TIMEOUT);
+    assert_eq!(RPC_TIMEOUT, Duration::from_secs(30));
+    assert!(SESSION_CREATE_RPC_TIMEOUT > RPC_TIMEOUT);
 }
 
 /// The default stays the default: everything that is not a provider startup
@@ -730,6 +754,72 @@ fn a_resume_wait_is_the_resume_roads_and_the_ping_keeps_the_default() {
                 resume.expect_err("a resume the daemon answers late must wait its own budget");
             assert!(matches!(&error, DaemonError::TimedOut(_)), "got {error:?}");
             assert_eq!(ping.expect("the control plane keeps the default"), 7);
+        },
+    );
+}
+
+/// The create road's deadline is wired to its own budget, and the control
+/// plane keeps the default — the sibling of the resume road's proof, on a
+/// create the fake daemon never answers.
+///
+/// The seam pulls the create road's window down to 120 ms: the create must
+/// time out there, while the `ping` behind it — still on [`RPC_TIMEOUT`] —
+/// rides the same silence out and answers.
+///
+/// Mutants: the road back on `roundtrip` (the create waits out the default,
+/// so the elapsed-time assertion fails), and the short window wired into the
+/// generic path instead of the create road (the ping times out).
+#[cfg(windows)]
+#[test]
+fn a_create_wait_is_the_create_roads_and_the_ping_keeps_the_default() {
+    let short = Duration::from_millis(120);
+    with_a_fake_daemon(
+        "create-deadline",
+        move |framed| {
+            let first = framed
+                .recv_timeout::<ClientMessage>(Duration::from_secs(10))
+                .expect("the create request");
+            assert!(
+                matches!(first, ClientMessage::SessionCreate { .. }),
+                "expected the create, got {first:?}"
+            );
+            // The create itself is never answered. The ping that follows the
+            // abandon is the only reply on this connection, and its arrival
+            // is what proves the short window stayed on the create road.
+            let ClientMessage::Ping { id } = framed
+                .recv_timeout::<ClientMessage>(Duration::from_secs(10))
+                .expect("the frame after the abandoned create")
+            else {
+                panic!("an abandoned create must be followed by the caller's next request");
+            };
+            framed
+                .send(&DaemonMessage::Pong { id, ts_ms: 12 })
+                .expect("pong");
+            let trailing = framed.recv_timeout::<ClientMessage>(Duration::from_millis(300));
+            assert!(
+                trailing.is_err(),
+                "nothing else may travel on the wire: {trailing:?}"
+            );
+        },
+        move |client| {
+            super::SESSION_CREATE_DEADLINE.with(|slot| slot.set(Some(short)));
+            let started = std::time::Instant::now();
+            let create = client.session_create_with(None, SessionKind::Acp, None, None, None);
+            let elapsed = started.elapsed();
+            super::SESSION_CREATE_DEADLINE.with(|slot| slot.set(None));
+            let error = create.expect_err("a create the daemon never answers must time out");
+            let DaemonError::TimedOut(what) = &error else {
+                panic!("expected the timeout the window renders, got {error:?}");
+            };
+            assert_eq!(what, "waiting for a daemon reply");
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "the create waited on the default, not its own budget: {elapsed:?}"
+            );
+            assert_eq!(
+                client.ping().expect("the control plane keeps the default"),
+                12
+            );
         },
     );
 }

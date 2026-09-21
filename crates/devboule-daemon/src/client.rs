@@ -53,6 +53,23 @@ const JOIN_BUDGET: Duration = Duration::from_millis(500);
 /// queue work — not a measurement of its own.
 const SESSION_RESUME_RPC_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// The budget `session_create` carries, and why it is not [`RPC_TIMEOUT`].
+///
+/// The daemon cannot answer `SessionCreate` before the provider startup it
+/// runs inline has finished: `acp_client::spawn_process` performs the whole
+/// handshake — `initialize` under `ACP_FIRST_RESPONSE_TIMEOUT` (120 s) and
+/// the `session/new` behind it under `ACP_RESPONSE_TIMEOUT` (15 s) — and a
+/// profile that names a model or an effort adds one more awaited reply, the
+/// delivery's confirmation, on the same 15 s bound. The ceiling those three
+/// bounds declare is 150 s; the control-plane default gives up at 30, and the
+/// slowest cold `npx` start measured in the house is 20.7 s — two thirds of
+/// it with nothing left for a slower machine or an agent that answers
+/// slowly. 180 s is the 150 s of bounds the create road can cross plus the
+/// 30 s of journal and queue work it adds, the shape
+/// [`SESSION_RESUME_RPC_TIMEOUT`] had before the recovery doubled it; the
+/// measurement supports far less, and this is a declared ceiling, not one.
+const SESSION_CREATE_RPC_TIMEOUT: Duration = Duration::from_secs(180);
+
 // One test's own deadline for the resume road, so the wiring can be proved
 // without waiting out the production window. A thread-local rather than an
 // environment variable: the test harness runs each test on its own thread, so
@@ -74,6 +91,26 @@ fn session_resume_deadline() -> Duration {
         return deadline;
     }
     SESSION_RESUME_RPC_TIMEOUT
+}
+
+// The create road's seam, for the reason the resume road's gives: one test
+// pulls this budget down to watch the road use its own window instead of the
+// control-plane default, without waiting out the production one.
+#[cfg(test)]
+thread_local! {
+    static SESSION_CREATE_DEADLINE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The deadline [`DaemonClient::session_create_with`] sends with. Read here
+/// rather than at the call site so a test can pull this one road's budget
+/// down; nothing sets it outside a test.
+fn session_create_deadline() -> Duration {
+    #[cfg(test)]
+    if let Some(deadline) = SESSION_CREATE_DEADLINE.with(std::cell::Cell::get) {
+        return deadline;
+    }
+    SESSION_CREATE_RPC_TIMEOUT
 }
 
 pub type EventHandler = Arc<dyn Fn(SessionEventEnvelope) + Send + Sync>;
@@ -239,18 +276,21 @@ impl DaemonClient {
         idempotency_key: Option<String>,
     ) -> Result<Session, DaemonError> {
         let id = self.alloc_id();
-        match self.roundtrip(ClientMessage::SessionCreate {
-            id,
-            workspace_id,
-            kind,
-            provider,
-            mode,
-            // A human-started session is named by the daemon's fallback in this
-            // slice: nothing in the app asks for a name yet, and inventing one
-            // here would put a second naming path beside the protocol field.
-            display_name: None,
-            idempotency_key,
-        })? {
+        match self.roundtrip_with_deadline(
+            ClientMessage::SessionCreate {
+                id,
+                workspace_id,
+                kind,
+                provider,
+                mode,
+                // A human-started session is named by the daemon's fallback in this
+                // slice: nothing in the app asks for a name yet, and inventing one
+                // here would put a second naming path beside the protocol field.
+                display_name: None,
+                idempotency_key,
+            },
+            session_create_deadline(),
+        )? {
             DaemonMessage::Session { session, .. } => Ok(session),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),

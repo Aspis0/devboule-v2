@@ -32,8 +32,8 @@ pub use devboule_protocol::{
 ///
 /// A non-`async` command is invoked on the main thread, so the wait for the
 /// daemon's `session_create` — which runs the provider's whole handshake
-/// inline and can outlast the control-plane default — would freeze the window
-/// for as long as the daemon takes. `off_main_thread` is where the wait goes.
+/// inline, up to `SESSION_CREATE_RPC_TIMEOUT` — would freeze the window for
+/// as long as the daemon takes. `off_main_thread` is where the wait goes.
 #[tauri::command]
 pub async fn session_create(
     bridge: State<'_, DaemonBridge>,
