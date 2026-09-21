@@ -2,6 +2,7 @@
 //! (`run`), the accept loops, and the idle-shutdown arming.
 
 use super::*;
+use crate::daemon_record::{DaemonRecord, Heartbeat};
 
 /// Begin shutdown only if the lifecycle snapshot that armed this timer is
 /// still current. The lifecycle mutex makes the final check and the shutdown
@@ -55,7 +56,11 @@ fn run_windows() -> Result<(), DaemonError> {
             .map(|duration| duration.as_millis())
             .unwrap_or(0)
     );
-    lock.write_identity(pid, &instance_id, &paths.pipe_name)?;
+    // The record is written before anything can be served and re-read by
+    // nobody here: it exists for the processes that will read it while this
+    // one holds the lock.
+    let mut record = DaemonRecord::starting(pid, &instance_id, &paths.pipe_name);
+    lock.write_body(&record.body())?;
 
     let state = ServerState::with_paths(instance_id, paths.clone())?;
     // Attachments survive a session close that never ran, because the daemon was
@@ -75,6 +80,17 @@ fn run_windows() -> Result<(), DaemonError> {
     }
     let mcp_server = state.mcp.start(&state).map_err(DaemonError::from)?;
     let (listener, shutdown) = transport::bind(&paths, Arc::clone(&state.stop))?;
+    // Only now is a connect admitted, so only now is the record allowed to say
+    // so: a readiness probe reads this and connects on the strength of it.
+    record.listening();
+    lock.write_body(&record.body())?;
+    let heartbeat = match Heartbeat::start(&paths.lock_file) {
+        Ok(heartbeat) => Some(heartbeat),
+        Err(error) => {
+            eprintln!("daemon heartbeat did not start: {error}");
+            None
+        }
+    };
     let accept_state = Arc::clone(&state);
     let accept = std::thread::Builder::new()
         .name("daemon-accept".into())
@@ -103,6 +119,7 @@ fn run_windows() -> Result<(), DaemonError> {
     }
     bounded_join(accept, JOIN_SLICE);
     drop(mcp_server);
+    drop(heartbeat);
     drop(lock);
     Ok(())
 }
@@ -165,7 +182,7 @@ pub(super) fn try_start_remote_listener(state: &Arc<ServerState>) -> Option<Join
     None
 }
 
-fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) {
+pub(super) fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) {
     let mut threads: Vec<JoinHandle<()>> = Vec::new();
     loop {
         if state.stop.load(Ordering::SeqCst) {

@@ -1,9 +1,17 @@
 //! Single-instance lock. Same primitive as v1's `fs2` exclusive lock: the OS
 //! releases it when the process dies, so a leftover file is not a deadlock.
+//!
+//! The locked range is one byte *past* the record the file carries, not the
+//! whole file. A whole-file lock would make the daemon's own identity
+//! unreadable by every other process for as long as the daemon lived —
+//! measured here, a second process' `ReadFile` fails with
+//! `ERROR_LOCK_VIOLATION` (33) — and being able to read it without connecting
+//! is the only reason to write it down.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 
+use crate::daemon_record::RECORD_CAPACITY;
 use crate::error::DaemonError;
 use crate::paths::RuntimePaths;
 
@@ -37,17 +45,12 @@ impl SingleInstanceLock {
         Ok(Self { file })
     }
 
-    pub fn write_identity(
-        &mut self,
-        pid: u32,
-        instance_id: &str,
-        pipe_name: &str,
-    ) -> io::Result<()> {
+    /// Replace the record the file carries. Truncate first so a shorter
+    /// record cannot leave the tail of a longer one behind it.
+    pub fn write_body(&mut self, body: &str) -> io::Result<()> {
         self.file.set_len(0)?;
         self.file.seek(SeekFrom::Start(0))?;
-        writeln!(self.file, "pid={pid}")?;
-        writeln!(self.file, "instance={instance_id}")?;
-        writeln!(self.file, "pipe={pipe_name}")?;
+        self.file.write_all(body.as_bytes())?;
         self.file.flush()
     }
 }
@@ -56,12 +59,15 @@ impl SingleInstanceLock {
 fn try_lock_exclusive(file: &File) -> io::Result<bool> {
     unsafe {
         let mut overlapped: OVERLAPPED = std::mem::zeroed();
+        // Not offset 0: see the module comment. One byte is all the mutex
+        // needs, and everything before it stays readable from outside.
+        overlapped.Anonymous.Anonymous.Offset = RECORD_CAPACITY as u32;
         let ok = LockFileEx(
             file.as_raw_handle() as HANDLE,
             LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
             0,
-            u32::MAX,
-            u32::MAX,
+            1,
+            0,
             &mut overlapped,
         );
         if ok != 0 {
@@ -115,12 +121,16 @@ mod tests {
         paths.ensure_dir().expect("dir");
         std::fs::write(&paths.lock_file, "pid=999999\ninstance=dead\n").expect("stale");
         let mut lock = SingleInstanceLock::acquire(&paths).expect("stale file must be lockable");
-        lock.write_identity(1, "live", &paths.pipe_name)
-            .expect("write");
+        let record = crate::daemon_record::DaemonRecord::starting(1, "live", &paths.pipe_name);
+        lock.write_body(&record.body()).expect("write");
         lock.file.seek(SeekFrom::Start(0)).expect("rewind");
         let mut body = String::new();
         std::io::Read::read_to_string(&mut lock.file, &mut body).expect("read own lock");
         assert!(body.contains("instance=live"));
+        assert!(
+            body.len() < RECORD_CAPACITY as usize,
+            "the record has to fit in the bytes the lock does not cover"
+        );
     }
 
     #[test]
@@ -130,6 +140,43 @@ mod tests {
         match SingleInstanceLock::acquire(&paths) {
             Err(DaemonError::AlreadyRunning) => {}
             Ok(_) => panic!("second lock succeeded"),
+            Err(error) => panic!("expected AlreadyRunning, got {error}"),
+        }
+    }
+
+    /// A daemon from the version whose lock covered the whole file still
+    /// excludes this one. The byte this version locks is inside that range, so
+    /// the two versions cannot both hold the daemon — which is what an app
+    /// upgrade starts while its old daemon is still running.
+    #[test]
+    fn a_whole_file_lock_from_an_older_daemon_still_excludes_this_one() {
+        let (paths, _guard) = unique_dir();
+        paths.ensure_dir().expect("dir");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&paths.lock_file)
+            .expect("open");
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        let held = unsafe {
+            LockFileEx(
+                file.as_raw_handle() as HANDLE,
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                u32::MAX,
+                u32::MAX,
+                &mut overlapped,
+            )
+        };
+        assert_ne!(
+            held, 0,
+            "the fixture could not take the old whole-file range"
+        );
+        match SingleInstanceLock::acquire(&paths) {
+            Err(DaemonError::AlreadyRunning) => {}
+            Ok(_) => panic!("the far byte is inside the old whole-file range"),
             Err(error) => panic!("expected AlreadyRunning, got {error}"),
         }
     }

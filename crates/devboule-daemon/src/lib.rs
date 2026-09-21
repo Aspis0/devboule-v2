@@ -24,6 +24,7 @@ mod claude_view;
 mod client;
 #[cfg(feature = "server")]
 mod codex_view;
+mod daemon_record;
 #[cfg(feature = "server")]
 mod delegation_store;
 #[cfg(feature = "server")]
@@ -115,6 +116,12 @@ pub use atomic::atomic_write;
 pub use client::{
     connect, connect_or_spawn, handshake, test_owner, DaemonClient, DelegationChangedHandler,
     EventHandler, SessionStateHandler,
+};
+// Neither the daemon's record nor its reader is behind `server`: the GUI
+// process is the reader, and it links this crate with `default-features = false`.
+pub use daemon_record::{
+    DaemonRecord, DaemonState, ExitReason, Heartbeat, HEARTBEAT_INTERVAL, RECORD_CAPACITY,
+    STALE_AFTER, STALE_BEATS,
 };
 #[cfg(feature = "server")]
 pub use diagnostics::DiagnosticsInput;
