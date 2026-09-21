@@ -38,17 +38,20 @@ const JOIN_BUDGET: Duration = Duration::from_millis(500);
 /// for the measured 20.7 s cold `npx` start) and the `session/load` or
 /// `session/new` behind it with `session::acp_client::ACP_RESPONSE_TIMEOUT`
 /// (15 s). The recovery road adds the journal read and the replacement
-/// session's own startup, which carries the same two bounds. Measured
-/// 2026-09-21 in the app: the window showed `timed out: waiting for a daemon
-/// reply` at 30 s while the daemon answered at 36 s — the client gave up on
-/// work the daemon was still doing and threw the answer away.
+/// session's own startup, which carries the same two bounds — so a resume the
+/// provider refuses can cost **two** startups, and 2 × 135 s is what this
+/// budget is sized against. Measured 2026-09-21 in the app: the window showed
+/// `timed out: waiting for a daemon reply` at 30 s while the daemon answered
+/// at 36 s — the client gave up on work the daemon was still doing and threw
+/// the answer away. The same mistake one order of magnitude later is what the
+/// 300 s here exists to prevent; it is deliberately no longer ranked against
+/// [`PROVIDER_UPDATE_RPC_TIMEOUT`], whose work (a package install) is
+/// unrelated to how many providers one resume starts.
 ///
-/// 180 s sits above the 135 s those two bounds add up to, with room for the
-/// road's own journal work, and below [`PROVIDER_UPDATE_RPC_TIMEOUT`], whose
-/// work is a package install. The number the measurement supports is 36 s;
-/// 180 is a declared product judgement on top of it, not a measurement of its
-/// own.
-const SESSION_RESUME_RPC_TIMEOUT: Duration = Duration::from_secs(180);
+/// The measurement supports 36 s for the single-startup road; 300 s is the
+/// daemon's own two bounds declared as a ceiling, plus 30 s of journal and
+/// queue work — not a measurement of its own.
+const SESSION_RESUME_RPC_TIMEOUT: Duration = Duration::from_secs(300);
 
 // One test's own deadline for the resume road, so the wiring can be proved
 // without waiting out the production window. A thread-local rather than an

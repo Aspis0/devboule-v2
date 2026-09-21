@@ -41,8 +41,11 @@ fn provider_update_deadline_has_install_headroom() {
 /// Mutant: the road back on `RPC_TIMEOUT` (or the constant lowered under the
 /// daemon's own bounds) — this assertion fails.
 #[test]
-fn session_resume_deadline_covers_the_provider_startup_it_waits_for() {
-    assert!(SESSION_RESUME_RPC_TIMEOUT > ACP_FIRST_RESPONSE_TIMEOUT + ACP_RESPONSE_TIMEOUT);
+fn session_resume_deadline_covers_the_provider_startups_it_waits_for() {
+    // Twice the pair of bounds, because one call can carry two startups: the
+    // resume the provider refuses, and the replacement session the daemon then
+    // builds to keep the conversation.
+    assert!(SESSION_RESUME_RPC_TIMEOUT > 2 * (ACP_FIRST_RESPONSE_TIMEOUT + ACP_RESPONSE_TIMEOUT));
 }
 
 /// The default stays the default: everything that is not a provider startup

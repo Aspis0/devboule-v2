@@ -90,9 +90,11 @@ const RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_RESPONSE_TIMEOUT_MS";
 /// sessions). That is a declared **product judgement, not a measurement of its
 /// own** — no cold start was timed through the daemon — and it is not the
 /// whole window a person waits: the app's client library carries the road's
-/// own budget on top of it (`crate::client::SESSION_RESUME_RPC_TIMEOUT`, 180 s
-/// for `session_resume`), which is where a `src/lib/tauri.ts` read finds
-/// nothing. The window that matters is the one in the layer that waits.
+/// own budget on top of it (`crate::client::SESSION_RESUME_RPC_TIMEOUT`, which
+/// is two of these bounds: a resume the provider refuses is answered by a
+/// recovery, and that is a second provider startup), which is where a
+/// `src/lib/tauri.ts` read finds nothing. The window that matters is the one in
+/// the layer that waits.
 pub(crate) const ACP_FIRST_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 const FIRST_RESPONSE_TIMEOUT_ENV: &str = "DEVBOULE_ACP_FIRST_RESPONSE_TIMEOUT_MS";
 
