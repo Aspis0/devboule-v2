@@ -3,6 +3,13 @@
 //! This test is intentionally separate from the known-flaky ignored ConPTY
 //! suite. It exercises direct stdio, malformed/partial-safe framing, stderr,
 //! CREATE_NO_WINDOW, two-level Job Object assignment, and close teardown.
+//!
+//! The stub is built by the same `cargo test` invocation
+//! (`CARGO_BIN_EXE_devboule-acp-stub`), and a stale one ignores the knobs it
+//! does not know **in silence**. A `cargo test --lib` selects no bin target, so
+//! before a targeted lib run rebuild it with `cargo build -p devboule-daemon
+//! --bin devboule-acp-stub --features test-support` (the lib fixture refuses a
+//! stale binary by name, `session_resume_fixture.rs`).
 
 #![cfg(windows)]
 

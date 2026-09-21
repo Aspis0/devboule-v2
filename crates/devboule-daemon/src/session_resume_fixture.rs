@@ -170,9 +170,19 @@ impl Drop for AcpEnv {
     }
 }
 
+/// The stub the lib tests drive, and the one trap this road has paid for.
+///
 /// The stub sits beside the test binary because Cargo built both in this
 /// invocation; refusing to guess is the point (a stale binary would test the
-/// past, and skipping would turn the test into a false green).
+/// past, and skipping would turn the test into a false green). `cargo test`
+/// builds every target, so the two are in step — but a `cargo test --lib`
+/// selects no bin target and leaves the stub from an earlier build, where the
+/// knobs it does not know are ignored **in silence**: an observation file that
+/// never appears reads exactly like the daemon having said nothing (paid for,
+/// 20 minutes). The staleness check below turns that silence into the command
+/// that fixes it, instead of rebuilding behind the caller's back: a `cargo`
+/// spawned from inside a running `cargo test` waits on the very package lock
+/// the parent holds.
 fn acp_stub() -> std::path::PathBuf {
     let candidate = std::env::current_exe()
         .expect("test binary path")
@@ -186,6 +196,19 @@ fn acp_stub() -> std::path::PathBuf {
          --bin devboule-acp-stub --features test-support`",
         candidate.display()
     );
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/devboule_acp_stub.rs");
+    if let (Ok(built), Ok(written)) = (
+        std::fs::metadata(&candidate).and_then(|meta| meta.modified()),
+        std::fs::metadata(&source).and_then(|meta| meta.modified()),
+    ) {
+        assert!(
+            built >= written,
+            "the ACP stub at {} was built before its source ({built:?} < {written:?}), so it \
+             would ignore the knobs it does not know in silence; rebuild it with `cargo build \
+             -p devboule-daemon --bin devboule-acp-stub --features test-support`",
+            candidate.display()
+        );
+    }
     candidate
 }
 
