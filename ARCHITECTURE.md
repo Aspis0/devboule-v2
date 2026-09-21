@@ -547,20 +547,23 @@ handshake slot, which is why the slot budgets are separate from the connection c
 (`peer_transport.rs:29-31`). The pattern and prologue are constants (`:46-48`), and the handshake
 deadline is `HANDSHAKE_DEADLINE = 10 s` (`:71`).
 
-**What a capability is.** A capability names an *act* a paired device may ask for. The list is one
-constant on the wire: `PEER_CAPS` is five names — `view`, `send`, `answer_permissions`,
-`create_sessions` and `roster` (`crates/devboule-protocol/src/messages.rs`, `PEER_CAPS`), with
-`roster` deliberately absent from `PEER_DEFAULT_CAPS`, so no pairing carries it until a person grants
-it per device. It is deliberately not a scope: which sessions an
+**What a capability is.** A capability names an *act* a paired device may ask for — or, for the
+sixth, the surface no act-name covers. The list is one
+constant on the wire: `PEER_CAPS` is six names — `view`, `send`, `answer_permissions`,
+`create_sessions`, `roster` and `admin` (`crates/devboule-protocol/src/messages.rs`, `PEER_CAPS`) —
+and `PEER_DEFAULT_CAPS` is the same six, so a device is born holding everything and a person narrows
+it per device. That is the owner's decision of 2026-09-21: it revoked the old global deny list, under
+which anything no capability named was refused to every peer. `validate_caps` is what still refuses to
+leave a `Client` without `view`. A capability is deliberately not a scope: which sessions an
 allowed request reaches is decided elsewhere, by the owner projection in `server.rs` and the origin
 branch of `check_user_owner` (`peer_policy.rs:14-18`). The gate itself is a closed match with **no
 `_` arm** over every `ClientMessage` variant, so adding a variant without deciding its peer policy is
 a compile error (`peer_policy.rs:1-8`, `peer_allows`). Consequences of that design, all in the same
 file:
 `view` is the one capability `validate_caps` refuses to strip (`crates/devboule-daemon/src/pairing.rs`,
-`validate_caps`); `Status`, pairing,
-capability changes and the tool bridge stay refused to a peer *whatever it holds*, because no
-capability names those acts (`peer_policy.rs:12-17`); and the role a device was paired as does not
+`validate_caps`); `admin` is the one that opens everything the act-named five do not, from `Status`
+to `Shutdown` (`peer_policy.rs`, `CAP_ADMIN`); the five permission-model frames stay refused *whatever
+a peer holds* (below); and the role a device was paired as does not
 decide anything
 here — the capability set does (the `peer_allows` doc comment).
 
@@ -599,15 +602,40 @@ this one may talk to as a machine" (`ROLE_OPTIONS`).
   `answer_permissions`: answer permission cards (`ClientMessage::SessionPermissionRespond`) — under the
   per-device budget of three from §5. With
   `create_sessions`: create sessions (`ClientMessage::SessionCreate`). With `roster`: list the peer's
-  own live agents (`ClientMessage::PeerAgentsList`) — the fifth name, and the only one this section
-  did not carry before. Every one of these is a per-device toggle the user can revoke.
-- *Cannot* — anything no capability names, which is the whole administrative surface: `Status`,
-  pairing itself, changing capabilities, the MCP tool bridge, journal retention and deletion, and the
-  app-only commands (`peer_policy.rs:12-17` and the `PeerDecision::Deny` arms for `PairingStart`,
-  `PeerRevoke`, `PeerSetCaps`, `ToolPolicyGet`, `JournalRetentionGet`, and the rest). A peer also does
+  own live agents (`ClientMessage::PeerAgentsList`). Every one of these is a per-device toggle the
+  user can revoke.
+- *Can, with `admin`* — everything else this machine's app can ask, because a paired device is a full
+  client: `Status` and `DaemonDiagnostics`, `Shutdown`, the session verbs outside the view/send pair
+  (`SessionClaim`, `SessionResume`, `SessionReportAgent`, `SessionDetach`, `SessionClose`,
+  `SessionStop`, `SessionResize`, `SessionInterrupt`, `SessionSetModel`), the watch set
+  (`SessionsWatch`/`Unwatch`/`Presence`), the journal (`JournalUsage`, `JournalRetentionGet`,
+  `JournalRetentionSet`), the deposited-bytes read (`SessionAttachmentRead`), the settings stores
+  (`ToolPolicyGet`/`Set`, `AgentProfilesGet`/`Set`, `DelegationGet`/`Set`, `ProviderVocabularyGet`),
+  projects and workspaces (`ProjectsList`, `ProjectAdd`, `WorkspacesList`, `WorkspaceCreate`,
+  `WorkspaceDelete`), providers (`ProvidersList`, `ProvidersRefresh`, `ProviderUpdate`), `Invoke`, and
+  the MCP bridge's destructive tools. The bridge draws the same line: every tool's wire act is judged
+  by the one table (`peer_policy.rs`, `mcp_tool_wire`), so a device holding `admin` reaches every
+  served tool — `devboule_stop_agent`, `devboule_close_agent`, the three project-graph tools, the
+  model half of `devboule_set_agent_profile` — and one without it is refused those with that
+  capability's name (`provider_catalog.rs`, `MCP_BROKER_TOOLS`).
+- *Cannot* — the three acts that decide **who may enter this machine**: start, complete or confirm a
+  pairing (`ClientMessage::PairingStart`, `PairingComplete`, `PairingConfirm`), change a device's
+  capability set (`PeerSetCaps`) and revoke a device (`PeerRevoke`). Those five frames are refused to
+  every capability set there is, `admin` included — the whole remaining `Deny` in `peer_allows`. The
+  reason is not "a paired device is not the app": it is that the trusted set is the human's. A peer
+  that could pair another device could hand out the permissions it holds, and one that could change
+  caps or revoke could rewrite the set that decides who is in. The owner's decision of 2026-09-21
+  opens everything else and leaves these five local; opening them is a decision to take deliberately,
+  not a consequence of granting `admin`. A peer also does
   not inherit anything local: a
   tool policy is this machine's own decision and is never propagated to a peer
   (`tool_policy.rs:15-17`).
+- Two refusals sit outside the capability table and are unchanged by that decision, because they are
+  about *what a session does* rather than who may ask: a frame from a paired device that *carries* an
+  attachment is refused (`crates/devboule-daemon/src/server/peer_gate.rs`,
+  `peer_refusal_before_mode`, temporary until the deposit budget's caller lands), and a paired device
+  never drives a session into a mode that would run without asking this machine's user
+  (`peer_gate.rs`, `peer_mode_refusal_for_conn`, §8b A5/R3).
 - *Scope* is separate from permission: an allowed request still has to reach a session, and which
   sessions a peer can reach is decided by the owner projection plus the session's recorded `origin`
   (`peer_policy.rs:14-16`; the `origin` contract is

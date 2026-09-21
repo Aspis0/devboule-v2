@@ -165,12 +165,15 @@ Measured on 2026-09-17, so the slice is smaller than it looks:
   `client.rs` roundtrip, Tauri forwarder, `invokeTyped` wrapper, and the two contract
   guards. Adding a variant forces classification in five closed matches, three of them in
   the peer gate, so the peer question cannot be skipped by omission.
-- **The peer posture is deny.** Every existing content read is refused to peers —
-  `ToolPolicyGet`, `AgentProfilesGet`, `DelegationGet`, `ProviderVocabularyGet` — while
-  only list reads ride on `CAP_VIEW`. A door that resolves `<sessionId>/<digest>` for a
-  paired device would be a way to read deposited bytes from another machine, and nothing
-  in the product asks for that yet. The handler calls `check_user_owner` exactly like the
-  deposit arm, so a reference resolves only inside a session the caller's own scope owns.
+- **The peer posture follows the capability table.** This document was written on 2026-09-17,
+  when every content read was refused to peers — `ToolPolicyGet`, `AgentProfilesGet`,
+  `DelegationGet`, `ProviderVocabularyGet` — and only list reads rode on `CAP_VIEW`. The owner
+  revoked that rule on 2026-09-21: a paired device is a full client, so those four and every
+  other content read now ride the `admin` capability. A door that resolves
+  `<sessionId>/<digest>` inherits that rule instead of inventing one, judging as
+  `SessionAttachmentRead` does: the administrative capability for the act, and the handler's
+  own `check_user_owner` for scope, so a reference resolves only inside a session the caller's
+  own scope owns.
 - **A dead reference needs its own answer.** The creator's folder is removed on close and
   swept after the retention window, and `ChildFinished` is journaled — so a replayed event
   names a digest that no longer resolves. "Never deposited" and "deposited and gone" are

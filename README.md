@@ -71,12 +71,18 @@ What works today:
   session. Every later connection is authenticated by the key pinned
   at pairing *and* by Tailscale agreeing that the address is the one the pairing
   was made from. Each paired device holds a set of capabilities — `view`,
-  `send`, `answer_permissions`, `create_sessions` — shown as toggles on its row
-  and revocable at any time. Inside those capabilities it can list and attach to
-  sessions, send prompts and steer a turn already running, answer permission
-  cards (at most three undecided ones per device) and create sessions. Outside
-  them it can do nothing: daemon status, pairing itself, capability changes, the
-  journal and the agent tool bridge are refused to a peer whatever it holds.
+  `send`, `answer_permissions`, `create_sessions`, `roster` and `admin` — shown
+  as toggles on its row and revocable at any time. A new pairing starts with all
+  of them, so a paired phone is a full client: it lists and attaches to
+  sessions, sends prompts and steers a running turn, answers permission cards
+  (at most three undecided ones per device), creates sessions, and, with
+  `admin`, reaches the rest of what the app can ask — settings, projects,
+  journal, shutdown, the agent tools. The one thing it cannot do is change who
+  else may enter: starting or completing a pairing, changing a device's
+  capabilities and revoking a device stay on this machine, because those decide
+  which devices are trusted rather than what a trusted one may do. Without
+  `admin` a device is back to the act-named capabilities alone, and a device
+  whose toggles are all off can still view its own sessions.
   Both ends need Tailscale; without it the daemon stays local and says so in
   Settings rather than failing to start.
 - **Agents that talk to each other** — the daemon owns a loopback MCP endpoint
