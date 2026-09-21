@@ -5,16 +5,30 @@
 //! answer. The stub battery proves the daemon seam; this proves the other
 //! side of it.
 //!
-//! The follow-up asks for a fact **derived** from the primed word — how many
-//! letters it has — so a replayed journal snapshot cannot contain the answer,
-//! and neither can a provider that came back without its conversation. (The
-//! sibling tests ask for the word **reversed**; this family's default model
-//! was measured answering `DRIEBULB` for `BLUEBIRD`, a transposition of the
-//! right reversal, so the exact-string probe is too sharp here. The count is
-//! not: it is one digit, it appears nowhere in the transcript, and it still
-//! cannot be produced without the word.) A second session, with no context at
-//! all, is asked the same question as a negative control — it must fail the
-//! same assertion, which is what makes the probe discriminating.
+//! The prime asks for a fixed eight-letter word, and the follow-up asks
+//! for a fact **derived** from it — how many letters it has — so a replayed
+//! journal snapshot cannot contain the answer, and neither can a provider that
+//! came back without its conversation. (The sibling tests ask for the word
+//! **reversed**; this family's default model was measured answering `DRIEBULB`
+//! for `BLUEBIRD`, a transposition of the right reversal, so the exact-string
+//! probe is too sharp here. The count is not: it is one digit, it appears
+//! nowhere in the transcript, and it still cannot be produced without the
+//! word.)
+//!
+//! A word minted per run was tried here and is not kept: measured on this box,
+//! the same model that still held the conversation counted a minted
+//! `KZNDZSHC` as **7** letters, so freshness made the probe red for a provider
+//! that had resumed correctly. That is a false proof of the wrong kind — the
+//! failure mode belongs to the model's arithmetic, not to the resume. The
+//! discriminating power here comes from the negative control (a fresh session
+//! asked the same question), which the sibling probes do not need because a
+//! reversed word cannot be guessed the way a digit can.
+//!
+//! The follow-up is read in the resumed generation only — a replayed row
+//! keeps the generation it was written under — and it must both spell the
+//! exact digit and end its turn. A second session, with no context at all, is
+//! asked the same question as a negative control — it must fail the same
+//! assertion, which is what makes the probe discriminating.
 //!
 //! The test also measures where the provider keeps the conversation: pi's own
 //! session file must still exist after the daemon restart, or `--session <id>`
@@ -34,28 +48,32 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use common::Observed;
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
     Persistence, PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionState,
 };
 use rusqlite::Connection;
 
-/// The word the prime asks for: eight letters (two of them B, so a sloppy
-/// count lands on 7 or 9 rather than on the fingerprinted digit).
+/// The generation a session created by this test starts in.
+const FIRST_GENERATION: u64 = 1;
+
+/// The word the prime asks for: eight letters, two of them B, so a sloppy
+/// count lands on 7 or 9 rather than on the fingerprinted digit.
 const PRIME_WORD: &str = "BLUEBIRD";
 /// Never spelled by either prompt: only a provider that still holds the
 /// conversation knows the word the count belongs to, and no replay of our
 /// journal contains this digit.
 const LETTER_COUNT: &str = "8";
+
 /// The follow-up, verbatim: the resumed session and the negative control are
 /// asked the same question, so the two answers differ only by context.
 const FOLLOW_UP: &str =
     "How many letters are in the word I asked you to reply with in my first message? Reply with only the number, using digits.";
 
-fn agent_texts(events: &[SessionEvent]) -> String {
+fn agent_texts<'a>(events: impl Iterator<Item = &'a Observed>) -> String {
     events
-        .iter()
-        .filter_map(|event| match event {
+        .filter_map(|observed| match &observed.event {
             SessionEvent::AgentMessage { text, .. } => Some(text.as_str()),
             _ => None,
         })
@@ -63,7 +81,39 @@ fn agent_texts(events: &[SessionEvent]) -> String {
         .join("\n")
 }
 
-/// The streamed word arrives in pieces (`D`, `RIBEULB`); it is there once the
+/// The agent's text in one generation. History keeps the generation it was
+/// written under, so the replayed prime turn cannot leak into the follow-up's
+/// answer, and a late replay frame cannot satisfy it either.
+fn texts_in(events: &[Observed], generation: u64) -> String {
+    agent_texts(
+        events
+            .iter()
+            .filter(|observed| observed.generation == generation),
+    )
+}
+
+/// The generations in the order the collector saw them, one entry per change:
+/// printed so a run says which generation a replayed turn arrived under.
+fn generations_in_order(events: &[Observed]) -> Vec<u64> {
+    let mut seen: Vec<u64> = Vec::new();
+    for observed in events {
+        if seen.last() != Some(&observed.generation) {
+            seen.push(observed.generation);
+        }
+    }
+    seen
+}
+
+/// The answer stripped to what it says: letters and digits only, uppercased.
+/// Prose around the digit fails; punctuation around it does not.
+fn answer_only(text: &str) -> String {
+    text.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_uppercase()
+}
+
+/// The streamed word arrives in pieces (`B`, `LUEBIRD`); it is there once the
 /// pieces spell it, whatever whitespace separates them.
 fn spells(text: &str, word: &str) -> bool {
     text.chars()
@@ -73,31 +123,27 @@ fn spells(text: &str, word: &str) -> bool {
         .contains(word)
 }
 
-fn says(events: &[SessionEvent], word: &str) -> bool {
-    spells(&agent_texts(events), word)
+fn finished_in(events: &[Observed], generation: u64) -> bool {
+    events.iter().any(|observed| {
+        observed.generation == generation
+            && matches!(observed.event, SessionEvent::AgentFinished { .. })
+    })
 }
 
-fn has_finished(events: &[SessionEvent]) -> bool {
-    events
-        .iter()
-        .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
-}
-
-fn agent_error(events: &[SessionEvent]) -> Option<String> {
-    events.iter().find_map(|event| match event {
+fn agent_error(events: &[Observed]) -> Option<String> {
+    events.iter().find_map(|observed| match &observed.event {
         SessionEvent::AgentError { message } => Some(message.clone()),
         _ => None,
     })
 }
 
-/// Wait until `done` holds over the collected events, and answer the agent
-/// text seen at that moment. A timeout — or an agent error — panics with what
-/// did arrive, so a failing run says why.
+/// Wait until `done` holds over the collected events. A timeout — or an agent
+/// error — panics with everything that did arrive, so a failing run says why.
 fn wait_for_events(
-    events: &Mutex<Vec<SessionEvent>>,
+    events: &Mutex<Vec<Observed>>,
     what: &str,
-    mut done: impl FnMut(&[SessionEvent]) -> bool,
-) -> String {
+    mut done: impl FnMut(&[Observed]) -> bool,
+) {
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
         let error = {
@@ -106,7 +152,7 @@ fn wait_for_events(
             // thread parked behind it.
             let collected = events.lock().expect("events lock");
             if done(&collected) {
-                return agent_texts(&collected);
+                return;
             }
             agent_error(&collected)
         };
@@ -115,7 +161,7 @@ fn wait_for_events(
         }
         if Instant::now() > deadline {
             let collected = events.lock().unwrap_or_else(|error| error.into_inner());
-            panic!("{what}: {:?}", agent_texts(&collected));
+            panic!("{what}: {:?}", agent_texts(collected.iter()));
         }
         std::thread::sleep(Duration::from_secs(2));
     }
@@ -177,20 +223,22 @@ fn pi_resume_continues_the_providers_session() {
         .session_create(None, SessionKind::Pi, None)
         .expect("create Pi session");
 
-    let (events, handler) = common::collect_events();
+    let word = PRIME_WORD;
+    let count = LETTER_COUNT;
+    let (events, handler) = common::collect_observed();
     client
         .session_attach(&session.id, None, handler)
         .expect("attach Pi session");
     client
         .session_send(
             &session.id,
-            "Reply with exactly the word BLUEBIRD and nothing else.",
+            &format!("Reply with exactly the word {word} and nothing else."),
         )
         .expect("prime the conversation");
-    let prime_text = wait_for_events(&events, "the prime was never answered", |events| {
-        has_finished(events) && says(events, PRIME_WORD)
+    wait_for_events(&events, "the prime was never answered", |events| {
+        finished_in(events, FIRST_GENERATION) && spells(&texts_in(events, FIRST_GENERATION), word)
     });
-    eprintln!("prime answered: {prime_text:?}");
+    eprintln!("the prime word: {word:?}, {count} letters");
 
     // The provider's own file, named by the id the daemon stored off the wire.
     let peer = peer_of(&client, &session.id);
@@ -245,41 +293,65 @@ fn pi_resume_continues_the_providers_session() {
             None,
         )
         .expect("resume recovered Pi session");
-    match resumed {
-        ResumeResult::Resumed { session } => {
-            assert!(matches!(
-                session.state,
-                SessionState::Live { generation: 2 }
-            ));
-        }
+    let resumed_generation = match resumed {
+        ResumeResult::Resumed { session } => match session.state {
+            SessionState::Live { generation } => generation,
+            other => panic!("a resumed Pi row is live, not {other:?}"),
+        },
         ResumeResult::NotSupported => panic!("Pi resume answered NotSupported"),
         ResumeResult::Failed { message } => panic!("Pi resume failed: {message}"),
-    }
+    };
+    assert_eq!(
+        resumed_generation,
+        FIRST_GENERATION + 1,
+        "a resume opens the next generation"
+    );
 
-    let (events, handler) = common::collect_events();
+    let (events, handler) = common::collect_observed();
     client
         .session_attach(&session.id, None, handler)
         .expect("attach resumed Pi session");
     // The attach replays our own journal. Wait for the whole replayed prime
     // turn (its answer plus its end marker), then empty the collector: from
     // here the probe watches only what arrives after the replay. Without the
-    // drain, the assertion below could be satisfied by the snapshot the
-    // daemon rewinds — the false proof this test exists to rule out.
-    let replayed = wait_for_events(&events, "the journal replay never landed", |events| {
-        has_finished(events) && says(events, PRIME_WORD)
+    // drain, a snapshot the daemon rewinds could satisfy the assertion below —
+    // the false proof this test exists to rule out.
+    wait_for_events(&events, "the journal replay never landed", |events| {
+        finished_in(events, FIRST_GENERATION) && spells(&texts_in(events, FIRST_GENERATION), word)
     });
-    eprintln!("replayed after resume: {replayed:?}");
+    {
+        let collected = events.lock().expect("events lock");
+        eprintln!(
+            "replay generations before the drain: {:?}",
+            generations_in_order(&collected)
+        );
+    }
     events.lock().expect("events lock").clear();
 
     client
         .session_send(&session.id, FOLLOW_UP)
         .expect("follow-up after resume");
-    let follow_up = wait_for_events(
+    wait_for_events(
         &events,
         "the context did not survive the resume",
-        |events| says(events, LETTER_COUNT),
+        |events| {
+            finished_in(events, resumed_generation)
+                && answer_only(&texts_in(events, resumed_generation)) == count
+        },
     );
-    eprintln!("follow-up answered after resume: {follow_up:?}");
+    let follow_up = {
+        let collected = events.lock().expect("events lock");
+        eprintln!(
+            "follow-up generations: {:?}",
+            generations_in_order(&collected)
+        );
+        answer_only(&texts_in(&collected, resumed_generation))
+    };
+    assert_eq!(
+        follow_up, count,
+        "the follow-up derives this run's letter count"
+    );
+    eprintln!("follow-up answered the derived count: {follow_up:?}");
 
     // The negative control: the same derived question to a session with no
     // context. It must fail the assertion the resumed session just passed,
@@ -287,18 +359,22 @@ fn pi_resume_continues_the_providers_session() {
     let control = client
         .session_create(None, SessionKind::Pi, None)
         .expect("create the control session");
-    let (control_events, control_handler) = common::collect_events();
+    let (control_events, control_handler) = common::collect_observed();
     client
         .session_attach(&control.id, None, control_handler)
         .expect("attach the control session");
     client
         .session_send(&control.id, FOLLOW_UP)
         .expect("ask the control session");
-    let control_text = wait_for_events(&control_events, "the control never answered", |events| {
-        has_finished(events)
+    wait_for_events(&control_events, "the control never answered", |events| {
+        finished_in(events, FIRST_GENERATION)
     });
+    let control_text = texts_in(
+        &control_events.lock().expect("events lock"),
+        FIRST_GENERATION,
+    );
     assert!(
-        !spells(&control_text, LETTER_COUNT),
+        !spells(&control_text, count),
         "an empty-context agent must not produce the derived count; it answered {control_text:?}"
     );
     eprintln!("control answered without the context: {control_text:?}");
