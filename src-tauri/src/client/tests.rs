@@ -1219,6 +1219,7 @@ fn supervisor_reconnects_after_a_connected_loop_reports_connection_loss() {
             connect_attempts += 1;
             Ok(connect_attempts)
         },
+        || false,
         |_| {
             connected_runs += 1;
             if connected_runs == 1 {
@@ -1234,6 +1235,66 @@ fn supervisor_reconnects_after_a_connected_loop_reports_connection_loss() {
     assert_eq!(outcome, SupervisorLoopExit::Stopped);
     assert_eq!(connect_attempts, 2);
     assert_eq!(connected_runs, 2);
+}
+
+/// A daemon that recorded why it left did not crash, and the reconnect path
+/// must not overrule it: a peer that asked the daemon to stop gets to have
+/// asked. The sleep assertions keep this from passing on a loop that ends for
+/// some other reason.
+#[test]
+fn a_connected_loss_with_a_recorded_goodbye_ends_the_supervisor() {
+    let stop = AtomicBool::new(false);
+    let mut connect_attempts = 0;
+    let mut sleeps = 0;
+    let outcome = run_supervisor_loop(
+        &stop,
+        || {
+            connect_attempts += 1;
+            Ok(())
+        },
+        || true,
+        |_| StatusLoopExit::ConnectionLost,
+        |_, _| {
+            sleeps += 1;
+            sleeps < 3
+        },
+        Instant::now,
+    );
+
+    assert_eq!(outcome, SupervisorLoopExit::Stopped);
+    assert_eq!(connect_attempts, 1, "a declared exit is not respawned");
+    assert_eq!(sleeps, 0, "and it does not feed the brake on the way out");
+}
+
+/// The control that makes the test above mean something: the same loss with
+/// no goodbye in the record, and the loop does what it has always done — it
+/// comes back and connects again.
+#[test]
+fn a_connected_loss_without_a_goodbye_goes_back_to_connect() {
+    let stop = AtomicBool::new(false);
+    let mut connect_attempts = 0;
+    let mut connected_rounds = 0;
+    let outcome = run_supervisor_loop(
+        &stop,
+        || {
+            connect_attempts += 1;
+            Ok(())
+        },
+        || false,
+        |_| {
+            connected_rounds += 1;
+            if connected_rounds == 2 {
+                StatusLoopExit::Stopped
+            } else {
+                StatusLoopExit::ConnectionLost
+            }
+        },
+        |_, _| true,
+        Instant::now,
+    );
+
+    assert_eq!(outcome, SupervisorLoopExit::Stopped);
+    assert_eq!(connect_attempts, 2, "a crash keeps the reconnect path");
 }
 
 #[test]
@@ -1260,6 +1321,7 @@ fn a_failed_connect_passes_its_cause_to_backoff_sleep() {
     let outcome = run_supervisor_loop(
         &stop,
         || Err::<(), _>(ConnectFailure::fault(cause)),
+        || false,
         |_| StatusLoopExit::Stopped,
         |delay, error| {
             if delay > PING_PERIOD {
@@ -1306,6 +1368,7 @@ fn a_declared_exit_is_not_charged_to_the_crash_brake_and_a_crash_still_is() {
                 Err::<(), _>(ConnectFailure::fault("the daemon died"))
             }
         },
+        || false,
         |_| StatusLoopExit::Stopped,
         |delay, _| {
             delays.push(delay);
@@ -1346,7 +1409,8 @@ fn a_declared_exit_is_not_charged_to_the_crash_brake_and_a_crash_still_is() {
 }
 
 /// The classifier reads the record, not the error text: a runtime folder whose
-/// daemon recorded a deliberate exit is the case the brake must not see.
+/// daemon recorded a deliberate exit is the case the brake must not see — for
+/// as long as that goodbye still decides anything.
 #[test]
 fn a_record_that_says_the_daemon_left_is_read_off_disk_not_guessed() {
     let dir = std::env::temp_dir().join(format!("devboule connect failure {}", std::process::id()));
@@ -1372,6 +1436,21 @@ fn a_record_that_says_the_daemon_left_is_read_off_disk_not_guessed() {
         ConnectFailure::after(&paths, error()).declared_exit,
         "the goodbye on disk is what the supervisor reads"
     );
+
+    let record_file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&paths.lock_file)
+        .expect("open record");
+    record_file
+        .set_modified(
+            std::time::SystemTime::now()
+                - (devboule_daemon::GOODBYE_TRUSTED_FOR + Duration::from_secs(1)),
+        )
+        .expect("age the goodbye");
+    assert!(
+        !ConnectFailure::after(&paths, error()).declared_exit,
+        "a goodbye past its window is history, not an excuse to skip the brake"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1383,6 +1462,7 @@ fn an_immediate_connected_loss_passes_no_cause_to_backoff_sleep() {
     let outcome = run_supervisor_loop(
         &stop,
         || Ok::<(), ConnectFailure>(()),
+        || false,
         |_| StatusLoopExit::ConnectionLost,
         |delay, error| {
             if delay > PING_PERIOD {
@@ -1438,6 +1518,7 @@ fn a_slow_spawn_that_dies_instantly_is_not_a_healthy_connection() {
             let _ = clock.now();
             Ok(())
         },
+        || false,
         |_| {
             connected_rounds += 1;
             if connected_rounds >= 40 {
@@ -1481,6 +1562,7 @@ fn a_crash_loop_backs_off_across_repeated_immediate_losses() {
             connect_attempts += 1;
             Ok(connect_attempts)
         },
+        || false,
         |_| {
             connected_rounds += 1;
             // The cap only exists so a broken brake (one that never
@@ -1537,6 +1619,7 @@ fn a_healthy_connection_restores_the_fast_path() {
             connect_attempts += 1;
             Ok(connect_attempts)
         },
+        || false,
         |_| {
             connected_rounds += 1;
             // Round five is the healthy one: the clock's step is raised
@@ -1590,6 +1673,7 @@ fn stopping_mid_backoff_exits_without_another_connect() {
             connect_attempts += 1;
             Ok(connect_attempts)
         },
+        || false,
         |_| {
             connected_rounds += 1;
             // The cap only exists so a backoff that ignores `stop`

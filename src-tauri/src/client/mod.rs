@@ -1490,14 +1490,25 @@ enum StatusLoopExit {
     Stopped,
 }
 
+/// Whether the record on disk says the daemon left on purpose. One function
+/// for the two callers: the connect that was refused, and the connection that
+/// was lost after the daemon had been serving.
+fn record_declares_exit(paths: &RuntimePaths) -> bool {
+    matches!(
+        DaemonState::read(&paths.lock_file),
+        DaemonState::Stopped(..)
+    )
+}
+
 /// A failed connect, and whether the daemon it failed against had said it was
 /// leaving.
 ///
 /// The two are one event at the wire — a pipe that is not there — and they do
 /// not want the same answer: a daemon that recorded why it stopped is not a
-/// crash-loop symptom, so it must not feed the brake. The record is read only
-/// on this path, and reading it cannot disturb the daemon: it is a file, not a
-/// connection.
+/// crash-loop symptom, so it must not feed the brake. The record is read here
+/// at the failed connect; the supervisor's lost-connection arm asks the same
+/// question through `daemon_declared_exit`. Reading cannot disturb the daemon:
+/// it is a file, not a connection.
 pub(super) struct ConnectFailure {
     message: String,
     declared_exit: bool,
@@ -1524,10 +1535,7 @@ impl ConnectFailure {
     fn after(paths: &RuntimePaths, error: DaemonError) -> Self {
         Self {
             message: error.to_string(),
-            declared_exit: matches!(
-                DaemonState::read(&paths.lock_file),
-                DaemonState::Stopped(..)
-            ),
+            declared_exit: record_declares_exit(paths),
         }
     }
 }
@@ -1603,15 +1611,17 @@ enum SupervisorLoopExit {
     Stopped,
 }
 
-fn run_supervisor_loop<C, Connect, Connected, Sleep, Now>(
+fn run_supervisor_loop<C, Connect, Declared, Connected, Sleep, Now>(
     stop: &AtomicBool,
     mut connect: Connect,
+    mut declared: Declared,
     mut connected: Connected,
     mut sleep: Sleep,
     now: Now,
 ) -> SupervisorLoopExit
 where
     Connect: FnMut() -> Result<C, ConnectFailure>,
+    Declared: FnMut() -> bool,
     Connected: FnMut(C) -> StatusLoopExit,
     Sleep: FnMut(Duration, Option<&str>) -> bool,
     Now: Fn() -> Instant,
@@ -1639,6 +1649,12 @@ where
                     // then the brake delays, ceilinged. Only a deliberate
                     // stop terminates the supervisor itself.
                     StatusLoopExit::ConnectionLost => {
+                        // A daemon that said why it left did not crash, and
+                        // starting it again would overrule a decision the app
+                        // did not make. Stop, as a deliberate stop does.
+                        if declared() {
+                            return SupervisorLoopExit::Stopped;
+                        }
                         if served >= HEALTHY_CONNECTED {
                             brake.reset();
                             continue;
@@ -1695,6 +1711,12 @@ fn retry_status_message(delay: Duration, cause: Option<&str>) -> Option<String> 
             delay.as_secs()
         ),
     })
+}
+
+/// The same record question for a connection that was lost: a runtime folder
+/// that cannot be resolved has no goodbye to report.
+fn daemon_declared_exit() -> bool {
+    RuntimePaths::from_env().is_ok_and(|paths| record_declares_exit(&paths))
 }
 
 fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
@@ -1758,6 +1780,7 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                 }
             }
         },
+        daemon_declared_exit,
         |(client, hello)| match run_status_loop(
             client.as_ref(),
             &mut status_tracker.borrow_mut(),
