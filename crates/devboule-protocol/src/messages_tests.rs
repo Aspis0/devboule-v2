@@ -511,7 +511,6 @@ fn devices_capability_is_advertised_and_the_peer_caps_are_the_agreed_set() {
     assert!(crate::m3a_daemon_capabilities()
         .iter()
         .any(|capability| capability.as_str() == crate::caps::DEVICES));
-    assert_eq!(PEER_DEFAULT_CAPS, ["view"]);
     assert_eq!(
         PEER_CAPS,
         [
@@ -519,13 +518,10 @@ fn devices_capability_is_advertised_and_the_peer_caps_are_the_agreed_set() {
             "send",
             "answer_permissions",
             "create_sessions",
-            "roster"
+            "roster",
+            "admin"
         ]
     );
-    // The roster capability is grantable but never default: reading the
-    // pairing user's whole live roster is a disclosure no pairing carries
-    // until a person grants it per device.
-    assert!(!PEER_DEFAULT_CAPS.contains(&"roster"));
     // Frame compatibility is the negotiated protocol capability
     // `peer_agents`, a different mechanism advertised in both hello
     // lists; it is deliberately not a peer capability name.
@@ -543,6 +539,29 @@ fn devices_capability_is_advertised_and_the_peer_caps_are_the_agreed_set() {
         .iter()
         .any(|capability| capability.as_str() == crate::caps::AGENT_MESSAGES));
     assert!(!PEER_CAPS.contains(&crate::caps::AGENT_MESSAGES));
+}
+
+#[test]
+fn a_new_pairing_is_born_with_every_capability() {
+    // The 2026-09-21 parity decision at the protocol layer: the default grant is
+    // the whole wire set, so "the phone is mine" is the state a pairing starts
+    // in and a person narrows it afterwards, per device.
+    assert_eq!(PEER_DEFAULT_CAPS, PEER_CAPS);
+    // Spelled as well as compared, because the comparison is what a seventh
+    // capability must break deliberately: the lengths differ, so whoever adds a
+    // name decides whether the default follows it instead of inheriting it
+    // silently.
+    assert_eq!(
+        PEER_DEFAULT_CAPS,
+        [
+            "view",
+            "send",
+            "answer_permissions",
+            "create_sessions",
+            "roster",
+            "admin"
+        ]
+    );
 }
 
 #[test]

@@ -172,7 +172,9 @@ pub mod caps {
     pub const SESSIONS_WATCH: &str = "sessions.watch";
     pub const AGENT_RUN: &str = "agent.run";
     /// The pairing server and the tailnet listener. Advertised to local
-    /// clients only: `peer_allows` denies all six device variants to peers.
+    /// clients only: `peer_allows` denies the five pairing/revocation variants
+    /// to peers whatever they hold (`DevicesList` is the sixth device variant
+    /// and rides `view`).
     pub const DEVICES: &str = "devices";
     pub const TYPED_PERMISSIONS: &str = "typed_permissions";
     /// Per-provider MCP tool policy (`ToolPolicyGet`/`ToolPolicySet`).
@@ -224,7 +226,8 @@ pub mod caps {
     /// that refuse `agent_profiles_get`/`agent_profiles_set` without this name
     /// would then refuse every call against every daemon. Whether a *connection*
     /// may use it is `peer_allows`, not this list: a paired device is refused
-    /// both requests whichever capability it holds.
+    /// `agent_profiles_get`/`agent_profiles_set` unless it holds the `admin`
+    /// capability (the 2026-09-21 revocation of the old global deny list).
     pub const AGENT_PROFILES: &str = "agent_profiles";
 
     /// The provider-vocabulary query (`ProviderVocabularyGet`): what one
@@ -237,7 +240,7 @@ pub mod caps {
     /// the query" from "this provider published no vocabulary" — two absences
     /// the form must not collapse into one answer. Whether a *connection* may
     /// use it is `peer_allows`, not this list: a paired device is refused the
-    /// request whichever capability it holds.
+    /// request unless it holds the `admin` capability.
     pub const PROVIDER_VOCABULARY: &str = "provider_vocabulary";
 
     /// The permission-delegation switch (`DelegationGet`/`DelegationSet`):
@@ -250,7 +253,7 @@ pub mod caps {
     /// `delegation_get`/`delegation_set` without this name would refuse every
     /// call against every daemon. Whether a *connection* may use it is
     /// `peer_allows`, not this list: a paired device is refused both requests
-    /// whichever capability it holds.
+    /// unless it holds the `admin` capability.
     pub const PERMISSION_DELEGATION: &str = "permission_delegation";
 
     /// The peer agent roster (`PeerAgentsList`/`PeerAgents`).

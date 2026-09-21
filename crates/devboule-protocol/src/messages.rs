@@ -49,19 +49,31 @@ impl std::fmt::Display for PeerRole {
 }
 
 /// The capability names a paired peer may hold. The set is closed on the wire:
-/// an unknown name is an error, never a silently dropped entry. `roster` is
-/// deliberately absent from [`PEER_DEFAULT_CAPS`]: reading the pairing user's
-/// whole live agent roster is a disclosure no pairing carries until a person
-/// grants it per device.
-pub const PEER_CAPS: [&str; 5] = [
+/// an unknown name is an error, never a silently dropped entry. The first five
+/// name acts; `admin` names the rest of this device's surface — the
+/// administrative acts no act-name covers (the decision of 2026-09-21: a
+/// paired device is a full client, and only the permission model itself stays
+/// local).
+pub const PEER_CAPS: [&str; 6] = [
     "view",
     "send",
     "answer_permissions",
     "create_sessions",
     "roster",
+    "admin",
 ];
-/// Every new pairing starts here (design §8b A11: only "view" is on).
-pub const PEER_DEFAULT_CAPS: [&str; 1] = ["view"];
+/// Every new pairing starts here: the whole set, which is the same decision as
+/// the one above — "the phone is mine". A person restricts a device afterwards,
+/// per device; `validate_caps` is what still refuses to leave a `Client` with
+/// no `view`.
+pub const PEER_DEFAULT_CAPS: [&str; 6] = [
+    "view",
+    "send",
+    "answer_permissions",
+    "create_sessions",
+    "roster",
+    "admin",
+];
 
 /// One pairing code, with its `Debug` redacted.
 ///
@@ -557,8 +569,9 @@ pub enum ClientMessage {
         device_id: String,
         caps: Vec<String>,
     },
-    /// Read every stored per-provider tool policy. Local-only: a paired
-    /// device may not read or change this device's tool gates.
+    /// Read every stored per-provider tool policy. This device's own settings:
+    /// a paired device needs the administrative capability to read or change
+    /// this device's tool gates.
     ToolPolicyGet {
         id: u64,
     },
@@ -574,9 +587,9 @@ pub enum ClientMessage {
         disabled_tools: Vec<String>,
     },
     /// Read the whole agent-profile document: the ordered profile list and the
-    /// standing instructions. Local-only: profiles carry the modes and tool
-    /// overlays this machine's agents are created in, so a paired device may
-    /// neither read nor change them (`peer_policy.rs` denies both roles).
+    /// standing instructions. This device's own settings: profiles carry the
+    /// modes and tool overlays this machine's agents are created in, so a paired
+    /// device needs the administrative capability to read or change them.
     AgentProfilesGet {
         id: u64,
     },
@@ -604,8 +617,8 @@ pub enum ClientMessage {
     /// start is the native version probe, and only while its installed
     /// version is still unknown).
     ///
-    /// Local-only, exactly like the profile store: a paired device is refused
-    /// by `peer_allows` whichever capability it holds. The handshake
+    /// The profile store's companion, and the same rule: a paired device needs
+    /// the administrative capability to read it. The handshake
     /// capability `provider_vocabulary` is the feature gate: a daemon without
     /// it predates this query, which is a different fact from the query
     /// answering `absent`, and the two must never be collapsed.
@@ -621,10 +634,10 @@ pub enum ClientMessage {
     /// configured it (`default`), or the settings file was damaged and the
     /// daemon is reading off until it is repaired (`quarantined`).
     ///
-    /// Local-only, exactly like the profile store: the switch decides what
+    /// The profile store's companion, read: the switch decides what
     /// this machine's agents may answer on their children's behalf, so a
-    /// paired device is refused by `peer_allows` whichever capability it
-    /// holds. The handshake capability `permission_delegation` is the feature
+    /// paired device needs the administrative capability to read it. The
+    /// handshake capability `permission_delegation` is the feature
     /// gate, the same pairing the profiles pair uses.
     DelegationGet {
         id: u64,
@@ -1204,8 +1217,9 @@ pub enum DaemonMessage {
     /// at mount, so a write from any surface — the Settings switch, the
     /// roster's take-back — has to reach every connected client or a stale
     /// OFF hides the very control that stops delegation. Delivered to the
-    /// daemon's session watchers, which is every local app connection;
-    /// peers are refused the switch and never hold it.
+    /// daemon's session watchers, which is every local app connection that
+    /// asked to watch — and a paired device's too, when it holds the
+    /// administrative capability that opens the watch frame.
     DelegationChanged {
         enabled: bool,
         source: DelegationSource,
@@ -1798,11 +1812,13 @@ pub struct DaemonStatusBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_stats: Option<Box<JournalStats>>,
     /// Which store holds the Noise static private key: `"keyring"` or
-    /// `"file"`. Local-only information; peers are denied `Status`.
+    /// `"file"`. Part of the status body, which a peer reads only with the
+    /// administrative capability.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_store: Option<String>,
-    /// Remote-listener state. Local-only information; peers are denied
-    /// `Status`, and `DevicesList.self_info` carries the identity instead.
+    /// Remote-listener state. Part of the status body, which a peer reads only
+    /// with the administrative capability; `DevicesList.self_info` carries the
+    /// identity to a peer without it.
     /// Boxed for the same size reason as `journal_stats`; the wire is
     /// unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]

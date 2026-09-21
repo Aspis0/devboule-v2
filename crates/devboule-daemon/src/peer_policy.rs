@@ -7,14 +7,17 @@
 //! `ALL_SAMPLES` iteration would only restate what the compiler already
 //! enforces.
 //!
-//! The 1a surface was deliberately tiny; slice 3 opened five session variants
-//! and later slices added two more (deposits and agent-to-agent messages),
-//! each under the capability that names the act (`view`, `send`,
-//! `answer_permissions`, `create_sessions` — §8b A9/A11/A12). `Status`,
-//! pairing, capability changes and the tool bridge stay refused to a peer
-//! whatever it holds, because no capability names those acts. Scope — *which*
-//! sessions an allowed request reaches — is not decided here: it is the owner
-//! projection in `server.rs` plus the origin branch of `check_user_owner`.
+//! The operational surface was opened in slices, each act under the capability
+//! that names it (`view`, `send`, `answer_permissions`, `create_sessions`,
+//! `roster` — §8b A9/A11/A12). Everything else used to be refused to every
+//! peer, whatever it held, because no capability named those acts. **That rule
+//! was revoked on 2026-09-21 by the owner**: a paired device is a full client,
+//! and the sixth capability, `admin`, opens the remainder. The one thing that
+//! stays local is the permission model itself — pairing, a device's capability
+//! set, and revocation — because a peer that could change this device's
+//! trusted set could let itself in. Scope — *which* sessions an allowed request
+//! reaches — is not decided here: it is the owner projection in `server.rs`
+//! plus the origin branch of `check_user_owner`.
 
 use devboule_protocol::{ClientMessage, SessionKind, SessionOrigin};
 
@@ -34,7 +37,7 @@ pub enum PeerDecision {
 
 /// The capability names this gate reads, spelled once. `PEER_CAPS` in the
 /// protocol crate is the wire set a `PeerSetCaps` may name; the test below
-/// pins these five to it so a rename cannot leave the gate enforcing a
+/// pins these six to it so a rename cannot leave the gate enforcing a
 /// capability nobody can hold.
 pub const CAP_VIEW: &str = "view";
 /// `send` names two target scopes: `SessionSend` keeps the peer's existing
@@ -44,12 +47,23 @@ pub const CAP_VIEW: &str = "view";
 pub const CAP_SEND: &str = "send";
 pub const CAP_ANSWER_PERMISSIONS: &str = "answer_permissions";
 pub const CAP_CREATE_SESSIONS: &str = "create_sessions";
-/// The peer roster (`PeerAgentsList`) has a capability of its own, and it is
-/// deliberately **absent from `PEER_DEFAULT_CAPS`**: `view` is one every
-/// pairing already holds, and reading the pairing user's whole live roster is
-/// a disclosure no pairing should carry silently. Nothing changes for an
-/// existing device until a person grants this per device.
+/// The peer roster (`PeerAgentsList`) has a capability of its own, and no other
+/// act's capability opens it: `view` is the weakest grant a pairing can carry,
+/// and the roster is the pairing user's whole live surface, so reading it stays
+/// a decision a person can take back on its own row. It is part of
+/// `PEER_DEFAULT_CAPS` since the 2026-09-21 parity decision — a new device is
+/// born with it, and the per-device switch is how it comes off.
 pub const CAP_ROSTER: &str = "roster";
+/// The administrative capability: the rest of this device's surface, which no
+/// operational capability names — the settings stores, the journal, projects
+/// and workspaces, the provider verbs, `Status` and diagnostics, `Shutdown`,
+/// the session verbs outside the view/send pair, the deposited-bytes read, and
+/// the tool bridge's destructive tools. It is named for the surface and not for
+/// an act, because it is the whole remainder: one switch a person can turn off
+/// to bring a device back to the act-named capabilities alone. A grant, not a
+/// shortcut — ownership is unchanged, so an allowed request still has to reach
+/// the session its own scope names.
+pub const CAP_ADMIN: &str = "admin";
 
 /// The audit outcome for a request refused because it would run a session
 /// without asking the user's permission (`DESIGN-remote-agents.md` §8b A5).
@@ -99,15 +113,18 @@ pub(crate) fn budget_for(origin: &SessionOrigin) -> u64 {
 
 /// May `role`, holding `caps`, send `request`?
 ///
-/// `caps` is the peer's own capability set, read from its `peers` row. Five
+/// `caps` is the peer's own capability set, read from its `peers` row. Six
 /// names are the whole permission model for a paired device (§8b A9/A11):
 /// `view` (`SessionsList`, `DevicesList`, `SessionAttach`), `send`
 /// (`SessionSend`, `AgentMessageSend`, `SessionDeposit`, `SessionSetMode`),
 /// `answer_permissions` (`SessionPermissionRespond`), `create_sessions`
-/// (`SessionCreate`) and `roster` (`PeerAgentsList`, the one capability no new
-/// pairing holds — it is absent from `PEER_DEFAULT_CAPS`). A variant that no
-/// capability names is refused to every peer, and a variant that one names is
-/// allowed exactly when the peer holds it.
+/// (`SessionCreate`), `roster` (`PeerAgentsList`) and `admin` (everything else
+/// this device's app can ask — see [`CAP_ADMIN`], which is the 2026-09-21
+/// revocation of the old global deny list). A variant an operational capability
+/// names is allowed exactly when the peer holds it; a variant no operational
+/// capability names is allowed exactly when the peer holds `admin`. The five
+/// permission-model variants — pairing, a device's capability set, revocation —
+/// are refused to every set, and that is the whole remaining `Deny`.
 ///
 /// `role` does not decide permission here: the capability set does. It stays
 /// in the signature because it decides *scope* one layer down (the owner
@@ -169,94 +186,98 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // A5) refuses the specific modes on top of this, in `dispatch`.
         ClientMessage::SessionSetMode { .. } => with_capability(caps, CAP_SEND),
 
-        // Pairing and revocation are local acts. A peer that could start a
-        // pairing or revoke another peer would be able to change this device's
-        // trusted set, which is exactly what pairing exists to prevent. No
-        // capability names them, so no capability opens them.
+        // The permission model itself is the one local act left. Starting or
+        // completing a pairing, changing a device's capability set and revoking
+        // a device are not uses of this machine, they decide *who may enter*
+        // it: a peer that could pair another device could hand out the
+        // permissions it holds, and one that could change caps or revoke could
+        // rewrite the trusted set. `admin` does not open them, deliberately and
+        // on the owner's instruction (2026-09-21) — if that changes, it is
+        // their decision to make, and this is the comment that must move with
+        // it.
         ClientMessage::PairingStart { .. } => PeerDecision::Deny("pairing.start"),
         ClientMessage::PairingComplete { .. } => PeerDecision::Deny("pairing.complete"),
         ClientMessage::PairingConfirm { .. } => PeerDecision::Deny("pairing.confirm"),
         ClientMessage::PeerRevoke { .. } => PeerDecision::Deny("peer.revoke"),
         ClientMessage::PeerSetCaps { .. } => PeerDecision::Deny("peer.set_caps"),
-        // A door that hands over deposited bytes must not become a way for a
-        // paired device to read them: every content read on this surface is
-        // refused, while only list reads ride on `view`.
-        ClientMessage::SessionAttachmentRead { .. } => PeerDecision::Deny("attachment.read"),
+        // The read half of the deposit. Reads of *content* ride the
+        // administrative capability while only the list reads ride `view`:
+        // deposited bytes are a session's own material, and a device the owner
+        // granted the whole surface may read them exactly as the app does.
+        // Scope still decides which reference resolves.
+        ClientMessage::SessionAttachmentRead { .. } => with_capability(caps, CAP_ADMIN),
 
-        // Tool policies are this device's own settings, read and written by
-        // its user through the app. A paired device toggling them would be
-        // changing what this machine hands to its agents, so both the read
-        // and the write are refused rather than projected.
-        ClientMessage::ToolPolicyGet { .. } => PeerDecision::Deny("tool.policy.get"),
-        ClientMessage::ToolPolicySet { .. } => PeerDecision::Deny("tool.policy.set"),
+        // The settings stores: the tool policies, the agent profiles (mode,
+        // model, tool overlay, and the standing instructions that travel into
+        // every created agent's prompt) and the delegation switch — whether an
+        // agent here may answer its child's permission cards. They are this
+        // device's own settings, read and written by its user through the app,
+        // so they ride the administrative capability: a device the owner
+        // granted the whole surface may change what this machine hands to its
+        // agents, and a device without it may not.
+        ClientMessage::ToolPolicyGet { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::ToolPolicySet { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::AgentProfilesGet { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::AgentProfilesSet { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::DelegationGet { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::DelegationSet { .. } => with_capability(caps, CAP_ADMIN),
+        // The provider vocabulary is the profile store's companion read — what
+        // this machine's providers offer — so the same capability opens it. No
+        // handshake name decides this arm: the app's `provider_vocabulary`
+        // name is a frame-compatibility gate, a different mechanism.
+        ClientMessage::ProviderVocabularyGet { .. } => with_capability(caps, CAP_ADMIN),
 
-        // The agent profiles are the same kind of object as the tool gates and
-        // are refused for the same reason, both halves: a profile carries the
-        // mode, the model and the tool overlay this machine's agents are created
-        // in, and the standing instructions are text that goes into every
-        // created agent's prompt. A paired device that could set them would be
-        // writing what this machine's agents do — and a device that could read
-        // them would be reading rules it was never given.
-        ClientMessage::AgentProfilesGet { .. } => PeerDecision::Deny("agent.profiles.get"),
-        ClientMessage::AgentProfilesSet { .. } => PeerDecision::Deny("agent.profiles.set"),
+        // Local information: pid, instance id, live counts and the secret-store
+        // selector. `Ping` and `DevicesList.self_info` remain what a peer uses
+        // to know this daemon is alive (muse M7, §8b A13); the full answer is
+        // part of the surface `admin` opens.
+        ClientMessage::Status { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::DaemonDiagnostics { .. } => with_capability(caps, CAP_ADMIN),
 
-        // The delegation switch is this device's own authority setting: it
-        // decides whether an agent on this machine may answer its child's
-        // permission cards, so a paired device that could set it would be
-        // granting itself answers this machine's human never gave, and one
-        // that could read it would learn whether the door is open. Both
-        // halves refused, the same way the profile store is — whichever
-        // capability the peer holds.
-        ClientMessage::DelegationGet { .. } => PeerDecision::Deny("delegation.get"),
-        ClientMessage::DelegationSet { .. } => PeerDecision::Deny("delegation.set"),
+        // The R1 list of §8 — destructive and configuration changes — is no
+        // longer denied to every peer. A device the owner granted the
+        // administrative capability asks these exactly as the app does; one
+        // that does not is refused with the name of the capability it is
+        // missing, not with the act's name, which is no longer what would open
+        // it. `Invoke` is the generic door of this wire variant: see its own
+        // note below.
+        ClientMessage::Shutdown { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionDelete { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::JournalRetentionSet { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::ProvidersRefresh { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::ProviderUpdate { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::ProjectAdd { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::WorkspaceCreate { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::WorkspaceDelete { .. } => with_capability(caps, CAP_ADMIN),
+        // `Invoke` is the wire's generic tenant door — "run this command" — and
+        // the daemon's own arm answers it with `Unimplemented`
+        // (`dispatch.rs`), because this daemon is not a plugin backend. What the
+        // gate opens here is that refusal, not the app's command surface; if a
+        // future slice serves `Invoke` from this daemon, a peer holding `admin`
+        // reaches whatever it serves. Said plainly rather than left to be
+        // discovered.
+        ClientMessage::Invoke { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionClaim { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionResume { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionReportAgent { .. } => with_capability(caps, CAP_ADMIN),
 
-        // The provider vocabulary is the profile store's companion read: it
-        // says what this machine's providers offer, which is the other half of
-        // what a profile stores. A paired device that could read it would be
-        // reading this machine's capability shape, and the handshake
-        // capability that advertises the query to the app is deliberately not
-        // a peer capability — no peer may hold it, so no arm but this one.
-        ClientMessage::ProviderVocabularyGet { .. } => {
-            PeerDecision::Deny("provider.vocabulary.get")
-        }
-
-        // Local-only information: pid, instance id, live counts and the
-        // secret-store selector, none of which a peer needs. Peers use `Ping`
-        // and `DevicesList.self_info` (muse M7, §8b A13).
-        ClientMessage::Status { .. } => PeerDecision::Deny("status"),
-        ClientMessage::DaemonDiagnostics { .. } => PeerDecision::Deny("diagnostics"),
-
-        // The global deny list of §8 R1: destructive or configuration
-        // changes, never reachable from a paired device.
-        ClientMessage::Shutdown { .. } => PeerDecision::Deny("shutdown"),
-        ClientMessage::SessionDelete { .. } => PeerDecision::Deny("session.delete"),
-        ClientMessage::JournalRetentionSet { .. } => PeerDecision::Deny("journal.retention.set"),
-        ClientMessage::ProvidersRefresh { .. } => PeerDecision::Deny("providers.refresh"),
-        ClientMessage::ProviderUpdate { .. } => PeerDecision::Deny("provider.update"),
-        ClientMessage::ProjectAdd { .. } => PeerDecision::Deny("project.add"),
-        ClientMessage::WorkspaceCreate { .. } => PeerDecision::Deny("workspace.create"),
-        ClientMessage::WorkspaceDelete { .. } => PeerDecision::Deny("workspace.delete"),
-        ClientMessage::Invoke { .. } => PeerDecision::Deny("invoke"),
-        ClientMessage::SessionClaim { .. } => PeerDecision::Deny("session.claim"),
-        ClientMessage::SessionResume { .. } => PeerDecision::Deny("session.resume"),
-        ClientMessage::SessionReportAgent { .. } => PeerDecision::Deny("session.report_agent"),
-
-        // Still outside a peer's reach after slice 3: their own slices or
-        // never. Refused rather than half-supported.
-        ClientMessage::JournalUsage { .. } => PeerDecision::Deny("journal.usage"),
-        ClientMessage::JournalRetentionGet { .. } => PeerDecision::Deny("journal.retention.get"),
-        ClientMessage::SessionDetach { .. } => PeerDecision::Deny("session.detach"),
-        ClientMessage::SessionClose { .. } => PeerDecision::Deny("session.close"),
-        ClientMessage::SessionStop { .. } => PeerDecision::Deny("session.stop"),
-        ClientMessage::SessionResize { .. } => PeerDecision::Deny("session.resize"),
-        ClientMessage::SessionInterrupt { .. } => PeerDecision::Deny("session.interrupt"),
-        ClientMessage::SessionSetModel { .. } => PeerDecision::Deny("session.set_model"),
-        ClientMessage::SessionsWatch { .. } => PeerDecision::Deny("sessions.watch"),
-        ClientMessage::SessionsUnwatch { .. } => PeerDecision::Deny("sessions.unwatch"),
-        ClientMessage::SessionsPresence { .. } => PeerDecision::Deny("sessions.presence"),
-        ClientMessage::ProjectsList { .. } => PeerDecision::Deny("projects.list"),
-        ClientMessage::WorkspacesList { .. } => PeerDecision::Deny("workspaces.list"),
-        ClientMessage::ProvidersList { .. } => PeerDecision::Deny("providers.list"),
+        // The verbs that were "still outside a peer's reach after slice 3":
+        // the same capability, for the same reason — the administrative
+        // surface is one grant, not thirty-six.
+        ClientMessage::JournalUsage { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::JournalRetentionGet { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionDetach { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionClose { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionStop { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionResize { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionInterrupt { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionSetModel { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionsWatch { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionsUnwatch { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::SessionsPresence { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::ProjectsList { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::WorkspacesList { .. } => with_capability(caps, CAP_ADMIN),
+        ClientMessage::ProvidersList { .. } => with_capability(caps, CAP_ADMIN),
     }
 }
 
@@ -418,7 +439,8 @@ pub enum McpToolWire {
 ///   ticked subset (name, note, provider, model, mode, unattended prediction)
 ///   the human enabled for agents to consume — not the full document
 ///   `AgentProfilesGet` returns (unticked profiles, stable ids, tool overlays,
-///   standing instructions), which stays denied to every peer and no tool serves.
+///   standing instructions), which rides the administrative capability and is
+///   served by no tool.
 ///   The tick is the human's authorisation to disclose to agents, including a
 ///   peer's agents that may create; without the list `create_agent` is
 ///   undiscoverable (its own error sends the caller to the list).
@@ -442,8 +464,9 @@ pub enum McpToolWire {
 ///   the model-skip when the child already runs the profile's model is a
 ///   runtime optimisation, not a permission fact, and permission must not depend
 ///   on it (tomorrow's profile edit would silently widen a peer's grant).
-///   Since the model half is denied to every peer, a peer never applies a profile;
-///   a peer with `send` may still change modes over the wire `SessionSetMode`.
+///   Since the model half rides the administrative capability, a peer applies a
+///   profile only when it holds `admin`; a peer with `send` alone may still
+///   change modes over the wire `SessionSetMode`.
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
@@ -483,7 +506,7 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         }]))
     } else if tool == MCP_LIST_PROFILES_TOOL {
         Some(McpToolWire::Unjudged(
-            "the ticked subset the human enabled for agents; the full-document read stays denied and unserved",
+            "the ticked subset the human enabled for agents; the full-document read rides the administrative capability and no tool serves it",
         ))
     } else if tool == MCP_SEND_MESSAGE_TOOL {
         Some(McpToolWire::Judged(vec![ClientMessage::AgentMessageSend {
@@ -542,8 +565,10 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         ]))
     } else if tool == MCP_STOP_AGENT_TOOL {
         // The destructive supervisor verb, judged as the wire's own
-        // `SessionStop` — which no capability names, so every peer is
-        // refused and the tool stays local-only by construction.
+        // `SessionStop`: it rides the administrative capability, so a device
+        // the owner granted the whole surface may stop a child through this
+        // door exactly as it may over the wire, and a device without `admin`
+        // is refused with that capability's name.
         Some(McpToolWire::Judged(vec![ClientMessage::SessionStop {
             id: 0,
             session_id: String::new(),
@@ -551,7 +576,7 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         }]))
     } else if tool == MCP_CLOSE_AGENT_TOOL {
         // The same construction as the stop tool, for the wire's
-        // `SessionClose`: a destructive verb no capability opens.
+        // `SessionClose`: the same administrative capability opens it.
         Some(McpToolWire::Judged(vec![ClientMessage::SessionClose {
             id: 0,
             session_id: String::new(),
@@ -561,7 +586,7 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         || tool == MCP_IMPORTS_TOOL
         || tool == MCP_IMPORTERS_TOOL
     {
-        // The three project-graph tools, local-only by construction.
+        // The three project-graph tools.
         //
         // The caller decides the severity, and both categories pass through
         // this one arm. A *local* session already reads the workspace's files
@@ -570,12 +595,11 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         // paired device's agent does not read this machine's files: for it the
         // graph is the project's internal structure travelling the wire. Judged
         // for the more severe of the two, and the wire read is the workspace
-        // inventory (`WorkspacesList`), which no capability names - so every
-        // peer is refused and the tools stay local by construction, exactly
-        // like the stop and close verbs. The graph discloses more per
-        // workspace than that inventory does, not less, so it cannot be the
-        // read that opens where the inventory is closed. Whose graph is read
-        // comes from the caller's own session row, never from an argument.
+        // inventory (`WorkspacesList`) — the read the administrative capability
+        // opens. It must be *that* read and not `view`: the graph discloses more
+        // per workspace than the inventory does, not less, so the graph cannot
+        // ride the weaker capability the inventory is closed to. Whose graph is
+        // read comes from the caller's own session row, never from an argument.
         Some(McpToolWire::Judged(vec![ClientMessage::WorkspacesList {
             id: 0,
             project_id: String::new(),
@@ -682,48 +706,62 @@ pub(crate) mod tests {
         names.iter().map(|name| name.to_string()).collect()
     }
 
-    /// What a freshly paired device holds: `view` and nothing else (§8b A11).
+    /// What a freshly paired device holds: `PEER_DEFAULT_CAPS` itself, which
+    /// since the 2026-09-21 parity decision is the whole wire set.
     fn default_caps() -> Vec<String> {
-        caps(&[CAP_VIEW])
+        caps(&devboule_protocol::PEER_DEFAULT_CAPS)
     }
 
-    /// Every capability the wire set names.
+    /// Every capability the wire set names — read from the wire set rather than
+    /// respelled here, so a seventh name cannot be added to the protocol and
+    /// stay invisible to the gate's own tests.
     fn all_caps() -> Vec<String> {
-        caps(&[
-            CAP_VIEW,
-            CAP_SEND,
-            CAP_ANSWER_PERMISSIONS,
-            CAP_CREATE_SESSIONS,
-            CAP_ROSTER,
-        ])
+        caps(&devboule_protocol::PEER_CAPS)
     }
 
-    /// The peer roster has a capability of its own, absent from
-    /// `PEER_DEFAULT_CAPS`: every pairing holds `view`, and the roster is the
-    /// pairing user's whole live surface, so `view` alone must not open it.
-    /// Nothing changes for an existing pairing until a person grants this.
+    /// Every capability **except** the administrative one: the five that name
+    /// acts. The negative control's set — a device holding all of them and
+    /// nothing else must still be refused the administrative surface.
+    fn operational_caps() -> Vec<String> {
+        let mut names = all_caps();
+        names.retain(|cap| cap != CAP_ADMIN);
+        assert_eq!(
+            names.len(),
+            all_caps().len() - 1,
+            "the administrative name must be in the wire set"
+        );
+        names
+    }
+
+    /// The peer roster has a capability of its own, and `view` — the weakest
+    /// grant a pairing can carry — does not open it. Since the parity decision
+    /// a new pairing is *born* holding it, so both halves are pinned: the
+    /// default carries it, and losing it is enough to close the read.
     #[test]
     fn the_peer_roster_has_a_capability_of_its_own() {
         let roster = ClientMessage::PeerAgentsList { id: 1 };
         for role in [PeerRole::Client, PeerRole::Daemon] {
-            // The default grant (view only) does not open the roster.
+            // A new pairing holds it, because the default is the whole set.
             assert_eq!(
                 peer_allows(role, &default_caps(), &roster),
-                PeerDecision::Deny(CAP_ROSTER),
-                "{role:?} holding only the default `view` must not read the roster"
+                PeerDecision::Allow,
+                "{role:?} holding the default grant must read the roster"
             );
-            // Even everything a pairing could hold before this capability
-            // existed does not.
-            let pre_roster_world = caps(&[
-                CAP_VIEW,
-                CAP_SEND,
-                CAP_ANSWER_PERMISSIONS,
-                CAP_CREATE_SESSIONS,
-            ]);
+            // `view` alone does not open it, and neither does every other
+            // capability together — `admin` included: the roster read is the
+            // one act only its own name reaches, which is why it keeps a switch
+            // of its own.
             assert_eq!(
-                peer_allows(role, &pre_roster_world, &roster),
+                peer_allows(role, &caps(&[CAP_VIEW]), &roster),
                 PeerDecision::Deny(CAP_ROSTER),
-                "{role:?} holding every pre-roster capability must not read the roster"
+                "{role:?} holding only `view` must not read the roster"
+            );
+            let mut without_roster = all_caps();
+            without_roster.retain(|cap| cap != CAP_ROSTER);
+            assert_eq!(
+                peer_allows(role, &without_roster, &roster),
+                PeerDecision::Deny(CAP_ROSTER),
+                "{role:?} holding every other capability must not read the roster"
             );
             // The capability of its own does, and nothing else about it.
             assert_eq!(
@@ -761,6 +799,7 @@ pub(crate) mod tests {
             CAP_ANSWER_PERMISSIONS,
             CAP_CREATE_SESSIONS,
             CAP_ROSTER,
+            CAP_ADMIN,
         ];
         named.sort_unstable();
         let mut listed = devboule_protocol::PEER_CAPS;
@@ -769,7 +808,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_allowlist_is_exactly_the_1a_surface_plus_the_slice_3_acts() {
+    fn the_handshake_pair_is_unconditional_and_view_makes_a_reader() {
         for role in [PeerRole::Client, PeerRole::Daemon] {
             assert_eq!(
                 peer_allows(role, &default_caps(), &ping()),
@@ -801,8 +840,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// One capability, one act. Holding `send` must not open `create`, and
-    /// holding nothing must not open a session at all.
+    /// One capability, one act. Holding `send` must not open `create`, holding
+    /// nothing must not open a session at all, and the five act-named
+    /// capabilities together still do not open an act none of them names.
     #[test]
     fn each_capability_opens_exactly_the_act_it_names() {
         let create = || ClientMessage::SessionCreate {
@@ -896,7 +936,8 @@ pub(crate) mod tests {
                 peer_allows(role, &caps(&[CAP_ANSWER_PERMISSIONS]), &respond()),
                 PeerDecision::Allow
             );
-            // The full set opens exactly those five and nothing else.
+            // The operational five open exactly the acts they name — and stop
+            // is not one of them, whatever combination of act-names is held.
             assert_eq!(
                 peer_allows(role, &all_caps(), &create()),
                 PeerDecision::Allow
@@ -904,23 +945,31 @@ pub(crate) mod tests {
             assert_eq!(
                 peer_allows(
                     role,
-                    &all_caps(),
+                    &operational_caps(),
                     &ClientMessage::SessionStop {
                         id: 1,
                         session_id: "s.a.1".to_string(),
                         subscription_id: 1,
                     }
                 ),
-                PeerDecision::Deny("session.stop")
+                PeerDecision::Deny(CAP_ADMIN)
             );
         }
     }
 
-    /// §8 R1's "denied to every role, always" list. The variants are
-    /// constructed directly: the compiler already proves the *match* is
-    /// exhaustive, this proves the *decisions* on the list that matters.
+    /// Every variant that used to be "denied to every role, always" (§8 R1), in
+    /// one list: the parity walk's subject.
+    ///
+    /// The list is the old one verbatim — that is the point. **This is the
+    /// parity proof at the wire level**: against the default grant of a new
+    /// pairing every entry that is not one of the three permission-model acts
+    /// must come back `Allow`, and against a device holding every *operational*
+    /// capability and no `admin`, `Deny(CAP_ADMIN)` — the negative control. The
+    /// variants are constructed directly: the compiler already proves the
+    /// *match* is exhaustive, this proves the *decisions* on the list that
+    /// matters.
     #[test]
-    fn the_r1_always_denied_list_is_denied_to_both_roles() {
+    fn the_administrative_surface_opens_with_the_administrative_capability() {
         let denied = [
             ClientMessage::Shutdown { id: 1 },
             ClientMessage::SessionDelete {
@@ -1019,8 +1068,9 @@ pub(crate) mod tests {
                 enabled: Some(false),
                 disabled_tools: Vec::new(),
             },
-            // The agent profiles, read and write: both are this device's own
-            // settings, and a peer holding every capability still gets neither.
+            // The agent profiles, read and write: this device's own settings,
+            // so they ride the administrative capability — open to a device
+            // the owner granted the whole surface, refused without it.
             ClientMessage::AgentProfilesGet { id: 1 },
             ClientMessage::AgentProfilesSet {
                 id: 1,
@@ -1034,40 +1084,177 @@ pub(crate) mod tests {
                 provider: "claude".to_string(),
                 refresh: false,
             },
-            // The delegation switch, read and write: the same refusal again.
-            // It decides whether this machine's agents may answer their
-            // children's permission cards, so a peer holding every capability
-            // still gets neither half.
+            // The delegation switch, read and write: the same setting-store
+            // rule, the same capability. It decides whether this machine's
+            // agents may answer their children's permission cards.
             ClientMessage::DelegationGet { id: 1 },
             ClientMessage::DelegationSet {
                 id: 1,
                 enabled: true,
             },
+            // The rest of the surface that used to be denied to every peer:
+            // the session verbs outside the view/send pair, the read half of
+            // the deposit, the watch set, the project/workspace/provider
+            // reads, the status pair and the journal read. One list, because
+            // they are one grant.
+            ClientMessage::SessionAttachmentRead {
+                id: 1,
+                reference: devboule_protocol::AttachmentReference {
+                    session_id: "s.a.1".to_string(),
+                    digest: "b".repeat(64),
+                    stored_bytes: 512,
+                },
+            },
+            ClientMessage::SessionDetach {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::SessionClose {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                idempotency_key: None,
+            },
+            ClientMessage::SessionStop {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::SessionResize {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                cols: 80,
+                rows: 24,
+            },
+            ClientMessage::SessionInterrupt {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+            },
+            ClientMessage::SessionSetModel {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                model_id: None,
+                effort: None,
+            },
+            ClientMessage::SessionsWatch { id: 1 },
+            ClientMessage::SessionsUnwatch { id: 1 },
+            ClientMessage::SessionsPresence {
+                id: 1,
+                focused_session_id: None,
+                app_visible: true,
+            },
+            ClientMessage::JournalRetentionGet { id: 1 },
+            ClientMessage::ProjectsList { id: 1 },
+            ClientMessage::WorkspacesList {
+                id: 1,
+                project_id: "p.1".to_string(),
+            },
+            ClientMessage::ProvidersList { id: 1 },
+            ClientMessage::Status { id: 1 },
+            ClientMessage::DaemonDiagnostics { id: 1 },
         ];
+        assert_eq!(
+            denied.len() + ALWAYS_ALLOWED_VARIANTS.len(),
+            VARIANT_COUNT,
+            "the parity walk must cover every variant that is not always allowed"
+        );
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for request in &denied {
-                let decision = peer_allows(role, &all_caps(), request);
-                assert!(
-                    matches!(decision, PeerDecision::Deny(_)),
-                    "{role} may not send {request:?}"
-                );
+                match permission_model_denial(request) {
+                    // The three permission-model acts: the one thing the parity
+                    // decision does not open, in every set.
+                    Some(reason) => {
+                        assert_eq!(
+                            peer_allows(role, &default_caps(), request),
+                            PeerDecision::Deny(reason),
+                            "{role} may not change the trusted set through {request:?}"
+                        );
+                        assert_eq!(
+                            peer_allows(role, &operational_caps(), request),
+                            PeerDecision::Deny(reason),
+                            "{role} holding no `admin` is refused {request:?} for the local reason"
+                        );
+                    }
+                    // Everything else: open to a device holding the
+                    // administrative capability, refused with that capability's
+                    // name — not the act's name, which is not what would open
+                    // it — to one that does not.
+                    None => {
+                        assert_eq!(
+                            peer_allows(role, &default_caps(), request),
+                            PeerDecision::Allow,
+                            "{role} holding a new pairing's grant must be able to ask {request:?}"
+                        );
+                        assert_eq!(
+                            peer_allows(role, &operational_caps(), request),
+                            PeerDecision::Deny(CAP_ADMIN),
+                            "{role} without `admin` must still be refused {request:?}"
+                        );
+                    }
+                }
             }
         }
     }
 
+    /// The twelve frames no `Deny` arm has ever covered: the handshake pair and
+    /// the ten act-named arms. Spelled as wire names so the walk above can prove
+    /// it covers every *other* variant — with `VARIANT_COUNT` that is a closed
+    /// statement, not a guess.
+    const ALWAYS_ALLOWED_VARIANTS: [&str; 12] = [
+        "Hello",
+        "Ping",
+        "SessionsList",
+        "DevicesList",
+        "PeerAgentsList",
+        "SessionAttach",
+        "SessionCreate",
+        "SessionSend",
+        "AgentMessageSend",
+        "SessionDeposit",
+        "SessionPermissionRespond",
+        "SessionSetMode",
+    ];
+
+    /// The five wire variants of the three permission-model acts — start or
+    /// complete a pairing, change a device's capability set, revoke a device —
+    /// with the reason each is refused under. `None` for every other request,
+    /// which under the parity rule is exactly "the administrative capability
+    /// opens it". Deliberately a second closed match and not a reading of
+    /// `matrix_row`: a row and the code disagreeing is the failure this
+    /// classifier must be able to report.
+    fn permission_model_denial(request: &ClientMessage) -> Option<&'static str> {
+        match request {
+            ClientMessage::PairingStart { .. } => Some("pairing.start"),
+            ClientMessage::PairingComplete { .. } => Some("pairing.complete"),
+            ClientMessage::PairingConfirm { .. } => Some("pairing.confirm"),
+            ClientMessage::PeerSetCaps { .. } => Some("peer.set_caps"),
+            ClientMessage::PeerRevoke { .. } => Some("peer.revoke"),
+            _ => None,
+        }
+    }
+
+    /// §8b A4/A5/R3 as the operational half of the wall: the status report and
+    /// the diagnostics bundle are local information, and they ride the
+    /// administrative capability like the rest of the surface no act names.
     #[test]
-    fn status_is_denied_to_both_roles() {
+    fn status_and_diagnostics_ride_the_administrative_capability() {
         for role in [PeerRole::Client, PeerRole::Daemon] {
             let status = ClientMessage::Status { id: 1 };
             let diagnostics = ClientMessage::DaemonDiagnostics { id: 1 };
-            assert_eq!(
-                peer_allows(role, &all_caps(), &status),
-                PeerDecision::Deny("status")
-            );
-            assert_eq!(
-                peer_allows(role, &all_caps(), &diagnostics),
-                PeerDecision::Deny("diagnostics")
-            );
+            for request in [&status, &diagnostics] {
+                assert_eq!(
+                    peer_allows(role, &default_caps(), request),
+                    PeerDecision::Allow,
+                    "{role} holding a new pairing's grant must reach {request:?}"
+                );
+                assert_eq!(
+                    peer_allows(role, &operational_caps(), request),
+                    PeerDecision::Deny(CAP_ADMIN),
+                    "{role} without `admin` must not reach {request:?}"
+                );
+            }
         }
     }
 
@@ -1277,12 +1464,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// The verbs that end a child are refused to every peer, walked over the
-    /// closed wire capability table rather than sampled: a capability added
-    /// to `PEER_CAPS` that could reach stop or close — through the wire gate
-    /// or the tool door — fails here by construction.
+    /// The verbs that end a child ride the administrative capability, walked
+    /// over the closed wire capability table rather than sampled: **no**
+    /// capability but `admin` reaches stop or close — through the wire gate or
+    /// the tool door — and `admin` reaches both. A seventh capability that
+    /// widened this would have to be named here.
     #[test]
-    fn no_capability_reaches_stop_or_close() {
+    fn only_the_administrative_capability_reaches_stop_or_close() {
         use crate::provider_catalog::{MCP_CLOSE_AGENT_TOOL, MCP_STOP_AGENT_TOOL};
         use devboule_protocol::PEER_CAPS;
         let stop = ClientMessage::SessionStop {
@@ -1298,79 +1486,100 @@ pub(crate) mod tests {
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for cap in PEER_CAPS {
                 let caps = caps(&[cap]);
+                let (wire, door) = if cap == CAP_ADMIN {
+                    (PeerDecision::Allow, None)
+                } else {
+                    (PeerDecision::Deny(CAP_ADMIN), Some(CAP_ADMIN))
+                };
                 assert_eq!(
                     peer_allows(role, &caps, &stop),
-                    PeerDecision::Deny("session.stop"),
-                    "{role:?} holding {cap} must not stop a session"
+                    wire,
+                    "{role:?} holding {cap} on SessionStop"
                 );
                 assert_eq!(
                     peer_allows(role, &caps, &close),
-                    PeerDecision::Deny("session.close"),
-                    "{role:?} holding {cap} must not close a session"
+                    wire,
+                    "{role:?} holding {cap} on SessionClose"
                 );
                 assert_eq!(
                     mcp_tool_denial(role, &caps, MCP_STOP_AGENT_TOOL),
-                    Some("session.stop"),
-                    "{role:?} holding {cap} must not reach the stop tool"
+                    door,
+                    "{role:?} holding {cap} on the stop tool"
                 );
                 assert_eq!(
                     mcp_tool_denial(role, &caps, MCP_CLOSE_AGENT_TOOL),
-                    Some("session.close"),
-                    "{role:?} holding {cap} must not reach the close tool"
+                    door,
+                    "{role:?} holding {cap} on the close tool"
                 );
             }
             // One capability at a time is not "every peer": a peer holding the
-            // whole table is legal, and a future arm gated on a combination
-            // would pass the loop above and fail here.
-            let every = caps(&PEER_CAPS);
-            assert_eq!(
-                peer_allows(role, &every, &stop),
-                PeerDecision::Deny("session.stop")
-            );
-            assert_eq!(
-                peer_allows(role, &every, &close),
-                PeerDecision::Deny("session.close")
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &every, MCP_STOP_AGENT_TOOL),
-                Some("session.stop")
-            );
-            assert_eq!(
-                mcp_tool_denial(role, &every, MCP_CLOSE_AGENT_TOOL),
-                Some("session.close")
-            );
+            // act-named five is legal, and so is the whole table. Without
+            // `admin` the verbs stay refused; with it they open — the parity
+            // decision, not an accident of the loop above.
+            for (set, wire, door) in [
+                (
+                    operational_caps(),
+                    PeerDecision::Deny(CAP_ADMIN),
+                    Some(CAP_ADMIN),
+                ),
+                (all_caps(), PeerDecision::Allow, None),
+            ] {
+                assert_eq!(peer_allows(role, &set, &stop), wire);
+                assert_eq!(peer_allows(role, &set, &close), wire);
+                assert_eq!(mcp_tool_denial(role, &set, MCP_STOP_AGENT_TOOL), door);
+                assert_eq!(mcp_tool_denial(role, &set, MCP_CLOSE_AGENT_TOOL), door);
+            }
         }
     }
 
-    /// The project-graph tools are local-only by the same construction the
-    /// stop and close verbs use, walked over the closed capability table
-    /// rather than sampled: no capability, alone or as the whole set, opens
-    /// the caller's workspace graph to a paired device.
+    /// The project-graph tools ride the administrative capability, walked over
+    /// the closed capability table rather than sampled. The property is
+    /// two-way, which is what makes it the proof and not a sample: **with** the
+    /// capability every served tool is reachable at the door, and **without** it
+    /// the caller's workspace graph stays closed whatever else the device holds
+    /// — alone, as the act-named five, or in any combination. Whose graph is
+    /// read comes from the caller's own session row, never from an argument.
     #[test]
-    fn no_capability_reaches_the_project_graph_tools() {
+    fn the_project_graph_tools_ride_the_administrative_capability() {
         use crate::provider_catalog::{
             MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_NEIGHBORHOOD_TOOL,
         };
         use devboule_protocol::PEER_CAPS;
+        const GRAPH_TOOLS: [&str; 3] =
+            [MCP_NEIGHBORHOOD_TOOL, MCP_IMPORTS_TOOL, MCP_IMPORTERS_TOOL];
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for cap in PEER_CAPS {
-                for tool in [MCP_NEIGHBORHOOD_TOOL, MCP_IMPORTS_TOOL, MCP_IMPORTERS_TOOL] {
+                let expected = if cap == CAP_ADMIN {
+                    None
+                } else {
+                    Some(CAP_ADMIN)
+                };
+                for tool in GRAPH_TOOLS {
                     assert_eq!(
                         mcp_tool_denial(role, &caps(&[cap]), tool),
-                        Some("workspaces.list"),
-                        "{role:?} holding {cap} must not read the project graph through {tool}"
+                        expected,
+                        "{role:?} holding {cap} on {tool}"
                     );
                 }
             }
-            // One capability at a time is not "every peer": the whole table
-            // is legal, and a future arm gated on a combination would pass
-            // the loop above and fail here.
-            let every = caps(&PEER_CAPS);
-            for tool in [MCP_NEIGHBORHOOD_TOOL, MCP_IMPORTS_TOOL, MCP_IMPORTERS_TOOL] {
+            // The negative control that matters: every act-named capability at
+            // once, and still no graph.
+            for tool in GRAPH_TOOLS {
                 assert_eq!(
-                    mcp_tool_denial(role, &every, tool),
-                    Some("workspaces.list"),
-                    "{role:?} holding every capability must not read the project graph through {tool}"
+                    mcp_tool_denial(role, &operational_caps(), tool),
+                    Some(CAP_ADMIN),
+                    "{role:?} holding every act-named capability must not read the project graph through {tool}"
+                );
+            }
+            // And the parity half: with the whole table no served tool is
+            // refused at the door — the graph tools included, which is the
+            // statement "a paired device with the administrative capability
+            // reaches what the app reaches".
+            for (name, _) in crate::provider_catalog::MCP_BROKER_TOOLS {
+                assert_eq!(
+                    mcp_tool_denial(role, &all_caps(), name),
+                    None,
+                    "{role:?} holding every capability must reach the served tool {name}"
                 );
             }
         }
@@ -1379,7 +1588,7 @@ pub(crate) mod tests {
     /// The door judges with `peer_allows`, per tool, for both roles: the role
     /// never decides (the capability set does), the denials name the policy's
     /// own payloads, and the move tool's two halves deny with two different
-    /// sentences — the mode half under `send`, the model half always.
+    /// sentences — the mode half under `send`, the model half under `admin`.
     #[test]
     fn the_mcp_door_denies_with_the_policy_own_sentences() {
         use crate::provider_catalog::*;
@@ -1488,19 +1697,24 @@ pub(crate) mod tests {
             );
             // The move tool, both halves: without `send` the mode half fires
             // first; with `send` the mode half allows and the model half —
-            // denied to every peer, whatever it holds — refuses instead.
+            // which needs `admin` — refuses instead.
             assert_eq!(
                 mcp_tool_denial(role, &none, MCP_SET_AGENT_PROFILE_TOOL),
                 Some(CAP_SEND)
             );
             assert_eq!(
                 mcp_tool_denial(role, &caps(&[CAP_SEND]), MCP_SET_AGENT_PROFILE_TOOL),
-                Some("session.set_model")
+                Some(CAP_ADMIN)
             );
             assert_eq!(
                 mcp_tool_denial(role, &all_caps(), MCP_SET_AGENT_PROFILE_TOOL),
-                Some("session.set_model"),
-                "{role:?} holding everything is still refused the model half"
+                None,
+                "{role:?} holding every capability, `admin` included, applies the whole profile"
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &operational_caps(), MCP_SET_AGENT_PROFILE_TOOL),
+                Some(CAP_ADMIN),
+                "{role:?} holding every act-named capability is still refused the model half"
             );
             // An unserved name is not the door's refusal: the broker's own
             // `Unknown tool` arm answers it without touching anything.
@@ -1522,36 +1736,62 @@ pub(crate) mod tests {
         );
     }
 
-    /// A row for an act no capability names: refused to every set, and the
-    /// refusal says why.
-    fn always(reason: &'static str) -> (PeerDecision, PeerDecision) {
-        (PeerDecision::Deny(reason), PeerDecision::Deny(reason))
+    /// A row for one of the three permission-model acts: refused to every set,
+    /// the whole wire table included, and the refusal says why.
+    fn local(reason: &'static str) -> (PeerDecision, PeerDecision, PeerDecision) {
+        (
+            PeerDecision::Deny(reason),
+            PeerDecision::Deny(reason),
+            PeerDecision::Deny(reason),
+        )
     }
 
-    /// A row for an act one capability opens: refused without it, allowed with
-    /// every capability held.
-    fn under(capability: &'static str) -> (PeerDecision, PeerDecision) {
-        (PeerDecision::Deny(capability), PeerDecision::Allow)
+    /// A row for an act one **operational** capability opens: refused without
+    /// any capability, open to the act-named five, open to everything.
+    fn under(capability: &'static str) -> (PeerDecision, PeerDecision, PeerDecision) {
+        (
+            PeerDecision::Deny(capability),
+            PeerDecision::Allow,
+            PeerDecision::Allow,
+        )
     }
 
-    /// §8b A9/A11/A12 as a table: one row per `ClientMessage` variant, holding
-    /// the decision a peer with **no** capability gets and the decision a peer
-    /// with **all five** gets.
+    /// A row for an act the **administrative** capability opens — the whole
+    /// remainder of this device's surface. Refused without it, with the name of
+    /// the capability that would open it; open with it, whether or not the
+    /// act-named five are held.
+    fn administrative() -> (PeerDecision, PeerDecision, PeerDecision) {
+        (
+            PeerDecision::Deny(CAP_ADMIN),
+            PeerDecision::Deny(CAP_ADMIN),
+            PeerDecision::Allow,
+        )
+    }
+
+    /// §8b A9/A11/A12 plus the 2026-09-21 parity decision, as a table: one row
+    /// per `ClientMessage` variant, holding the decision a peer gets with **no**
+    /// capability, with the five **operational** capabilities, and with **all
+    /// six**.
+    ///
+    /// The middle column is the negative control and the old world: it is what a
+    /// device may do once it holds every act-named capability, and it still
+    /// refuses both the administrative surface and the permission model. The
+    /// third column is the parity decision — everything but the permission model.
     ///
     /// Closed match with no `_` arm, exactly like `peer_allows` itself: a new
     /// variant does not compile until it has a row here. `VARIANT_COUNT` and
     /// `matrix_samples` below are the other half — they fail the test until the
     /// new variant also has a frame to assert the row on.
-    fn matrix_row(request: &ClientMessage) -> (PeerDecision, PeerDecision) {
+    fn matrix_row(request: &ClientMessage) -> (PeerDecision, PeerDecision, PeerDecision) {
         match request {
-            ClientMessage::Hello(_) | ClientMessage::Ping { .. } => (allow(), allow()),
+            ClientMessage::Hello(_) | ClientMessage::Ping { .. } => (allow(), allow(), allow()),
             ClientMessage::SessionsList { .. } | ClientMessage::DevicesList { .. } => {
                 under(CAP_VIEW)
             }
             // The peer roster is a read, but a disclosure of its own: it
-            // rides the roster capability, not `view` — every pairing holds
-            // `view`, and the roster is the pairing user's whole live
-            // surface.
+            // rides the roster capability, not `view` — `view` is the weakest
+            // grant a pairing can carry, and the roster is the pairing user's
+            // whole live surface.
             ClientMessage::PeerAgentsList { .. } => under(CAP_ROSTER),
             ClientMessage::SessionAttach { .. } => under(CAP_VIEW),
             ClientMessage::SessionCreate { .. } => under(CAP_CREATE_SESSIONS),
@@ -1567,51 +1807,51 @@ pub(crate) mod tests {
             // not allowed to send must not, or it writes bytes into a session
             // folder nothing on this machine can consume.
             ClientMessage::SessionDeposit { .. } => under(CAP_SEND),
-            // The read half of the deposit: refused to every set, like every
-            // other content read — a paired device must not read deposited
-            // bytes through any capability it holds.
-            ClientMessage::SessionAttachmentRead { .. } => always("attachment.read"),
+            // The read half of the deposit: a content read, so it rides the
+            // administrative capability — scope still decides which reference
+            // resolves.
+            ClientMessage::SessionAttachmentRead { .. } => administrative(),
             ClientMessage::SessionPermissionRespond { .. } => under(CAP_ANSWER_PERMISSIONS),
-            ClientMessage::Status { .. } => always("status"),
-            ClientMessage::DaemonDiagnostics { .. } => always("diagnostics"),
-            ClientMessage::Shutdown { .. } => always("shutdown"),
-            ClientMessage::SessionDetach { .. } => always("session.detach"),
-            ClientMessage::SessionClaim { .. } => always("session.claim"),
-            ClientMessage::SessionClose { .. } => always("session.close"),
-            ClientMessage::SessionStop { .. } => always("session.stop"),
-            ClientMessage::SessionResize { .. } => always("session.resize"),
-            ClientMessage::SessionInterrupt { .. } => always("session.interrupt"),
-            ClientMessage::SessionSetModel { .. } => always("session.set_model"),
-            ClientMessage::SessionReportAgent { .. } => always("session.report_agent"),
-            ClientMessage::SessionsWatch { .. } => always("sessions.watch"),
-            ClientMessage::SessionsUnwatch { .. } => always("sessions.unwatch"),
-            ClientMessage::SessionsPresence { .. } => always("sessions.presence"),
-            ClientMessage::SessionResume { .. } => always("session.resume"),
-            ClientMessage::SessionDelete { .. } => always("session.delete"),
-            ClientMessage::JournalUsage { .. } => always("journal.usage"),
-            ClientMessage::JournalRetentionGet { .. } => always("journal.retention.get"),
-            ClientMessage::JournalRetentionSet { .. } => always("journal.retention.set"),
-            ClientMessage::ProjectsList { .. } => always("projects.list"),
-            ClientMessage::ProjectAdd { .. } => always("project.add"),
-            ClientMessage::WorkspacesList { .. } => always("workspaces.list"),
-            ClientMessage::WorkspaceCreate { .. } => always("workspace.create"),
-            ClientMessage::WorkspaceDelete { .. } => always("workspace.delete"),
-            ClientMessage::ProvidersList { .. } => always("providers.list"),
-            ClientMessage::ProvidersRefresh { .. } => always("providers.refresh"),
-            ClientMessage::ProviderUpdate { .. } => always("provider.update"),
-            ClientMessage::Invoke { .. } => always("invoke"),
-            ClientMessage::PairingStart { .. } => always("pairing.start"),
-            ClientMessage::PairingComplete { .. } => always("pairing.complete"),
-            ClientMessage::PairingConfirm { .. } => always("pairing.confirm"),
-            ClientMessage::PeerRevoke { .. } => always("peer.revoke"),
-            ClientMessage::PeerSetCaps { .. } => always("peer.set_caps"),
-            ClientMessage::ToolPolicyGet { .. } => always("tool.policy.get"),
-            ClientMessage::ToolPolicySet { .. } => always("tool.policy.set"),
-            ClientMessage::AgentProfilesGet { .. } => always("agent.profiles.get"),
-            ClientMessage::AgentProfilesSet { .. } => always("agent.profiles.set"),
-            ClientMessage::ProviderVocabularyGet { .. } => always("provider.vocabulary.get"),
-            ClientMessage::DelegationGet { .. } => always("delegation.get"),
-            ClientMessage::DelegationSet { .. } => always("delegation.set"),
+            ClientMessage::Status { .. } => administrative(),
+            ClientMessage::DaemonDiagnostics { .. } => administrative(),
+            ClientMessage::Shutdown { .. } => administrative(),
+            ClientMessage::SessionDetach { .. } => administrative(),
+            ClientMessage::SessionClaim { .. } => administrative(),
+            ClientMessage::SessionClose { .. } => administrative(),
+            ClientMessage::SessionStop { .. } => administrative(),
+            ClientMessage::SessionResize { .. } => administrative(),
+            ClientMessage::SessionInterrupt { .. } => administrative(),
+            ClientMessage::SessionSetModel { .. } => administrative(),
+            ClientMessage::SessionReportAgent { .. } => administrative(),
+            ClientMessage::SessionsWatch { .. } => administrative(),
+            ClientMessage::SessionsUnwatch { .. } => administrative(),
+            ClientMessage::SessionsPresence { .. } => administrative(),
+            ClientMessage::SessionResume { .. } => administrative(),
+            ClientMessage::SessionDelete { .. } => administrative(),
+            ClientMessage::JournalUsage { .. } => administrative(),
+            ClientMessage::JournalRetentionGet { .. } => administrative(),
+            ClientMessage::JournalRetentionSet { .. } => administrative(),
+            ClientMessage::ProjectsList { .. } => administrative(),
+            ClientMessage::ProjectAdd { .. } => administrative(),
+            ClientMessage::WorkspacesList { .. } => administrative(),
+            ClientMessage::WorkspaceCreate { .. } => administrative(),
+            ClientMessage::WorkspaceDelete { .. } => administrative(),
+            ClientMessage::ProvidersList { .. } => administrative(),
+            ClientMessage::ProvidersRefresh { .. } => administrative(),
+            ClientMessage::ProviderUpdate { .. } => administrative(),
+            ClientMessage::Invoke { .. } => administrative(),
+            ClientMessage::PairingStart { .. } => local("pairing.start"),
+            ClientMessage::PairingComplete { .. } => local("pairing.complete"),
+            ClientMessage::PairingConfirm { .. } => local("pairing.confirm"),
+            ClientMessage::PeerRevoke { .. } => local("peer.revoke"),
+            ClientMessage::PeerSetCaps { .. } => local("peer.set_caps"),
+            ClientMessage::ToolPolicyGet { .. } => administrative(),
+            ClientMessage::ToolPolicySet { .. } => administrative(),
+            ClientMessage::AgentProfilesGet { .. } => administrative(),
+            ClientMessage::AgentProfilesSet { .. } => administrative(),
+            ClientMessage::ProviderVocabularyGet { .. } => administrative(),
+            ClientMessage::DelegationGet { .. } => administrative(),
+            ClientMessage::DelegationSet { .. } => administrative(),
         }
     }
 
@@ -1920,10 +2160,11 @@ pub(crate) mod tests {
         ]
     }
 
-    /// §8b A9/A11/A12 end to end: every frame, both roles, no capability and
-    /// every capability, against the table above. The table is closed by the
-    /// compiler and the frame list is pinned by `VARIANT_COUNT`, so a new
-    /// variant cannot arrive without a decision *and* a frame to check it on.
+    /// §8b A9/A11/A12 plus the parity decision, end to end: every frame, both
+    /// roles, no capability, the act-named five, and every capability, against
+    /// the table above. The table is closed by the compiler and the frame list
+    /// is pinned by `VARIANT_COUNT`, so a new variant cannot arrive without a
+    /// decision *and* a frame to check it on.
     #[test]
     fn the_capability_matrix_covers_every_client_frame() {
         let samples = matrix_samples();
@@ -1940,12 +2181,18 @@ pub(crate) mod tests {
                 sample.name(),
                 "the matrix arm must spell the wire name"
             );
-            let (without_caps, with_all) = matrix_row(sample);
+            let (without_caps, with_operational, with_all) = matrix_row(sample);
             for role in [PeerRole::Client, PeerRole::Daemon] {
                 assert_eq!(
                     peer_allows(role, &none, sample),
                     without_caps,
                     "{role} with no capability on {}",
+                    sample.name()
+                );
+                assert_eq!(
+                    peer_allows(role, &operational_caps(), sample),
+                    with_operational,
+                    "{role} with every act-named capability on {}",
                     sample.name()
                 );
                 assert_eq!(
@@ -1979,10 +2226,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_peer_may_not_read_a_deposited_attachment() {
-        // The read half of the deposit, refused like every other content
-        // read: no capability a pairing can hold opens deposited bytes to
-        // a paired device.
+    fn the_deposited_bytes_read_rides_the_administrative_capability() {
+        // The read half of the deposit: a *content* read, so it rides the
+        // administrative capability while only the list reads ride `view`. The
+        // negative control is the point — without `admin`, no combination of
+        // the act-named capabilities opens a paired device the bytes this
+        // machine stored.
         let read = || ClientMessage::SessionAttachmentRead {
             id: 1,
             reference: devboule_protocol::AttachmentReference {
@@ -1994,13 +2243,14 @@ pub(crate) mod tests {
         for role in [PeerRole::Client, PeerRole::Daemon] {
             assert_eq!(
                 peer_allows(role, &Vec::new(), &read()),
-                PeerDecision::Deny("attachment.read")
+                PeerDecision::Deny(CAP_ADMIN)
             );
             assert_eq!(
-                peer_allows(role, &all_caps(), &read()),
-                PeerDecision::Deny("attachment.read"),
-                "{role:?} holding everything is still refused the read"
+                peer_allows(role, &operational_caps(), &read()),
+                PeerDecision::Deny(CAP_ADMIN),
+                "{role:?} holding every act-named capability must not read deposited bytes"
             );
+            assert_eq!(peer_allows(role, &all_caps(), &read()), PeerDecision::Allow);
         }
     }
 
