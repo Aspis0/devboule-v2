@@ -262,7 +262,8 @@ fn wait_for_prompt(path: &std::path::Path) -> String {
 /// "continue from here" — this test dies); the context handed to the old row
 /// instead of the new one (a fresh session gets nothing, and the test's wait
 /// times out); the new session created without the old one's provider (the
-/// stub's prompt file never appears).
+/// stub's prompt file never appears); the idle-shutdown slot never taken (the
+/// live-session count is one, not two).
 #[test]
 fn a_resume_for_a_gone_directory_recovers_the_conversation_into_a_new_session() {
     let fixture = ResumeFixture::new("recover");
@@ -295,6 +296,11 @@ fn a_resume_for_a_gone_directory_recovers_the_conversation_into_a_new_session() 
     assert_ne!(
         session.id, id,
         "the old row is not reopened: the provider cannot reopen it"
+    );
+    assert_eq!(
+        fixture.state.live_session_count(),
+        2,
+        "the bystander and the recovered session: the daemon counts the child it is holding"
     );
     assert!(
         matches!(session.state, SessionState::Live { .. }),

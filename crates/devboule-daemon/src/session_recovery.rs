@@ -281,7 +281,21 @@ impl SessionRegistry {
             context_id: Some(record.context()),
             ..SessionCreateMeta::default()
         };
-        let session = self.create_with_provider_env(
+        // The replacement is a live daemon-owned session like any other, so it
+        // holds the idle-shutdown slot every create road takes: the wire create
+        // road takes one in `server::sessions` before it calls the registry, and
+        // an agent child's own road takes its own in
+        // `create_session_for_agent`. This road is the registry's, so nobody
+        // upstream has taken one for it — and a live child the daemon does not
+        // count is a daemon that can idle-exit under it. Taken here, after every
+        // refusal above, so a recovery that creates nothing leaves no slot.
+        if !state.session_started() {
+            return Err(WireError::new(
+                ErrorCode::ShuttingDown,
+                "daemon is shutting down",
+            ));
+        }
+        let session = match self.create_with_provider_env(
             state,
             owner,
             None,
@@ -292,7 +306,15 @@ impl SessionRegistry {
             &conn.conn_peer,
             env_provider.as_deref(),
             &meta,
-        )?;
+        ) {
+            Ok(session) => session,
+            // The slot goes back with the failure, the way the wire create road
+            // gives it back in its own `Err` arm.
+            Err(error) => {
+                state.session_finished();
+                return Err(error);
+            }
+        };
         let runtime = self.runtime_for_user(&session.id, owner, conn)?;
         // The notice comes first: the human is looking at the new session's
         // transcript, and the one thing it must say before anything else is
