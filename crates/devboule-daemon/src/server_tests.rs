@@ -3921,6 +3921,73 @@ fn the_capability_set_of_a_device_comes_from_its_row_and_fails_closed() {
     let _ = std::fs::remove_dir_all(path);
 }
 
+/// The panel narrows a device by sending `PeerSetCaps` over the local pipe,
+/// and the role a device was paired as must not stand in the way: `validate_caps`
+/// refuses to strip `view` from a `Client` and says nothing about a `Daemon`, so
+/// a daemon peer can be left holding one act. What is asserted is the set the
+/// next connection will read (`peer_caps`), not the sentence in the reply.
+#[test]
+fn a_daemon_peer_narrowed_from_the_panel_is_stored_and_read_back() {
+    let (path, state) = temp_state("daemon-peer-narrowed");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    state
+        .peer_upsert(PeerRecord {
+            device_id: "dev-daemon".to_string(),
+            display_name: "Other devboule".to_string(),
+            role: "daemon".to_string(),
+            public_key: vec![9u8; 32],
+            paired_by_user: Some("S-user-a".to_string()),
+            binding_kind: "tailnet".to_string(),
+            binding_stable_id: Some("nstable".to_string()),
+            binding_node_name: Some("node".to_string()),
+            binding_login_name: Some("user@example.com".to_string()),
+            address: "100.64.0.3:47831".to_string(),
+            paired_at: 1,
+            revoked_at: None,
+            caps: devboule_protocol::PEER_DEFAULT_CAPS
+                .iter()
+                .map(|cap| cap.to_string())
+                .collect(),
+        })
+        .expect("store a daemon peer");
+
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::PeerSetCaps {
+            id: 4,
+            device_id: "dev-daemon".to_string(),
+            caps: vec![crate::peer_policy::CAP_VIEW.to_string()],
+        },
+        &ConnHandle::new(9),
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("immediate dispatch reply");
+
+    match reply {
+        DaemonMessage::PeerUpdated { id, peer } => {
+            assert_eq!(id, 4);
+            assert_eq!(peer.role, PeerRole::Daemon);
+            assert_eq!(
+                peer.caps,
+                vec![crate::peer_policy::CAP_VIEW.to_string()],
+                "the panel keeps the set the daemon answered with"
+            );
+        }
+        other => panic!("PeerSetCaps must answer PeerUpdated, got {other:?}"),
+    }
+    assert_eq!(
+        state.peer_caps("dev-daemon"),
+        vec![crate::peer_policy::CAP_VIEW.to_string()],
+        "the next connection reads the narrowed set, not the one it was paired with"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
 /// S7 after the scope correction: the attachment counter is the peer's
 /// deposit branch, so until it lands a send from a paired device that
 /// carries an attachment is refused — before any decode, and the store
