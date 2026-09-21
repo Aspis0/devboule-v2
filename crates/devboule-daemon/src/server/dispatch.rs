@@ -198,7 +198,9 @@ pub(super) fn dispatch_immediate(
             agent_profiles_set(state, id, document, passed)
         }
         ClientMessage::DelegationGet { id } => delegation_get(state, id, passed),
-        ClientMessage::DelegationSet { id, enabled } => delegation_set(state, id, enabled, passed),
+        ClientMessage::DelegationSet { id, enabled } => {
+            delegation_set(state, id, enabled, passed, conn)
+        }
         ClientMessage::ProviderVocabularyGet {
             id,
             provider,

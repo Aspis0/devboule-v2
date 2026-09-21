@@ -909,8 +909,10 @@ impl ServerState {
                 ring_dropped_frames: output_metrics.coalesced_frames,
                 journal_error,
                 journal_stats: self.sessions.journal_stats().map(Box::new),
-                // The selector, never the key. A peer is denied `Status`
-                // precisely because this body is local-only (muse M7).
+                // The selector, never the key. The body is part of the app's
+                // own status surface: a peer reads it only with the
+                // administrative capability, and the key is not in this struct
+                // at all.
                 secret_store: Some(self.secret_store().1.to_string()),
                 remote: Some(Box::new(self.remote_state())),
             },

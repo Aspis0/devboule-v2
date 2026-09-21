@@ -319,13 +319,14 @@ pub const MCP_ACTIVITY_TOOL: &str = "devboule_agent_activity";
 /// Served to every MCP-capable provider, subject to the provider tool policy
 /// like `devboule_send_message`: a stored policy may take supervision away,
 /// and taking it away is the safe direction. The act is destructive, so the
-/// tool is local-only by construction: the peer door judges it as the wire's
-/// `SessionStop`, which no capability names.
+/// peer door judges it as the wire's `SessionStop`, which rides the
+/// administrative capability — a device the owner granted the whole surface
+/// reaches it, one without is refused.
 pub const MCP_STOP_AGENT_TOOL: &str = "devboule_stop_agent";
 /// The close tool: a creator ends one of its own live children — the live
 /// session goes away, the transcript stays in history. Same policy subject
-/// and same local-only construction as [`MCP_STOP_AGENT_TOOL`], judged as
-/// the wire's `SessionClose`.
+/// and same construction as [`MCP_STOP_AGENT_TOOL`], judged as
+/// the wire's `SessionClose`: the administrative capability is what opens it.
 pub const MCP_CLOSE_AGENT_TOOL: &str = "devboule_close_agent";
 /// The read-only profile-list tool (`create-from-profile`).
 ///
@@ -340,13 +341,15 @@ pub const MCP_LIST_PROFILES_TOOL: &str = "devboule_list_profiles";
 /// The three project-graph tools: the code-knowledge graph the indexer writes
 /// for the calling session's own workspace, read-only.
 ///
-/// Local by construction. The graph is derived from the files of a workspace,
-/// and a local agent already reads those files (its cwd is that workspace), so
-/// the tools hand it no reach it did not have; a paired device's agent does not
-/// read this machine's files, so the same read would disclose the project's
-/// structure over the wire. The door judges them as the wire's workspace
-/// inventory read, which no capability names - see `peer_policy::mcp_tool_wire`.
-/// The workspace comes from the caller's session row, never from an argument.
+/// The graph is derived from the files of a workspace, and a local agent
+/// already reads those files (its cwd is that workspace), so the tools hand it
+/// no reach it did not have; a paired device's agent does not read this
+/// machine's files, so the same read discloses the project's structure over the
+/// wire — which is why the door judges them as the wire's workspace inventory
+/// read, and why that read must be the administrative capability and not
+/// `view`: the graph discloses more per workspace than the inventory does, not
+/// less - see `peer_policy::mcp_tool_wire`. The workspace comes from the
+/// caller's session row, never from an argument.
 pub const MCP_NEIGHBORHOOD_TOOL: &str = "devboule_project_neighborhood";
 /// Which files one file imports, from the same workspace graph.
 pub const MCP_IMPORTS_TOOL: &str = "devboule_project_imports";

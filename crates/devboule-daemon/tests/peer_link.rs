@@ -9,7 +9,8 @@
 //! The test drives two separate daemon processes over their named pipes for
 //! control (pairing, device lists, revocation), and acts as a **peer** itself
 //! over Noise for the assertions that only exist on the peer path: the
-//! `Daemon`-role projection, the capability refusals, the audit rows, and the
+//! `Daemon`-role projection, what the grant opens and what narrowing it
+//! closes, the audit rows, and the
 //! revocation drop. Acting as the peer means reading daemon B's long-term
 //! static key out of its own file secret store, which is exactly what a real
 //! peer holds.
@@ -454,7 +455,7 @@ fn assert_absent_or_empty(json: &serde_json::Value, key: &str, context: &str) {
 }
 
 #[test]
-fn two_daemons_pair_over_the_tailnet_and_a_peer_is_restricted() {
+fn two_daemons_pair_over_the_tailnet_and_the_grant_decides_what_the_peer_reaches() {
     let _guard = lock_tests();
 
     // Two ports nobody is using, rather than the defaults: the developer's own
@@ -592,28 +593,6 @@ fn two_daemons_pair_over_the_tailnet_and_a_peer_is_restricted() {
         "20 allowed pings must not write an audit row: {rows:?}"
     );
 
-    // ---- Status and Shutdown are refused, each with one denied audit row ---
-    for request in [
-        ClientMessage::Status { id: 100 },
-        ClientMessage::Shutdown { id: 101 },
-    ] {
-        let name = request.name().to_string();
-        match peer.request(request) {
-            Ok(DaemonMessage::Error(error)) => assert_eq!(
-                error.code,
-                ErrorCode::CapabilityNotSupported,
-                "{name} must be refused"
-            ),
-            other => panic!("expected CapabilityNotSupported for {name}, got {other:?}"),
-        }
-        let rows = a.audit_rows();
-        assert!(
-            rows.iter()
-                .any(|(action, outcome)| action == &name && outcome == "denied"),
-            "{name} must leave one denied audit row: {rows:?}"
-        );
-    }
-
     // ---- the Client-role device list withholds the pairing user's SID ------
     match peer.request(ClientMessage::DevicesList { id: 200 }) {
         Ok(DaemonMessage::Devices {
@@ -637,6 +616,102 @@ fn two_daemons_pair_over_the_tailnet_and_a_peer_is_restricted() {
             }
         }
         other => panic!("expected Devices, got {other:?}"),
+    }
+
+    // ---- a paired device is a full client: the status body is served --------
+    //
+    // The row a pairing writes holds every capability (`PEER_DEFAULT_CAPS`,
+    // the owner's decision of 2026-09-21), so the daemon's own status body —
+    // pid, instance, counts, the secret-store selector — reaches the device
+    // that just paired. The pid is compared with what the local pipe reads,
+    // which is what makes this the daemon's own body and not a projection. It
+    // is a read, so it writes no audit row: the same rule the twenty pings
+    // above follow.
+    let local_pid = match a.pipe.expect(ClientMessage::Status { id: a.pipe.id() }) {
+        DaemonMessage::Status { body, .. } => body.pid,
+        other => panic!("the local pipe reads the daemon's status body, got {other:?}"),
+    };
+    match peer.request(ClientMessage::Status { id: 100 }) {
+        Ok(DaemonMessage::Status { id: 100, body }) => {
+            assert_eq!(
+                body.pid, local_pid,
+                "the peer reads the daemon's own status body, not a projection"
+            );
+            assert!(
+                body.secret_store.is_some(),
+                "the whole body, selector included: {body:?}"
+            );
+        }
+        other => panic!("a freshly paired device must be served Status, got {other:?}"),
+    }
+    let rows = a.audit_rows();
+    assert!(
+        !rows.iter().any(|(action, _)| action == "Status"),
+        "an allowed read must not write an audit row: {rows:?}"
+    );
+
+    // ---- narrowing the grant takes it away, over the wire ------------------
+    //
+    // The capability set is read from the `peers` row when a connection is
+    // established (`server/connection.rs`), so the owner's change applies to the
+    // next connection. It also drops the live one, on that connection's own next
+    // turn: a device must not keep a capability the row no longer grants
+    // (`server/devices.rs`, `revoke_peer_connections`).
+    let id = a.pipe.id();
+    match a.pipe.expect(ClientMessage::PeerSetCaps {
+        id,
+        device_id: b_self.device_id.clone(),
+        caps: vec!["view".to_string()],
+    }) {
+        DaemonMessage::PeerUpdated { peer, .. } => {
+            assert_eq!(
+                peer.caps,
+                vec!["view".to_string()],
+                "the row keeps the narrowing"
+            )
+        }
+        other => panic!("expected PeerUpdated on set_caps, got {other:?}"),
+    }
+    assert!(
+        peer.request(ClientMessage::Ping { id: 120 }).is_err(),
+        "the live connection must not outlive the capability it was opened with"
+    );
+
+    // ---- and a device without `admin` is refused the same frames as before --
+    //
+    // The negative control the parity decision has to keep, on the connection
+    // that reads the narrowed row: the administrative surface is refused with
+    // the capability's own name, and each refusal leaves one denied audit row.
+    let narrowed = NoisePeer::connect(&address_a, &b.static_private())
+        .expect("the narrowed peer completes the Noise handshake");
+    narrowed
+        .hello()
+        .expect("the hello inside Noise is accepted");
+    for request in [
+        ClientMessage::Status { id: 101 },
+        ClientMessage::Shutdown { id: 102 },
+    ] {
+        let name = request.name().to_string();
+        match narrowed.request(request) {
+            Ok(DaemonMessage::Error(error)) => {
+                assert_eq!(
+                    error.code,
+                    ErrorCode::CapabilityNotSupported,
+                    "{name} must be refused without `admin`"
+                );
+                assert_eq!(
+                    error.message, "capability 'admin' was not negotiated",
+                    "the refusal names the capability the device lacks"
+                );
+            }
+            other => panic!("expected CapabilityNotSupported for {name}, got {other:?}"),
+        }
+        let rows = a.audit_rows();
+        assert!(
+            rows.iter()
+                .any(|(action, outcome)| action == &name && outcome == "denied"),
+            "{name} must leave one denied audit row: {rows:?}"
+        );
     }
 
     // ---- a plaintext connection is closed, not answered --------------------
@@ -678,11 +753,12 @@ fn two_daemons_pair_over_the_tailnet_and_a_peer_is_restricted() {
             .any(|(device, _, revoked)| device == &b_self.device_id && revoked.is_some()),
         "A's row for B is revoked"
     );
-    let after = peer.request(ClientMessage::Ping { id: 999 });
+    let after = narrowed.request(ClientMessage::Ping { id: 999 });
     assert!(
         after.is_err(),
         "a revoked peer's connection must be closed, got {after:?}"
     );
+    drop(narrowed);
     drop(peer);
     let refused = match NoisePeer::connect(&address_a, &b.static_private()) {
         Err(_) => true,

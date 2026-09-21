@@ -1340,7 +1340,7 @@ fn peers_round_trip_revoke_and_caps() {
     assert_eq!(journal.peers_list().expect("list").len(), 1);
     let loaded = journal.peer_get("dev-1").expect("get").expect("row");
     assert_eq!(loaded.role, "daemon");
-    assert_eq!(loaded.caps, vec!["view".to_string()]);
+    assert_eq!(loaded.caps, devboule_protocol::PEER_DEFAULT_CAPS.to_vec());
     assert!(loaded.owns_address(&"100.74.116.126".parse().expect("ip")));
     assert!(!loaded.owns_address(&"100.74.116.127".parse().expect("ip")));
 

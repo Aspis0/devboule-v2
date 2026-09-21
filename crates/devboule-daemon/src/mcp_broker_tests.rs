@@ -2534,9 +2534,10 @@ fn a_caller_with_an_unknown_origin_is_refused_hard() {
 }
 
 /// A peer-origin caller is refused the profile move with the policy's own
-/// model sentence — even holding every capability — and the child is
-/// untouched: the door returns before the move's checks run, so no mode
-/// ask lands, no model ask lands, and no profile change is recorded.
+/// model sentence — it holds every act-named capability and no `admin`, which
+/// is the capability that sentence names — and the child is untouched: the door
+/// returns before the move's checks run, so no mode ask lands, no model ask
+/// lands, and no profile change is recorded.
 #[test]
 fn a_peer_caller_is_refused_the_model_half_with_the_policy_sentence() {
     let state = ServerState::new("mcp-p0-peer-model".to_string());
@@ -2597,7 +2598,7 @@ fn a_peer_caller_is_refused_the_model_half_with_the_policy_sentence() {
     assert_eq!(body.pointer("/error/code"), Some(&json!(-32601)));
     assert_eq!(
         body.pointer("/error/message"),
-        Some(&json!("capability 'session.set_model' was not negotiated")),
+        Some(&json!("capability 'admin' was not negotiated")),
         "the policy's own sentence: {body}"
     );
     drop(guard);

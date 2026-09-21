@@ -108,6 +108,7 @@ pub(super) fn delegation_set(
     id: u64,
     enabled: bool,
     _passed: &GatePassed,
+    conn: &Arc<ConnHandle>,
 ) -> DaemonMessage {
     // The reply carries what the daemon stored, not an echo of the
     // request (`NOTE-a-write-that-does-not-say-what-it-stored.md`),
@@ -117,19 +118,25 @@ pub(super) fn delegation_set(
     // hides the control that stops delegation.
     match state.delegation.set(enabled) {
         Ok((enabled, source)) => {
-            // The setting change is an audited act (§4.3): the actor
-            // here is always the person at this machine — the peer
-            // gate refuses the pair before this arm ever runs — and
-            // the row names the act, not the value.
-            if let Ok(identity) = state.device_identity() {
-                state.audit(AuditRecord {
-                    device_id: identity.device_id.clone(),
-                    role: "local".to_string(),
-                    claimed_origin: None,
-                    action: "DelegationSet".to_string(),
-                    session_id: None,
-                    outcome: "ok".to_string(),
-                });
+            // The setting change is an audited act (§4.3): the row names the
+            // actor the connection proves. A local pipe writes the local row —
+            // the person at this machine — while a paired device's write is
+            // recorded by the peer gate's own row, under that device's id and
+            // role; writing "local" here for it would be a false trail. The
+            // arm became reachable by a peer holding the administrative
+            // capability on 2026-09-21, which is when this condition stopped
+            // being decoration.
+            if crate::session::session_origin_for(&conn.conn_peer).is_local() {
+                if let Ok(identity) = state.device_identity() {
+                    state.audit(AuditRecord {
+                        device_id: identity.device_id.clone(),
+                        role: "local".to_string(),
+                        claimed_origin: None,
+                        action: "DelegationSet".to_string(),
+                        session_id: None,
+                        outcome: "ok".to_string(),
+                    });
+                }
             }
             state.broadcast_delegation(enabled, source);
             // The delegation facts ride the roster snapshot rows: the

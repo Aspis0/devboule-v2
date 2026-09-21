@@ -16,6 +16,16 @@ fn tmp_paths() -> (PathBuf, crate::paths::RuntimePaths) {
     (dir.clone(), crate::paths::RuntimePaths::from_dir(&dir))
 }
 
+/// The grant a new pairing is born with: the whole wire set, read from the
+/// protocol crate so a rename follows (`PEER_DEFAULT_CAPS`), which since the
+/// 2026-09-21 parity decision is the same list as `PEER_CAPS`.
+fn new_pairing_caps() -> Vec<String> {
+    devboule_protocol::PEER_DEFAULT_CAPS
+        .iter()
+        .map(|cap| (*cap).to_string())
+        .collect()
+}
+
 fn server(tag: &str) -> (PathBuf, Arc<ServerState>) {
     let (dir, paths) = tmp_paths();
     let server =
@@ -124,7 +134,7 @@ fn a_client_pairing_completes_and_writes_both_rows() {
     assert_eq!(row.device_id, initiator_id);
     assert_eq!(row.role, PeerRole::Client);
     assert!(row.revoked_at.is_none());
-    assert_eq!(row.caps, vec!["view".to_string()]);
+    assert_eq!(row.caps, new_pairing_caps());
 
     join_bounded(responder, "the responder's pairing thread");
 
@@ -147,7 +157,7 @@ fn a_client_pairing_completes_and_writes_both_rows() {
     // `peers()` hands back the stored record, whose role is the wire
     // string, not the enum.
     assert_eq!(a_row.role, "client");
-    assert_eq!(a_row.caps, vec!["view".to_string()]);
+    assert_eq!(a_row.caps, new_pairing_caps());
     assert!(a_row.revoked_at.is_none());
 
     drop(server_a);
@@ -880,6 +890,17 @@ fn caps_are_validated_against_the_closed_set() {
         validate_caps(PeerRole::Daemon, &["send".to_string()]).is_ok(),
         "only the client role is required to keep 'view'"
     );
+    assert!(
+        validate_caps(
+            PeerRole::Client,
+            &[
+                "view".to_string(),
+                crate::peer_policy::CAP_ADMIN.to_string()
+            ]
+        )
+        .is_ok(),
+        "the administrative capability is a name this validator accepts"
+    );
 }
 
 #[test]
@@ -896,7 +917,7 @@ fn a_local_peer_record_carries_this_device_as_the_pairer() {
     )
     .expect("record");
     assert_eq!(record.role, "client");
-    assert_eq!(record.caps, vec!["view".to_string()]);
+    assert_eq!(record.caps, new_pairing_caps());
     assert_eq!(record.paired_by_user, server.local_user_sid());
     assert!(record.revoked_at.is_none());
     assert_eq!(record.binding_stable_id.as_deref(), Some("npeer"));
@@ -1005,7 +1026,7 @@ fn a_pending_pairing_is_answered_by_confirm_and_writes_the_row_only_when_accepte
     };
     assert_eq!(row.role, PeerRole::Client);
     assert_eq!(row.display_name, "Phone");
-    assert_eq!(row.caps, vec!["view".to_string()]);
+    assert_eq!(row.caps, new_pairing_caps());
     assert_eq!(row.key_fingerprint.len(), 32);
     assert!(wait.recv_timeout(Duration::from_secs(1)).expect("decision"));
     assert!(service.pending_snapshot().is_empty());

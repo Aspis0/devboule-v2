@@ -240,6 +240,21 @@ fn audit_sessions(path: &std::path::Path) -> Vec<Option<String>> {
         .expect("rows")
 }
 
+/// The actor each audit row names, in insertion order: `(device_id, role)`.
+fn audit_actors(path: &std::path::Path) -> Vec<(String, String)> {
+    let connection = rusqlite::Connection::open(path.join("journal.db")).expect("journal");
+    let mut statement = connection
+        .prepare("SELECT device_id, role FROM audit ORDER BY id")
+        .expect("prepare");
+    statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("rows")
+}
+
 fn wire_attachment(name: &str, bytes: &[u8]) -> PromptAttachment {
     use base64::Engine;
     PromptAttachment {
@@ -926,58 +941,74 @@ fn a_refused_agent_profiles_set_is_an_invalid_request_not_an_io_failure() {
     let _ = std::fs::remove_dir_all(runtime_dir);
 }
 
-/// The brief's first of the two refusals, at the dispatch layer: a paired
-/// device holding **every** capability still gets neither half, and the
-/// refusal is the capability error the app already renders.
+/// The agent-profile store at the dispatch layer, in the two halves the parity
+/// decision is made of. The negative control first: a paired device holding
+/// every act-named capability and no `admin` is refused both frames, with the
+/// capability error that now names `admin` — the sentence changed with the
+/// rule, and pinning it is what keeps a peer's refusal actionable. Then the
+/// parity: the same frames from a device that holds `admin` are served.
 #[test]
-fn both_agent_profile_frames_are_refused_for_a_peer_connection() {
+fn both_agent_profile_frames_ride_the_administrative_capability() {
     let state = ServerState::new("agent-profiles-peer".to_string());
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let all_caps = ["view", "send", "answer_permissions", "create_sessions"];
-    let conn = remote_conn_with_caps(PeerRole::Client, None, &all_caps);
+    let operational = ["view", "send", "answer_permissions", "create_sessions"];
+    let conn = remote_conn_with_caps(PeerRole::Client, None, &operational);
 
-    for (label, request) in [
-        (
-            "agent.profiles.get",
-            ClientMessage::AgentProfilesGet { id: 41 },
-        ),
-        (
-            "agent.profiles.set",
-            ClientMessage::AgentProfilesSet {
-                id: 42,
-                document: devboule_protocol::AgentProfilesDocument::default(),
-            },
-        ),
+    for request in [
+        ClientMessage::AgentProfilesGet { id: 41 },
+        ClientMessage::AgentProfilesSet {
+            id: 42,
+            document: devboule_protocol::AgentProfilesDocument::default(),
+        },
     ] {
         let reply = dispatch(&state, &owner, request, &conn, true, true, true, true)
             .expect("dispatch reply");
         let DaemonMessage::Error(error) = reply else {
-            panic!("a peer's profile frame must be refused, got {reply:?}");
+            panic!("a peer without `admin` must be refused, got {reply:?}");
         };
         assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
         assert_eq!(
-            error.message,
-            format!("capability '{label}' was not negotiated"),
-            "the refusal names the rule that fired"
+            error.message, "capability 'admin' was not negotiated",
+            "the refusal names the capability that would open the arm"
         );
     }
 
-    // The refusal is the gate and not the connection: the same frame from
-    // the local pipe is served.
-    let local = ConnHandle::new(26);
+    // The parity half, through the same gate: the administrative capability is
+    // what the arm needs, and the wire answer is the handler's own.
+    let mut admin = operational.to_vec();
+    admin.push(crate::peer_policy::CAP_ADMIN);
+    let conn = remote_conn_with_caps(PeerRole::Client, None, &admin);
     let reply = dispatch(
         &state,
         &owner,
         ClientMessage::AgentProfilesGet { id: 43 },
-        &local,
-        false,
-        false,
-        false,
-        false,
+        &conn,
+        true,
+        true,
+        true,
+        true,
     )
-    .expect("local reply");
+    .expect("dispatch reply");
     assert!(
         matches!(reply, DaemonMessage::AgentProfiles { id: 43, .. }),
+        "got {reply:?}"
+    );
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::AgentProfilesSet {
+            id: 44,
+            document: devboule_protocol::AgentProfilesDocument::default(),
+        },
+        &conn,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("dispatch reply");
+    assert!(
+        matches!(reply, DaemonMessage::AgentProfilesSetOk { id: 44 }),
         "got {reply:?}"
     );
 
@@ -1123,55 +1154,163 @@ fn delegation_get_and_set_round_trip_and_push_the_stored_value() {
 }
 
 /// The delegation pair is refused to a paired device holding **every**
-/// capability, with the refusal naming `permission_delegation` — the
-/// switch is this machine's own authority setting, both halves of it.
+/// act-named capability — the negative control — and is served to one holding
+/// the administrative capability, through the same gate. The refusal sentence
+/// is the capability error the app already renders, naming `admin`.
 #[test]
-fn both_delegation_frames_are_refused_for_a_peer_connection() {
+fn both_delegation_frames_ride_the_administrative_capability() {
     let state = ServerState::new("delegation-peer".to_string());
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let all_caps = ["view", "send", "answer_permissions", "create_sessions"];
-    let conn = remote_conn_with_caps(PeerRole::Client, None, &all_caps);
+    let operational = ["view", "send", "answer_permissions", "create_sessions"];
+    let conn = remote_conn_with_caps(PeerRole::Client, None, &operational);
 
-    for (label, request) in [
-        ("delegation.get", ClientMessage::DelegationGet { id: 41 }),
-        (
-            "delegation.set",
-            ClientMessage::DelegationSet {
-                id: 42,
-                enabled: true,
-            },
-        ),
+    for request in [
+        ClientMessage::DelegationGet { id: 41 },
+        ClientMessage::DelegationSet {
+            id: 42,
+            enabled: true,
+        },
     ] {
         let reply = dispatch(&state, &owner, request, &conn, true, true, true, true)
             .expect("dispatch reply");
         let DaemonMessage::Error(error) = reply else {
-            panic!("a peer's delegation frame must be refused, got {reply:?}");
+            panic!("a peer without `admin` must be refused, got {reply:?}");
         };
         assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
         assert_eq!(
-            error.message,
-            format!("capability '{label}' was not negotiated"),
-            "the refusal names the rule that fired"
+            error.message, "capability 'admin' was not negotiated",
+            "the refusal names the capability that would open the arm"
         );
     }
+
+    // The parity half: with `admin`, the switch is read and written like any
+    // other setting — and the write is audited under the peer's own identity by
+    // the gate, never as a local act (`stores.rs::delegation_set`).
+    let mut admin = operational.to_vec();
+    admin.push(crate::peer_policy::CAP_ADMIN);
+    let conn = remote_conn_with_caps(PeerRole::Client, None, &admin);
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::DelegationGet { id: 43 },
+        &conn,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("dispatch reply");
+    assert!(
+        matches!(reply, DaemonMessage::DelegationState { id: 43, .. }),
+        "got {reply:?}"
+    );
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::DelegationSet {
+            id: 44,
+            enabled: true,
+        },
+        &conn,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("dispatch reply");
+    assert!(
+        matches!(reply, DaemonMessage::DelegationSetOk { id: 44, .. }),
+        "got {reply:?}"
+    );
 
     let runtime_dir = state.sessions.runtime_dir().to_path_buf();
     drop(state);
     let _ = std::fs::remove_dir_all(runtime_dir);
 }
 
-/// The vocabulary query is the profile store's companion read and is
-/// refused on the same terms: a paired device holding **every**
-/// capability still gets refused, and the refusal is the capability
-/// error the app already renders. The handshake capability that
-/// advertises the query to the app is deliberately not a peer
-/// capability, so no capability set can open this arm.
+/// The parity decision put `DelegationSet` inside a paired device's reach, and
+/// that made the row `stores.rs` wrote false: it claimed the actor was "the
+/// person at this machine" because the gate used to refuse the arm before the
+/// handler ran. The trail now says what the connection proves — a local write
+/// writes the local row, a peer's write carries the peer's device id and role,
+/// and the peer's write is **not** double-written as a local act.
 #[test]
-fn a_vocabulary_request_is_refused_for_a_peer_connection() {
+fn a_peers_delegation_write_is_audited_under_the_peers_identity() {
+    let (path, state) = temp_state("delegation-audit");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+
+    let local = ConnHandle::new(31);
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::DelegationSet {
+            id: 1,
+            enabled: false,
+        },
+        &local,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("dispatch reply");
+    assert!(
+        matches!(reply, DaemonMessage::DelegationSetOk { id: 1, .. }),
+        "got {reply:?}"
+    );
+
+    let peer = remote_conn_with_caps(
+        PeerRole::Client,
+        Some("S-user-a"),
+        &[crate::peer_policy::CAP_VIEW, crate::peer_policy::CAP_ADMIN],
+    );
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::DelegationSet {
+            id: 2,
+            enabled: true,
+        },
+        &peer,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("dispatch reply");
+    assert!(
+        matches!(reply, DaemonMessage::DelegationSetOk { id: 2, .. }),
+        "got {reply:?}"
+    );
+
+    let actors = audit_actors(&path);
+    assert_eq!(
+        actors.len(),
+        2,
+        "one row per write: the peer's is the gate's, not a second local one: {actors:?}"
+    );
+    assert_eq!(actors[0].1, "local", "the local write is the local row");
+    assert_eq!(
+        actors[1],
+        ("dev-peer-1".to_string(), "client".to_string()),
+        "the peer's write carries the peer's own device id and role"
+    );
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
+
+/// The vocabulary query is the profile store's companion read: refused to a
+/// paired device holding **every** act-named capability — the negative control
+/// — and served to one holding the administrative capability, through the same
+/// gate. The handshake capability that advertises the query to the app is a
+/// frame-compatibility name, a different mechanism from the peer capability set.
+#[test]
+fn a_vocabulary_request_rides_the_administrative_capability() {
     let state = ServerState::new("vocabulary-peer".to_string());
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let all_caps = ["view", "send", "answer_permissions", "create_sessions"];
-    let conn = remote_conn_with_caps(PeerRole::Client, None, &all_caps);
+    let operational = ["view", "send", "answer_permissions", "create_sessions"];
+    let conn = remote_conn_with_caps(PeerRole::Client, None, &operational);
 
     let reply = dispatch(
         &state,
@@ -1189,17 +1328,19 @@ fn a_vocabulary_request_is_refused_for_a_peer_connection() {
     )
     .expect("dispatch reply");
     let DaemonMessage::Error(error) = reply else {
-        panic!("a peer's vocabulary request must be refused, got {reply:?}");
+        panic!("a peer without `admin` must be refused, got {reply:?}");
     };
     assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
     assert_eq!(
-        error.message, "capability 'provider.vocabulary.get' was not negotiated",
-        "the refusal names the rule that fired"
+        error.message, "capability 'admin' was not negotiated",
+        "the refusal names the capability that would open the arm"
     );
 
-    // The refusal is the gate and not the connection: the same frame from
-    // the local pipe is served.
-    let local = ConnHandle::new(27);
+    // The parity half: with `admin`, the same frame reaches the same handler the
+    // local pipe reaches.
+    let mut admin = operational.to_vec();
+    admin.push(crate::peer_policy::CAP_ADMIN);
+    let conn = remote_conn_with_caps(PeerRole::Client, None, &admin);
     let reply = dispatch(
         &state,
         &owner,
@@ -1208,13 +1349,13 @@ fn a_vocabulary_request_is_refused_for_a_peer_connection() {
             provider: "claude".to_string(),
             refresh: false,
         },
-        &local,
-        false,
-        false,
-        false,
-        false,
+        &conn,
+        true,
+        true,
+        true,
+        true,
     )
-    .expect("local reply");
+    .expect("dispatch reply");
     assert!(
         matches!(reply, DaemonMessage::ProviderVocabulary { id: 52, .. }),
         "got {reply:?}"
@@ -4359,32 +4500,31 @@ fn a_local_deposit_answers_a_reference_and_a_refusal_echoes_nothing() {
     let _ = std::fs::remove_dir_all(path);
 }
 
-/// The read half of the deposit, refused like every other content read: a
-/// paired device holds no capability that opens deposited bytes — not even
-/// all of them at once. The audit rows below are the gate's, not the
-/// handler's: the gate refuses first, so the handler — and its ownership
-/// check — never runs for a peer. The control proves the same frame from
-/// the local pipe passes the gate and reaches the handler's own answer.
+/// The read half of the deposit at the gate, both directions, walked over both
+/// roles. A paired device holding every act-named capability and no `admin` is
+/// refused: the gate refuses first, so the handler — and its ownership check —
+/// never runs for it. The same device holding `admin` passes the gate and meets
+/// the handler's own answer, which for an absent session is `SessionNotFound` —
+/// the same answer the local pipe gets, and the last block proves that.
 #[test]
-fn a_peers_attachment_read_is_refused_at_the_gate() {
+fn a_peers_attachment_read_rides_the_administrative_capability() {
     let (path, state) = temp_state("peer-read-refused");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
     let read = |id: u64| ClientMessage::SessionAttachmentRead {
         id,
         reference: stored_reference("s.none.1", 'b'),
     };
+    let operational = [
+        crate::peer_policy::CAP_VIEW,
+        crate::peer_policy::CAP_SEND,
+        crate::peer_policy::CAP_ROSTER,
+        crate::peer_policy::CAP_ANSWER_PERMISSIONS,
+        crate::peer_policy::CAP_CREATE_SESSIONS,
+    ];
+    let mut admin = operational.to_vec();
+    admin.push(crate::peer_policy::CAP_ADMIN);
     for role in [PeerRole::Client, PeerRole::Daemon] {
-        let peer = remote_conn_with_caps(
-            role,
-            Some("S-user-a"),
-            &[
-                crate::peer_policy::CAP_VIEW,
-                crate::peer_policy::CAP_SEND,
-                crate::peer_policy::CAP_ROSTER,
-                crate::peer_policy::CAP_ANSWER_PERMISSIONS,
-                crate::peer_policy::CAP_CREATE_SESSIONS,
-            ],
-        );
+        let peer = remote_conn_with_caps(role, Some("S-user-a"), &operational);
         let refusal = match dispatch(&state, &owner, read(1), &peer, true, true, true, true)
             .expect("the gate answers")
         {
@@ -4397,18 +4537,31 @@ fn a_peers_attachment_read_is_refused_at_the_gate() {
             "{refusal:?}"
         );
         assert_eq!(
-            refusal.message, "capability 'attachment.read' was not negotiated",
+            refusal.message, "capability 'admin' was not negotiated",
             "{refusal:?}"
         );
         assert_eq!(refusal.id, Some(1));
+
+        // The parity half: with the administrative capability the same frame
+        // reaches the store, and the store's answer for an unknown session is
+        // the handler's, not the gate's.
+        let peer = remote_conn_with_caps(role, Some("S-user-a"), &admin);
+        let answered = match dispatch(&state, &owner, read(2), &peer, true, true, true, true)
+            .expect("the gate answers")
+        {
+            DaemonMessage::Error(error) => error,
+            other => panic!("{role:?} peer's read reached the store, not the gate: {other:?}"),
+        };
+        assert_eq!(answered.code, ErrorCode::SessionNotFound, "{answered:?}");
+        assert_eq!(answered.id, Some(2));
     }
 
-    // The control: the local pipe passes the gate — an absent session is
-    // the handler's answer, not the gate's.
+    // The control: the local pipe reaches the same handler with the same
+    // answer, so the peer's parity is not a different code path.
     let local = match dispatch(
         &state,
         &owner,
-        read(2),
+        read(3),
         &ConnHandle::new(4),
         true,
         true,
@@ -4426,7 +4579,7 @@ fn a_peers_attachment_read_is_refused_at_the_gate() {
     assert_eq!(
         audit_sessions(&path),
         vec![Some("s.none.1".to_string()), Some("s.none.1".to_string())],
-        "each refused read's audit row must name the session the reference named"
+        "one audit row per refused read, each naming the session it named; the two allowed reads write none"
     );
     let _ = std::fs::remove_dir_all(path);
 }
