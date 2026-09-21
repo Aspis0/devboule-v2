@@ -72,6 +72,7 @@ export const CAP_ORDER: readonly Cap[] = [
   "answer_permissions",
   "create_sessions",
   "roster",
+  "admin",
 ];
 
 const CAP_LABELS: Record<Cap, string> = {
@@ -83,6 +84,10 @@ const CAP_LABELS: Record<Cap, string> = {
   // a person deciding on `roster` is deciding who may see the live agents
   // of the user who approved the pairing.
   roster: "read this device's live agent roster",
+  // The whole remaining surface in one switch, so the label names the surface
+  // and gives three examples of it: a person unchecking this is deciding that
+  // the device may still drive sessions but may not change this machine.
+  admin: "administer this device (settings, projects, shutdown)",
 };
 
 const DEVICES_DESCRIPTION =

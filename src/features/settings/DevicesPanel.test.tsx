@@ -68,6 +68,9 @@ const SELF: SelfInfo = {
 /** The roster switch's label: what the grant discloses, not its wire name. */
 const ROSTER_LABEL = "read this device's live agent roster";
 
+/** The administrative switch's label: the surface it opens, not its wire name. */
+const ADMIN_LABEL = "administer this device (settings, projects, shutdown)";
+
 const CLIENT_PEER: PeerRow = {
   deviceId: "9f6b0f2e-6f1c-4a1e-9c62-1e2f7d59a9c3",
   displayName: "Xiaomi 14",
@@ -672,6 +675,33 @@ describe("devices panel", () => {
 
     const roster = checkboxByLabel(ROSTER_LABEL);
     expect(roster.checked).toBe(true);
+  });
+
+  it("renders a switch for an administrative capability the row holds, labelled with what it opens", async () => {
+    vi.mocked(devicesList).mockResolvedValue(
+      replyWith({ peers: [{ ...CLIENT_PEER, caps: ["view", "admin"] }] }),
+    );
+    await renderPanel();
+
+    const admin = checkboxByLabel(ADMIN_LABEL);
+    expect(admin.checked).toBe(true);
+  });
+
+  it("sends the administrative capability when a person grants it", async () => {
+    // Every new pairing holds `admin` (the 2026-09-21 parity decision), so the
+    // switch exists to *narrow* a device and to put the grant back: without it
+    // the panel could take the whole surface away and never return it.
+    vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
+    vi.mocked(peerSetCaps).mockResolvedValue({ ...CLIENT_PEER, caps: ["view", "admin"] });
+    await renderPanel();
+
+    await act(async () => {
+      checkboxByLabel(ADMIN_LABEL).click();
+      await Promise.resolve();
+    });
+
+    expect(peerSetCaps).toHaveBeenCalledWith(CLIENT_PEER.deviceId, ["view", "admin"]);
+    expect(checkboxByLabel(ADMIN_LABEL).checked).toBe(true);
   });
 
   it("does not drop a held capability when toggling a gated one", async () => {
