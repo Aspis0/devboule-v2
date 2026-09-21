@@ -552,7 +552,10 @@ sixth, the surface no act-name covers. The list is one
 constant on the wire: `PEER_CAPS` is six names — `view`, `send`, `answer_permissions`,
 `create_sessions`, `roster` and `admin` (`crates/devboule-protocol/src/messages.rs`, `PEER_CAPS`) —
 and `PEER_DEFAULT_CAPS` is the same six, so a device is born holding everything and a person narrows
-it per device. That is the owner's decision of 2026-09-21: it revoked the old global deny list, under
+it per device. The default is written once, at the pairing that creates the peer row (`pairing.rs`,
+its only production use), so a device paired before 2026-09-21 keeps the narrower set it was paired
+with: the panel draws its `admin` switch off, and turning it on there is the grant. That is the
+owner's decision of 2026-09-21: it revoked the old global deny list, under
 which anything no capability named was refused to every peer. `validate_caps` is what still refuses to
 leave a `Client` without `view`. A capability is deliberately not a scope: which sessions an
 allowed request reaches is decided elsewhere, by the owner projection in `server.rs` and the origin
