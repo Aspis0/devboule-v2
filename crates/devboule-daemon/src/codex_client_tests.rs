@@ -1019,10 +1019,13 @@ fn codex_mcp_launch_rides_config_overrides_and_keeps_the_token_in_env() {
 
 /// A fake `codex app-server` (node): answers initialize/model-list and both
 /// thread roads. stderr is nulled: the tests read the protocol, never the
-/// log. When `FAKE_CODEX_METHODS` names a file, every request method the
-/// child sees is appended there, in arrival order.
+/// log. `FAKE_CODEX_METHODS` names a file that receives every request method
+/// the child sees, in arrival order; `FAKE_CODEX_RESUME_HANDLES` names one
+/// that receives the `threadId` of every `thread/resume` frame — so a test
+/// can pin the value the road sent, not only its method name.
 const FAKE_CODEX_HANDSHAKE: &str = r#"
 const methods = process.env.FAKE_CODEX_METHODS || "";
+const handles = process.env.FAKE_CODEX_RESUME_HANDLES || "";
 let buf = "";
 process.stdin.on("data", (chunk) => {
   buf += chunk.toString();
@@ -1035,6 +1038,10 @@ process.stdin.on("data", (chunk) => {
     try { msg = JSON.parse(line); } catch { continue; }
     if (msg.id === undefined || msg.id === null) continue;
     if (methods) require("fs").appendFileSync(methods, msg.method + "\n");
+    if (handles && msg.method === "thread/resume") {
+      const handle = msg.params && msg.params.threadId;
+      require("fs").appendFileSync(handles, (handle === undefined ? "missing" : handle) + "\n");
+    }
     let result = {};
     if (msg.method === "initialize") result = { userAgent: "fake-codex" };
     else if (msg.method === "model/list") result = { data: [{ id: "fake-model", isDefault: true }] };
@@ -1045,19 +1052,23 @@ process.stdin.on("data", (chunk) => {
 });
 "#;
 
+/// The handle a dead generation persisted: distinctive enough that no
+/// hard-coded substitute can stand in for it on the wire.
+const PERSISTED_THREAD: &str = "01a0c179-a889-7432-8c89-2ca801ccf9fa";
+
 fn fake_codex_child() -> std::process::Child {
-    fake_codex_child_recording(None)
+    fake_codex_child_recording(&[])
 }
 
-fn fake_codex_child_recording(methods: Option<&std::path::Path>) -> std::process::Child {
+fn fake_codex_child_recording(records: &[(&str, std::path::PathBuf)]) -> std::process::Child {
     let mut command = std::process::Command::new("node");
     command
         .args(["-e", FAKE_CODEX_HANDSHAKE])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    if let Some(methods) = methods {
-        command.env("FAKE_CODEX_METHODS", methods);
+    for (name, path) in records {
+        command.env(name, path);
     }
     command
         .spawn()
@@ -1096,8 +1107,9 @@ fn codex_handshake_starts_a_thread_on_the_fresh_road() {
 #[test]
 fn codex_resume_handshake_loads_the_thread_and_never_starts_one() {
     // The resume road must send `thread/resume {threadId}` after initialize —
-    // not `thread/start`. The child records every method it sees, so a
-    // mutation back to `thread/start` fails on the record, not on a comment.
+    // not `thread/start`, and not a placeholder handle. The child records
+    // both the method it sees and the `threadId` on the frame, so a mutation
+    // of either fails on the record, not on a comment.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
@@ -1106,7 +1118,11 @@ fn codex_resume_handshake_loads_the_thread_and_never_starts_one() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     let methods_file = dir.join("methods.txt");
-    let mut child = fake_codex_child_recording(Some(&methods_file));
+    let handles_file = dir.join("handles.txt");
+    let mut child = fake_codex_child_recording(&[
+        ("FAKE_CODEX_METHODS", methods_file.clone()),
+        ("FAKE_CODEX_RESUME_HANDLES", handles_file.clone()),
+    ]);
     let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
     let mut stdout = CodexStdout::spawn(child.stdout.take().expect("stdout")).expect("reader");
     let next_id = AtomicU64::new(1);
@@ -1116,7 +1132,7 @@ fn codex_resume_handshake_loads_the_thread_and_never_starts_one() {
         &next_id,
         &dir,
         "auto",
-        ThreadRoad::Resuming("thread-persisted"),
+        ThreadRoad::Resuming(PERSISTED_THREAD),
     )
     .expect("the resume handshake answers");
     let _ = child.kill();
@@ -1134,6 +1150,12 @@ fn codex_resume_handshake_loads_the_thread_and_never_starts_one() {
     assert!(
         !methods.contains(&"thread/start"),
         "a resume never starts a new thread: {methods:?}"
+    );
+    let sent = std::fs::read_to_string(&handles_file).expect("the child recorded its handles");
+    assert_eq!(
+        sent,
+        format!("{PERSISTED_THREAD}\n"),
+        "the frame carries the persisted handle, exactly once"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1154,6 +1176,7 @@ fn codex_resume_spawn_sends_only_the_handle_and_returns_the_thread() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     let methods_file = dir.join("methods.txt");
+    let handles_file = dir.join("handles.txt");
     let command = crate::session::PtyCommand::new(
         "node",
         vec![
@@ -1162,13 +1185,19 @@ fn codex_resume_spawn_sends_only_the_handle_and_returns_the_thread() {
             "--".to_string(),
         ],
         std::env::temp_dir(),
-        vec![(
-            "FAKE_CODEX_METHODS".to_string(),
-            methods_file.to_string_lossy().into_owned(),
-        )],
+        vec![
+            (
+                "FAKE_CODEX_METHODS".to_string(),
+                methods_file.to_string_lossy().into_owned(),
+            ),
+            (
+                "FAKE_CODEX_RESUME_HANDLES".to_string(),
+                handles_file.to_string_lossy().into_owned(),
+            ),
+        ],
     );
     let mut spawned =
-        super::spawn_process_resuming(&state, command, "thread-persisted".to_string(), None)
+        super::spawn_process_resuming(&state, command, PERSISTED_THREAD.to_string(), None)
             .expect("the resume road spawns");
     assert_eq!(spawned.peer_session_id.as_deref(), Some("thread-resumed"));
     let seen = std::fs::read_to_string(&methods_file).expect("the child recorded its methods");
@@ -1178,16 +1207,31 @@ fn codex_resume_spawn_sends_only_the_handle_and_returns_the_thread() {
         ["initialize", "model/list", "thread/resume"],
         "a resume sends the handle and nothing else"
     );
+    let sent = std::fs::read_to_string(&handles_file).expect("the child recorded its handles");
+    assert_eq!(
+        sent,
+        format!("{PERSISTED_THREAD}\n"),
+        "the production road sends the row's own handle, not a placeholder"
+    );
     spawned.killer.kill();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A fake child that records its own argv to `FAKE_ARGV_FILE`, then answers
-/// the fresh handshake so `spawn_process` returns.
+/// A fake child that records its own argv to `FAKE_ARGV_FILE` and the child
+/// values of `FAKE_ENV_KEYS` (a comma-separated list) to `FAKE_ENV_FILE`,
+/// then answers the fresh handshake so `spawn_process` returns.
 const ARGV_FAKE: &str = r#"
 const fs = require("fs");
 const out = process.env.FAKE_ARGV_FILE || "";
 if (out) fs.writeFileSync(out, process.argv.slice(1).join("\n"));
+const envOut = process.env.FAKE_ENV_FILE || "";
+if (envOut) {
+  const report = {};
+  for (const key of (process.env.FAKE_ENV_KEYS || "").split(",")) {
+    if (key) report[key] = process.env[key] === undefined ? null : process.env[key];
+  }
+  fs.writeFileSync(envOut, JSON.stringify(report));
+}
 let buf = "";
 process.stdin.on("data", (chunk) => {
   buf += chunk.toString();
@@ -1208,12 +1252,54 @@ process.stdin.on("data", (chunk) => {
 });
 "#;
 
+/// Drives production's `spawn_process` on the carrier road and answers what
+/// the child was started with: its argv, and the value it read for each name
+/// in `env_keys` (`null` for a name the child does not have).
+fn spawn_carrier_road(
+    state: &Arc<crate::server::ServerState>,
+    config: crate::mcp_broker::McpLaunchConfig,
+    dir: &Path,
+    env_keys: &[&str],
+) -> (super::SpawnedSession, String, serde_json::Value) {
+    let argv_file = dir.join("argv.txt");
+    let env_file = dir.join("env.json");
+    let command = crate::session::PtyCommand::new(
+        "node",
+        vec!["-e".to_string(), ARGV_FAKE.to_string(), "--".to_string()],
+        std::env::temp_dir(),
+        vec![
+            (
+                "FAKE_ARGV_FILE".to_string(),
+                argv_file.to_string_lossy().into_owned(),
+            ),
+            (
+                "FAKE_ENV_FILE".to_string(),
+                env_file.to_string_lossy().into_owned(),
+            ),
+            ("FAKE_ENV_KEYS".to_string(), env_keys.join(",")),
+        ],
+    );
+    let spawned = super::spawn_process(
+        state,
+        command,
+        Some(config),
+        crate::profile_delivery::ProfileDelivery::none(),
+    )
+    .expect("the carrier road spawns");
+    let argv = std::fs::read_to_string(&argv_file).expect("the child recorded its argv");
+    let env = serde_json::from_str(&std::fs::read_to_string(&env_file).expect("env report"))
+        .expect("the env report parses");
+    (spawned, argv, env)
+}
+
 #[test]
 fn codex_carrier_road_puts_the_overrides_on_argv_and_the_token_in_env() {
     // The launch line the child actually reads: the `-c` overrides ride argv
-    // (URL and env-var pointer, no secret), the token rides the child env.
-    // The fake child records its own argv, so a mutation back to a
-    // config-file carrier — or a token spliced onto argv — fails here.
+    // (URL and env-var pointer, no secret), and the bearer the broker minted
+    // rides the child env — applied by production's own loop, not by this
+    // test. The fake child records argv and its environment, so a mutation
+    // back to a config-file carrier, a token spliced onto argv, or an env
+    // loop that stopped running all fail here.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
@@ -1237,24 +1323,8 @@ fn codex_carrier_road_puts_the_overrides_on_argv_and_the_token_in_env() {
     let dir = std::env::temp_dir().join(format!("devboule-codex-argv-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
-    let argv_file = dir.join("argv.txt");
-    let command = crate::session::PtyCommand::new(
-        "node",
-        vec!["-e".to_string(), ARGV_FAKE.to_string(), "--".to_string()],
-        std::env::temp_dir(),
-        vec![(
-            "FAKE_ARGV_FILE".to_string(),
-            argv_file.to_string_lossy().into_owned(),
-        )],
-    );
-    let mut spawned = super::spawn_process(
-        &state,
-        command,
-        Some(config),
-        crate::profile_delivery::ProfileDelivery::none(),
-    )
-    .expect("the carrier road spawns");
-    let argv = std::fs::read_to_string(&argv_file).expect("the child recorded its argv");
+    let (mut spawned, argv, env) =
+        spawn_carrier_road(&state, config, &dir, &[crate::mcp_broker::MCP_TOKEN_ENV]);
     assert!(
         argv.contains(&format!(
             "mcp_servers.{}.url=",
@@ -1278,6 +1348,12 @@ fn codex_carrier_road_puts_the_overrides_on_argv_and_the_token_in_env() {
         !argv.contains(&bearer),
         "the token never rides argv: {argv}"
     );
+    assert_eq!(
+        env.get(crate::mcp_broker::MCP_TOKEN_ENV)
+            .and_then(serde_json::Value::as_str),
+        Some(bearer.as_str()),
+        "the bearer the broker minted is the value the child reads: {env}"
+    );
     spawned.killer.kill();
     drop(guard);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1288,8 +1364,8 @@ fn thread_resume_params_carry_the_handle_and_nothing_else() {
     // Measured against the installed schema: `ThreadResumeParams` requires
     // exactly `threadId`; the thread on disk carries its cwd, model and policy.
     assert_eq!(
-        thread_resume_params("01a0c179-a889-7432-8c89-2ca801ccf9fa"),
-        serde_json::json!({ "threadId": "01a0c179-a889-7432-8c89-2ca801ccf9fa" })
+        thread_resume_params(PERSISTED_THREAD),
+        serde_json::json!({ "threadId": PERSISTED_THREAD })
     );
 }
 
@@ -2088,11 +2164,10 @@ fn codex_bearer_is_redacted_from_stderr_before_delivery() {
 }
 
 #[test]
-fn codex_spawn_failure_removes_the_prepared_home() {
-    // The 9th early-error path: the home exists before the child does, so a
-    // spawn failure must remove it (no child exists to kill).
+fn codex_spawn_failure_names_the_program_that_would_not_start() {
+    // The 9th early-error path: an unstartable program refuses with the
+    // program named, and no child exists to kill.
     let state = crate::server::ServerState::new("codex-early-error".to_string());
-    let runtime_dir = state.sessions.runtime_dir().to_path_buf();
     let command = crate::session::PtyCommand::new(
         "devboule-no-such-program-9f1a",
         Vec::new(),
@@ -2111,21 +2186,47 @@ fn codex_spawn_failure_removes_the_prepared_home() {
         Ok(_) => panic!("an unstartable program fails the spawn"),
     };
     assert!(
-        error.message.contains("Could not start Codex"),
-        "the refusal names the spawn: {}",
+        error.message.contains("Could not start Codex")
+            && error.message.contains("devboule-no-such-program-9f1a"),
+        "the refusal names the program: {}",
         error.message
     );
-    let orphans: Vec<_> = std::fs::read_dir(&runtime_dir)
-        .expect("runtime dir")
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with("devboule-codex-home-"))
-        })
-        .collect();
-    assert!(orphans.is_empty(), "no prepared home survives: {orphans:?}");
+}
+
+#[test]
+fn codex_carrier_road_adds_no_home_redirect_to_the_child_env() {
+    // The contract the removed per-session carrier left behind: the child
+    // keeps the human's Codex home, where the credentials and the rollouts
+    // live — a daemon-chosen `CODEX_HOME` carries no `auth.json`, and every
+    // turn against it answers 401. The fake child records the env it was
+    // actually started with, so re-adding the redirect fails here, not in a
+    // comment. (That this road owns no file is asserted by
+    // `codex_mcp_launch_rides_config_overrides_and_keeps_the_token_in_env`.)
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let state = crate::server::ServerState::new("codex-home-contract".to_string());
+    let dir = std::env::temp_dir().join(format!("devboule-codex-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let config =
+        crate::mcp_broker::McpLaunchConfig::for_test("http://127.0.0.1:9/mcp", "home-contract");
+    let (mut spawned, argv, env) = spawn_carrier_road(&state, config, &dir, &["CODEX_HOME"]);
+    assert!(
+        argv.contains(&format!(
+            "mcp_servers.{}.url=",
+            crate::mcp_broker::MCP_SERVER_NAME
+        )),
+        "the carrier still rode argv: {argv}"
+    );
+    assert_eq!(
+        env.get("CODEX_HOME").and_then(serde_json::Value::as_str),
+        std::env::var("CODEX_HOME").ok().as_deref(),
+        "the child inherits the human's home, never one the daemon chose: {env}"
+    );
+    spawned.killer.kill();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The real launch line, resolved exactly like production
