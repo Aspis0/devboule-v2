@@ -768,7 +768,8 @@ impl Provider for PiProvider {
     }
 }
 
-/// The Codex family: app-server road, per-session home at spawn.
+/// The Codex family: app-server road, the child keeping the human's own Codex
+/// home (its credentials and rollouts live there); MCP rides the launch line.
 struct CodexProvider;
 
 impl Provider for CodexProvider {
