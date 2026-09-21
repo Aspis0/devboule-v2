@@ -1867,6 +1867,43 @@ function answer(frame) {
 }
 "#;
 
+/// The resume wiring test's fake: it writes its own launch line where the
+/// test reads it, then serves the handshake so `spawn_process_resuming`
+/// completes. `get_state` answers the id the resume asked for, the way a
+/// real pi answers a resolved `--session`.
+const FAKE_PI_RESUME_HANDSHAKE: &str = r#"
+const fs = require("fs");
+fs.appendFileSync(process.env.DEVBOULE_FAKE_PI_ARGV_LOG, JSON.stringify(process.argv) + "\n");
+// The injected permission extension's readiness announce, which a child in
+// the `ask` mode the resume road starts in must produce before the third
+// handshake response lands.
+process.stdout.write(JSON.stringify({ type: "extension_ui_request", method: "notify", message: "devboule-permission-channel" }) + "\n");
+let buffered = "";
+process.stdin.on("data", (chunk) => {
+  buffered += chunk;
+  let index;
+  while ((index = buffered.indexOf("\n")) >= 0) {
+    const line = buffered.slice(0, index);
+    buffered = buffered.slice(index + 1);
+    const frame = JSON.parse(line);
+    fs.appendFileSync(process.env.DEVBOULE_FAKE_PI_LOG, frame.type + "\n");
+    let answer = { success: true };
+    if (frame.type === "get_state") {
+      answer.data = { sessionId: process.env.DEVBOULE_FAKE_PI_SESSION, model: { id: "pi-model", provider: "pi-provider" }, thinkingLevel: "high" };
+    } else if (frame.type === "get_available_models") {
+      answer.data = { models: [
+        { id: "pi-model", name: "Pi Model", provider: "pi-provider", thinkingLevelMap: { high: {}, low: {} } }
+      ] };
+    } else if (frame.type === "get_available_thinking_levels") {
+      answer.data = { levels: ["high", "low"] };
+    }
+    answer.id = frame.id;
+    answer.type = "response";
+    process.stdout.write(JSON.stringify(answer) + "\n");
+  }
+});
+"#;
+
 /// A fake that serves the real `spawn_process` handshake — `get_state`,
 /// `get_available_models`, `get_available_thinking_levels` — and then
 /// answers whatever else comes, logging every frame. This is the fake
@@ -1912,8 +1949,9 @@ process.stdin.on("data", (chunk) => {
 mod lifecycle_tests {
     use super::super::PtyCommand;
     use super::super::{
-        pending_pi_delivery, spawn_process, PiCatalog, PiControl, PiInputKinds, PiKiller, PiModel,
-        PiReader, PiStaticPrompt, PiStderr, PiStdout, PiSwitcher, PiWriter,
+        pending_pi_delivery, spawn_process, spawn_process_resuming, PiCatalog, PiControl,
+        PiInputKinds, PiKiller, PiModel, PiReader, PiStaticPrompt, PiStderr, PiStdout, PiSwitcher,
+        PiWriter,
     };
     use crate::process_tree::JobObject;
     use crate::profile_delivery::ProfileDelivery;
@@ -2131,6 +2169,16 @@ mod lifecycle_tests {
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    /// The argv the fake child wrote for itself: one JSON line per launch.
+    fn read_argv(path: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .and_then(|line| serde_json::from_str(line).ok())
+            .unwrap_or_default()
     }
 
     fn wait_for_commands(log: &std::path::Path, wanted: &[&str]) -> Vec<String> {
@@ -2527,5 +2575,93 @@ mod lifecycle_tests {
         );
         let _ = state.sessions.close(&session_id, &owner, &None);
         let _ = std::fs::remove_dir_all(log.parent().expect("log dir"));
+    }
+
+    /// The handle's wiring: `spawn_process_resuming` puts the persisted
+    /// session id on the child's own launch line as `--session <id>` — the
+    /// one place the child can read it — and the fresh road, spawned with
+    /// the same fake as a control, carries no session flag at all. The child
+    /// writes its argv itself, so the assertion is about what the process
+    /// received, not about what the caller intended. Cut the splice and the
+    /// resumed child comes up on a new conversation: the first assertion is
+    /// the one that goes red.
+    #[test]
+    fn spawn_process_resuming_puts_the_handle_on_the_childs_argv() {
+        const HANDLE: &str = "01a0c1a7-0b95-731a-9a2e-06db94ff8043";
+        let log = log_path("resumeargv");
+        let state = ServerState::new("pi-resume-argv".to_string());
+        let dir = log.parent().expect("log dir").to_path_buf();
+        let script = dir.join("fake-pi-entry.js");
+        std::fs::write(&script, super::FAKE_PI_RESUME_HANDSHAKE).expect("write the fake pi entry");
+        let base = PtyCommand::new(
+            node_program(),
+            vec![script.to_string_lossy().into_owned(), "--".to_string()],
+            std::env::temp_dir(),
+            vec![
+                (
+                    "DEVBOULE_FAKE_PI_LOG".to_string(),
+                    log.to_string_lossy().into_owned(),
+                ),
+                ("DEVBOULE_FAKE_PI_SESSION".to_string(), HANDLE.to_string()),
+            ],
+        );
+
+        let resumed_argv = dir.join("resumed-argv.log");
+        let mut resumed = base.clone();
+        resumed.env.push((
+            "DEVBOULE_FAKE_PI_ARGV_LOG".to_string(),
+            resumed_argv.to_string_lossy().into_owned(),
+        ));
+        let resumed_session = spawn_process_resuming(&state, resumed, HANDLE.to_string(), None)
+            .expect("the resumed launch completes its handshake");
+        let argv = read_argv(&resumed_argv);
+        assert_eq!(
+            argv.iter().filter(|arg| *arg == "--session").count(),
+            1,
+            "the child's argv carries the session option exactly once: {argv:?}"
+        );
+        assert!(
+            argv.windows(2).any(|pair| pair == ["--session", HANDLE]),
+            "the child's argv carries the persisted handle verbatim: {argv:?}"
+        );
+        for flag in [
+            "--resume",
+            "-r",
+            "--continue",
+            "-c",
+            "--session-id",
+            "--fork",
+            "--no-session",
+        ] {
+            assert!(
+                !argv.iter().any(|arg| arg == flag),
+                "the resume road selects the conversation one way only ({flag}): {argv:?}"
+            );
+        }
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "-e" && pair[1].ends_with(".ts")),
+            "the permission extension is still on the resumed launch line: {argv:?}"
+        );
+        // Windows' kill-on-job-close ends the fake when the session drops;
+        // elsewhere the dropped stdin ends it. No reader is started here.
+        drop(resumed_session);
+
+        let fresh_argv = dir.join("fresh-argv.log");
+        let mut fresh = base;
+        fresh.env.push((
+            "DEVBOULE_FAKE_PI_ARGV_LOG".to_string(),
+            fresh_argv.to_string_lossy().into_owned(),
+        ));
+        let fresh_session = spawn_process(&state, fresh, None, ProfileDelivery::none())
+            .expect("the fresh launch completes its handshake");
+        let fresh_args = read_argv(&fresh_argv);
+        assert!(
+            !fresh_args.iter().any(|arg| arg == "--session"),
+            "the fresh road must not carry a session flag: {fresh_args:?}"
+        );
+        drop(fresh_session);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

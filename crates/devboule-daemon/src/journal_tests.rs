@@ -253,7 +253,14 @@ fn to_session_carries_the_resume_verdict_from_the_trait() {
     pi.status = PersistStatus::Ended;
     pi.provider = Some("pi".to_string());
     pi.peer_session_id = Some("peer-1".to_string());
-    assert!(!pi.to_session().resumable);
+    assert!(pi.to_session().resumable);
+
+    let mut terminal = sample_session("s.terminal.dead");
+    terminal.kind = SessionKind::Terminal;
+    terminal.status = PersistStatus::Ended;
+    terminal.provider = Some("terminal".to_string());
+    terminal.peer_session_id = Some("peer-1".to_string());
+    assert!(!terminal.to_session().resumable);
 }
 
 #[test]

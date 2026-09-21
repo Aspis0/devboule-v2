@@ -1820,11 +1820,10 @@ impl SessionRegistry {
             }
         };
         // S9 kind-preserving fix: the gate above (`resume_handle`) admits the
-        // resumable families, so this is Acp, Claude or Codex today — but the
-        // kind comes from the record, never from a literal, so a resumed
+        // resumable families, so this is Acp, Claude, Codex or Pi today — but
+        // the kind comes from the record, never from a literal, so a resumed
         // session re-registers with its own kind rather than as whatever the
-        // last author assumed. Pi resume stays refused at the gate
-        // (deliberate: family resume is undesigned — see `resume_handle`).
+        // last author assumed. The terminal stays refused at the gate.
         let mcp_session = match state.mcp.register_with_provider(
             session_id,
             owner,
@@ -3193,10 +3192,10 @@ fn resume_handle(
     if record.owner != owner.user {
         return Err(unauthorized());
     }
-    // Pi can resume on its own wire, but the end-to-end design is not done:
-    // that family stays refused deliberately, not by accident. The fact is
-    // the impls' `resumable()`; `resume_refusal()` is only the wording of the
-    // refusal, so the decision is never expressible in two places.
+    // The fact is the impls' `resumable()`; `resume_refusal()` is only the
+    // wording of the refusal, so the decision is never expressible in two
+    // places. The terminal is the one family left out, and its refusal
+    // sentence says so.
     let family = provider::catalog_registry().provider_for_kind(&record.kind);
     if !family.resumable() {
         return Err(cannot_resume(family.resume_refusal()));

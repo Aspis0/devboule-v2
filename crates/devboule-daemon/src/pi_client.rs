@@ -733,6 +733,29 @@ fn spawn_args(
     Ok(args)
 }
 
+/// The resume half of the launch argv: `--session <peer>` spliced where
+/// `spawn_args` leaves Pi's options, before any `--`, so a caller argv that
+/// ends option parsing still carries it as the option it is. The id is the
+/// `sessionId` the wire reported; Pi resolves it against its session
+/// directory for this cwd first, then across projects.
+fn spawn_resume_args(
+    command: &PtyCommand,
+    permission_path: &Path,
+    bridge_path: Option<&Path>,
+    peer_session_id: &str,
+) -> Result<Vec<String>, WireError> {
+    let mut args = spawn_args(command, permission_path, bridge_path)?;
+    let index = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    args.splice(
+        index..index,
+        ["--session".to_string(), peer_session_id.to_string()],
+    );
+    Ok(args)
+}
+
 fn permission_extension_path(runtime_dir: &Path) -> PathBuf {
     let serial = PERMISSION_EXTENSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     runtime_dir.join(format!("devboule-pi-permissions-{serial}.ts"))
@@ -881,6 +904,41 @@ pub(super) fn spawn_process(
     mcp: Option<crate::mcp_broker::McpLaunchConfig>,
     delivery: ProfileDelivery,
 ) -> Result<SpawnedSession, WireError> {
+    spawn_pi(state, command, mcp, delivery, None)
+}
+
+/// A resumed child: the same spawn, with `--session <peer>` spliced onto the
+/// launch argv and nothing else changed. Pi loads the conversation from its
+/// own session file by the id the dead generation persisted — the
+/// `sessionId` `get_state` reports and this client already reads off the
+/// wire. Nothing from our journal is re-sent; the provider's session file is
+/// the conversation.
+pub(super) fn spawn_process_resuming(
+    state: &Arc<ServerState>,
+    command: PtyCommand,
+    peer_session_id: String,
+    mcp: Option<crate::mcp_broker::McpLaunchConfig>,
+) -> Result<SpawnedSession, WireError> {
+    spawn_pi(
+        state,
+        command,
+        mcp,
+        ProfileDelivery::none(),
+        Some(peer_session_id),
+    )
+}
+
+/// The child both roads share: same process, same carrier, same handshake.
+/// `resume_session` is `Some(peer)` only on the resume road, where the pair
+/// is spliced onto the argv; every other line is identical, so a resumed
+/// child cannot drift from a fresh one.
+fn spawn_pi(
+    state: &Arc<ServerState>,
+    command: PtyCommand,
+    mcp: Option<crate::mcp_broker::McpLaunchConfig>,
+    delivery: ProfileDelivery,
+    resume_session: Option<String>,
+) -> Result<SpawnedSession, WireError> {
     validate_delivery(&delivery)?;
     let mode_id = delivery
         .mode_id
@@ -912,7 +970,15 @@ pub(super) fn spawn_process(
             remove_bridge_extension(path);
         }
     };
-    let args = spawn_args(&command, &extension_path, bridge_path.as_deref())?;
+    let args = match resume_session.as_deref() {
+        Some(peer_session_id) => spawn_resume_args(
+            &command,
+            &extension_path,
+            bridge_path.as_deref(),
+            peer_session_id,
+        )?,
+        None => spawn_args(&command, &extension_path, bridge_path.as_deref())?,
+    };
     if let Err(error) = write_permission_extension(&extension_path) {
         remove_permission_extension(&extension_path);
         remove_bridge(&bridge_path);

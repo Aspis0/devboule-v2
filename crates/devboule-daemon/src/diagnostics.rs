@@ -997,7 +997,7 @@ mod tests {
     fn resumable_counts_dead_admitted_sessions_with_their_columns() {
         // The verdict asks the family, not the wire tag: a dead Claude row
         // with its columns counts, a live one does not, and neither does a
-        // dead row of an undesigned family.
+        // dead row of a family with no resume road at all.
         fn ended() -> SessionState {
             SessionState::Ended {
                 generation: 1,
@@ -1027,10 +1027,15 @@ mod tests {
         let mut columnless_claude = session("s.3", SessionKind::Claude, ended(), "three");
         columnless_claude.provider = None;
         columnless_claude.peer_session_id = None;
-        let mut dead_pi = session("s.4", SessionKind::Pi, recovered(), "four");
-        dead_pi.provider = Some("pi".to_string());
-        dead_pi.peer_session_id = Some("peer-4".to_string());
-        source.sessions = vec![resumable_claude, live_claude, columnless_claude, dead_pi];
+        let mut dead_terminal = session("s.4", SessionKind::Terminal, recovered(), "four");
+        dead_terminal.provider = Some("terminal".to_string());
+        dead_terminal.peer_session_id = Some("peer-4".to_string());
+        source.sessions = vec![
+            resumable_claude,
+            live_claude,
+            columnless_claude,
+            dead_terminal,
+        ];
         let report = DiagnosticsReport::new(source);
         assert_eq!(report.sessions.resumable, 1);
     }

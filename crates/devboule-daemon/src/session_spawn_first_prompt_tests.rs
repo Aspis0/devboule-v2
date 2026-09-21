@@ -62,31 +62,28 @@ fn codex_first_prompt_does_not_wait_for_mcp() {
 }
 
 #[test]
-fn resume_handle_refuses_undesigned_families_before_any_registration() {
-    // S9: Pi/terminal resume stays refused at the gate (deliberate — pi
-    // resume is undesigned); Codex was admitted in stage 2, so the
-    // record-kind registration below only ever sees Acp, Claude and Codex. A
-    // refusal here means no bearer is minted for a refused row, ever.
+fn resume_handle_refuses_the_terminal_before_any_registration() {
+    // S9: the terminal's resume stays refused at the gate (it has no
+    // conversation to load); stage 3 admitted Pi, so the record-kind
+    // registration below sees Acp, Claude, Codex and Pi. A refusal here means
+    // no bearer is minted for a refused row, ever.
     let owner = test_owner("S-1-5-21-resume", "process-resume");
-    for (kind, needle) in [
-        (
-            SessionKind::Pi,
-            "only ACP, Claude and Codex sessions support",
-        ),
-        (
-            SessionKind::Terminal,
-            "only ACP, Claude and Codex sessions support",
-        ),
-    ] {
-        let record = new_session_record("s.resume.1", &owner.user, None, kind, "Old");
-        let error = super::resume_handle(&record, &owner)
-            .expect_err("undesigned-family resume is refused before anything is minted");
-        assert!(
-            error.message.contains(needle),
-            "the refusal names the boundary: {}",
-            error.message
-        );
-    }
+    let terminal = new_session_record(
+        "s.resume.1",
+        &owner.user,
+        None,
+        SessionKind::Terminal,
+        "Old",
+    );
+    let error = super::resume_handle(&terminal, &owner)
+        .expect_err("the terminal's resume is refused before anything is minted");
+    assert!(
+        error
+            .message
+            .contains("only ACP, Claude, Codex and Pi sessions support"),
+        "the refusal names the boundary: {}",
+        error.message
+    );
     let mut acp = new_session_record("s.resume.2", &owner.user, None, SessionKind::Acp, "Old");
     acp.provider = Some("grok".to_string());
     acp.peer_session_id = Some("peer-1".to_string());
@@ -108,6 +105,13 @@ fn resume_handle_refuses_undesigned_families_before_any_registration() {
     assert!(
         super::resume_handle(&codex, &owner).is_ok(),
         "a Codex row with its persisted thread id passes the gate"
+    );
+    let mut pi = new_session_record("s.resume.5", &owner.user, None, SessionKind::Pi, "Old");
+    pi.provider = Some("pi".to_string());
+    pi.peer_session_id = Some("01a0c1a7-0b95-731a-9a2e-06db94ff8043".to_string());
+    assert!(
+        super::resume_handle(&pi, &owner).is_ok(),
+        "a Pi row with its persisted session id passes the gate"
     );
 }
 
