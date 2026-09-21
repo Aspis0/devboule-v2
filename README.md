@@ -47,10 +47,9 @@ What works today:
   Windows job object that kills it when the daemon exits, so resuming a
   provider's own session is a separate, explicit act — replaying is free and
   happens by itself, resuming starts a process and waits for you to ask. It
-  exists today for **ACP, Claude and Codex** sessions: Claude resumes by
+  exists today for **ACP, Claude, Codex and Pi** sessions: Claude resumes by
   handing the CLI back its own history file, Codex by asking the app-server for
-  its thread id. A pi session can be replayed, not resumed; pi can resume on
-  its own wire, and that exclusion is a decision rather than a limitation.
+  its thread id, Pi by handing its CLI the session id it keeps on disk.
 - **Agent conversation** — real IPC sessions on the daemon. Claude, Codex
   (app-server) and pi run through native adapters; other agents speak ACP.
   Each provider declares its own permission modes (for Claude: plan, always

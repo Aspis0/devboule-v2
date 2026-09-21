@@ -153,19 +153,21 @@ tree, so "closing the last window quits the app" is not something this code show
    `Ended` / `Recovered` with a transcript-integrity verdict (`journal.rs:398-418`); the replay emits
    `Recovered` and no exit event (`journal_replay.rs:374-392`). The transcript is then replayed from
    the journal on attach (§3). Starting the provider again is an explicit, separate act: `resume` is
-   the only path, and the gate admits **three** families — ACP, Claude and Codex
-   (`resume_handle`, `session.rs:9500`; the per-family fact is `Provider::resumable`,
-   `provider.rs:240`, answered `true` by `AcpProvider`, `ClaudeProvider` and `CodexProvider` and
-   `false` by Pi and Terminal). Pi is deliberately excluded "until Pi resume is
-   designed end to end" — pi can resume on its own wire, so that exclusion is a decision, not a
-   limitation. Claude resumes by handing the CLI back its own history: the daemon finds the
+   the only path, and the gate admits **four** families — ACP, Claude, Codex and Pi
+   (`resume_handle`, `session.rs:3188`; the per-family fact is `Provider::resumable`,
+   `provider.rs:240`, answered `true` by `AcpProvider`, `ClaudeProvider`, `CodexProvider` and
+   `PiProvider` and `false` by Terminal). Claude resumes by handing the CLI back its own history: the daemon finds the
    transcript file for the provider's session id under the Claude home, refuses with a named error
    when it is not there, and passes `--resume` (`claude_client.rs:390`, `:411`, `:429`). The id it
    builds that path from is validated against a closed alphabet first, because a session id that
    could contain a separator is a path that could leave its root. Codex resumes by
    `thread/resume { threadId }` on the app-server (`codex_client.rs`, the `ThreadRoad`
    handshake): the thread id is the handle the row already stores, the rollout under the human's
-   Codex home is the conversation, and no journal history is re-sent.
+   Codex home is the conversation, and no journal history is re-sent. Pi resumes by
+   `--session <id>` (`pi_client.rs:913`, `spawn_process_resuming`): the id is the `sessionId`
+   the handshake reports and the row already stores, pi resolves it against its own session
+   directory for the workspace cwd (under the human's `~/.pi`), and no journal history rides
+   the launch line either.
 
 **The daemon can outlive the app.** Because the idle exit requires `sessions == 0` (`server.rs:415`),
 a daemon whose app went away without delivering `Shutdown` — a kill, a crash — keeps running with its
