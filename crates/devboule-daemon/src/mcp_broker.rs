@@ -3,7 +3,8 @@
 //! The broker is deliberately small: one loopback HTTP listener, one bearer
 //! token per session, and the six broker tools served to every agent family —
 //! ACP and Claude natively, pi through its bridge extension (S5), Codex
-//! through its `CODEX_HOME` carrier (S6), both verified post-spawn (S7/S8).
+//! through `-c` overrides on its launch line (S6), both verified post-spawn
+//! (S7/S8).
 //! Stable agent names are not a protocol field yet, so the roster tool returns
 //! `name: null` and keeps the existing title as a separate display-only field.
 //!
@@ -2992,9 +2993,11 @@ fn cleanup_stale_configs(runtime_dir: &Path) -> io::Result<()> {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        // Owned Codex homes (S6): whole trees by our name alone — never by
-        // content, never outside our names — so a crashed spawn's goals, sqlite
-        // and `installation_id` cannot accumulate. At daemon start no live
+        // Legacy Codex homes (S6, retired): the `-c` carrier writes no home
+        // any more, so whole trees by our name alone — never by content,
+        // never outside our names — are leftovers from older builds, and
+        // sweeping them keeps a crashed spawn's goals, sqlite and
+        // `installation_id` from accumulating. At daemon start no live
         // session exists, so every match is an orphan by construction.
         if name.starts_with("devboule-codex-home-") {
             let _ = fs::remove_dir_all(&path);

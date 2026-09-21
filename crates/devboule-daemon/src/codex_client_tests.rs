@@ -6,14 +6,13 @@ use super::super::event_pull::ConnHandle;
 use super::super::permission_broker::PermissionBroker;
 use super::super::session_runtime::SessionRuntime;
 use super::{
-    assert_codex_home, carried_image_paths, codex_delivery, codex_local_image_entry,
-    decline_input_result, initialize_params, interrupt_params, mcp_launch, mode_values,
-    notification_frame, parse_back_codex_config, permission_decision, permission_decision_frame,
-    plan_codex_prompt, render_codex_config, request_frame, send_interrupt_request,
-    steer_params_if_current, thread_start_params, turn_id_from_response, turn_start_params,
-    turn_start_params_for_prompt, turn_start_params_with_images, turn_steer_params, validate_mode,
-    write_codex_home, write_codex_home_with, CodexReader, CodexRequests, CodexSteerer,
-    CODEX_HOME_ENV,
+    carried_image_paths, codex_delivery, codex_local_image_entry, decline_input_result,
+    initialize_params, interrupt_params, mcp_launch, mode_values, notification_frame,
+    permission_decision, permission_decision_frame, plan_codex_prompt, request_frame,
+    send_interrupt_request, steer_params_if_current, thread_resume_params, thread_start_params,
+    turn_id_from_response, turn_start_params, turn_start_params_for_prompt,
+    turn_start_params_with_images, turn_steer_params, validate_mode, CodexReader, CodexRequests,
+    CodexSteerer, ThreadRoad,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::codex_view::{
@@ -25,7 +24,7 @@ use devboule_protocol::PromptAttachment;
 use devboule_protocol::SessionEvent;
 use devboule_protocol::WireError;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -972,141 +971,223 @@ fn a_jpeg_plans_its_stripped_path_on_codex() {
         "stripped JPEG bytes at the planned path"
     );
 }
-// ---- S6: CODEX_HOME carrier ----
+// ---- S6: the Codex carrier rides `-c` overrides ----
 
 #[test]
-fn codex_home_config_round_trips_and_refuses_garbage() {
-    // Typed values render the probe-measured shape; the parse-back accepts
-    // exactly our server entry and refuses everything else.
-    let text = render_codex_config("http://127.0.0.1:4321/mcp");
-    let server = parse_back_codex_config(&text).expect("our bytes parse back");
-    assert_eq!(server.url, "http://127.0.0.1:4321/mcp");
-    assert_eq!(
-        server.bearer_token_env_var,
-        crate::mcp_broker::MCP_TOKEN_ENV
-    );
-    for bad in [
-            "this is not valid toml [",
-            "",
-            "model = \"x\"\n",
-            "[mcp_servers.other]\nurl = \"http://127.0.0.1:1/mcp\"\nbearer_token_env_var = \"DEVBOULE_MCP_TOKEN\"\n",
-            "[mcp_servers.devboule]\nurl = \"\"\nbearer_token_env_var = \"DEVBOULE_MCP_TOKEN\"\n",
-            "[mcp_servers.devboule]\nurl = \"http://127.0.0.1:1/mcp\"\nbearer_token_env_var = \"SOMEONE_ELSES_TOKEN\"\n",
-        ] {
-            assert!(
-                parse_back_codex_config(bad).is_err(),
-                "parse-back refuses: {bad:?}"
-            );
-        }
-}
-
-#[test]
-fn codex_home_write_refuses_before_anything_lands() {
-    // A writer emitting garbage is refused at preparation: no home dir, no
-    // config file. Mutation: skip the parse-back in `write_codex_home_with`
-    // → the garbage lands and this test is red.
-    let dir = std::env::temp_dir().join(format!("devboule-codex-write-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let home = dir.join("devboule-codex-home-0");
-    assert!(write_codex_home_with(&home, "this is not valid toml [").is_err());
-    assert!(!home.exists(), "a refused write leaves no home behind");
-    // And the honest road lands a protected config with no secret on disk.
-    write_codex_home(&home, "http://127.0.0.1:4321/mcp").expect("honest write");
-    let config = home.join("config.toml");
-    assert!(config.is_file());
-    let text = std::fs::read_to_string(&config).expect("read back");
-    assert!(text.contains("http://127.0.0.1:4321/mcp"));
-    assert!(!text.contains("secret-bearer"));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&config)
-            .expect("metadata")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "carrier files are owner-only");
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn codex_home_assertion_is_canonicalised_both_sides() {
-    // Raw string equality would refuse healthy children on Windows
-    // (symlink/case normalisation); both sides canonicalise.
-    let dir = std::env::temp_dir().join(format!("devboule-codex-echo-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let canonical = dir.canonicalize().expect("canonicalize");
-    // A trailing separator spells the same dir: strings differ, homes do not.
-    let with_sep = format!("{}{}", canonical.display(), std::path::MAIN_SEPARATOR);
-    assert_codex_home(Some(&with_sep), &dir).expect("trailing separator is the same home");
-    assert_codex_home(Some(&canonical.to_string_lossy()), &dir).expect("echo matches");
-    let other = std::env::temp_dir();
-    if other.canonicalize().expect("tmp") != canonical {
-        assert!(
-            assert_codex_home(Some(&other.to_string_lossy()), &dir).is_err(),
-            "a different dir is refused, never run against"
-        );
-    }
-    assert!(
-        assert_codex_home(None, &dir).is_err(),
-        "absent echo is refused"
-    );
-    assert!(
-        assert_codex_home(Some(""), &dir).is_err(),
-        "empty echo is refused"
-    );
-    assert!(
-        assert_codex_home(
-            Some(&canonical.to_string_lossy()),
-            Path::new("devboule-no-such-dir-9f1a"),
-        )
-        .is_err(),
-        "an unreadable expected home fails closed"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn codex_mcp_launch_separates_env_from_argv() {
-    // S4 seam body for Codex: env carries the token value + the home path,
-    // argv carries nothing, owned dirs name the sweepable home.
-    let dir = std::env::temp_dir().join(format!("devboule-codex-launch-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+fn codex_mcp_launch_rides_config_overrides_and_keeps_the_token_in_env() {
+    // S4 seam body for Codex: env carries the token value; argv carries the
+    // `-c` overrides naming the broker URL and the token env var. No owned
+    // files or dirs — the child keeps the human's real home, where the
+    // credentials and the rollout this family resumes live.
     let config = crate::mcp_broker::McpLaunchConfig::for_test(
         "http://127.0.0.1:4321/mcp",
         "secret-bearer-launch",
     );
-    let carrier = mcp_launch(&config, &dir).expect("carrier");
-    assert!(carrier.arg_additions.is_empty(), "no verbatim argv splice");
+    let carrier = mcp_launch(&config, Path::new("unused")).expect("carrier");
     let env: std::collections::HashMap<_, _> = carrier.env_additions.iter().cloned().collect();
     assert_eq!(
         env.get(crate::mcp_broker::MCP_TOKEN_ENV)
             .map(String::as_str),
         Some("secret-bearer-launch")
     );
-    let home = env.get(CODEX_HOME_ENV).expect("CODEX_HOME rides the env");
-    assert_eq!(carrier.owned_dirs.len(), 1);
+    assert!(carrier.owned_paths.is_empty(), "nothing on disk to revoke");
+    assert!(carrier.owned_dirs.is_empty(), "no per-session home");
     assert_eq!(
-        carrier.owned_dirs[0].to_string_lossy(),
-        home.as_str(),
-        "the owned dir is the env dir"
+        carrier.arg_additions,
+        vec![
+            "-c".to_string(),
+            format!(
+                "mcp_servers.{}.url=\"http://127.0.0.1:4321/mcp\"",
+                crate::mcp_broker::MCP_SERVER_NAME
+            ),
+            "-c".to_string(),
+            format!(
+                "mcp_servers.{}.bearer_token_env_var=\"{}\"",
+                crate::mcp_broker::MCP_SERVER_NAME,
+                crate::mcp_broker::MCP_TOKEN_ENV
+            ),
+        ]
     );
     assert!(
-        home.contains("devboule-codex-home-"),
-        "owned home name the sweep covers: {home}"
+        !carrier
+            .arg_additions
+            .iter()
+            .any(|arg| arg.contains("secret-bearer-launch")),
+        "argv stays token-free"
     );
-    let text = std::fs::read_to_string(carrier.owned_paths[0].clone()).expect("config on disk");
-    assert!(text.contains("http://127.0.0.1:4321/mcp"));
-    assert!(!text.contains("secret-bearer-launch"), "no secret on disk");
+}
+
+/// A fake `codex app-server` (node): answers initialize/model-list and both
+/// thread roads. stderr is nulled: the tests read the protocol, never the
+/// log. When `FAKE_CODEX_METHODS` names a file, every request method the
+/// child sees is appended there, in arrival order.
+const FAKE_CODEX_HANDSHAKE: &str = r#"
+const methods = process.env.FAKE_CODEX_METHODS || "";
+let buf = "";
+process.stdin.on("data", (chunk) => {
+  buf += chunk.toString();
+  let nl;
+  while ((nl = buf.indexOf("\n")) >= 0) {
+    const line = buf.slice(0, nl);
+    buf = buf.slice(nl + 1);
+    if (!line.trim()) continue;
+    let msg;
+    try { msg = JSON.parse(line); } catch { continue; }
+    if (msg.id === undefined || msg.id === null) continue;
+    if (methods) require("fs").appendFileSync(methods, msg.method + "\n");
+    let result = {};
+    if (msg.method === "initialize") result = { userAgent: "fake-codex" };
+    else if (msg.method === "model/list") result = { data: [{ id: "fake-model", isDefault: true }] };
+    else if (msg.method === "thread/start") result = { thread: { id: "thread-fake" } };
+    else if (msg.method === "thread/resume") result = { thread: { id: "thread-resumed" } };
+    process.stdout.write(JSON.stringify({ id: msg.id, result }) + "\n");
+  }
+});
+"#;
+
+fn fake_codex_child() -> std::process::Child {
+    fake_codex_child_recording(None)
+}
+
+fn fake_codex_child_recording(methods: Option<&std::path::Path>) -> std::process::Child {
+    let mut command = std::process::Command::new("node");
+    command
+        .args(["-e", FAKE_CODEX_HANDSHAKE])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    if let Some(methods) = methods {
+        command.env("FAKE_CODEX_METHODS", methods);
+    }
+    command
+        .spawn()
+        .expect("node is required for the fake Codex handshake")
+}
+
+#[test]
+fn codex_handshake_starts_a_thread_on_the_fresh_road() {
+    // Full `perform_handshake` through a fake child: the fresh road sends
+    // `thread/start` and reads the response's thread id.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("devboule-codex-handshake-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let mut child = fake_codex_child();
+    let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+    let mut stdout = CodexStdout::spawn(child.stdout.take().expect("stdout")).expect("reader");
+    let next_id = AtomicU64::new(1);
+    let handshake = super::perform_handshake(
+        &mut stdout,
+        &stdin,
+        &next_id,
+        &dir,
+        "auto",
+        ThreadRoad::Fresh,
+    )
+    .expect("the fresh handshake answers");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(handshake.thread_id, "thread-fake");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A fake `codex app-server` (node): answers initialize/model-list/thread-start,
-/// echoing the home from `FAKE_CODEX_HOME`, so the handshake assertion runs
-/// without the real binary. stderr is nulled: the real assertion reads the
-/// protocol echo, never the log.
-const FAKE_CODEX_HANDSHAKE: &str = r#"
-const home = process.env.FAKE_CODEX_HOME || "";
+#[test]
+fn codex_resume_handshake_loads_the_thread_and_never_starts_one() {
+    // The resume road must send `thread/resume {threadId}` after initialize —
+    // not `thread/start`. The child records every method it sees, so a
+    // mutation back to `thread/start` fails on the record, not on a comment.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("devboule-codex-resume-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let methods_file = dir.join("methods.txt");
+    let mut child = fake_codex_child_recording(Some(&methods_file));
+    let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+    let mut stdout = CodexStdout::spawn(child.stdout.take().expect("stdout")).expect("reader");
+    let next_id = AtomicU64::new(1);
+    let handshake = super::perform_handshake(
+        &mut stdout,
+        &stdin,
+        &next_id,
+        &dir,
+        "auto",
+        ThreadRoad::Resuming("thread-persisted"),
+    )
+    .expect("the resume handshake answers");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        handshake.thread_id, "thread-resumed",
+        "the handle is the response's thread id"
+    );
+    let seen = std::fs::read_to_string(&methods_file).expect("the child recorded its methods");
+    let methods: Vec<&str> = seen.lines().collect();
+    assert!(
+        methods.contains(&"thread/resume"),
+        "the resume road is the one on the wire: {methods:?}"
+    );
+    assert!(
+        !methods.contains(&"thread/start"),
+        "a resume never starts a new thread: {methods:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn codex_resume_spawn_sends_only_the_handle_and_returns_the_thread() {
+    // The production resume entry point: `spawn_process_resuming` drives the
+    // fake child through `thread/resume` and nothing that could re-send our
+    // journal — no `turn/start`, no `thread/start` — and the provider's
+    // answer becomes the session's peer id.
+    if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
+        eprintln!("{reason}");
+        return;
+    }
+    let state = crate::server::ServerState::new("codex-resume-road".to_string());
+    let dir =
+        std::env::temp_dir().join(format!("devboule-codex-resume-road-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let methods_file = dir.join("methods.txt");
+    let command = crate::session::PtyCommand::new(
+        "node",
+        vec![
+            "-e".to_string(),
+            FAKE_CODEX_HANDSHAKE.to_string(),
+            "--".to_string(),
+        ],
+        std::env::temp_dir(),
+        vec![(
+            "FAKE_CODEX_METHODS".to_string(),
+            methods_file.to_string_lossy().into_owned(),
+        )],
+    );
+    let mut spawned =
+        super::spawn_process_resuming(&state, command, "thread-persisted".to_string(), None)
+            .expect("the resume road spawns");
+    assert_eq!(spawned.peer_session_id.as_deref(), Some("thread-resumed"));
+    let seen = std::fs::read_to_string(&methods_file).expect("the child recorded its methods");
+    let methods: Vec<&str> = seen.lines().collect();
+    assert_eq!(
+        methods,
+        ["initialize", "model/list", "thread/resume"],
+        "a resume sends the handle and nothing else"
+    );
+    spawned.killer.kill();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A fake child that records its own argv to `FAKE_ARGV_FILE`, then answers
+/// the fresh handshake so `spawn_process` returns.
+const ARGV_FAKE: &str = r#"
+const fs = require("fs");
+const out = process.env.FAKE_ARGV_FILE || "";
+if (out) fs.writeFileSync(out, process.argv.slice(1).join("\n"));
 let buf = "";
 process.stdin.on("data", (chunk) => {
   buf += chunk.toString();
@@ -1119,104 +1200,147 @@ process.stdin.on("data", (chunk) => {
     try { msg = JSON.parse(line); } catch { continue; }
     if (msg.id === undefined || msg.id === null) continue;
     let result = {};
-    if (msg.method === "initialize") result = { codexHome: home, userAgent: "fake-codex" };
+    if (msg.method === "initialize") result = { userAgent: "fake-argv" };
     else if (msg.method === "model/list") result = { data: [{ id: "fake-model", isDefault: true }] };
-    else if (msg.method === "thread/start") result = { thread: { id: "thread-fake" } };
+    else if (msg.method === "thread/start") result = { thread: { id: "thread-argv" } };
     process.stdout.write(JSON.stringify({ id: msg.id, result }) + "\n");
   }
 });
 "#;
 
-fn fake_codex_child(home: &std::path::Path) -> std::process::Child {
-    std::process::Command::new("node")
-        .args(["-e", FAKE_CODEX_HANDSHAKE])
-        .env("FAKE_CODEX_HOME", home)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("node is required for the fake Codex handshake")
-}
-
 #[test]
-fn codex_handshake_asserts_the_echoed_home_end_to_end() {
-    // Full `perform_handshake` through a fake child: echo match proceeds,
-    // echo mismatch refuses (never runs against the wrong home), and the
-    // `None` road — today's production road — asserts nothing.
+fn codex_carrier_road_puts_the_overrides_on_argv_and_the_token_in_env() {
+    // The launch line the child actually reads: the `-c` overrides ride argv
+    // (URL and env-var pointer, no secret), the token rides the child env.
+    // The fake child records its own argv, so a mutation back to a
+    // config-file carrier — or a token spliced onto argv — fails here.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("devboule-codex-handshake-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let other = std::env::temp_dir().join(format!(
-        "devboule-codex-handshake-other-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::create_dir_all(&other);
-    let run = |expected: Option<&std::path::Path>| {
-        let mut child = fake_codex_child(&dir);
-        let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
-        let mut stdout = CodexStdout::spawn(child.stdout.take().expect("stdout")).expect("reader");
-        let next_id = AtomicU64::new(1);
-        let outcome =
-            super::perform_handshake(&mut stdout, &stdin, &next_id, &dir, "auto", expected);
-        let _ = child.kill();
-        let _ = child.wait();
-        outcome
-    };
-    let handshake = run(Some(&dir)).expect("echo match proceeds");
-    assert_eq!(handshake.thread_id, "thread-fake");
-    let error = match run(Some(&other)) {
-        Err(error) => error,
-        Ok(_) => panic!("echo mismatch refuses"),
-    };
-    assert!(
-        error.message.contains("not the chosen home"),
-        "the refusal names the mismatch: {}",
-        error.message
-    );
-    run(None).expect("the None road asserts nothing");
+    let state = crate::server::ServerState::new("codex-argv-road".to_string());
+    let owner = devboule_protocol::OwnerId::new("local", "argv").expect("owner");
+    let id = "s.argv.1";
+    let guard = state
+        .mcp
+        .register_with_provider(
+            id,
+            &owner,
+            &devboule_protocol::SessionKind::Codex,
+            Some("codex"),
+            crate::mcp_broker::AgentLineage::root(),
+        )
+        .expect("register")
+        .expect("bearer");
+    let config = state.mcp.launch_config(id).expect("launch config");
+    let bearer = config.bearer().to_string();
+    let dir = std::env::temp_dir().join(format!("devboule-codex-argv-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&other);
+    let _ = std::fs::create_dir_all(&dir);
+    let argv_file = dir.join("argv.txt");
+    let command = crate::session::PtyCommand::new(
+        "node",
+        vec!["-e".to_string(), ARGV_FAKE.to_string(), "--".to_string()],
+        std::env::temp_dir(),
+        vec![(
+            "FAKE_ARGV_FILE".to_string(),
+            argv_file.to_string_lossy().into_owned(),
+        )],
+    );
+    let mut spawned = super::spawn_process(
+        &state,
+        command,
+        Some(config),
+        crate::profile_delivery::ProfileDelivery::none(),
+    )
+    .expect("the carrier road spawns");
+    let argv = std::fs::read_to_string(&argv_file).expect("the child recorded its argv");
+    assert!(
+        argv.contains(&format!(
+            "mcp_servers.{}.url=",
+            crate::mcp_broker::MCP_SERVER_NAME
+        )),
+        "the URL rides a `-c` override: {argv}"
+    );
+    assert!(
+        argv.contains(&format!(
+            "mcp_servers.{}.bearer_token_env_var=\"{}\"",
+            crate::mcp_broker::MCP_SERVER_NAME,
+            crate::mcp_broker::MCP_TOKEN_ENV
+        )),
+        "the env-var pointer rides a `-c` override: {argv}"
+    );
+    assert!(
+        argv.lines().filter(|line| *line == "-c").count() == 2,
+        "exactly the two overrides: {argv}"
+    );
+    assert!(
+        !argv.contains(&bearer),
+        "the token never rides argv: {argv}"
+    );
+    spawned.killer.kill();
+    drop(guard);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn live_codex_recognises_the_home_carrier_and_reports_failure_honestly() {
-    // S6 live (real codex-cli, unreachable broker): the handshake echo names
-    // our home (carrier read), and `mcpServerStatus/list` shows the entry
-    // with a `toolsError` — the probe's failure shape, never `connected`.
-    // Skips where Codex is not runnable (gate PATH caveat, stated in report).
+fn thread_resume_params_carry_the_handle_and_nothing_else() {
+    // Measured against the installed schema: `ThreadResumeParams` requires
+    // exactly `threadId`; the thread on disk carries its cwd, model and policy.
+    assert_eq!(
+        thread_resume_params("01a0c179-a889-7432-8c89-2ca801ccf9fa"),
+        serde_json::json!({ "threadId": "01a0c179-a889-7432-8c89-2ca801ccf9fa" })
+    );
+}
+
+/// The broker's own entry in a `mcpServerStatus/list` answer. The human's real
+/// home may configure other servers, so the tests find ours by name.
+fn devboule_entry(status: &serde_json::Value) -> &serde_json::Value {
+    status["data"]
+        .as_array()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry["name"] == crate::mcp_broker::MCP_SERVER_NAME)
+        })
+        .unwrap_or_else(|| panic!("the devboule entry is listed: {status}"))
+}
+
+#[test]
+fn live_codex_reports_a_configured_but_dead_broker_honestly() {
+    // S6 live (real codex-cli, unreachable broker): the `-c` overrides
+    // configure the entry, and `mcpServerStatus/list` shows it with a
+    // `toolsError` — the probe's failure shape, never `connected`. Skips
+    // where Codex is not runnable (gate PATH caveat, stated in report).
     let Some((program, args)) = live_codex_command() else {
         eprintln!("skipping: live codex is not runnable here");
         return;
     };
-    let dir = std::env::temp_dir().join(format!("devboule-codex-live-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let home = dir.join("devboule-codex-home-live");
-    super::write_codex_home(&home, "http://127.0.0.1:9/mcp").expect("live home written");
+    let carrier = super::mcp_launch(
+        &crate::mcp_broker::McpLaunchConfig::for_test("http://127.0.0.1:9/mcp", "live-canary"),
+        Path::new("unused"),
+    )
+    .expect("carrier");
+    let mut args = args;
+    args.extend(carrier.arg_additions.iter().cloned());
     let status = live_codex_result(
         &program,
         &args,
-        &home,
         "live-canary-token",
         "mcpServerStatus/list",
         serde_json::json!({}),
     );
-    let entries = status["data"].as_array().expect("status data array");
-    assert_eq!(entries.len(), 1, "the carrier entry is listed: {status}");
-    assert_eq!(entries[0]["name"], "devboule");
+    let entry = devboule_entry(&status);
     assert!(
-        entries[0]["toolsError"]
+        entry["toolsError"]
             .as_str()
             .is_some_and(|message| !message.is_empty()),
         "configured-and-failed reads from toolsError, never runtimeStatus: {status}"
     );
     assert!(
-        entries[0]["runtimeStatus"].is_null(),
+        entry["runtimeStatus"].is_null(),
         "the probe's null-status trap holds live: {status}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1359,15 +1483,17 @@ fn live_codex_sends_the_bearer_and_serves_a_catalog_without_tools_error() {
             served += 1;
         }
     });
-    let dir = std::env::temp_dir().join(format!("devboule-codex-stub-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let home = dir.join("devboule-codex-home-stub");
-    super::write_codex_home(&home, &stub_url).expect("stub home written");
+    let carrier = super::mcp_launch(
+        &crate::mcp_broker::McpLaunchConfig::for_test(&stub_url, "live-bearer-xyz"),
+        Path::new("unused"),
+    )
+    .expect("carrier");
+    let mut args = args;
+    args.extend(carrier.arg_additions.iter().cloned());
     let started = Instant::now();
     let status = live_codex_result(
         &program,
         &args,
-        &home,
         "live-bearer-xyz",
         "mcpServerStatus/list",
         serde_json::json!({}),
@@ -1378,17 +1504,13 @@ fn live_codex_sends_the_bearer_and_serves_a_catalog_without_tools_error() {
     // The golden success shape (Q2, measured live +12 s apart with identical
     // results): present, catalog served, no toolsError. `runtimeStatus` is
     // null even fully working — keyed on nothing, documented here.
-    let entries = status["data"].as_array().expect("status data array");
-    assert_eq!(entries.len(), 1, "the stub entry is listed: {status}");
-    assert_eq!(entries[0]["name"], "devboule");
+    let entry = devboule_entry(&status);
     assert!(
-        entries[0]["tools"].get("stub_tool").is_some(),
+        entry["tools"].get("stub_tool").is_some(),
         "the stub catalog arrives: {status}"
     );
     assert!(
-        entries[0]
-            .get("toolsError")
-            .is_none_or(|value| value.is_null()),
+        entry.get("toolsError").is_none_or(|value| value.is_null()),
         "no toolsError on success: {status}"
     );
     // The token the daemon put in the child env flies on the stub's wire.
@@ -1399,17 +1521,19 @@ fn live_codex_sends_the_bearer_and_serves_a_catalog_without_tools_error() {
             .any(|(auth, _)| auth == "Bearer live-bearer-xyz"),
         "Bearer equals the env token: {seen:?}"
     );
-    // And it never rode argv: our launch line carries no secret, and the
-    // config names the env var without holding the value.
+    // And it never rode argv: the launch line names the env var, not the
+    // token, and the carrier owns no file on disk.
     assert!(
         !args.iter().any(|arg| arg.contains("live-bearer-xyz")),
         "argv is token-free"
     );
-    let config = std::fs::read_to_string(home.join("config.toml")).expect("config");
-    assert!(config.contains("DEVBOULE_MCP_TOKEN"));
-    assert!(!config.contains("live-bearer-xyz"));
+    assert!(
+        args.iter()
+            .any(|arg| arg.contains(crate::mcp_broker::MCP_TOKEN_ENV)),
+        "the bearer rides the env-var pointer: {args:?}"
+    );
+    assert!(carrier.owned_paths.is_empty() && carrier.owned_dirs.is_empty());
     eprintln!("live stub handshake+status took {elapsed:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- S7: post-spawn verification ----
@@ -1731,26 +1855,21 @@ fn codex_verify_trigger_flips_the_runtime_detached() {
 #[test]
 fn codex_none_road_installs_no_carrier_and_verifies_nothing() {
     // End-of-pass OFF property, executable: production's `None` road spawns
-    // with no home, no extra env, and no verification bundle — a Codex
-    // session obtains no bearer, no config file and no tool. (The gate
-    // itself is pinned unit-level by `registration_is_a_fact`; this pins
-    // the spawn road that S9 will light.)
+    // with no extra env and no verification bundle — a Codex session obtains
+    // no bearer, no launch-line override and no tool. (The gate itself is
+    // pinned unit-level by `registration_is_a_fact`; this pins the spawn road
+    // that S9 will light.)
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
     }
     let state = crate::server::ServerState::new("codex-none-road".to_string());
     let runtime_dir = state.sessions.runtime_dir().to_path_buf();
-    let home = std::env::temp_dir().join(format!("devboule-codex-none-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&home);
     let command = crate::session::PtyCommand::new(
         "node",
         vec!["-e".to_string(), FAKE_CODEX_HANDSHAKE.to_string()],
         std::env::temp_dir(),
-        vec![(
-            "FAKE_CODEX_HOME".to_string(),
-            home.to_string_lossy().into_owned(),
-        )],
+        Vec::new(),
     );
     let mut spawned = super::spawn_process(
         &state,
@@ -1775,23 +1894,12 @@ fn codex_none_road_installs_no_carrier_and_verifies_nothing() {
         })
         .collect();
     assert!(orphans.is_empty(), "no home prepared: {orphans:?}");
-    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// A fake child for the live carrier road: handshake answers plus a golden
-/// `mcpServerStatus/list` after `LIST_DELAY_MS`. The echo is globbed from
-/// `FAKE_RUNTIME_DIR` — the carrier home is minted inside `spawn_process`,
-/// so no caller can know its name beforehand and the assertion stays honest.
+/// `mcpServerStatus/list` after `LIST_DELAY_MS`.
 const ROAD_FAKE: &str = r#"
-const fs = require("fs"), path = require("path");
-const runtimeDir = process.env.FAKE_RUNTIME_DIR || "";
 const listDelay = parseInt(process.env.LIST_DELAY_MS || "0", 10);
-function codexHome() {
-  try {
-    const hit = fs.readdirSync(runtimeDir).find((n) => n.startsWith("devboule-codex-home-"));
-    return hit ? path.join(runtimeDir, hit) : "";
-  } catch { return ""; }
-}
 let buf = "";
 process.stdin.on("data", (chunk) => {
   buf += chunk.toString();
@@ -1804,7 +1912,7 @@ process.stdin.on("data", (chunk) => {
     try { msg = JSON.parse(line); } catch { continue; }
     if (msg.id === undefined || msg.id === null) continue;
     const reply = (result) => process.stdout.write(JSON.stringify({ id: msg.id, result }) + "\n");
-    if (msg.method === "initialize") reply({ codexHome: codexHome(), userAgent: "fake-road" });
+    if (msg.method === "initialize") reply({ userAgent: "fake-road" });
     else if (msg.method === "model/list") reply({ data: [{ id: "fake-model", isDefault: true }] });
     else if (msg.method === "thread/start") reply({ thread: { id: "thread-road" } });
     else if (msg.method === "mcpServerStatus/list") {
@@ -1819,12 +1927,12 @@ process.stdin.on("data", (chunk) => {
 #[test]
 fn codex_live_carrier_road_registers_verifies_and_lists() {
     // S9 wiring, end to end through production code: broker register (the
-    // flipped gate admits Codex) → carrier → spawn (echo asserted) → bind
-    // (Unverified installed) → detached verify → roster lists the child as
-    // Hosted. The part-2 report's two uncovered lines — the trigger CALL
-    // and the else-bind LINE — are both load-bearing here: without the
-    // bind the word never leaves Unavailable, without the trigger it never
-    // leaves Unverified.
+    // flipped gate admits Codex) → carrier → spawn → bind (Unverified
+    // installed) → detached verify → roster lists the child as Hosted. The
+    // part-2 report's two uncovered lines — the trigger CALL and the
+    // else-bind LINE — are both load-bearing here: without the bind the word
+    // never leaves Unavailable, without the trigger it never leaves
+    // Unverified.
     if let Some(reason) = crate::test_support::external_program_skip_reason("node") {
         eprintln!("{reason}");
         return;
@@ -1846,18 +1954,13 @@ fn codex_live_carrier_road_registers_verifies_and_lists() {
         .expect("a bearer is minted");
     assert!(state.mcp.is_registered(id));
     let config = state.mcp.launch_config(id).expect("launch config");
-    let runtime_dir = state.sessions.runtime_dir().to_path_buf();
     let command = crate::session::PtyCommand::new(
         "node",
-        vec!["-e".to_string(), ROAD_FAKE.to_string()],
+        // `--` so the carrier's `-c` additions the spawn appends are read as
+        // script arguments by the fake child, not as node options.
+        vec!["-e".to_string(), ROAD_FAKE.to_string(), "--".to_string()],
         std::env::temp_dir(),
-        vec![
-            (
-                "FAKE_RUNTIME_DIR".to_string(),
-                runtime_dir.to_string_lossy().into_owned(),
-            ),
-            ("LIST_DELAY_MS".to_string(), "1500".to_string()),
-        ],
+        vec![("LIST_DELAY_MS".to_string(), "1500".to_string())],
     );
     let spawned = super::spawn_process(
         &state,
@@ -1865,7 +1968,7 @@ fn codex_live_carrier_road_registers_verifies_and_lists() {
         Some(config),
         crate::profile_delivery::ProfileDelivery::none(),
     )
-    .expect("the carrier road spawns with its echo asserted");
+    .expect("the carrier road spawns");
     assert!(
         spawned.pending_codex_verify.is_some(),
         "a minted carrier verifies"
@@ -1926,68 +2029,7 @@ fn codex_live_carrier_road_registers_verifies_and_lists() {
         "bind installed Unverified before verify landed"
     );
     assert!(hosted, "the detached poll flipped the roster to Hosted");
-    // Teardown removes the home with the session (the killer owns it).
     let _ = state.sessions.close(id, &owner, &None);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let orphans: Vec<_> = std::fs::read_dir(&runtime_dir)
-            .expect("runtime dir")
-            .flatten()
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.starts_with("devboule-codex-home-"))
-            })
-            .collect();
-        if orphans.is_empty() {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "teardown removes the home: {orphans:?}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-#[test]
-fn codex_killer_removes_the_home_even_for_an_exited_child() {
-    // The S9 road-test regression, pinned directly: a child that already
-    // exited when `kill` runs must still lose its home. The old grace-loop
-    // early `return` leaked the whole tree exactly here.
-    let dir = std::env::temp_dir().join(format!("devboule-codex-killer-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let home = dir.join("devboule-codex-home-killed");
-    std::fs::create_dir_all(&home).expect("home");
-    std::fs::write(home.join("config.toml"), b"stale").expect("config");
-    let mut child = std::process::Command::new("node")
-        .args(["-e", "process.exit(0);"])
-        .spawn()
-        .expect("node exits at once");
-    // Reaped before kill: the grace loop observes the exit on entry.
-    assert!(child.wait().expect("reap").success());
-    let catalog = crate::codex_view::catalog_from_response(&serde_json::json!({
-        "data": [{ "id": "model", "isDefault": true }]
-    }))
-    .expect("catalog");
-    let mut killer = super::CodexKiller {
-        process: Arc::new(Mutex::new(child)),
-        stdin: Arc::new(Mutex::new(None)),
-        next_id: Arc::new(AtomicU64::new(1)),
-        state: Arc::new(crate::codex_view::CodexState::new(
-            "thread-kill".to_string(),
-            catalog,
-            "auto",
-        )),
-        permission_broker: PermissionBroker::for_test(Arc::new(|_, _| Ok(()))),
-        cancelled: Arc::new(AtomicBool::new(false)),
-        codex_home: Some(home.clone()),
-    };
-    use crate::session::SessionKiller;
-    killer.kill();
-    assert!(!home.exists(), "an exited child still loses its home");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Attached-runtime helper mirroring ACP's: a runtime with a broker plus a
@@ -2108,19 +2150,17 @@ fn live_codex_command() -> Option<(std::path::PathBuf, Vec<String>)> {
 fn live_codex_result(
     program: &std::path::Path,
     args: &[String],
-    home: &std::path::Path,
     token: &str,
     method: &str,
     params: serde_json::Value,
 ) -> serde_json::Value {
     let mut child = std::process::Command::new(program)
         .args(args)
-        .env(super::CODEX_HOME_ENV, home)
         .env(crate::mcp_broker::MCP_TOKEN_ENV, token)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .current_dir(home)
+        .current_dir(std::env::temp_dir())
         .spawn()
         .expect("live codex spawns");
     let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
@@ -2141,12 +2181,7 @@ fn live_codex_result(
         )
         .unwrap_or_else(|_| panic!("live {method} answers"))
     };
-    let initialize = send("initialize", super::initialize_params());
-    super::assert_codex_home(
-        initialize.get("codexHome").and_then(|value| value.as_str()),
-        home,
-    )
-    .expect("live echo names the chosen home");
+    let _initialize = send("initialize", super::initialize_params());
     // Notifications get no response, so they ride `send_frame`, never
     // `request_response` (which would park until the deadline). Mirrors
     // `perform_handshake`'s own `initialized` send.

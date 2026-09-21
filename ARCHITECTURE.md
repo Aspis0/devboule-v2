@@ -153,16 +153,19 @@ tree, so "closing the last window quits the app" is not something this code show
    `Ended` / `Recovered` with a transcript-integrity verdict (`journal.rs:398-418`); the replay emits
    `Recovered` and no exit event (`journal_replay.rs:374-392`). The transcript is then replayed from
    the journal on attach (§3). Starting the provider again is an explicit, separate act: `resume` is
-   the only path, and the gate admits **two** families — ACP and Claude
+   the only path, and the gate admits **three** families — ACP, Claude and Codex
    (`resume_handle`, `session.rs:9500`; the per-family fact is `Provider::resumable`,
-   `provider.rs:240`, answered `true` by `AcpProvider` and `ClaudeProvider` and `false` by Pi, Codex
-   and Terminal). Codex is refused outright and Pi is deliberately excluded "until Pi resume is
+   `provider.rs:240`, answered `true` by `AcpProvider`, `ClaudeProvider` and `CodexProvider` and
+   `false` by Pi and Terminal). Pi is deliberately excluded "until Pi resume is
    designed end to end" — pi can resume on its own wire, so that exclusion is a decision, not a
    limitation. Claude resumes by handing the CLI back its own history: the daemon finds the
    transcript file for the provider's session id under the Claude home, refuses with a named error
    when it is not there, and passes `--resume` (`claude_client.rs:390`, `:411`, `:429`). The id it
    builds that path from is validated against a closed alphabet first, because a session id that
-   could contain a separator is a path that could leave its root.
+   could contain a separator is a path that could leave its root. Codex resumes by
+   `thread/resume { threadId }` on the app-server (`codex_client.rs`, the `ThreadRoad`
+   handshake): the thread id is the handle the row already stores, the rollout under the human's
+   Codex home is the conversation, and no journal history is re-sent.
 
 **The daemon can outlive the app.** Because the idle exit requires `sessions == 0` (`server.rs:415`),
 a daemon whose app went away without delivering `Shutdown` — a kill, a crash — keeps running with its
@@ -836,9 +839,12 @@ speaking a different protocol version is refused rather than replaced
 supervisor on its next iteration, paced only by the loop sleep and the 50 × 100 ms connect retries
 (`src-tauri/src/client/mod.rs:1339-1369`; `crates/devboule-daemon/src/client.rs:29-30`).
 
-**`resume` exists only for ACP providers.** `resume_handle` refuses Codex outright and excludes Pi
-deliberately (`crates/devboule-daemon/src/session.rs:8039-8065`), so a Claude, Pi or Codex session
-that was lost with its process cannot be brought back by the app — only replayed.
+**`resume` exists for ACP, Claude and Codex.** `resume_handle` admits the three resumable families
+and excludes Pi deliberately (`crates/devboule-daemon/src/session.rs:8039-8065`): a Pi session that
+was lost with its process cannot be brought back by the app — only replayed. Codex resume loads the
+thread by `threadId` from the human's real Codex home, which is also why that family keeps no
+per-session `CODEX_HOME` and writes no carrier file (the broker rides `-c` overrides on the launch
+line).
 
 Six further questions that no code here answers. They are recorded as questions because that is what the evidence supports:
 

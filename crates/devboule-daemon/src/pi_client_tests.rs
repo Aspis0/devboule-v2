@@ -2368,7 +2368,7 @@ mod lifecycle_tests {
         // The gate opens, the delivery lands, the create returns — and
         // only then does the session exist for its peers. Resume's guard
         // (the re-audit's P2-1) sits behind the journal-row lookup and
-        // `resume_handle`, and only ACP rows take that path — so the
+        // `resume_handle`, and a resumable row takes that path — so the
         // resume refusal is observed by writing the row a resumed ACP
         // child carries and naming the windowed id the way the audit's
         // trigger describes. The named-provider resolution the resume

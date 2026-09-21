@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -235,185 +235,86 @@ fn seed_model_and_effort(
     Ok(())
 }
 
-/// The env name Codex reads its home directory from. Family knowledge lives in
-/// this module (rule 1); the broker's own env names (`DEVBOULE_MCP_TOKEN`,
-/// `DEVBOULE_MCP_URL`) live beside the door in `mcp_broker`.
-pub(crate) const CODEX_HOME_ENV: &str = "CODEX_HOME";
-/// Owned per-session home dir names under the runtime dir. The sweep removes
-/// whole trees by this name alone — never by content, never outside our names —
-/// so a Codex child's goals, logs, sqlite and `installation_id` (probe-measured
-/// per-child state) can never leak into a sibling or survive teardown.
-const CODEX_HOME_PREFIX: &str = "devboule-codex-home-";
-static CODEX_HOME_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// One MCP server entry in a Codex `config.toml`, generated from typed values
-/// (S6). The table name is the broker's `MCP_SERVER_NAME`; the token travels
-/// as a child-env name, never a value on disk — the secret on disk is the
-/// pointer, the secret in memory is the env, the same exposure class as
-/// Claude's inline-bearer file.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct CodexMcpServer {
-    url: String,
-    bearer_token_env_var: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-struct CodexHomeConfig {
-    #[serde(default)]
-    mcp_servers: std::collections::BTreeMap<String, CodexMcpServer>,
-}
-
-/// Render the home's `config.toml` from typed values. `BTreeMap` so the bytes
-/// are deterministic and the parse-back below reads exactly what was written.
-fn render_codex_config(url: &str) -> String {
-    let mut mcp_servers = std::collections::BTreeMap::new();
-    mcp_servers.insert(
-        crate::mcp_broker::MCP_SERVER_NAME.to_string(),
-        CodexMcpServer {
-            url: url.to_string(),
-            bearer_token_env_var: crate::mcp_broker::MCP_TOKEN_ENV.to_string(),
-        },
-    );
-    toml::to_string(&CodexHomeConfig { mcp_servers }).expect("typed Codex config serializes")
-}
-
-/// The parse-back before the write (S6): the bytes must parse as TOML *and*
-/// carry our server entry with our URL and our token-env pointer. A file that
-/// does not round-trip never reaches the child — without this, a broken writer
-/// reproduces the probe's silent dead end (`Invalid configuration; using
-/// defaults`, server keeps serving, no tools, nobody told).
-fn parse_back_codex_config(text: &str) -> Result<CodexMcpServer, String> {
-    let config: CodexHomeConfig = toml::from_str(text)
-        .map_err(|error| format!("Codex home config does not parse as TOML: {error}"))?;
-    config
-        .mcp_servers
-        .get(crate::mcp_broker::MCP_SERVER_NAME)
-        .cloned()
-        .filter(|server| {
-            !server.url.is_empty()
-                && server.bearer_token_env_var == crate::mcp_broker::MCP_TOKEN_ENV
-        })
-        .ok_or_else(|| {
-            "Codex home config lacks the devboule MCP server entry with our URL and token pointer"
-                .to_string()
-        })
-}
-
-/// Parse-back plus protected write, in that order: a refusal leaves neither a
-/// home dir nor a config behind. The text goes through S4's
-/// `write_protected_bytes` (create_new, DACL before the first byte, sync,
-/// rename) — no second recipe.
-fn write_codex_home_with(home: &Path, text: &str) -> io::Result<()> {
-    parse_back_codex_config(text).map_err(io::Error::other)?;
-    crate::mcp_broker::write_protected_str(&home.join("config.toml"), text)
-}
-
-pub(crate) fn write_codex_home(home: &Path, url: &str) -> io::Result<()> {
-    write_codex_home_with(home, &render_codex_config(url))
-}
-
-fn codex_home_path(runtime_dir: &Path) -> PathBuf {
-    let serial = CODEX_HOME_COUNTER.fetch_add(1, Ordering::Relaxed);
-    runtime_dir.join(format!("{CODEX_HOME_PREFIX}{serial}"))
-}
-
-fn remove_codex_home(home: &Path) {
-    if let Err(error) = std::fs::remove_dir_all(home) {
-        if error.kind() != io::ErrorKind::NotFound {
-            eprintln!("could not remove Codex home {}: {error}", home.display());
-        }
-    }
-}
-
-/// The handshake assertion (S6): the `initialize` result's echoed `codexHome`
-/// must be the directory chosen — canonicalised on BOTH sides, because Windows
-/// symlink/case normalisation makes raw string equality refuse healthy children
-/// (plan correction #3). Mismatch, absence, or an unreadable dir means the env
-/// redirect did not take and the child would read the human's real `~/.codex`:
-/// refuse loudly, never run against the wrong home. The one loud failure Codex
-/// version drift (Q11) produces — a renamed echo key reads as absent here.
-fn assert_codex_home(echoed: Option<&str>, expected_home: &Path) -> Result<(), WireError> {
-    let echoed = echoed.filter(|value| !value.is_empty()).ok_or_else(|| {
-        WireError::new(
-            ErrorCode::Io,
-            "Codex initialize response had no codexHome; the home redirect cannot be verified, so the child is refused rather than run against an unknown home.",
-        )
-    })?;
-    let expected = expected_home.canonicalize().map_err(|error| {
-        WireError::new(
-            ErrorCode::Io,
-            format!("Could not canonicalize the chosen Codex home: {error}"),
-        )
-    })?;
-    let actual = Path::new(echoed).canonicalize().map_err(|error| {
-        WireError::new(
-            ErrorCode::Io,
-            format!("Could not canonicalize the Codex home the child reports ({echoed}): {error}"),
-        )
-    })?;
-    if actual != expected {
-        return Err(WireError::new(
-            ErrorCode::Io,
-            format!(
-                "Codex runs in {}, not the chosen home {}; refusing rather than reading the human's real config.",
-                actual.display(),
-                expected.display()
-            ),
-        ));
-    }
-    Ok(())
-}
-
 /// The Codex carrier seam (S4 shape, S6 body — the provider-trait signatures
-/// verbatim, so adoption is a move): from the launch config the broker minted,
-/// the env the child needs and the owned home. Token travels as child **env**
-/// (`DEVBOULE_MCP_TOKEN`), `CODEX_HOME` joins it the same way. Never argv —
-/// the argv token-free assertion in S6 tests pins this, and the URL rides the
-/// config file inline (it is not a secret; the names carry no secret bytes).
+/// verbatim, so adoption is a move): the broker's server rides the app-server
+/// launch line as `-c mcp_servers.<name>.url=...` overrides, with the bearer
+/// named by `bearer_token_env_var` and carried as child **env**
+/// (`DEVBOULE_MCP_TOKEN`). The token itself never rides argv — the S6
+/// argv-token-free assertion pins this; the URL is not a secret. No
+/// `CODEX_HOME` redirect: a per-session home carries no `auth.json` (measured:
+/// every turn answers 401 "Missing bearer or basic authentication"), and the
+/// rollout this client resumes lives under the home that wrote it, which the
+/// startup sweep then deletes. The child keeps the human's real home, where
+/// the credentials and the rollouts already live.
 pub(crate) fn mcp_launch(
     config: &crate::mcp_broker::McpLaunchConfig,
-    runtime_dir: &Path,
+    _runtime_dir: &Path,
 ) -> Result<crate::mcp_broker::McpProviderConfig, WireError> {
-    let home = codex_home_path(runtime_dir);
-    write_codex_home(&home, &config.url).map_err(|error| {
-        remove_codex_home(&home);
-        WireError::new(
-            ErrorCode::Io,
-            format!("Could not prepare the Codex home: {error}"),
-        )
-    })?;
     Ok(crate::mcp_broker::McpProviderConfig {
-        env_additions: vec![
-            (
-                crate::mcp_broker::MCP_TOKEN_ENV.to_string(),
-                config.bearer().to_string(),
+        env_additions: vec![(
+            crate::mcp_broker::MCP_TOKEN_ENV.to_string(),
+            config.bearer().to_string(),
+        )],
+        arg_additions: vec![
+            "-c".to_string(),
+            format!(
+                "mcp_servers.{}.url=\"{}\"",
+                crate::mcp_broker::MCP_SERVER_NAME,
+                config.url
             ),
-            (
-                CODEX_HOME_ENV.to_string(),
-                home.to_string_lossy().into_owned(),
+            "-c".to_string(),
+            format!(
+                "mcp_servers.{}.bearer_token_env_var=\"{}\"",
+                crate::mcp_broker::MCP_SERVER_NAME,
+                crate::mcp_broker::MCP_TOKEN_ENV
             ),
         ],
-        arg_additions: Vec::new(),
-        owned_paths: vec![home.join("config.toml")],
-        owned_dirs: vec![home],
+        owned_paths: Vec::new(),
+        owned_dirs: Vec::new(),
     })
 }
 
 /// Spawn Codex (S6 wiring, S9 live): `mcp` is the broker's launch config when
-/// the session was registered for MCP tools, `None` otherwise. `None` is exactly
-/// the old behaviour — no home dir, no extra env, no handshake assertion — and
-/// stays the road for unregistered sessions. `Some` builds
-/// the per-session `CODEX_HOME` (our `config.toml` naming the broker by env-var
-/// pointer), joins `DEVBOULE_MCP_TOKEN` + `CODEX_HOME` onto the child env (never
-/// argv), and asserts the `initialize` echo names the chosen dir — canonicalised
-/// both sides — refusing loudly otherwise, never running against the human's
-/// real home. A per-session home means per-session empty state (goals, sqlite,
-/// `installation_id`); fleet cost disclosed in S7/Q5, not solved here.
+/// the session was registered for MCP tools, `None` otherwise. `Some` joins the
+/// broker's server onto the launch line (`mcp_launch`) and the bearer onto the
+/// child env; `None` leaves both untouched. The child keeps the human's real
+/// Codex home: the credentials live there and the rollout this family resumes
+/// is written there, which is also why no per-session home is minted.
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
     mcp: Option<crate::mcp_broker::McpLaunchConfig>,
     delivery: ProfileDelivery,
+) -> Result<SpawnedSession, WireError> {
+    spawn_codex(state, command, mcp, delivery, ThreadRoad::Fresh)
+}
+
+/// A resumed child: the same spawn and handshake, with `thread/resume` in
+/// place of `thread/start` and nothing else changed. The app-server loads the
+/// thread from disk by the `threadId` the dead generation persisted — the
+/// session row's own handle — and loads nothing from our journal: no history
+/// is re-sent, the provider's rollout is the conversation.
+pub(super) fn spawn_process_resuming(
+    state: &Arc<ServerState>,
+    command: PtyCommand,
+    peer_session_id: String,
+    mcp: Option<crate::mcp_broker::McpLaunchConfig>,
+) -> Result<SpawnedSession, WireError> {
+    spawn_codex(
+        state,
+        command,
+        mcp,
+        ProfileDelivery::none(),
+        ThreadRoad::Resuming(&peer_session_id),
+    )
+}
+
+fn spawn_codex(
+    state: &Arc<ServerState>,
+    command: PtyCommand,
+    mcp: Option<crate::mcp_broker::McpLaunchConfig>,
+    delivery: ProfileDelivery,
+    road: ThreadRoad<'_>,
 ) -> Result<SpawnedSession, WireError> {
     validate_delivery(&delivery)?;
     let mode_id = delivery
@@ -427,27 +328,15 @@ pub(super) fn spawn_process(
         Some(config) => Some(mcp_launch(config, state.sessions.runtime_dir())?),
         None => None,
     };
-    let codex_home: Option<PathBuf> = carrier
+    let carrier_args: Vec<String> = carrier
         .as_ref()
-        .and_then(|carrier| carrier.owned_dirs.first().cloned());
-    // S4 seam invariants, pinned loudly: Codex carries no verbatim argv
-    // additions (its launch line is already complete from the catalog) — a
-    // carrier violating that fails here, not in the child.
-    if let Some(carrier) = carrier.as_ref() {
-        assert!(
-            carrier.arg_additions.is_empty(),
-            "codex carrier is env + owned home, nothing else"
-        );
-    }
-    let remove_home = |codex_home: &Option<PathBuf>| {
-        if let Some(home) = codex_home {
-            remove_codex_home(home);
-        }
-    };
+        .map(|carrier| carrier.arg_additions.clone())
+        .unwrap_or_default();
 
     let mut process = Command::new(&command.program);
     process
         .args(&command.args)
+        .args(&carrier_args)
         .current_dir(&command.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -455,7 +344,7 @@ pub(super) fn spawn_process(
     for (key, value) in &command.env {
         process.env(key, value);
     }
-    // The carrier env, only when the broker minted one: token + home as child
+    // The carrier env, only when the broker minted one: the bearer as child
     // env (never argv — the S6 argv token-free assertion pins this).
     if let Some(carrier) = carrier.as_ref() {
         for (key, value) in &carrier.env_additions {
@@ -468,7 +357,6 @@ pub(super) fn spawn_process(
         process.creation_flags(0x0800_0000);
     }
     let mut child = process.spawn().map_err(|error| {
-        remove_home(&codex_home);
         WireError::new(
             ErrorCode::Io,
             format!("Could not start Codex {}: {error}", command.program),
@@ -480,7 +368,6 @@ pub(super) fn spawn_process(
         use std::os::windows::io::AsRawHandle;
         let process_job = JobObject::new().map_err(|error| {
             terminate_process(&mut child);
-            remove_home(&codex_home);
             WireError::new(
                 ErrorCode::Io,
                 format!("Could not create the Codex process job: {error}"),
@@ -493,7 +380,6 @@ pub(super) fn spawn_process(
             .and_then(|()| process_job.assign(handle))
         {
             terminate_process(&mut child);
-            remove_home(&codex_home);
             return Err(WireError::new(
                 ErrorCode::Io,
                 format!("Could not contain the Codex process: {error}"),
@@ -505,7 +391,6 @@ pub(super) fn spawn_process(
     #[cfg(not(windows))]
     let process_job = JobObject::new().map_err(|error| {
         terminate_process(&mut child);
-        remove_home(&codex_home);
         WireError::new(
             ErrorCode::Io,
             format!("Could not create the Codex process job: {error}"),
@@ -516,17 +401,14 @@ pub(super) fn spawn_process(
 
     let stdin = child.stdin.take().ok_or_else(|| {
         terminate_process(&mut child);
-        remove_home(&codex_home);
         WireError::new(ErrorCode::Io, "Codex did not provide stdin.")
     })?;
     let stdout = child.stdout.take().ok_or_else(|| {
         terminate_process(&mut child);
-        remove_home(&codex_home);
         WireError::new(ErrorCode::Io, "Codex did not provide stdout.")
     })?;
     let stderr = child.stderr.take().ok_or_else(|| {
         terminate_process(&mut child);
-        remove_home(&codex_home);
         WireError::new(ErrorCode::Io, "Codex did not provide stderr.")
     })?;
     let process = Arc::new(Mutex::new(child));
@@ -534,24 +416,15 @@ pub(super) fn spawn_process(
     let next_id = Arc::new(AtomicU64::new(1));
     let mut stdout = CodexStdout::spawn(stdout).map_err(|error| {
         terminate_shared_process(&process);
-        remove_home(&codex_home);
         WireError::new(
             ErrorCode::Io,
             format!("Could not read Codex stdout: {error}"),
         )
     })?;
-    let handshake = perform_handshake(
-        &mut stdout,
-        &stdin,
-        &next_id,
-        &command.cwd,
-        &mode_id,
-        codex_home.as_deref(),
-    )
-    .inspect_err(|_| {
-        terminate_shared_process(&process);
-        remove_home(&codex_home);
-    })?;
+    let handshake = perform_handshake(&mut stdout, &stdin, &next_id, &command.cwd, &mode_id, road)
+        .inspect_err(|_| {
+            terminate_shared_process(&process);
+        })?;
 
     let state = Arc::new(CodexState::new(
         handshake.thread_id,
@@ -564,7 +437,6 @@ pub(super) fn spawn_process(
     // before the child is a session, instead of running something else.
     if let Err(error) = seed_model_and_effort(&state, &delivery) {
         terminate_shared_process(&process);
-        remove_home(&codex_home);
         return Err(error);
     }
     let peer_session_id = state.thread_id();
@@ -607,7 +479,6 @@ pub(super) fn spawn_process(
         state: Arc::clone(&state),
         permission_broker: Arc::clone(&permission_broker),
         cancelled: Arc::new(AtomicBool::new(false)),
-        codex_home: codex_home.clone(),
     };
     let reader = CodexReader {
         buffer: Vec::new(),
@@ -1090,7 +961,6 @@ struct CodexKiller {
     state: Arc<CodexState>,
     permission_broker: Arc<PermissionBroker>,
     cancelled: Arc<AtomicBool>,
-    codex_home: Option<PathBuf>,
 }
 
 impl SessionKiller for CodexKiller {
@@ -1110,10 +980,10 @@ impl SessionKiller for CodexKiller {
         if let Ok(mut stdin) = self.stdin.lock() {
             *stdin = None;
         }
-        // Grace for a natural exit first — but the home is removed on EVERY
-        // path below, never just the kill path: the old early `return` on a
-        // reaped child skipped the removal and leaked the whole tree (S9 road
-        // test caught it: a child that exits on stdin close left its home).
+        // Grace for a natural exit first — but the process must be reaped on
+        // EVERY path below, never just the kill path: the old early `return`
+        // on a reaped child skipped the reap (S9 road test caught it: a child
+        // that exits on stdin close left its state behind).
         let deadline = Instant::now() + KILL_GRACE;
         while Instant::now() < deadline {
             if self
@@ -1142,9 +1012,6 @@ impl SessionKiller for CodexKiller {
                 }
             }
         }
-        if let Some(home) = self.codex_home.as_deref() {
-            remove_codex_home(home);
-        }
     }
 
     fn clone_killer(&self) -> Box<dyn SessionKiller> {
@@ -1155,7 +1022,6 @@ impl SessionKiller for CodexKiller {
             state: Arc::clone(&self.state),
             permission_broker: Arc::clone(&self.permission_broker),
             cancelled: Arc::clone(&self.cancelled),
-            codex_home: self.codex_home.clone(),
         })
     }
 }
@@ -1166,17 +1032,26 @@ struct Handshake {
     deferred: Vec<Value>,
 }
 
+/// The thread road the handshake takes: a fresh `thread/start`, or the
+/// `thread/resume` that loads the persisted thread by the handle a dead
+/// generation stored.
+#[derive(Clone, Copy)]
+enum ThreadRoad<'a> {
+    Fresh,
+    Resuming(&'a str),
+}
+
 fn perform_handshake(
     stdout: &mut CodexStdout,
     stdin: &Mutex<Option<ChildStdin>>,
     next_id: &AtomicU64,
     cwd: &Path,
     mode_id: &str,
-    expected_home: Option<&Path>,
+    road: ThreadRoad<'_>,
 ) -> Result<Handshake, WireError> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let mut deferred = Vec::new();
-    let initialize = request_response(
+    let _initialize = request_response(
         stdout,
         stdin,
         next_id,
@@ -1185,14 +1060,6 @@ fn perform_handshake(
         deadline,
         &mut deferred,
     )?;
-    // S6: the env redirect either took or the child reads the human's home.
-    // `None` (today's road) skips the check; `Some` refuses loudly on mismatch.
-    if let Some(expected) = expected_home {
-        assert_codex_home(
-            initialize.get("codexHome").and_then(Value::as_str),
-            expected,
-        )?;
-    }
     send_frame(
         stdin,
         &notification_frame("initialized", serde_json::json!({})),
@@ -1208,12 +1075,16 @@ fn perform_handshake(
         &mut deferred,
     )?;
     let mut catalog = catalog_from_response(&models_response)?;
+    let (method, params) = match road {
+        ThreadRoad::Fresh => ("thread/start", thread_start_params(cwd, mode_id)),
+        ThreadRoad::Resuming(thread_id) => ("thread/resume", thread_resume_params(thread_id)),
+    };
     let thread_response = request_response(
         stdout,
         stdin,
         next_id,
-        "thread/start",
-        thread_start_params(cwd, mode_id),
+        method,
+        params,
         deadline,
         &mut deferred,
     )?;
@@ -1221,7 +1092,7 @@ fn perform_handshake(
         .pointer("/thread/id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-        .ok_or_else(|| handshake_error("thread/start response had no thread.id"))?
+        .ok_or_else(|| handshake_error(&format!("{method} response had no thread.id")))?
         .to_string();
     catalog.apply_thread_response(&thread_response);
     Ok(Handshake {
@@ -1554,6 +1425,13 @@ fn thread_start_params(cwd: &Path, mode_id: &str) -> Value {
         Value::String(cwd.to_string_lossy().into_owned()),
     );
     Value::Object(params)
+}
+
+/// `thread/resume` takes the handle alone: the thread loaded from disk
+/// already carries its cwd, model and policy (measured against the installed
+/// app-server schema: `ThreadResumeParams` requires only `threadId`).
+fn thread_resume_params(thread_id: &str) -> Value {
+    serde_json::json!({ "threadId": thread_id })
 }
 
 fn send_frame(

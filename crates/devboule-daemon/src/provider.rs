@@ -255,9 +255,9 @@ pub(crate) trait Provider: Send + Sync {
     /// The wording of this family's resume refusal. NOT a second source of
     /// the decision — the fact stays `resumable()`; this method is only its
     /// explanation, so the yes/no is never expressible in two places. The
-    /// default is the generic sentence; Codex overrides it with its own.
+    /// default is the generic sentence; no family overrides it today.
     fn resume_refusal(&self) -> &'static str {
-        "only ACP and Claude sessions support this resume path"
+        "only ACP, Claude and Codex sessions support this resume path"
     }
 
     /// The refusal a non-resumable family's `spawn_resuming` answers with:
@@ -852,24 +852,20 @@ impl Provider for CodexProvider {
     }
 
     fn resumable(&self) -> bool {
-        false
+        // `thread/resume` loads the thread from disk by the `threadId` this
+        // family already persists; the rollout is the conversation, and no
+        // history rides our journal onto the wire.
+        true
     }
 
     fn spawn_resuming(
         &self,
-        _state: &Arc<ServerState>,
-        _command: super::PtyCommand,
-        _peer_session_id: String,
-        _mcp: Option<McpLaunchConfig>,
+        state: &Arc<ServerState>,
+        command: super::PtyCommand,
+        peer_session_id: String,
+        mcp: Option<McpLaunchConfig>,
     ) -> Result<SpawnedSession, WireError> {
-        Err(self.resume_refused())
-    }
-
-    fn resume_refusal(&self) -> &'static str {
-        // The family's own sentence, preserved verbatim from the resume
-        // site: collapsing it into the generic message would be a
-        // wire-visible behaviour change.
-        "Codex app-server sessions do not support resume"
+        super::codex_client::spawn_process_resuming(state, command, peer_session_id, mcp)
     }
 
     fn spawn_measures_health(&self) -> bool {
@@ -1534,16 +1530,16 @@ mod tests {
         }
     }
 
-    /// Stage 1: Claude joins ACP as a resumable family; Pi, Codex and the
-    /// terminal stay refused. Pins all five answers — the flip this test
-    /// guards went red before it went green.
+    /// Stage 1: Claude joins ACP as a resumable family; stage 2 adds Codex
+    /// (`thread/resume`); Pi and the terminal stay refused. Pins all five
+    /// answers — the flips this test guards went red before they went green.
     #[test]
     fn resumable_is_a_per_family_fact() {
         for (kind, resumable) in [
             (SessionKind::Acp, true),
             (SessionKind::Claude, true),
+            (SessionKind::Codex, true),
             (SessionKind::Pi, false),
-            (SessionKind::Codex, false),
             (SessionKind::Terminal, false),
         ] {
             assert_eq!(
@@ -1568,7 +1564,7 @@ mod tests {
             None,
         );
         assert!(!live, "a running process is never resumable");
-        for kind in [SessionKind::Pi, SessionKind::Codex, SessionKind::Terminal] {
+        for kind in [SessionKind::Pi, SessionKind::Terminal] {
             assert!(
                 !session_resumable(&kind, Some("x"), Some("peer-1"), false, None),
                 "an undesigned family is never resumable ({kind:?})"
@@ -1585,7 +1581,7 @@ mod tests {
                 "missing columns are never resumable"
             );
         }
-        for kind in [SessionKind::Acp, SessionKind::Claude] {
+        for kind in [SessionKind::Acp, SessionKind::Claude, SessionKind::Codex] {
             assert!(
                 session_resumable(&kind, Some("x"), Some("peer-1"), false, None),
                 "a dead admitted session with its columns is resumable ({kind:?})"

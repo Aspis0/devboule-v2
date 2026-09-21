@@ -135,8 +135,8 @@ pub fn spawn_resumed_session(
 ) -> Result<(), WireError> {
     let mcp = state.mcp.launch_config(&metadata.id);
     // The family's own respawn: ACP reloads by session/load, Claude by
-    // `--resume`. Anything the gate admitted implements this; the refused
-    // families never reach here.
+    // `--resume`, Codex by `thread/resume`. Anything the gate admitted
+    // implements this; the refused families never reach here.
     let family = provider::catalog_registry().provider_for_kind(&metadata.kind);
     let spawned = family.spawn_resuming(state, command, context.peer_session_id, mcp)?;
     start_spawned_session(

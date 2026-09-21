@@ -63,17 +63,19 @@ fn codex_first_prompt_does_not_wait_for_mcp() {
 
 #[test]
 fn resume_handle_refuses_undesigned_families_before_any_registration() {
-    // S9: Pi/Codex/terminal resume stays refused at the gate (deliberate —
-    // pi/Codex resume is undesigned), so the record-kind registration below
-    // it only ever sees ACP and Claude. A refusal here means no bearer is
-    // minted for a refused row, ever.
+    // S9: Pi/terminal resume stays refused at the gate (deliberate — pi
+    // resume is undesigned); Codex was admitted in stage 2, so the
+    // record-kind registration below only ever sees Acp, Claude and Codex. A
+    // refusal here means no bearer is minted for a refused row, ever.
     let owner = test_owner("S-1-5-21-resume", "process-resume");
     for (kind, needle) in [
-        (SessionKind::Codex, "do not support resume"),
-        (SessionKind::Pi, "only ACP and Claude sessions support"),
+        (
+            SessionKind::Pi,
+            "only ACP, Claude and Codex sessions support",
+        ),
         (
             SessionKind::Terminal,
-            "only ACP and Claude sessions support",
+            "only ACP, Claude and Codex sessions support",
         ),
     ] {
         let record = new_session_record("s.resume.1", &owner.user, None, kind, "Old");
@@ -99,6 +101,13 @@ fn resume_handle_refuses_undesigned_families_before_any_registration() {
     assert!(
         super::resume_handle(&claude, &owner).is_ok(),
         "a Claude row with its persisted handles passes the gate"
+    );
+    let mut codex = new_session_record("s.resume.4", &owner.user, None, SessionKind::Codex, "Old");
+    codex.provider = Some("codex".to_string());
+    codex.peer_session_id = Some("thread-1".to_string());
+    assert!(
+        super::resume_handle(&codex, &owner).is_ok(),
+        "a Codex row with its persisted thread id passes the gate"
     );
 }
 

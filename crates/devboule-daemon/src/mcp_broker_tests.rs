@@ -413,11 +413,12 @@ fn protected_bytes_write_is_mode_narrow_and_atomic() {
 }
 
 #[test]
-fn sweep_removes_owned_carriers_and_keeps_strangers() {
-    // S4 sweep test, S6-extended: stale Claude configs, pi permission/bridge
-    // files and their temps go, plus whole owned Codex home trees (S6); a
-    // non-matching file — and a non-matching dir — stay. Forbidden states:
-    // an orphan bridge file surviving teardown, an orphan home tree
+fn sweep_removes_legacy_codex_homes_and_keeps_strangers() {
+    // S4 sweep test: stale Claude configs, pi permission/bridge files and
+    // their temps go, plus legacy owned Codex home trees (the `-c` carrier
+    // writes no home; the sweep only ever sees leftovers from older builds);
+    // a non-matching file — and a non-matching dir — stay. Forbidden states:
+    // an orphan bridge file surviving teardown, an orphan legacy home tree
     // surviving it (leave either → red).
     let dir = std::env::temp_dir().join(format!("devboule-s4-sweep-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
@@ -456,7 +457,7 @@ fn sweep_removes_owned_carriers_and_keeps_strangers() {
     );
     assert!(
         !dir.join("devboule-codex-home-9").exists(),
-        "orphan Codex home trees are swept"
+        "orphan legacy Codex home trees are swept"
     );
     assert!(
         dir.join("devboule-mcp-abc.json.bak").exists(),
@@ -488,20 +489,25 @@ fn redaction_covers_bearer_and_url_but_not_env_names() {
     assert!(!redacted.contains("4567"), "endpoint redacted: {redacted}");
     let argv = "pi --mode rpc -e bridge.ts with DEVBOULE_MCP_TOKEN and DEVBOULE_MCP_URL";
     assert_eq!(config.redact_text(argv), argv, "env names are not secrets");
-    // S8: the same cover for Codex carrier errors (home path + names pass,
-    // secrets do not).
-    let codex_error = format!(
-        "Could not prepare the Codex home: dial {} with Bearer {} (CODEX_HOME set)",
+    // S8: the same cover for the Codex launch line — the URL rides a `-c`
+    // override on argv, the bearer value stays in the env, and the env-var
+    // names themselves are not secrets.
+    let codex_argv = format!(
+        "codex app-server -c mcp_servers.devboule.url=\"{}\" with Bearer {} and {}",
         config.url,
-        config.bearer()
+        config.bearer(),
+        crate::mcp_broker::MCP_TOKEN_ENV
     );
-    let redacted = config.redact_text(&codex_error);
+    let redacted = config.redact_text(&codex_argv);
     assert!(
         !redacted.contains("secret-bearer-xyz"),
         "bearer redacted: {redacted}"
     );
     assert!(!redacted.contains("4567"), "endpoint redacted: {redacted}");
-    assert!(redacted.contains("CODEX_HOME"), "names pass through");
+    assert!(
+        redacted.contains("DEVBOULE_MCP_TOKEN"),
+        "names pass through"
+    );
 }
 
 #[test]

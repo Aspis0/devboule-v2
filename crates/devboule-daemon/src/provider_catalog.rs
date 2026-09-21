@@ -482,10 +482,10 @@ pub(crate) fn peer_agents_input_schema() -> serde_json::Value {
 /// Which providers can be served the broker's tools, keyed by catalog id.
 ///
 /// S9: all four session families host carriers now — ACP and Claude as before,
-/// plus `codex` (app-server `CODEX_HOME` carrier, S6) and `pi` (RPC bridge, S5)
-/// with post-spawn verification (S7/S8). A provider absent from this table
-/// advertises no tools — the panel then hides its tool section, because there
-/// is nothing there to gate.
+/// plus `codex` (`-c mcp_servers` overrides on the launch line, S6) and `pi`
+/// (RPC bridge, S5) with post-spawn verification (S7/S8). A provider absent
+/// from this table advertises no tools — the panel then hides its tool
+/// section, because there is nothing there to gate.
 pub const AGENT_MCP_TOOLS: &[(&str, &[(&str, &str)])] = &[
     ("claude", MCP_BROKER_TOOLS),
     ("codex", MCP_BROKER_TOOLS),
