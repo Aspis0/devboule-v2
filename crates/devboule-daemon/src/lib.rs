@@ -120,8 +120,8 @@ pub use client::{
 // Neither the daemon's record nor its reader is behind `server`: the GUI
 // process is the reader, and it links this crate with `default-features = false`.
 pub use daemon_record::{
-    DaemonRecord, DaemonState, ExitReason, Heartbeat, HEARTBEAT_INTERVAL, RECORD_CAPACITY,
-    STALE_AFTER, STALE_BEATS,
+    DaemonRecord, DaemonState, ExitReason, Heartbeat, GOODBYE_TRUSTED_FOR, HEARTBEAT_INTERVAL,
+    RECORD_CAPACITY, STALE_AFTER, STALE_BEATS,
 };
 #[cfg(feature = "server")]
 pub use diagnostics::DiagnosticsInput;

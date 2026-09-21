@@ -147,15 +147,14 @@ fn the_age_that_decides_is_the_beat_and_it_is_counted_in_beats() {
     );
 }
 
-/// The reason outlives the process, which is the point of writing it down: an
-/// old goodbye is a deliberate exit that happened long ago, not a crash.
+/// A goodbye written a moment ago is the daemon's decision and is believed;
+/// the record still names who stopped.
 #[test]
-fn a_record_that_says_why_it_stopped_is_believed_however_old_it_is() {
+fn a_fresh_goodbye_is_believed_and_still_names_who_stopped() {
     let (dir, _guard) = unique_dir();
     let mut record = running(999_999);
     record.stopped(ExitReason::Idle);
     let path = write_record(&dir, &record);
-    age(&path, STALE_AFTER * 100);
 
     match DaemonState::read(&path) {
         DaemonState::Stopped(record, reason) => {
@@ -163,7 +162,28 @@ fn a_record_that_says_why_it_stopped_is_believed_however_old_it_is() {
             assert_eq!(record.pid, 999_999, "the record still names who stopped");
             assert!(!DaemonState::read(&path).is_live());
         }
-        other => panic!("a goodbye is not a crash, got {other:?}"),
+        other => panic!("a goodbye just written is a decision, got {other:?}"),
+    }
+}
+
+/// The same goodbye, aged past the window, no longer decides. Without this
+/// the reason would disarm the crash brake and stop a restart for as long as
+/// the file exists; the reason is still written down, it is just history.
+#[test]
+fn a_goodbye_that_aged_out_is_history_not_a_decision() {
+    let (dir, _guard) = unique_dir();
+    let mut record = running(999_999);
+    record.stopped(ExitReason::Requested);
+    let path = write_record(&dir, &record);
+    age(&path, GOODBYE_TRUSTED_FOR + Duration::from_secs(1));
+
+    match DaemonState::read(&path) {
+        DaemonState::Stale(record) => assert_eq!(
+            record.exit,
+            Some(ExitReason::Requested),
+            "the reason is still written down, it just no longer decides"
+        ),
+        other => panic!("an aged goodbye must not keep deciding, got {other:?}"),
     }
 }
 

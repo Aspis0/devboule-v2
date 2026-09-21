@@ -57,6 +57,15 @@ pub const STALE_BEATS: u32 = 4;
 pub const STALE_AFTER: Duration =
     Duration::from_secs(HEARTBEAT_INTERVAL.as_secs() * STALE_BEATS as u64);
 
+/// How long a goodbye keeps deciding.
+///
+/// A goodbye is dated by the same modification time a beat is, and it
+/// outlives the process that wrote it — but not the record's authority: past
+/// this window the reason is history, not an instruction. Keeping it deciding
+/// would let a body nobody has touched in minutes disarm the crash brake
+/// forever. The window is the heartbeat window: one age rule for the file.
+pub const GOODBYE_TRUSTED_FOR: Duration = STALE_AFTER;
+
 /// Why a daemon stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitReason {
@@ -179,9 +188,11 @@ pub enum DaemonState {
     /// A record whose heartbeat is inside the window.
     Live(DaemonRecord),
     /// A record whose heartbeat has aged out: the daemon that wrote it died
-    /// without a goodbye.
+    /// without a goodbye, or said goodbye long enough ago that the reason no
+    /// longer decides anything. The body is still there to be read.
     Stale(DaemonRecord),
-    /// A record that says why it stopped. The reason outlives the process.
+    /// A record that says why it stopped, inside [`GOODBYE_TRUSTED_FOR`]. The
+    /// reason outlives the process; this state does not outlive the window.
     Stopped(DaemonRecord, ExitReason),
 }
 
@@ -199,13 +210,12 @@ impl DaemonState {
         let Some(record) = DaemonRecord::parse(&body) else {
             return Self::Absent;
         };
-        if let Some(reason) = record.exit {
-            return Self::Stopped(record, reason);
-        }
-        if heartbeat_age(&metadata) <= STALE_AFTER {
-            Self::Live(record)
-        } else {
-            Self::Stale(record)
+        let age = heartbeat_age(&metadata);
+        match record.exit {
+            Some(reason) if age <= GOODBYE_TRUSTED_FOR => Self::Stopped(record, reason),
+            Some(_) => Self::Stale(record),
+            None if age <= STALE_AFTER => Self::Live(record),
+            None => Self::Stale(record),
         }
     }
 
