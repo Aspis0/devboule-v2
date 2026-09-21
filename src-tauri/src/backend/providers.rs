@@ -7,6 +7,7 @@ use devboule_protocol::ProviderInfo;
 
 use crate::client::DaemonBridge;
 
+use super::blocking::off_main_thread;
 use super::error::CommandError;
 
 #[derive(Serialize)]
@@ -42,12 +43,17 @@ pub fn providers_refresh(bridge: State<'_, DaemonBridge>) -> Result<ProviderCata
     })
 }
 
+/// The window must not wait on this call either: the daemon runs the
+/// provider's package install inline, and the client's budget for it is
+/// `PROVIDER_UPDATE_RPC_TIMEOUT` (240 s).
 #[tauri::command]
-pub fn provider_update(
+pub async fn provider_update(
     bridge: State<'_, DaemonBridge>,
     provider_id: String,
 ) -> Result<ProviderUpdateResult, CommandError> {
-    let (ok, exit_code, log) = require_client(&bridge)?.provider_update(&provider_id)?;
+    let client = require_client(&bridge)?;
+    let (ok, exit_code, log) =
+        off_main_thread(move || client.provider_update(&provider_id)).await?;
     Ok(ProviderUpdateResult { ok, exit_code, log })
 }
 

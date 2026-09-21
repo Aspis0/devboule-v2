@@ -18,6 +18,7 @@ use devboule_protocol::{
 
 use crate::client::DaemonBridge;
 
+use super::blocking::off_main_thread;
 use super::error::CommandError;
 
 #[cfg(test)]
@@ -27,8 +28,14 @@ pub use devboule_protocol::{
     validate_session_id, Session, SessionEvent, SessionKind, SessionStateSnapshot,
 };
 
+/// The window must not wait on this call.
+///
+/// A non-`async` command is invoked on the main thread, so the wait for the
+/// daemon's `session_create` — which runs the provider's whole handshake
+/// inline and can outlast the control-plane default — would freeze the window
+/// for as long as the daemon takes. `off_main_thread` is where the wait goes.
 #[tauri::command]
-pub fn session_create(
+pub async fn session_create(
     bridge: State<'_, DaemonBridge>,
     workspace_id: Option<String>,
     kind: SessionKind,
@@ -36,21 +43,31 @@ pub fn session_create(
     mode: Option<String>,
 ) -> Result<Session, CommandError> {
     require_terminal_kind(&kind)?;
-    Ok(require_client(&bridge)?.session_create_with(workspace_id, kind, provider, mode, None)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_create_with(workspace_id, kind, provider, mode, None))
+        .await
 }
 
+/// The window must not wait on this call: the daemon answers only after the
+/// provider startup it runs inline has finished, and the recovery road can
+/// carry a second startup — the measured freeze is the `Not Responding` of
+/// `scout/user-pass/f08b.png`.
 #[tauri::command]
-pub fn session_resume(
+pub async fn session_resume(
     bridge: State<'_, DaemonBridge>,
     session_id: String,
 ) -> Result<ResumeResult, CommandError> {
     require_session_id(&session_id)?;
-    Ok(require_client(&bridge)?.session_resume(
-        Persistence {
-            kind: PersistenceKind::Acp { handle: session_id },
-        },
-        None,
-    )?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp { handle: session_id },
+            },
+            None,
+        )
+    })
+    .await
 }
 
 /// IMPORTANT STARTUP ORDER: the client registers the Channel as the
