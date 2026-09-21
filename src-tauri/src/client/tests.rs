@@ -1487,7 +1487,7 @@ fn a_requested_goodbye_on_disk_ends_the_lost_connection_loop() {
             connect_attempts += 1;
             Ok(())
         },
-        || record_declares_a_requested_exit(&paths),
+        || declared_exit_from(Some(&paths)),
         |_| StatusLoopExit::ConnectionLost,
         |_, _| {
             sleeps += 1;
@@ -1519,7 +1519,7 @@ fn an_idle_goodbye_on_disk_does_not_end_the_lost_connection_loop() {
             connect_attempts += 1;
             Ok(())
         },
-        || record_declares_a_requested_exit(&paths),
+        || declared_exit_from(Some(&paths)),
         |_| StatusLoopExit::ConnectionLost,
         |_, _| {
             sleeps += 1;
@@ -1535,6 +1535,38 @@ fn an_idle_goodbye_on_disk_does_not_end_the_lost_connection_loop() {
     );
     assert!(sleeps > 0, "and it went back through the reconnect path");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same question at the value level, which is what the loop above is built
+/// on: `Requested` yes, `Idle` no, a folder that cannot be named no, and no
+/// record at all no.
+#[test]
+fn the_lost_connection_question_answers_a_requested_stop_only() {
+    let (requested, requested_dir) = lost_connection_record(ExitReason::Requested);
+    assert!(
+        declared_exit_from(Some(&requested)),
+        "a stop someone requested is the decision that stands"
+    );
+    let _ = std::fs::remove_dir_all(&requested_dir);
+
+    let (idle, idle_dir) = lost_connection_record(ExitReason::Idle);
+    assert!(
+        !declared_exit_from(Some(&idle)),
+        "an idle exit is housekeeping, not a decision to disappear on"
+    );
+    let _ = std::fs::remove_dir_all(&idle_dir);
+
+    assert!(
+        !declared_exit_from(None),
+        "a runtime folder that cannot be named has no goodbye to report"
+    );
+    let absent = RuntimePaths::from_dir(
+        std::env::temp_dir().join(format!("devboule absent {}", std::process::id())),
+    );
+    assert!(
+        !declared_exit_from(Some(&absent)),
+        "a daemon that never wrote a record has said nothing about leaving"
+    );
 }
 
 #[test]

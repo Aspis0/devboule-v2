@@ -1735,10 +1735,17 @@ fn retry_status_message(delay: Duration, cause: Option<&str>) -> Option<String> 
     })
 }
 
-/// The record question for a connection that was lost: a runtime folder that
-/// cannot be resolved has no goodbye to report.
+/// The record question for a connection that was lost, with the runtime folder
+/// handed in: `None` is a folder the environment could not name, and that has
+/// no goodbye to report. The folder is an argument rather than an environment
+/// read so a test can point the production answer at a folder it wrote.
+fn declared_exit_from(runtime: Option<&RuntimePaths>) -> bool {
+    runtime.is_some_and(record_declares_a_requested_exit)
+}
+
+/// The answer the supervisor injects.
 fn daemon_declared_exit() -> bool {
-    RuntimePaths::from_env().is_ok_and(|paths| record_declares_a_requested_exit(&paths))
+    declared_exit_from(RuntimePaths::from_env().ok().as_ref())
 }
 
 fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
