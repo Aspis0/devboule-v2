@@ -124,6 +124,28 @@ fn workspace_a() -> (std::path::PathBuf, Arc<ServerState>) {
     (dir, state)
 }
 
+/// A second project with a disjoint graph: its files do not exist in the
+/// first one's graph, which is what makes the scoping assertion mean
+/// something.
+fn workspace_b(state: &Arc<ServerState>) -> std::path::PathBuf {
+    let dir = temp_dir("b");
+    let root = dir.join("ProjectB");
+    std::fs::create_dir_all(&root).expect("project folder");
+    write_graph(
+        &root,
+        &[file_node("lib/x.rs"), file_node("lib/y.rs")],
+        &[import_edge("lib/x.rs", "lib/y.rs")],
+    );
+    let workspace = add_workspace(state, &root);
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "graph-b",
+        owner(),
+        &workspace,
+    );
+    dir
+}
+
 fn endpoint(url: &str) -> String {
     url.strip_prefix("http://")
         .expect("loopback URL")
@@ -275,4 +297,119 @@ fn the_three_tools_answer_the_graph_of_the_callers_own_workspace() {
 
     drop(guard);
     drop(server);
+}
+
+/// The scoping proof: the same argument, two sessions, two answers. Session B
+/// asks about B's node and gets B's neighbour; session A asks about the very
+/// same node and gets nothing, because A's graph does not contain it. If the
+/// path were read from an argument, or fixed, the two answers would agree.
+#[test]
+fn the_graph_is_the_callers_own_workspace_and_not_another() {
+    let (_dir_a, state) = workspace_a();
+    let _dir_b = workspace_b(&state);
+
+    let a_sees_own = imports(&state, "graph-a", &owner(), &json!({"file": "src/a.rs"}))
+        .expect("A reads its own graph");
+    assert_eq!(
+        a_sees_own,
+        json!({"file": "src/a.rs", "imports": [{"from": "src/a.rs", "to": "src/b.rs"}]})
+    );
+
+    let b_sees_own = neighborhood(
+        &state,
+        "graph-b",
+        &owner(),
+        &json!({"node": "lib/x.rs", "depth": 2}),
+    )
+    .expect("B reads its own graph");
+    assert_eq!(
+        b_sees_own,
+        json!({
+            "node": "lib/x.rs",
+            "depth": 2,
+            "kind": null,
+            "neighbors": [{"node": "lib/y.rs", "depth": 1}],
+        })
+    );
+
+    // The same argument, the other session: A must not see B's nodes.
+    let a_on_b_node = neighborhood(
+        &state,
+        "graph-a",
+        &owner(),
+        &json!({"node": "lib/x.rs", "depth": 2}),
+    )
+    .expect("A answers about a node it does not have");
+    assert_eq!(
+        a_on_b_node["neighbors"],
+        json!([]),
+        "A's graph has no lib/x.rs, so A sees nothing: {a_on_b_node}"
+    );
+    let a_on_b_file = imports(&state, "graph-a", &owner(), &json!({"file": "lib/x.rs"}))
+        .expect("A answers about a file it does not have");
+    assert_eq!(a_on_b_file["imports"], json!([]));
+    let b_on_a_node = importers(&state, "graph-b", &owner(), &json!({"file": "src/b.rs"}))
+        .expect("B answers about a file it does not have");
+    assert_eq!(b_on_a_node["importers"], json!([]));
+}
+
+/// Fail-closed, both cases: a session with no workspace, and a workspace whose
+/// graph has never been built. Neither is an empty answer, which would read as
+/// "this node has no neighbours".
+#[test]
+fn a_missing_workspace_or_graph_is_refused_and_never_answered_with_an_empty_graph() {
+    let state = ServerState::new("project-graph-absent".to_string());
+    crate::session::insert_test_live_agent(&state.sessions, "graph-none", owner());
+
+    let no_workspace = imports(&state, "graph-none", &owner(), &json!({"file": "src/a.rs"}))
+        .expect_err("a session with no workspace is refused");
+    match no_workspace {
+        GraphError::Refused(message) => assert!(
+            message.contains("no workspace"),
+            "the refusal names the missing fact: {message}"
+        ),
+        GraphError::Invalid(message) => panic!("not a parameter refusal: {message}"),
+    }
+
+    let dir = temp_dir("empty");
+    let root = dir.join("Unindexed");
+    std::fs::create_dir_all(&root).expect("project folder");
+    let workspace = add_workspace(&state, &root);
+    crate::session::insert_test_live_agent_in_workspace(
+        &state.sessions,
+        "graph-empty",
+        owner(),
+        &workspace,
+    );
+    let no_graph = neighborhood(
+        &state,
+        "graph-empty",
+        &owner(),
+        &json!({"node": "src/a.rs"}),
+    )
+    .expect_err("a workspace with no graph is refused");
+    match no_graph {
+        GraphError::Refused(message) => {
+            assert!(
+                message.contains("no project graph yet"),
+                "the refusal says which fact is missing: {message}"
+            );
+            assert!(
+                message.contains("ckg.sqlite"),
+                "the refusal names the missing file: {message}"
+            );
+        }
+        GraphError::Invalid(message) => panic!("not a parameter refusal: {message}"),
+    }
+
+    // And the ownership rule: another user's session is the same refusal as an
+    // unknown one, so a bearer cannot be used to read a row it does not own.
+    let stranger = OwnerId::new("S-1-5-21-stranger", "claude").expect("owner");
+    assert!(imports(
+        &state,
+        "graph-empty",
+        &stranger,
+        &json!({"file": "src/a.rs"})
+    )
+    .is_err());
 }

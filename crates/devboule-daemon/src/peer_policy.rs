@@ -1335,6 +1335,40 @@ pub(crate) mod tests {
         }
     }
 
+    /// The project-graph tools are local-only by the same construction the
+    /// stop and close verbs use, walked over the closed capability table
+    /// rather than sampled: no capability, alone or as the whole set, opens
+    /// the caller's workspace graph to a paired device.
+    #[test]
+    fn no_capability_reaches_the_project_graph_tools() {
+        use crate::provider_catalog::{
+            MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_NEIGHBORHOOD_TOOL,
+        };
+        use devboule_protocol::PEER_CAPS;
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            for cap in PEER_CAPS {
+                for tool in [MCP_NEIGHBORHOOD_TOOL, MCP_IMPORTS_TOOL, MCP_IMPORTERS_TOOL] {
+                    assert_eq!(
+                        mcp_tool_denial(role, &caps(&[cap]), tool),
+                        Some("workspaces.list"),
+                        "{role:?} holding {cap} must not read the project graph through {tool}"
+                    );
+                }
+            }
+            // One capability at a time is not "every peer": the whole table
+            // is legal, and a future arm gated on a combination would pass
+            // the loop above and fail here.
+            let every = caps(&PEER_CAPS);
+            for tool in [MCP_NEIGHBORHOOD_TOOL, MCP_IMPORTS_TOOL, MCP_IMPORTERS_TOOL] {
+                assert_eq!(
+                    mcp_tool_denial(role, &every, tool),
+                    Some("workspaces.list"),
+                    "{role:?} holding every capability must not read the project graph through {tool}"
+                );
+            }
+        }
+    }
+
     /// The door judges with `peer_allows`, per tool, for both roles: the role
     /// never decides (the capability set does), the denials name the policy's
     /// own payloads, and the move tool's two halves deny with two different
