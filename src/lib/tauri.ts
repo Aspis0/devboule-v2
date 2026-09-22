@@ -36,6 +36,7 @@ import type {
   Session,
   ToolPolicyReply,
   Workspace,
+  WorkspaceGitFileDiff,
   WorkspaceGitStatus,
   SessionEvent,
   SessionKind,
@@ -102,6 +103,7 @@ export type CommandArgs = {
     branch?: string | null;
   };
   workspace_git_status: { workspaceId: Id };
+  workspace_git_diff: { workspaceId: Id; path: string };
   session_create: {
     workspaceId: Id | null;
     kind: SessionKind;
@@ -215,6 +217,7 @@ type CommandResults = {
   workspaces_list: Workspace[];
   workspace_create: Workspace;
   workspace_git_status: WorkspaceGitStatus;
+  workspace_git_diff: WorkspaceGitFileDiff;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
@@ -346,6 +349,7 @@ export const COMMAND_ARG_KEYS = {
   workspaces_list: ["projectId"],
   workspace_create: ["projectId", "isolation", "branch"],
   workspace_git_status: ["workspaceId"],
+  workspace_git_diff: ["workspaceId", "path"],
   session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -522,6 +526,14 @@ export const workspacesList = (projectId: Id) => invokeTyped("workspaces_list", 
  */
 export const workspaceGitStatus = (workspaceId: Id) =>
   invokeTyped("workspace_git_status", { workspaceId });
+/**
+ * The diff of one workspace file — the detail view behind a Changes row.
+ * `path` is relative to the workspace folder: the daemon resolves the folder
+ * from the id and refuses any path that would leave it, so this takes the
+ * path a row gave back, never a filesystem path of the frontend's own.
+ */
+export const workspaceGitDiff = (workspaceId: Id, path: string) =>
+  invokeTyped("workspace_git_diff", { workspaceId, path });
 /**
  * Creates a workspace inside a project. Only `local` isolation exists today;
  * `worktree` and any `branch` are refused by the daemon with `unimplemented`

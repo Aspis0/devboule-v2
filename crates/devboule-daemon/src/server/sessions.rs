@@ -461,6 +461,7 @@ pub(super) fn dispatch_session(
         | ClientMessage::ProjectAdd { .. }
         | ClientMessage::WorkspacesList { .. }
         | ClientMessage::WorkspaceGitStatus { .. }
+        | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }

@@ -151,10 +151,11 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::ProjectsList { .. }
         | ClientMessage::ProjectAdd { .. }
         | ClientMessage::WorkspacesList { .. }
-        // A workspace's git state reads the journal's own workspace row to
-        // resolve the id, so it rides the journal capability with the rest of
-        // the workspace inventory.
+        // A workspace's git reads the journal's own workspace row to resolve
+        // the id — both the status list and one file's diff — so both ride
+        // the journal capability with the rest of the workspace inventory.
         | ClientMessage::WorkspaceGitStatus { .. }
+        | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. } => {
             if !journal_ok {

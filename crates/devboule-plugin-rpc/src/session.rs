@@ -287,6 +287,7 @@ impl PluginSession {
                         // never makes, but it is a reply and carries an id:
                         // listed, not swept — the same reason as above.
                         | DaemonMessage::WorkspaceGit { id, .. }
+                        | DaemonMessage::WorkspaceGitFile { id, .. }
                         | DaemonMessage::DelegationState { id, .. }
                         | DaemonMessage::DelegationSetOk { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)

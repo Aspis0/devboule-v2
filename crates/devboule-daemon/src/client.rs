@@ -13,7 +13,7 @@ use devboule_protocol::{
     JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
     Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
     SessionEventEnvelope, SessionKind, SessionStateSnapshot, StoredAttachment, SubscriptionId,
-    WireError, Workspace, WorkspaceGitStatus, WorkspaceIsolation,
+    WireError, Workspace, WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -839,6 +839,27 @@ impl DaemonClient {
             workspace_id: workspace_id.to_string(),
         })? {
             DaemonMessage::WorkspaceGit { status, .. } => Ok(status),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The diff of one workspace file. The id and a relative `path` are the
+    /// whole argument: the daemon resolves the directory from the id — the
+    /// `path` every `Workspace` carries is display-only — and confines the
+    /// rest to a file inside that directory.
+    pub fn workspace_git_diff(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceGitFileDiff, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceGitDiff {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::WorkspaceGitFile { file, .. } => Ok(file),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -1842,6 +1863,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Workspaces { id, .. }
         | DaemonMessage::Workspace { id, .. }
         | DaemonMessage::WorkspaceGit { id, .. }
+        | DaemonMessage::WorkspaceGitFile { id, .. }
         | DaemonMessage::SessionAttached { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }

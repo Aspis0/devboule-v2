@@ -1,35 +1,24 @@
 //! The uncommitted working-tree state of one workspace, for the Changes panel.
 //!
-//! Orchestration only: resolve the root, run `git`, hand the bytes to
-//! [`parse`] and compose the reply. The root comes from a workspace id, never
-//! from the caller's `path` field (the wire declares that display-only).
-//! Untracked files are in neither `git diff --numstat` dump, so their lines
-//! are counted by [`parse`] under a byte cap that flags itself on the row
-//! instead of passing for an exact count.
+//! Orchestration only: resolve the root, classify it and run `git` through
+//! [`crate::workspace_git_support`], hand the bytes to [`parse`] and compose
+//! the reply. The root comes from a workspace id, never from the caller's
+//! `path` field (the wire declares that display-only). Untracked files are
+//! in neither `git diff --numstat` dump, so their lines are counted by
+//! [`parse`] under a byte cap that flags itself on the row instead of
+//! passing for an exact count.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use devboule_protocol::{DaemonMessage, WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals};
 
-use crate::git::{
-    detect_git_repository, run_git_args, GitOutput, GitRepositoryStatus, GitRunError,
-    GIT_STDOUT_MAX_BYTES,
-};
+use crate::git::GIT_STDOUT_MAX_BYTES;
+use crate::workspace_git_support::{exit_error, git, probe, run_error, Probe, INSIDE_A_REPOSITORY};
 use crate::ServerState;
 
 #[path = "workspace_git_status_parse.rs"]
 mod parse;
-
-/// A workspace folder below a repository root. Read from a subdirectory,
-/// `git status` answers for the whole repository with paths relative to that
-/// subdirectory, so the panel would show files of other checkouts and count
-/// every untracked one against a path that is not there. Decided in the fix
-/// round: refuse and say what the panel would have shown instead of resolving
-/// the top level, which is a product choice this slice does not make.
-const INSIDE_A_REPOSITORY: &str =
-    "this workspace folder is inside a git repository but is not its root; the Changes panel \
-     lists changes of the repository, not of this folder";
 
 /// Resolve `workspace_id` through the registry — never a request field.
 pub(crate) fn reply(state: &ServerState, id: u64, workspace_id: &str) -> DaemonMessage {
@@ -43,21 +32,13 @@ pub(crate) fn reply(state: &ServerState, id: u64, workspace_id: &str) -> DaemonM
 /// The status of one directory. Private on purpose: callers outside this
 /// module arrive through [`reply`], and the test modules are children.
 fn status_of(root: &Path) -> WorkspaceGitStatus {
-    if !root.is_dir() {
-        // The path is deliberately absent: `error` crosses a wire whose
-        // redaction seam does not touch this frame (see `WorkspaceGitStatus`).
-        // This one sentence also covers the folder that disappeared after the
-        // registry had cached it.
-        return unavailable("the workspace folder is not a directory");
-    }
-    match detect_git_repository(root) {
-        GitRepositoryStatus::RepositoryRoot => {}
-        GitRepositoryStatus::InsideRepository => return caveat(INSIDE_A_REPOSITORY),
-        GitRepositoryStatus::NotRepository => return build(false, false, None, Vec::new(), None),
-        GitRepositoryStatus::TimedOut => {
-            return unavailable("git did not answer within the probe timeout")
-        }
-        GitRepositoryStatus::Unknown => return unavailable("git could not be run"),
+    match probe(root) {
+        Probe::Ready => {}
+        Probe::NotRepository => return build(false, false, None, Vec::new(), None),
+        Probe::InsideRepository => return caveat(INSIDE_A_REPOSITORY),
+        // Not a directory (also: the folder vanished after the registry had
+        // cached it), a probe git did not answer, or git missing.
+        Probe::Refused(message) => return unavailable(message),
     }
     let arguments = [
         "status",
@@ -134,32 +115,6 @@ fn unavailable(message: impl Into<String>) -> WorkspaceGitStatus {
 /// give: `is_git` stands, `error` names what is missing.
 fn caveat(message: impl Into<String>) -> WorkspaceGitStatus {
     build(true, false, None, Vec::new(), Some(message.into()))
-}
-
-fn git(root: &Path, subcommand: &[&str]) -> Result<GitOutput, GitRunError> {
-    let mut arguments = vec!["-C".to_string(), root.to_string_lossy().into_owned()];
-    arguments.extend(subcommand.iter().map(|argument| (*argument).to_string()));
-    run_git_args(&arguments)
-}
-
-fn run_error(error: GitRunError, operation: &str) -> String {
-    match error {
-        GitRunError::NotFound => format!("{operation}: git is not installed"),
-        GitRunError::TimedOut => format!("{operation}: git timed out"),
-        GitRunError::SpawnFailed => format!("{operation}: git could not be started"),
-    }
-}
-
-/// A failed command's identity and exit code, and never its stderr: git
-/// writes absolute paths and personal file names into stderr, and `error`
-/// travels on a wire whose redaction seam does not touch this frame. The
-/// detail is dropped on purpose, not lost by accident — a local debug session
-/// that needs it should print `output.stderr` at the call site.
-fn exit_error(operation: &str, output: &GitOutput) -> String {
-    match output.code {
-        Some(code) => format!("{operation} exited with code {code}"),
-        None => format!("{operation} was terminated before it could report a code"),
-    }
 }
 
 /// Line counts per path over both halves of the index: `git diff` reads the

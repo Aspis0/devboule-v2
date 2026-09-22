@@ -2493,6 +2493,7 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::ProjectAdd { .. } => None,
         ClientMessage::WorkspacesList { .. } => None,
         ClientMessage::WorkspaceGitStatus { .. } => None,
+        ClientMessage::WorkspaceGitDiff { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::ProvidersList { .. } => None,

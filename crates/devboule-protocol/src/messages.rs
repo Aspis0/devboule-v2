@@ -501,6 +501,20 @@ pub enum ClientMessage {
         id: u64,
         workspace_id: String,
     },
+    /// The uncommitted diff of one workspace file, for the Changes panel's
+    /// detail view. A read like [`Self::WorkspaceGitStatus`]: the daemon
+    /// resolves the directory from `workspace_id`, and `path` is confined to
+    /// a relative path inside it — refused when absolute, when it climbs out
+    /// with `..`, or when it resolves outside — because the `path` every
+    /// `Workspace` carries is declared display-only (`src/types/ipc.ts`).
+    /// The reply is [`DaemonMessage::WorkspaceGitFile`].
+    WorkspaceGitDiff {
+        id: u64,
+        workspace_id: String,
+        /// Path relative to the workspace folder, spelled the way
+        /// `git status` printed it.
+        path: String,
+    },
     WorkspaceCreate {
         id: u64,
         project_id: String,
@@ -729,6 +743,7 @@ impl ClientMessage {
             | Self::ProjectAdd { id, .. }
             | Self::WorkspacesList { id, .. }
             | Self::WorkspaceGitStatus { id, .. }
+            | Self::WorkspaceGitDiff { id, .. }
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
             | Self::ProvidersList { id }
@@ -807,6 +822,7 @@ impl ClientMessage {
             | Self::ProjectAdd { .. }
             | Self::WorkspacesList { .. }
             | Self::WorkspaceGitStatus { .. }
+            | Self::WorkspaceGitDiff { .. }
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
             | Self::Invoke { .. }
@@ -865,6 +881,7 @@ impl ClientMessage {
             Self::ProjectAdd { .. } => "ProjectAdd",
             Self::WorkspacesList { .. } => "WorkspacesList",
             Self::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
+            Self::WorkspaceGitDiff { .. } => "WorkspaceGitDiff",
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
             Self::WorkspaceDelete { .. } => "WorkspaceDelete",
             Self::ProvidersList { .. } => "ProvidersList",
@@ -908,6 +925,7 @@ impl ClientMessage {
             | Self::ProjectsList { .. }
             | Self::WorkspacesList { .. }
             | Self::WorkspaceGitStatus { .. }
+            | Self::WorkspaceGitDiff { .. }
             | Self::ProvidersList { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
@@ -1031,6 +1049,12 @@ pub enum DaemonMessage {
     WorkspaceGit {
         id: u64,
         status: WorkspaceGitStatus,
+    },
+    /// The reply to [`ClientMessage::WorkspaceGitDiff`]: the diff of one
+    /// file, or a refusal of it.
+    WorkspaceGitFile {
+        id: u64,
+        file: WorkspaceGitFileDiff,
     },
     Workspace {
         id: u64,
@@ -1319,6 +1343,89 @@ pub enum WorkspaceGitFileStatus {
     Renamed,
     Untracked,
     Conflicted,
+}
+
+/// Why this reply does or does not carry lines. `ok` and `binary` are
+/// complete answers; `too_large` says the lines exist and were withheld
+/// rather than cut short (the sentence in `error` names which cap); `error`
+/// is a refusal to answer at all (the sentence says what stopped it).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceGitDiffStatus {
+    Ok,
+    Binary,
+    TooLarge,
+    Error,
+}
+
+/// One line's role in the diff. Line-level, never word-level: that is the
+/// choice the working diff makes (`plan.md` §4b), the word-level form being
+/// reserved for an agent tool's own diff elsewhere.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceGitDiffLineKind {
+    Add,
+    Remove,
+    Context,
+    Header,
+}
+
+/// One line of a diff. `header` is a hunk header (`@@ …`), kept whole so the
+/// panel can label and navigate; the other three are file content.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitDiffLine {
+    pub kind: WorkspaceGitDiffLineKind,
+    /// Without the `+`/`-`/space marker for content lines; the whole `@@ …`
+    /// for a header.
+    pub text: String,
+}
+
+/// One file's diff of the working tree, as the Changes panel renders it.
+///
+/// `status` and `error` answer different questions and must never collapse,
+/// like the pair on `WorkspaceGitStatus`: `binary` and `too_large` are
+/// complete answers about a file this reply deliberately carries no lines
+/// for, while `error` with `status: "error"` is a refusal — the folder is
+/// not a repository, the path is outside it, git did not run. An unchanged
+/// file is `ok` with no lines: an empty diff is an answer too.
+///
+/// **Debt, recorded with `WorkspaceGitStatus` in the slice-1 fix round and
+/// true here too:** `error` is free text on a frame that does **not** pass
+/// `redact_for_conn` — that seam rewrites only `DaemonMessage::Error`. Every
+/// sentence is written without an absolute path and without git's stderr,
+/// and this reply's only caller-supplied text (`path`) is echoed only in its
+/// own field, never in `error`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitFileDiff {
+    /// The path this reply is about, echoed **verbatim**: the caller's own
+    /// text coming back — including in a refusal that rejects it, where the
+    /// rejected string (possibly absolute) travels only to the sender that
+    /// supplied it. This side never replaces it with a path of its own.
+    pub path: String,
+    /// The path is not in `HEAD` — untracked, staged new, or the surviving
+    /// side of a rename. Carve-out, the same one `additions` has: `false`
+    /// whenever `status` is not `ok` — a `binary`, `too_large` or `error`
+    /// reply zeroes the flags with the lines, and about such a reply the
+    /// flags claim nothing.
+    pub is_new: bool,
+    /// The path is in `HEAD` and gone from the working tree, from git's own
+    /// `deleted file mode`. Carve-out, the same one `additions` has: `false`
+    /// whenever `status` is not `ok` — a `binary`, `too_large` or `error`
+    /// reply zeroes the flags with the lines, and about such a reply the
+    /// flags claim nothing.
+    pub is_deleted: bool,
+    /// Added and removed lines of `lines`. `0` whenever `status` is not
+    /// `ok`: a count of lines this reply does not carry would be a guess.
+    pub additions: u64,
+    pub deletions: u64,
+    pub lines: Vec<WorkspaceGitDiffLine>,
+    pub status: WorkspaceGitDiffStatus,
+    /// Why no lines came back, in one synthetic sentence: no absolute path
+    /// and no git stderr (see the debt note above). `null` exactly when
+    /// `status` is `ok` or `binary` — those two are answers, not failures.
+    pub error: Option<String>,
 }
 
 /// The three-valued answer to "what does this provider offer". The three are

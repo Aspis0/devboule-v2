@@ -2567,3 +2567,105 @@ fn reply_status(message: &DaemonMessage) -> WorkspaceGitStatus {
         other => panic!("not a workspace git reply: {other:?}"),
     }
 }
+
+/// The workspace git-diff frame and its reply, pinned to the exact words
+/// TypeScript reads (`src/types/ipc.ts`): the `type` tags, the camelCase
+/// keys, the four `status` words and the four `kind` words in `snake_case`,
+/// and `error` travelling as `null` rather than being omitted.
+#[test]
+fn workspace_git_diff_round_trips_with_its_wire_words() {
+    let file = WorkspaceGitFileDiff {
+        path: "src/lib.rs".to_string(),
+        is_new: false,
+        is_deleted: true,
+        additions: 0,
+        deletions: 2,
+        lines: vec![
+            WorkspaceGitDiffLine {
+                kind: WorkspaceGitDiffLineKind::Header,
+                text: "@@ -1,3 +0,0 @@".to_string(),
+            },
+            WorkspaceGitDiffLine {
+                kind: WorkspaceGitDiffLineKind::Remove,
+                text: "gone".to_string(),
+            },
+        ],
+        status: WorkspaceGitDiffStatus::Ok,
+        error: None,
+    };
+    let reply = DaemonMessage::WorkspaceGitFile {
+        id: 9,
+        file: file.clone(),
+    };
+    let json = serde_json::to_string(&reply).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_git_file\"",
+        "\"path\":\"src/lib.rs\"",
+        "\"isDeleted\":true",
+        "\"isNew\":false",
+        "\"deletions\":2",
+        "\"kind\":\"header\"",
+        "\"text\":\"@@ -1,3 +0,0 @@\"",
+        "\"kind\":\"remove\"",
+        "\"status\":\"ok\"",
+        "\"error\":null",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        reply
+    );
+
+    let request = ClientMessage::WorkspaceGitDiff {
+        id: 9,
+        workspace_id: "ws.1".to_string(),
+        path: "src/lib.rs".to_string(),
+    };
+    let json = serde_json::to_string(&request).expect("serialize");
+    assert!(json.contains("\"type\":\"workspace_git_diff\""), "{json}");
+    assert!(json.contains("\"workspaceId\":\"ws.1\""), "{json}");
+    assert!(json.contains("\"path\":\"src/lib.rs\""), "{json}");
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        request
+    );
+    assert_eq!(request.name(), "WorkspaceGitDiff");
+    assert!(!request.is_state_changing(), "a read writes nothing");
+    assert_eq!(request.request_id(), Some(9));
+
+    for (status, spelled) in [
+        (WorkspaceGitDiffStatus::Ok, "\"ok\""),
+        (WorkspaceGitDiffStatus::Binary, "\"binary\""),
+        (WorkspaceGitDiffStatus::TooLarge, "\"too_large\""),
+        (WorkspaceGitDiffStatus::Error, "\"error\""),
+    ] {
+        assert_eq!(serde_json::to_string(&status).expect("serialize"), spelled);
+    }
+    for (kind, spelled) in [
+        (WorkspaceGitDiffLineKind::Add, "\"add\""),
+        (WorkspaceGitDiffLineKind::Remove, "\"remove\""),
+        (WorkspaceGitDiffLineKind::Context, "\"context\""),
+        (WorkspaceGitDiffLineKind::Header, "\"header\""),
+    ] {
+        assert_eq!(serde_json::to_string(&kind).expect("serialize"), spelled);
+    }
+
+    // A refusal and a cap both carry their sentence; an omitted `error` key
+    // would be a field TypeScript types as nullable and cannot see.
+    let refused = WorkspaceGitFileDiff {
+        status: WorkspaceGitDiffStatus::Error,
+        error: Some("the requested path is outside the workspace folder".to_string()),
+        lines: Vec::new(),
+        ..file
+    };
+    let json = serde_json::to_string(&refused).expect("serialize");
+    assert!(
+        json.contains("\"status\":\"error\""),
+        "the refusal word, spelled: {json}"
+    );
+    assert!(
+        json.contains("\"error\":\"the requested path"),
+        "the sentence travels: {json}"
+    );
+}

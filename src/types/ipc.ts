@@ -87,6 +87,60 @@ export interface WorkspaceGitStatus {
   error: string | null;
 }
 
+/** Why a file diff does or does not carry lines. `ok` and `binary` are
+ * complete answers; `too_large` says the lines exist and were withheld
+ * rather than cut short (the sentence in `error` names which cap); `error`
+ * is a refusal to answer at all. */
+export type WorkspaceGitDiffStatus = "ok" | "binary" | "too_large" | "error";
+
+/** One line's role: line-level, never word-level — `header` is a hunk
+ * header (`@@ …`) kept whole, the other three are file content with their
+ * `+`/`-`/space marker already stripped. */
+export type WorkspaceGitDiffLineKind = "add" | "remove" | "context" | "header";
+
+export interface WorkspaceGitDiffLine {
+  kind: WorkspaceGitDiffLineKind;
+  /** Without the marker for content lines; the whole `@@ …` for a header. */
+  text: string;
+}
+
+/**
+ * The uncommitted diff of one workspace file, the reply of
+ * `workspace_git_diff` — same pair discipline as `WorkspaceGitStatus`:
+ * `binary` and `too_large` are complete answers about a file deliberately
+ * carried without lines, while `status: "error"` with its `error` sentence
+ * is a refusal. An unchanged file is `ok` with no lines.
+ */
+export interface WorkspaceGitFileDiff {
+  /** The path this reply is about, echoed verbatim — the caller's own text,
+   * even in a refusal that rejects it; the daemon never substitutes a path
+   * of its own. */
+  path: string;
+  /** Not in `HEAD` — untracked, staged new, or the surviving side of a
+   * rename. Carve-out, the same one `additions` has: `false` whenever
+   * `status !== "ok"` — a `binary`, `too_large` or `error` reply zeroes
+   * the flags with the lines, and about such a reply the flags claim
+   * nothing. */
+  isNew: boolean;
+  /** In `HEAD` and gone from the working tree, from git's `deleted file mode`.
+   * Carve-out, the same one `additions` has: `false` whenever
+   * `status !== "ok"` — a `binary`, `too_large` or `error` reply zeroes
+   * the flags with the lines, and about such a reply the flags claim
+   * nothing. */
+  isDeleted: boolean;
+  /**
+   * Added and removed lines of `lines`. `0` whenever `status !== "ok"`:
+   * a count of lines this reply does not carry would be a guess.
+   */
+  additions: number;
+  deletions: number;
+  lines: WorkspaceGitDiffLine[];
+  status: WorkspaceGitDiffStatus;
+  /** Why no lines came back, in one synthetic sentence: no absolute path,
+   * no git stderr. `null` exactly when `status` is `ok` or `binary`. */
+  error: string | null;
+}
+
 export type SessionKind = "terminal" | "acp" | "claude" | "pi" | "codex";
 
 export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" | "codex" {

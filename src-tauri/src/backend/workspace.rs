@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use devboule_daemon::DaemonClient;
-use devboule_protocol::{Project, Workspace, WorkspaceGitStatus, WorkspaceIsolation};
+use devboule_protocol::{
+    Project, Workspace, WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
+};
 use tauri::State;
 
 use super::blocking::off_main_thread;
@@ -61,4 +63,31 @@ pub async fn workspace_git_status(
 ) -> Result<WorkspaceGitStatus, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.workspace_git_status(&workspace_id)).await
+}
+
+/// The diff of one workspace file. `workspace_id` names the folder and
+/// `path` is relative to it; the daemon confines the path before it opens
+/// anything, so the frontend cannot name a directory it was never vouched
+/// for.
+///
+/// Bounded exactly like the status road above: `RPC_TIMEOUT` (30 s) is what
+/// this caller feels, against a daemon worst case of **190 s** — the 10 s
+/// probe (`GIT_PROBE_TIMEOUT`, `crates/devboule-daemon/src/git.rs:15`)
+/// plus three commands at 60 s each (`git status` for the path, `git diff
+/// HEAD`, and the one declared `--cached` fallback in a repository with no
+/// commit). Outside those four calls sits the one wait nobody bounds: the
+/// synthesis of an untracked file reads the filesystem with **no timeout at
+/// all** — inherited from slice 1, declared there (its review, §4.1). On a
+/// checkout that slow or a file that hangs, the caller times out at 30 s
+/// while the daemon finishes, and the residual is accepted and stated
+/// rather than hidden. The wait leaves the window's thread the way the
+/// other long roads do.
+#[tauri::command]
+pub async fn workspace_git_diff(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceGitFileDiff, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_git_diff(&workspace_id, &path)).await
 }
