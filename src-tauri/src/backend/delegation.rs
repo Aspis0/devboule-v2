@@ -16,6 +16,7 @@ use devboule_daemon::DaemonClient;
 use devboule_protocol::{DaemonMessage, DelegationSource, ErrorCode};
 use tauri::State;
 
+use super::blocking::off_main_thread;
 use super::error::CommandError;
 use crate::client::DaemonBridge;
 
@@ -43,24 +44,30 @@ pub struct DelegationReply {
 }
 
 #[tauri::command]
-pub fn delegation_get(bridge: State<'_, DaemonBridge>) -> Result<DelegationReply, CommandError> {
-    match require_client(&bridge)?.delegation_get()? {
+pub async fn delegation_get(
+    bridge: State<'_, DaemonBridge>,
+) -> Result<DelegationReply, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || match client.delegation_get()? {
         DaemonMessage::DelegationState {
             enabled, source, ..
         } => Ok(DelegationReply { enabled, source }),
         _ => Err(unexpected_reply()),
-    }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delegation_set(
+pub async fn delegation_set(
     bridge: State<'_, DaemonBridge>,
     enabled: bool,
 ) -> Result<DelegationReply, CommandError> {
-    match require_client(&bridge)?.delegation_set(enabled)? {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || match client.delegation_set(enabled)? {
         DaemonMessage::DelegationSetOk {
             enabled, source, ..
         } => Ok(DelegationReply { enabled, source }),
         _ => Err(unexpected_reply()),
-    }
+    })
+    .await
 }

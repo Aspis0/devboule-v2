@@ -19,6 +19,7 @@ use devboule_daemon::DaemonClient;
 use devboule_protocol::{AgentProfilesDocument, DaemonMessage, ErrorCode};
 use tauri::State;
 
+use super::blocking::off_main_thread;
 use super::error::CommandError;
 use crate::client::DaemonBridge;
 
@@ -42,22 +43,26 @@ pub struct AgentProfilesReply {
 }
 
 #[tauri::command]
-pub fn agent_profiles_get(
+pub async fn agent_profiles_get(
     bridge: State<'_, DaemonBridge>,
 ) -> Result<AgentProfilesReply, CommandError> {
-    match require_client(&bridge)?.agent_profiles_get()? {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || match client.agent_profiles_get()? {
         DaemonMessage::AgentProfiles { document, .. } => Ok(AgentProfilesReply { document }),
         _ => Err(unexpected_reply()),
-    }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn agent_profiles_set(
+pub async fn agent_profiles_set(
     bridge: State<'_, DaemonBridge>,
     document: AgentProfilesDocument,
 ) -> Result<(), CommandError> {
-    match require_client(&bridge)?.agent_profiles_set(document)? {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || match client.agent_profiles_set(document)? {
         DaemonMessage::AgentProfilesSetOk { .. } => Ok(()),
         _ => Err(unexpected_reply()),
-    }
+    })
+    .await
 }

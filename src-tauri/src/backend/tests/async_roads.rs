@@ -16,46 +16,19 @@ use devboule_daemon::DaemonError;
 
 /// Bridge commands that take `State<'_, DaemonBridge>` but send the daemon no
 /// frame: a local snapshot and a `TerminateProcess` by handle. They are the
-/// only declared exception to the class rule below.
+/// only declared exception to the class rule below, checked both ways: a
+/// name here that stops being synchronous fails as stale, and a synchronous
+/// bridge command outside this list fails by name.
 const BRIDGE_COMMANDS_WITHOUT_A_WAIT: &[&str] = &["daemon_status", "daemon_restart"];
 
-/// The settings slice (A2) still declares these synchronously, one by one:
-/// every name here IS a synchronous bridge command today, and the pin fails
-/// the day one stops being one — the list cannot rot silently. Converting
-/// them means emptying this list, and then the class rule holds for the whole
-/// tree with nothing but [`BRIDGE_COMMANDS_WITHOUT_A_WAIT`] left.
-const WAITING_ON_THE_SETTINGS_SLICE: &[&str] = &[
-    "journal_usage",
-    "journal_retention_get",
-    "journal_retention_set",
-    "session_delete",
-    "projects_list",
-    "project_add",
-    "workspaces_list",
-    "workspace_create",
-    "agent_profiles_get",
-    "agent_profiles_set",
-    "delegation_get",
-    "delegation_set",
-    "providers_list",
-    "providers_refresh",
-    "tool_policy_get",
-    "tool_policy_set",
-    "provider_vocabulary_get",
-];
-
 /// The class pin: every `#[tauri::command]` that holds the daemon bridge is
-/// `pub async fn`, except the names the two lists above declare. A new
+/// `pub async fn`, except the names the list above declares. A new
 /// command that is born synchronous dies here on its own, wherever it lands
 /// under `src/`.
 #[test]
 fn every_daemon_bridge_command_is_an_async_command() {
     let scan = command_scan::scan();
-    let declared: BTreeSet<&str> = BRIDGE_COMMANDS_WITHOUT_A_WAIT
-        .iter()
-        .chain(WAITING_ON_THE_SETTINGS_SLICE.iter())
-        .copied()
-        .collect();
+    let declared: BTreeSet<&str> = BRIDGE_COMMANDS_WITHOUT_A_WAIT.iter().copied().collect();
 
     let mut violations = Vec::new();
     let mut still_synchronous = BTreeSet::new();
@@ -80,7 +53,7 @@ fn every_daemon_bridge_command_is_an_async_command() {
             violations.push(format!(
                 "{}: `{}` is a synchronous command holding `State<'_, DaemonBridge>`: its wait \
                  would run on the window's thread. Make it `pub async fn` through \
-                 `off_main_thread`, or declare it in a list above if it truly never waits.",
+                 `off_main_thread`, or declare it in the list above if it truly never waits.",
                 command.file.display(),
                 command.name
             ));
@@ -132,7 +105,7 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 33,
+        scan.helper_calls, 50,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }

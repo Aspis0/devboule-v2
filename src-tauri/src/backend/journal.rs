@@ -6,44 +6,51 @@ use devboule_protocol::{validate_session_id, JournalRetention, JournalUsage, Ret
 
 use crate::client::DaemonBridge;
 
+use super::blocking::off_main_thread;
 use super::error::CommandError;
 
 #[tauri::command]
-pub fn journal_usage(bridge: State<'_, DaemonBridge>) -> Result<JournalUsage, CommandError> {
-    Ok(require_client(&bridge)?.journal_usage()?)
+pub async fn journal_usage(bridge: State<'_, DaemonBridge>) -> Result<JournalUsage, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.journal_usage()).await
 }
 
 #[tauri::command]
-pub fn journal_retention_get(
+pub async fn journal_retention_get(
     bridge: State<'_, DaemonBridge>,
 ) -> Result<JournalRetention, CommandError> {
-    Ok(require_client(&bridge)?.journal_retention_get()?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.journal_retention_get()).await
 }
 
 #[tauri::command]
-pub fn journal_retention_set(
+pub async fn journal_retention_set(
     bridge: State<'_, DaemonBridge>,
     max_age_ms: Option<i64>,
     max_bytes: Option<i64>,
     max_sessions: Option<i64>,
     session_max_bytes: Option<i64>,
 ) -> Result<JournalRetention, CommandError> {
-    Ok(
-        require_client(&bridge)?.journal_retention_set(RetentionPatch {
-            max_age_ms,
-            max_bytes,
-            max_sessions,
-            session_max_bytes,
-        })?,
-    )
+    let patch = RetentionPatch {
+        max_age_ms,
+        max_bytes,
+        max_sessions,
+        session_max_bytes,
+    };
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.journal_retention_set(patch)).await
 }
 
 #[tauri::command]
-pub fn session_delete(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
+pub async fn session_delete(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+) -> Result<(), CommandError> {
     validate_session_id(&id).map_err(|message| {
         CommandError::new(devboule_protocol::ErrorCode::InvalidRequest, message)
     })?;
-    Ok(require_client(&bridge)?.session_delete(&id)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_delete(&id)).await
 }
 
 fn require_client(

@@ -23,6 +23,7 @@ use devboule_protocol::{
 };
 use tauri::State;
 
+use super::blocking::off_main_thread;
 use super::error::CommandError;
 use crate::client::DaemonBridge;
 
@@ -53,26 +54,30 @@ pub struct ProviderVocabularyReply {
 }
 
 #[tauri::command]
-pub fn provider_vocabulary_get(
+pub async fn provider_vocabulary_get(
     bridge: State<'_, DaemonBridge>,
     provider: String,
     refresh: bool,
 ) -> Result<ProviderVocabularyReply, CommandError> {
-    match require_client(&bridge)?.provider_vocabulary_get(&provider, refresh)? {
-        DaemonMessage::ProviderVocabulary {
-            provider,
-            models,
-            modes,
-            source,
-            probed_at_ms,
-            ..
-        } => Ok(ProviderVocabularyReply {
-            provider,
-            models,
-            modes,
-            source,
-            probed_at_ms,
-        }),
-        _ => Err(unexpected_reply()),
-    }
+    let client = require_client(&bridge)?;
+    off_main_thread(
+        move || match client.provider_vocabulary_get(&provider, refresh)? {
+            DaemonMessage::ProviderVocabulary {
+                provider,
+                models,
+                modes,
+                source,
+                probed_at_ms,
+                ..
+            } => Ok(ProviderVocabularyReply {
+                provider,
+                models,
+                modes,
+                source,
+                probed_at_ms,
+            }),
+            _ => Err(unexpected_reply()),
+        },
+    )
+    .await
 }

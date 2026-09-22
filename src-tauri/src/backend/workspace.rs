@@ -18,31 +18,38 @@ fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandErr
 }
 
 #[tauri::command]
-pub fn projects_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Project>, CommandError> {
-    Ok(require_client(&bridge)?.projects_list()?)
+pub async fn projects_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Project>, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.projects_list()).await
 }
 
 #[tauri::command]
-pub fn project_add(bridge: State<'_, DaemonBridge>, path: String) -> Result<Project, CommandError> {
-    Ok(require_client(&bridge)?.project_add(&path)?)
+pub async fn project_add(
+    bridge: State<'_, DaemonBridge>,
+    path: String,
+) -> Result<Project, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.project_add(&path)).await
 }
 
 #[tauri::command]
-pub fn workspaces_list(
+pub async fn workspaces_list(
     bridge: State<'_, DaemonBridge>,
     project_id: String,
 ) -> Result<Vec<Workspace>, CommandError> {
-    Ok(require_client(&bridge)?.workspaces_list(&project_id)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspaces_list(&project_id)).await
 }
 
 #[tauri::command]
-pub fn workspace_create(
+pub async fn workspace_create(
     bridge: State<'_, DaemonBridge>,
     project_id: String,
     isolation: WorkspaceIsolation,
     branch: Option<String>,
 ) -> Result<Workspace, CommandError> {
-    Ok(require_client(&bridge)?.workspace_create(&project_id, isolation, branch)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_create(&project_id, isolation, branch)).await
 }
 
 /// The uncommitted working-tree state of one workspace. `workspace_id` is the

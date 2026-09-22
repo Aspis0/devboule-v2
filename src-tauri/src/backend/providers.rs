@@ -26,8 +26,11 @@ pub struct ProviderUpdateResult {
 }
 
 #[tauri::command]
-pub fn providers_list(bridge: State<'_, DaemonBridge>) -> Result<ProviderCatalog, CommandError> {
-    let (providers, unreadable_dirs) = require_client(&bridge)?.providers_list()?;
+pub async fn providers_list(
+    bridge: State<'_, DaemonBridge>,
+) -> Result<ProviderCatalog, CommandError> {
+    let client = require_client(&bridge)?;
+    let (providers, unreadable_dirs) = off_main_thread(move || client.providers_list()).await?;
     Ok(ProviderCatalog {
         providers,
         unreadable_dirs,
@@ -35,8 +38,11 @@ pub fn providers_list(bridge: State<'_, DaemonBridge>) -> Result<ProviderCatalog
 }
 
 #[tauri::command]
-pub fn providers_refresh(bridge: State<'_, DaemonBridge>) -> Result<ProviderCatalog, CommandError> {
-    let (providers, unreadable_dirs) = require_client(&bridge)?.providers_refresh()?;
+pub async fn providers_refresh(
+    bridge: State<'_, DaemonBridge>,
+) -> Result<ProviderCatalog, CommandError> {
+    let client = require_client(&bridge)?;
+    let (providers, unreadable_dirs) = off_main_thread(move || client.providers_refresh()).await?;
     Ok(ProviderCatalog {
         providers,
         unreadable_dirs,

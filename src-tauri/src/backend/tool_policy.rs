@@ -17,6 +17,7 @@ use devboule_daemon::DaemonClient;
 use devboule_protocol::{DaemonMessage, ErrorCode, ToolPolicyEntry};
 use tauri::State;
 
+use super::blocking::off_main_thread;
 use super::error::CommandError;
 use crate::client::DaemonBridge;
 
@@ -40,22 +41,30 @@ pub struct ToolPolicyReply {
 }
 
 #[tauri::command]
-pub fn tool_policy_get(bridge: State<'_, DaemonBridge>) -> Result<ToolPolicyReply, CommandError> {
-    match require_client(&bridge)?.tool_policy_get()? {
+pub async fn tool_policy_get(
+    bridge: State<'_, DaemonBridge>,
+) -> Result<ToolPolicyReply, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || match client.tool_policy_get()? {
         DaemonMessage::ToolPolicy { policies, .. } => Ok(ToolPolicyReply { policies }),
         _ => Err(unexpected_reply()),
-    }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn tool_policy_set(
+pub async fn tool_policy_set(
     bridge: State<'_, DaemonBridge>,
     provider_id: String,
     enabled: Option<bool>,
     disabled_tools: Vec<String>,
 ) -> Result<(), CommandError> {
-    match require_client(&bridge)?.tool_policy_set(&provider_id, enabled, disabled_tools)? {
-        DaemonMessage::ToolPolicySetOk { .. } => Ok(()),
-        _ => Err(unexpected_reply()),
-    }
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        match client.tool_policy_set(&provider_id, enabled, disabled_tools)? {
+            DaemonMessage::ToolPolicySetOk { .. } => Ok(()),
+            _ => Err(unexpected_reply()),
+        }
+    })
+    .await
 }
