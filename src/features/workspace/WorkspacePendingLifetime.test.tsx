@@ -23,6 +23,26 @@ vi.mock("../../lib/tauri", () => ({
   projectAdd: vi.fn(),
   workspacesList: vi.fn(),
   workspaceCreate: vi.fn(),
+  // The Changes panel is the registry's default and reads on mount: these are
+  // its two roads, answered with a clean tree so nothing here shows a refusal.
+  workspaceGitStatus: vi.fn(async () => ({
+    isGit: true,
+    dirty: false,
+    branch: "main",
+    totals: { additions: 0, deletions: 0 },
+    rows: [],
+    error: null,
+  })),
+  workspaceGitDiff: vi.fn(async () => ({
+    path: "src/writer.ts",
+    isNew: false,
+    isDeleted: false,
+    additions: 0,
+    deletions: 0,
+    lines: [],
+    status: "ok",
+    error: null,
+  })),
   sessionsList: vi.fn(),
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),

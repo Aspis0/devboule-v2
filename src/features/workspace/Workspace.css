@@ -439,8 +439,7 @@
 }
 
 .workspace-daemon-status .workspace-status-dot,
-.workspace-browser-status .workspace-status-dot,
-.workspace-test-heading .workspace-status-dot {
+.workspace-browser-status .workspace-status-dot {
   width: 5px;
   height: 5px;
 }
@@ -535,7 +534,6 @@
 .workspace-session-cwd,
 .workspace-diff-header,
 .workspace-diff-lines,
-.workspace-test-meta,
 .workspace-files-tree,
 .workspace-browser-address,
 .workspace-browser-build,
@@ -1783,6 +1781,31 @@
   line-height: 1.55;
 }
 
+.workspace-changes-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+/* Loading, no workspace, not a repository, clean tree: the panel's own words
+   for what is true. The wire's sentences use `.workspace-changes-error`. */
+.workspace-changes-state {
+  padding: 10px;
+  color: var(--silence);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.workspace-changes-error {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--danger-deep);
+  border-radius: 8px;
+  color: var(--danger-deep);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .workspace-file-changes {
   display: flex;
   flex-direction: column;
@@ -1800,13 +1823,16 @@
   color: var(--ink-soft);
   text-align: left;
   background: transparent;
+  border: 0;
   border-radius: 8px;
+  cursor: pointer;
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
   white-space: nowrap;
 }
 
 .workspace-file-change > span:first-child {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1815,6 +1841,12 @@
   flex: none;
   margin-left: auto;
   color: var(--silence);
+}
+
+.workspace-file-change-status {
+  flex: none;
+  color: var(--silence);
+  font-size: 10px;
 }
 
 .workspace-file-change-selected {
@@ -1878,6 +1910,14 @@
   flex: none;
 }
 
+.workspace-diff-line > span:last-child {
+  min-width: 0;
+  /* Git's indentation is part of the line: without `pre-wrap` the browser
+     collapses it and every hunk renders flat. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .workspace-diff-context {
   color: var(--silence);
 }
@@ -1890,32 +1930,20 @@
   color: var(--green-deep);
 }
 
-.workspace-test-card {
-  margin-top: 13px;
-  padding: 5px 12px 0;
-}
-
-.workspace-test-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-  font-size: 11.5px;
+.workspace-diff-hunk {
+  color: var(--ink-soft);
   font-weight: 600;
 }
 
-.workspace-test-result {
-  margin-left: auto;
-  color: var(--green-deep);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  font-weight: 400;
-}
-
-.workspace-test-meta {
+.workspace-diff-note {
+  padding: 10px 11px 12px;
   color: var(--silence);
   font-size: 10.5px;
-  line-height: 1.7;
+  line-height: 1.6;
+}
+
+.workspace-diff-note-error {
+  color: var(--danger-deep);
 }
 
 .workspace-files-tree {

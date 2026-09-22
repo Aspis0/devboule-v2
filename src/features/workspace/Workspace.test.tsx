@@ -31,6 +31,28 @@ vi.mock("../../lib/tauri", () => ({
   projectAdd: vi.fn(),
   workspacesList: vi.fn(),
   workspaceCreate: vi.fn(),
+  // The Changes panel is the registry's default and reads on mount: these are
+  // its two roads, answered with a clean tree so nothing here shows a refusal
+  // unless a test asks for one (each test's override is re-pinned in beforeEach,
+  // which `clearAllMocks` does not undo).
+  workspaceGitStatus: vi.fn(async () => ({
+    isGit: true,
+    dirty: false,
+    branch: "main",
+    totals: { additions: 0, deletions: 0 },
+    rows: [],
+    error: null,
+  })),
+  workspaceGitDiff: vi.fn(async () => ({
+    path: "src/writer.ts",
+    isNew: false,
+    isDeleted: false,
+    additions: 0,
+    deletions: 0,
+    lines: [],
+    status: "ok",
+    error: null,
+  })),
   sessionsList: vi.fn(),
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),
@@ -238,6 +260,7 @@ import {
   projectsList,
   providersList,
   workspaceCreate,
+  workspaceGitStatus,
   workspacesList,
   sessionCreate,
   sessionDelete,
@@ -252,6 +275,7 @@ import type {
   JournalUsage,
   Project,
   Workspace as IpcWorkspace,
+  WorkspaceGitStatus,
 } from "../../types/ipc";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
 import { createDelegationController } from "../../lib/delegation";
@@ -302,6 +326,25 @@ const createdWorkspace: IpcWorkspace = {
   title: "new-workspace",
   isolation: "local",
   path: "C:\\devboule",
+};
+
+/** The Changes panel's default answer: a repository with nothing to show. */
+const cleanChanges: WorkspaceGitStatus = {
+  isGit: true,
+  dirty: false,
+  branch: "main",
+  totals: { additions: 0, deletions: 0 },
+  rows: [],
+  error: null,
+};
+
+const dirtyChanges: WorkspaceGitStatus = {
+  isGit: true,
+  dirty: true,
+  branch: "main",
+  totals: { additions: 12, deletions: 3 },
+  rows: [{ path: "src/writer.ts", additions: 12, deletions: 3, status: "modified", capped: false }],
+  error: null,
 };
 
 const daemonConnected: DaemonStatus = {
@@ -435,6 +478,7 @@ describe("Workspace sessions", () => {
     });
     vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
     vi.mocked(devicesList).mockResolvedValue(devicesReply);
+    vi.mocked(workspaceGitStatus).mockResolvedValue(cleanChanges);
     // The factory default already says "connected", but a nested describe's
     // override survives `clearAllMocks`, so pin it here for every test.
     vi.mocked(daemonStatus).mockResolvedValue(daemonConnected);
@@ -502,6 +546,76 @@ describe("Workspace sessions", () => {
       container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
     ).find((button) => button.textContent?.includes("Plugin panel"));
     expect(selectedOption?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  describe("the Changes badge in the panel selector", () => {
+    afterEach(() => {
+      // An override above must not leak: `clearAllMocks` keeps implementations,
+      // and the second top-level describe has no pin of its own.
+      vi.mocked(workspaceGitStatus).mockResolvedValue(cleanChanges);
+    });
+
+    async function renderWorkspace() {
+      root = createRoot(container);
+      await act(async () => root.render(<Workspace />));
+      // Projects → workspaces → selection is a three-hop chain; flush it
+      // rather than guess one tick.
+      for (let hop = 0; hop < 4; hop += 1) {
+        await act(async () => undefined);
+      }
+    }
+
+    function badge(): string | null | undefined {
+      return container.querySelector(".workspace-surface-meta")?.textContent;
+    }
+
+    function option(label: string): HTMLButtonElement {
+      const match = Array.from(
+        container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+      ).find((button) => button.textContent?.includes(label));
+      if (match === undefined) throw new Error(`side panel option did not render: ${label}`);
+      return match;
+    }
+
+    it("shows nothing known until the open panel's own read lands, then the label it read", async () => {
+      // A workspace id no other test has read: the badge store is module-level
+      // and only ever grows, so "never read" needs an id nothing has reported.
+      vi.mocked(workspacesList).mockResolvedValue([{ ...workspace, id: "workspace-badge-unread" }]);
+      const pending = deferred<WorkspaceGitStatus>();
+      vi.mocked(workspaceGitStatus).mockReturnValue(pending.promise);
+      await renderWorkspace();
+
+      expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
+      expect(badge()).toBe("—");
+
+      await act(async () => {
+        pending.resolve(dirtyChanges);
+      });
+      expect(badge()).toBe("+12 −3");
+    });
+
+    it("keeps the last label the Changes panel read once another panel is selected", async () => {
+      // Its own workspace id as well: the label written here must not become
+      // another test's badge.
+      vi.mocked(workspacesList).mockResolvedValue([{ ...workspace, id: "workspace-badge-kept" }]);
+      vi.mocked(workspaceGitStatus).mockResolvedValue(dirtyChanges);
+      await renderWorkspace();
+      expect(badge()).toBe("+12 −3");
+
+      const selector = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
+      if (selector === null) throw new Error("side panel selector did not render");
+      await act(async () => selector.click());
+      await act(async () => option("Files").click());
+      // The toolbar now carries the selected panel's badge …
+      expect(badge()).toBe("2 140");
+
+      // … while Changes keeps the value it last read: no panel is mounted to
+      // refresh it (DECISIONS §9: no background poller for a decoration).
+      await act(async () => selector.click());
+      expect(option("Changes").querySelector(".workspace-surface-option-meta")?.textContent).toBe(
+        "+12 −3",
+      );
+    });
   });
 
   it("renders the first registry entry for an unknown active panel without selecting it", async () => {

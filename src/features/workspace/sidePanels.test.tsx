@@ -4,7 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AppSurface, ChangesSurface, DesignPanel, FilesSurface } from "./sidePanels";
+import { AppSurface, DesignPanel, FilesSurface } from "./sidePanels";
 import { useAppStore } from "../../store/appStore";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,40 +43,9 @@ describe("side panel dead controls", () => {
     });
   }
 
-  describe("ChangesSurface", () => {
-    it("labels the hardcoded rows as a mockup, not a real diff", async () => {
-      await render(<ChangesSurface />);
-
-      const note = container.querySelector('[role="note"]');
-      if (note === null) throw new Error("mockup notice did not render");
-      expect(note.textContent).toBe(
-        "Mockup — these rows are hardcoded examples. Real git integration is not built yet.",
-      );
-    });
-
-    it("renders the file rows as non-interactive elements, not buttons", async () => {
-      await render(<ChangesSurface />);
-
-      expect(container.querySelectorAll("button")).toHaveLength(0);
-      expect(container.querySelectorAll(".workspace-file-change")).toHaveLength(3);
-    });
-
-    it("no longer renders the fake git operations Stage and Discard", async () => {
-      await render(<ChangesSurface />);
-
-      // Anchor on the panel's real content first: if ChangesSurface ever stops
-      // rendering its rows, this test must fail rather than pass vacuously on
-      // an empty button list.
-      expect(container.querySelectorAll(".workspace-file-change")).toHaveLength(3);
-      expect(container.textContent).toContain("index_writer.rs");
-      const controls = Array.from(container.querySelectorAll("button, [role='button']")).map(
-        (control) => control.textContent,
-      );
-      expect(controls).not.toContain("Stage");
-      expect(controls).not.toContain("Discard");
-    });
-  });
-
+  // The Changes panel's tests moved to `ChangesSurface.test.tsx`: the panel
+  // reads real git state now, so its guarantees (no write actions, no mockup
+  // notice) are anchored there against real content instead of the mock's.
   describe("FilesSurface", () => {
     it("renders the tree entries as non-interactive elements, not buttons", async () => {
       await render(<FilesSurface />);

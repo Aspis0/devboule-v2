@@ -1,57 +1,9 @@
 import { memo } from "react";
-import { MOCK_DIFF_LINES, MOCK_SHIP_STEPS } from "./mockData";
+import { MOCK_SHIP_STEPS } from "./mockData";
 import { DesignPreviewPanel } from "../design/DesignPreviewPanel";
 
-export const ChangesSurface = memo(function ChangesSurface() {
-  return (
-    <div>
-      <div className="workspace-changes-mockup-note" role="note">
-        Mockup — these rows are hardcoded examples. Real git integration is not built yet.
-      </div>
-      <div className="workspace-file-changes">
-        <div className="workspace-file-change workspace-file-change-selected">
-          <span>index_writer.rs</span>
-          <span>+92 −41</span>
-        </div>
-        <div className="workspace-file-change">
-          <span>embedder.rs</span>
-          <span>+14 −3</span>
-        </div>
-        <div className="workspace-file-change workspace-file-change-muted">
-          <span>writer.ts</span>
-          <span>deleted</span>
-        </div>
-      </div>
-
-      <div className="workspace-diff-card">
-        <div className="workspace-diff-header">
-          <span>oracle-core/src/index_writer.rs</span>
-          <span>@@ 118</span>
-        </div>
-        <div className="workspace-diff-lines">
-          {MOCK_DIFF_LINES.map((line, index) => (
-            <div
-              className={`workspace-diff-line workspace-diff-${line.kind}`}
-              key={`${line.line}-${index}`}
-            >
-              <span>{line.line}</span>
-              <span>{line.text}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="workspace-test-card">
-        <div className="workspace-test-heading">
-          <span className="workspace-status-dot workspace-dot-green" />
-          <span>cargo test</span>
-          <span className="workspace-test-result">142 passed</span>
-        </div>
-        <div className="workspace-test-meta">oracle-core 96 · devboule-mcp 46 · 8.41 s</div>
-      </div>
-    </div>
-  );
-});
+// The Changes panel lives in `ChangesSurface.tsx`: it reads real git state and
+// carries its own data source, so it is not one of these mock bodies.
 
 export const FilesSurface = memo(function FilesSurface() {
   return (

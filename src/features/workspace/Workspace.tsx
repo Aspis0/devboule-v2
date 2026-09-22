@@ -102,6 +102,9 @@ function daemonLabel(status: DaemonStatus): string {
 
 export { WorkspacePermissionCard, formatPermissionCommand };
 
+/** A subscription that never fires: the badge of a panel with no live reads. */
+const subscribeNoMeta = () => () => {};
+
 /**
  * One badge list per roster row, cached by row identity: the strip maps over
  * it on every render of the workspace (including every keystroke and daemon
@@ -347,6 +350,14 @@ export function Workspace({
     sidePanelRegistry.find((surface) => surface.id === activeSidePanel) ??
     sidePanelRegistry[0] ??
     SIDE_PANEL_REGISTRY[0];
+  // The selected panel's badge: its own live label when the panel reports one
+  // (the Changes panel, while it is open and polling), the registry's static
+  // label otherwise. Subscribed only to the selected panel — an unmounted panel
+  // reports nothing, which is exactly DECISIONS §3's "last value known".
+  const surfaceMeta = useSyncExternalStore(
+    selectedSurface.liveMeta?.subscribe ?? subscribeNoMeta,
+    () => selectedSurface.liveMeta?.snapshot(selectedWorkspace) ?? selectedSurface.meta,
+  );
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
   // The names the roster carries, for the badge that resolves a child's
   // `createdBy` back to the session that created it. Memoized on the roster:
@@ -1338,7 +1349,7 @@ export function Workspace({
                   className={`workspace-status-dot workspace-surface-dot-${selectedSurface.dotTone}`}
                 />
                 <span className="workspace-surface-name">{selectedSurface.name}</span>
-                <span className="workspace-surface-meta">{selectedSurface.meta}</span>
+                <span className="workspace-surface-meta">{surfaceMeta}</span>
                 <span className="workspace-surface-chevron" aria-hidden="true">
                   ▾
                 </span>
@@ -1369,7 +1380,9 @@ export function Workspace({
                         className={`workspace-status-dot workspace-surface-dot-${surface.dotTone}`}
                       />
                       <span className="workspace-surface-name">{surface.name}</span>
-                      <span className="workspace-surface-option-meta">{surface.meta}</span>
+                      <span className="workspace-surface-option-meta">
+                        {surface.liveMeta?.snapshot(selectedWorkspace) ?? surface.meta}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -1382,6 +1395,7 @@ export function Workspace({
                 onReload: handleAppReload,
                 prLabel,
                 onOpenPullRequest: handleOpenPullRequest,
+                workspaceId: selectedWorkspace,
               })}
             </div>
           </div>

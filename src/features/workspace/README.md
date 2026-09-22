@@ -23,13 +23,30 @@ What is wired and what is not:
   `worktree` isolation is still refused by the daemon, so every workspace is
   the project folder itself until git worktrees land.
 
-- **Side panels are mock, and no longer pretend otherwise.** The
-  Changes/Files/app/Design panels in `sidePanels.tsx` render hardcoded examples
-  and each carries a note saying so. Their rows are non-interactive rather than
-  buttons that do nothing, and the controls that named operations this app
-  cannot perform — Stage, Discard, Reindex, Export, Generate — were removed
-  instead of left drawn. "Open Design" is real and selects the Design surface.
-  There is no git status and no file tree on the wire yet.
+- **The Changes panel is real, and read-only.** `ChangesSurface.tsx` reads
+  `workspace_git_status` and the selected row's `workspace_git_diff` through the
+  typed commands, driven by `useWorkspaceChanges.ts`: refresh on open, a 5 s poll
+  while the panel is open, and a manual Refresh button. No watcher — none exists
+  in this codebase — and nothing polls while the panel is closed. Every reply
+  state is its own screen: loading, _not a repository_ (a flag, not a failure),
+  a clean tree, the wire's own `error` sentence shown verbatim and never
+  confused with "not a repository", the row list (a `capped` row carries the `≈`
+  mark, never an exact-looking number), and the selected file's diff (loading /
+  binary / too large / refused / lines). The badge beside the panel's name is
+  the label the open panel last read for that workspace (`changesBadge.ts`);
+  closed, it keeps that value, and a workspace never read shows "—". Stage,
+  Discard and commit do not exist here — the panel reads, it never writes — and
+  the `cargo test · 142 passed` card is gone with them: no source of test
+  results exists, and an invented number beside real data is worse than an
+  empty space.
+
+- **The Files, app and PR panels are still mock, and no longer pretend
+  otherwise.** Their bodies in `sidePanels.tsx` render hardcoded examples under
+  a note saying so. Their rows are non-interactive rather than buttons that do
+  nothing, and the controls that named operations this app cannot perform —
+  Reindex, Export, Generate, Stage, Discard — stay removed instead of left
+  drawn. "Open Design" is real and selects the Design surface. There is no file
+  tree read on the wire yet.
 
 History lives in the left sidebar footer beside the daemon status. It is a
 separate journal log view, not terminal screen restore.

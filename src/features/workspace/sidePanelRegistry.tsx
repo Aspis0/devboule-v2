@@ -1,11 +1,7 @@
 import type { ReactNode } from "react";
-import {
-  AppSurface,
-  ChangesSurface,
-  DesignPanel,
-  FilesSurface,
-  PullRequestSurface,
-} from "./sidePanels";
+import { AppSurface, DesignPanel, FilesSurface, PullRequestSurface } from "./sidePanels";
+import { ChangesSurface } from "./ChangesSurface";
+import { CHANGES_BADGE_UNREAD, changesBadge } from "./changesBadge";
 
 export type DotTone = "terracotta" | "silence" | "green" | "purple" | "ochre";
 
@@ -14,12 +10,30 @@ export interface SidePanelContext {
   onReload: () => void;
   prLabel: string;
   onOpenPullRequest: () => void;
+  /**
+   * The selected workspace's id — the only form of it that may leave this
+   * process (`src/types/ipc.ts` declares `Workspace.path` display-only).
+   */
+  workspaceId: string | null;
+}
+
+/**
+ * A panel whose own reads produce the badge, instead of a value written into
+ * the registry. The snapshot is keyed by workspace so one checkout's numbers
+ * can never appear under another's name, and `null` means this panel has never
+ * read — the registry then falls back to the entry's static `meta`.
+ */
+export interface SidePanelLiveMeta {
+  subscribe: (listener: () => void) => () => void;
+  snapshot: (workspaceId: string | null) => string | null;
 }
 
 export interface SidePanelEntry {
   id: string;
   name: string;
+  /** The badge beside the panel's name; a panel with live data overrides it. */
   meta: string;
+  liveMeta?: SidePanelLiveMeta;
   dotTone: DotTone;
   render: (context: SidePanelContext) => ReactNode;
 }
@@ -27,13 +41,15 @@ export interface SidePanelEntry {
 // Keep panel composition here so future plugin panels can contribute an entry without reopening
 // Workspace; this is intentionally not a plugin registration API.
 export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
-  // This metadata is a mockup: it is an invented value for the mock Changes panel.
   {
     id: "changes",
     name: "Changes",
-    meta: "+118 −64",
+    // Before the first read, and what a workspace never read shows (DECISIONS §9:
+    // the open panel's poll supplies the real label, a closed panel keeps it).
+    meta: CHANGES_BADGE_UNREAD,
+    liveMeta: changesBadge,
     dotTone: "terracotta",
-    render: () => <ChangesSurface />,
+    render: ({ workspaceId }) => <ChangesSurface workspaceId={workspaceId} />,
   },
   // This metadata is a mockup: it is an invented value for the mock Files panel.
   { id: "files", name: "Files", meta: "2 140", dotTone: "silence", render: () => <FilesSurface /> },
