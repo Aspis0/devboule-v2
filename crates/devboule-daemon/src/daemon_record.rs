@@ -273,7 +273,7 @@ fn goodbye_decides(metadata: &std::fs::Metadata) -> bool {
 /// one ahead of now, reads as zero — "just beat" — which is the benign
 /// direction for liveness and the reason a goodbye is dated by
 /// [`goodbye_decides`] instead.
-fn heartbeat_age(metadata: &std::fs::Metadata) -> Duration {
+pub(crate) fn heartbeat_age(metadata: &std::fs::Metadata) -> Duration {
     metadata
         .modified()
         .ok()

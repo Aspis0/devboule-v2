@@ -2,6 +2,7 @@
 //! the environment lock, temp runtimes, fixtures — live in [`support`].
 
 mod commands;
+mod endpoint;
 mod folder;
 mod indexing;
 mod model_download;

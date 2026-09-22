@@ -38,6 +38,10 @@ serde_json = "=1.0.151"
 tempfile = "3"
 # Plugin manifests carry a digest per file.
 sha2 = "0.11"
+# The Oracle endpoint's bearer: 32 fresh bytes per app start, drawn from the
+# OS entropy source — never derived from pid/time. Same version the daemon
+# already pins; 0.4 is the latest stable major.
+getrandom = "=0.4.3"
 
 [dev-dependencies]
 # Already in the workspace; used to assert the Tauri error payload JSON.

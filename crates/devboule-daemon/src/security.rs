@@ -7,12 +7,10 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::ptr;
 
-#[cfg(feature = "server")]
 use windows_sys::core::BOOL;
 #[cfg(feature = "server")]
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::{GetLastError, LocalFree, HANDLE, INVALID_HANDLE_VALUE};
-#[cfg(feature = "server")]
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
@@ -293,8 +291,10 @@ pub fn create_private_file(path: &std::path::Path) -> io::Result<std::fs::File> 
 /// `SetNamedSecurityInfoW` with a protected (`P`) one-ACE DACL replaces the
 /// DACL rather than merging into it, so a wide ACE added earlier is removed,
 /// not added to. This is what makes it usable after the fact for both the
-/// truncate path of [`create_private_file`] and the `secrets/` directory.
-#[cfg(feature = "server")]
+/// truncate path of [`create_private_file`] and the `secrets/` directory. Not
+/// behind `server`: the app applies it to the Oracle record (the bearer rides
+/// in the body) before the first byte, from a build that links this crate
+/// without features.
 pub fn apply_current_user_dacl(path: &std::path::Path) -> io::Result<()> {
     use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{ACL, PROTECTED_DACL_SECURITY_INFORMATION};

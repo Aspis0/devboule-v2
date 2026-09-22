@@ -10,6 +10,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
+use std::path::Path;
 
 use crate::daemon_record::RECORD_CAPACITY;
 use crate::error::DaemonError;
@@ -33,12 +34,19 @@ pub struct SingleInstanceLock {
 impl SingleInstanceLock {
     pub fn acquire(paths: &RuntimePaths) -> Result<Self, DaemonError> {
         paths.ensure_dir()?;
+        Self::acquire_at(&paths.lock_file)
+    }
+
+    /// The same lock at an explicit path: the app's Oracle record lock sits
+    /// next to `daemon.lock` and is not a `RuntimePaths` field. The caller
+    /// owns the directory — this only creates the file it locks.
+    pub fn acquire_at(path: &Path) -> Result<Self, DaemonError> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&paths.lock_file)?;
+            .open(path)?;
         if !try_lock_exclusive(&file)? {
             return Err(DaemonError::AlreadyRunning);
         }

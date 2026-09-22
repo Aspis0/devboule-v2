@@ -38,7 +38,6 @@ mod git;
 mod idempotency;
 #[cfg(feature = "server")]
 mod journal;
-#[cfg(feature = "server")]
 mod lock;
 mod login_shell_env;
 #[cfg(feature = "server")]
@@ -49,6 +48,7 @@ mod mcp_device_roster;
 mod mcp_peer_agents;
 #[cfg(feature = "server")]
 mod mcp_project_graph;
+mod oracle_app_record;
 #[cfg(feature = "server")]
 mod outbound;
 #[cfg(feature = "server")]
@@ -139,9 +139,15 @@ pub use journal::{
     JOURNAL_MAX_SESSIONS, JOURNAL_QUEUE_CAP, JOURNAL_SCHEMA_VERSION, JOURNAL_SESSION_MAX_BYTES,
     SNAPSHOT_EVERY_BYTES,
 };
+pub use lock::SingleInstanceLock;
 pub use login_shell_env::{
     initialize_login_shell_environment, login_shell_capture_outcome, LoginShellCaptureOutcome,
     LoginShellCaptureState,
+};
+// Same rule as the record above: the app writes this one, the daemon reads
+// it, and neither side runs behind `server`.
+pub use oracle_app_record::{
+    oracle_app_lock_path, OracleAppRecord, OracleAppState, ORACLE_APP_LOCK_FILE_NAME,
 };
 pub use paths::RuntimePaths;
 #[cfg(feature = "server")]
@@ -177,6 +183,9 @@ pub use spawn::spawn_daemon_with_env;
 pub const IDLE_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 
 #[cfg(windows)]
-pub use security::{current_user_sid, dacl_is_current_user_only, user_only_sddl};
+pub use security::{
+    apply_current_user_dacl, current_user_sid, dacl_is_current_user_only, dacl_sddl_for_path,
+    user_only_sddl,
+};
 #[cfg(windows)]
 pub use transport::{connect_pipe, inspect_pipe_dacl};

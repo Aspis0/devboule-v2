@@ -19,6 +19,7 @@
 mod commands;
 mod errors;
 mod folder;
+mod listener;
 mod query;
 mod runtime;
 mod status;
@@ -52,6 +53,7 @@ pub use folder::{
     __cmd__oracle_ask_folder, __cmd__oracle_folder_status, __tauri_command_name_oracle_ask_folder,
     __tauri_command_name_oracle_folder_status, oracle_ask_folder, oracle_folder_status,
 };
+pub(crate) use listener::OracleEndpoint;
 pub use runtime::OracleRuntime;
 // The types keep their original path at the oracle root; nothing inside the
 // crate names them through this re-export, and the module itself is private,

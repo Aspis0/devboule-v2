@@ -19,6 +19,7 @@ pub fn run() {
     builder
         .manage(client::DaemonBridge::start())
         .manage(oracle::OracleRuntime::from_environment())
+        .manage(oracle::OracleEndpoint::default())
         // The asset server refuses everything until this exists, so it is
         // managed before any window can ask for a plugin file.
         .manage(plugins::PluginRegistry::default())
@@ -44,6 +45,11 @@ pub fn run() {
                     "devboule: Oracle model download did not start: {}",
                     error.message
                 );
+            }
+            // The daemon reaches the semantic search over this endpoint; the
+            // record is published only after the bind.
+            if let Err(error) = app.state::<oracle::OracleEndpoint>().start() {
+                eprintln!("devboule: Oracle endpoint did not start: {error}");
             }
             Ok(())
         })
@@ -126,6 +132,7 @@ pub fn run() {
             if matches!(event, tauri::RunEvent::Exit) {
                 let oracle = app_handle.state::<oracle::OracleRuntime>();
                 oracle.shutdown();
+                app_handle.state::<oracle::OracleEndpoint>().stop();
                 let daemon = app_handle.state::<client::DaemonBridge>();
                 daemon.shutdown();
                 app_handle.state::<plugins::rpc::PluginRuntime>().stop_all();
