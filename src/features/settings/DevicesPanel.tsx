@@ -72,6 +72,7 @@ export const CAP_ORDER: readonly Cap[] = [
   "answer_permissions",
   "create_sessions",
   "roster",
+  "search",
   "admin",
 ];
 
@@ -80,10 +81,13 @@ const CAP_LABELS: Record<Cap, string> = {
   send: "send",
   answer_permissions: "answer permissions",
   create_sessions: "create sessions",
-  // The one label that names what the grant discloses, not just the act:
+  // The labels below name what the grant discloses, not just the act:
   // a person deciding on `roster` is deciding who may see the live agents
-  // of the user who approved the pairing.
+  // of the user who approved the pairing, and a person deciding on `search`
+  // is deciding whether this machine's code may be semantically searched
+  // for that device's agents — snippets, paths, line ranges.
   roster: "read this device's live agent roster",
+  search: "search this machine's code (source snippets, paths, lines)",
   // The whole remaining surface in one switch, so the label names the surface
   // and gives three examples of it: a person unchecking this is deciding that
   // the device may still drive sessions but may not change this machine.
@@ -982,7 +986,10 @@ export function DevicesPanel() {
             <p className="device-copy">
               A new pairing starts with every switch on. A device paired before 21 September 2026
               keeps whatever set it had then: nothing grants it the new default on its own, and its
-              admin switch stays off until a person turns it on.
+              admin switch stays off until a person turns it on. The same is true of a device paired
+              before the search capability existed — its search switch starts off, because nothing
+              grants a switch the pairing never wrote. For every device, that search switch is the
+              one that turns the Oracle search on.
             </p>
           )}
           {activePeers.map((row) => (

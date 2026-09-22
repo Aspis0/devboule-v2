@@ -2045,6 +2045,54 @@ fn local_callers_pass_the_door_for_every_tool() {
     assert!(mcp_peer_door(&caller, None, &json!(1)).is_none());
 }
 
+/// The Oracle search is the one served tool behind its own capability,
+/// `search` (owner's decision, 2026-09-22, `DECISIONS.md` §Q-g): a peer
+/// holding `view` but not `search` meets the door's standard capability
+/// refusal — a sentence that **names `search`**, not a hard origin refusal —
+/// while the same peer granted `search` passes the door to the broker. The
+/// graph tools keep their own line: the same `search`-holding peer without
+/// `admin` is still refused the neighborhood tool for `admin`, so the
+/// migration moved one row and nothing else. The local half is the test
+/// above: every served tool, the Oracle included, passes unjudged for a
+/// session running on this machine.
+#[test]
+fn a_peer_is_refused_the_oracle_search_until_it_holds_search() {
+    use crate::provider_catalog::{MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL};
+    let view_only = McpCaller::Peer {
+        device_id: "dev-view".to_string(),
+        role: crate::peer_policy::PeerRole::Client,
+        caps: vec!["view".to_string()],
+    };
+    let refused = mcp_peer_door(&view_only, Some(MCP_ORACLE_SEARCH_TOOL), &json!(7))
+        .unwrap_or_else(|| {
+            panic!("devboule_oracle_search must be refused for a peer holding no `search`")
+        });
+    assert_eq!(
+        refused.pointer("/error/message"),
+        Some(&json!("capability 'search' was not negotiated")),
+        "the refusal names the missing capability: {refused}"
+    );
+    let searcher = McpCaller::Peer {
+        device_id: "dev-search".to_string(),
+        role: crate::peer_policy::PeerRole::Client,
+        caps: vec!["view".to_string(), "search".to_string()],
+    };
+    assert_eq!(
+        mcp_peer_door(&searcher, Some(MCP_ORACLE_SEARCH_TOOL), &json!(8)),
+        None,
+        "devboule_oracle_search passes the door for a peer holding `search`"
+    );
+    assert_eq!(
+        mcp_peer_door(&searcher, Some(MCP_NEIGHBORHOOD_TOOL), &json!(9)),
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": json!(9),
+            "error": { "code": -32601, "message": "capability 'admin' was not negotiated" }
+        })),
+        "the graph tools keep their own line: `search` opens the Oracle and nothing else"
+    );
+}
+
 /// The discovery tool answers from this daemon's own rows, scoped to the
 /// calling session's own user. Its schema lives in its own
 /// `enabled_tool_list` arm, and the assertions below pin the shape that

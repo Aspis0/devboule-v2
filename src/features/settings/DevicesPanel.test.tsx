@@ -805,6 +805,7 @@ describe("devices panel", () => {
       "answer_permissions",
       "create_sessions",
       "roster",
+      "search",
     ]);
     expect(checkboxByLabel(ADMIN_LABEL).checked).toBe(false);
   });

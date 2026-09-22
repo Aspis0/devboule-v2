@@ -519,6 +519,7 @@ fn devices_capability_is_advertised_and_the_peer_caps_are_the_agreed_set() {
             "answer_permissions",
             "create_sessions",
             "roster",
+            "search",
             "admin"
         ]
     );
@@ -559,6 +560,7 @@ fn a_new_pairing_is_born_with_every_capability() {
             "answer_permissions",
             "create_sessions",
             "roster",
+            "search",
             "admin"
         ]
     );

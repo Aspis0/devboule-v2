@@ -65,6 +65,15 @@ pub const CAP_ROSTER: &str = "roster";
 /// the session its own scope names.
 pub const CAP_ADMIN: &str = "admin";
 
+/// The capability that gates the Oracle semantic search (`devboule_oracle_search`)
+/// at the MCP tool door. What it **reveals**, which is why it is a name of its
+/// own and not a guest of `admin`: a search over this machine's code answered
+/// to a session whose origin may be a paired device — source snippets, paths
+/// and line ranges of these files. Granted per device from the Devices panel;
+/// a new pairing is born holding it (`PEER_DEFAULT_CAPS`), so the switch is how
+/// it is taken back from one device without touching the rest.
+pub const CAP_SEARCH: &str = "search";
+
 /// The audit outcome for a request refused because it would run a session
 /// without asking the user's permission (`DESIGN-remote-agents.md` §8b A5).
 /// One spelling, used by the refusal and by the audit row it writes.
@@ -113,14 +122,16 @@ pub(crate) fn budget_for(origin: &SessionOrigin) -> u64 {
 
 /// May `role`, holding `caps`, send `request`?
 ///
-/// `caps` is the peer's own capability set, read from its `peers` row. Six
-/// names are the whole permission model for a paired device (§8b A9/A11):
+/// `caps` is the peer's own capability set, read from its `peers` row. Seven
+/// names are the wire permission model for a paired device (§8b A9/A11):
 /// `view` (`SessionsList`, `DevicesList`, `SessionAttach`), `send`
 /// (`SessionSend`, `AgentMessageSend`, `SessionDeposit`, `SessionSetMode`),
 /// `answer_permissions` (`SessionPermissionRespond`), `create_sessions`
-/// (`SessionCreate`), `roster` (`PeerAgentsList`) and `admin` (everything else
-/// this device's app can ask — see [`CAP_ADMIN`], which is the 2026-09-21
-/// revocation of the old global deny list). A variant an operational capability
+/// (`SessionCreate`), `roster` (`PeerAgentsList`), `search` (the Oracle tool
+/// at the broker door — it decides no arm here, see [`CAP_SEARCH`]) and
+/// `admin` (everything else this device's app can ask — see [`CAP_ADMIN`],
+/// which is the 2026-09-21 revocation of the old global deny list). A variant
+/// an operational capability
 /// names is allowed exactly when the peer holds it; a variant no operational
 /// capability names is allowed exactly when the peer holds `admin`. The five
 /// permission-model variants — pairing, a device's capability set, revocation —
@@ -423,6 +434,12 @@ pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
 /// `Unjudged(reason)` — the tool performs nothing the policy judges, and the
 /// reason says why. The only such tool is the ticked-profile list (below).
 ///
+/// `Requires(capability)` — the tool is answered exactly when the caller's
+/// capability set holds that name, and nothing on the wire is judged: the act
+/// has no `ClientMessage` frame, it happens inside the broker. The refusal is
+/// therefore a plain capability refusal and renders with the wire's own
+/// sentence. The only such tool is the Oracle search (below).
+///
 /// `None` (from [`mcp_tool_wire`]) is an unknown tool name — not served by the
 /// broker. The door lets it through to the broker's own `Unknown tool` arm,
 /// which touches nothing; the closed-table test fails for any *served* name
@@ -432,6 +449,10 @@ pub fn mode_refusal(kind: SessionKind, mode_id: &str) -> Option<&'static str> {
 pub enum McpToolWire {
     Judged(Vec<ClientMessage>),
     Unjudged(&'static str),
+    /// The tool answers exactly when the caller's set holds this capability;
+    /// no wire frame stands behind it, so there is nothing for `peer_allows`
+    /// to judge.
+    Requires(&'static str),
 }
 
 /// The permission table for the MCP tool door: every served tool's wire
@@ -480,6 +501,10 @@ pub enum McpToolWire {
 ///   Since the model half rides the administrative capability, a peer applies a
 ///   profile only when it holds `admin`; a peer with `send` alone may still
 ///   change modes over the wire `SessionSetMode`.
+/// - Oracle search (`devboule_oracle_search`) is `Requires(CAP_SEARCH)`: it
+///   ships source text from this machine — snippets, paths, line ranges — so
+///   it rides its own capability, granted per device from the Devices panel,
+///   and not `admin`, whose switch names settings, projects and shutdown.
 pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
@@ -618,23 +643,24 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
             project_id: String::new(),
         }]))
     } else if tool == MCP_ORACLE_SEARCH_TOOL {
-        // The semantic search, judged exactly like the graph it complements —
-        // with the stronger premise: it ships source text (snippets, paths,
-        // line ranges), not topology, so the disclosure per workspace is at
-        // least the graph's and cannot ride a weaker capability. The same
-        // `WorkspacesList` act under `admin` opens it, and whose workspace is
-        // searched comes from the caller's own session row, never an argument.
-        Some(McpToolWire::Judged(vec![ClientMessage::WorkspacesList {
-            id: 0,
-            project_id: String::new(),
-        }]))
+        // The semantic search ships source text — snippets, paths, line
+        // ranges — of this machine's files, answered to a session that may
+        // originate from a paired device. It therefore needs its own
+        // capability, `search`, granted per device (owner's decision,
+        // 2026-09-22, `DECISIONS.md` §Q-g): not `admin`, whose switch means
+        // settings, projects and shutdown, and not a local-only rule — a
+        // phone of the same user may search, when its switch says so. No wire
+        // frame stands behind the act, so the door checks the capability
+        // directly instead of judging a placeholder request.
+        Some(McpToolWire::Requires(CAP_SEARCH))
     } else {
         None
     }
 }
 
 /// Judge one tool call for a peer with the same function the dispatcher uses:
-/// the policy's first `Deny` payload, or `None` when the tool is allowed.
+/// the policy's first `Deny` payload, or the capability a `Requires` row names
+/// when the caller does not hold it, or `None` when the tool is allowed.
 ///
 /// `Unjudged` tools and unknown tool names both allow here: the former perform
 /// nothing judged, the latter fall through to the broker's own `Unknown tool`
@@ -643,6 +669,9 @@ pub fn mcp_tool_denial(role: PeerRole, caps: &[String], tool: &str) -> Option<&'
     let judged = match mcp_tool_wire(tool)? {
         McpToolWire::Judged(requests) => requests,
         McpToolWire::Unjudged(_) => return None,
+        McpToolWire::Requires(capability) => {
+            return (!caps.iter().any(|cap| cap == capability)).then_some(capability);
+        }
     };
     for request in &judged {
         if let PeerDecision::Deny(reason) = peer_allows(role, caps, request) {
@@ -744,8 +773,9 @@ pub(crate) mod tests {
     }
 
     /// Every capability **except** the administrative one: the five that name
-    /// acts. The negative control's set — a device holding all of them and
-    /// nothing else must still be refused the administrative surface.
+    /// acts plus `search` (2026-09-22). The negative control's set — a device
+    /// holding all of them and nothing else must still be refused the
+    /// administrative surface.
     fn operational_caps() -> Vec<String> {
         let mut names = all_caps();
         names.retain(|cap| cap != CAP_ADMIN);
@@ -823,6 +853,7 @@ pub(crate) mod tests {
             CAP_ANSWER_PERMISSIONS,
             CAP_CREATE_SESSIONS,
             CAP_ROSTER,
+            CAP_SEARCH,
             CAP_ADMIN,
         ];
         named.sort_unstable();
@@ -1484,6 +1515,21 @@ pub(crate) mod tests {
                 Some(McpToolWire::Unjudged(reason)) => {
                     assert!(!reason.is_empty(), "{name}: an unjudged tool says why")
                 }
+                Some(McpToolWire::Requires(capability)) => {
+                    // Not enough that a name exists: a typo'd one would be
+                    // unreachable for every peer and green in every walker,
+                    // because `validate_caps` only lets a device hold names
+                    // from the wire set — so the name a row requires must be
+                    // one somebody can actually hold.
+                    assert!(
+                        !capability.is_empty(),
+                        "{name}: a tool that requires a capability says which"
+                    );
+                    assert!(
+                        devboule_protocol::PEER_CAPS.contains(&capability),
+                        "{name}: `{capability}` is required but absent from PEER_CAPS"
+                    );
+                }
                 None => panic!("{name}: served by the broker but missing from the door table"),
             }
         }
@@ -1570,26 +1616,30 @@ pub(crate) mod tests {
         }
     }
 
-    /// The project-graph tools and the Oracle search ride the administrative
-    /// capability, walked over the closed capability table rather than
-    /// sampled. The property is
+    /// The project-graph tools ride the administrative capability, walked over
+    /// the closed capability table rather than sampled: the three tools and
+    /// nothing else — the Oracle search is not in this walk (below). The
+    /// property is
     /// two-way, which is what makes it the proof and not a sample: **with** the
-    /// capability every served tool is reachable at the door, and **without** it
+    /// capability all three graph tools are reachable at the door, and
+    /// **without** it
     /// the caller's workspace stays closed whatever else the device holds
     /// — alone, as the act-named five, or in any combination. Whose workspace
     /// is read comes from the caller's own session row, never from an argument.
+    ///
+    /// The Oracle search rides `search`, not `admin`, since 2026-09-22 (§Q-g):
+    /// its row is `Requires(CAP_SEARCH)`, so the `admin` column below does not
+    /// describe it — it is asserted apart, in the door test below, against the
+    /// capability it actually needs. The parity half at the end still walks
+    /// **every** served tool, Oracle included, with the whole table held.
     #[test]
     fn the_project_graph_tools_ride_the_administrative_capability() {
         use crate::provider_catalog::{
-            MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL,
+            MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_NEIGHBORHOOD_TOOL,
         };
         use devboule_protocol::PEER_CAPS;
-        const GRAPH_TOOLS: [&str; 4] = [
-            MCP_NEIGHBORHOOD_TOOL,
-            MCP_IMPORTS_TOOL,
-            MCP_IMPORTERS_TOOL,
-            MCP_ORACLE_SEARCH_TOOL,
-        ];
+        const GRAPH_TOOLS: [&str; 3] =
+            [MCP_NEIGHBORHOOD_TOOL, MCP_IMPORTS_TOOL, MCP_IMPORTERS_TOOL];
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for cap in PEER_CAPS {
                 let expected = if cap == CAP_ADMIN {
@@ -1762,6 +1812,62 @@ pub(crate) mod tests {
             // An unserved name is not the door's refusal: the broker's own
             // `Unknown tool` arm answers it without touching anything.
             assert_eq!(mcp_tool_denial(role, &none, "devboule_no_such_tool"), None);
+        }
+    }
+
+    /// The Oracle search rides its own capability, `search`, at the tool door:
+    /// a peer holding `view` — or every other name but `search` — is refused
+    /// it with a sentence that **names `search`**, the same refusal shape every
+    /// capability row has; the same peer holding `search` passes; and the
+    /// graph tools are untouched by the change (they still ride `admin`, in
+    /// the walk above). A regression that put the row back behind
+    /// `WorkspacesList`+`admin` dies here, naming the tool.
+    #[test]
+    fn the_oracle_search_rides_its_own_capability() {
+        use crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL;
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[]), MCP_ORACLE_SEARCH_TOOL),
+                Some(CAP_SEARCH),
+                "{role:?} holding nothing: devboule_oracle_search is refused for the missing `search` capability"
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_VIEW]), MCP_ORACLE_SEARCH_TOOL),
+                Some(CAP_SEARCH),
+                "{role:?} holding `view` but not `search`: devboule_oracle_search names what is missing"
+            );
+            assert_eq!(
+                mcp_tool_denial(
+                    role,
+                    &caps(&[
+                        CAP_VIEW,
+                        CAP_SEND,
+                        CAP_ANSWER_PERMISSIONS,
+                        CAP_CREATE_SESSIONS,
+                        CAP_ROSTER,
+                    ]),
+                    MCP_ORACLE_SEARCH_TOOL
+                ),
+                Some(CAP_SEARCH),
+                "{role:?} holding every act-named capability but no `search` is still refused devboule_oracle_search"
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_SEARCH]), MCP_ORACLE_SEARCH_TOOL),
+                None,
+                "{role:?} holding `search` reaches devboule_oracle_search"
+            );
+            assert_eq!(
+                mcp_tool_denial(role, &all_caps(), MCP_ORACLE_SEARCH_TOOL),
+                None,
+                "{role:?} holding the whole table reaches devboule_oracle_search"
+            );
+            // `admin` alone is what the old row accepted; it must not be
+            // enough any more.
+            assert_eq!(
+                mcp_tool_denial(role, &caps(&[CAP_ADMIN]), MCP_ORACLE_SEARCH_TOOL),
+                Some(CAP_SEARCH),
+                "{role:?} holding only `admin` no longer reaches devboule_oracle_search"
+            );
         }
     }
 

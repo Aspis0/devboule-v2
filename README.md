@@ -71,13 +71,20 @@ What works today:
   session. Every later connection is authenticated by the key pinned
   at pairing *and* by Tailscale agreeing that the address is the one the pairing
   was made from. Each paired device holds a set of capabilities — `view`,
-  `send`, `answer_permissions`, `create_sessions`, `roster` and `admin` — shown
+  `send`, `answer_permissions`, `create_sessions`, `roster`, `search` and
+  `admin` — shown
   as toggles on its row and revocable at any time. A new pairing starts with all
   of them, so a paired phone is a full client: it lists and attaches to
   sessions, sends prompts and steers a running turn, answers permission cards
   (at most three undecided ones per device), creates sessions, and, with
   `admin`, reaches the rest of what the app can ask — settings, projects,
-  journal, shutdown, the agent tools. The one thing it cannot do is change who
+  journal, shutdown, the agent tools. The Oracle semantic search is not part of
+  that remainder: it rides its own `search` switch, so a paired device's agent
+  may semantically search this machine's code — snippets, paths, line ranges —
+  only while that switch is on for that device. A new pairing is born holding
+  `search` too (the same "the phone is mine" default as everything else), and
+  the switch is how it is taken back from one device alone. The one thing it
+  cannot do is change who
   else may enter: starting or completing a pairing, changing a device's
   capabilities and revoking a device stay on this machine, because those decide
   which devices are trusted rather than what a trusted one may do. Without
@@ -187,6 +194,11 @@ the local models live here, so it works only while the desktop app is running -
 leave it open, or minimize it to the tray. With the app closed the tool says so,
 in a sentence that names the app; it does not fail silently and it never answers
 from another project's index.
+
+A paired device reaches the same tool only while that device holds the `search`
+capability: on by default at pairing, toggled per device in Settings - Devices,
+and refused by name (`capability 'search' was not negotiated`) when it is off —
+local sessions on this machine are never judged.
 
 ### Using Oracle
 

@@ -1567,7 +1567,14 @@ export type PeerRole = "client" | "daemon";
  * `PEER_CAPS` in `crates/devboule-protocol/src/messages.rs` (the DevicesPanel
  * walker test reads that literal so the two cannot drift).
  */
-export type Cap = "view" | "send" | "answer_permissions" | "create_sessions" | "roster" | "admin";
+export type Cap =
+  | "view"
+  | "send"
+  | "answer_permissions"
+  | "create_sessions"
+  | "roster"
+  | "search"
+  | "admin";
 
 /** Where the daemon keeps its Noise static key. Reported in `Status`. */
 export type SecretStore = "keyring" | "file";

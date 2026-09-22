@@ -549,11 +549,13 @@ handshake slot, which is why the slot budgets are separate from the connection c
 (`peer_transport.rs:29-31`). The pattern and prologue are constants (`:46-48`), and the handshake
 deadline is `HANDSHAKE_DEADLINE = 10 s` (`:71`).
 
-**What a capability is.** A capability names an *act* a paired device may ask for — or, for the
-sixth, the surface no act-name covers. The list is one
-constant on the wire: `PEER_CAPS` is six names — `view`, `send`, `answer_permissions`,
-`create_sessions`, `roster` and `admin` (`crates/devboule-protocol/src/messages.rs`, `PEER_CAPS`) —
-and `PEER_DEFAULT_CAPS` is the same six, so a device is born holding everything and a person narrows
+**What a capability is.** A capability names an *act* a paired device may ask for — or, in
+`admin`'s case, the surface no act-name covers (`search` is the other kind of name: one
+disclosure — this machine's code, searched — rather than an act). The list is one
+constant on the wire: `PEER_CAPS` is seven names — `view`, `send`,
+`answer_permissions`, `create_sessions`, `roster`, `search` and `admin`
+(`crates/devboule-protocol/src/messages.rs`, `PEER_CAPS`) —
+and `PEER_DEFAULT_CAPS` is the same seven, so a device is born holding everything and a person narrows
 it per device. The default is written once, at the pairing that creates the peer row (`pairing.rs`,
 its only production use), so a device paired before 2026-09-21 keeps the narrower set it was paired
 with: the panel draws its `admin` switch off, and turning it on there is the grant. That is the
@@ -567,7 +569,9 @@ a compile error (`peer_policy.rs:1-8`, `peer_allows`). Consequences of that desi
 file:
 `view` is the one capability `validate_caps` refuses to strip (`crates/devboule-daemon/src/pairing.rs`,
 `validate_caps`); `admin` is the one that opens everything the act-named five do not, from `Status`
-to `Shutdown` (`peer_policy.rs`, `CAP_ADMIN`); the five permission-model frames stay refused *whatever
+to `Shutdown` (`peer_policy.rs`, `CAP_ADMIN`) — bar the Oracle semantic search, which the seventh
+name, `search`, opens at the MCP broker door instead (`peer_policy.rs`, `CAP_SEARCH`, the owner's
+decision of 2026-09-22); the five permission-model frames stay refused *whatever
 a peer holds* (below); and the role a device was paired as does not
 decide anything
 here — the capability set does (the `peer_allows` doc comment).
@@ -621,9 +625,15 @@ this one may talk to as a machine" (`ROLE_OPTIONS`).
   the MCP bridge's destructive tools. The bridge draws the same line: every tool's wire act is judged
   by the one table (`peer_policy.rs`, `mcp_tool_wire`), so a device holding `admin` reaches every
   served tool — `devboule_stop_agent`, `devboule_close_agent`, the three project-graph tools, the
-  Oracle semantic search (`devboule_oracle_search`), the model half of `devboule_set_agent_profile`
+  model half of `devboule_set_agent_profile`
   — and one without it is refused those with that
-  capability's name (`provider_catalog.rs`, `MCP_BROKER_TOOLS`).
+  capability's name (`provider_catalog.rs`, `MCP_BROKER_TOOLS`). The one exception is the Oracle
+  semantic search (`devboule_oracle_search`): it ships source text from this machine — snippets,
+  paths, line ranges — so its row is `Requires(CAP_SEARCH)` and its own per-device switch decides
+  (owner's decision, 2026-09-22): `admin` alone no longer reaches it, a device holding `search`
+  does, and a local session passes unjudged. The switch starts **on** for every new pairing
+  (`PEER_DEFAULT_CAPS` carries `search`), so revoking it from the Devices panel is the act that
+  takes the tool away from one device.
 - *Cannot* — the three acts that decide **who may enter this machine**: start, complete or confirm a
   pairing (`ClientMessage::PairingStart`, `PairingComplete`, `PairingConfirm`), change a device's
   capability set (`PeerSetCaps`) and revoke a device (`PeerRevoke`). Those five frames are refused to

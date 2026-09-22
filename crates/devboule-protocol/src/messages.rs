@@ -50,28 +50,34 @@ impl std::fmt::Display for PeerRole {
 
 /// The capability names a paired peer may hold. The set is closed on the wire:
 /// an unknown name is an error, never a silently dropped entry. The first five
-/// name acts; `admin` names the rest of this device's surface — the
-/// administrative acts no act-name covers (the decision of 2026-09-21: a
-/// paired device is a full client, and only the permission model itself stays
-/// local).
-pub const PEER_CAPS: [&str; 6] = [
+/// name acts; `search` names the Oracle semantic search's per-device grant (the
+/// decision of 2026-09-22: source snippets of this machine travel only to the
+/// devices whose switch says so); `admin` names the rest of this device's
+/// surface — the administrative acts no act-name covers (the decision of
+/// 2026-09-21: a paired device is a full client, and only the permission model
+/// itself stays local).
+pub const PEER_CAPS: [&str; 7] = [
     "view",
     "send",
     "answer_permissions",
     "create_sessions",
     "roster",
+    "search",
     "admin",
 ];
 /// Every new pairing starts here: the whole set, which is the same decision as
 /// the one above — "the phone is mine". A person restricts a device afterwards,
 /// per device; `validate_caps` is what still refuses to leave a `Client` with
-/// no `view`.
-pub const PEER_DEFAULT_CAPS: [&str; 6] = [
+/// no `view`. `search` enters this default deliberately (owner's decision,
+/// 2026-09-22): a new device may search this machine's code out of the box and
+/// the Devices-panel switch is how that is taken back.
+pub const PEER_DEFAULT_CAPS: [&str; 7] = [
     "view",
     "send",
     "answer_permissions",
     "create_sessions",
     "roster",
+    "search",
     "admin",
 ];
 
