@@ -11,11 +11,12 @@ use devboule_daemon::DaemonError;
 /// window's own thread. That inline call is the measured freeze of Reopen
 /// (`scout/user-pass/f08b.png`).
 ///
-/// The artifact write and the plugin install sit on the list one size down:
-/// both are blocking work on the window's thread if they stay plain `fn` — a
-/// document of megabytes, a folder copy with its digest pass.
+/// The artifact write, the plugin install and the workspace git status sit on
+/// the list one size down: all three are blocking work on the window's thread
+/// if they stay plain `fn` — a document of megabytes, a folder copy with its
+/// digest pass, a `git status` over a checkout whose size nobody chose.
 ///
-/// Mutant: drop the `async` from any of the five — the road is named in the
+/// Mutant: drop the `async` from any of the six — the road is named in the
 /// failure.
 #[test]
 fn the_long_roads_are_async_commands() {
@@ -45,6 +46,11 @@ fn the_long_roads_are_async_commands() {
             include_str!("../../plugins/mod.rs"),
             "plugin_install",
         ),
+        (
+            "backend/workspace.rs",
+            include_str!("../workspace.rs"),
+            "workspace_git_status",
+        ),
     ];
     for (file, source, command) in roads {
         assert!(
@@ -58,7 +64,7 @@ fn the_long_roads_are_async_commands() {
     }
 }
 
-/// All five roads, and only those five, wait through the helper: an `async`
+/// All six roads, and only those six, wait through the helper: an `async`
 /// command that called the client directly would park a runtime worker for
 /// minutes, which is the thread `spawn_blocking` exists to spare.
 ///
@@ -73,6 +79,7 @@ fn every_blocking_road_waits_through_the_blocking_helper() {
     let sources = [
         include_str!("../session.rs"),
         include_str!("../providers.rs"),
+        include_str!("../workspace.rs"),
         include_str!("../../artifact_export.rs"),
         include_str!("../../plugins/mod.rs"),
     ];
@@ -89,8 +96,9 @@ fn every_blocking_road_waits_through_the_blocking_helper() {
         })
         .sum();
     assert_eq!(
-        calls, 5,
-        "one wait per road: create, resume, update, artifact write and plugin install must all go through the helper"
+        calls, 6,
+        "one wait per road: create, resume, update, artifact write, plugin install and the \
+         workspace git status must all go through the helper"
     );
 }
 

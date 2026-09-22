@@ -104,6 +104,8 @@ mod wire_json;
 #[cfg(feature = "server")]
 mod workspace;
 #[cfg(feature = "server")]
+mod workspace_git_status;
+#[cfg(feature = "server")]
 mod worktree;
 
 #[cfg(windows)]

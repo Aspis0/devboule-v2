@@ -277,6 +277,11 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         ClientMessage::SessionsPresence { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProjectsList { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::WorkspacesList { .. } => with_capability(caps, CAP_ADMIN),
+        // A workspace's git state is a read of this machine's disk reached by
+        // the workspace inventory's own key — the id — and it rides the same
+        // capability as that inventory for the same reason: it discloses what
+        // the user has uncommitted in a checkout they opened here.
+        ClientMessage::WorkspaceGitStatus { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProvidersList { .. } => with_capability(caps, CAP_ADMIN),
     }
 }
@@ -1162,6 +1167,10 @@ pub(crate) mod tests {
                 id: 1,
                 project_id: "p.1".to_string(),
             },
+            ClientMessage::WorkspaceGitStatus {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+            },
             ClientMessage::ProvidersList { id: 1 },
             ClientMessage::Status { id: 1 },
             ClientMessage::DaemonDiagnostics { id: 1 },
@@ -1850,6 +1859,7 @@ pub(crate) mod tests {
             ClientMessage::ProjectsList { .. } => administrative(),
             ClientMessage::ProjectAdd { .. } => administrative(),
             ClientMessage::WorkspacesList { .. } => administrative(),
+            ClientMessage::WorkspaceGitStatus { .. } => administrative(),
             ClientMessage::WorkspaceCreate { .. } => administrative(),
             ClientMessage::WorkspaceDelete { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
@@ -1878,7 +1888,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 53;
+    pub(crate) const VARIANT_COUNT: usize = 54;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -1919,6 +1929,7 @@ pub(crate) mod tests {
             ClientMessage::ProjectsList { .. } => "ProjectsList",
             ClientMessage::ProjectAdd { .. } => "ProjectAdd",
             ClientMessage::WorkspacesList { .. } => "WorkspacesList",
+            ClientMessage::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
             ClientMessage::WorkspaceCreate { .. } => "WorkspaceCreate",
             ClientMessage::WorkspaceDelete { .. } => "WorkspaceDelete",
             ClientMessage::ProvidersList { .. } => "ProvidersList",
@@ -2102,6 +2113,10 @@ pub(crate) mod tests {
             ClientMessage::WorkspacesList {
                 id: 1,
                 project_id: "p.1".to_string(),
+            },
+            ClientMessage::WorkspaceGitStatus {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
             },
             ClientMessage::WorkspaceCreate {
                 id: 1,

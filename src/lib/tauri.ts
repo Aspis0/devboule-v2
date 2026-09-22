@@ -36,6 +36,7 @@ import type {
   Session,
   ToolPolicyReply,
   Workspace,
+  WorkspaceGitStatus,
   SessionEvent,
   SessionKind,
   SessionStateSnapshot,
@@ -100,6 +101,7 @@ export type CommandArgs = {
     isolation: Workspace["isolation"];
     branch?: string | null;
   };
+  workspace_git_status: { workspaceId: Id };
   session_create: {
     workspaceId: Id | null;
     kind: SessionKind;
@@ -212,6 +214,7 @@ type CommandResults = {
   project_add: Project;
   workspaces_list: Workspace[];
   workspace_create: Workspace;
+  workspace_git_status: WorkspaceGitStatus;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
@@ -342,6 +345,7 @@ export const COMMAND_ARG_KEYS = {
   project_add: ["path"],
   workspaces_list: ["projectId"],
   workspace_create: ["projectId", "isolation", "branch"],
+  workspace_git_status: ["workspaceId"],
   session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -509,6 +513,15 @@ export const projectsList = () => invokeTyped("projects_list");
  */
 export const projectAdd = (path: string) => invokeTyped("project_add", { path });
 export const workspacesList = (projectId: Id) => invokeTyped("workspaces_list", { projectId });
+/**
+ * The uncommitted working-tree state of one workspace — the source of the
+ * Changes panel. Only the id is sent: the daemon resolves the directory from
+ * it, because `Workspace.path` is display-only (see `src/types/ipc.ts`), and a
+ * caller that sent a path back would be asking the daemon to read a directory
+ * it never vouched for.
+ */
+export const workspaceGitStatus = (workspaceId: Id) =>
+  invokeTyped("workspace_git_status", { workspaceId });
 /**
  * Creates a workspace inside a project. Only `local` isolation exists today;
  * `worktree` and any `branch` are refused by the daemon with `unimplemented`

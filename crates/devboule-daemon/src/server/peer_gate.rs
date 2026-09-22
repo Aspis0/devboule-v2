@@ -297,6 +297,7 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::ProjectsList { .. } => None,
         ClientMessage::ProjectAdd { .. } => None,
         ClientMessage::WorkspacesList { .. } => None,
+        ClientMessage::WorkspaceGitStatus { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
@@ -519,6 +520,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::ProjectsList { .. }
         | ClientMessage::ProjectAdd { .. }
         | ClientMessage::WorkspacesList { .. }
+        | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }

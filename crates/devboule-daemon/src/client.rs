@@ -13,7 +13,7 @@ use devboule_protocol::{
     JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
     Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
     SessionEventEnvelope, SessionKind, SessionStateSnapshot, StoredAttachment, SubscriptionId,
-    WireError, Workspace, WorkspaceIsolation,
+    WireError, Workspace, WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -821,6 +821,24 @@ impl DaemonClient {
             project_id: project_id.to_string(),
         })? {
             DaemonMessage::Workspaces { workspaces, .. } => Ok(workspaces),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The uncommitted working-tree state of one workspace. The id is the
+    /// whole argument: the daemon resolves the directory from it, because the
+    /// `path` every `Workspace` carries is display-only on the wire.
+    pub fn workspace_git_status(
+        &self,
+        workspace_id: &str,
+    ) -> Result<WorkspaceGitStatus, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceGitStatus {
+            id,
+            workspace_id: workspace_id.to_string(),
+        })? {
+            DaemonMessage::WorkspaceGit { status, .. } => Ok(status),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -1823,6 +1841,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Project { id, .. }
         | DaemonMessage::Workspaces { id, .. }
         | DaemonMessage::Workspace { id, .. }
+        | DaemonMessage::WorkspaceGit { id, .. }
         | DaemonMessage::SessionAttached { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }

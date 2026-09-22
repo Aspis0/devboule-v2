@@ -283,6 +283,10 @@ impl PluginSession {
                         // read nor write what answers its child's permission
                         // cards. The replies are listed here because they
                         // carry ids; the push is a broadcast, not a reply.
+                        // The workspace git status is a read a plugin backend
+                        // never makes, but it is a reply and carries an id:
+                        // listed, not swept — the same reason as above.
+                        | DaemonMessage::WorkspaceGit { id, .. }
                         | DaemonMessage::DelegationState { id, .. }
                         | DaemonMessage::DelegationSetOk { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)

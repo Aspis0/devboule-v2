@@ -326,7 +326,9 @@ impl super::SessionRegistry {
         Ok(())
     }
 
-    pub(super) fn workspace_cwd(&self, workspace_id: &str) -> Result<PathBuf, WireError> {
+    /// `pub(crate)` because the workspace git-status read resolves its root
+    /// from an id the same way a session does, and never from a request field.
+    pub(crate) fn workspace_cwd(&self, workspace_id: &str) -> Result<PathBuf, WireError> {
         if let Some(path) = self.cached_workspace_path(workspace_id) {
             if path.is_dir() {
                 return Ok(path);

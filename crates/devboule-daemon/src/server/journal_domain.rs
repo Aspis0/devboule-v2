@@ -97,6 +97,9 @@ pub(super) fn dispatch_journal(
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
             }
         }
+        ClientMessage::WorkspaceGitStatus { id, workspace_id } => {
+            crate::workspace_git_status::reply(state, id, &workspace_id)
+        }
         ClientMessage::WorkspaceCreate {
             id,
             project_id,

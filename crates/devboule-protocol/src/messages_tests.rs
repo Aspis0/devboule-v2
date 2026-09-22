@@ -2480,3 +2480,90 @@ fn a_display_name_is_trimmed_then_capped_at_sixty_characters() {
     assert!(accented.len() > crate::MAX_DISPLAY_NAME_CHARS);
     assert_eq!(validate_display_name(&accented), Ok(accented));
 }
+
+/// The workspace git-status frame and its reply, pinned to the exact words
+/// TypeScript reads (`src/types/ipc.ts`): the `type` tags, the camelCase keys,
+/// and the six `status` values spelled in `snake_case`.
+#[test]
+fn workspace_git_status_round_trips_with_its_wire_words() {
+    let status = WorkspaceGitStatus {
+        is_git: true,
+        dirty: true,
+        branch: Some("main".to_string()),
+        totals: WorkspaceGitTotals {
+            additions: 3,
+            deletions: 1,
+        },
+        rows: vec![WorkspaceGitRow {
+            path: "src/lib.rs".to_string(),
+            additions: 3,
+            deletions: 1,
+            status: WorkspaceGitFileStatus::Modified,
+            capped: false,
+        }],
+        error: None,
+    };
+    let reply = DaemonMessage::WorkspaceGit { id: 7, status };
+    let json = serde_json::to_string(&reply).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_git\"",
+        "\"isGit\":true",
+        "\"dirty\":true",
+        "\"branch\":\"main\"",
+        "\"totals\":{\"additions\":3,\"deletions\":1}",
+        "\"status\":\"modified\"",
+        "\"capped\":false",
+        "\"error\":null",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        reply
+    );
+
+    let request = ClientMessage::WorkspaceGitStatus {
+        id: 7,
+        workspace_id: "ws.1".to_string(),
+    };
+    let json = serde_json::to_string(&request).expect("serialize");
+    assert!(json.contains("\"type\":\"workspace_git_status\""), "{json}");
+    assert!(json.contains("\"workspaceId\":\"ws.1\""), "{json}");
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        request
+    );
+    assert_eq!(request.name(), "WorkspaceGitStatus");
+    assert!(!request.is_state_changing(), "a read writes nothing");
+    assert_eq!(request.request_id(), Some(7));
+
+    // An absent branch and a present error are both `null` on the wire, never
+    // an omitted key: the TypeScript side types them as nullable, and a key
+    // TypeScript cannot see is a crash it cannot predict.
+    let refused = WorkspaceGitStatus {
+        branch: None,
+        error: Some("the workspace folder is not a directory".to_string()),
+        ..reply_status(&reply)
+    };
+    let json = serde_json::to_string(&refused).expect("serialize");
+    assert!(json.contains("\"branch\":null"), "{json}");
+    assert!(json.contains("\"error\":\"the workspace folder"), "{json}");
+
+    for (word, spelled) in [
+        (WorkspaceGitFileStatus::Modified, "\"modified\""),
+        (WorkspaceGitFileStatus::Added, "\"added\""),
+        (WorkspaceGitFileStatus::Deleted, "\"deleted\""),
+        (WorkspaceGitFileStatus::Renamed, "\"renamed\""),
+        (WorkspaceGitFileStatus::Untracked, "\"untracked\""),
+        (WorkspaceGitFileStatus::Conflicted, "\"conflicted\""),
+    ] {
+        assert_eq!(serde_json::to_string(&word).expect("serialize"), spelled);
+    }
+}
+
+fn reply_status(message: &DaemonMessage) -> WorkspaceGitStatus {
+    match message {
+        DaemonMessage::WorkspaceGit { status, .. } => status.clone(),
+        other => panic!("not a workspace git reply: {other:?}"),
+    }
+}

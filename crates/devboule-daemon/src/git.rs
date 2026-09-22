@@ -16,7 +16,9 @@ const GIT_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const GIT_REAP_TIMEOUT: Duration = Duration::from_millis(500);
 const GIT_PROBE_POLL: Duration = Duration::from_millis(10);
 const GIT_OUTPUT_READ_TIMEOUT: Duration = Duration::from_millis(250);
-const GIT_STDOUT_MAX_BYTES: usize = 16 * 1024;
+/// The accumulator's ceiling: output past it is dropped, so a caller that
+/// reads `stdout.len() > GIT_STDOUT_MAX_BYTES` knows its reply was cut.
+pub(crate) const GIT_STDOUT_MAX_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GitRepositoryStatus {

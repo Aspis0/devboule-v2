@@ -24,6 +24,69 @@ export interface Workspace {
   path: string;
 }
 
+/**
+ * The six words `git status --porcelain=v2` maps a file to, for the Changes
+ * panel. `conflicted` comes from the record kind (`u`), `untracked` from `?`;
+ * the other four are derived from the `XY` pair of the `1`/`2` records.
+ */
+export type WorkspaceGitFileStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "conflicted";
+
+export interface WorkspaceGitTotals {
+  additions: number;
+  deletions: number;
+}
+
+export interface WorkspaceGitRow {
+  /** Repository-relative path, exactly as git printed it. */
+  path: string;
+  additions: number;
+  deletions: number;
+  status: WorkspaceGitFileStatus;
+  /**
+   * `true` when the two counts are NOT the file's exact line counts. Set by
+   * every path that can make them inexact: the untracked reader refused the
+   * file (over the byte cap, unreadable or gone) or stopped inside it; the
+   * file carries a NUL byte; git printed `-` for it; the path is unmerged, so
+   * git's numstat is stage bookkeeping rather than a delta; or the whole
+   * numstat round was degraded (a dump failed or was cut), in which case
+   * every number that came from it is a floor. An untracked row counts its
+   * own file and is unaffected by a degraded round. Never silently short.
+   */
+  capped: boolean;
+}
+
+/**
+ * The uncommitted working-tree state of one workspace, the reply of
+ * `workspace_git_status`.
+ *
+ * `isGit` and `error` answer different questions and must not collapse: a
+ * folder that is not a repository is `isGit: false` with `error: null`, while
+ * an `error` says THIS reply is incomplete — the folder is gone, git did not
+ * run, or `git status` produced more bytes than the daemon's reply cap and the
+ * row list was withheld rather than cut short.
+ */
+export interface WorkspaceGitStatus {
+  isGit: boolean;
+  /**
+   * Normally `!rows.length`, so the two agree. The one deliberate exception
+   * is the withheld list: `git status` passed the reply cap, so `rows` is
+   * empty while `dirty` still says the tree is dirty — a cut-short list is
+   * not an empty tree.
+   */
+  dirty: boolean;
+  /** `# branch.head` verbatim, including git's own `(detached)`. */
+  branch: string | null;
+  totals: WorkspaceGitTotals;
+  rows: WorkspaceGitRow[];
+  error: string | null;
+}
+
 export type SessionKind = "terminal" | "acp" | "claude" | "pi" | "codex";
 
 export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" | "codex" {

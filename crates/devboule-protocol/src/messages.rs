@@ -492,6 +492,15 @@ pub enum ClientMessage {
         id: u64,
         project_id: String,
     },
+    /// The uncommitted working-tree state of one workspace, for the Changes
+    /// panel. A read: the daemon resolves the directory from `workspace_id`
+    /// and the caller's `path` field — the one every `Workspace` carries — is
+    /// never consulted, because it is declared display-only
+    /// (`src/types/ipc.ts`). The reply is [`DaemonMessage::WorkspaceGit`].
+    WorkspaceGitStatus {
+        id: u64,
+        workspace_id: String,
+    },
     WorkspaceCreate {
         id: u64,
         project_id: String,
@@ -719,6 +728,7 @@ impl ClientMessage {
             | Self::ProjectsList { id }
             | Self::ProjectAdd { id, .. }
             | Self::WorkspacesList { id, .. }
+            | Self::WorkspaceGitStatus { id, .. }
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
             | Self::ProvidersList { id }
@@ -796,6 +806,7 @@ impl ClientMessage {
             | Self::ProjectsList { .. }
             | Self::ProjectAdd { .. }
             | Self::WorkspacesList { .. }
+            | Self::WorkspaceGitStatus { .. }
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
             | Self::Invoke { .. }
@@ -853,6 +864,7 @@ impl ClientMessage {
             Self::ProjectsList { .. } => "ProjectsList",
             Self::ProjectAdd { .. } => "ProjectAdd",
             Self::WorkspacesList { .. } => "WorkspacesList",
+            Self::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
             Self::WorkspaceDelete { .. } => "WorkspaceDelete",
             Self::ProvidersList { .. } => "ProvidersList",
@@ -895,6 +907,7 @@ impl ClientMessage {
             | Self::JournalRetentionGet { .. }
             | Self::ProjectsList { .. }
             | Self::WorkspacesList { .. }
+            | Self::WorkspaceGitStatus { .. }
             | Self::ProvidersList { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
@@ -1013,6 +1026,11 @@ pub enum DaemonMessage {
     Workspaces {
         id: u64,
         workspaces: Vec<Workspace>,
+    },
+    /// The reply to [`ClientMessage::WorkspaceGitStatus`].
+    WorkspaceGit {
+        id: u64,
+        status: WorkspaceGitStatus,
     },
     Workspace {
         id: u64,
@@ -1224,6 +1242,83 @@ pub enum DaemonMessage {
         enabled: bool,
         source: DelegationSource,
     },
+}
+
+/// One workspace's working-tree state, as the Changes panel reads it.
+///
+/// `is_git` and `error` answer different questions and must never collapse:
+/// a folder that is simply not a repository answers `is_git: false` with
+/// `error: null`, while an `error` says *this reply* is incomplete — the
+/// workspace folder is gone, git did not run, or `git status` produced more
+/// bytes than the reply cap allows and the daemon refused to hand back a
+/// list it had cut short. `error` beside `is_git: true` is a caveat on an
+/// answer that is otherwise real; `error` beside `is_git: false` is a
+/// refusal to claim either way.
+///
+/// **Debt, recorded in the slice-1 fix round:** `error` is free text on a
+/// frame that does **not** pass `redact_for_conn` — that seam rewrites only
+/// `DaemonMessage::Error`, never this variant. Today the reply is behind the
+/// `admin` capability and every sentence is written without a path and
+/// without git's stderr, so nothing leaks; a future lowering of that
+/// capability would let this machine's paths out in silence, and the fix then
+/// belongs in the redaction seam, not in the message writers.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitStatus {
+    pub is_git: bool,
+    /// Whether anything is uncommitted. Normally `!rows.is_empty()`, so the
+    /// two agree; the one deliberate exception is the withheld list: `git
+    /// status` passed the reply cap, so `rows` is empty while `dirty` still
+    /// says the tree is dirty — a cut-short list is not an empty tree.
+    pub dirty: bool,
+    /// `# branch.head` verbatim, including git's own `(detached)`. `null`
+    /// when there is no repository or no answer.
+    pub branch: Option<String>,
+    pub totals: WorkspaceGitTotals,
+    pub rows: Vec<WorkspaceGitRow>,
+    pub error: Option<String>,
+}
+
+/// Added and removed lines over every row of one reply.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitTotals {
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+/// One changed file. `status` is derived from the `XY` pair of
+/// `git status --porcelain=v2` (or from the record kind for `?` and `u`).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitRow {
+    /// Path relative to the repository root, as git printed it.
+    pub path: String,
+    pub additions: u64,
+    pub deletions: u64,
+    pub status: WorkspaceGitFileStatus,
+    /// Whether the two counts are **not** the file's exact line counts. Set,
+    /// never implied, and by every path that can make them inexact: the
+    /// untracked reader refused the file (over the byte cap, unreadable or
+    /// gone) or stopped inside it; the file carries a NUL byte; git printed
+    /// `-` for it; the path is unmerged, so git's numstat is stage
+    /// bookkeeping rather than a delta; or the whole numstat round was
+    /// degraded — one dump failed or was cut — in which case every number
+    /// that came from it is a floor. An untracked row counts its own file and
+    /// is unaffected by a degraded round.
+    pub capped: bool,
+}
+
+/// The six words the Changes panel renders, all derived from `porcelain=v2`.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceGitFileStatus {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Untracked,
+    Conflicted,
 }
 
 /// The three-valued answer to "what does this provider offer". The three are

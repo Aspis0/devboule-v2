@@ -460,6 +460,7 @@ pub(super) fn dispatch_session(
         | ClientMessage::ProjectsList { .. }
         | ClientMessage::ProjectAdd { .. }
         | ClientMessage::WorkspacesList { .. }
+        | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }
