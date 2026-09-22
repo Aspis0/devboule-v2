@@ -870,59 +870,14 @@ impl DaemonBridge {
         self.inner.client()
     }
 
-    pub fn sessions_watch(&self, handler: SessionStateHandler) -> Result<(), DaemonError> {
-        self.inner.sessions_watch(handler)
-    }
-
-    pub fn sessions_unwatch(&self) -> Result<(), DaemonError> {
-        self.inner.sessions_unwatch()
-    }
-
-    pub(crate) fn session_attach(
-        &self,
-        session_id: &str,
-        from_seq: Option<u64>,
-        sink: AttachmentSink,
-    ) -> Result<SubscriptionId, DaemonError> {
-        self.inner.session_attach(session_id, from_seq, sink)
-    }
-
-    pub(crate) fn ensure_subscription_attached(
-        &self,
-        subscription_id: SubscriptionId,
-    ) -> Result<(), DaemonError> {
-        self.inner.ensure_subscription_attached(subscription_id)
-    }
-
-    pub(crate) fn session_detach(
-        &self,
-        subscription_id: SubscriptionId,
-    ) -> Result<(), DaemonError> {
-        self.inner.session_detach(subscription_id)
-    }
-
-    pub(crate) fn session_claim(&self, subscription_id: SubscriptionId) -> Result<(), DaemonError> {
-        self.inner.session_claim(subscription_id)
-    }
-
-    pub(crate) fn session_close(
-        &self,
-        session_id: &str,
-        subscription_id: Option<SubscriptionId>,
-    ) -> Result<(), DaemonError> {
-        self.inner.session_close(session_id, subscription_id)
-    }
-
-    pub(crate) fn session_stop(
-        &self,
-        session_id: &str,
-        subscription_id: Option<SubscriptionId>,
-    ) -> Result<(), DaemonError> {
-        self.inner.session_stop(session_id, subscription_id)
-    }
-
-    pub fn forget_generation(&self, session_id: &str) {
-        self.inner.forget_generation(session_id);
+    /// The shared state behind this handle, for a command body that moves
+    /// into `off_main_thread`: the closure cannot borrow `State`, so the
+    /// command clones this `Arc` first and the bridge calls run inside the
+    /// closure. The per-operation wrappers that used to sit here lived on
+    /// `&self` and could not cross that boundary. Named `shared`, not
+    /// `inner`: `State::inner` already exists and would take the call.
+    pub(crate) fn shared(&self) -> Arc<BridgeInner> {
+        Arc::clone(&self.inner)
     }
 
     /// Deliberate shutdown so M3c can flush the journal on the daemon side.
@@ -957,7 +912,10 @@ impl BridgeInner {
             .ok_or_else(|| "The daemon connection was lost.".to_string())
     }
 
-    fn sessions_watch(self: &Arc<Self>, handler: SessionStateHandler) -> Result<(), DaemonError> {
+    pub(crate) fn sessions_watch(
+        self: &Arc<Self>,
+        handler: SessionStateHandler,
+    ) -> Result<(), DaemonError> {
         // Serialize desired-subscription changes with client replacement. The
         // lifecycle guard is always acquired before the client mutex, and no
         // path acquires them in the reverse order.
@@ -978,7 +936,7 @@ impl BridgeInner {
         self.roster_subscription.watch(client.as_deref(), handler)
     }
 
-    fn sessions_unwatch(&self) -> Result<(), DaemonError> {
+    pub(crate) fn sessions_unwatch(&self) -> Result<(), DaemonError> {
         let _lifecycle = self
             .client_lifecycle
             .lock()

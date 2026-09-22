@@ -17,6 +17,7 @@ use devboule_protocol::{
 };
 use tauri::State;
 
+use super::blocking::off_main_thread;
 use super::error::CommandError;
 use crate::client::DaemonBridge;
 
@@ -81,8 +82,9 @@ pub enum PairingOutcome {
 }
 
 #[tauri::command]
-pub fn devices_list(bridge: State<'_, DaemonBridge>) -> Result<DevicesReply, CommandError> {
-    match require_client(&bridge)?.devices_list()? {
+pub async fn devices_list(bridge: State<'_, DaemonBridge>) -> Result<DevicesReply, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || match client.devices_list()? {
         DaemonMessage::Devices {
             self_info,
             peers,
@@ -94,16 +96,18 @@ pub fn devices_list(bridge: State<'_, DaemonBridge>) -> Result<DevicesReply, Com
             pending,
         }),
         _ => Err(unexpected_reply()),
-    }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn pairing_start(
+pub async fn pairing_start(
     bridge: State<'_, DaemonBridge>,
     role: String,
 ) -> Result<PairingCode, CommandError> {
     let role = parse_role(&role)?;
-    match require_client(&bridge)?.pairing_start(role)? {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || match client.pairing_start(role)? {
         DaemonMessage::PairingCode {
             code,
             expires_at,
@@ -117,54 +121,64 @@ pub fn pairing_start(
             address,
         }),
         _ => Err(unexpected_reply()),
-    }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn pairing_complete(
+pub async fn pairing_complete(
     bridge: State<'_, DaemonBridge>,
     address: String,
     code: String,
     role: String,
 ) -> Result<PairingOutcome, CommandError> {
     let role = parse_role(&role)?;
-    match require_client(&bridge)?.pairing_complete(
-        &address,
-        // The wrapper keeps the code out of `Debug` output for the whole trip
-        // through the daemon client.
-        PairingSecret::new(code),
-        role,
-    )? {
-        DaemonMessage::PairingPending { peer, .. } => Ok(PairingOutcome::PairingPending { peer }),
-        DaemonMessage::PairingDone { peer, .. } => Ok(PairingOutcome::PairingDone { peer }),
-        _ => Err(unexpected_reply()),
-    }
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        match client.pairing_complete(
+            &address,
+            // The wrapper keeps the code out of `Debug` output for the whole trip
+            // through the daemon client.
+            PairingSecret::new(code),
+            role,
+        )? {
+            DaemonMessage::PairingPending { peer, .. } => {
+                Ok(PairingOutcome::PairingPending { peer })
+            }
+            DaemonMessage::PairingDone { peer, .. } => Ok(PairingOutcome::PairingDone { peer }),
+            _ => Err(unexpected_reply()),
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn pairing_confirm(
+pub async fn pairing_confirm(
     bridge: State<'_, DaemonBridge>,
     device_id: String,
     accept: bool,
 ) -> Result<Option<PeerRow>, CommandError> {
     // `None` is a declined pairing, which the daemon reports as success; it
     // reaches the frontend as `null`.
-    Ok(require_client(&bridge)?.pairing_confirm(&device_id, accept)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.pairing_confirm(&device_id, accept)).await
 }
 
 #[tauri::command]
-pub fn peer_revoke(
+pub async fn peer_revoke(
     bridge: State<'_, DaemonBridge>,
     device_id: String,
 ) -> Result<PeerRow, CommandError> {
-    Ok(require_client(&bridge)?.peer_revoke(&device_id)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.peer_revoke(&device_id)).await
 }
 
 #[tauri::command]
-pub fn peer_set_caps(
+pub async fn peer_set_caps(
     bridge: State<'_, DaemonBridge>,
     device_id: String,
     caps: Vec<String>,
 ) -> Result<PeerRow, CommandError> {
-    Ok(require_client(&bridge)?.peer_set_caps(&device_id, caps)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.peer_set_caps(&device_id, caps)).await
 }

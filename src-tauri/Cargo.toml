@@ -48,3 +48,6 @@ getrandom = "=0.4.3"
 serde_json = "=1.0.151"
 # Used by the command-boundary fake embedder in Oracle runtime tests.
 anyhow = "1"
+# Parses the sources the asyncness pins read at test time (backend/tests):
+# a real parse is immune to comments and strings, a grep is not.
+syn = { version = "3", features = ["full", "visit"] }

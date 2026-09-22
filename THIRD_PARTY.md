@@ -989,7 +989,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | swift-rs | 1.0.8 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | syn | 1.0.109 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | syn | 2.0.119 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| syn | 3.0.4 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| syn | 3.0.4 | Rust direct test | MIT OR Apache-2.0 |
 | sync_wrapper | 1.0.2 | Rust transitive (lockfile) | Apache-2.0 |
 | synstructure | 0.13.2 | Rust transitive (lockfile) | MIT |
 | sysctl | 0.6.0 | Rust transitive (lockfile) | MIT |

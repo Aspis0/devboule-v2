@@ -76,7 +76,7 @@ pub async fn session_resume(
 /// reader output on the daemon waits until that attach is registered
 /// under the stream mutex; there is no subscribe/snapshot race.
 #[tauri::command]
-pub fn session_attach(
+pub async fn session_attach(
     bridge: State<'_, DaemonBridge>,
     id: String,
     from_cursor: Option<u64>,
@@ -86,36 +86,41 @@ pub fn session_attach(
     let sink = Arc::new(move |event| {
         let _ = ch.send(event);
     });
-    Ok(bridge.session_attach(&id, from_cursor, sink)?)
+    let inner = bridge.shared();
+    off_main_thread(move || inner.session_attach(&id, from_cursor, sink)).await
 }
 
 /// Detach the current view without touching the process, reader, registry,
 /// or scrollback. The daemon's idle-exit condition is clients==0 &&
 /// sessions==0, so a detached-but-alive session keeps the daemon up.
 #[tauri::command]
-pub fn session_detach(
+pub async fn session_detach(
     bridge: State<'_, DaemonBridge>,
     subscription_id: SubscriptionId,
 ) -> Result<(), CommandError> {
-    Ok(bridge.session_detach(subscription_id)?)
+    let inner = bridge.shared();
+    off_main_thread(move || inner.session_detach(subscription_id)).await
 }
 
 #[tauri::command]
-pub fn session_claim(
+pub async fn session_claim(
     bridge: State<'_, DaemonBridge>,
     subscription_id: SubscriptionId,
 ) -> Result<(), CommandError> {
-    Ok(bridge.session_claim(subscription_id)?)
+    let inner = bridge.shared();
+    off_main_thread(move || inner.session_claim(subscription_id)).await
 }
 
 #[tauri::command]
-pub fn session_presence(
+pub async fn session_presence(
     bridge: State<'_, DaemonBridge>,
     focused_session_id: Option<String>,
     app_visible: bool,
 ) -> Result<(), CommandError> {
     // Presence is best-effort UI state: preserve errors for observability, while a lost hint only leaves a transiently stale badge.
-    Ok(require_client(&bridge)?.session_presence(focused_session_id.as_deref(), app_visible)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_presence(focused_session_id.as_deref(), app_visible))
+        .await
 }
 
 /// Send one prompt.
@@ -143,7 +148,7 @@ pub fn session_presence(
 /// refused here as `InvalidRequest` instead of travelling as a frame the daemon
 /// answers with an error.
 #[tauri::command]
-pub fn session_send(
+pub async fn session_send(
     bridge: State<'_, DaemonBridge>,
     id: String,
     subscription_id: SubscriptionId,
@@ -159,15 +164,20 @@ pub fn session_send(
     let attachment_references = attachment_references.unwrap_or_default();
     require_attachment_reference_limits(&id, &attachment_references)?;
     let active_turn_behavior = parse_active_turn_behavior(active_turn_behavior.as_deref())?;
-    bridge.ensure_subscription_attached(subscription_id)?;
-    Ok(require_client(&bridge)?.session_send_with_subscription(
-        &id,
-        subscription_id,
-        &text,
-        &attachments,
-        &attachment_references,
-        active_turn_behavior,
-    )?)
+    let client = require_client(&bridge)?;
+    let inner = bridge.shared();
+    off_main_thread(move || {
+        inner.ensure_subscription_attached(subscription_id)?;
+        client.session_send_with_subscription(
+            &id,
+            subscription_id,
+            &text,
+            &attachments,
+            &attachment_references,
+            active_turn_behavior,
+        )
+    })
+    .await
 }
 
 /// Store one attachment for a session and answer the reference a later
@@ -186,14 +196,15 @@ pub fn session_send(
 /// reference this answers with is a value the caller cannot compute (the digest
 /// is of the bytes as *stored*).
 #[tauri::command]
-pub fn session_deposit(
+pub async fn session_deposit(
     bridge: State<'_, DaemonBridge>,
     id: String,
     attachment: PromptAttachment,
 ) -> Result<AttachmentReference, CommandError> {
     require_session_id(&id)?;
     require_attachment_limits(std::slice::from_ref(&attachment))?;
-    Ok(require_client(&bridge)?.session_deposit(&id, &attachment)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_deposit(&id, &attachment)).await
 }
 
 /// Read back the bytes of one deposited attachment, by reference.
@@ -210,16 +221,17 @@ pub fn session_deposit(
 /// ceiling, and a second reference would be a second answer with nowhere to
 /// put it.
 #[tauri::command]
-pub fn session_attachment_read(
+pub async fn session_attachment_read(
     bridge: State<'_, DaemonBridge>,
     reference: AttachmentReference,
 ) -> Result<StoredAttachment, CommandError> {
     require_attachment_reference_limits(&reference.session_id, std::slice::from_ref(&reference))?;
-    Ok(require_client(&bridge)?.session_attachment_read(&reference)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_attachment_read(&reference)).await
 }
 
 #[tauri::command]
-pub fn session_permission_respond(
+pub async fn session_permission_respond(
     bridge: State<'_, DaemonBridge>,
     id: String,
     subscription_id: SubscriptionId,
@@ -234,20 +246,23 @@ pub fn session_permission_respond(
             "Permission request id is required.",
         ));
     }
-    bridge.ensure_subscription_attached(subscription_id)?;
-    Ok(
-        require_client(&bridge)?.session_permission_respond_with_subscription(
+    let client = require_client(&bridge)?;
+    let inner = bridge.shared();
+    off_main_thread(move || {
+        inner.ensure_subscription_attached(subscription_id)?;
+        client.session_permission_respond_with_subscription(
             &id,
             subscription_id,
             &request_id,
             outcome,
             option_id.as_deref(),
-        )?,
-    )
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn session_resize(
+pub async fn session_resize(
     bridge: State<'_, DaemonBridge>,
     id: String,
     subscription_id: SubscriptionId,
@@ -255,35 +270,42 @@ pub fn session_resize(
     rows: u16,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    bridge.ensure_subscription_attached(subscription_id)?;
-    Ok(require_client(&bridge)?.session_resize_with_subscription(
-        &id,
-        subscription_id,
-        cols,
-        rows,
-    )?)
+    let client = require_client(&bridge)?;
+    let inner = bridge.shared();
+    off_main_thread(move || {
+        inner.ensure_subscription_attached(subscription_id)?;
+        client.session_resize_with_subscription(&id, subscription_id, cols, rows)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn session_interrupt(
+pub async fn session_interrupt(
     bridge: State<'_, DaemonBridge>,
     id: String,
     subscription_id: SubscriptionId,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    bridge.ensure_subscription_attached(subscription_id)?;
-    Ok(require_client(&bridge)?.session_interrupt_with_subscription(&id, subscription_id)?)
+    let client = require_client(&bridge)?;
+    let inner = bridge.shared();
+    off_main_thread(move || {
+        inner.ensure_subscription_attached(subscription_id)?;
+        client.session_interrupt_with_subscription(&id, subscription_id)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn session_set_model(
+pub async fn session_set_model(
     bridge: State<'_, DaemonBridge>,
     id: String,
     model_id: Option<String>,
     effort: Option<String>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    Ok(require_client(&bridge)?.session_set_model(&id, model_id.as_deref(), effort.as_deref())?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_set_model(&id, model_id.as_deref(), effort.as_deref()))
+        .await
 }
 
 /// Destroys the session. The subscription is optional: the wire `SessionClose`
@@ -293,25 +315,30 @@ pub fn session_set_model(
 /// this, such a session stays alive in the daemon with nothing able to close
 /// it, because every other teardown path is keyed on a subscription.
 #[tauri::command]
-pub fn session_set_mode(
+pub async fn session_set_mode(
     bridge: State<'_, DaemonBridge>,
     id: String,
     mode_id: String,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    Ok(require_client(&bridge)?.session_set_mode(&id, &mode_id)?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_set_mode(&id, &mode_id)).await
 }
 
 #[tauri::command]
-pub fn session_close(
+pub async fn session_close(
     bridge: State<'_, DaemonBridge>,
     id: String,
     subscription_id: Option<SubscriptionId>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    bridge.session_close(&id, subscription_id)?;
-    bridge.forget_generation(&id);
-    Ok(())
+    let inner = bridge.shared();
+    off_main_thread(move || {
+        inner.session_close(&id, subscription_id)?;
+        inner.forget_generation(&id);
+        Ok::<(), CommandError>(())
+    })
+    .await
 }
 
 /// Stops a session's running process but keeps the session: id, scrollback,
@@ -320,42 +347,46 @@ pub fn session_close(
 /// no `forget_generation`: the instance died, it was not replaced, so the
 /// generation is unchanged and a reconnecting client must still recognize it.
 #[tauri::command]
-pub fn session_stop(
+pub async fn session_stop(
     bridge: State<'_, DaemonBridge>,
     id: String,
     subscription_id: Option<SubscriptionId>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    bridge.session_stop(&id, subscription_id)?;
-    Ok(())
+    let inner = bridge.shared();
+    off_main_thread(move || inner.session_stop(&id, subscription_id)).await
 }
 
 #[tauri::command]
-pub fn sessions_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Session>, CommandError> {
-    Ok(require_client(&bridge)?.sessions_list()?)
+pub async fn sessions_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Session>, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.sessions_list()).await
 }
 
 #[tauri::command]
-pub fn daemon_diagnostics(
+pub async fn daemon_diagnostics(
     bridge: State<'_, DaemonBridge>,
 ) -> Result<DiagnosticsReport, CommandError> {
-    Ok(require_client(&bridge)?.daemon_diagnostics()?)
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.daemon_diagnostics()).await
 }
 
 #[tauri::command]
-pub fn sessions_watch(
+pub async fn sessions_watch(
     bridge: State<'_, DaemonBridge>,
     ch: Channel<Vec<SessionStateSnapshot>>,
 ) -> Result<(), CommandError> {
     let handler: SessionStateHandler = Arc::new(move |snapshots| {
         let _ = ch.send(snapshots);
     });
-    Ok(bridge.sessions_watch(handler)?)
+    let inner = bridge.shared();
+    off_main_thread(move || inner.sessions_watch(handler)).await
 }
 
 #[tauri::command]
-pub fn sessions_unwatch(bridge: State<'_, DaemonBridge>) -> Result<(), CommandError> {
-    Ok(bridge.sessions_unwatch()?)
+pub async fn sessions_unwatch(bridge: State<'_, DaemonBridge>) -> Result<(), CommandError> {
+    let inner = bridge.shared();
+    off_main_thread(move || inner.sessions_unwatch()).await
 }
 
 fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandError> {
@@ -575,8 +606,11 @@ mod tests {
 
     #[test]
     fn session_presence_forwarder_has_the_frozen_tauri_signature() {
-        let _: fn(State<'_, DaemonBridge>, Option<String>, bool) -> Result<(), CommandError> =
-            session_presence;
+        fn frozen<Fut: std::future::Future<Output = Result<(), CommandError>>>(
+            _: fn(State<'static, DaemonBridge>, Option<String>, bool) -> Fut,
+        ) {
+        }
+        frozen(session_presence);
     }
 
     /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ id,
@@ -585,11 +619,11 @@ mod tests {
     /// command's argument shape.
     #[test]
     fn session_deposit_forwarder_has_the_frozen_tauri_signature() {
-        let _: fn(
-            State<'_, DaemonBridge>,
-            String,
-            PromptAttachment,
-        ) -> Result<AttachmentReference, CommandError> = session_deposit;
+        fn frozen<Fut: std::future::Future<Output = Result<AttachmentReference, CommandError>>>(
+            _: fn(State<'static, DaemonBridge>, String, PromptAttachment) -> Fut,
+        ) {
+        }
+        frozen(session_deposit);
     }
 
     /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ reference }`
@@ -598,10 +632,11 @@ mod tests {
     /// command's argument shape.
     #[test]
     fn session_attachment_read_forwarder_has_the_frozen_tauri_signature() {
-        let _: fn(
-            State<'_, DaemonBridge>,
-            AttachmentReference,
-        ) -> Result<StoredAttachment, CommandError> = session_attachment_read;
+        fn frozen<Fut: std::future::Future<Output = Result<StoredAttachment, CommandError>>>(
+            _: fn(State<'static, DaemonBridge>, AttachmentReference) -> Fut,
+        ) {
+        }
+        frozen(session_attachment_read);
     }
 
     /// The sibling of `session_close`'s shape: `{ id, subscription_id? }` in,
@@ -609,11 +644,11 @@ mod tests {
     /// never attached, so the bridge resolves the subscription itself.
     #[test]
     fn session_stop_forwarder_has_the_frozen_tauri_signature() {
-        let _: fn(
-            State<'_, DaemonBridge>,
-            String,
-            Option<SubscriptionId>,
-        ) -> Result<(), CommandError> = session_stop;
+        fn frozen<Fut: std::future::Future<Output = Result<(), CommandError>>>(
+            _: fn(State<'static, DaemonBridge>, String, Option<SubscriptionId>) -> Fut,
+        ) {
+        }
+        frozen(session_stop);
     }
 
     fn reference(session_id: &str, digest: &str) -> AttachmentReference {
