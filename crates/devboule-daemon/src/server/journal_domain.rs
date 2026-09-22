@@ -105,6 +105,11 @@ pub(super) fn dispatch_journal(
             workspace_id,
             path,
         } => crate::workspace_git_diff::reply(state, id, &workspace_id, &path),
+        ClientMessage::WorkspaceFilesList {
+            id,
+            workspace_id,
+            path,
+        } => crate::workspace_files::reply(state, id, &workspace_id, &path),
         ClientMessage::WorkspaceCreate {
             id,
             project_id,

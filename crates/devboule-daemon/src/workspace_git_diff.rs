@@ -7,7 +7,7 @@
 //! before anything is opened or spawned — the `assertWithinWorkspace` of
 //! Paseo's file explorer, in the same role.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use devboule_protocol::{
     DaemonMessage, WorkspaceGitDiffLine, WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus,
@@ -15,7 +15,9 @@ use devboule_protocol::{
 };
 
 use crate::git::{GitOutput, GIT_STDOUT_MAX_BYTES};
-use crate::workspace_git_support::{exit_error, git, probe, run_error};
+use crate::workspace_git_support::{
+    confined, exit_error, git, probe, run_error, walk, Walked, OUTSIDE_THE_WORKSPACE,
+};
 use crate::ServerState;
 
 #[path = "workspace_git_diff_parse.rs"]
@@ -46,48 +48,21 @@ fn diff_of(root: &Path, requested: &str) -> WorkspaceGitFileDiff {
     // Confinement first and without a process: nothing below opens a path
     // this check has not put inside `root`.
     let Some(target) = confined(root, requested) else {
-        return refused(
-            requested,
-            "the requested path is outside the workspace folder",
-        );
+        return refused(requested, OUTSIDE_THE_WORKSPACE);
     };
     if let Some(sentence) = probe(root).refusal() {
         return refused(requested, sentence);
     }
-    // Component by component: the confinement above trusts the spelling,
-    // this trusts the filesystem. An intermediate symlink or junction would
-    // resolve outside the workspace — measured with a real, reachable
-    // junction: git itself answers `? dirlink/present.txt` and the
-    // synthesis used to open through it — and the final component may not be
-    // a link at all: its target is not read. A component with no stat (a
-    // deletion) ends the walk: nothing below it exists, and git answers for
-    // the missing path. A link swapped in between this walk and the open
-    // below is the stat→open race, declared with slice 1's stat→read one:
-    // no test holds a swapper still.
-    let requested_components: Vec<Component> = Path::new(requested)
-        .components()
-        .filter(|component| !matches!(component, Component::CurDir))
-        .collect();
-    let mut prefix = root.to_path_buf();
-    let last_component = requested_components.len().saturating_sub(1);
-    let mut final_metadata = None;
-    for (index, component) in requested_components.iter().enumerate() {
-        prefix.push(*component);
-        let Ok(metadata) = std::fs::symlink_metadata(&prefix) else {
-            break;
-        };
-        if crosses_a_link(&metadata) {
-            let sentence = if index == last_component {
-                "the requested path is a symbolic link; its target is not read"
-            } else {
-                "the requested path crosses a link and is not read"
-            };
-            return refused(requested, sentence);
-        }
-        if index == last_component {
-            final_metadata = Some(metadata);
-        }
-    }
+    // Then the walk: the confinement above trusts the spelling, this trusts
+    // the filesystem — every component stat'ed without following, a link
+    // refused with the shared sentence, a component with no stat (a deletion)
+    // ending the walk: nothing below it exists, and git answers for the
+    // missing path.
+    let final_metadata = match walk(root, requested) {
+        Walked::Link(sentence) => return refused(requested, sentence),
+        Walked::Missing => None,
+        Walked::Inside(metadata) => Some(metadata),
+    };
     // The final entry must be an ordinary file of this workspace: refuse a
     // directory (an ordinary one — a junction ended the walk above), and
     // apply the per-file cap in the same stat. A path with no stat has no
@@ -196,46 +171,6 @@ fn diff_of(root: &Path, requested: &str) -> WorkspaceGitFileDiff {
             Err(error) => refused(requested, run_error(error, "git ls-files")),
         },
     }
-}
-
-/// Whether this stat describes a link rather than an ordinary entry.
-fn crosses_a_link(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink() || is_reparse_point(metadata)
-}
-
-/// Windows: a junction or a mount point is *not* `is_symlink` (lstat calls
-/// it a directory — measured), but every link-like reparse point carries
-/// `FILE_ATTRIBUTE_REPARSE_POINT` (0x400); a walk of ordinary components
-/// therefore stays inside an ordinary root.
-#[cfg(windows)]
-fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes() & 0x400 != 0
-}
-
-/// Off Windows every link is a symlink, which [`crosses_a_link`] saw.
-#[cfg(not(windows))]
-fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
-    false
-}
-
-/// The requested path, confined: non-empty, relative (no root, no prefix,
-/// matched by component rather than by `is_absolute()`, which on Windows
-/// calls a bare `/x` relative), no `..`, and inside `root` once joined.
-/// The last check restates what the component rules guarantee rather than
-/// trusting them.
-fn confined(root: &Path, requested: &str) -> Option<PathBuf> {
-    if requested.is_empty() {
-        return None;
-    }
-    for component in Path::new(requested).components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
-    let joined = root.join(requested);
-    joined.starts_with(root).then_some(joined)
 }
 
 /// `git diff HEAD` — staged and unstaged together, the delta from the last

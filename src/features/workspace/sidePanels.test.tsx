@@ -4,7 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AppSurface, DesignPanel, FilesSurface } from "./sidePanels";
+import { AppSurface, DesignPanel } from "./sidePanels";
 import { useAppStore } from "../../store/appStore";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,28 +43,10 @@ describe("side panel dead controls", () => {
     });
   }
 
-  // The Changes panel's tests moved to `ChangesSurface.test.tsx`: the panel
-  // reads real git state now, so its guarantees (no write actions, no mockup
-  // notice) are anchored there against real content instead of the mock's.
-  describe("FilesSurface", () => {
-    it("renders the tree entries as non-interactive elements, not buttons", async () => {
-      await render(<FilesSurface />);
-
-      expect(container.querySelectorAll("button")).toHaveLength(0);
-      expect(container.querySelectorAll(".workspace-tree-file")).toHaveLength(4);
-    });
-
-    it("labels the hardcoded tree as a mockup", async () => {
-      await render(<FilesSurface />);
-
-      const note = container.querySelector('[role="note"]');
-      if (note === null) throw new Error("mockup notice did not render");
-      expect(note.textContent).toBe(
-        "Mockup — these files are hardcoded examples. No workspace file tree is read yet.",
-      );
-    });
-  });
-
+  // The Changes panel's tests moved to `ChangesSurface.test.tsx` and the
+  // Files panel's to `FilesSurface.test.tsx`: both panels read real data now,
+  // so their guarantees (no write actions, no mockup notice) are anchored
+  // there against real content instead of the mock's.
   describe("AppSurface", () => {
     it("no longer renders the dead Reindex and Export buttons", async () => {
       await render(<AppSurface appBuild={41} onReload={() => undefined} />);

@@ -88,6 +88,7 @@ pub fn run() {
             backend::workspace::workspace_create,
             backend::workspace::workspace_git_status,
             backend::workspace::workspace_git_diff,
+            backend::workspace::workspace_files_list,
             backend::devices::devices_list,
             backend::devices::pairing_start,
             backend::devices::pairing_complete,

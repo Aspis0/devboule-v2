@@ -13,7 +13,8 @@ use devboule_protocol::{
     JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
     Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
     SessionEventEnvelope, SessionKind, SessionStateSnapshot, StoredAttachment, SubscriptionId,
-    WireError, Workspace, WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
+    WireError, Workspace, WorkspaceDirectory, WorkspaceGitFileDiff, WorkspaceGitStatus,
+    WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -860,6 +861,27 @@ impl DaemonClient {
             path: path.to_string(),
         })? {
             DaemonMessage::WorkspaceGitFile { file, .. } => Ok(file),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The entries of one workspace folder. The id and a relative `path` are
+    /// the whole argument — the empty string is the folder itself — and the
+    /// daemon confines the rest to a directory inside it before opening
+    /// anything.
+    pub fn workspace_files_list(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceDirectory, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFilesList {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::WorkspaceFiles { directory, .. } => Ok(directory),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -1864,6 +1886,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Workspace { id, .. }
         | DaemonMessage::WorkspaceGit { id, .. }
         | DaemonMessage::WorkspaceGitFile { id, .. }
+        | DaemonMessage::WorkspaceFiles { id, .. }
         | DaemonMessage::SessionAttached { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }

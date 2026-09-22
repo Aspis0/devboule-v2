@@ -2,24 +2,9 @@ import { memo } from "react";
 import { MOCK_SHIP_STEPS } from "./mockData";
 import { DesignPreviewPanel } from "../design/DesignPreviewPanel";
 
-// The Changes panel lives in `ChangesSurface.tsx`: it reads real git state and
-// carries its own data source, so it is not one of these mock bodies.
-
-export const FilesSurface = memo(function FilesSurface() {
-  return (
-    <div className="workspace-files-tree">
-      <div className="workspace-changes-mockup-note" role="note">
-        Mockup — these files are hardcoded examples. No workspace file tree is read yet.
-      </div>
-      <div>oracle-core/</div>
-      <div className="workspace-tree-file workspace-tree-file-selected">index_writer.rs</div>
-      <div className="workspace-tree-file">embedder.rs</div>
-      <div className="workspace-tree-file">lance/mod.rs</div>
-      <div>devboule-mcp/</div>
-      <div className="workspace-tree-file">tools.rs</div>
-    </div>
-  );
-});
+// The Changes panel lives in `ChangesSurface.tsx` and the Files panel in
+// `FilesSurface.tsx`: each carries its own data source, so neither is one of
+// these mock bodies.
 
 interface AppSurfaceProps {
   appBuild: number;

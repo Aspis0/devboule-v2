@@ -40,13 +40,43 @@ What is wired and what is not:
   results exists, and an invented number beside real data is worse than an
   empty space.
 
-- **The Files, app and PR panels are still mock, and no longer pretend
-  otherwise.** Their bodies in `sidePanels.tsx` render hardcoded examples under
-  a note saying so. Their rows are non-interactive rather than buttons that do
-  nothing, and the controls that named operations this app cannot perform —
-  Reindex, Export, Generate, Stage, Discard — stay removed instead of left
-  drawn. "Open Design" is real and selects the Design surface. There is no file
-  tree read on the wire yet.
+- **The Files panel is real, and read-only.** `FilesSurface.tsx` reads
+  `workspace_files_list` through the typed command, driven by
+  `useWorkspaceFiles.ts`: one directory per request, lazily — the root on
+  open, a folder the moment its row expands, and every folder on screen
+  again on the manual Refresh button. No poll and no watcher: an
+  unattended tree would be a background reader of the checkout for a
+  decoration nobody asked about. The daemon resolves the folder from the
+  workspace id — never from a path the frontend sends — confines the
+  requested path in two layers (component rules, then a walk that refuses
+  links and junctions, with the same sentences the diff shows), excludes
+  `.git` from every listing and refuses it when named directly — in **any**
+  spelling the filesystem resolves to it (NTFS folds case, Win32 drops
+  trailing dots and spaces: `.GIT`, `.git.`, `.git ` are the same folder),
+  orders the
+  entries itself (folders first, then names in byte order, never a locale
+  collation), and stops a huge folder at its entry cap with `capped` saying
+  the list is partial — never a silent cut. An entry that will not stat or
+  is a link is skipped: one bad entry never fails the whole listing, and
+  the reply **counts** those skips in `skipped`, which the panel shows — a
+  folder with a link inside says so instead of looking complete (`.git` is
+  the declared policy exclusion and is not in that count; entries past the
+  cap belong to `capped`). Every
+  state is its own screen — loading, no workspace, an empty folder, the
+  wire's refusal sentence (root and per-folder are separate places), the
+  partial-list note and the not-listed note. Folders toggle; files are rows; no rename, delete,
+  create or download exists here — the panel reads, it never writes. The
+  badge beside the panel's name is `read-only`, a property of the panel:
+  no live source for a count exists, and an invented number beside real
+  data is the defect the old mock carried.
+
+- **The app and PR panels are still mock, and no longer pretend
+  otherwise.** Their bodies in `sidePanels.tsx` render hardcoded examples
+  under a note saying so, their rows are non-interactive rather than
+  buttons that do nothing, and the controls that named operations this app
+  cannot perform — Reindex, Export, Generate, Stage, Discard — stay removed
+  instead of left drawn. "Open Design" is real and selects the Design
+  surface.
 
 History lives in the left sidebar footer beside the daemon status. It is a
 separate journal log view, not terminal screen restore.

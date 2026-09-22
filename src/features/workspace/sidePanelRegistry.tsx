@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
-import { AppSurface, DesignPanel, FilesSurface, PullRequestSurface } from "./sidePanels";
+import { AppSurface, DesignPanel, PullRequestSurface } from "./sidePanels";
 import { ChangesSurface } from "./ChangesSurface";
+import { FilesSurface } from "./FilesSurface";
 import { CHANGES_BADGE_UNREAD, changesBadge } from "./changesBadge";
 
 export type DotTone = "terracotta" | "silence" | "green" | "purple" | "ochre";
@@ -51,8 +52,16 @@ export const SIDE_PANEL_REGISTRY: readonly SidePanelEntry[] = [
     dotTone: "terracotta",
     render: ({ workspaceId }) => <ChangesSurface workspaceId={workspaceId} />,
   },
-  // This metadata is a mockup: it is an invented value for the mock Files panel.
-  { id: "files", name: "Files", meta: "2 140", dotTone: "silence", render: () => <FilesSurface /> },
+  // The Files panel reads a real tree, but has no live badge: its meta is a
+  // property of the panel, never an invented count (an example of one, the
+  // old `2 140`, was exactly the defect this comment used to carry).
+  {
+    id: "files",
+    name: "Files",
+    meta: "read-only",
+    dotTone: "silence",
+    render: ({ workspaceId }) => <FilesSurface workspaceId={workspaceId} />,
+  },
   // This metadata is a mockup: it is an invented value for the mock Interactive app panel.
   {
     id: "app",

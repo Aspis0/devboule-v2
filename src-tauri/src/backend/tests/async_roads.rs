@@ -11,13 +11,14 @@ use devboule_daemon::DaemonError;
 /// window's own thread. That inline call is the measured freeze of Reopen
 /// (`scout/user-pass/f08b.png`).
 ///
-/// The artifact write, the plugin install and the two workspace git roads
-/// sit on the list one size down: all four are blocking work on the window's
+/// The artifact write, the plugin install and the three workspace reads
+/// sit on the list one size down: all five are blocking work on the window's
 /// thread if they stay plain `fn` — a document of megabytes, a folder copy
 /// with its digest pass, a `git status` over a checkout whose size nobody
-/// chose, and a `git diff` plus a file read behind it.
+/// chose, a `git diff` plus a file read behind it, and a directory read of
+/// that same checkout with one stat per entry.
 ///
-/// Mutant: drop the `async` from any of the seven — the road is named in the
+/// Mutant: drop the `async` from any of the eight — the road is named in the
 /// failure.
 #[test]
 fn the_long_roads_are_async_commands() {
@@ -57,6 +58,11 @@ fn the_long_roads_are_async_commands() {
             include_str!("../workspace.rs"),
             "workspace_git_diff",
         ),
+        (
+            "backend/workspace.rs",
+            include_str!("../workspace.rs"),
+            "workspace_files_list",
+        ),
     ];
     for (file, source, command) in roads {
         assert!(
@@ -70,7 +76,7 @@ fn the_long_roads_are_async_commands() {
     }
 }
 
-/// All seven roads, and only those seven, wait through the helper: an `async`
+/// All eight roads, and only those eight, wait through the helper: an `async`
 /// command that called the client directly would park a runtime worker for
 /// minutes, which is the thread `spawn_blocking` exists to spare.
 ///
@@ -102,9 +108,10 @@ fn every_blocking_road_waits_through_the_blocking_helper() {
         })
         .sum();
     assert_eq!(
-        calls, 7,
+        calls, 8,
         "one wait per road: create, resume, update, artifact write, plugin install, the workspace \
-         git status and the workspace git diff must all go through the helper"
+         git status, the workspace git diff and the workspace folder listing must all go through \
+         the helper"
     );
 }
 

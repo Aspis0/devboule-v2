@@ -53,6 +53,16 @@ vi.mock("../../lib/tauri", () => ({
     status: "ok",
     error: null,
   })),
+  // The Files panel reads the moment a test selects it (the badge test
+  // below): its one road, answered with an empty folder so nothing here
+  // shows a refusal unless a test asks for one.
+  workspaceFilesList: vi.fn(async () => ({
+    path: "",
+    entries: [],
+    capped: false,
+    skipped: 0,
+    error: null,
+  })),
   sessionsList: vi.fn(),
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),
@@ -607,7 +617,7 @@ describe("Workspace sessions", () => {
       await act(async () => selector.click());
       await act(async () => option("Files").click());
       // The toolbar now carries the selected panel's badge …
-      expect(badge()).toBe("2 140");
+      expect(badge()).toBe("read-only");
 
       // … while Changes keeps the value it last read: no panel is mounted to
       // refresh it (DECISIONS §9: no background poller for a decoration).

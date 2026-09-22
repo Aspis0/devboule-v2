@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
-    Project, Workspace, WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
+    Project, Workspace, WorkspaceDirectory, WorkspaceGitFileDiff, WorkspaceGitStatus,
+    WorkspaceIsolation,
 };
 use tauri::State;
 
@@ -90,4 +91,28 @@ pub async fn workspace_git_diff(
 ) -> Result<WorkspaceGitFileDiff, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.workspace_git_diff(&workspace_id, &path)).await
+}
+
+/// The entries of one workspace folder — the Files panel's tree, one
+/// directory per request. `workspace_id` names the folder and `path` is
+/// relative to it (empty = the folder itself); the daemon confines the path
+/// before it opens anything, and only reads: no rename, no delete, no write
+/// exists behind this road.
+///
+/// The wait is a `read_dir` plus one stat per entry over a folder whose
+/// entry count nobody chose. The daemon's entry cap bounds what the reply
+/// **carries**, not this scan: entries the listing skips never reach the
+/// cap, so a folder full of links is read to its end. What bounds this
+/// caller — and with it the scan — is `RPC_TIMEOUT` (30 s), the same bound
+/// as the two git roads above; the residual on a folder that slow is
+/// accepted and stated the same way there. Either way the wait leaves the
+/// window's thread the way the other long roads do.
+#[tauri::command]
+pub async fn workspace_files_list(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceDirectory, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_files_list(&workspace_id, &path)).await
 }

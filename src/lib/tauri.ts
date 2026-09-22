@@ -36,6 +36,7 @@ import type {
   Session,
   ToolPolicyReply,
   Workspace,
+  WorkspaceDirectory,
   WorkspaceGitFileDiff,
   WorkspaceGitStatus,
   SessionEvent,
@@ -104,6 +105,7 @@ export type CommandArgs = {
   };
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
+  workspace_files_list: { workspaceId: Id; path: string };
   session_create: {
     workspaceId: Id | null;
     kind: SessionKind;
@@ -218,6 +220,7 @@ type CommandResults = {
   workspace_create: Workspace;
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
+  workspace_files_list: WorkspaceDirectory;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
@@ -350,6 +353,7 @@ export const COMMAND_ARG_KEYS = {
   workspace_create: ["projectId", "isolation", "branch"],
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
+  workspace_files_list: ["workspaceId", "path"],
   session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -534,6 +538,16 @@ export const workspaceGitStatus = (workspaceId: Id) =>
  */
 export const workspaceGitDiff = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_git_diff", { workspaceId, path });
+/**
+ * The entries of one workspace folder — the Files panel's tree. `path` is
+ * relative to the workspace folder and empty means the folder itself: the
+ * daemon resolves the folder from the id and refuses any path that would
+ * leave it, so this takes only paths the daemon's own replies handed back.
+ * One directory per call, lazily: the panel asks when a row expands and
+ * never requests a whole tree.
+ */
+export const workspaceFilesList = (workspaceId: Id, path: string) =>
+  invokeTyped("workspace_files_list", { workspaceId, path });
 /**
  * Creates a workspace inside a project. Only `local` isolation exists today;
  * `worktree` and any `branch` are refused by the daemon with `unimplemented`

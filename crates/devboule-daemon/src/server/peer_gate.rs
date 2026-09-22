@@ -301,6 +301,7 @@ pub(super) fn peer_mode_refusal_for_conn(
         // A read like the status list: it reaches no agent, so there is no
         // mode to vet here either.
         ClientMessage::WorkspaceGitDiff { .. } => None,
+        ClientMessage::WorkspaceFilesList { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
@@ -525,6 +526,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspacesList { .. }
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
+        | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }

@@ -141,6 +141,54 @@ export interface WorkspaceGitFileDiff {
   error: string | null;
 }
 
+/** What a folder entry is, decided without following it: a link is never an
+ * entry — the daemon skips it rather than classifying its target. */
+export type WorkspaceFileKind = "dir" | "file";
+
+export interface WorkspaceFileEntry {
+  /** Path relative to the workspace folder, `/`-separated — the key the
+   * tree expands and collapses by. */
+  path: string;
+  /** The entry's own name, for the row's label. */
+  name: string;
+  kind: WorkspaceFileKind;
+  /** File size in bytes as `stat` reported it; `null` for a folder and
+   * never a guess. */
+  size: number | null;
+}
+
+/**
+ * The entries of one workspace folder, the reply of
+ * `workspace_files_list` — same pair discipline as `WorkspaceGitStatus`:
+ * `entries` with `error: null` is the answer (an empty list is a folder
+ * that holds nothing), while a sentence in `error` is a refusal and carries
+ * no entries — the panel may then claim nothing about the folder behind it.
+ * One directory per reply, never a subtree.
+ */
+export interface WorkspaceDirectory {
+  /** The requested path, echoed verbatim — the caller's own text, even in a
+   * refusal that rejects it; the empty string is the folder itself. */
+  path: string;
+  /** Already ordered by the daemon: folders first, then by name in byte
+   * order. The panel renders this order and sorts nothing. */
+  entries: WorkspaceFileEntry[];
+  /** `true` when the entry cap dropped entries of this folder. Never
+   * silently truncated. */
+  capped: boolean;
+  /**
+   * Entries this directory had that the reply does **not** carry because
+   * they failed the survival test — a link (never classified; its target is
+   * not read) or an entry that would not stat. The panel shows this when it
+   * is > 0: a folder with a link inside says so instead of looking
+   * complete. `.git` is not in this count (declared policy exclusion), and
+   * entries past `capped` belong to `capped`, not here. Never omitted.
+   */
+  skipped: number;
+  /** Why no entries came back, in one synthetic sentence: no absolute
+   * path, no OS error text. `null` exactly when the reply is an answer. */
+  error: string | null;
+}
+
 export type SessionKind = "terminal" | "acp" | "claude" | "pi" | "codex";
 
 export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" | "codex" {

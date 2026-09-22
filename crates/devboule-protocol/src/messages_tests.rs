@@ -2669,3 +2669,107 @@ fn workspace_git_diff_round_trips_with_its_wire_words() {
         "the sentence travels: {json}"
     );
 }
+
+/// The workspace files-list frame and its reply, pinned to the exact words
+/// TypeScript reads (`src/types/ipc.ts`): the `type` tags, the camelCase
+/// keys, the two `kind` values spelled in `snake_case`, a folder's `size`
+/// travelling as `null` rather than being omitted, and the empty `path` —
+/// the folder itself — travelling as an empty string rather than vanishing.
+#[test]
+fn workspace_files_list_round_trips_with_its_wire_words() {
+    let directory = WorkspaceDirectory {
+        path: "crates".to_string(),
+        entries: vec![
+            WorkspaceFileEntry {
+                path: "crates/devboule-daemon".to_string(),
+                name: "devboule-daemon".to_string(),
+                kind: WorkspaceFileKind::Dir,
+                size: None,
+            },
+            WorkspaceFileEntry {
+                path: "crates/README.md".to_string(),
+                name: "README.md".to_string(),
+                kind: WorkspaceFileKind::File,
+                size: Some(512),
+            },
+        ],
+        capped: false,
+        skipped: 1,
+        error: None,
+    };
+    let reply = DaemonMessage::WorkspaceFiles { id: 11, directory };
+    let json = serde_json::to_string(&reply).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_files\"",
+        "\"path\":\"crates\"",
+        "\"name\":\"devboule-daemon\"",
+        "\"kind\":\"dir\"",
+        "\"kind\":\"file\"",
+        "\"size\":null",
+        "\"size\":512",
+        "\"capped\":false",
+        "\"skipped\":1",
+        "\"error\":null",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        reply
+    );
+
+    let request = ClientMessage::WorkspaceFilesList {
+        id: 11,
+        workspace_id: "ws.1".to_string(),
+        path: "crates".to_string(),
+    };
+    let json = serde_json::to_string(&request).expect("serialize");
+    assert!(json.contains("\"type\":\"workspace_files_list\""), "{json}");
+    assert!(json.contains("\"workspaceId\":\"ws.1\""), "{json}");
+    assert!(json.contains("\"path\":\"crates\""), "{json}");
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        request
+    );
+    assert_eq!(request.name(), "WorkspaceFilesList");
+    assert!(!request.is_state_changing(), "a read writes nothing");
+    assert_eq!(request.request_id(), Some(11));
+
+    let root = ClientMessage::WorkspaceFilesList {
+        id: 12,
+        workspace_id: "ws.1".to_string(),
+        path: String::new(),
+    };
+    let json = serde_json::to_string(&root).expect("serialize");
+    assert!(
+        json.contains("\"path\":\"\""),
+        "the folder itself travels as an empty path: {json}"
+    );
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        root
+    );
+
+    for (kind, spelled) in [
+        (WorkspaceFileKind::Dir, "\"dir\""),
+        (WorkspaceFileKind::File, "\"file\""),
+    ] {
+        assert_eq!(serde_json::to_string(&kind).expect("serialize"), spelled);
+    }
+
+    // A refusal carries its sentence and no entries — an omitted `error`
+    // key would be a field TypeScript types as nullable and cannot see.
+    let refused = WorkspaceDirectory {
+        path: "../outside".to_string(),
+        entries: Vec::new(),
+        capped: false,
+        skipped: 0,
+        error: Some("the requested path is outside the workspace folder".to_string()),
+    };
+    let json = serde_json::to_string(&refused).expect("serialize");
+    assert!(json.contains("\"entries\":[]"), "{json}");
+    assert!(
+        json.contains("\"error\":\"the requested path"),
+        "the sentence travels: {json}"
+    );
+}

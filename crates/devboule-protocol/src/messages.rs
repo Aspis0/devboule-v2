@@ -515,6 +515,20 @@ pub enum ClientMessage {
         /// `git status` printed it.
         path: String,
     },
+    /// The entries of one workspace folder, for the Files panel's tree. A read
+    /// like [`Self::WorkspaceGitStatus`]: the daemon resolves the directory
+    /// from `workspace_id`, and `path` is a relative path inside it — empty
+    /// names the folder itself — confined before anything is opened, because
+    /// the `path` every `Workspace` carries is declared display-only
+    /// (`src/types/ipc.ts`). One directory per request: no recursion, no tree.
+    /// The reply is [`DaemonMessage::WorkspaceFiles`].
+    WorkspaceFilesList {
+        id: u64,
+        workspace_id: String,
+        /// Path relative to the workspace folder; the empty string is the
+        /// folder's own top level.
+        path: String,
+    },
     WorkspaceCreate {
         id: u64,
         project_id: String,
@@ -744,6 +758,7 @@ impl ClientMessage {
             | Self::WorkspacesList { id, .. }
             | Self::WorkspaceGitStatus { id, .. }
             | Self::WorkspaceGitDiff { id, .. }
+            | Self::WorkspaceFilesList { id, .. }
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
             | Self::ProvidersList { id }
@@ -823,6 +838,7 @@ impl ClientMessage {
             | Self::WorkspacesList { .. }
             | Self::WorkspaceGitStatus { .. }
             | Self::WorkspaceGitDiff { .. }
+            | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
             | Self::Invoke { .. }
@@ -882,6 +898,7 @@ impl ClientMessage {
             Self::WorkspacesList { .. } => "WorkspacesList",
             Self::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
             Self::WorkspaceGitDiff { .. } => "WorkspaceGitDiff",
+            Self::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
             Self::WorkspaceDelete { .. } => "WorkspaceDelete",
             Self::ProvidersList { .. } => "ProvidersList",
@@ -926,6 +943,7 @@ impl ClientMessage {
             | Self::WorkspacesList { .. }
             | Self::WorkspaceGitStatus { .. }
             | Self::WorkspaceGitDiff { .. }
+            | Self::WorkspaceFilesList { .. }
             | Self::ProvidersList { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
@@ -1055,6 +1073,12 @@ pub enum DaemonMessage {
     WorkspaceGitFile {
         id: u64,
         file: WorkspaceGitFileDiff,
+    },
+    /// The reply to [`ClientMessage::WorkspaceFilesList`]: the entries of one
+    /// folder, or a refusal of it.
+    WorkspaceFiles {
+        id: u64,
+        directory: WorkspaceDirectory,
     },
     Workspace {
         id: u64,
@@ -1426,6 +1450,76 @@ pub struct WorkspaceGitFileDiff {
     /// and no git stderr (see the debt note above). `null` exactly when
     /// `status` is `ok` or `binary` — those two are answers, not failures.
     pub error: Option<String>,
+}
+
+/// The entries of one workspace folder, as the Files panel's tree renders
+/// them — one directory per reply, never a subtree.
+///
+/// `entries` and `error` answer different questions and must never collapse,
+/// like the pair on `WorkspaceGitStatus`: a folder's entries with `error:
+/// null` is the answer, an empty list with `error: null` is a folder that
+/// holds nothing, and `error` with a sentence is a refusal — the path left
+/// the workspace, it is not a folder, the folder could not be listed. A
+/// refusal carries no entries, so the panel may not claim anything about the
+/// folder behind it.
+///
+/// **Debt, recorded with `WorkspaceGitStatus` in the slice-1 fix round and
+/// true here too:** `error` is free text on a frame that does **not** pass
+/// `redact_for_conn`. Every sentence is written without an absolute path and
+/// without an OS error string, and this reply's only caller-supplied text
+/// (`path`) is echoed only in its own field, never in `error`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceDirectory {
+    /// The path this reply is about, echoed **verbatim**: the caller's own
+    /// text coming back — including in a refusal that rejects it, exactly as
+    /// `WorkspaceGitFileDiff::path` does. The empty string is the folder
+    /// itself.
+    pub path: String,
+    /// The entries of this single directory, already ordered by the daemon:
+    /// folders first, then by name in byte order (never a locale collation).
+    pub entries: Vec<WorkspaceFileEntry>,
+    /// Whether the entry cap dropped entries of this folder. Set, never
+    /// implied: a partial list says so instead of passing for the whole
+    /// folder.
+    pub capped: bool,
+    /// Entries this directory had that the reply does **not** carry because
+    /// they failed the survival test — a link (never classified; its target
+    /// is not read) or an entry that would not stat. Set, never implied: a
+    /// folder holding a link says so instead of looking complete. Two
+    /// carve-outs, both deliberate: `.git` is the tree's declared policy
+    /// exclusion (DECISIONS §6), not a hidden entry; and entries past
+    /// `capped` are `capped`'s own confession, not this count's.
+    pub skipped: u64,
+    /// Why no entries came back, in one synthetic sentence: no absolute
+    /// path, no OS error text. `null` exactly when the reply is an answer —
+    /// a listed folder, empty or not.
+    pub error: Option<String>,
+}
+
+/// One directory entry: an ordinary folder or an ordinary file of the
+/// workspace. A link is never an entry — the daemon skips it rather than
+/// classifying what it points at, so `kind` never has to guess.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileEntry {
+    /// Path relative to the workspace folder, `/`-separated — the key the
+    /// panel expands and collapses by.
+    pub path: String,
+    /// The entry's own name, for the row's label.
+    pub name: String,
+    pub kind: WorkspaceFileKind,
+    /// File size in bytes as `stat` reported it; `null` for a folder (a
+    /// folder has no size to show) and never a guess.
+    pub size: Option<u64>,
+}
+
+/// What an entry is, decided without following it.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceFileKind {
+    Dir,
+    File,
 }
 
 /// The three-valued answer to "what does this provider offer". The three are
