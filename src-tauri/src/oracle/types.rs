@@ -144,7 +144,7 @@ pub struct IndexedFile {
     pub updated_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct OracleResult {
     pub path: String,

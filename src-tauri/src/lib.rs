@@ -48,7 +48,8 @@ pub fn run() {
             }
             // The daemon reaches the semantic search over this endpoint; the
             // record is published only after the bind.
-            if let Err(error) = app.state::<oracle::OracleEndpoint>().start() {
+            let endpoint = app.state::<oracle::OracleEndpoint>();
+            if let Err(error) = endpoint.start(app.handle().clone()) {
                 eprintln!("devboule: Oracle endpoint did not start: {error}");
             }
             Ok(())

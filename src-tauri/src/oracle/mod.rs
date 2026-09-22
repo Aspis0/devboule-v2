@@ -15,8 +15,14 @@
 //! - [`query`] builds the query engine over the stores and maps engine
 //!   contexts into the results the panel cites.
 //! - [`errors`] maps failures onto the shared [`CommandError`] vocabulary.
+//! - [`listener`] owns the socket, the bearer gate and the record lifecycle.
+//! - [`endpoint_http`] is the hand-parsed HTTP codec those connections speak.
+//! - [`endpoint_query`] is the query route: the refusal ladder and the host
+//!   it searches through.
 
 mod commands;
+mod endpoint_http;
+mod endpoint_query;
 mod errors;
 mod folder;
 mod listener;

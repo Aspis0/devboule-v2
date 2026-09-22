@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use crate::daemon_record::{Heartbeat, STALE_AFTER};
+use crate::daemon_record::{Heartbeat, RECORD_CAPACITY, STALE_AFTER};
 use crate::error::DaemonError;
 use crate::lock::SingleInstanceLock;
 
@@ -54,7 +54,11 @@ fn a_record_round_trips_through_its_body() {
 
     record.listening();
     assert!(record.ready, "ready after the bind");
-    assert_eq!(OracleAppRecord::parse(&record.body()), Some(record));
+    assert_eq!(OracleAppRecord::parse(&record.body()), Some(record.clone()));
+    assert!(
+        record.body().len() < RECORD_CAPACITY as usize,
+        "the record has to fit in the bytes the lock does not cover"
+    );
 
     assert!(OracleAppRecord::parse("").is_none());
     assert!(OracleAppRecord::parse("pid=1\ninstance=i\n").is_none());

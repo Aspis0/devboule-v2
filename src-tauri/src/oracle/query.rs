@@ -9,7 +9,7 @@ use std::sync::Arc;
 use oracle_core::redact_secret_tokens;
 use oracle_core::{
     CancelFlag, ContextChunk, EmbedderPool, LanceStore, PoolQueryEmbedder, QueryEngine,
-    SharedReranker, SqliteStore, MAX_BOUNDED_LIMIT,
+    SharedReranker, SqliteStore,
 };
 
 use crate::backend::error::CommandError;
@@ -20,7 +20,7 @@ use super::status::ensure_model_is_available;
 use super::types::{OracleMatchType, OracleModelStatus, OracleResult, OracleSearchResponse};
 
 /// One query returns at most this many results.
-const QUERY_LIMIT: usize = 10;
+pub(super) const QUERY_LIMIT: usize = 10;
 
 /// The query validation both commands share. Kept in one place so a folder
 /// query cannot end up with looser bounds than a workspace query.
@@ -50,12 +50,17 @@ pub(super) fn validate_query(query: String) -> Result<String, CommandError> {
 ///
 /// The model download is deliberately *not* started here: the caller decides
 /// whether a question may begin a transfer.
+///
+/// `limit` is clamped to `1..=QUERY_LIMIT` here as well as at the endpoint's
+/// parser: no caller can make the engine ask for more than one query's worth
+/// of results, whoever builds the number.
 pub(super) async fn search_paths(
     paths: &ResolvedOraclePaths,
     query: &str,
     pool: &Arc<EmbedderPool>,
     reranker: Option<SharedReranker>,
     model_status: &OracleModelStatus,
+    limit: usize,
 ) -> Result<OracleSearchResponse, CommandError> {
     ensure_model_is_available(pool.backend(), model_status)?;
     let engine = open_engine(paths, reranker)?;
@@ -65,7 +70,7 @@ pub(super) async fn search_paths(
     let contexts = engine
         .context(
             query,
-            QUERY_LIMIT.min(MAX_BOUNDED_LIMIT),
+            limit.clamp(1, QUERY_LIMIT),
             &embedder,
             None,
             false,

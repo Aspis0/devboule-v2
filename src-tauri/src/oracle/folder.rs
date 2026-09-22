@@ -27,7 +27,7 @@ use oracle_core::{
 use crate::backend::error::CommandError;
 
 use super::errors::{core_error, invalid_configuration};
-use super::query::{search_paths, validate_query};
+use super::query::{search_paths, validate_query, QUERY_LIMIT};
 use super::runtime::{OracleRuntime, ResolvedOraclePaths};
 use super::status::folder_state_from_snapshot;
 use super::types::{OracleFolderIndexState, OracleFolderIndexStatus, OracleSearchResponse};
@@ -121,7 +121,13 @@ pub(super) fn resolve_folder_root(requested: &str) -> Result<PathBuf, CommandErr
 
 /// Inspect a folder's index files without changing anything.
 pub(super) fn probe_folder(root: &Path) -> FolderIndexProbe {
-    let data = OracleDataPaths::from_root(root);
+    probe_folder_at(root, OracleDataPaths::from_root(root))
+}
+
+/// Probe with caller-computed store paths: the endpoint passes
+/// [`OracleDataPaths::from_root_without_env`] so a process environment
+/// variable cannot redirect which workspace's index it reads.
+pub(super) fn probe_folder_at(root: &Path, data: OracleDataPaths) -> FolderIndexProbe {
     // `read_dir` is the one operation that needs list permission on the folder
     // itself; `metadata` on a denied directory usually still succeeds, so this
     // is the probe that actually detects an unreadable folder.
@@ -491,7 +497,7 @@ pub(super) async fn oracle_ask_folder_inner(
     // No model download is started here on purpose: asking about a folder must
     // not begin a multi-hundred-megabyte transfer as a side effect. A missing
     // model is reported by `ensure_model_is_available` inside `search_paths`.
-    search_paths(&paths, &query, &pool, reranker, &model_status).await
+    search_paths(&paths, &query, &pool, reranker, &model_status, QUERY_LIMIT).await
 }
 
 /// Answer whether a folder has an Oracle index, and how complete it is.

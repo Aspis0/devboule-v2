@@ -17,7 +17,7 @@ use oracle_core::{
 use crate::backend::error::CommandError;
 
 use super::errors::{core_error, unimplemented_command};
-use super::query::{open_engine, search_paths, validate_query};
+use super::query::{open_engine, search_paths, validate_query, QUERY_LIMIT};
 use super::runtime::OracleRuntime;
 use super::runtime::ResolvedOraclePaths;
 use super::status::{
@@ -248,7 +248,15 @@ pub(super) async fn oracle_ask_inner(
     let pool = runtime.pool()?;
     runtime.start_model_download(false)?;
     let model_status = runtime.model_status();
-    search_paths(&paths, &query, &pool, runtime.reranker(), &model_status).await
+    search_paths(
+        &paths,
+        &query,
+        &pool,
+        runtime.reranker(),
+        &model_status,
+        QUERY_LIMIT,
+    )
+    .await
 }
 
 #[tauri::command]
