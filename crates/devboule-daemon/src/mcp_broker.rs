@@ -1580,6 +1580,18 @@ fn handle_rpc(
                         &project_graph_arguments(message),
                     ),
                 )
+            } else if tool_name == Some(crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL) {
+                // The caller's own workspace decides the search; the bearer
+                // is the identity, and no argument names a path.
+                project_graph_reply(
+                    &id,
+                    crate::oracle_forward::search(
+                        state,
+                        &registration.session_id,
+                        &registration.owner,
+                        &project_graph_arguments(message),
+                    ),
+                )
             } else if tool_name != Some(crate::provider_catalog::MCP_ROSTER_TOOL) {
                 Ok(Some(rpc_error(id, -32601, "Unknown tool")))
             } else {
@@ -1768,6 +1780,19 @@ fn enabled_tool_list(
                     "type": "object",
                     "properties": {"file": {"type": "string"}},
                     "required": ["file"],
+                    "additionalProperties": false,
+                })
+            } else if *name == crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL {
+                // Closed and bounded like its siblings: `limit` is clamped to
+                // the range the app's own route clamps to, and `root` is
+                // deliberately absent — the session's row names the folder.
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+                    },
+                    "required": ["query"],
                     "additionalProperties": false,
                 })
             } else if *name == crate::provider_catalog::MCP_LIST_DEVICES_TOOL {
@@ -2630,11 +2655,12 @@ fn project_graph_arguments(message: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// One reply shape for the three project-graph tools: their own document on
-/// success, `-32602` for a malformed request, and a tool error (`isError: true`)
-/// carrying the sentence that names the missing fact when the graph cannot be
-/// read. An unreadable graph is deliberately not an empty document: `[]` would
-/// read as "this node has no neighbours".
+/// One reply shape for the three project-graph tools and the Oracle search
+/// (`GraphError` is the shared refusal type, kept as named): their own document
+/// on success, `-32602` for a malformed request, and a tool error
+/// (`isError: true`) carrying the sentence that names the missing fact when the
+/// answer cannot be produced. A refusal is deliberately not an empty document:
+/// `[]` would read as "this node has no neighbours".
 fn project_graph_reply(
     id: &Value,
     result: Result<Value, crate::mcp_project_graph::GraphError>,

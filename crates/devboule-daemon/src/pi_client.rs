@@ -165,6 +165,15 @@ const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
         name: crate::provider_catalog::MCP_IMPORTERS_TOOL,
         requires_confirmation: false,
     },
+    // Oracle search: read-only semantic search of the caller's own workspace,
+    // answered by the desktop app's engine through the daemon's forward leg.
+    // The origin door judges peers before the forward leg runs and the broker
+    // owns every refusal sentence, so no generic confirm would have anything
+    // to ask that the door and the phrases do not already say.
+    PiToolPolicy {
+        name: crate::provider_catalog::MCP_ORACLE_SEARCH_TOOL,
+        requires_confirmation: false,
+    },
 ];
 static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -215,7 +224,7 @@ static BRIDGE_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The pi MCP bridge (S5): our own extension, ~130 lines TypeScript, sibling of
 /// `PERMISSION_EXTENSION_TEMPLATE`. First-class tools, not a proxy: one
-/// `pi.registerTool` per broker tool (fourteen today), closed schemas matching the
+/// `pi.registerTool` per broker tool (fifteen today), closed schemas matching the
 /// broker's `tools/list` documents, descriptions verbatim from
 /// `provider_catalog::MCP_BROKER_TOOLS` (pinned by the S5 walking test, so a
 /// catalog edit without a bridge edit fails).
@@ -587,6 +596,24 @@ export default function (pi) {
     async execute(_toolCallId, params, signal) {
       await brokerSession(signal);
       const result = await mcpRequest("tools/call", { name: "devboule_project_importers", arguments: params }, signal);
+      return { content: result?.content ?? [], details: result ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "devboule_oracle_search",
+    label: "Search Devboule Oracle",
+    description: `Answers questions about the code of the calling session's own workspace by meaning, not by keyword: the Oracle index built for that folder is searched and the closest chunks come back as citations. query is the question in natural language; limit is how many chunks to return (1 to 10, default 10). Each result carries a repository-relative path, a line range, a narrower focus span when one was scored, the chunk text, a score that is a rank fusion (RRF) rather than a cosine similarity, and whether the chunk was found densely, lexically, or both. The folder searched is the calling session's own workspace, taken from the session's row and never from an argument; a session with no workspace is refused. This tool needs the Devboule desktop app running: the engine, the index and the local models live in the app, so with the app closed the call fails with a sentence that says exactly that. The project-graph tools (devboule_project_neighborhood, devboule_project_imports, devboule_project_importers) do not need the app. Fail-closed: no index, no model, no vectors, or a model still loading each answers with its own reason and the action to take - never an empty result list standing in for a missing fact, and never an answer from another project's index.`,
+    parameters: Type.Object(
+      {
+        query: Type.String({ description: "The question to answer by meaning, in natural language." }),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "How many chunks to return, 1 to 10. Default 10." })),
+      },
+      { required: ["query"], additionalProperties: false },
+    ),
+    async execute(_toolCallId, params, signal) {
+      await brokerSession(signal);
+      const result = await mcpRequest("tools/call", { name: "devboule_oracle_search", arguments: params }, signal);
       return { content: result?.content ?? [], details: result ?? {} };
     },
   });

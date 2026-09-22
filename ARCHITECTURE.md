@@ -96,6 +96,8 @@ What stays in the app process: the surfaces, the plugin host and asset server
 retrieval engine (`src-tauri/src/oracle/`), and the Tauri command surface itself — 60-odd commands in
 one `generate_handler!` list (`src-tauri/src/lib.rs:50-115`). The app is a client of the daemon like
 any other, which is why the same `ClientMessage` vocabulary serves it and a paired device (§6).
+The semantic MCP tool (`devboule_oracle_search`) is answered by that in-app engine, so it requires
+the app process; the project-graph tools are answered by the daemon and do not.
 
 ## 2. Process and lifetime
 
@@ -619,7 +621,8 @@ this one may talk to as a machine" (`ROLE_OPTIONS`).
   the MCP bridge's destructive tools. The bridge draws the same line: every tool's wire act is judged
   by the one table (`peer_policy.rs`, `mcp_tool_wire`), so a device holding `admin` reaches every
   served tool — `devboule_stop_agent`, `devboule_close_agent`, the three project-graph tools, the
-  model half of `devboule_set_agent_profile` — and one without it is refused those with that
+  Oracle semantic search (`devboule_oracle_search`), the model half of `devboule_set_agent_profile`
+  — and one without it is refused those with that
   capability's name (`provider_catalog.rs`, `MCP_BROKER_TOOLS`).
 - *Cannot* — the three acts that decide **who may enter this machine**: start, complete or confirm a
   pairing (`ClientMessage::PairingStart`, `PairingComplete`, `PairingConfirm`), change a device's

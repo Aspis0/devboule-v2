@@ -261,6 +261,10 @@ pub const MCP_BROKER_TOOLS: &[(&str, &str)] = &[
         MCP_IMPORTERS_TOOL,
         "Answers which files import one file - the reverse of devboule_project_imports, read from the project's code-knowledge graph in the calling session's own workspace. file is named by its repository-relative path as the graph spells it. Import edges only, never call edges: 'who calls this function' is a question this graph cannot answer, and this tool does not answer it with an empty list that would look like 'nobody does'.",
     ),
+    (
+        MCP_ORACLE_SEARCH_TOOL,
+        "Answers questions about the code of the calling session's own workspace by meaning, not by keyword: the Oracle index built for that folder is searched and the closest chunks come back as citations. query is the question in natural language; limit is how many chunks to return (1 to 10, default 10). Each result carries a repository-relative path, a line range, a narrower focus span when one was scored, the chunk text, a score that is a rank fusion (RRF) rather than a cosine similarity, and whether the chunk was found densely, lexically, or both. The folder searched is the calling session's own workspace, taken from the session's row and never from an argument; a session with no workspace is refused. This tool needs the Devboule desktop app running: the engine, the index and the local models live in the app, so with the app closed the call fails with a sentence that says exactly that. The project-graph tools (devboule_project_neighborhood, devboule_project_imports, devboule_project_importers) do not need the app. Fail-closed: no index, no model, no vectors, or a model still loading each answers with its own reason and the action to take - never an empty result list standing in for a missing fact, and never an answer from another project's index.",
+    ),
 ];
 
 /// The read-only roster tool, and the one name a tool policy can never
@@ -355,6 +359,17 @@ pub const MCP_NEIGHBORHOOD_TOOL: &str = "devboule_project_neighborhood";
 pub const MCP_IMPORTS_TOOL: &str = "devboule_project_imports";
 /// Which files import one file: the reverse direction, same graph.
 pub const MCP_IMPORTERS_TOOL: &str = "devboule_project_importers";
+/// The semantic search tool: the Oracle index of the calling session's own
+/// workspace, read by meaning, served by the desktop app's engine.
+///
+/// Same door verdict as the three graph tools it complements — and with the
+/// stronger premise: it ships source snippets (content), not topology, so it
+/// rides the same administrative capability rather than a weaker one. The
+/// workspace comes from the caller's session row, never from an argument.
+/// Unlike the graph tools this one needs the app open: the engine, the index
+/// and the local models live in the app, so the description says so and the
+/// tool's refusal when the app is closed says so too.
+pub const MCP_ORACLE_SEARCH_TOOL: &str = "devboule_oracle_search";
 
 /// The `tools/list` input schema of [`MCP_CREATE_AGENT_TOOL`] (`S5` §2).
 ///

@@ -471,8 +471,8 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
     use crate::provider_catalog::{
         MCP_ACTIVITY_TOOL, MCP_ANSWER_PERMISSION_TOOL, MCP_CLOSE_AGENT_TOOL, MCP_CREATE_AGENT_TOOL,
         MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_LIST_DEVICES_TOOL, MCP_LIST_PEER_AGENTS_TOOL,
-        MCP_LIST_PROFILES_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ROSTER_TOOL, MCP_SEND_MESSAGE_TOOL,
-        MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
+        MCP_LIST_PROFILES_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL, MCP_ROSTER_TOOL,
+        MCP_SEND_MESSAGE_TOOL, MCP_SET_AGENT_PROFILE_TOOL, MCP_STOP_AGENT_TOOL,
     };
     if tool == MCP_ROSTER_TOOL {
         Some(McpToolWire::Judged(vec![ClientMessage::SessionsList {
@@ -600,6 +600,17 @@ pub fn mcp_tool_wire(tool: &str) -> Option<McpToolWire> {
         // per workspace than the inventory does, not less, so the graph cannot
         // ride the weaker capability the inventory is closed to. Whose graph is
         // read comes from the caller's own session row, never from an argument.
+        Some(McpToolWire::Judged(vec![ClientMessage::WorkspacesList {
+            id: 0,
+            project_id: String::new(),
+        }]))
+    } else if tool == MCP_ORACLE_SEARCH_TOOL {
+        // The semantic search, judged exactly like the graph it complements —
+        // with the stronger premise: it ships source text (snippets, paths,
+        // line ranges), not topology, so the disclosure per workspace is at
+        // least the graph's and cannot ride a weaker capability. The same
+        // `WorkspacesList` act under `admin` opens it, and whose workspace is
+        // searched comes from the caller's own session row, never an argument.
         Some(McpToolWire::Judged(vec![ClientMessage::WorkspacesList {
             id: 0,
             project_id: String::new(),
@@ -1532,21 +1543,26 @@ pub(crate) mod tests {
         }
     }
 
-    /// The project-graph tools ride the administrative capability, walked over
-    /// the closed capability table rather than sampled. The property is
+    /// The project-graph tools and the Oracle search ride the administrative
+    /// capability, walked over the closed capability table rather than
+    /// sampled. The property is
     /// two-way, which is what makes it the proof and not a sample: **with** the
     /// capability every served tool is reachable at the door, and **without** it
-    /// the caller's workspace graph stays closed whatever else the device holds
-    /// — alone, as the act-named five, or in any combination. Whose graph is
-    /// read comes from the caller's own session row, never from an argument.
+    /// the caller's workspace stays closed whatever else the device holds
+    /// — alone, as the act-named five, or in any combination. Whose workspace
+    /// is read comes from the caller's own session row, never from an argument.
     #[test]
     fn the_project_graph_tools_ride_the_administrative_capability() {
         use crate::provider_catalog::{
-            MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_NEIGHBORHOOD_TOOL,
+            MCP_IMPORTERS_TOOL, MCP_IMPORTS_TOOL, MCP_NEIGHBORHOOD_TOOL, MCP_ORACLE_SEARCH_TOOL,
         };
         use devboule_protocol::PEER_CAPS;
-        const GRAPH_TOOLS: [&str; 3] =
-            [MCP_NEIGHBORHOOD_TOOL, MCP_IMPORTS_TOOL, MCP_IMPORTERS_TOOL];
+        const GRAPH_TOOLS: [&str; 4] = [
+            MCP_NEIGHBORHOOD_TOOL,
+            MCP_IMPORTS_TOOL,
+            MCP_IMPORTERS_TOOL,
+            MCP_ORACLE_SEARCH_TOOL,
+        ];
         for role in [PeerRole::Client, PeerRole::Daemon] {
             for cap in PEER_CAPS {
                 let expected = if cap == CAP_ADMIN {

@@ -3296,7 +3296,8 @@ fn a_disabled_tool_is_refused_at_call_time_and_the_roster_still_answers() {
     // session is served: the roster, the device list, the peer-agents
     // read, the profile list, the sender, the creation tool, the
     // delegated permission answer, the profile move, the activity read,
-    // the stop/close pair, and the project-graph trio. Disabling one does
+    // the stop/close pair, the project-graph trio, and the Oracle search.
+    // Disabling one does
     // not shrink the other rows, which is the point of this test.
     let listed = http_request(
         &state.mcp.url,
@@ -3308,7 +3309,7 @@ fn a_disabled_tool_is_refused_at_call_time_and_the_roster_still_answers() {
             .pointer("/result/tools")
             .and_then(Value::as_array)
             .map(|tools| tools.len()),
-        Some(14)
+        Some(crate::provider_catalog::MCP_BROKER_TOOLS.len())
     );
     let runtime_dir = state.sessions.runtime_dir().to_path_buf();
     drop(server);

@@ -50,6 +50,8 @@ mod mcp_peer_agents;
 mod mcp_project_graph;
 mod oracle_app_record;
 #[cfg(feature = "server")]
+mod oracle_forward;
+#[cfg(feature = "server")]
 mod outbound;
 #[cfg(feature = "server")]
 mod pairing;

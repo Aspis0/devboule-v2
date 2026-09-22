@@ -178,6 +178,16 @@ The Oracle panel is wired to the local engine. It downloads the models it needs,
 indexes the selected folder, and returns ranked source pointers through typed
 Oracle IPC.
 
+Agents reach Oracle through the Devboule MCP broker, and the two halves have
+different requirements. The project-graph tools (`devboule_project_neighborhood`,
+`devboule_project_imports`, `devboule_project_importers`) are answered by the
+Daemon and work with the desktop app closed. The semantic search tool
+(`devboule_oracle_search`) is answered by this app's own engine: the index and
+the local models live here, so it works only while the desktop app is running -
+leave it open, or minimize it to the tray. With the app closed the tool says so,
+in a sentence that names the app; it does not fail silently and it never answers
+from another project's index.
+
 ### Using Oracle
 
 Oracle is for the person reading a codebase, not just for configuring the app:
