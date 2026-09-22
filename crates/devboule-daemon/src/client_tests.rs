@@ -899,3 +899,198 @@ fn giving_up_on_a_resume_writes_nothing_and_leaves_the_connection_usable() {
         },
     );
 }
+
+/// Parse one trace line into its `key=value` fields, core order included.
+fn trace_fields(line: &str) -> Vec<(&str, &str)> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(tokens.first().copied(), Some("rpc"), "{line}");
+    tokens[1..]
+        .iter()
+        .map(|token| token.split_once('=').expect("key=value token"))
+        .collect()
+}
+
+/// A client whose every frame lands in a file: enough wire for the trace to
+/// see a request leave, with no daemon behind it.
+fn trace_stub_inner(dir: &std::path::Path) -> Arc<ClientInner> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
+        options.custom_flags(FILE_FLAG_OVERLAPPED);
+    }
+    let framed = Framed::new(options.open(dir.join("wire.out")).expect("wire file"));
+    Arc::new(ClientInner {
+        framed,
+        next_id: std::sync::atomic::AtomicU64::new(1),
+        next_subscription_id: std::sync::atomic::AtomicU64::new(1),
+        pending: Mutex::new(HashMap::new()),
+        pending_subscriptions: Mutex::new(HashMap::new()),
+        subscriptions: Mutex::new(HashMap::new()),
+        default_subscriptions: Mutex::new(HashMap::new()),
+        session_state_subscription: Mutex::new(None),
+        delegation_subscription: Mutex::new(None),
+        stop: AtomicBool::new(false),
+        hello: DaemonHello::plugin_backend("trace-test", std::process::id()),
+        server_pid: None,
+    })
+}
+
+/// The trace names the command the caller waited on: a `start` line at
+/// departure carrying the calling thread, a `done` line at arrival carrying
+/// the waited time — and never the payload the request rode in on.
+#[test]
+fn the_roundtrip_trace_names_the_wait_the_thread_and_no_payload() {
+    let dir = crate::rpc_trace::tests::scratch("roundtrip-ok");
+    let _env = crate::rpc_trace::tests::trace_on(&dir);
+    let inner = trace_stub_inner(&dir);
+    let responder = {
+        let inner = Arc::clone(&inner);
+        thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let reply = {
+                    let pending = inner.pending.lock().unwrap_or_else(|err| err.into_inner());
+                    pending.get(&987_654_321).cloned()
+                };
+                if let Some(tx) = reply {
+                    tx.send(DaemonMessage::Ok { id: 987_654_321 })
+                        .expect("reply channel");
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the request never reached the pending map"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
+    let client = super::DaemonClient {
+        inner,
+        reader: Mutex::new(None),
+    };
+
+    let result = client.roundtrip_with_deadline(
+        ClientMessage::AgentMessageSend {
+            id: 987_654_321,
+            from_session: "session-a".to_string(),
+            to_session: "session-b".to_string(),
+            text: "TRACE-SENTINEL-4d07 the prompt body must not be logged".to_string(),
+            idempotency_key: None,
+        },
+        Duration::from_secs(5),
+    );
+    assert!(result.is_ok(), "{result:?}");
+    responder.join().expect("responder thread");
+
+    let log = crate::rpc_trace::tests::read_app_log(&dir);
+    // The env sink is process-wide: roundtrips of tests running in parallel
+    // land in this file too. Both of this test's lines carry its distinctive
+    // name+id pair (adjacent core fields), and no other test uses that id.
+    let mine: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("name=AgentMessageSend id=987654321"))
+        .collect();
+    assert_eq!(mine.len(), 2, "one start, one done: {log}");
+
+    let start = trace_fields(mine[0]);
+    let start_keys: Vec<&str> = start.iter().map(|(key, _)| *key).collect();
+    assert_eq!(
+        start_keys,
+        [
+            "side",
+            "event",
+            "t",
+            "name",
+            "id",
+            "thread",
+            "tid",
+            "budget_ms"
+        ],
+        "{}",
+        mine[0]
+    );
+    assert_eq!(start[0].1, "app");
+    assert_eq!(start[1].1, "start");
+    start[2].1.parse::<u64>().expect("t is epoch ms");
+    assert_eq!(start[3].1, "AgentMessageSend");
+    assert_eq!(start[4].1, "987654321");
+    assert!(!start[5].1.is_empty(), "the calling thread is named");
+    start[6].1.parse::<u64>().expect("tid is numeric");
+    assert_eq!(start[7].1, "5000");
+
+    let done = trace_fields(mine[1]);
+    let done_keys: Vec<&str> = done.iter().map(|(key, _)| *key).collect();
+    assert_eq!(
+        done_keys,
+        [
+            "side",
+            "event",
+            "t",
+            "name",
+            "id",
+            "waited_ms",
+            "budget_ms",
+            "status"
+        ],
+        "{}",
+        mine[1]
+    );
+    assert_eq!(done[1].1, "done");
+    assert_eq!(done[3].1, "AgentMessageSend");
+    done[5].1.parse::<u64>().expect("waited_ms is a duration");
+    assert_eq!(done[6].1, "5000");
+    assert_eq!(done[7].1, "ok");
+
+    assert!(!log.contains("TRACE-SENTINEL"), "{log}");
+    assert!(!log.contains("session-a"), "{log}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The deadline the request carried shows up in the log: a wait that ends at
+/// the budget is `status=timeout`, and `waited_ms` proves how long the
+/// calling thread stood still.
+#[test]
+fn the_roundtrip_trace_reports_the_deadline_it_expired_on() {
+    let dir = crate::rpc_trace::tests::scratch("roundtrip-timeout");
+    let _env = crate::rpc_trace::tests::trace_on(&dir);
+    let inner = trace_stub_inner(&dir);
+    let client = super::DaemonClient {
+        inner,
+        reader: Mutex::new(None),
+    };
+
+    let result = client.roundtrip_with_deadline(
+        ClientMessage::Ping { id: 987_654_322 },
+        Duration::from_millis(100),
+    );
+    assert!(
+        matches!(result, Err(DaemonError::TimedOut(_))),
+        "{result:?}"
+    );
+
+    let log = crate::rpc_trace::tests::read_app_log(&dir);
+    // Parallel tests share this file; both of this test's lines carry its
+    // distinctive name+id pair, and no other test uses that id.
+    let mine: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("name=Ping id=987654322"))
+        .collect();
+    assert_eq!(mine.len(), 2, "one start, one done: {log}");
+    let start = trace_fields(mine[0]);
+    assert_eq!(start[3].1, "Ping");
+    assert_eq!(start[4].1, "987654322");
+    assert_eq!(start[7].1, "100");
+    let done = trace_fields(mine[1]);
+    assert_eq!(done[1].1, "done");
+    assert_eq!(done[3].1, "Ping");
+    assert_eq!(done[4].1, "987654322");
+    let waited: u64 = done[5].1.parse().expect("waited_ms is a duration");
+    assert!(waited >= 100, "waited {waited} ms: {log}");
+    assert_eq!(done[6].1, "100");
+    assert_eq!(done[7].1, "timeout");
+    let _ = std::fs::remove_dir_all(&dir);
+}

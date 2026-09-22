@@ -76,6 +76,7 @@ mod raster_metadata;
 mod registry;
 #[cfg(feature = "server")]
 mod release_guard;
+mod rpc_trace;
 #[cfg(feature = "server")]
 mod screen;
 #[cfg(feature = "server")]

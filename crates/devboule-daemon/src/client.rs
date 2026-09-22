@@ -1360,6 +1360,21 @@ impl DaemonClient {
         message: ClientMessage,
         timeout: Duration,
     ) -> Result<DaemonMessage, DaemonError> {
+        // One line at departure and one at arrival (or deadline) on the
+        // calling thread: this wait *is* the window's wait when a non-async
+        // command makes it. Spent unless DEVBOULE_RPC_TRACE names a sink.
+        let trace =
+            crate::rpc_trace::Roundtrip::begin(message.name(), message.request_id(), timeout);
+        let result = self.roundtrip_inner(message, timeout);
+        trace.finish(&result);
+        result
+    }
+
+    fn roundtrip_inner(
+        &self,
+        message: ClientMessage,
+        timeout: Duration,
+    ) -> Result<DaemonMessage, DaemonError> {
         let Some(id) = message.request_id() else {
             self.write_frame(&message)?;
             return Err(DaemonError::Protocol(

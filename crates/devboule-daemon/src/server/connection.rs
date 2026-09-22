@@ -153,9 +153,10 @@ pub(crate) fn handle_client(
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();
+    let reader_conn_id = conn.id;
     let reader = std::thread::Builder::new()
         .name("daemon-client-request".into())
-        .spawn(move || read_client_requests(reader_framed, request_tx, reader_wake))
+        .spawn(move || read_client_requests(reader_framed, request_tx, reader_wake, reader_conn_id))
         .map_err(DaemonError::from)?;
     let mut pending_events = VecDeque::new();
     let mut pending_state_events = VecDeque::new();
@@ -261,7 +262,17 @@ pub(crate) fn handle_client(
                     framed.send(&DaemonMessage::Error(error))?;
                     continue;
                 }
-                let Some(reply) = dispatch(
+                let trace_name = request.name();
+                let trace_id = request.request_id();
+                crate::rpc_trace::daemon_event(
+                    "dispatch_start",
+                    trace_name,
+                    trace_id,
+                    conn.id,
+                    &[],
+                );
+                let dispatch_clock = Instant::now();
+                let dispatched = dispatch(
                     &state,
                     &owner,
                     request,
@@ -270,7 +281,18 @@ pub(crate) fn handle_client(
                     journal_ok,
                     typed_permissions_ok,
                     devices_ok,
-                ) else {
+                );
+                // Recorded even when the dispatch answers with nothing: the
+                // window it held the loop is the fact the log exists for.
+                let took_ms = dispatch_clock.elapsed().as_millis().to_string();
+                crate::rpc_trace::daemon_event(
+                    "dispatch_end",
+                    trace_name,
+                    trace_id,
+                    conn.id,
+                    &[("took_ms", took_ms.as_str())],
+                );
+                let Some(reply) = dispatched else {
                     continue;
                 };
                 if close_request {
@@ -287,6 +309,7 @@ pub(crate) fn handle_client(
                 // disconnect; the event stream below must never use that
                 // barrier per frame.
                 framed.send(&redact_for_conn(&conn, reply))?;
+                crate::rpc_trace::daemon_event("reply", trace_name, trace_id, conn.id, &[]);
                 if shutting_down {
                     state.request_shutdown();
                     break;
@@ -553,9 +576,21 @@ fn read_client_requests(
     framed: Framed,
     inbox: SyncSender<Result<ClientMessage, DaemonError>>,
     wake: Arc<ConnOut>,
+    conn_id: u64,
 ) {
     loop {
         let request = framed.recv::<ClientMessage>();
+        // Arrival on disk before the request enters the queue: an arrival
+        // between two dispatch markers is the time it stood in line.
+        if let Ok(message) = &request {
+            crate::rpc_trace::daemon_event(
+                "arrival",
+                message.name(),
+                message.request_id(),
+                conn_id,
+                &[],
+            );
+        }
         let finished = request.is_err();
         if inbox.send(request).is_err() {
             break;
@@ -610,3 +645,7 @@ fn daemon_hello(state: &ServerState) -> DaemonHello {
         capabilities: m3a_daemon_capabilities(),
     }
 }
+
+#[cfg(test)]
+#[path = "connection_tests.rs"]
+mod tests;

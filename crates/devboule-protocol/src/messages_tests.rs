@@ -2773,3 +2773,32 @@ fn workspace_files_list_round_trips_with_its_wire_words() {
         "the sentence travels: {json}"
     );
 }
+
+/// The request trace names a command through `name()`, which is a
+/// `&'static str` constant — never through `Debug`, whose rendering carries
+/// the payload (a prompt's text) inside.
+#[test]
+fn trace_name_is_a_static_constant_and_never_carries_the_payload() {
+    let text = "TRACE-SENTINEL-8f31 the prompt body must not be logged";
+    let message = ClientMessage::AgentMessageSend {
+        id: 9,
+        from_session: "session-a".to_string(),
+        to_session: "session-b".to_string(),
+        text: text.to_string(),
+        idempotency_key: None,
+    };
+    let name: &'static str = message.name();
+    assert_eq!(name, "AgentMessageSend");
+    assert!(!name.contains("TRACE-SENTINEL"), "{name}");
+    assert!(!name.contains("session-a"), "{name}");
+    // Debug is exactly what the trace must never reach for: the payload is in it.
+    let debug = format!("{message:?}");
+    assert!(
+        debug.contains("TRACE-SENTINEL"),
+        "the payload lives inside Debug: {debug}"
+    );
+    assert_ne!(name, debug);
+
+    assert_eq!(ClientMessage::SessionsList { id: 1 }.name(), "SessionsList");
+    assert_eq!(ClientMessage::Ping { id: 1 }.name(), "Ping");
+}
