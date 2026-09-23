@@ -80,6 +80,11 @@ describe("FilesFileActions", () => {
       size: 0,
       modifiedAt: 0,
       error: null,
+      fromLine: 1,
+      lines: 0,
+      hasMore: false,
+      truncated: false,
+      note: null,
     });
     vi.mocked(workspaceFileRename).mockResolvedValue({ newPath: "README.md", error: null });
     vi.mocked(workspaceFileDuplicate).mockResolvedValue({ newPath: "README copy.md", error: null });

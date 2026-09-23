@@ -114,7 +114,16 @@ pub(super) fn dispatch_journal(
             id,
             workspace_id,
             path,
-        } => crate::workspace_file_read::reply(state, id, &workspace_id, &path),
+            from_line,
+            line_count,
+        } => crate::workspace_file_read::reply(
+            state,
+            id,
+            &workspace_id,
+            &path,
+            from_line,
+            line_count,
+        ),
         // The two write acts: keyed like the other keyed writes here (a
         // retry with the same key replays the first success instead of
         // acting twice — the second rename would find nothing to rename),

@@ -111,7 +111,12 @@ export type CommandArgs = {
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
   workspace_files_list: { workspaceId: Id; path: string };
-  workspace_file_read: { workspaceId: Id; path: string };
+  workspace_file_read: {
+    workspaceId: Id;
+    path: string;
+    fromLine?: number;
+    lineCount?: number;
+  };
   workspace_file_preview_stage: { workspaceId: Id; path: string };
   workspace_file_preview_unstage: undefined;
   workspace_file_rename: { workspaceId: Id; path: string; name: string };
@@ -371,7 +376,7 @@ export const COMMAND_ARG_KEYS = {
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
   workspace_files_list: ["workspaceId", "path"],
-  workspace_file_read: ["workspaceId", "path"],
+  workspace_file_read: ["workspaceId", "path", "fromLine", "lineCount"],
   workspace_file_preview_stage: ["workspaceId", "path"],
   workspace_file_preview_unstage: [],
   workspace_file_rename: ["workspaceId", "path", "name"],
@@ -572,15 +577,21 @@ export const workspaceGitDiff = (workspaceId: Id, path: string) =>
 export const workspaceFilesList = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_files_list", { workspaceId, path });
 /**
- * The content of one workspace file — the Files panel's preview behind a
+ * One window of one workspace file — the Files panel's preview behind a
  * clicked file row. `path` is relative to the workspace folder: the daemon
- * resolves the folder from the id, confines the path, refuses anything that
- * would leave it, caps the read at 128 KiB and classifies the bytes, so this
- * takes only paths the daemon's own replies handed back. One file per call,
- * on click — never a whole folder, never on a schedule.
+ * resolves the folder from the id, confines the path, refuses anything
+ * that would leave it, and classifies the bytes, so this takes only paths
+ * the daemon's own replies handed back. `fromLine`/`lineCount` address the
+ * window and are omitted for the first one — the daemon reads that as the
+ * first window, so the first click sends the two arguments it always sent.
+ * One file per call, on click — never a whole folder, never on a schedule.
  */
-export const workspaceFileRead = (workspaceId: Id, path: string) =>
-  invokeTyped("workspace_file_read", { workspaceId, path });
+export const workspaceFileRead = (
+  workspaceId: Id,
+  path: string,
+  fromLine?: number,
+  lineCount?: number,
+) => invokeTyped("workspace_file_read", { workspaceId, path, fromLine, lineCount });
 /**
  * Stage one workspace file for the panel's full-size preview: the daemon
  * confines the path exactly as the read above does, refuses what that read

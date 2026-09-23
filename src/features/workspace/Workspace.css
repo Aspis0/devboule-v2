@@ -2117,6 +2117,16 @@
   overflow-wrap: anywhere;
 }
 
+/* The window footer under that text: the lines on screen, the admission
+   that the cap cut one short, and the control that fetches the next
+   window — one row for all three, wrapping when the card is narrow. */
+.workspace-file-preview-window {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .workspace-file-preview-image {
   display: block;
   max-width: 100%;

@@ -70,6 +70,11 @@ describe("FilesSurface", () => {
       size: 0,
       modifiedAt: 0,
       error: null,
+      fromLine: 1,
+      lines: 0,
+      hasMore: false,
+      truncated: false,
+      note: null,
     });
     // No test here acts on a row, but defaults keep an accidental click from
     // reaching `undefined` and passing for a silent no-op.

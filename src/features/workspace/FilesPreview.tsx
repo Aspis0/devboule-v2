@@ -34,6 +34,16 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** The range on screen: where the window starts and how many lines the
+ * reply says it holds — the reply's own numbers, never a count of the
+ * file, which no reply of this frame ever carries. */
+function linesLabel(textWindow: WorkspaceFileContent): string {
+  if (textWindow.fromLine === null || textWindow.lines === null || textWindow.lines === 0) {
+    return "no lines";
+  }
+  return `lines ${textWindow.fromLine}–${textWindow.fromLine + textWindow.lines - 1}`;
+}
+
 /**
  * The preview under the Files tree: one card, every wire state its own
  * screen — loading, the wire's refusal or the transport's failure (both
@@ -43,11 +53,26 @@ export function formatSize(bytes: number): string {
  * path this side built. An image the read would have answered as base64
  * does not reach this card through the read at all any more: the hook
  * stages it, so the 128 KiB frame cap stopped being the display limit
- * (DECISIONS-write §8 still governs the text below).
+ * (DECISIONS-write §8 still governs the text below). A text reply is one
+ * *window* of the file: under it sit the lines on screen, the wire's own
+ * sentence when a line is bigger than one window, and the control that
+ * asks the hook for the next window.
  */
-export function FilesPreview({ path, preview }: { path: string; preview: PreviewCell }) {
+export function FilesPreview({
+  path,
+  preview,
+  readMore,
+}: {
+  path: string;
+  preview: PreviewCell;
+  readMore: () => Promise<void>;
+}) {
   const reply = preview.reply;
   const staged = preview.staged;
+  // The only reply carrying a window: `ok` text. Everything else on this
+  // card — image, binary, withholding, refusal — has no lines to range.
+  const textWindow =
+    reply !== null && reply.status === "ok" && reply.kind === "text" ? reply : null;
   return (
     <div className="workspace-diff-card">
       <div className="workspace-diff-header">
@@ -89,7 +114,30 @@ export function FilesPreview({ path, preview }: { path: string; preview: Preview
       ) : reply !== null && reply.status === "binary" ? (
         <div className="workspace-diff-note">This file is binary; there is no content to show.</div>
       ) : (
-        <pre className="workspace-file-preview-text">{reply?.content}</pre>
+        <>
+          <pre className="workspace-file-preview-text">{reply?.content}</pre>
+          {textWindow === null ? null : (
+            <div className="workspace-diff-note workspace-file-preview-window">
+              <span>{linesLabel(textWindow)}</span>
+              {/* The wire's own sentence for its own cut; the plain words
+                  are the fallback for a cut that arrives without one — the
+                  daemon builds the pair together, so today they never
+                  occur apart. */}
+              {textWindow.truncated ? (
+                <span>{textWindow.note ?? "the last line is cut short at the window's cap"}</span>
+              ) : null}
+              {textWindow.hasMore === true ? (
+                <button
+                  type="button"
+                  className="workspace-secondary-action"
+                  onClick={() => void readMore()}
+                >
+                  Read more
+                </button>
+              ) : null}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

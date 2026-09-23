@@ -539,13 +539,26 @@ pub enum ClientMessage {
     /// like [`Self::WorkspaceFilesList`]: the daemon resolves the directory
     /// from `workspace_id` and confines `path` to a relative path inside it
     /// before anything is opened — and nothing is written behind this frame.
-    /// The reply is [`DaemonMessage::WorkspaceFileContent`].
+    /// One **window** per request: `from_line` and `line_count` address it,
+    /// both absent being the first window — the whole frame a caller that
+    /// never heard of windows still sends, unchanged. The reply is
+    /// [`DaemonMessage::WorkspaceFileContent`].
     WorkspaceFileRead {
         id: u64,
         workspace_id: String,
         /// Path relative to the workspace folder, of a file — the spelling a
         /// listing entry already handed back.
         path: String,
+        /// First line of the window, 1-based; absent is line 1. A line the
+        /// file does not have answers with no lines and `has_more: false` —
+        /// past the end is a window, not a failure.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_line: Option<u64>,
+        /// How many lines the window may hold; absent lets the frame's byte
+        /// cap alone decide. Asked with 0 it still takes one line — a
+        /// window of nothing is not a request this frame answers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_count: Option<u64>,
     },
     /// Rename one entry inside a workspace — the Files panel's inline rename.
     /// A **write**: the daemon resolves the folder from `workspace_id`,
@@ -1223,9 +1236,9 @@ pub enum DaemonMessage {
         id: u64,
         directory: WorkspaceDirectory,
     },
-    /// The reply to [`ClientMessage::WorkspaceFileRead`]: the content of one
-    /// file, a deliberate withholding of it (`too_large`, `binary`), or a
-    /// refusal of it. Flattened, so the wire is one flat object beside
+    /// The reply to [`ClientMessage::WorkspaceFileRead`]: one window of the
+    /// file's content, a deliberate withholding of it (`too_large`,
+    /// `binary`), or a refusal of it. Flattened, so the wire is one flat object beside
     /// `id` — the same shape [`DaemonMessage::Status`] gives its body.
     WorkspaceFileContent {
         id: u64,
@@ -1748,7 +1761,14 @@ pub enum WorkspaceFileContentKind {
 /// `size` and `modified_at` come from the stat and are `null` exactly when
 /// the status is `refused`, because a refusal claims nothing about the
 /// file it rejected; `kind` is `Some` exactly when the bytes were read, an
-/// over-cap file never being opened at all.
+/// over-cap file never being opened at all; and the five window fields
+/// (`from_line`, `lines`, `has_more`, `truncated`, `note`) are `Some`
+/// exactly for a text `ok` reply — an answer about one window, where
+/// `lines` counts the lines this reply carries and never the file's own
+/// total (which would be a whole read behind one number). `truncated` and
+/// `note` travel together: the first says the cap cut a line too big for
+/// one window, the second is the sentence that says its rest — and with
+/// `has_more: false` everything after it — cannot be read this way.
 ///
 /// **Debt, the same one `WorkspaceDirectory` records:** `error` is free text
 /// on a frame that does **not** pass `redact_for_conn`. The sentences this
@@ -1771,6 +1791,21 @@ pub struct WorkspaceFileContent {
     /// when the filesystem gave no stamp, and on `refused`.
     pub modified_at: Option<i64>,
     pub error: Option<String>,
+    /// The 1-based line this window starts at; `Some` exactly for a text
+    /// `ok` reply (the four window fields share that carve-out).
+    pub from_line: Option<u64>,
+    /// How many lines this window carries: 0 is a window past the file's
+    /// end, and no reply counts the file whole.
+    pub lines: Option<u64>,
+    /// Whether another window follows this one; `false` on the last.
+    pub has_more: Option<bool>,
+    /// Whether the byte cap cut this window's last line short — declared
+    /// rather than hidden, because the file goes on inside that line.
+    pub truncated: Option<bool>,
+    /// The sentence that cut carries: `Some` exactly when `truncated` is
+    /// `Some(true)`, saying the line exceeds one window and the rest of it
+    /// cannot be read this way — static words, never a path.
+    pub note: Option<String>,
 }
 
 /// The outcome of one Files-panel write — a rename, a duplicate, or the

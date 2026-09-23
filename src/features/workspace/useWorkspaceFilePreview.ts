@@ -8,6 +8,11 @@ import {
 import type { WorkspaceFileContent, WorkspaceFileStaged } from "../../types/ipc";
 import { previewMediaKind } from "./previewMedia";
 
+/** How many lines one «Read more» asks for. The frame's 128 KiB cap still
+ * decides for long lines — this only keeps a window of short ones to a
+ * bounded stretch per click instead of the whole file. */
+const READ_MORE_LINES = 5000;
+
 /** One file's preview: a read's reply, a stage's copy, or the sentence
  * either road refused with — exactly one of the three at a time. */
 export interface PreviewCell {
@@ -47,6 +52,9 @@ export interface WorkspaceFilePreviewSource {
    * must not reach. */
   deselect: () => void;
   refresh: () => void;
+  /** The next window of the file on screen, appended to what is already
+   * there — a no-op unless the last reply said another window follows. */
+  readMore: () => Promise<void>;
 }
 
 /**
@@ -225,10 +233,70 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
     if (selectionPath !== null) void load(selectionPath);
   }, [load, selectionPath]);
 
+  /** The next window, appended: the reply on screen says where its lines
+   * ended (`fromLine + lines`), and this asks for the ones after them —
+   * the newest-request-wins guard of a load, so a click racing a selection
+   * change or a Refresh lands nowhere. What a failed append leaves behind
+   * is the rule `load` gives its own cells: the text stays, the failure
+   * rides with it, and the same button is the retry. */
+  const readMore = useCallback(async (): Promise<void> => {
+    if (workspaceId === null) return;
+    const current = state;
+    const reply = current.cell.reply;
+    if (current.workspaceId !== workspaceId || current.path === null || reply === null) return;
+    if (reply.hasMore !== true || reply.fromLine === null || reply.lines === null) return;
+    const path = current.path;
+    const own = ++generation.current;
+    try {
+      const next = await workspaceFileRead(
+        workspaceId,
+        path,
+        reply.fromLine + reply.lines,
+        READ_MORE_LINES,
+      );
+      if (generation.current !== own) return;
+      setState((onScreen) => {
+        if (onScreen.workspaceId !== workspaceId || onScreen.path !== path) return onScreen;
+        const shown = onScreen.cell.reply;
+        if (shown === null) return onScreen;
+        if (next.status !== "ok" || next.fromLine === null || next.lines === null) {
+          // The road's answer changed between windows — a file that turns
+          // out binary past the first one, a refusal after it — and that
+          // answer IS what stopped the read: it replaces the window rather
+          // than letting the panel claim the file continued.
+          return { ...onScreen, cell: { reply: next, staged: null, failure: null } };
+        }
+        return {
+          ...onScreen,
+          cell: {
+            reply: {
+              ...shown,
+              content: (shown.content ?? "") + (next.content ?? ""),
+              lines: (shown.lines ?? 0) + next.lines,
+              hasMore: next.hasMore,
+              truncated: next.truncated,
+            },
+            staged: null,
+            failure: null,
+          },
+        };
+      });
+    } catch (cause: unknown) {
+      if (generation.current !== own) return;
+      setState((onScreen) => {
+        if (onScreen.workspaceId !== workspaceId || onScreen.path !== path) return onScreen;
+        return {
+          ...onScreen,
+          cell: { ...onScreen.cell, failure: reasonFromCause(cause) },
+        };
+      });
+    }
+  }, [workspaceId, state]);
+
   const preview: PreviewCell =
     state.workspaceId === workspaceId && selectionPath !== null && state.path === selectionPath
       ? state.cell
       : { reply: null, staged: null, failure: null };
 
-  return { preview, selection: selectionPath, select, deselect, refresh };
+  return { preview, selection: selectionPath, select, deselect, refresh, readMore };
 }

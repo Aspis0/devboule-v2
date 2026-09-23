@@ -56,6 +56,11 @@ function content(overrides: Partial<WorkspaceFileContent> = {}): WorkspaceFileCo
     size: 6,
     modifiedAt: STAMP,
     error: null,
+    fromLine: 1,
+    lines: 1,
+    hasMore: false,
+    truncated: false,
+    note: null,
     ...overrides,
   };
 }
@@ -219,6 +224,11 @@ describe("FilesPreview", () => {
         size: null,
         modifiedAt: null,
         error: "the requested path is outside the workspace folder",
+        fromLine: null,
+        lines: null,
+        hasMore: null,
+        truncated: null,
+        note: null,
       }),
     );
     await renderFiles("escape.txt");
@@ -245,6 +255,11 @@ describe("FilesPreview", () => {
         size: 131073,
         error:
           "the file is larger than the 131072-byte content cap; its content is not handed back",
+        fromLine: null,
+        lines: null,
+        hasMore: null,
+        truncated: null,
+        note: null,
       }),
     );
     await renderFiles("huge.txt");
@@ -264,7 +279,17 @@ describe("FilesPreview", () => {
   // bytes never reach the DOM in any form.
   it("shows a binary file without content and without an error", async () => {
     vi.mocked(workspaceFileRead).mockResolvedValue(
-      content({ status: "binary", kind: "binary", content: null, size: 5 }),
+      content({
+        status: "binary",
+        kind: "binary",
+        content: null,
+        size: 5,
+        fromLine: null,
+        lines: null,
+        hasMore: null,
+        truncated: null,
+        note: null,
+      }),
     );
     await renderFiles("blob.dat");
 
@@ -456,5 +481,115 @@ describe("FilesPreview", () => {
 
     expect(card().querySelector('[role="alert"]')?.textContent).toBe("the app did not answer");
     expect(card().querySelector("pre")).toBeNull();
+  });
+
+  // The windowed read, end to end at the panel: the first window shows its
+  // text and its range, «Read more» asks for the next one — same file,
+  // fromLine + lines — and the reply's own numbers move the range, never a
+  // count of the file. Kills the mutation that sends the wrong offset (the
+  // second call's args) or drops the append (the text after the click).
+  it("appends the next window on Read more and shows the lines on screen", async () => {
+    vi.mocked(workspaceFileRead)
+      .mockResolvedValueOnce(
+        content({ content: "one\ntwo\n", size: 307200, lines: 2, hasMore: true }),
+      )
+      .mockResolvedValueOnce(
+        content({ content: "three\n", size: 307200, fromLine: 3, lines: 1, hasMore: false }),
+      );
+    await renderFiles("big.log");
+
+    await act(async () => {
+      fileRow("big.log").click();
+    });
+
+    expect(card().querySelector("pre")?.textContent).toBe("one\ntwo\n");
+    const footer = () => card().querySelector(".workspace-file-preview-window");
+    expect(footer()?.textContent).toContain("lines 1–2");
+    const readMoreButton = (): HTMLButtonElement | undefined =>
+      Array.from(card().querySelectorAll("button")).find(
+        (button) => button.textContent === "Read more",
+      );
+    const more = readMoreButton();
+    if (more === undefined) throw new Error("the read-more control did not render");
+
+    await act(async () => {
+      more.click();
+    });
+
+    expect(vi.mocked(workspaceFileRead).mock.calls[1]).toEqual([WORKSPACE, "big.log", 3, 5000]);
+    expect(card().querySelector("pre")?.textContent).toBe("one\ntwo\nthree\n");
+    expect(footer()?.textContent).toContain("lines 1–3");
+    expect(readMoreButton(), "the last window offers no next one").toBeUndefined();
+  });
+
+  // The wire's own pair for a line bigger than one window: `truncated`,
+  // `has_more: false` and the `note` sentence — its words are shown as
+  // they arrive, and no «Read more» appears for a continuation the wire
+  // says cannot resume byte-exactly. (The review called the old mock an
+  // impossible state; under the line-boundary rule this is the real one.)
+  it("shows the wire's sentence when a line exceeds one window", async () => {
+    vi.mocked(workspaceFileRead).mockResolvedValue(
+      content({
+        content: "y".repeat(64),
+        lines: 1,
+        truncated: true,
+        hasMore: false,
+        note: "the line exceeds one window; what follows it in the file cannot be read this way",
+      }),
+    );
+    await renderFiles("one.log");
+
+    await act(async () => {
+      fileRow("one.log").click();
+    });
+
+    expect(card().querySelector(".workspace-file-preview-window")?.textContent).toContain(
+      "the line exceeds one window",
+    );
+    expect(
+      Array.from(card().querySelectorAll("button")).some(
+        (button) => button.textContent === "Read more",
+      ),
+    ).toBe(false);
+  });
+
+  // A window that lands after the selection moved goes nowhere: the path
+  // and generation guard of `readMore`, the gap the review named — only
+  // the INITIAL read's late reply had a test until now.
+  it("drops a window that arrives after another file was selected", async () => {
+    const pending = deferred<WorkspaceFileContent>();
+    vi.mocked(workspaceFileRead).mockImplementation((_workspaceId, path, fromLine) => {
+      if (path === "big.log" && fromLine !== undefined) return pending.promise;
+      if (path === "big.log") {
+        return Promise.resolve(
+          content({ content: "one\n", size: 307200, lines: 1, hasMore: true }),
+        );
+      }
+      return Promise.resolve(content({ content: "b-content\n" }));
+    });
+    await renderFiles("big.log", "b.txt");
+
+    await act(async () => {
+      fileRow("big.log").click();
+    });
+    const more = Array.from(card().querySelectorAll("button")).find(
+      (button) => button.textContent === "Read more",
+    );
+    if (more === undefined) throw new Error("the read-more control did not render");
+    await act(async () => {
+      more.click();
+    }); // the window of big.log is still in flight
+
+    await act(async () => {
+      fileRow("b.txt").click();
+    });
+    expect(card().querySelector("pre")?.textContent).toBe("b-content\n");
+
+    await act(async () => {
+      pending.resolve(content({ content: "two\n", fromLine: 2, lines: 1, hasMore: false }));
+    });
+
+    expect(card().querySelector("pre")?.textContent).toBe("b-content\n");
+    expect(card().textContent).not.toContain("one\ntwo");
   });
 });

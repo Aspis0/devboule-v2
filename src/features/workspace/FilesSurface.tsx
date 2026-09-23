@@ -120,6 +120,7 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
     select,
     deselect,
     refresh: refreshPreview,
+    readMore,
   } = useWorkspaceFilePreview(workspaceId);
   const { renameEntry, duplicateEntry, deleteEntry } = useWorkspaceFileActions({
     workspaceId,
@@ -353,7 +354,9 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
       {/* The clicked file's own answer, below the tree the way the Changes
           panel puts its diff below the rows: its states are the preview's,
           and a selection this panel never made renders nothing. */}
-      {selection !== null ? <FilesPreview path={selection} preview={preview} /> : null}
+      {selection !== null ? (
+        <FilesPreview path={selection} preview={preview} readMore={readMore} />
+      ) : null}
     </div>
   );
 });

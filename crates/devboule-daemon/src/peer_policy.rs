@@ -1247,6 +1247,8 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 path: "README.md".to_string(),
+                from_line: None,
+                line_count: None,
             },
             ClientMessage::WorkspaceFileRename {
                 id: 1,
@@ -2325,6 +2327,8 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 path: "README.md".to_string(),
+                from_line: None,
+                line_count: None,
             },
             ClientMessage::WorkspaceFileRename {
                 id: 1,

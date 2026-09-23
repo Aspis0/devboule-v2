@@ -127,21 +127,30 @@ pub async fn workspace_files_list(
 /// The content of one workspace file — the Files panel's preview behind a
 /// clicked file row. `workspace_id` names the folder and `path` is relative
 /// to it; the daemon confines the path, refuses links and the repository's
-/// metadata, caps the read at 128 KiB before opening anything, and only
-/// reads: no write exists behind this road.
+/// metadata, and only reads: no write exists behind this road. `from_line`
+/// and `line_count` address the window (`None`/`None` is the first one):
+/// the reply carries the lines, the line they start at, and whether another
+/// window follows.
 ///
 /// Bounded like the other three workspace roads: `RPC_TIMEOUT` (30 s) is
-/// what this caller feels, and the daemon's own work is one stat plus a read
-/// of at most 128 KiB — no process is spawned for this frame at all. The
-/// wait leaves the window's thread the way the other long roads do.
+/// what this caller feels, and the daemon's own work is one stat, a newline
+/// count over the prefix up to the window's first line (chunk by chunk,
+/// never held — worst case, for a late line or one that does not exist,
+/// the whole file in those chunks), and a read of at most 128 KiB plus the
+/// one byte that says the file goes on — no process is spawned for this
+/// frame at all. The wait leaves the window's thread the way the other
+/// long roads do.
 #[tauri::command]
 pub async fn workspace_file_read(
     bridge: State<'_, DaemonBridge>,
     workspace_id: String,
     path: String,
+    from_line: Option<u64>,
+    line_count: Option<u64>,
 ) -> Result<WorkspaceFileContent, CommandError> {
     let client = require_client(&bridge)?;
-    off_main_thread(move || client.workspace_file_read(&workspace_id, &path)).await
+    off_main_thread(move || client.workspace_file_read(&workspace_id, &path, from_line, line_count))
+        .await
 }
 
 /// Stage one workspace file for the panel's full-size preview. Same shape

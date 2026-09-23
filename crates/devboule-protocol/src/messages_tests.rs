@@ -2793,6 +2793,11 @@ fn workspace_file_read_round_trips_with_its_wire_words() {
             size: Some(6),
             modified_at: Some(1_758_000_000_000),
             error: None,
+            from_line: Some(1),
+            lines: Some(1),
+            has_more: Some(false),
+            truncated: Some(false),
+            note: None,
         },
     };
     let json = serde_json::to_string(&reply).expect("serialize");
@@ -2803,6 +2808,11 @@ fn workspace_file_read_round_trips_with_its_wire_words() {
         "\"content\":\"hello\\n\"",
         "\"modifiedAt\":1758000000000",
         "\"error\":null",
+        "\"fromLine\":1",
+        "\"lines\":1",
+        "\"hasMore\":false",
+        "\"truncated\":false",
+        "\"note\":null",
     ] {
         assert!(json.contains(needle), "{needle} missing from {json}");
     }
@@ -2815,14 +2825,35 @@ fn workspace_file_read_round_trips_with_its_wire_words() {
         id: 13,
         workspace_id: "ws.1".to_string(),
         path: "README.md".to_string(),
+        from_line: None,
+        line_count: None,
     };
     let json = serde_json::to_string(&request).expect("serialize");
     assert!(json.contains("\"type\":\"workspace_file_read\""), "{json}");
     assert!(json.contains("\"workspaceId\":\"ws.1\""), "{json}");
     assert!(json.contains("\"path\":\"README.md\""), "{json}");
+    // No window named is the first window, and the frame stays the one
+    // older journals hold — the window keys join it only when a caller
+    // asks for a later one.
+    assert!(!json.contains("fromLine"), "{json}");
+    assert!(!json.contains("lineCount"), "{json}");
     assert_eq!(
         serde_json::from_str::<ClientMessage>(&json).expect("parse"),
         request
+    );
+    let windowed = ClientMessage::WorkspaceFileRead {
+        id: 13,
+        workspace_id: "ws.1".to_string(),
+        path: "README.md".to_string(),
+        from_line: Some(2001),
+        line_count: Some(5000),
+    };
+    let json = serde_json::to_string(&windowed).expect("serialize");
+    assert!(json.contains("\"fromLine\":2001"), "{json}");
+    assert!(json.contains("\"lineCount\":5000"), "{json}");
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        windowed
     );
     assert_eq!(request.name(), "WorkspaceFileRead");
     assert!(!request.is_state_changing(), "a read writes nothing");
@@ -2849,6 +2880,11 @@ fn workspace_file_read_round_trips_with_its_wire_words() {
             size: None,
             modified_at: None,
             error: Some("the requested path is outside the workspace folder".to_string()),
+            from_line: None,
+            lines: None,
+            has_more: None,
+            truncated: None,
+            note: None,
         },
     };
     let json = serde_json::to_string(&refused).expect("serialize");
@@ -2857,6 +2893,7 @@ fn workspace_file_read_round_trips_with_its_wire_words() {
         "\"kind\":null",
         "\"content\":null",
         "\"size\":null",
+        "\"fromLine\":null",
         "\"error\":\"the requested path",
     ] {
         assert!(json.contains(needle), "{needle} missing from {json}");

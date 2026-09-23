@@ -887,20 +887,27 @@ impl DaemonClient {
         }
     }
 
-    /// The content of one workspace file. The id and a relative `path` are
-    /// the whole argument — of an ordinary file, never a folder — and the
-    /// daemon confines the rest to a directory inside it before opening
-    /// anything, caps the read, and classifies the bytes.
+    /// One window of one workspace file: the id and a relative `path` are
+    /// the whole argument for the first window — of an ordinary file,
+    /// never a folder — and `from_line`/`line_count` address a later one,
+    /// `None`/`None` being the default the first window needs. The daemon
+    /// confines the path to a directory inside the workspace before
+    /// opening anything, reads at most one window's cap, and classifies
+    /// the bytes.
     pub fn workspace_file_read(
         &self,
         workspace_id: &str,
         path: &str,
+        from_line: Option<u64>,
+        line_count: Option<u64>,
     ) -> Result<WorkspaceFileContent, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::WorkspaceFileRead {
             id,
             workspace_id: workspace_id.to_string(),
             path: path.to_string(),
+            from_line,
+            line_count,
         })? {
             DaemonMessage::WorkspaceFileContent { file, .. } => Ok(file),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),

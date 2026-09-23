@@ -209,7 +209,10 @@ export type WorkspaceFileContentKind = "text" | "image" | "binary";
  * `modifiedAt` (ms since the epoch) come from the stat and are `null`
  * exactly on a refusal, which claims nothing about the file it rejected.
  * The panel knows which path it asked for — the row it clicked — so the
- * reply echoes none.
+ * reply echoes none. The five window fields below make `ok` text a
+ * *window* of the file: where it starts, how many lines it holds, whether
+ * another follows, and — when a line is bigger than one window — the cut
+ * and the sentence that says the rest of it cannot be read this way.
  */
 export interface WorkspaceFileContent {
   status: WorkspaceFileContentStatus;
@@ -218,6 +221,23 @@ export interface WorkspaceFileContent {
   size: number | null;
   modifiedAt: number | null;
   error: string | null;
+  /** The 1-based line this window starts at — `null` unless the reply is
+   * `ok` text (an image's base64 has no lines; a withholding, a binary
+   * and a refusal carry no window). */
+  fromLine: number | null;
+  /** How many lines this window holds: 0 is one addressed past the file's
+   * end, and never the file's own line total — no reply counts that. */
+  lines: number | null;
+  /** Whether another window follows; `false` on the last one. */
+  hasMore: boolean | null;
+  /** Whether the byte cap cut this window's last line short — declared by
+   * the reply, never left for the panel to guess. */
+  truncated: boolean | null;
+  /** The sentence that cut carries: `null` unless `truncated` is true, and
+   * static words (never a path) when it is — the wire's own admission that
+   * the line exceeds one window and the rest of it cannot be read this
+   * way. */
+  note: string | null;
 }
 
 /**
