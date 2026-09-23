@@ -12,22 +12,45 @@
 //! app concedes this one folder, the panel's copy is the only thing that
 //! ever rests in it, and unstage deletes it.
 //!
-//! Two consequences are load-bearing and stated here rather than left to a
-//! caller. The **daemon** makes the copy: an app-side `join` + `copy` would
-//! follow a link swapped between the listing and the preview
-//! (`std::fs::copy` follows links), which is exactly what this module's
-//! walk refuses. And every stage clears the folder first, so at most one
-//! copy rests there — the panel's revoke cannot be defeated by an older
-//! copy left behind, and a file that changed between two previews gets a
-//! fresh name (the copy is named from the file's own stat).
+//! Three consequences are load-bearing and stated here rather than left to
+//! a caller.
+//!
+//! **The daemon makes the copy — and opens the source exactly once.** An
+//! app-side `join` + `copy` would follow a link swapped between the
+//! listing and the preview, and so would a daemon that walked the path and
+//! then reopened it by name: `std::fs::copy` follows links, which is
+//! precisely what this module's walk refuses. So the stage opens the
+//! source a single time, without resolving a link at the final component,
+//! and proves **on that handle** what the walk proved on the path — not a
+//! link, a regular file, still inside the workspace root — and copies from
+//! the handle ([`verified_source`]). That closes the stat→open race the
+//! shared module declares (`workspace_git_support::walk`): two seam tests
+//! hold the swapper still and come back refused. On non-Windows the open
+//! resolves links, so the binding there is the handle's identity against
+//! the walk's own stat — the target's bytes are never read (its metadata
+//! is), and a swap to a FIFO can still block that open: declared, and this
+//! daemon starts on Windows (`crate::paths` asks for `LOCALAPPDATA`).
+//!
+//! **Every stage clears the folder first**, so at most one copy rests
+//! there — the panel's revoke cannot be defeated by an older copy left
+//! behind, and a file that changed between two previews gets a fresh name
+//! (the copy is named from the file's own stat).
+//!
+//! **There is no TTL and no periodic sweep.** Nothing runs while the panel
+//! sits idle: a copy rests until the next stage, the next unstage, or the
+//! next start ([`sweep`]) — and at most one copy ever rests.
 //!
 //! What the app concedes is `<runtime dir>/previews/*` (`tauri.conf.json`,
 //! `$CACHE/Devboule/previews/*`), which must name this module's folder byte
 //! for byte — the trap being that Tauri's `$CACHE` resolves to
 //! `%LOCALAPPDATA%` without the app identifier while `$APPLOCALDATA`
-//! carries one, and the runtime dir has none (`crate::paths`). The daemon's
-//! start sweeps this folder ([`sweep`]), so a copy a killed process left
-//! dies with the restart.
+//! carries one, and the runtime dir has none (`crate::paths`). Beside that
+//! static default the app concedes, at start, the `previews` folder of the
+//! runtime dir this process actually resolves — so a
+//! `DEVBOULE_RUNTIME_DIR` override stages into a conceded folder too
+//! (`src-tauri/src/preview_scope.rs`). The daemon's start sweeps this
+//! folder ([`sweep`]), so a copy a killed process left dies with the
+//! restart.
 //!
 //! # The residual, stated plainly
 //!
@@ -54,6 +77,7 @@
 //!   unverified; what is verified is the file side: the URL 404s from the
 //!   moment the copy is gone.
 
+use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
@@ -65,7 +89,7 @@ use sha2::{Digest, Sha256};
 use crate::workspace_file_read::{stamped, IMAGE_EXTENSIONS};
 use crate::workspace_files::{names_git_metadata, DOES_NOT_EXIST, NOT_PART_OF_THE_TREE};
 use crate::workspace_git_diff::NOT_A_FILE;
-use crate::workspace_git_support::{confined, walk, Walked, OUTSIDE_THE_WORKSPACE};
+use crate::workspace_git_support::{confined, walk, Walked, LINK_FINAL, OUTSIDE_THE_WORKSPACE};
 use crate::ServerState;
 
 /// The runtime-dir subfolder the app concedes to the asset protocol
@@ -96,12 +120,68 @@ const NOT_SHOWABLE: &str = "this file's type is not shown in the preview";
 const COPY_FAILED: &str = "the preview copy could not be written";
 const REMOVE_FAILED: &str = "the preview copy could not be removed";
 
+/// The sentence for a source that would not open — after the walk said it
+/// exists and the extension gate said the panel draws it. Static, like
+/// every sentence here: the OS error is dropped, because it carries a path.
+const OPEN_FAILED: &str = "the file could not be opened for the preview";
+
+/// The sentence for an open this code cannot vouch for: the handle's own
+/// stat or its resolved path came back unusable, so "inside the workspace"
+/// cannot be affirmed — and an unaffirmed location is a refusal, never a
+/// copy.
+const LOCATION_UNCONFIRMED: &str =
+    "the file's location could not be confirmed inside the workspace";
+
+/// Non-Windows only: what the handle holds is not the object the walk
+/// stat'ed — a component under it was replaced between the two (a symlink
+/// resolved through, a folder redirected). The identity of an open handle
+/// cannot be forged by such a swap, and no path is re-examined to say it.
+#[cfg(not(windows))]
+const REPLACED_WHILE_STAGED: &str = "the file changed after it was checked; nothing was copied";
+
+/// Windows only: `FILE_FLAG_OPEN_REPARSE_POINT` — the flag that opens the
+/// final component as itself instead of resolving it, so a link planted
+/// over the validated name yields a handle **to the link** (refused on its
+/// attribute below) and its target is never touched, not even stat'ed.
+/// Hardcoded the way this house hardcodes `0x400` in
+/// `workspace_git_support::is_reparse_point`.
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
 /// Serializes stage against stage and unstage: the folder's "at most one
 /// copy" invariant is written here, and two panel clicks are two threads
 /// behind this bridge, so the clear + copy of one act must not interleave
 /// with the clear of the next. A poisoned lock is still this lock — no
 /// panic elsewhere must stop the panel from revoking.
 static FOLDER_LOCK: Mutex<()> = Mutex::new(());
+
+/// The seam the race tests drive: it runs between the walk's verdict and
+/// the open of the source — the exact window `workspace_git_support::walk`
+/// declares as the stat→open race ("no test holds a swapper still"). A
+/// test installs the swap here; [`verified_source`] has to refuse what the
+/// open then finds. Per thread because each `#[test]` runs on its own, so
+/// one test's swapper can never fire inside another's.
+#[cfg(test)]
+pub(crate) mod between {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static AFTER_WALK: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    /// Install the swap for the next stage **on this thread**. It fires
+    /// once — `run` takes it — so a test that never reaches the stage
+    /// cannot leak its swapper into anything.
+    pub(crate) fn install(after_walk: Box<dyn FnOnce()>) {
+        AFTER_WALK.with(|slot| *slot.borrow_mut() = Some(after_walk));
+    }
+
+    pub(crate) fn run() {
+        if let Some(swapper) = AFTER_WALK.with(|slot| slot.borrow_mut().take()) {
+            swapper();
+        }
+    }
+}
 
 /// The [`ClientMessage::WorkspaceFilePreviewStage`] arm: confine, guard,
 /// copy, answer with the copy's path.
@@ -200,30 +280,208 @@ fn copy_of(root: &Path, requested: &str, previews: &Path) -> WorkspaceFilePrevie
     }
 }
 
-/// The write itself, under the folder lock: the folder emptied, the copy
-/// made, the copy's path answered. A refusal here — a folder that could not
-/// be cleared, a copy that failed — leaves no half-folder pretending to be
-/// a stage: either the folder holds exactly this copy or the reply is the
-/// sentence above.
+/// Open the source once and prove on the handle what the walk proved on
+/// the path: not a link (the final component never resolved), a regular
+/// file, still inside `root` — then hand back the handle to copy from.
+/// Every error is a static sentence; the OS error itself is dropped,
+/// because it carries a path.
+///
+/// The binding is per platform and it is the point of the function:
+/// Windows asks the handle where it *really* lives
+/// (`GetFinalPathNameByHandle` reports a component swapped for a junction
+/// as the outside path the open resolved through); the rest resolves
+/// links at open and compares the handle's own identity with the walk's
+/// stat, which no swap can keep equal. Neither branch is a second look at
+/// the path — the path already lied once, which is why everything here
+/// reads the handle.
+fn verified_source(
+    root: &Path,
+    target: &Path,
+    walked: &std::fs::Metadata,
+) -> Result<(File, std::fs::Metadata), &'static str> {
+    let file = open_source(target).map_err(|_| open_failure_sentence(target))?;
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        // A handle this code opened but cannot stat: choose the sentence
+        // from the path instead — a refusal either way, and a link that
+        // got here still gets the link's words.
+        Err(_) => return Err(open_failure_sentence(target)),
+    };
+    if opened_final_is_link(&metadata) {
+        return Err(LINK_FINAL);
+    }
+    if !metadata.is_file() {
+        return Err(NOT_A_FILE);
+    }
+    confirm_binding(&file, root, walked)?;
+    Ok((file, metadata))
+}
+
+/// The sentence for a source that would not open. The path is stat'ed
+/// only to *choose* words for a stage that is already refused — it gates
+/// nothing, and nothing is read through it.
+fn open_failure_sentence(target: &Path) -> &'static str {
+    match std::fs::symlink_metadata(target) {
+        Ok(metadata) if opened_final_is_link(&metadata) => LINK_FINAL,
+        Ok(_) => OPEN_FAILED,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => DOES_NOT_EXIST,
+        Err(_) => LOCATION_UNCONFIRMED,
+    }
+}
+
+/// One open of the source, without resolving a link at the final
+/// component, so a link planted over the validated name is opened as the
+/// link it is and its target is never touched.
+#[cfg(windows)]
+fn open_source(target: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(target)
+}
+
+/// One open of the source. Plain on non-Windows: links are resolved here,
+/// which is what the identity half of [`confirm_binding`] then refuses —
+/// the target may be *stat'ed* through that follow, never read: its bytes
+/// are copied only from a handle that matched the walk's own stat.
+#[cfg(not(windows))]
+fn open_source(target: &Path) -> std::io::Result<File> {
+    OpenOptions::new().read(true).open(target)
+}
+
+/// The house predicate for "this stat is a link", spelled without
+/// `is_symlink()`: whether a junction answers to that label is a
+/// measurement this house has seen flip (`workspace_git_support`), while
+/// the attribute never has.
+#[cfg(windows)]
+fn opened_final_is_link(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
+}
+
+/// Non-Windows spelling of the same predicate, on a stat — where a symlink
+/// is a symlink and the label has no junction to disagree about.
+#[cfg(not(windows))]
+fn opened_final_is_link(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+/// The binding, on Windows: where the handle *really* lives. The walk's
+/// stat carries no identity stable Rust can read (`file_index` is still
+/// unstable), so the proof is the handle's own resolved path —
+/// `GetFinalPathNameByHandle` reports what the open actually traversed,
+/// which makes a component swapped for a junction show up as the outside
+/// path it leads to, and a handle whose location cannot even be named is
+/// a refusal rather than a copy.
+#[cfg(windows)]
+fn confirm_binding(
+    file: &File,
+    root: &Path,
+    _walked: &std::fs::Metadata,
+) -> Result<(), &'static str> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, VOLUME_NAME_DOS};
+
+    let root = std::fs::canonicalize(root).map_err(|_| LOCATION_UNCONFIRMED)?;
+    let mut buffer = vec![0u16; 1024];
+    let length = loop {
+        let written = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle() as _,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                VOLUME_NAME_DOS,
+            )
+        };
+        if written == 0 {
+            return Err(LOCATION_UNCONFIRMED);
+        }
+        // Success excludes the terminating null (it fits); too small
+        // returns the size *including* it — exactly the length to retry
+        // with, and `+ 1` where they are equal so the loop cannot stall.
+        if (written as usize) < buffer.len() {
+            break written as usize;
+        }
+        if written > 32_768 {
+            return Err(LOCATION_UNCONFIRMED);
+        }
+        buffer.resize((written as usize).max(buffer.len() + 1), 0);
+    };
+    let resolved = PathBuf::from(OsString::from_wide(&buffer[..length]));
+    if resolved.starts_with(&root) {
+        Ok(())
+    } else {
+        Err(OUTSIDE_THE_WORKSPACE)
+    }
+}
+
+/// The binding, on non-Windows: the handle's own identity (`dev`, `ino` —
+/// both readable from the walk's lstat there) against the identity the
+/// walk stat'ed. No swap of any component keeps them equal, and no path
+/// is re-examined — the handle answers.
+#[cfg(not(windows))]
+fn confirm_binding(
+    file: &File,
+    _root: &Path,
+    walked: &std::fs::Metadata,
+) -> Result<(), &'static str> {
+    use std::os::unix::fs::MetadataExt;
+    let opened = file.metadata().map_err(|_| LOCATION_UNCONFIRMED)?;
+    if (opened.dev(), opened.ino()) == (walked.dev(), walked.ino()) {
+        Ok(())
+    } else {
+        Err(REPLACED_WHILE_STAGED)
+    }
+}
+
+/// The write itself: open-once and verify first (a refusal here happens
+/// before the folder is touched, so a swap cannot even destroy the
+/// previous copy), then the folder lock, the reset, and a streaming copy
+/// **from the handle** — the name of the source is never reopened.
+/// Either the folder ends up holding exactly this copy or the reply is a
+/// sentence; a copy that fails halfway has its half removed again.
 fn stage_file(
     root: &Path,
     target: &Path,
     requested: &str,
     extension: &str,
     previews: &Path,
-    metadata: &std::fs::Metadata,
+    walked: &std::fs::Metadata,
 ) -> WorkspaceFilePreview {
+    // The seam, first thing after the walk's verdict: the swap a race
+    // test plants must land between that verdict and the open below.
+    #[cfg(test)]
+    between::run();
+    let (mut source, source_metadata) = match verified_source(root, target, walked) {
+        Ok(verified) => verified,
+        Err(sentence) => return refused(sentence),
+    };
     let _guard = FOLDER_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     if !reset_folder(previews) {
         return refused(COPY_FAILED);
     }
-    let destination = previews.join(copy_name(root, requested, extension, metadata));
-    if std::fs::copy(target, &destination).is_err() {
+    let destination = previews.join(copy_name(root, requested, extension, &source_metadata));
+    // `create_new`: the folder was just reset, so a name that already
+    // exists is a bug rather than a file to overwrite.
+    let mut written = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+    {
+        Ok(written) => written,
+        Err(_) => return refused(COPY_FAILED),
+    };
+    if std::io::copy(&mut source, &mut written).is_err() {
+        drop(written);
+        let _ = std::fs::remove_file(&destination);
         return refused(COPY_FAILED);
     }
-    staged_copy(&destination, metadata)
+    staged_copy(&destination, &source_metadata)
 }
 
 /// The folder empty and creatable, or `false`. "Already absent" is a
@@ -262,6 +520,10 @@ fn clear(previews: &Path) -> bool {
 /// unchanged file get the same name and therefore the same asset URL (which
 /// the webview may cache); and any edit — new size or mtime — gets a new
 /// name, so a stale cached response can never stand in for a changed file.
+/// The converse is the declared limit of a stat-named snapshot: bytes that
+/// change while size and mtime stay identical keep the name, and with it
+/// the URL — the name answers for the stat, never for the content, and
+/// this stage is a copy of the bytes at one moment, never a re-read.
 fn copy_name(
     root: &Path,
     requested: &str,

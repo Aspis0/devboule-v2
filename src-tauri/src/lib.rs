@@ -3,11 +3,16 @@ mod backend;
 mod client;
 mod oracle;
 mod plugins;
+mod preview_scope;
 mod surface_settings;
 
 use tauri::Manager;
 
 pub use backend::session::{validate_session_id, Session, SessionEvent, SessionKind};
+// The asset-scope concession whose parameterized half the integration test
+// drives (`tests/asset_scope.rs`); `run` reaches the resolving one through
+// the module itself.
+pub use preview_scope::concede_previews_of;
 
 #[tauri::command]
 fn app_identity(app: tauri::AppHandle) -> String {
@@ -26,6 +31,14 @@ pub fn run() {
         .manage(plugins::rpc::PluginRuntime::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // The asset scope in tauri.conf.json concedes the DEFAULT
+            // runtime dir's previews folder; the daemon stages where
+            // `RuntimePaths::from_env` says — `DEVBOULE_RUNTIME_DIR`
+            // included, the same rule this app's client and spawn use.
+            // Concede the folder this process actually resolves, or an
+            // override turns every preview into a 403 against a folder
+            // nothing writes (see `preview_scope`).
+            preview_scope::concede_runtime_previews(app);
             let runtime = app.state::<oracle::OracleRuntime>();
             match app.path().app_config_dir() {
                 Ok(config_dir) => {

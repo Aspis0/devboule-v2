@@ -1,9 +1,10 @@
 //! `copy_of` and the folder's lifecycle over real repositories in `%TEMP%`:
 //! the copy that must exist with the source's bytes, every refusal the read
 //! makes (plus the extension gate this module adds), the folder's "at most
-//! one copy" invariant, and the two deletes — unstage's and the start
-//! sweep's. The sentences are pinned to the words the rest of the panel
-//! shows, and none of the refusals carries the workspace root.
+//! one copy" invariant, the two deletes — unstage's and the start sweep's —
+//! and the two seam tests that hold the stat→open swapper still. The
+//! sentences are pinned to the words the rest of the panel shows, and none
+//! of the refusals carries the workspace root.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::WorkspaceFilePreviewStatus;
 
-use super::{clear, copy_of, previews_of, sweep, NOT_SHOWABLE, OUTSIDE_THE_WORKSPACE};
+use super::{between, clear, copy_of, previews_of, sweep, NOT_SHOWABLE, OUTSIDE_THE_WORKSPACE};
 
 /// A repository under `temp_dir`, the fixture `workspace_file_read_tests`
 /// uses: the `.git` the guard refuses here is the real metadata folder, not
@@ -388,4 +389,91 @@ fn assert_no_root(error: &str, root: &Path) {
 fn the_shared_escape_sentence_is_the_one_this_test_pins() {
     assert!(OUTSIDE_THE_WORKSPACE.contains("outside the workspace folder"));
     assert!(!NOT_SHOWABLE.contains('/') && !NOT_SHOWABLE.contains('\\'));
+}
+
+/// The stat→open race the shared module declares ("no test holds a
+/// swapper still"), held still here **by construction**: between the
+/// walk's verdict and the open, the validated file is replaced by a
+/// symlink to a target OUTSIDE the workspace. The stage opens without
+/// following, so the house's own link sentence refuses it — and the
+/// conceded folder is never even created, which is what makes the
+/// sentinel's absence a claim rather than a hope: `std::fs::copy` on the
+/// name would have followed the link and staged `OUTSIDE-SENTINEL`.
+#[test]
+#[cfg(windows)]
+fn a_file_swapped_for_a_link_between_walk_and_copy_is_refused() {
+    let repo = Repo::new("swap-link");
+    repo.write("shot.png", "inside bytes");
+    let outside = unique_directory("swap-link-target");
+    std::fs::create_dir(&outside).expect("outside dir");
+    std::fs::write(outside.join("stolen.png"), "OUTSIDE-SENTINEL").expect("outside file");
+    let previews = fresh_previews("swap-link");
+    let source = repo.root.join("shot.png");
+    let planted = outside.join("stolen.png");
+    between::install(Box::new(move || {
+        std::fs::remove_file(&source).expect("remove the validated file");
+        std::os::windows::fs::symlink_file(&planted, &source).expect("plant the link");
+    }));
+
+    let staged = copy_of(&repo.root, "shot.png", &previews);
+
+    assert_eq!(staged.status, WorkspaceFilePreviewStatus::Refused);
+    let error = staged.error.as_deref().expect("the refusal says why");
+    assert!(error.contains("symbolic link"), "{error}");
+    assert_no_root(error, &repo.root);
+    assert!(
+        !previews.exists(),
+        "a refused stage creates nothing the webview could read"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+/// The same race one level up, where the link attribute cannot see it: the
+/// walk validated `sub/shot.png` inside the workspace, then `sub` itself
+/// is replaced by a junction to an outside folder holding a file of the
+/// same name. The open resolves through the junction — the final component
+/// is an ordinary file, so only the handle's own resolved path says
+/// "outside the workspace", which is the sentence this must come back
+/// with. Without the binding check this copies `OUTSIDE-SENTINEL` into
+/// `previews` and answers `ok`.
+#[test]
+#[cfg(windows)]
+fn an_intermediate_folder_swapped_for_a_junction_is_refused() {
+    let repo = Repo::new("swap-junction");
+    repo.write("sub/shot.png", "inside bytes");
+    let outside = unique_directory("swap-junction-target");
+    std::fs::create_dir(&outside).expect("outside dir");
+    std::fs::write(outside.join("shot.png"), "OUTSIDE-SENTINEL").expect("outside file");
+    let previews = fresh_previews("swap-junction");
+    let folder = repo.root.join("sub");
+    let junction_target = outside.clone();
+    between::install(Box::new(move || {
+        std::fs::remove_dir_all(&folder).expect("remove the validated folder");
+        let created = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&folder)
+            .arg(&junction_target)
+            .output()
+            .expect("mklink");
+        assert!(
+            created.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+    }));
+
+    let staged = copy_of(&repo.root, "sub/shot.png", &previews);
+
+    assert_eq!(staged.status, WorkspaceFilePreviewStatus::Refused);
+    let error = staged.error.as_deref().expect("the refusal says why");
+    assert!(error.contains("outside the workspace folder"), "{error}");
+    assert_no_root(error, &repo.root);
+    assert!(
+        !previews.exists(),
+        "a refused stage creates nothing the webview could read"
+    );
+    // Remove the junction itself (RemoveDirectory semantics: the link goes,
+    // the outside target stays), then the fixture beside it.
+    let _ = std::fs::remove_dir(repo.root.join("sub"));
+    let _ = std::fs::remove_dir_all(&outside);
 }

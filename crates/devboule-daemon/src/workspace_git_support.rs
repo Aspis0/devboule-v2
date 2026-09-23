@@ -37,7 +37,7 @@ const GIT_UNAVAILABLE: &str = "git could not be run";
 /// sentences contains an absolute path — `error` travels on a wire whose
 /// redaction seam does not touch these frames.
 pub(crate) const OUTSIDE_THE_WORKSPACE: &str = "the requested path is outside the workspace folder";
-const LINK_FINAL: &str = "the requested path is a symbolic link; its target is not read";
+pub(crate) const LINK_FINAL: &str = "the requested path is a symbolic link; its target is not read";
 const LINK_CROSSED: &str = "the requested path crosses a link and is not read";
 
 /// What one workspace folder answers when asked whether git can serve it.
@@ -155,7 +155,11 @@ pub(crate) enum Walked {
 /// an empty request is the folder itself, which the listing names before it
 /// walks. A link swapped in between these stats and the caller's open is the
 /// stat→open race, declared with slice 1's stat→read one: no test holds a
-/// swapper still.
+/// swapper still for the read, which still opens the path by name after
+/// this returns. The preview stage closed its half differently — it does
+/// not reopen the name: it proves the swap away on its own handle and holds
+/// the swapper still with two seam tests
+/// (`crate::workspace_file_preview::verified_source`).
 pub(crate) fn walk(root: &Path, requested: &str) -> Walked {
     let components: Vec<Component> = Path::new(requested)
         .components()

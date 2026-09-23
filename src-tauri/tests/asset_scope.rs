@@ -102,8 +102,28 @@ fn the_asset_scope_covers_the_daemons_real_previews_folder_and_only_it() {
     // spelling the glob was built from and the spelling on disk must agree).
     let existed_before = previews.exists();
     std::fs::create_dir_all(&previews).expect("create the daemon's previews folder");
-    let copy = previews.join("imgs-scope-selftest.png");
-    std::fs::write(&copy, b"scope self-test").expect("stage a throwaway copy");
+    // A name this run owns, opened `create_new` (review-images §7): a fixed
+    // name with `write` would truncate whatever a real daemon staged
+    // under it, and `create_new` turns a collision into a red test
+    // instead of a lost copy.
+    let copy = previews.join(format!(
+        "imgs-scope-selftest-{}-{}.png",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&copy)
+            .expect("stage a throwaway copy, never truncating a real one");
+        file.write_all(b"scope self-test")
+            .expect("write the throwaway");
+    }
     assert!(
         scope.is_allowed(&copy),
         "the staged copy itself must be inside the concession: {}",
@@ -115,4 +135,56 @@ fn the_asset_scope_covers_the_daemons_real_previews_folder_and_only_it() {
     if !existed_before {
         let _ = std::fs::remove_dir(&previews);
     }
+}
+
+/// The override the static scope cannot spell, closed by the app's own
+/// concession instead of left declared: `DEVBOULE_RUNTIME_DIR` moves the
+/// daemon's copies out of `$CACHE/Devboule` while `tauri.conf.json` stays
+/// where it was, so at start the app concedes the `previews` folder of
+/// the runtime dir it actually resolves (`devboule_lib::concede_previews_of`)
+/// — the same function `run` calls with `RuntimePaths::from_env`. This
+/// test drives it over a directory that is NOT this environment's default
+/// and measures the whole width of the grant: its copy (real file,
+/// canonicalized request) is inside, and attachments, a subfolder, and the
+/// runtime dir itself are not.
+#[test]
+fn a_runtime_dir_override_gets_the_same_flat_concession_as_the_default() {
+    let app = tauri::test::mock_builder()
+        .build(tauri::generate_context!())
+        .expect("a mock app from this crate's own tauri.conf.json");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let override_dir = std::env::temp_dir().join(format!(
+        "devboule-other-runtime-{}-{stamp}",
+        std::process::id()
+    ));
+    devboule_lib::concede_previews_of(&app, &override_dir);
+
+    let scope = app.asset_protocol_scope();
+    let previews = override_dir.join("previews");
+    std::fs::create_dir_all(&previews).expect("the override's previews folder");
+    let copy = previews.join(format!("ab12-{stamp}.png"));
+    std::fs::write(&copy, b"override copy").expect("a real file to canonicalize");
+
+    assert!(
+        scope.is_allowed(&copy),
+        "a copy staged under the override must be inside the concession: {}",
+        copy.display()
+    );
+    assert!(
+        !scope.is_allowed(override_dir.join("attachments").join("ab.png")),
+        "only previews is conceded, never the sibling folders"
+    );
+    assert!(
+        !scope.is_allowed(previews.join("sub").join("x.png")),
+        "the concession is one level, like the static scope"
+    );
+    assert!(
+        !scope.is_allowed(override_dir.join("ab.png")),
+        "the runtime dir itself is not conceded, only its previews"
+    );
+
+    let _ = std::fs::remove_dir_all(&override_dir);
 }
