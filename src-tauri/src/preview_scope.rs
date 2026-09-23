@@ -42,6 +42,11 @@ pub fn concede_runtime_previews<R: tauri::Runtime>(app: &impl Manager<R>) {
 /// (`workspace_file_preview`) — with no subfolder and nothing above it.
 /// A failure is printed, never swallowed silently: an unconceded folder
 /// means every preview answers 403, and the operator should read why.
+/// That line is **local diagnostic**: this process's stderr only, never
+/// the webview and never a wire — the same class as `spawn.rs`'s
+/// binary-not-found message — and it names the folder, so on a default
+/// install it carries the Windows profile name in the path, exactly like
+/// every other path this app prints to its own console.
 pub fn concede_previews_of<R: tauri::Runtime>(app: &impl Manager<R>, runtime_dir: &Path) {
     let previews = runtime_dir.join("previews");
     if let Err(error) = app.asset_protocol_scope().allow_directory(&previews, false) {

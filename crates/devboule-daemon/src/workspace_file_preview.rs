@@ -291,9 +291,12 @@ fn copy_of(root: &Path, requested: &str, previews: &Path) -> WorkspaceFilePrevie
 /// (`GetFinalPathNameByHandle` reports a component swapped for a junction
 /// as the outside path the open resolved through); the rest resolves
 /// links at open and compares the handle's own identity with the walk's
-/// stat, which no swap can keep equal. Neither branch is a second look at
-/// the path — the path already lied once, which is why everything here
-/// reads the handle.
+/// stat, which no swap can keep equal. Neither branch opens the source a
+/// second time **for its bytes**: the path already lied once, so every
+/// byte that could be copied comes from this one handle. The only
+/// name-side lookup that remains is [`open_failure_sentence`]'s
+/// diagnostic stat — run after an open that already failed, it chooses a
+/// static sentence for a refusal and enables no copy.
 fn verified_source(
     root: &Path,
     target: &Path,
@@ -440,9 +443,13 @@ fn confirm_binding(
 /// The write itself: open-once and verify first (a refusal here happens
 /// before the folder is touched, so a swap cannot even destroy the
 /// previous copy), then the folder lock, the reset, and a streaming copy
-/// **from the handle** — the name of the source is never reopened.
+/// **from the handle** — no byte is ever read through the source's name
+/// (the one name-side lookup left is [`open_failure_sentence`]'s
+/// diagnostic, after an open that already failed, and it enables no
+/// copy).
 /// Either the folder ends up holding exactly this copy or the reply is a
-/// sentence; a copy that fails halfway has its half removed again.
+/// sentence; a copy that fails halfway has its half removed again — best
+/// effort, declared where it is attempted.
 fn stage_file(
     root: &Path,
     target: &Path,
@@ -478,6 +485,14 @@ fn stage_file(
     };
     if std::io::copy(&mut source, &mut written).is_err() {
         drop(written);
+        // Best effort, and its failure is declared rather than fatal: the
+        // refusal answers with no path (a refusal carries none, so the
+        // webview never learns this hash-name and no road lists the
+        // folder), and what a failed removal leaves is our own half-written
+        // copy of an in-root file — foreign bytes cannot be in it, the
+        // source was already verified on the handle — until the next act
+        // that clears the folder (the next stage, the next unstage, the
+        // next start).
         let _ = std::fs::remove_file(&destination);
         return refused(COPY_FAILED);
     }

@@ -156,9 +156,11 @@ pub(crate) enum Walked {
 /// walks. A link swapped in between these stats and the caller's open is the
 /// stat→open race, declared with slice 1's stat→read one: no test holds a
 /// swapper still for the read, which still opens the path by name after
-/// this returns. The preview stage closed its half differently — it does
-/// not reopen the name: it proves the swap away on its own handle and holds
-/// the swapper still with two seam tests
+/// this returns. The preview stage closed its half differently — it never
+/// reopens the name **to read or copy bytes**: it proves the swap away on
+/// its own handle (the one lookup left by name is a diagnostic stat after
+/// a failed open, which picks a refusal sentence and enables no copy) and
+/// holds the swapper still with two seam tests
 /// (`crate::workspace_file_preview::verified_source`).
 pub(crate) fn walk(root: &Path, requested: &str) -> Walked {
     let components: Vec<Component> = Path::new(requested)
