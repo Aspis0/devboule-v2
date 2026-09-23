@@ -76,11 +76,7 @@ fn a_creation_retry_answers_the_first_session_and_a_changed_payload_is_a_conflic
 /// A state with a runtime dir whose `journal.db` the test can also open
 /// directly, for asserting what the daemon wrote to `audit`/`peers`.
 fn temp_state(tag: &str) -> (std::path::PathBuf, Arc<ServerState>) {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-{tag}-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
+    let path = crate::test_dirs::test_temp_dir(&format!("devboule-{tag}"));
     let state = ServerState::with_paths(
         "test-instance".to_string(),
         RuntimePaths::from_dir(path.clone()),
@@ -619,11 +615,7 @@ fn permission_response_requires_the_negotiated_typed_capability() {
 
 #[test]
 fn providers_list_returns_catalog_entries_with_unknown_authentication() {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-providers-test-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
+    let path = crate::test_dirs::test_temp_dir("devboule-providers-test");
     let state = ServerState::with_paths(
         "test-instance".to_string(),
         RuntimePaths::from_dir(path.clone()),
@@ -673,11 +665,7 @@ fn providers_list_returns_catalog_entries_with_unknown_authentication() {
 
 #[test]
 fn tool_policy_set_then_get_round_trips_through_dispatch() {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-tool-policy-dispatch-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
+    let path = crate::test_dirs::test_temp_dir("devboule-tool-policy-dispatch");
     let state = ServerState::with_paths(
         "test-instance".to_string(),
         RuntimePaths::from_dir(path.clone()),
@@ -782,11 +770,7 @@ fn a_refused_tool_policy_set_is_an_invalid_request_not_an_io_failure() {
 
 #[test]
 fn agent_profiles_set_then_get_round_trips_through_dispatch() {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-agent-profiles-dispatch-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
+    let path = crate::test_dirs::test_temp_dir("devboule-agent-profiles-dispatch");
     let state = ServerState::with_paths(
         "test-instance".to_string(),
         RuntimePaths::from_dir(path.clone()),
@@ -1548,15 +1532,7 @@ fn a_vocabulary_read_answers_on_the_wire_as_the_spec_spells_it() {
 /// daemon in, enters it zero times.
 #[test]
 fn a_claude_read_enters_the_version_probe_seam_only_while_the_version_is_unknown() {
-    let temp = std::env::temp_dir().join(format!(
-        "devboule-vocabulary-seam-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&temp).expect("temp dir");
+    let temp = crate::test_dirs::test_temp_dir("devboule-vocabulary-seam");
     let fake = temp.join("claude.exe");
     std::fs::write(&fake, b"not really claude").expect("fake binary");
 
@@ -2009,12 +1985,7 @@ fn wait_for_update_reply(conn: &ConnHandle) -> DaemonMessage {
 
 #[test]
 fn provider_update_drops_fingerprint_but_preserves_latest_version_cache() {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-provider-update-test-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
-    std::fs::create_dir_all(&path).expect("runtime directory");
+    let path = crate::test_dirs::test_temp_dir("devboule-provider-update-test");
     let executable = path.join("codex.cmd");
     std::fs::write(&executable, b"shim").expect("fake executable");
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2111,12 +2082,7 @@ fn provider_update_drops_fingerprint_but_preserves_latest_version_cache() {
 
 #[test]
 fn provider_update_failure_preserves_both_version_caches() {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-provider-update-failure-test-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
-    std::fs::create_dir_all(&path).expect("runtime directory");
+    let path = crate::test_dirs::test_temp_dir("devboule-provider-update-failure-test");
     let package = "@qwen-code/qwen-code";
     crate::registry::reset_npm_version_cache(package);
     let executable = path.join("qwen.cmd");
@@ -2272,11 +2238,7 @@ fn provider_update_refuses_the_native_debug_stub_before_package_lookup() {
 
 #[test]
 fn provider_update_reports_missing_npm_without_invoking_the_runner() {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-provider-update-missing-npm-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
+    let path = crate::test_dirs::test_temp_dir("devboule-provider-update-missing-npm");
     let calls = Arc::new(Mutex::new(Vec::new()));
     let runner = Arc::new(RecordingNpmRunner {
         calls: Arc::clone(&calls),
@@ -2374,11 +2336,7 @@ fn cli_version_cache_is_invalidated_when_executable_metadata_changes() {
 
 #[test]
 fn journal_commands_dispatch_and_reject_invalid_retention_patches() {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-command-test-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
+    let path = crate::test_dirs::test_temp_dir("devboule-command-test");
     let state = ServerState::with_paths(
         "test-instance".to_string(),
         RuntimePaths::from_dir(path.clone()),
@@ -2527,11 +2485,7 @@ fn journal_commands_dispatch_and_reject_invalid_retention_patches() {
 
 #[test]
 fn journal_mutations_replay_idempotently() {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-idempotency-test-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
+    let path = crate::test_dirs::test_temp_dir("devboule-idempotency-test");
     let state = ServerState::with_paths(
         "test-instance".to_string(),
         RuntimePaths::from_dir(path.clone()),
@@ -2674,12 +2628,7 @@ fn journal_mutations_replay_idempotently() {
 ///    prevent, observed directly.
 #[test]
 fn the_peer_gate_denies_the_destructive_set_before_any_spawn() {
-    let path = std::env::temp_dir().join(format!(
-        "devboule-peer-gate-{}-{}",
-        std::process::id(),
-        unix_millis()
-    ));
-    std::fs::create_dir_all(&path).expect("runtime directory");
+    let path = crate::test_dirs::test_temp_dir("devboule-peer-gate");
     let executable = path.join("codex.cmd");
     std::fs::write(&executable, b"shim").expect("fake executable");
     let calls = Arc::new(Mutex::new(Vec::new()));

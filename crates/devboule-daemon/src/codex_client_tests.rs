@@ -384,14 +384,7 @@ struct PlanTempDir(std::path::PathBuf);
 
 impl PlanTempDir {
     fn new(tag: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-codex-plan-{}-{}-{}",
-            std::process::id(),
-            tag,
-            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dir = crate::test_dirs::test_temp_dir(&format!("devboule-codex-plan-{tag}"));
         Self(dir)
     }
 }
@@ -1083,8 +1076,7 @@ fn codex_handshake_starts_a_thread_on_the_fresh_road() {
         eprintln!("{reason}");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("devboule-codex-handshake-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-handshake");
     let mut child = fake_codex_child();
     let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
     let mut stdout = CodexStdout::spawn(child.stdout.take().expect("stdout")).expect("reader");
@@ -1114,9 +1106,7 @@ fn codex_resume_handshake_loads_the_thread_and_never_starts_one() {
         eprintln!("{reason}");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("devboule-codex-resume-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-resume");
     let methods_file = dir.join("methods.txt");
     let handles_file = dir.join("handles.txt");
     let mut child = fake_codex_child_recording(&[
@@ -1171,10 +1161,7 @@ fn codex_resume_spawn_sends_only_the_handle_and_returns_the_thread() {
         return;
     }
     let state = crate::server::ServerState::new("codex-resume-road".to_string());
-    let dir =
-        std::env::temp_dir().join(format!("devboule-codex-resume-road-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-resume-road");
     let methods_file = dir.join("methods.txt");
     let handles_file = dir.join("handles.txt");
     let command = crate::session::PtyCommand::new(
@@ -1184,7 +1171,7 @@ fn codex_resume_spawn_sends_only_the_handle_and_returns_the_thread() {
             FAKE_CODEX_HANDSHAKE.to_string(),
             "--".to_string(),
         ],
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-codex-cwd"),
         vec![
             (
                 "FAKE_CODEX_METHODS".to_string(),
@@ -1266,7 +1253,7 @@ fn spawn_carrier_road(
     let command = crate::session::PtyCommand::new(
         "node",
         vec!["-e".to_string(), ARGV_FAKE.to_string(), "--".to_string()],
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-codex-cwd"),
         vec![
             (
                 "FAKE_ARGV_FILE".to_string(),
@@ -1320,9 +1307,7 @@ fn codex_carrier_road_puts_the_overrides_on_argv_and_the_token_in_env() {
         .expect("bearer");
     let config = state.mcp.launch_config(id).expect("launch config");
     let bearer = config.bearer().to_string();
-    let dir = std::env::temp_dir().join(format!("devboule-codex-argv-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-argv");
     let (mut spawned, argv, env) =
         spawn_carrier_road(&state, config, &dir, &[crate::mcp_broker::MCP_TOKEN_ENV]);
     assert!(
@@ -1944,7 +1929,7 @@ fn codex_none_road_installs_no_carrier_and_verifies_nothing() {
     let command = crate::session::PtyCommand::new(
         "node",
         vec!["-e".to_string(), FAKE_CODEX_HANDSHAKE.to_string()],
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-codex-cwd"),
         Vec::new(),
     );
     let mut spawned = super::spawn_process(
@@ -2035,7 +2020,7 @@ fn codex_live_carrier_road_registers_verifies_and_lists() {
         // `--` so the carrier's `-c` additions the spawn appends are read as
         // script arguments by the fake child, not as node options.
         vec!["-e".to_string(), ROAD_FAKE.to_string(), "--".to_string()],
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-codex-cwd"),
         vec![("LIST_DELAY_MS".to_string(), "1500".to_string())],
     );
     let spawned = super::spawn_process(
@@ -2171,7 +2156,7 @@ fn codex_spawn_failure_names_the_program_that_would_not_start() {
     let command = crate::session::PtyCommand::new(
         "devboule-no-such-program-9f1a",
         Vec::new(),
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-codex-cwd"),
         Vec::new(),
     );
     let config =
@@ -2207,9 +2192,7 @@ fn codex_carrier_road_adds_no_home_redirect_to_the_child_env() {
         return;
     }
     let state = crate::server::ServerState::new("codex-home-contract".to_string());
-    let dir = std::env::temp_dir().join(format!("devboule-codex-home-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-home");
     let config =
         crate::mcp_broker::McpLaunchConfig::for_test("http://127.0.0.1:9/mcp", "home-contract");
     let (mut spawned, argv, env) = spawn_carrier_road(&state, config, &dir, &["CODEX_HOME"]);
@@ -2261,7 +2244,7 @@ fn live_codex_result(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .current_dir(std::env::temp_dir())
+        .current_dir(crate::test_dirs::test_temp_dir("devboule-codex-cwd"))
         .spawn()
         .expect("live codex spawns");
     let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));

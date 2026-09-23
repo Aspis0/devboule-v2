@@ -376,14 +376,11 @@ mod tests {
     use super::*;
 
     fn state() -> Arc<ServerState> {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         ServerState::with_paths(
             "provider-vocabulary".to_string(),
-            crate::paths::RuntimePaths::from_dir(std::env::temp_dir().join(format!(
-                "devboule-provider-vocabulary-{}-{counter}",
-                std::process::id()
-            ))),
+            crate::paths::RuntimePaths::from_dir(crate::test_dirs::test_temp_dir(
+                "devboule-provider-vocabulary",
+            )),
         )
         .expect("state")
     }

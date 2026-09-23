@@ -2877,15 +2877,12 @@ impl AcpReader {
         session_id: String,
         permission_broker: Arc<PermissionBroker>,
     ) -> Self {
+        let dir = crate::test_dirs::test_temp_dir("devboule-acp-for-test");
         Self::for_test_on_host(
             pending,
             session_id,
             permission_broker,
-            AcpHost::new(
-                std::env::temp_dir(),
-                std::env::temp_dir(),
-                Arc::new(JobObject::new().expect("job")),
-            ),
+            AcpHost::new(dir.clone(), dir, Arc::new(JobObject::new().expect("job"))),
         )
     }
 

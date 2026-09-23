@@ -80,7 +80,7 @@ fn build_birth_record_stamps_the_birth_facts_on_row_and_metadata() {
         "s.child.1",
         SessionKind::Acp,
         Some("codex"),
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-phase-cwd"),
     );
     let (record, metadata, generation) = build_birth_record(
         &resolved_child,
@@ -105,7 +105,12 @@ fn build_birth_record_stamps_the_birth_facts_on_row_and_metadata() {
     assert!(!metadata.resumable, "born live, so resume is refused");
 
     let orphan = SessionCreateMeta::default();
-    let resolved_own = resolved("s.own.1", SessionKind::Terminal, None, std::env::temp_dir());
+    let resolved_own = resolved(
+        "s.own.1",
+        SessionKind::Terminal,
+        None,
+        crate::test_dirs::test_temp_dir("devboule-phase-cwd"),
+    );
     let (record, metadata, _) = build_birth_record(
         &resolved_own,
         &owner,
@@ -126,8 +131,9 @@ fn build_birth_record_stamps_the_birth_facts_on_row_and_metadata() {
 fn resolve_creation_inputs_honours_the_cwd_override_and_family_stamp() {
     let state = ServerState::new("create-phase-resolve".to_string());
     let owner = test_owner("S-1-5-21-phase-resolve");
+    let cwd = crate::test_dirs::test_temp_dir("devboule-phase-override");
     let meta = SessionCreateMeta {
-        cwd: Some(std::env::temp_dir()),
+        cwd: Some(cwd.clone()),
         ..SessionCreateMeta::default()
     };
     let resolved = state
@@ -142,7 +148,7 @@ fn resolve_creation_inputs_honours_the_cwd_override_and_family_stamp() {
             &meta,
         )
         .expect("resolution with no workspace lookup");
-    assert_eq!(resolved.command.cwd, std::env::temp_dir());
+    assert_eq!(resolved.command.cwd, cwd);
     let parts: Vec<&str> = resolved.id.split('.').collect();
     assert_eq!(parts.len(), 3, "a minted id: {}", resolved.id);
     assert_eq!(

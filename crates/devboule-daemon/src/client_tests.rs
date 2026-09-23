@@ -166,14 +166,7 @@ fn dead_connection_recovery_still_spawns_then_retries() {
 #[cfg(windows)]
 #[test]
 fn subscription_events_route_by_their_subscription_id() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-client-routing-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let dir = crate::test_dirs::test_temp_dir("devboule-client-routing");
     let paths = crate::paths::RuntimePaths::from_dir(&dir);
     let stop = Arc::new(AtomicBool::new(false));
     let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
@@ -350,14 +343,7 @@ fn subscription_events_route_by_their_subscription_id() {
 #[cfg(windows)]
 #[test]
 fn session_detach_removes_only_its_subscription() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-client-detach-pending-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let dir = crate::test_dirs::test_temp_dir("devboule-client-detach-pending");
     let paths = crate::paths::RuntimePaths::from_dir(&dir);
     let stop = Arc::new(AtomicBool::new(false));
     let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
@@ -475,14 +461,7 @@ fn session_detach_removes_only_its_subscription() {
 #[cfg(windows)]
 #[test]
 fn a_daemon_that_did_not_negotiate_tool_policy_is_never_sent_a_policy_rpc() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-client-tool-policy-cap-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let dir = crate::test_dirs::test_temp_dir("devboule-client-tool-policy-cap");
     let paths = crate::paths::RuntimePaths::from_dir(&dir);
     let stop = Arc::new(AtomicBool::new(false));
     let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
@@ -569,14 +548,7 @@ fn a_daemon_that_did_not_negotiate_tool_policy_is_never_sent_a_policy_rpc() {
 #[cfg(windows)]
 #[test]
 fn a_daemon_that_did_not_negotiate_agent_profiles_is_never_sent_a_profile_rpc() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-client-agent-profiles-cap-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let dir = crate::test_dirs::test_temp_dir("devboule-client-agent-profiles-cap");
     let paths = crate::paths::RuntimePaths::from_dir(&dir);
     let stop = Arc::new(AtomicBool::new(false));
     let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
@@ -670,14 +642,7 @@ fn with_a_fake_daemon(
     serve: impl FnOnce(Framed) + Send + 'static,
     body: impl FnOnce(&super::DaemonClient),
 ) {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-client-{label}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let dir = crate::test_dirs::test_temp_dir(&format!("devboule-client-{label}"));
     let paths = crate::paths::RuntimePaths::from_dir(&dir);
     let stop = Arc::new(AtomicBool::new(false));
     let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");

@@ -605,14 +605,7 @@ mod tests {
 
     #[test]
     fn capture_read_rejects_a_file_over_the_boot_cap() {
-        let path = std::env::temp_dir().join(format!(
-            ".devboule-login-env-test-{}-{}.tmp",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
+        let path = crate::test_dirs::test_temp_dir(".devboule-login-env-test").join("capture.tmp");
         std::fs::write(&path, vec![b'x'; (CAPTURE_MAX_BYTES + 1) as usize])
             .expect("oversized capture");
 

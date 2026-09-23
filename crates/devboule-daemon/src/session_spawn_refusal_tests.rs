@@ -21,7 +21,7 @@ fn a_refused_spawn_ends_its_journal_row_before_the_refusal_is_returned() {
     let command = PtyCommand::new(
         "definitely-not-a-real-program-xyz",
         Vec::new(),
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-spawn-cwd"),
         Vec::new(),
     );
     let meta = SessionCreateMeta::default();
@@ -80,7 +80,7 @@ fn a_refused_spawn_ends_its_row_async_without_blocking_the_caller() {
     let command = PtyCommand::new(
         "definitely-not-a-real-program-xyz",
         Vec::new(),
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-spawn-cwd"),
         Vec::new(),
     );
     let meta = SessionCreateMeta::default();

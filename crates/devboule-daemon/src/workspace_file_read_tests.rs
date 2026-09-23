@@ -156,7 +156,6 @@ fn a_path_through_or_to_a_link_is_refused_with_the_walk_sentences() {
     let repo = Repo::new("links");
     repo.write("in.txt", "a\n");
     let outside = unique_directory("links-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("present.txt"), "outside reached\n").expect("outside file");
     let junction = repo.root.join("dirlink");
     let created = std::process::Command::new("cmd")

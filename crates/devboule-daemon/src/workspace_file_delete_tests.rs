@@ -7,7 +7,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{delete_vouched, deleted};
 use crate::workspace_file_mutations::{vouched_entry, THE_ROOT};
@@ -24,15 +23,7 @@ struct Repo {
 
 impl Repo {
     fn new(label: &str) -> Self {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "devboule-file-delete-{label}-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).expect("test directory");
+        let root = crate::test_dirs::test_temp_dir(&format!("devboule-file-delete-{label}"));
         let repo = Self { root };
         repo.run(&["init", "--quiet"]);
         repo.run(&["config", "user.email", "test@devboule.local"]);
@@ -89,14 +80,7 @@ fn plant_junction(at: &Path, target: &Path) {
 
 /// A unique path under `temp_dir`, for the link targets of the escape cases.
 fn unique_directory(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-file-delete-{label}-{}-{stamp}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-file-delete-{label}"))
 }
 
 #[test]
@@ -201,7 +185,6 @@ fn the_repository_metadata_folder_is_never_deleted_in_any_spelling() {
 fn a_link_is_refused_not_deleted_nor_followed() {
     let repo = Repo::new("links");
     let outside = unique_directory("links-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("present.txt"), "outside reached\n").expect("outside file");
     let junction = repo.root.join("dirlink");
     plant_junction(&junction, &outside);
@@ -240,7 +223,6 @@ fn a_deleted_folder_unlinks_a_child_link_and_never_its_target() {
     let repo = Repo::new("child-link");
     repo.write("tree/real.txt", "real\n");
     let outside = unique_directory("child-link-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("present.txt"), "outside reached\n").expect("outside file");
     // Two joins, not one: `join("tree/inner")` would hand `cmd` a slash it
     // parses as a switch.
@@ -296,7 +278,6 @@ fn a_parent_swapped_between_the_verdict_and_the_act_is_refused_and_spares_the_ou
 ",
     );
     let outside = unique_directory("race-parent-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(
         outside.join("inner.txt"),
         "outside reached
@@ -339,7 +320,6 @@ fn a_folder_swapped_for_a_junction_between_the_verdict_and_the_act_is_refused() 
 ",
     );
     let outside = unique_directory("race-folder-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(
         outside.join("present.txt"),
         "outside reached

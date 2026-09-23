@@ -3,21 +3,14 @@
 //! a real repository live in `workspace_git_diff_tests.rs`.
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::WorkspaceGitDiffLineKind;
 
 use super::{parse_diff, path_record, untracked_file, PathRecord, UntrackedFile};
 
 fn unique_path(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-workspace-diff-parse-{label}-{}-{stamp}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-workspace-diff-parse-{label}"))
+        .join("data.txt")
 }
 
 /// Every line of a hunk, by the marker git prints: the `@@` header whole,

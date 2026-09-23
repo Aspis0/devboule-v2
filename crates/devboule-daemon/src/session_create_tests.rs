@@ -23,7 +23,7 @@ fn refused_spawn_command() -> PtyCommand {
     PtyCommand::new(
         "definitely-not-a-real-program-xyz",
         Vec::new(),
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-create-cwd"),
         Vec::new(),
     )
 }
@@ -32,7 +32,7 @@ fn echo_command() -> PtyCommand {
     PtyCommand::new(
         "cmd.exe",
         vec!["/c".to_string(), "echo create-road".to_string()],
-        std::env::temp_dir(),
+        crate::test_dirs::test_temp_dir("devboule-create-cwd"),
         Vec::new(),
     )
 }
@@ -97,7 +97,7 @@ fn birth_row(state: &Arc<ServerState>, title: &str) -> SessionRecord {
 fn an_unknown_workspace_refuses_even_when_the_create_carries_a_cwd() {
     let (state, owner) = road_state("create-order-workspace", "S-1-5-21-create-ws");
     let meta = SessionCreateMeta {
-        cwd: Some(std::env::temp_dir()),
+        cwd: Some(crate::test_dirs::test_temp_dir("devboule-create-cwd")),
         ..SessionCreateMeta::default()
     };
     let error = create(

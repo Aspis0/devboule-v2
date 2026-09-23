@@ -474,7 +474,7 @@ fn write_policies(path: &Path, policies: &HashMap<String, ToolPolicyEntry>) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::Ordering;
 
     fn entry(provider_id: &str, enabled: Option<bool>, disabled: &[&str]) -> ToolPolicyEntry {
         ToolPolicyEntry {
@@ -485,14 +485,7 @@ mod tests {
     }
 
     fn temp_dir() -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-tool-policy-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        dir
+        crate::test_dirs::test_temp_dir("devboule-tool-policy")
     }
 
     /// Every `<POLICY_FILE>.corrupt-*` sibling in `dir`, sorted.

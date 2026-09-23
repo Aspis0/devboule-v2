@@ -13,7 +13,6 @@ use oracle_core::{CkgEdgeRow, CkgNodeRow, CkgStore};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 fn file_node(id: &str) -> CkgNodeRow {
@@ -69,14 +68,7 @@ fn owner() -> OwnerId {
 }
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-project-graph-{tag}-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    dir
+    crate::test_dirs::test_temp_dir(&format!("devboule-project-graph-{tag}"))
 }
 
 /// One project folder with its own graph, added to `state` as a local

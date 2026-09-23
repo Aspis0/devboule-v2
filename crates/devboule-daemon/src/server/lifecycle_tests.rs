@@ -7,16 +7,9 @@
 use super::*;
 use crate::daemon_record::{DaemonRecord, DaemonState, Heartbeat};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 
 fn unique_paths() -> (RuntimePaths, DirGuard) {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule lifecycle {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = crate::test_dirs::test_temp_dir("devboule lifecycle");
     let paths = RuntimePaths::from_dir(dir.clone());
     (paths, DirGuard(dir))
 }

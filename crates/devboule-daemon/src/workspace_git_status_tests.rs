@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     WorkspaceGitFileStatus, WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals,
@@ -12,14 +11,7 @@ use devboule_protocol::{
 use super::status_of;
 
 fn unique_directory(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-workspace-git-{label}-{}-{stamp}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-workspace-git-{label}"))
 }
 
 /// A repository under `temp_dir`, pinned against the machine it runs on:
@@ -33,7 +25,6 @@ struct Repo {
 impl Repo {
     fn new(label: &str) -> Self {
         let root = unique_directory(label);
-        std::fs::create_dir(&root).expect("test directory");
         let repo = Self { root };
         repo.run(&["init", "--quiet"]);
         repo.run(&["config", "user.email", "test@devboule.local"]);
@@ -181,7 +172,6 @@ fn a_deleted_file_is_a_deleted_row_with_the_lines_it_lost() {
 #[test]
 fn a_folder_without_a_repository_is_not_git_and_is_not_an_error() {
     let folder = unique_directory("not-a-repo");
-    std::fs::create_dir(&folder).expect("test directory");
 
     let status = status_of(&folder);
     let _ = std::fs::remove_dir_all(&folder);
@@ -199,6 +189,8 @@ fn a_folder_without_a_repository_is_not_git_and_is_not_an_error() {
 #[test]
 fn a_folder_that_does_not_exist_is_an_error_and_never_a_panic() {
     let missing = unique_directory("missing");
+    // The helper pre-creates the dir; this case needs the path absent.
+    let _ = std::fs::remove_dir(&missing);
 
     let status = status_of(&missing);
     let _ = std::fs::remove_dir_all(&missing);

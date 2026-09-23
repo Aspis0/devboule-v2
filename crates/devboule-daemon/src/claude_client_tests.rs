@@ -77,12 +77,7 @@ fn resume_argv_adds_the_flag_and_keeps_the_launch() {
 
 #[test]
 fn history_lookup_finds_the_conversation_and_refuses_traversal() {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let home = std::env::temp_dir().join(format!(
-        "devboule-claude-hist-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let home = crate::test_dirs::test_temp_dir("devboule-claude-hist");
     let cwd = Path::new(r"C:\work\shop");
     let dir = home
         .join(".claude")
@@ -1661,14 +1656,7 @@ struct PlanTempDir(PathBuf);
 
 impl PlanTempDir {
     fn new(tag: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-claude-plan-{}-{}-{}",
-            std::process::id(),
-            tag,
-            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dir = crate::test_dirs::test_temp_dir(&format!("devboule-claude-plan-{tag}"));
         Self(dir)
     }
 }

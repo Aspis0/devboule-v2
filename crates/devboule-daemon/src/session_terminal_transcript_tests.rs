@@ -750,15 +750,7 @@ fn detach_clears_only_this_connection() {
 
 #[test]
 fn journal_keeps_drain_bytes_after_reap() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-drain-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-drain");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     journal
         .upsert_blocking(new_session_record(

@@ -345,10 +345,7 @@ fn permission_extension_prompts_unknown_tools_and_allows_confirmed_tools() {
         eprintln!("{reason}");
         return;
     }
-    let path = std::env::temp_dir().join(format!(
-        "devboule-pi-permission-test-{}.mjs",
-        std::process::id()
-    ));
+    let path = crate::test_dirs::test_temp_dir("devboule-pi-permission-test").join("extension.mjs");
     write_permission_extension(&path).expect("permission extension");
     let script = r#"
 (async () => {
@@ -594,8 +591,7 @@ fn pi_spawn_args_put_the_bridge_second_and_keep_callers() {
 fn pi_mcp_launch_separates_env_from_argv() {
     // S4 seam body: env carries URL + token values, argv carries nothing,
     // the bridge file exists with the served names, owned_paths names it.
-    let dir = std::env::temp_dir().join(format!("devboule-pi-mcp-launch-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-pi-mcp-launch");
     let config = crate::mcp_broker::McpLaunchConfig::for_test(
         "http://127.0.0.1:4321/mcp",
         "secret-bearer-launch",
@@ -646,8 +642,7 @@ fn pi_bridge_drives_the_broker_shape_through_a_stub_pi() {
         eprintln!("{reason}");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("devboule-pi-bridge-test-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-pi-bridge-test");
     std::fs::write(dir.join("bridge.mjs"), bridge_extension()).expect("bridge file");
     // A minimal `typebox` stub: the bridge only needs the builders to record
     // their arguments; the assertions below read the recorded schemas back.
@@ -842,9 +837,8 @@ fn pi_bearer_is_redacted_from_stderr_before_delivery() {
 
 #[test]
 fn write_permission_extension_requires_the_runtime_parent() {
-    let path = std::env::temp_dir()
-        .join("devboule-pi-missing-parent")
-        .join("permission.ts");
+    let base = crate::test_dirs::test_temp_dir("devboule-pi-missing-parent");
+    let path = base.join("absent").join("permission.ts");
     let error = write_permission_extension(&path).expect_err("missing parent must fail");
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
 }
@@ -942,14 +936,7 @@ struct PlanTempDir(std::path::PathBuf);
 
 impl PlanTempDir {
     fn new(tag: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-pi-plan-{}-{}-{}",
-            std::process::id(),
-            tag,
-            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dir = crate::test_dirs::test_temp_dir(&format!("devboule-pi-plan-{tag}"));
         Self(dir)
     }
 }
@@ -2094,10 +2081,8 @@ mod lifecycle_tests {
                 next_id: Arc::clone(&pi.next_id),
                 permission_broker: Arc::clone(&permission_broker),
                 cancelled: Arc::new(AtomicBool::new(false)),
-                extension_path: std::env::temp_dir().join(format!(
-                    "devboule-pi-lifecycle-ext-{}.ts",
-                    std::process::id()
-                )),
+                extension_path: crate::test_dirs::test_temp_dir("devboule-pi-lifecycle-ext")
+                    .join("extension.ts"),
                 bridge_path: None,
             }),
             switcher: Some(Box::new(switcher)),
@@ -2153,14 +2138,8 @@ mod lifecycle_tests {
     }
 
     fn log_path(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-pi-lifecycle-{tag}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::create_dir_all(&dir);
-        let log = dir.join("commands.log");
-        let _ = std::fs::remove_file(&log);
-        log
+        let dir = crate::test_dirs::test_temp_dir(&format!("devboule-pi-lifecycle-{tag}"));
+        dir.join("commands.log")
     }
 
     fn read_log(log: &std::path::Path) -> Vec<String> {
@@ -2539,7 +2518,7 @@ mod lifecycle_tests {
         let command = PtyCommand::new(
             node_program(),
             vec![script.to_string_lossy().into_owned(), "--".to_string()],
-            std::env::temp_dir(),
+            crate::test_dirs::test_temp_dir("devboule-pi-cwd"),
             vec![(
                 "DEVBOULE_FAKE_PI_LOG".to_string(),
                 log.to_string_lossy().into_owned(),
@@ -2596,7 +2575,7 @@ mod lifecycle_tests {
         let base = PtyCommand::new(
             node_program(),
             vec![script.to_string_lossy().into_owned(), "--".to_string()],
-            std::env::temp_dir(),
+            crate::test_dirs::test_temp_dir("devboule-pi-cwd"),
             vec![
                 (
                     "DEVBOULE_FAKE_PI_LOG".to_string(),

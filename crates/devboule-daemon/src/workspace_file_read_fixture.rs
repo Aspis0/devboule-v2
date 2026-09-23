@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 /// A repository under `temp_dir`, the fixture this slice's brief names: the
 /// panel reads files of a real checkout, and the `.git` the guard refuses
@@ -18,15 +18,7 @@ pub(super) struct Repo {
 
 impl Repo {
     pub(super) fn new(label: &str) -> Self {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "devboule-file-read-{label}-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).expect("test directory");
+        let root = crate::test_dirs::test_temp_dir(&format!("devboule-file-read-{label}"));
         let repo = Self { root };
         repo.run(&["init", "--quiet"]);
         repo
@@ -61,17 +53,11 @@ impl Drop for Repo {
     }
 }
 
-/// A unique path under `temp_dir`, for a directory the test wants *outside*
-/// the workspace (the link targets of the escape cases).
+/// A fresh directory *outside* the workspace (the link targets of the
+/// escape cases): the shared helper **creates** it before this returns —
+/// do not `create_dir` it again.
 pub(super) fn unique_directory(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-file-read-{label}-{}-{stamp}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-file-read-{label}"))
 }
 
 /// The stat's own mtime, spelled the way the module spells it — the unit

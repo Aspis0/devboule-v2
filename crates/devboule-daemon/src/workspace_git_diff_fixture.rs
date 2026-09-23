@@ -5,17 +5,9 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(super) fn unique_directory(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-workspace-diff-{label}-{}-{stamp}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-workspace-diff-{label}"))
 }
 
 /// A repository under `temp_dir`, pinned against the machine it runs on:
@@ -31,7 +23,6 @@ pub(super) struct Repo {
 impl Repo {
     pub(super) fn new(label: &str) -> Self {
         let root = unique_directory(label);
-        std::fs::create_dir(&root).expect("test directory");
         let repo = Self { root };
         repo.run(&["init", "--quiet"]);
         repo.run(&["config", "user.email", "test@devboule.local"]);

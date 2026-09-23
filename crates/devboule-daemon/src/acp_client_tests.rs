@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// Pass 2e step 2: a user row resolves through the same named road a
 /// catalog row rides, to its own argv and env — the row's command is
@@ -267,7 +267,7 @@ fn vendor_switch_without_a_manifest_still_publishes_the_new_model() {
         .spawn()
         .expect("cmd");
     let stdin = child.stdin.take().expect("stdin");
-    let cwd = std::env::temp_dir();
+    let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
     let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
     let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
     transport.set_session_id("stub-session".to_string());
@@ -312,7 +312,7 @@ fn negotiated_prompt_capabilities_are_kept_on_the_session_transport() {
         .spawn()
         .expect("cmd");
     let stdin = child.stdin.take().expect("stdin");
-    let cwd = std::env::temp_dir();
+    let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
     let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
     let transport = AcpTransport::new(stdin, host);
 
@@ -349,7 +349,7 @@ fn poisoned_manifest_lock_preserves_the_prior_model_catalog() {
         .spawn()
         .expect("cmd");
     let stdin = child.stdin.take().expect("stdin");
-    let cwd = std::env::temp_dir();
+    let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
     let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
     let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
     transport.remember_manifest(&SessionEvent::SessionManifest {
@@ -939,24 +939,8 @@ fn reattach_reemits_the_stored_session_manifest() {
 fn reader_finish_releases_terminals_left_by_a_dead_agent() {
     use super::AcpHost;
     use crate::process_tree::JobObject;
-    let cwd = std::env::temp_dir().join(format!(
-        "devboule-acp-finish-cwd-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    let runtime = std::env::temp_dir().join(format!(
-        "devboule-acp-finish-rt-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&cwd).expect("cwd");
-    std::fs::create_dir_all(&runtime).expect("runtime");
+    let cwd = crate::test_dirs::test_temp_dir("devboule-acp-finish-cwd");
+    let runtime = crate::test_dirs::test_temp_dir("devboule-acp-finish-rt");
     let host = AcpHost::new(
         cwd.clone(),
         runtime.clone(),
@@ -1027,7 +1011,7 @@ fn killer_does_not_block_on_a_full_agent_stdin() {
         .spawn()
         .expect("ping");
     let stdin = child.stdin.take().expect("stdin");
-    let cwd = std::env::temp_dir();
+    let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
     let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
     let transport = Arc::new(AcpTransport::new(stdin, host));
     transport.set_session_id("stub-session".to_string());
@@ -1091,15 +1075,7 @@ fn kill_unblocks_a_pending_terminal_create_gate() {
         .spawn()
         .expect("ping");
     let stdin = child.stdin.take().expect("stdin");
-    let cwd = std::env::temp_dir().join(format!(
-        "devboule-acp-kill-gate-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&cwd).expect("cwd");
+    let cwd = crate::test_dirs::test_temp_dir("devboule-acp-kill-gate");
     let host = AcpHost::new(
         cwd.clone(),
         cwd.clone(),
@@ -1316,7 +1292,7 @@ fn cancel_closure_does_not_keep_transport_alive() {
         .spawn()
         .expect("ping");
     let stdin = child.stdin.take().expect("stdin");
-    let cwd = std::env::temp_dir();
+    let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
     let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
     let transport = Arc::new(AcpTransport::new(stdin, host));
     transport.bind_turn();
@@ -1339,24 +1315,8 @@ fn reader_keeps_dispatching_while_a_host_call_is_blocked() {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
-    let cwd = std::env::temp_dir().join(format!(
-        "devboule-acp-e-cwd-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    let runtime_dir = std::env::temp_dir().join(format!(
-        "devboule-acp-e-rt-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&cwd).expect("cwd");
-    std::fs::create_dir_all(&runtime_dir).expect("runtime");
+    let cwd = crate::test_dirs::test_temp_dir("devboule-acp-e-cwd");
+    let runtime_dir = crate::test_dirs::test_temp_dir("devboule-acp-e-rt");
     let host = AcpHost::new(
         cwd.clone(),
         runtime_dir.clone(),

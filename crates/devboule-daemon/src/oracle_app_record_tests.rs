@@ -6,7 +6,6 @@ use super::*;
 
 use std::fs::OpenOptions;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use crate::daemon_record::{Heartbeat, RECORD_CAPACITY, STALE_AFTER};
@@ -14,13 +13,7 @@ use crate::error::DaemonError;
 use crate::lock::SingleInstanceLock;
 
 fn unique_dir() -> (PathBuf, DirGuard) {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule oracle app record {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = crate::test_dirs::test_temp_dir("devboule oracle app record");
     let guard = DirGuard(dir.clone());
     (dir, guard)
 }

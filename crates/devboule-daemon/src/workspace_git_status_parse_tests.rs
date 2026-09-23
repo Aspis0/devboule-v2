@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::WorkspaceGitFileStatus;
 
@@ -16,14 +15,7 @@ use super::{
 };
 
 fn unique_path(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-workspace-parse-{label}-{}-{stamp}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-workspace-parse-{label}"))
 }
 
 const HEADERS: &str = "# branch.oid 834fbbf\0# branch.head main\0";
@@ -144,7 +136,7 @@ fn two_numstat_dumps_accumulate_on_one_path() {
 /// racing writer is not something this test can hold still — declared.)
 #[test]
 fn the_untracked_line_count_stops_at_the_cap_and_says_so() {
-    let file = unique_path("cap");
+    let file = unique_path("cap").join("untracked.txt");
     let mut contents = vec![0u8; UNTRACKED_COUNT_MAX_BYTES * 2];
     for pair in contents.chunks_mut(2) {
         pair[0] = b'a';
@@ -165,7 +157,7 @@ fn the_untracked_line_count_stops_at_the_cap_and_says_so() {
 /// that cannot be opened has no count to give.
 #[test]
 fn the_line_count_answers_exactly_under_the_cap_and_refuses_to_invent_one() {
-    let file = unique_path("exact");
+    let file = unique_path("exact").join("untracked.txt");
     std::fs::write(&file, b"a\nb\nc\n").expect("write");
     assert_eq!(count_untracked_lines(&file), (3, false));
     std::fs::write(&file, b"\0binary\0bytes\0").expect("rewrite");
@@ -215,7 +207,6 @@ fn a_dump_past_the_shared_cap_is_recognised_by_length_alone() {
 #[test]
 fn a_degraded_count_round_marks_its_numbers_a_floor_rather_than_exact_zeros() {
     let root = unique_path("degraded");
-    std::fs::create_dir(&root).expect("dir");
     let empty = HashMap::new();
 
     let missing = build_row(
@@ -260,7 +251,6 @@ fn a_degraded_count_round_marks_its_numbers_a_floor_rather_than_exact_zeros() {
 #[test]
 fn a_row_takes_its_counts_from_the_status_it_carries() {
     let root = unique_path("rows-root");
-    std::fs::create_dir(&root).expect("dir");
     std::fs::write(root.join("fresh.txt"), "x\ny\n").expect("write");
     let mut counts = HashMap::new();
     merge_numstat("7\t2\tcounted.txt\0", &mut counts);

@@ -12,7 +12,6 @@ use devboule_protocol::WorkspaceIsolation;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -33,14 +32,7 @@ pub(super) fn owner() -> OwnerId {
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-oracle-forward-{tag}-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    dir
+    crate::test_dirs::test_temp_dir(&format!("devboule-oracle-forward-{tag}"))
 }
 
 pub(super) fn add_session(state: &Arc<ServerState>, session: &str, root: &Path) {

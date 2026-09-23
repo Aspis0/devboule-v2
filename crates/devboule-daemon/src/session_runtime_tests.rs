@@ -163,14 +163,7 @@ fn session_notice_is_emitted_without_changing_runtime_status() {
 
 #[test]
 fn session_notice_survives_detach_and_reattach() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-session-notice-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let dir = crate::test_dirs::test_temp_dir("devboule-session-notice");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
     journal
         .upsert_blocking(SessionRecord {
@@ -307,15 +300,7 @@ fn a_session_owes_its_first_prompt_once_and_a_replay_owes_none() {
         "and the flag is taken, not read: a second prompt cannot carry a second copy"
     );
 
-    let dir = std::env::temp_dir().join(format!(
-        "devboule first prompt {}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = crate::test_dirs::test_temp_dir("devboule first prompt");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
     let mut record = crate::journal::new_session_record(
         "s.replayed",

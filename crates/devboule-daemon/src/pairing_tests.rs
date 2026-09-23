@@ -3,16 +3,9 @@
 use super::*;
 use crate::device_identity::MAX_DISPLAY_NAME_CHARS;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 fn tmp_paths() -> (PathBuf, crate::paths::RuntimePaths) {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule pairing {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("runtime dir");
+    let dir = crate::test_dirs::test_temp_dir("devboule pairing");
     (dir.clone(), crate::paths::RuntimePaths::from_dir(&dir))
 }
 

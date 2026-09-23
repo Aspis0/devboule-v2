@@ -353,12 +353,10 @@ mod tests {
     /// the person at the far end types it verbatim into the pairing field.
     #[test]
     fn the_advertised_pairing_address_parses_on_ipv6() {
-        let dir = std::env::temp_dir().join(format!(
-            "devboule devices {}-{:?}",
-            std::process::id(),
+        let dir = crate::test_dirs::test_temp_dir(&format!(
+            "devboule devices {:?}",
             std::thread::current().id()
         ));
-        std::fs::create_dir_all(&dir).expect("runtime dir");
         let server = ServerState::with_paths(
             "devices-test".into(),
             crate::paths::RuntimePaths::from_dir(&dir),

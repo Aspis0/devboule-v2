@@ -3489,32 +3489,9 @@ pub fn acp_envelope_record(
 
 #[cfg(test)]
 fn tmp_journal() -> (PathBuf, PathBuf) {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let process_id = std::process::id();
-    let stamp = now_ms();
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = create_unique_directory(|attempt| {
-        std::env::temp_dir().join(format!(
-            "devboule journal {process_id}-{stamp}-{counter}-{attempt}"
-        ))
-    });
+    let dir = crate::test_dirs::test_temp_dir("devboule-journal");
     let path = dir.join("journal.db");
     (dir, path)
-}
-
-// A failed test leaves its directory behind. Use create_dir, rather than
-// create_dir_all, so a reused PID can never reopen another run's database.
-#[cfg(test)]
-fn create_unique_directory(mut candidate: impl FnMut(u64) -> PathBuf) -> PathBuf {
-    for attempt in 0..1000 {
-        let dir = candidate(attempt);
-        match std::fs::create_dir(&dir) {
-            Ok(()) => return dir,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => panic!("could not create test directory: {error}"),
-        }
-    }
-    panic!("could not find an unused test directory");
 }
 
 #[cfg(test)]

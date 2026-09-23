@@ -139,17 +139,9 @@ pub(crate) fn write_protected_bytes(path: &Path, bytes: &[u8]) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn tmp_dir() -> std::path::PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-atomic-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&dir).expect("temp dir");
-        dir
+        crate::test_dirs::test_temp_dir("devboule-atomic")
     }
 
     #[test]

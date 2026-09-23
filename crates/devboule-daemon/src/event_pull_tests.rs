@@ -109,15 +109,7 @@ fn live_agent_replay_fixture(
     Arc<SessionRuntime>,
     Arc<ConnHandle>,
 ) {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-live-agent-replay-parse-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-agent-replay-parse");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     journal
         .upsert_blocking(new_session_record(
@@ -359,15 +351,7 @@ fn unmodeled_acp_envelope_replay_stays_quiet() {
 
 #[test]
 fn live_agent_replay_is_complete_ordered_deduplicated_and_not_pending() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-live-agent-replay-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-agent-replay");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.live.agent.replay";
     journal
@@ -516,15 +500,7 @@ fn live_agent_replay_is_complete_ordered_deduplicated_and_not_pending() {
 
 #[test]
 fn same_connection_reattach_preserves_agent_pending_once() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-live-agent-same-connection-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-agent-same-connection");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.live.agent.same-connection";
     journal
@@ -624,15 +600,7 @@ fn same_connection_reattach_preserves_agent_pending_once() {
 
 #[test]
 fn live_agent_replay_pages_without_filling_any_stream_queue() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-live-agent-replay-pages-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-agent-replay-pages");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.live.agent.replay.pages";
     journal
@@ -756,15 +724,7 @@ fn live_agent_replay_pages_without_filling_any_stream_queue() {
 
 #[test]
 fn live_agent_replay_recovers_live_tail_after_pending_overflow() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-live-agent-replay-tail-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-agent-replay-tail");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.live.agent.replay.tail";
     journal
@@ -878,15 +838,7 @@ fn live_agent_replay_recovers_live_tail_after_pending_overflow() {
 
 #[test]
 fn live_agent_replay_uses_stored_manifest_state() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-live-agent-replay-manifest-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-agent-replay-manifest");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.live.agent.replay.manifest";
     journal
@@ -984,15 +936,7 @@ fn live_agent_replay_uses_stored_manifest_state() {
 
 #[test]
 fn live_agent_replay_marks_an_empty_journal_prefix_degraded() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-live-agent-replay-empty-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-agent-replay-empty");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.live.agent.replay.empty";
     journal
@@ -1067,15 +1011,7 @@ fn live_agent_attach_keeps_generation_mismatch_loud() {
 /// attach — the whole transcript, in journal order.
 #[test]
 fn live_agent_replay_delivers_the_generations_before_the_attach() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-cross-gen-replay-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-cross-gen-replay");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.cross.gen.attach";
     journal
@@ -1179,15 +1115,7 @@ fn live_agent_replay_delivers_the_generations_before_the_attach() {
 /// space that is not its own.
 #[test]
 fn live_agent_replay_stamps_history_envelopes_with_their_own_generation() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-history-stamp-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-history-stamp");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.history.stamp";
     journal
@@ -1566,15 +1494,7 @@ fn reattach_to_history_serves_the_whole_conversation() {
 /// Output rows the journal holds, whatever seq they sit at.
 #[test]
 fn journal_copies_of_history_survive_the_reattach() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-journal-history-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-journal-history");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.journal.history";
     journal
@@ -1857,15 +1777,7 @@ fn transcript_outputs_from_different_generations_do_not_collide() {
 
 #[test]
 fn live_claude_replay_derives_journaled_views() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-live-claude-replay-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-claude-replay");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let session_id = "s.live.claude.replay";
     journal
@@ -2128,15 +2040,7 @@ fn observers_replay_from_independent_cursors() {
 
 #[test]
 fn third_live_agent_observer_keeps_the_shared_backlog() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-live-agent-delayed-observer-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-live-agent-delayed-observer");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     let runtime = Arc::new(SessionRuntime::with_journal(
         "s.live.agent.delayed-observer".to_string(),
@@ -2553,15 +2457,7 @@ fn live_terminal_positions_survive_connection_replacement() {
 
 #[test]
 fn journal_keeps_every_frame_for_recovery() {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-recovery-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::test_dirs::test_temp_dir("devboule-recovery");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
     journal
         .upsert_blocking(new_session_record(

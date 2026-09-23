@@ -66,32 +66,26 @@ fn a_stored_origin_kind_reads_back_as_local_peer_or_unknown() {
     }
 }
 
+/// What this test can observe, and no more: each `tmp_journal` call hands
+/// back a directory with no `journal.db` in it, and two calls never share
+/// a directory. That a *later* run cannot land in this name is enforced
+/// by the token rule in `temp_dir_guard_tests.rs` and by the helper's
+/// refusing create, not by these assertions. It replaces the pre-helper
+/// candidate walk, which built its `devboule journal {pid}-{counter}`
+/// candidates in the system temp dir itself and could never collide with
+/// the helper's nanosecond name anyway.
 #[test]
-fn journal_test_directory_does_not_reuse_pid_counter_candidate() {
-    let process_id = std::process::id();
-    let mut candidates = Vec::new();
-    let mut created = Vec::new();
-    for counter in 1..=256 {
-        let dir = std::env::temp_dir().join(format!("devboule journal {process_id}-{counter}"));
-        candidates.push(dir.clone());
-        if std::fs::create_dir(&dir).is_ok() {
-            created.push(dir);
-        }
-    }
-
-    let (selected, _) = tmp_journal();
-    let reused = candidates.iter().any(|dir| dir == &selected);
-    let selected_display = selected.display().to_string();
-    if !reused {
-        let _ = std::fs::remove_dir_all(&selected);
-    }
-    for dir in created {
-        let _ = std::fs::remove_dir_all(dir);
-    }
+fn tmp_journal_each_call_gets_a_fresh_empty_dir() {
+    let (dir, path) = tmp_journal();
     assert!(
-        !reused,
-        "reused legacy journal test directory: {selected_display}"
+        !path.exists(),
+        "a fresh journal dir holds no journal.db: {}",
+        path.display()
     );
+    let (second, _) = tmp_journal();
+    assert_ne!(dir, second, "two calls claim two dirs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&second);
 }
 
 #[test]

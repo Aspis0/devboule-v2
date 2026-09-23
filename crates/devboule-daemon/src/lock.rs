@@ -103,16 +103,9 @@ fn try_lock_exclusive(_file: &File) -> io::Result<bool> {
 mod tests {
     use super::*;
     use crate::paths::RuntimePaths;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn unique_dir() -> (RuntimePaths, PathBufDrop) {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule lock {}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dir = crate::test_dirs::test_temp_dir("devboule lock");
         (RuntimePaths::from_dir(&dir), PathBufDrop(dir))
     }
 

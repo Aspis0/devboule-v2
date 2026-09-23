@@ -10,17 +10,7 @@ use super::tests::{insert_child, insert_live_agent};
 use super::*;
 
 pub(super) fn registry_with_journal() -> (std::path::PathBuf, SessionRegistry, Arc<Journal>) {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let process_id = std::process::id();
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-child-perm-{process_id}-{stamp}-{counter}"
-    ));
-    std::fs::create_dir(&dir).expect("tmp dir");
+    let dir = crate::test_dirs::test_temp_dir("devboule-child-perm");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
     let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
     (dir, registry, journal)

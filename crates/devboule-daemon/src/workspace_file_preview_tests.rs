@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use devboule_protocol::WorkspaceFilePreviewStatus;
 
@@ -25,7 +25,6 @@ struct Repo {
 impl Repo {
     fn new(label: &str) -> Self {
         let root = unique_path(&format!("devboule-preview-{label}"));
-        std::fs::create_dir(&root).expect("test directory");
         let repo = Self { root };
         let output = Command::new("git")
             .arg("-C")
@@ -56,20 +55,22 @@ impl Drop for Repo {
     }
 }
 
-/// A unique path under `temp_dir`: the label keeps the run readable, the
-/// stamp and pid keep two parallel tests apart.
+/// A fresh directory under the system temp dir: the label keeps the run
+/// readable, and the helper's pid + nanosecond clock + counter keep
+/// parallel tests apart. It **creates** the directory — `fresh_previews`
+/// removes it again for the cases that must start absent.
 fn unique_path(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!("{label}-{}-{stamp}", std::process::id()))
+    crate::test_dirs::test_temp_dir(label)
 }
 
 /// The staging folder of one test — itself under `temp_dir`, outside every
 /// fixture repo, so nothing here can pass by reading a workspace path.
 fn fresh_previews(label: &str) -> PathBuf {
-    unique_path(&format!("devboule-previews-{label}"))
+    let path = unique_path(&format!("devboule-previews-{label}"));
+    // The helper pre-creates the dir; this folder's whole point is that it
+    // starts absent — a refused stage must never have created it.
+    let _ = std::fs::remove_dir(&path);
+    path
 }
 
 /// A directory outside the workspace, for the link targets of the escape
@@ -256,7 +257,6 @@ fn a_path_through_or_to_a_link_is_refused_with_the_walk_sentences() {
     let repo = Repo::new("links");
     repo.write("in.png", "x");
     let outside = unique_directory("links-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("present.png"), "outside reached").expect("outside file");
     let junction = repo.root.join("dirlink");
     let created = Command::new("cmd")
@@ -405,7 +405,6 @@ fn a_file_swapped_for_a_link_between_walk_and_copy_is_refused() {
     let repo = Repo::new("swap-link");
     repo.write("shot.png", "inside bytes");
     let outside = unique_directory("swap-link-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("stolen.png"), "OUTSIDE-SENTINEL").expect("outside file");
     let previews = fresh_previews("swap-link");
     let source = repo.root.join("shot.png");
@@ -442,7 +441,6 @@ fn an_intermediate_folder_swapped_for_a_junction_is_refused() {
     let repo = Repo::new("swap-junction");
     repo.write("sub/shot.png", "inside bytes");
     let outside = unique_directory("swap-junction-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("shot.png"), "OUTSIDE-SENTINEL").expect("outside file");
     let previews = fresh_previews("swap-junction");
     let folder = repo.root.join("sub");

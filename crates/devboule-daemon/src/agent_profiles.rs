@@ -609,7 +609,6 @@ fn write_document(path: &Path, document: &AgentProfilesDocument) -> io::Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
 
     /// The whole document is validated against **one** registry snapshot.
     /// The registry is swappable, so a per-row read could accept row 1
@@ -673,14 +672,7 @@ mod tests {
     }
 
     fn temp_dir() -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-agent-profiles-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        dir
+        crate::test_dirs::test_temp_dir("devboule-agent-profiles")
     }
 
     /// Every `<PROFILES_FILE>.corrupt-*` sibling in `dir`, sorted.

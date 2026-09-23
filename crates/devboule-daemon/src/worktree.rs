@@ -815,14 +815,7 @@ locked hold
 
     #[test]
     fn leftover_checkout_matches_only_this_repo_worktrees_dir() {
-        let root = std::env::temp_dir().join(format!(
-            "devboule-leftover-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
+        let root = crate::test_dirs::test_temp_dir("devboule-leftover");
         let checkout = root.join("checkout");
         let worktrees = root.join("git").join("worktrees");
         std::fs::create_dir_all(&checkout).expect("checkout");
@@ -843,11 +836,7 @@ locked hold
     }
 
     fn unique_temp_path(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!("devboule-{name}-{}-{nanos}", std::process::id()))
+        crate::test_dirs::test_temp_dir(&format!("devboule-{name}"))
     }
 
     fn run_git(repo: &Path, args: &[&str]) {

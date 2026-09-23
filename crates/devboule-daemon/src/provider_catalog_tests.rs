@@ -10,17 +10,9 @@ use std::fs;
 #[cfg(windows)]
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temporary_directory(label: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-provider-catalog-{label}-{}-{nonce}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-provider-catalog-{label}"))
 }
 
 #[test]

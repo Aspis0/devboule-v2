@@ -1063,17 +1063,7 @@ pub(super) fn attach_tracked(runtime: &Arc<SessionRuntime>, conn: &Arc<ConnHandl
 }
 
 pub(super) fn tmp_delete_registry() -> (std::path::PathBuf, SessionRegistry, Arc<Journal>) {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let process_id = std::process::id();
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-delete-session-{process_id}-{stamp}-{counter}"
-    ));
-    std::fs::create_dir(&dir).expect("tmp dir");
+    let dir = crate::test_dirs::test_temp_dir("devboule-delete-session");
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
     let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
     (dir, registry, journal)
@@ -1907,15 +1897,7 @@ fn invalid_session_mode_is_rejected_without_changing_the_manifest() {
 }
 
 fn tmp_registry_cache() -> std::path::PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let process_id = std::process::id();
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("devboule-env-npx-{process_id}-{stamp}-{counter}"));
-    std::fs::create_dir(&dir).expect("tmp dir");
+    let dir = crate::test_dirs::test_temp_dir("devboule-env-npx");
     crate::registry::write_cache(&dir, crate::registry::TEST_REGISTRY_FIXTURE);
     dir
 }

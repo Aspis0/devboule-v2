@@ -6,7 +6,6 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{commit, discard, stage, unstage, DISCARD_HALF_RUN, SELECTION_MAX, THE_ROOT};
 use crate::workspace_files::NOT_PART_OF_THE_TREE;
@@ -15,14 +14,7 @@ use crate::workspace_git_support::{
 };
 
 fn unique_directory(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-git-write-{label}-{}-{stamp}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-git-write-{label}"))
 }
 
 /// A repository under `temp_dir`, pinned the way the status tests pin
@@ -36,7 +28,6 @@ struct Repo {
 impl Repo {
     fn new(label: &str) -> Self {
         let root = unique_directory(label);
-        std::fs::create_dir(&root).expect("test directory");
         let repo = Self { root };
         repo.run(&["init", "--quiet"]);
         repo.run(&["config", "user.email", "test@devboule.local"]);
@@ -267,7 +258,6 @@ fn a_glob_spelling_stages_only_itself_and_never_its_neighbour() {
 #[test]
 fn a_folder_without_a_repository_is_refused_with_the_probes_sentence() {
     let folder = unique_directory("not-a-repo");
-    std::fs::create_dir(&folder).expect("test directory");
     std::fs::write(folder.join("a.txt"), "one\n").expect("write");
 
     let error = stage(&folder, &["a.txt".to_string()]).expect_err("must refuse");
@@ -617,7 +607,6 @@ fn a_failing_hook_answers_with_the_exit_code_and_never_its_stderr() {
 #[test]
 fn commit_in_a_folder_without_a_repository_is_refused() {
     let folder = unique_directory("commit-not-a-repo");
-    std::fs::create_dir(&folder).expect("test directory");
     std::fs::write(folder.join("a.txt"), "one\n").expect("write");
 
     let error = commit(&folder, "anything").expect_err("must refuse");

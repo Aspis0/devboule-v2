@@ -1223,12 +1223,7 @@ mod tests {
         use crate::transport::{Listener, NamedPipeListener};
 
         static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule localapi {}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("dir");
+        let dir = crate::test_dirs::test_temp_dir("devboule localapi");
         let mut paths = RuntimePaths::from_dir(&dir);
         paths.pipe_name = format!(
             "\\\\.\\pipe\\devboule-localapi-test-{}-{}",

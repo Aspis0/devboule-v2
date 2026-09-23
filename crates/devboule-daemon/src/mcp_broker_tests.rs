@@ -372,8 +372,7 @@ fn protected_bytes_write_is_mode_narrow_and_atomic() {
     // On unix the assertion is the 0o600 mode bit; on Windows the DACL call
     // runs before the first byte (code inspection) and the test pins content
     // + cleanup. Mutation: drop the 0o600 mode (unix) → this test red.
-    let dir = std::env::temp_dir().join(format!("devboule-s4-write-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-s4-write");
     let path = dir.join("carrier.json");
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("tmp"));
@@ -420,8 +419,7 @@ fn sweep_removes_legacy_codex_homes_and_keeps_strangers() {
     // a non-matching file — and a non-matching dir — stay. Forbidden states:
     // an orphan bridge file surviving teardown, an orphan legacy home tree
     // surviving it (leave either → red).
-    let dir = std::env::temp_dir().join(format!("devboule-s4-sweep-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-s4-sweep");
     for name in [
         "devboule-mcp-abc.json",
         "devboule-mcp-abc.tmp",
@@ -951,8 +949,7 @@ fn a_journal_row_restriction_reaches_the_broker_registration() {
     // respawn) nor the respawn itself: reverting that one line escapes
     // this test, and only the live e2e battery covers it.
     use crate::provider_catalog::{MCP_CREATE_AGENT_TOOL, MCP_SEND_MESSAGE_TOOL};
-    let dir = std::env::temp_dir().join(format!("devboule-overlay-wire-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = crate::test_dirs::test_temp_dir("devboule-overlay-wire");
     let journal = crate::journal::Journal::open(&dir.join("journal.db")).expect("journal");
     let mut record = crate::journal::new_session_record(
         "wire-child",
@@ -4012,13 +4009,7 @@ fn a_profile_overlay_hides_peer_tools_from_the_child_it_creates() {
 /// has saved *at the moment of the call*, and a fake that answered from a map
 /// would be a second implementation of the thing under test.
 fn profile_store(document: serde_json::Value) -> crate::agent_profiles::AgentProfilesStore {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let dir = std::env::temp_dir().join(format!(
-        "devboule broker profiles {}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = crate::test_dirs::test_temp_dir("devboule broker profiles");
     let store = crate::agent_profiles::AgentProfilesStore::load(&dir);
     store
         .set(serde_json::from_value(document).expect("a profile document"))

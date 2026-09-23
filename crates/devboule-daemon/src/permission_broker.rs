@@ -1223,7 +1223,6 @@ fn io_error(message: &str) -> PermissionResponseError {
 #[cfg(test)]
 use std::path::PathBuf;
 #[cfg(test)]
-use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 pub(super) fn permission_with_kinds(tool_call_id: &str, kinds: &[(&str, &str)]) -> SessionEvent {
     SessionEvent::PermissionRequest {
@@ -1260,14 +1259,7 @@ pub(super) fn permission(tool_call_id: &str) -> SessionEvent {
 
 #[cfg(test)]
 pub(super) fn permission_path(label: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-permission-{label}-{}-{nonce}.sqlite",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-permission-{label}")).join("broker.sqlite")
 }
 
 #[cfg(test)]

@@ -332,14 +332,7 @@ mod tests {
     use super::*;
 
     fn store_dir(label: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "devboule-delegation-{label}-{}-{nonce}",
-            std::process::id()
-        ))
+        crate::test_dirs::test_temp_dir(&format!("devboule-delegation-{label}"))
     }
 
     fn quarantined(dir: &Path) -> Vec<PathBuf> {

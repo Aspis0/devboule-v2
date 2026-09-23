@@ -16,16 +16,7 @@ struct TestDirs {
 }
 
 fn unique_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "devboule-acp-{label}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).expect("test dir");
-    dir
+    crate::test_dirs::test_temp_dir(&format!("devboule-acp-{label}"))
 }
 
 fn host() -> TestDirs {
@@ -1145,15 +1136,7 @@ fn terminal_kill_deletes_the_shell_batch_file() {
 #[test]
 fn terminal_create_shell_line_runs_when_runtime_dir_has_a_space() {
     let cwd = unique_dir("cwd");
-    let runtime = std::env::temp_dir().join(format!(
-        "acp gate space {}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&runtime).expect("spaced runtime");
+    let runtime = crate::test_dirs::test_temp_dir("acp gate space");
     assert!(
         runtime.to_string_lossy().contains(' '),
         "fixture runtime dir must contain a space: {runtime:?}"

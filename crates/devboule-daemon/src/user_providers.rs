@@ -466,8 +466,6 @@ fn apply_document(state: &mut RowsState, bytes: Vec<u8>, path: &Path) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// The ids the impls bind by, the same source production validation uses.
     fn natives() -> Vec<String> {
@@ -494,18 +492,7 @@ mod tests {
     /// in a test that has nothing to do with unreadable files. Name the
     /// directory with the clock too, so no run can inherit another's.
     fn temp_dir() -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|since| since.as_nanos())
-            .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-user-providers-{}-{nonce}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        dir
+        crate::test_dirs::test_temp_dir("devboule-user-providers")
     }
 
     #[test]

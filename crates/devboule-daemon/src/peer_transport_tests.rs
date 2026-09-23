@@ -681,8 +681,7 @@ fn the_peer_port_is_overridable_and_never_zero() {
 fn an_identity_can_be_created_for_the_transport_tests() {
     // Sanity check on the fixture S5's real test needs; the full identity
     // path is covered in `device_identity`.
-    let dir = std::env::temp_dir().join(format!("devboule-peers-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("dir");
+    let dir = crate::test_dirs::test_temp_dir("devboule-peers");
     let paths = crate::paths::RuntimePaths::from_dir(&dir);
     let store = InMemoryStore::default();
     let identity = crate::device_identity::load_or_create(&paths, &store).expect("identity");

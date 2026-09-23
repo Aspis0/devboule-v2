@@ -5,7 +5,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
     claim_then_move, duplicated, renamed, NAME_DOT, NAME_EMPTY, NAME_INVALID, NAME_SEPARATOR,
@@ -22,15 +21,7 @@ struct Repo {
 
 impl Repo {
     fn new(label: &str) -> Self {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "devboule-file-mutations-{label}-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).expect("test directory");
+        let root = crate::test_dirs::test_temp_dir(&format!("devboule-file-mutations-{label}"));
         let repo = Self { root };
         repo.run(&["init", "--quiet"]);
         repo.run(&["config", "user.email", "test@devboule.local"]);
@@ -97,14 +88,7 @@ impl Drop for Repo {
 
 /// A unique path under `temp_dir`, for the link targets of the escape cases.
 fn unique_directory(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-file-mutations-{label}-{}-{stamp}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-file-mutations-{label}"))
 }
 
 #[test]
@@ -397,7 +381,6 @@ fn a_path_through_or_to_a_link_is_refused_with_the_walk_sentence() {
     let repo = Repo::new("links");
     repo.write("in.txt", "a\n");
     let outside = unique_directory("links-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("present.txt"), "outside reached\n").expect("outside file");
     let junction = repo.root.join("dirlink");
     let created = std::process::Command::new("cmd")
@@ -451,7 +434,6 @@ fn a_folder_copy_that_meets_a_child_link_is_refused_and_leaves_nothing() {
     let repo = Repo::new("copy-child-link");
     repo.write("tree/real.txt", "real\n");
     let outside = unique_directory("copy-child-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("present.txt"), "outside reached\n").expect("outside file");
     let dangling = repo.root.join("tree/inner.txt");
     std::os::windows::fs::symlink_file(outside.join("present.txt"), &dangling).expect("symlink");

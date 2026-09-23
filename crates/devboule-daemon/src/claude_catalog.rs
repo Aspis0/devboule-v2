@@ -693,13 +693,7 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "devboule-claude-catalog-{name}-{}-{}",
-            std::process::id(),
-            CACHE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).expect("temp dir");
-        path
+        crate::test_dirs::test_temp_dir(&format!("devboule-claude-catalog-{name}"))
     }
 
     fn fake_binary(record: &str) -> PathBuf {

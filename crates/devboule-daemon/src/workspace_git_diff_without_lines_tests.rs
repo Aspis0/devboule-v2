@@ -221,7 +221,7 @@ fn a_symlink_is_refused_and_its_target_is_never_read() {
     let repo = Repo::new("symlink");
     repo.write("tracked.txt", "a\n");
     repo.commit("initial");
-    let target = unique_directory("symlink-target");
+    let target = unique_directory("symlink-target").join("target.txt");
     std::fs::write(&target, "TOP SECRET OUTSIDE CONTENT\n").expect("target");
     let link = repo.root.join("link.txt");
     std::os::windows::fs::symlink_file(&target, &link).expect("symlink");
@@ -256,7 +256,6 @@ fn a_path_through_a_directory_junction_is_refused_the_same_way_whether_the_targe
     repo.write("in.txt", "a\n");
     repo.commit("initial");
     let outside = unique_directory("junction-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("present.txt"), "outside reached\n").expect("outside file");
     let link = repo.root.join("dirlink");
     let created = std::process::Command::new("cmd")
@@ -316,6 +315,8 @@ fn a_folder_path_is_refused() {
 #[test]
 fn a_folder_that_does_not_exist_is_refused_without_a_path_in_the_sentence() {
     let missing = unique_directory("missing-root");
+    // The helper pre-creates the dir; this case needs the path absent.
+    let _ = std::fs::remove_dir(&missing);
 
     let diff = diff_of(&missing, "any.txt");
     let _ = std::fs::remove_dir_all(&missing);
@@ -347,7 +348,6 @@ fn the_probes_own_refusals_reach_the_diff_with_the_same_sentences() {
     assert_no_path(sentence);
 
     let plain = unique_directory("not-a-repo");
-    std::fs::create_dir(&plain).expect("dir");
     let not_a_repo = diff_of(&plain, "file.txt");
     let _ = std::fs::remove_dir_all(&plain);
     assert_eq!(

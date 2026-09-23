@@ -63,14 +63,10 @@ fn trace_set(value: Option<&str>) -> TraceEnv {
     }
 }
 
-/// A per-test directory under the system temp dir, keyed by label and pid so
-/// two test binaries cannot collide.
+/// A per-test directory under the system temp dir, built by the shared
+/// helper so no run can inherit another's.
 pub(crate) fn scratch(label: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("devboule-rpc-trace-{label}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    crate::test_dirs::test_temp_dir(&format!("devboule-rpc-trace-{label}"))
 }
 
 pub(crate) fn read_app_log(dir: &Path) -> String {

@@ -5,19 +5,12 @@
 //! file and `#[cfg(test)]`-only.
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-/// A unique path under `temp_dir`, for a directory the test wants *outside*
-/// the workspace (the escape cases).
+/// A fresh directory *outside* the workspace (the escape cases): the
+/// shared helper **creates** it before this returns — do not `create_dir`
+/// it again.
 pub(super) fn unique_directory(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "devboule-workspace-files-{label}-{}-{stamp}",
-        std::process::id()
-    ))
+    crate::test_dirs::test_temp_dir(&format!("devboule-workspace-files-{label}"))
 }
 
 pub(super) struct Folder {
@@ -35,7 +28,6 @@ pub(super) fn assert_no_path(message: &str) {
 impl Folder {
     pub(super) fn new(label: &str) -> Self {
         let root = unique_directory(label);
-        std::fs::create_dir(&root).expect("test directory");
         Self { root }
     }
 

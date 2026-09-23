@@ -524,7 +524,6 @@ mod tests {
     use std::ffi::OsString;
     use std::path::Path;
     use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
         append_git_stdout, bounded_reap, classify_git_probe, detect_git_repository,
@@ -618,15 +617,7 @@ mod tests {
 
     #[test]
     fn detect_git_repository_classifies_a_real_root_and_nested_folder() {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "devboule-git-detection-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).expect("test directory");
+        let root = crate::test_dirs::test_temp_dir("devboule-git-detection");
         let init = Command::new("git")
             .arg("-C")
             .arg(&root)
@@ -657,7 +648,6 @@ mod tests {
     #[ignore = "spawns PowerShell and cmd.exe; run by ignored-tests-informational on scheduled/dispatch Windows CI"]
     fn git_probe_drains_large_stdout_before_waiting_for_exit() {
         let root = unique_probe_directory("git-output");
-        std::fs::create_dir(&root).expect("test directory");
         let script = root.join("emit.cmd");
         let powershell = root.join("emit.ps1");
         std::fs::write(
@@ -689,7 +679,6 @@ mod tests {
     #[ignore = "spawns PowerShell, ping.exe, and a real process tree; run by ignored-tests-informational on scheduled/dispatch Windows CI"]
     fn timed_out_git_probe_leaves_no_descendant_process_alive() {
         let root = unique_probe_directory("git-tree");
-        std::fs::create_dir(&root).expect("test directory");
         let script = root.join("spawn.cmd");
         let powershell = root.join("spawn.ps1");
         let marker = root.join("child.pid");
@@ -749,10 +738,6 @@ mod tests {
 
     #[cfg(windows)]
     fn unique_probe_directory(label: &str) -> std::path::PathBuf {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        std::env::temp_dir().join(format!("devboule-{label}-{}-{stamp}", std::process::id()))
+        crate::test_dirs::test_temp_dir(&format!("devboule-{label}"))
     }
 }

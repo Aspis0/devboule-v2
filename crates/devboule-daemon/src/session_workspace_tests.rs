@@ -13,8 +13,7 @@ use super::*;
 #[test]
 #[cfg(windows)]
 fn workspace_spawn_directory_error_names_workspace_and_display_path() {
-    let parent = std::env::temp_dir().join(format!("devboule-missing-cwd-{}", std::process::id()));
-    std::fs::create_dir_all(&parent).expect("parent");
+    let parent = crate::test_dirs::test_temp_dir("devboule-missing-cwd");
     let path = parent.join("Project With Spaces");
     let error = std::process::Command::new("cmd.exe")
         .current_dir(&path)
@@ -173,7 +172,12 @@ fn resume_preserves_the_original_created_at_ms() {
         "Agent",
     );
     record.created_at_ms = 1_700_000_000_123;
-    let command = PtyCommand::new("cmd.exe", Vec::new(), std::env::temp_dir(), Vec::new());
+    let command = PtyCommand::new(
+        "cmd.exe",
+        Vec::new(),
+        crate::test_dirs::test_temp_dir("devboule-pty-cwd"),
+        Vec::new(),
+    );
     let session = session_metadata_for_resume(
         "s.client.1",
         &record,
@@ -211,7 +215,12 @@ fn resume_metadata_kind_is_the_records_own_kind_not_the_provider_string() {
     // `Acp`, the provider says a native family. The record wins. The old test
     // asserted the opposite on this very pair, and that is the decision this
     // one reverses.
-    let command = PtyCommand::new("cmd.exe", Vec::new(), std::env::temp_dir(), Vec::new());
+    let command = PtyCommand::new(
+        "cmd.exe",
+        Vec::new(),
+        crate::test_dirs::test_temp_dir("devboule-pty-cwd"),
+        Vec::new(),
+    );
     for provider_id in ["grok", "claude", "codex", "pi"] {
         let record = new_session_record(
             "s.client.1",

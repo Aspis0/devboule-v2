@@ -1042,15 +1042,7 @@ mod tests {
 
     #[test]
     fn journal_size_and_schema_are_read_from_the_real_journal() {
-        let directory = std::env::temp_dir().join(format!(
-            "devboule-diagnostics-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&directory).expect("journal directory");
+        let directory = crate::test_dirs::test_temp_dir("devboule-diagnostics");
         let path = directory.join("journal.db");
         let journal = Journal::open(&path).expect("journal");
         let bytes = journal.file_len().expect("journal file size");

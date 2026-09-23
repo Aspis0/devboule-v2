@@ -539,7 +539,6 @@ pub(crate) const TEST_REGISTRY_FIXTURE: &str = r#"{
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct FakeFetch {
         result: Result<String, String>,
@@ -552,14 +551,7 @@ mod tests {
     }
 
     fn temp_dir(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "devboule-registry-{label}-{}-{nonce}",
-            std::process::id()
-        ))
+        crate::test_dirs::test_temp_dir(&format!("devboule-registry-{label}"))
     }
 
     #[test]

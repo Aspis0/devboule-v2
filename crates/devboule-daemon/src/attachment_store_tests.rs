@@ -15,17 +15,7 @@ impl TempDir {
     /// into it fails with `Access is denied`, in whatever test drew the short
     /// straw. Name it with the clock so no run can inherit another's.
     fn new() -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_nanos())
-            .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-attachments-{}-{nonce}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dir = crate::test_dirs::test_temp_dir("devboule-attachments");
         Self(dir)
     }
 }

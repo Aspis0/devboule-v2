@@ -149,7 +149,6 @@ fn an_entry_that_does_not_survive_is_skipped_and_the_list_stands() {
     folder.file("real.txt", "r");
     folder.dir("ordinary");
     let outside = super::fixture::unique_directory("skip-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     let junction = folder.root.join("dirlink");
     let created = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])

@@ -216,16 +216,11 @@ pub(super) fn session_state_event(
 impl ServerState {
     #[cfg(test)]
     pub fn new(instance_id: String) -> Arc<Self> {
-        static TEST_STATE_COUNTER: AtomicU64 = AtomicU64::new(1);
-        let counter = TEST_STATE_COUNTER.fetch_add(1, Ordering::Relaxed);
         // Each test state needs its own SQLite path: parallel WAL writers
         // sharing one test database can legitimately hold each other locked.
         Self::with_paths(
             instance_id,
-            RuntimePaths::from_dir(
-                std::env::temp_dir()
-                    .join(format!("devboule-test-{}-{counter}", std::process::id())),
-            ),
+            RuntimePaths::from_dir(crate::test_dirs::test_temp_dir("devboule-test")),
         )
         .expect("create daemon process job")
     }

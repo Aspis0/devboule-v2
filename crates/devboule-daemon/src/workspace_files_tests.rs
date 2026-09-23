@@ -157,6 +157,8 @@ fn the_git_folder_is_refused_when_named_directly() {
 #[test]
 fn a_workspace_folder_that_does_not_exist_is_refused_without_a_path() {
     let missing = unique_directory("missing-root");
+    // The helper pre-creates the dir; this case needs the path absent.
+    let _ = std::fs::remove_dir(&missing);
 
     let listing = directory_of(&missing, "");
     let _ = std::fs::remove_dir_all(&missing);
@@ -179,7 +181,6 @@ fn a_path_through_or_to_a_link_is_refused_with_the_shared_sentences() {
     folder.file("in.txt", "a\n");
     folder.file("sub/child.txt", "c\n");
     let outside = unique_directory("links-target");
-    std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("present.txt"), "outside reached\n").expect("outside file");
     let junction = folder.root.join("dirlink");
     let created = std::process::Command::new("cmd")

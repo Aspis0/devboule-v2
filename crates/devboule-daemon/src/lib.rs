@@ -90,6 +90,10 @@ mod shell_unwrap;
 mod spawn;
 #[cfg(feature = "server")]
 mod tailscale_localapi;
+#[cfg(test)]
+mod temp_dir_guard_tests;
+#[cfg(test)]
+mod test_dirs;
 #[cfg(all(test, feature = "server"))]
 mod test_support;
 mod text_safety;

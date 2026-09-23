@@ -30,17 +30,7 @@ struct SlotFixture {
 
 impl SlotFixture {
     fn new(label: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-child-slot-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|since| since.as_millis())
-                .unwrap_or(0),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("the fixture's directory");
+        let dir = crate::test_dirs::test_temp_dir("devboule-child-slot");
         // The user-provider rows are process-global (`user_providers::ROWS_STATE`),
         // and a refresh from a directory with no providers file retires whatever
         // another test just loaded. This fixture needs no rows of its own, so its
