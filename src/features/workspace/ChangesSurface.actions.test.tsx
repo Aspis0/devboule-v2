@@ -126,10 +126,10 @@ describe("ChangesSurface actions", () => {
     return found;
   }
 
-  /** Open the row's menu — the only way to Discard exists behind it. */
-  async function openMenu() {
+  /** Open a row's menu — the only way to Discard exists behind it. */
+  async function openMenu(path: string = ROW_PATH) {
     await act(async () => {
-      button(`button[aria-label="${ROW_PATH} actions"]`).click();
+      button(`button[aria-label="${path} actions"]`).click();
     });
     expect(container.querySelector('[role="menu"]')).not.toBeNull();
   }
@@ -190,6 +190,60 @@ describe("ChangesSurface actions", () => {
     expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain("No uncommitted changes in this workspace.");
     expect(container.textContent).not.toContain(ROW_PATH);
+  });
+
+  // The review's §4.1 defect, fixed end to end from the row down to the
+  // wire: a renamed row acts on **both** of its paths, because the new one
+  // alone leaves the old side's deletion staged and the only copy on disk
+  // deleted — a half operation that answered success (measured on git
+  // 2.54.0). The old path is the status reply's own `renamedFrom` (the
+  // bare `-z` token the parse used to drop), and the confirmation names
+  // both files it will touch. Mutant `e:1` — drop the partner from
+  // `pathsOf`: the wire spy below receives a one-element array and the
+  // first equality fails.
+  it("sends both paths of a renamed row to the wire, stage and discard alike", async () => {
+    const renamed: WorkspaceGitRow = {
+      path: "notes/todo-v2.md",
+      renamedFrom: "notes/todo-v1.md",
+      additions: 3,
+      deletions: 0,
+      status: "renamed",
+      capped: false,
+    };
+    vi.mocked(workspaceGitStatus).mockResolvedValue(
+      statusReply({
+        dirty: true,
+        totals: { additions: 3, deletions: 0 },
+        rows: [renamed],
+      }),
+    );
+    await render(<ChangesSurface workspaceId={WORKSPACE} />);
+    expect(container.textContent).toContain("notes/todo-v2.md");
+
+    await act(async () => {
+      button('button[title="Stage notes/todo-v2.md"]').click();
+    });
+    expect(vi.mocked(workspaceGitStage)).toHaveBeenCalledWith(WORKSPACE, [
+      "notes/todo-v2.md",
+      "notes/todo-v1.md",
+    ]);
+
+    vi.mocked(confirm).mockResolvedValue(true);
+    await openMenu("notes/todo-v2.md");
+    await act(async () => {
+      container.querySelector<HTMLElement>('[role="menuitem"]')?.click();
+    });
+
+    expect(vi.mocked(workspaceGitDiscard)).toHaveBeenCalledWith(WORKSPACE, [
+      "notes/todo-v2.md",
+      "notes/todo-v1.md",
+    ]);
+    // The question itself names the file the user never clicked: both
+    // sides are about to disappear.
+    expect(vi.mocked(confirm)).toHaveBeenCalledWith(
+      expect.stringContaining("notes/todo-v1.md"),
+      expect.anything(),
+    );
   });
 
   // Commit's own discipline at the keyboard: an empty message never

@@ -58,14 +58,28 @@ const TOO_MANY_PATHS: &str = "too many paths in one request";
 /// own error, and naming it first keeps a non-repository from answering a
 /// question that was not asked.
 const MESSAGE_EMPTY: &str = "the commit message is empty";
-/// The discard's classification reply ran past the shared stdout cap
-/// (measured: 500 paths of ordinary length can exceed 16 KiB). Reached
-/// only **after** the reset step — so the sentence admits the half state
-/// instead of pretending nothing ran: the selection is unstaged (index
-/// back to HEAD, no data lost) but its files were not restored.
+/// Every failure **after** the reset: by then the selection has left the
+/// index (through the reset, or through its `rm --cached` fallback — the
+/// fallback is reachable inside the discard, measured: an `HEAD` that does
+/// not resolve makes `reset` exit 128 and the fallback exit 0), so the
+/// sentence admits the stop instead of reporting the failing command as if
+/// nothing had happened. The points it covers, each measured on this
+/// machine: the classification `status` dying at 128 on an unresolvable
+/// `HEAD`; the reply cut — 400 changed paths of ~60 characters produce
+/// 22.000 bytes of `status --porcelain=v1 -z`, past the 16 KiB
+/// accumulator; and `checkout`/`clean` refusing a file (the case
+/// `plan-write.md` §3.3.4 names — the plan's static "the file is in use"
+/// sentence is not in this slice, and the exit code would otherwise be
+/// the whole answer with the index already moved). One sentence for all
+/// four because it claims only what is true at all of them: the discard
+/// stopped, and the selection is unstaged. The panel refreshes after
+/// every answer, so the list under the toolbar is already the true state
+/// and a retry finishes the act. `index.lock` keeps its own sentence one
+/// step earlier — inside `reset_or_unindex`, where a double failure means
+/// the index never moved.
 const DISCARD_HALF_RUN: &str =
-    "the selection produced more reply than one request can carry; it was unstaged but not \
-     restored — select fewer paths and discard again";
+    "the discard stopped after unstaging the selection — the panel has re-read it; discard those \
+     paths again to finish";
 
 /// Resolve `workspace_id` through the registry — never a request field —
 /// take this workspace's write mutex, run one act, and hand back only its
@@ -248,7 +262,9 @@ fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
 /// classification runs **after** the reset on purpose — load-bearing:
 /// a staged new file is `A ` before it and `??` after, and only the
 /// second classification deletes it (Paseo's three truths,
-/// `checkout-git.test.ts:3827`).
+/// `checkout-git.test.ts:3827`). From the reset onward every failure
+/// answers [`DISCARD_HALF_RUN`]: the index has moved by then, and a bare
+/// exit code would say nothing about that.
 fn discard(root: &Path, paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
@@ -267,7 +283,7 @@ fn discard(root: &Path, paths: &[String]) -> Result<(), String> {
         "--",
     ];
     status.extend_from_slice(&selected);
-    let status = write(root, "git status", &status)?;
+    let status = write(root, "git status", &status).map_err(|_| DISCARD_HALF_RUN.to_string())?;
     // The accumulator cuts at `GIT_STDOUT_MAX_BYTES + 1`: past that the
     // classification is a guess, and guessing which files to restore or
     // delete is how half a selection vanishes. The reset above already
@@ -279,12 +295,12 @@ fn discard(root: &Path, paths: &[String]) -> Result<(), String> {
     if !tracked.is_empty() {
         let mut checkout = vec!["--literal-pathspecs", "checkout", "-q", "--"];
         checkout.extend_from_slice(&tracked);
-        write(root, "git checkout", &checkout)?;
+        write(root, "git checkout", &checkout).map_err(|_| DISCARD_HALF_RUN.to_string())?;
     }
     if !untracked.is_empty() {
         let mut clean = vec!["--literal-pathspecs", "clean", "-fd", "-q", "--"];
         clean.extend_from_slice(&untracked);
-        write(root, "git clean", &clean)?;
+        write(root, "git clean", &clean).map_err(|_| DISCARD_HALF_RUN.to_string())?;
     }
     Ok(())
 }

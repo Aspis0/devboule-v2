@@ -8,9 +8,11 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{commit, discard, stage, unstage, SELECTION_MAX, THE_ROOT};
+use super::{commit, discard, stage, unstage, DISCARD_HALF_RUN, SELECTION_MAX, THE_ROOT};
 use crate::workspace_files::NOT_PART_OF_THE_TREE;
-use crate::workspace_git_support::{write_failure, INDEX_LOCKED, OUTSIDE_THE_WORKSPACE};
+use crate::workspace_git_support::{
+    write_failure, INDEX_LOCKED, NOTHING_STAGED, OUTSIDE_THE_WORKSPACE,
+};
 
 fn unique_directory(label: &str) -> PathBuf {
     let stamp = SystemTime::now()
@@ -623,6 +625,106 @@ fn commit_in_a_folder_without_a_repository_is_refused() {
 
     assert_eq!(error, "this workspace folder is not a git repository");
     assert_no_path(&error);
+}
+
+/// The renamed row's other half — what the panel now sends for such a row
+/// (both paths: `path` + `renamedFrom`). The old path no longer exists on
+/// disk after `git mv` (the walk allows a missing component), and the
+/// sequence must end where a discard of that row promises: old restored to
+/// its committed content, new gone, status empty — the M3 truth, measured
+/// on git 2.54.0 before this round. Mutant `e:3` — make the selection loop
+/// refuse `Walked::Missing` the way the Files mutations do: the old path
+/// (absent after the move) is refused before any spawn and this
+/// expectation fails.
+#[test]
+fn discard_restores_both_sides_of_a_staged_rename() {
+    let repo = Repo::new("rename-pair");
+    repo.write("old.txt", "committed\n");
+    repo.commit("initial");
+    repo.run(&["mv", "old.txt", "new.txt"]);
+
+    discard(&repo.root, &["old.txt".to_string(), "new.txt".to_string()])
+        .expect("both sides of the rename must discard");
+
+    assert_eq!(
+        std::fs::read_to_string(repo.root.join("old.txt")).expect("read back"),
+        "committed\n",
+        "the old side was not restored"
+    );
+    assert!(
+        !repo.root.join("new.txt").exists(),
+        "the new side survived the discard"
+    );
+    let status = output_of(repo.git(&["status", "--porcelain"]).expect("status"));
+    assert_eq!(status.trim_end(), "", "residue: {status}");
+}
+
+/// The reset fallback **inside** the discard, and the sentence that admits
+/// the stop: an `HEAD` whose ref points at a missing object makes the
+/// classification `status` die 128 (measured, `fatal: bad object HEAD`) —
+/// but only AFTER `reset` died 128 (measured) and its `rm --cached`
+/// fallback succeeded (measured): `ls-files`, which reads only the index
+/// and works where `status` dies, proving the path left the index, and the
+/// worktree keeping its bytes. Mutant `f` — let this failure answer with
+/// the naked exit-code sentence (its shape before this round): the
+/// equality on [`DISCARD_HALF_RUN`] fails. Mutant `b` kills it too:
+/// without the fallback the error is reset's own naked sentence, never
+/// reaching the wrap at all.
+#[test]
+fn discard_falls_back_when_head_does_not_resolve_and_answers_that_it_stopped() {
+    let repo = Repo::new("discard-broken-head");
+    repo.write("f.txt", "one\n");
+    repo.commit("initial");
+    let branch = output_of(repo.git(&["symbolic-ref", "--short", "HEAD"]).expect("ref"))
+        .trim()
+        .to_string();
+    std::fs::write(
+        repo.root.join(".git/refs/heads").join(&branch),
+        "0000000000000000000000000000000000000001\n",
+    )
+    .expect("break HEAD");
+    repo.write("f.txt", "staged over the break\n");
+    repo.run(&["add", "f.txt"]);
+
+    let error = discard(&repo.root, &["f.txt".to_string()])
+        .expect_err("the classification status must fail on this HEAD");
+
+    assert_eq!(error, DISCARD_HALF_RUN);
+    assert_no_path(&error);
+    let indexed = output_of(
+        repo.git(&["ls-files", "--", "f.txt"])
+            .expect("ls-files reads the index alone"),
+    );
+    assert!(
+        indexed.trim().is_empty(),
+        "the fallback never ran — reset failed, so only rm --cached could empty the index: {indexed}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.root.join("f.txt")).expect("read back"),
+        "staged over the break\n",
+        "the worktree lost its bytes"
+    );
+}
+
+/// Mutant `g` — drop the [`NOTHING_STAGED`] branch of `write_failure`:
+/// the measured stdout phrases (`no changes added to commit`, exit 1)
+/// fall through to `exit_error` and the sentence becomes `git commit
+/// exited with code 1` — this equality fails. The message is refused
+/// before anything moves: `HEAD` is byte-identical afterwards.
+#[test]
+fn commit_with_nothing_staged_says_so_in_static_words() {
+    let repo = Repo::new("commit-nothing-staged");
+    repo.write("a.txt", "one\n");
+    repo.commit("initial");
+    repo.write("a.txt", "modified but never staged\n");
+    let head_before = output_of(repo.git(&["rev-parse", "HEAD"]).expect("head"));
+
+    let error = commit(&repo.root, "nothing behind it").expect_err("must refuse");
+
+    assert_eq!(error, NOTHING_STAGED);
+    assert_no_path(&error);
+    let head_after = output_of(repo.git(&["rev-parse", "HEAD"]).expect("head"));
+    assert_eq!(head_before, head_after, "the refused commit moved HEAD");
 }
 
 /// stdout of one fixture git call as an owned string (the command must

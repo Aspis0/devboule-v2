@@ -45,6 +45,13 @@ export interface WorkspaceGitTotals {
 export interface WorkspaceGitRow {
   /** Repository-relative path, exactly as git printed it. */
   path: string;
+  /**
+   * The original path of a rename row (`-z`'s bare token after the `2`
+   * record); absent on every other row. A renamed row acts on **both** of
+   * its paths — only the new path would leave the old side's deletion
+   * staged, a half operation that answers success.
+   */
+  renamedFrom?: string | null;
   additions: number;
   deletions: number;
   status: WorkspaceGitFileStatus;

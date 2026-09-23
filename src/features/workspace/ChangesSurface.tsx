@@ -48,6 +48,18 @@ function rowCounts(row: WorkspaceGitRow): string {
   return `${row.capped ? "≈" : ""}+${row.additions} −${row.deletions}`;
 }
 
+/**
+ * What one row acts on: its path, and for a renamed row its `renamedFrom`
+ * too. Both sides, always — a rename row keyed only on its new path is a
+ * half operation waiting to happen: the old side's deletion stays staged
+ * and the confirmation would claim success anyway (measured on git
+ * 2.54.0; `renamedFrom` is the bare token `-z` writes after the `2`
+ * record, which the status parse now carries instead of dropping).
+ */
+function pathsOf(row: WorkspaceGitRow): string[] {
+  return row.renamedFrom ? [row.path, row.renamedFrom] : [row.path];
+}
+
 function FileRows({
   rows,
   selection,
@@ -62,9 +74,9 @@ function FileRows({
   rows: WorkspaceGitRow[];
   selection: string | null;
   onSelect: (path: string) => void;
-  onStage: (path: string) => void;
-  onUnstage: (path: string) => void;
-  onDiscard: (path: string) => void;
+  onStage: (paths: string[]) => void;
+  onUnstage: (paths: string[]) => void;
+  onDiscard: (paths: string[]) => void;
   menuPath: string | null;
   onToggleMenu: (path: string) => void;
   acting: boolean;
@@ -96,7 +108,7 @@ function FileRows({
               className="workspace-file-change-action"
               disabled={acting}
               title={`Stage ${row.path}`}
-              onClick={() => onStage(row.path)}
+              onClick={() => onStage(pathsOf(row))}
             >
               Stage
             </button>
@@ -105,7 +117,7 @@ function FileRows({
               className="workspace-file-change-action"
               disabled={acting}
               title={`Unstage ${row.path}`}
-              onClick={() => onUnstage(row.path)}
+              onClick={() => onUnstage(pathsOf(row))}
             >
               Unstage
             </button>
@@ -133,7 +145,7 @@ function FileRows({
                 role="menuitem"
                 className="workspace-tree-menu-item"
                 disabled={acting}
-                onClick={() => onDiscard(row.path)}
+                onClick={() => onDiscard(pathsOf(row))}
               >
                 Discard
               </button>
@@ -249,17 +261,17 @@ export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: Chan
     return error;
   };
 
-  const runStage = (path: string): void => {
-    void runAct(stage(path));
+  const runStage = (paths: string[]): void => {
+    void runAct(stage(paths));
   };
-  const runUnstage = (path: string): void => {
-    void runAct(unstage(path));
+  const runUnstage = (paths: string[]): void => {
+    void runAct(unstage(paths));
   };
-  const runDiscard = (path: string): void => {
+  const runDiscard = (paths: string[]): void => {
     // The menu closes first: the confirmation (or the refusal) that comes
     // back belongs under the toolbar, not under a menu that has gone.
     setMenuPath(null);
-    void runAct(discard(path));
+    void runAct(discard(paths));
   };
   const runCommit = (): void => {
     void (async () => {

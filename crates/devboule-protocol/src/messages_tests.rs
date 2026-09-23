@@ -2498,6 +2498,7 @@ fn workspace_git_status_round_trips_with_its_wire_words() {
         },
         rows: vec![WorkspaceGitRow {
             path: "src/lib.rs".to_string(),
+            renamed_from: None,
             additions: 3,
             deletions: 1,
             status: WorkspaceGitFileStatus::Modified,
@@ -3223,7 +3224,10 @@ fn workspace_git_write_frames_round_trip_with_their_wire_words() {
             *frame,
             "{variant}"
         );
-        assert_eq!(frame.request_id(), Some(frame.request_id().expect("id")));
+        // The four ids are 7, 8, 9, 10 in order — a literal the assertion
+        // can fail against (comparing the value with itself would be a
+        // tautology, which is what this line was).
+        assert_eq!(frame.request_id(), Some(7 + index as u64));
         assert!(frame.is_state_changing(), "{variant}: a write is audited");
         assert_eq!(
             frame.idempotency_key(),

@@ -23,7 +23,8 @@ What is wired and what is not:
   `worktree` isolation is still refused by the daemon, so every workspace is
   the project folder itself until git worktrees land.
 
-- **The Changes panel is real, and read-only.** `ChangesSurface.tsx` reads
+- **The Changes panel is real — it reads, and it writes its own four
+  acts.** `ChangesSurface.tsx` reads
   `workspace_git_status` and the selected row's `workspace_git_diff` through the
   typed commands, driven by `useWorkspaceChanges.ts`: refresh on open, a 5 s poll
   while the panel is open, and a manual Refresh button. No watcher — none exists

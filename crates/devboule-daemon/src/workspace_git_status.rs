@@ -76,7 +76,11 @@ fn status_of(root: &Path) -> WorkspaceGitStatus {
     let degraded = count_error.is_some();
     let rows: Vec<WorkspaceGitRow> = entries
         .into_iter()
-        .map(|(path, status)| parse::build_row(root, &path, status, &counts, degraded))
+        .map(|(path, status, renamed_from)| {
+            let mut row = parse::build_row(root, &path, status, &counts, degraded);
+            row.renamed_from = renamed_from;
+            row
+        })
         .collect();
     // Normally `!rows.is_empty()`. The withheld list above is the one
     // deliberate exception and never reaches this line.

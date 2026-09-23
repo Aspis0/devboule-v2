@@ -25,11 +25,16 @@ pub(super) fn stdout_truncated(stdout: &str) -> bool {
     stdout.len() > GIT_STDOUT_MAX_BYTES
 }
 
+/// One parsed row: its path, its wire word, and — only for a rename/copy
+/// record — the original path `-z` writes as the bare next token. Named so
+/// the return type stays readable (the compiler's `type_complexity` said so)
+/// and so a construction site shows which element is which.
+pub(super) type ParsedRow = (String, WorkspaceGitFileStatus, Option<String>);
+
 /// The branch and the changed paths of a `-z` `--porcelain=v2` dump, in git's
-/// own order.
-pub(super) fn parse_status(
-    stdout: &str,
-) -> (Option<String>, Vec<(String, WorkspaceGitFileStatus)>) {
+/// own order. Each row carries the rename source when the record is one: the
+/// bare token `-z` writes after a `2` record lands in `renamed_from`.
+pub(super) fn parse_status(stdout: &str) -> (Option<String>, Vec<ParsedRow>) {
     let mut branch = None;
     let mut rows = Vec::new();
     let mut records = stdout.split('\0').filter(|record| !record.is_empty());
@@ -42,20 +47,27 @@ pub(super) fn parse_status(
             continue;
         }
         if let Some(path) = record.strip_prefix("? ") {
-            rows.push((path.to_string(), WorkspaceGitFileStatus::Untracked));
+            rows.push((path.to_string(), WorkspaceGitFileStatus::Untracked, None));
             continue;
         }
         let Some((xy, path)) = entry(record) else {
             continue;
         };
-        rows.push((path.to_string(), classify(xy, record.starts_with("u "))));
-        if record.starts_with("2 ") {
-            // `-z` writes a rename's original path as the very next record,
-            // bare. Skipping it by position is the only thing stopping a
-            // source path that looks like an entry (`? old`) from becoming a
-            // second row — see the killer test in the parse tests.
-            records.next();
-        }
+        // `-z` writes a rename's original path as the very next record,
+        // bare. Consuming it by position is what keeps it from becoming a
+        // second row **and** what hands it to the row as `renamed_from` —
+        // the panel's renamed row acts on both of its paths because of
+        // this line. Both halves have their tests in the parse tests.
+        let renamed_from = if record.starts_with("2 ") {
+            records.next().map(str::to_string)
+        } else {
+            None
+        };
+        rows.push((
+            path.to_string(),
+            classify(xy, record.starts_with("u ")),
+            renamed_from,
+        ));
     }
     (branch, rows)
 }
@@ -189,6 +201,10 @@ pub(super) fn build_row(
     };
     WorkspaceGitRow {
         path: path.to_string(),
+        // Filled in by the caller from the parse's third element: `build_row`
+        // decides counts and capped, never identity — the rename source is
+        // identity, and it arrives with the record.
+        renamed_from: None,
         additions,
         deletions,
         status,

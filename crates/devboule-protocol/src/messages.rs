@@ -1655,6 +1655,16 @@ pub struct WorkspaceGitTotals {
 pub struct WorkspaceGitRow {
     /// Path relative to the repository root, as git printed it.
     pub path: String,
+    /// The original path of a rename (or copy) record: `-z` writes it as
+    /// the bare token right after the record, and this field is where that
+    /// token lands instead of vanishing. The panel needs it to act on a
+    /// renamed row **with both of its paths** — discarding (or unstaging)
+    /// only the new path leaves the old side's deletion staged, a half
+    /// operation that answers success (measured on git 2.54.0; the row is
+    /// keyed on the new path because that is what the `2` record carries).
+    /// `null`/absent for every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_from: Option<String>,
     pub additions: u64,
     pub deletions: u64,
     pub status: WorkspaceGitFileStatus,

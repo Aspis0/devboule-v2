@@ -45,7 +45,11 @@ fn an_untracked_record_is_a_row() {
     assert_eq!(branch.as_deref(), Some("main"));
     assert_eq!(
         rows,
-        vec![("new.txt".to_string(), WorkspaceGitFileStatus::Untracked)]
+        vec![(
+            "new.txt".to_string(),
+            WorkspaceGitFileStatus::Untracked,
+            None
+        )]
     );
 }
 
@@ -78,15 +82,21 @@ fn the_six_status_words_come_from_the_record_kind_and_the_xy_pair() {
 }
 
 /// A `2` record, and the bare original path `-z` writes after it: the source
-/// of a rename must not become a second row, and an unknown record is ignored
-/// rather than guessed at.
+/// must not become a second row, and it must land in `renamed_from` — the
+/// field the panel's renamed row acts with. Mutant `e:2` — consume that
+/// token without capturing it (its shape before this fix): the row answers
+/// `None` and this equality fails.
 #[test]
-fn a_rename_keeps_one_row_and_its_original_path_is_not_a_row() {
+fn a_rename_keeps_one_row_and_carries_its_original_path() {
     let stdout = format!("{HEADERS}2 R. N... 100644 100644 100644 a b R100 new.txt\0old.txt\0");
     let (_, rows) = parse_status(&stdout);
     assert_eq!(
         rows,
-        vec![("new.txt".to_string(), WorkspaceGitFileStatus::Renamed)],
+        vec![(
+            "new.txt".to_string(),
+            WorkspaceGitFileStatus::Renamed,
+            Some("old.txt".to_string()),
+        )],
         "{rows:?}"
     );
 }
@@ -179,7 +189,13 @@ fn the_original_path_of_a_rename_never_becomes_a_row() {
     let (_, rows) = parse_status(&stdout);
     assert_eq!(
         rows,
-        vec![("new.txt".to_string(), WorkspaceGitFileStatus::Renamed)],
+        vec![(
+            "new.txt".to_string(),
+            WorkspaceGitFileStatus::Renamed,
+            // The source is captured even when it spells like an entry: one
+            // token, one job — consumed by position, remembered as identity.
+            Some("? trap.txt".to_string()),
+        )],
         "the orphan record leaked in as a row: {rows:?}"
     );
 }

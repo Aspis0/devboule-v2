@@ -22,18 +22,21 @@ interface GitActionsContext {
 }
 
 export interface WorkspaceGitActions {
-  /** Stage one row's path. Resolves `null` when the act landed, the
-   * refusal's sentence otherwise. */
-  stage: (path: string) => Promise<string | null>;
-  /** Unstage one row's path — the worktree keeps its bytes. */
-  unstage: (path: string) => Promise<string | null>;
+  /** Stage a row's paths. Resolves `null` when the act landed, the
+   * refusal's sentence otherwise. One rule for a renamed row: it arrives
+   * as **both** of its paths (the row's `renamedFrom`), because acting on
+   * the new path alone leaves the old side staged — a half operation that
+   * would answer success. */
+  stage: (paths: string[]) => Promise<string | null>;
+  /** Unstage a row's paths — the worktree keeps its bytes. */
+  unstage: (paths: string[]) => Promise<string | null>;
   /**
-   * Discard one row's path — the one act of the four that loses data, and
+   * Discard a row's paths — the one act of the four that loses data, and
    * the one this hook gates: the native `confirm()` stands between the
    * click and the wire, and a declined confirmation resolves `null` with
    * **zero** calls made and nothing refreshed, because nothing happened.
    */
-  discard: (path: string) => Promise<string | null>;
+  discard: (paths: string[]) => Promise<string | null>;
   /** Commit what is staged, with this hand-written message. */
   commit: (message: string) => Promise<string | null>;
 }
@@ -74,28 +77,31 @@ export function useWorkspaceGitActions(context: GitActionsContext): WorkspaceGit
   );
 
   const stage = useCallback(
-    async (path: string): Promise<string | null> => {
+    async (paths: string[]): Promise<string | null> => {
       if (workspaceId === null) return "no workspace is selected";
-      return run(async () => workspaceGitStage(workspaceId, [path]));
+      return run(async () => workspaceGitStage(workspaceId, paths));
     },
     [run, workspaceId],
   );
 
   const unstage = useCallback(
-    async (path: string): Promise<string | null> => {
+    async (paths: string[]): Promise<string | null> => {
       if (workspaceId === null) return "no workspace is selected";
-      return run(async () => workspaceGitUnstage(workspaceId, [path]));
+      return run(async () => workspaceGitUnstage(workspaceId, paths));
     },
     [run, workspaceId],
   );
 
   const discard = useCallback(
-    async (path: string): Promise<string | null> => {
+    async (paths: string[]): Promise<string | null> => {
       if (workspaceId === null) return "no workspace is selected";
       // The gate: nothing below runs unless the user answers yes — a No
       // reaches no command and refreshes nothing, because nothing changed.
+      // Every path the act will touch is named in the question — for a
+      // renamed row that is both sides of the rename.
+      const named = paths.map((entry) => `"${entry}"`).join(" and ");
       const confirmed = await confirm(
-        `Discard every uncommitted change to "${path}"? This cannot be undone.`,
+        `Discard every uncommitted change to ${named}? This cannot be undone.`,
         {
           title: "Discard changes",
           kind: "warning",
@@ -104,7 +110,7 @@ export function useWorkspaceGitActions(context: GitActionsContext): WorkspaceGit
         },
       );
       if (!confirmed) return null;
-      return run(async () => workspaceGitDiscard(workspaceId, [path]));
+      return run(async () => workspaceGitDiscard(workspaceId, paths));
     },
     [run, workspaceId],
   );
