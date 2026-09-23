@@ -115,6 +115,86 @@ pub(super) fn dispatch_journal(
             workspace_id,
             path,
         } => crate::workspace_file_read::reply(state, id, &workspace_id, &path),
+        // The two write acts: keyed like the other keyed writes here (a
+        // retry with the same key replays the first success instead of
+        // acting twice — the second rename would find nothing to rename),
+        // and only a success is remembered: a refusal costs nothing to
+        // retry, and caching it would freeze a sentence over a tree that
+        // has since changed.
+        ClientMessage::WorkspaceFileRename {
+            id,
+            workspace_id,
+            path,
+            name,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("rename:{workspace_id}:{path}:{name}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            let reply = crate::workspace_file_mutations::reply_rename(
+                state,
+                id,
+                &workspace_id,
+                &path,
+                &name,
+            );
+            if matches!(
+                &reply,
+                DaemonMessage::WorkspaceFileRenamed {
+                    change: devboule_protocol::WorkspaceFileMutation {
+                        new_path: Some(_),
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                remember(
+                    state,
+                    owner,
+                    idempotency_key.as_deref(),
+                    &fingerprint,
+                    &reply,
+                );
+            }
+            reply
+        }
+        ClientMessage::WorkspaceFileDuplicate {
+            id,
+            workspace_id,
+            path,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("duplicate:{workspace_id}:{path}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            let reply =
+                crate::workspace_file_mutations::reply_duplicate(state, id, &workspace_id, &path);
+            if matches!(
+                &reply,
+                DaemonMessage::WorkspaceFileDuplicated {
+                    change: devboule_protocol::WorkspaceFileMutation {
+                        new_path: Some(_),
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                remember(
+                    state,
+                    owner,
+                    idempotency_key.as_deref(),
+                    &fingerprint,
+                    &reply,
+                );
+            }
+            reply
+        }
         ClientMessage::WorkspaceCreate {
             id,
             project_id,

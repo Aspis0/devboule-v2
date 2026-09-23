@@ -2863,6 +2863,101 @@ fn workspace_file_read_round_trips_with_its_wire_words() {
     }
 }
 
+/// The two write frames of the Files panel and their replies, pinned the
+/// same way the read's are: the `type` tags, the camelCase keys (including
+/// the optional `idempotencyKey`, omitted when absent), `newPath` and
+/// `error` travelling as explicit `null` — and, the reason these two frames
+/// are the first workspace ones allowed to write at all,
+/// `is_state_changing` being `true`: a rename and a duplicate are audited.
+#[test]
+fn workspace_file_writes_round_trip_with_their_wire_words() {
+    let renamed = DaemonMessage::WorkspaceFileRenamed {
+        id: 21,
+        change: WorkspaceFileMutation {
+            new_path: Some("docs/guide.md".to_string()),
+            error: None,
+        },
+    };
+    let json = serde_json::to_string(&renamed).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_file_renamed\"",
+        "\"newPath\":\"docs/guide.md\"",
+        "\"error\":null",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        renamed
+    );
+
+    let duplicated = DaemonMessage::WorkspaceFileDuplicated {
+        id: 22,
+        change: WorkspaceFileMutation {
+            new_path: None,
+            error: Some("an entry with that new name already exists".to_string()),
+        },
+    };
+    let json = serde_json::to_string(&duplicated).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_file_duplicated\"",
+        "\"newPath\":null",
+        "\"error\":\"an entry with that new name",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        duplicated
+    );
+
+    let request = ClientMessage::WorkspaceFileRename {
+        id: 21,
+        workspace_id: "ws.1".to_string(),
+        path: "docs/guide.txt".to_string(),
+        name: "guide.md".to_string(),
+        idempotency_key: Some("k-21".to_string()),
+    };
+    let json = serde_json::to_string(&request).expect("serialize");
+    assert!(
+        json.contains("\"type\":\"workspace_file_rename\""),
+        "{json}"
+    );
+    assert!(json.contains("\"name\":\"guide.md\""), "{json}");
+    assert!(json.contains("\"idempotencyKey\":\"k-21\""), "{json}");
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        request
+    );
+    assert_eq!(request.name(), "WorkspaceFileRename");
+    assert!(request.is_state_changing(), "a write is audited");
+    assert_eq!(request.request_id(), Some(21));
+    assert_eq!(request.idempotency_key(), Some("k-21"));
+
+    let duplicate = ClientMessage::WorkspaceFileDuplicate {
+        id: 22,
+        workspace_id: "ws.1".to_string(),
+        path: "README.md".to_string(),
+        idempotency_key: None,
+    };
+    let json = serde_json::to_string(&duplicate).expect("serialize");
+    assert!(
+        json.contains("\"type\":\"workspace_file_duplicate\""),
+        "{json}"
+    );
+    // Absent, not `null`: the field is typed optional in TypeScript, and an
+    // omitted key is the only spelling `skip_serializing_if` ever produces.
+    assert!(!json.contains("idempotencyKey"), "{json}");
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        duplicate
+    );
+    assert_eq!(duplicate.name(), "WorkspaceFileDuplicate");
+    assert!(duplicate.is_state_changing(), "a write is audited");
+    assert_eq!(duplicate.request_id(), Some(22));
+    assert_eq!(duplicate.idempotency_key(), None);
+}
+
 /// The request trace names a command through `name()`, which is a
 /// `&'static str` constant — never through `Debug`, whose rendering carries
 /// the payload (a prompt's text) inside.

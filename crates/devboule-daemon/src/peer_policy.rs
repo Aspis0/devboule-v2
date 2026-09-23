@@ -300,12 +300,18 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // behind them: one directory per request, links never followed. The
         // content of one file discloses the lines themselves — no more than
         // the checkout's owner already reads from this machine, confined to
-        // that checkout the same way before anything opens, and read-only:
-        // no write frame exists behind this door.
+        // that checkout the same way before anything opens. Two writes ride
+        // the same grant: a rename and a duplicate change a name inside that
+        // checkout and nothing else — no deletion exists behind this door —
+        // every path is confined and walked before the act, and the
+        // administrative surface is one grant, not two (the same reason the
+        // journal verbs give above).
         ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
-        | ClientMessage::WorkspaceFileRead { .. } => with_capability(caps, CAP_ADMIN),
+        | ClientMessage::WorkspaceFileRead { .. }
+        | ClientMessage::WorkspaceFileRename { .. }
+        | ClientMessage::WorkspaceFileDuplicate { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProvidersList { .. } => with_capability(caps, CAP_ADMIN),
     }
 }
@@ -1230,6 +1236,19 @@ pub(crate) mod tests {
                 workspace_id: "ws.1".to_string(),
                 path: "README.md".to_string(),
             },
+            ClientMessage::WorkspaceFileRename {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                name: "GUIDE.md".to_string(),
+                idempotency_key: None,
+            },
+            ClientMessage::WorkspaceFileDuplicate {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                idempotency_key: None,
+            },
             ClientMessage::ProvidersList { id: 1 },
             ClientMessage::Status { id: 1 },
             ClientMessage::DaemonDiagnostics { id: 1 },
@@ -1997,6 +2016,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitDiff { .. } => administrative(),
             ClientMessage::WorkspaceFilesList { .. } => administrative(),
             ClientMessage::WorkspaceFileRead { .. } => administrative(),
+            ClientMessage::WorkspaceFileRename { .. } => administrative(),
+            ClientMessage::WorkspaceFileDuplicate { .. } => administrative(),
             ClientMessage::WorkspaceCreate { .. } => administrative(),
             ClientMessage::WorkspaceDelete { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
@@ -2025,7 +2046,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 57;
+    pub(crate) const VARIANT_COUNT: usize = 59;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2070,6 +2091,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitDiff { .. } => "WorkspaceGitDiff",
             ClientMessage::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             ClientMessage::WorkspaceFileRead { .. } => "WorkspaceFileRead",
+            ClientMessage::WorkspaceFileRename { .. } => "WorkspaceFileRename",
+            ClientMessage::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
             ClientMessage::WorkspaceCreate { .. } => "WorkspaceCreate",
             ClientMessage::WorkspaceDelete { .. } => "WorkspaceDelete",
             ClientMessage::ProvidersList { .. } => "ProvidersList",
@@ -2272,6 +2295,19 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 path: "README.md".to_string(),
+            },
+            ClientMessage::WorkspaceFileRename {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                name: "GUIDE.md".to_string(),
+                idempotency_key: None,
+            },
+            ClientMessage::WorkspaceFileDuplicate {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                idempotency_key: None,
             },
             ClientMessage::WorkspaceCreate {
                 id: 1,

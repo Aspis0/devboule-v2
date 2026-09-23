@@ -13,8 +13,8 @@ use devboule_protocol::{
     JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
     Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
     SessionEventEnvelope, SessionKind, SessionStateSnapshot, StoredAttachment, SubscriptionId,
-    WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceGitFileDiff,
-    WorkspaceGitStatus, WorkspaceIsolation,
+    WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
+    WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -903,6 +903,51 @@ impl DaemonClient {
             path: path.to_string(),
         })? {
             DaemonMessage::WorkspaceFileContent { file, .. } => Ok(file),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Rename one workspace entry. The id, a relative `path` — of an entry
+    /// the listing handed back, never the workspace's own folder — and the
+    /// new name are the whole argument; the daemon confines the path,
+    /// validates the name, and answers with the entry's new spelling (or
+    /// the sentence the refusal stopped on).
+    pub fn workspace_file_rename(
+        &self,
+        workspace_id: &str,
+        path: &str,
+        name: &str,
+    ) -> Result<WorkspaceFileMutation, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFileRename {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+            name: name.to_string(),
+            idempotency_key: None,
+        })? {
+            DaemonMessage::WorkspaceFileRenamed { change, .. } => Ok(change),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Duplicate one workspace entry: the daemon picks the name (`a copy`,
+    /// `a copy 2`, …) and answers with the copy's spelling.
+    pub fn workspace_file_duplicate(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceFileMutation, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFileDuplicate {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+            idempotency_key: None,
+        })? {
+            DaemonMessage::WorkspaceFileDuplicated { change, .. } => Ok(change),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -1924,6 +1969,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::WorkspaceGitFile { id, .. }
         | DaemonMessage::WorkspaceFiles { id, .. }
         | DaemonMessage::WorkspaceFileContent { id, .. }
+        | DaemonMessage::WorkspaceFileRenamed { id, .. }
+        | DaemonMessage::WorkspaceFileDuplicated { id, .. }
         | DaemonMessage::SessionAttached { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }

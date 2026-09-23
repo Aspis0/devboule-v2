@@ -293,6 +293,13 @@ impl PluginSession {
                         | DaemonMessage::WorkspaceGitFile { id, .. }
                         | DaemonMessage::WorkspaceFiles { id, .. }
                         | DaemonMessage::WorkspaceFileContent { id, .. }
+                        // The two Files-panel writes are replies with ids
+                        // for the same reason as the four reads above: a
+                        // plugin backend neither renames nor duplicates
+                        // inside this machine's checkout. Listed, not
+                        // swept — the match stays exhaustive on purpose.
+                        | DaemonMessage::WorkspaceFileRenamed { id, .. }
+                        | DaemonMessage::WorkspaceFileDuplicated { id, .. }
                         | DaemonMessage::DelegationState { id, .. }
                         | DaemonMessage::DelegationSetOk { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)

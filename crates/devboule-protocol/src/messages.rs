@@ -547,6 +547,46 @@ pub enum ClientMessage {
         /// listing entry already handed back.
         path: String,
     },
+    /// Rename one entry inside a workspace — the Files panel's inline rename.
+    /// A **write**: the daemon resolves the folder from `workspace_id`,
+    /// confines `path` like [`Self::WorkspaceFileRead`] does, validates `name`
+    /// as one name with no separator (and never `.git` in any spelling),
+    /// refuses a target name that is already taken (a rename that changes
+    /// only the case of the same entry is allowed), and — for an entry git
+    /// tracks — performs the rename with `git mv`, so the act arrives in the
+    /// Changes panel as a staged rename rather than as a deletion beside a
+    /// new file. No confirmation exists on this frame: a rename loses no
+    /// data. The reply is [`DaemonMessage::WorkspaceFileRenamed`].
+    WorkspaceFileRename {
+        id: u64,
+        workspace_id: String,
+        /// Path relative to the workspace folder of the entry being renamed —
+        /// the spelling a listing entry already handed back.
+        path: String,
+        /// The entry's new name: one name, judged on its trimmed spelling.
+        /// The frontend checks it too as a courtesy; this daemon's check is
+        /// the rule.
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
+    /// Duplicate one entry inside a workspace — the Files panel's Duplicate.
+    /// A **write** like [`Self::WorkspaceFileRename`], with the same
+    /// confinement and the same guards. The new name is chosen by the
+    /// daemon (`a copy.txt`, then `a copy 2.txt`, …) and the copy is created
+    /// exclusive: an existing entry is never overwritten, and a folder is
+    /// copied whole — refusing (and removing what it made) if it meets a
+    /// link, because nothing in this tree is ever copied *through* a link.
+    /// Git is not consulted: a duplicate is not a rename and stages nothing.
+    /// The reply is [`DaemonMessage::WorkspaceFileDuplicated`].
+    WorkspaceFileDuplicate {
+        id: u64,
+        workspace_id: String,
+        /// Path relative to the workspace folder of the entry to duplicate.
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
     WorkspaceCreate {
         id: u64,
         project_id: String,
@@ -778,6 +818,8 @@ impl ClientMessage {
             | Self::WorkspaceGitDiff { id, .. }
             | Self::WorkspaceFilesList { id, .. }
             | Self::WorkspaceFileRead { id, .. }
+            | Self::WorkspaceFileRename { id, .. }
+            | Self::WorkspaceFileDuplicate { id, .. }
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
             | Self::ProvidersList { id }
@@ -825,6 +867,12 @@ impl ClientMessage {
                 idempotency_key, ..
             }
             | Self::SessionDelete {
+                idempotency_key, ..
+            }
+            | Self::WorkspaceFileRename {
+                idempotency_key, ..
+            }
+            | Self::WorkspaceFileDuplicate {
                 idempotency_key, ..
             } => idempotency_key.as_deref(),
             Self::Hello(_)
@@ -920,6 +968,8 @@ impl ClientMessage {
             Self::WorkspaceGitDiff { .. } => "WorkspaceGitDiff",
             Self::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             Self::WorkspaceFileRead { .. } => "WorkspaceFileRead",
+            Self::WorkspaceFileRename { .. } => "WorkspaceFileRename",
+            Self::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
             Self::WorkspaceDelete { .. } => "WorkspaceDelete",
             Self::ProvidersList { .. } => "ProvidersList",
@@ -999,6 +1049,8 @@ impl ClientMessage {
             | Self::ProjectAdd { .. }
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
+            | Self::WorkspaceFileRename { .. }
+            | Self::WorkspaceFileDuplicate { .. }
             | Self::ProvidersRefresh { .. }
             | Self::ProviderUpdate { .. }
             | Self::Invoke { .. }
@@ -1110,6 +1162,23 @@ pub enum DaemonMessage {
         id: u64,
         #[serde(flatten)]
         file: WorkspaceFileContent,
+    },
+    /// The reply to [`ClientMessage::WorkspaceFileRename`]: the entry's new
+    /// spelling, or the sentence the refusal stopped on. Flattened beside
+    /// `id` the same way [`DaemonMessage::WorkspaceFileContent`] flattens
+    /// its body.
+    WorkspaceFileRenamed {
+        id: u64,
+        #[serde(flatten)]
+        change: WorkspaceFileMutation,
+    },
+    /// The reply to [`ClientMessage::WorkspaceFileDuplicate`]: the copy's
+    /// spelling (the daemon chose the name), or the sentence the refusal
+    /// stopped on.
+    WorkspaceFileDuplicated {
+        id: u64,
+        #[serde(flatten)]
+        change: WorkspaceFileMutation,
     },
     Workspace {
         id: u64,
@@ -1615,6 +1684,25 @@ pub struct WorkspaceFileContent {
     /// Milliseconds since the Unix epoch, as `stat` reported them; `null`
     /// when the filesystem gave no stamp, and on `refused`.
     pub modified_at: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// The outcome of one Files-panel write — a rename or a duplicate — as both
+/// replies carry it. Exactly one field is `Some`: a success carries
+/// `new_path` — the entry's new spelling relative to the workspace folder,
+/// `/`-joined the way a listing builds its entries — and no sentence; a
+/// refusal carries a static `error` sentence and `new_path: null`, so a
+/// refusal claims nothing about where anything is. The same pair discipline
+/// [`WorkspaceDirectory`] and [`WorkspaceFileContent`] keep, and the same
+/// debt: `error` is free text on a frame the redaction seam does not touch,
+/// so its sentences are static or the registry's own (which echoes the
+/// `workspace_id` the caller sent — never a path).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileMutation {
+    /// The entry's new spelling on success; `null` on a refusal.
+    pub new_path: Option<String>,
+    /// Why the act was refused; `null` on a success.
     pub error: Option<String>,
 }
 

@@ -1954,15 +1954,24 @@
   font-size: 11px;
 }
 
-/* One row of the tree. A folder is a button — it toggles — and a file is
-   a button too: it opens the content preview below the tree (a read; the
-   panel still has no write control of any kind). Depth padding arrives
-   inline from the row's depth. */
+/* One row of the tree. The row is a wrapper — depth padding and the row's
+   menu live on it — holding one control: a folder button (it toggles), a
+   file button (it opens the content preview below the tree — a read), or
+   the inline rename input while a rename is being typed. The row's ⋯
+   trigger sits beside it. */
+.workspace-tree-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .workspace-tree-dir {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 27px;
   padding: 0 8px;
   color: var(--ink);
@@ -1980,7 +1989,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 27px;
   padding: 0 8px;
   color: var(--ink-soft);
@@ -1989,6 +1999,82 @@
   border: 0;
   border-radius: 8px;
   cursor: pointer;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+/* The row's own menu trigger: always present, quiet until hovered — the
+   first row-level control this panel has (Rename and Duplicate behind it;
+   Delete arrives with its own slice). */
+.workspace-tree-menu-trigger {
+  flex: none;
+  height: 27px;
+  padding: 0 8px;
+  color: var(--silence);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.workspace-tree-menu-trigger:hover,
+.workspace-tree-menu-trigger[aria-expanded="true"] {
+  color: var(--ink);
+  background: var(--surface-muted);
+}
+
+/* The menu itself: over the rows below it, so opening it never moves the
+   tree under the pointer. */
+.workspace-tree-menu {
+  position: absolute;
+  top: 26px;
+  right: 6px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  min-width: 118px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+}
+
+.workspace-tree-menu-item {
+  padding: 6px 8px;
+  color: var(--ink);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+.workspace-tree-menu-item:hover {
+  background: var(--surface-muted);
+}
+
+.workspace-tree-menu-item:disabled,
+.workspace-tree-menu-trigger:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* The inline rename: the row's own name, ready to be edited in place —
+   Enter commits it, Escape or a click away abandons it. */
+.workspace-tree-rename {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
 }

@@ -464,6 +464,8 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
+        | ClientMessage::WorkspaceFileRename { .. }
+        | ClientMessage::WorkspaceFileDuplicate { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }
@@ -844,6 +846,14 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
             exit_code,
             log,
         },
+        // A replayed write answers under the retry's own id — the id the
+        // caller is still waiting on — never the first call's.
+        DaemonMessage::WorkspaceFileRenamed { change, .. } => {
+            DaemonMessage::WorkspaceFileRenamed { id, change }
+        }
+        DaemonMessage::WorkspaceFileDuplicated { change, .. } => {
+            DaemonMessage::WorkspaceFileDuplicated { id, change }
+        }
         DaemonMessage::Error(error) => DaemonMessage::Error(error.with_id(id)),
         other => other,
     }

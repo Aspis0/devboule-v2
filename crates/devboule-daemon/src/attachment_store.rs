@@ -1,9 +1,14 @@
 //! Where the bytes attached to a prompt live on disk.
 //!
 //! Files live under the daemon's runtime directory, one folder per session, and
-//! never inside the workspace. A workspace is a git checkout the user reads from
-//! `git status` and the Changes panel; an attachment written there would appear
-//! as the user's own edit and could be committed by accident.
+//! never inside the workspace. A workspace is a git checkout the user reads
+//! from `git status` and the Changes panel **and now renames and duplicates
+//! from the Files panel — through its own named write requests, and only
+//! those** (the owner reopened that half of the rule on 2026-09-22). The half
+//! this store exists for is unchanged: an attachment written there would
+//! appear as the user's own edit and could be committed by accident, so an
+//! agent's payload never enters — the only writes into a workspace are the
+//! user's named actions from the panel.
 //!
 //! Layout is `<runtime dir>/attachments/<session id>/<sha256>.<ext>`.
 //!

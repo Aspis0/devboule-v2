@@ -1,6 +1,7 @@
-import { memo } from "react";
+import { memo, useState, type ReactNode } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
 import { FilesPreview, formatSize } from "./FilesPreview";
+import { useWorkspaceFileActions } from "./useWorkspaceFileActions";
 import { useWorkspaceFilePreview } from "./useWorkspaceFilePreview";
 import { useWorkspaceFiles, type DirectoryCell } from "./useWorkspaceFiles";
 
@@ -84,36 +85,172 @@ function visibleRows(
 
 const indent = (depth: number): { paddingLeft: string } => ({ paddingLeft: `${8 + depth * 14}px` });
 
+/** The inline rename in progress: which row it is, and what is typed so far. */
+interface Renaming {
+  path: string;
+  value: string;
+}
+
 /**
  * The Files panel: a presenter over the reads `useWorkspaceFiles` and
- * `useWorkspaceFilePreview` make. Every state the wire can produce is its
+ * `useWorkspaceFilePreview` make, and over the two write acts
+ * `useWorkspaceFileActions` runs. Every state the wire can produce is its
  * own screen — loading, no workspace, an empty folder, the wire's refusal
  * sentence, the capped and skipped notes, the tree itself, a per-folder
- * loading/error row under an expanded folder, and the clicked file's
- * preview below it (loading / text / image / binary / too large / the
- * refusal's sentence, one screen each). Read-only by decision (DECISIONS
- * §5, which asked for exactly this: navigate the tree **and see a file's
- * content**): folders toggle, files open a preview — both reads — and no
- * rename, delete, create or download control exists here, nothing coming
- * from this module's imports either, which reach two read commands.
+ * loading/error row under an expanded folder, the clicked file's preview
+ * below it (loading / text / image / binary / too large / the refusal's
+ * sentence, one screen each), and — since the owner reopened DECISIONS §5
+ * on 2026-09-22 — each row's own menu (Rename, Duplicate; Delete arrives
+ * with its own slice, behind a confirmation), the inline rename it starts,
+ * and a write's refusal under the toolbar as the alert it is. Neither act
+ * loses data, so neither asks for confirmation: no delete, create or
+ * download control exists here, nothing coming from this module's imports
+ * either, which reach two read commands and those two writes.
  */
 export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSurfaceProps) {
-  const { cells, expanded, toggle, refresh } = useWorkspaceFiles(workspaceId);
+  const { cells, expanded, toggle, refresh, refreshPath, rekey } = useWorkspaceFiles(workspaceId);
   const {
     preview,
     selection,
     select,
     refresh: refreshPreview,
   } = useWorkspaceFilePreview(workspaceId);
+  const { renameEntry, duplicateEntry } = useWorkspaceFileActions({
+    workspaceId,
+    refreshPath,
+    rekey,
+    selection,
+    select,
+  });
+  const [menuPath, setMenuPath] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<Renaming | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // One act at a time: the menu and the rename input stay answering while
+  // the wire decides, so a double click cannot fire two renames.
+  const [acting, setActing] = useState(false);
+
   const refreshAll = (): void => {
     refresh();
     refreshPreview();
   };
+  const startRename = (entry: WorkspaceFileEntry): void => {
+    setMenuPath(null);
+    setRenaming({ path: entry.path, value: entry.name });
+  };
+  const commitRename = async (entry: WorkspaceFileEntry): Promise<void> => {
+    if (renaming === null || acting) return;
+    setActionError(null);
+    setActing(true);
+    const error = await renameEntry(entry, renaming.value);
+    setActing(false);
+    if (error === null) {
+      setRenaming(null);
+    } else {
+      // The refusal's own sentence, and the input stays open under it: the
+      // name it rejected is still on screen to be fixed.
+      setActionError(error);
+    }
+  };
+  const runDuplicate = async (entry: WorkspaceFileEntry): Promise<void> => {
+    setMenuPath(null);
+    setActionError(null);
+    setActing(true);
+    const error = await duplicateEntry(entry);
+    setActing(false);
+    if (error !== null) setActionError(error);
+  };
+
   const root = cells[""] ?? null;
   const rootFailure = root?.failure ?? null;
   const rootReply = root?.reply ?? null;
   const loading = workspaceId !== null && rootReply === null && rootFailure === null;
   const rows = visibleRows(cells, expanded);
+
+  /** One tree entry: its own button (or the input renaming it), the row's
+   * menu trigger, and the menu itself when this row's is open. */
+  const entryRow = ({ entry, depth }: { entry: WorkspaceFileEntry; depth: number }): ReactNode => {
+    const beingRenamed = renaming !== null && renaming.path === entry.path;
+    return (
+      <div className="workspace-tree-row" key={entry.path} style={indent(depth)}>
+        {beingRenamed ? (
+          <input
+            className="workspace-tree-rename"
+            aria-label={`Rename ${entry.name}`}
+            value={renaming.value}
+            autoFocus
+            onChange={(event) => setRenaming({ path: entry.path, value: event.target.value })}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void commitRename(entry);
+              if (event.key === "Escape") setRenaming(null);
+            }}
+            // Clicking away abandons the edit — a rename is never committed
+            // by losing focus, only by Enter.
+            onBlur={() => {
+              if (!acting) setRenaming(null);
+            }}
+          />
+        ) : entry.kind === "dir" ? (
+          <button
+            type="button"
+            className="workspace-tree-dir"
+            aria-expanded={expanded.has(entry.path)}
+            title={entry.path}
+            onClick={() => toggle(entry.path)}
+          >
+            <span className="workspace-tree-chevron">{expanded.has(entry.path) ? "▾" : "▸"}</span>
+            <span className="workspace-tree-label">{entry.name}</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="workspace-tree-file"
+            aria-pressed={selection === entry.path}
+            title={entry.path}
+            onClick={() => select(entry.path)}
+          >
+            <span className="workspace-tree-label">{entry.name}</span>
+            {entry.size !== null ? (
+              <span className="workspace-tree-size">{formatSize(entry.size)}</span>
+            ) : null}
+          </button>
+        )}
+        {beingRenamed ? null : (
+          <button
+            type="button"
+            className="workspace-tree-menu-trigger"
+            aria-label={`${entry.name} actions`}
+            aria-expanded={menuPath === entry.path}
+            disabled={acting}
+            onClick={() => setMenuPath(menuPath === entry.path ? null : entry.path)}
+          >
+            ⋯
+          </button>
+        )}
+        {menuPath === entry.path ? (
+          <div className="workspace-tree-menu" role="menu">
+            <button
+              type="button"
+              role="menuitem"
+              className="workspace-tree-menu-item"
+              disabled={acting}
+              onClick={() => startRename(entry)}
+            >
+              Rename
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="workspace-tree-menu-item"
+              disabled={acting}
+              onClick={() => void runDuplicate(entry)}
+            >
+              Duplicate
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -129,6 +266,13 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
       {rootFailure !== null ? (
         <div className="workspace-files-error" role="alert">
           {rootFailure}
+        </div>
+      ) : null}
+      {/* A write's own refusal: one place for one failure, beside the
+          reads' alert above and never in place of the tree below. */}
+      {actionError !== null ? (
+        <div className="workspace-files-error" role="alert">
+          {actionError}
         </div>
       ) : null}
       {/* A first read that refused: the alert above is the whole answer, so
@@ -147,37 +291,7 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
         <div className="workspace-files-tree">
           {rows.map((row) =>
             row.kind === "entry" ? (
-              row.entry.kind === "dir" ? (
-                <button
-                  type="button"
-                  key={row.entry.path}
-                  className="workspace-tree-dir"
-                  aria-expanded={expanded.has(row.entry.path)}
-                  style={indent(row.depth)}
-                  title={row.entry.path}
-                  onClick={() => toggle(row.entry.path)}
-                >
-                  <span className="workspace-tree-chevron">
-                    {expanded.has(row.entry.path) ? "▾" : "▸"}
-                  </span>
-                  <span className="workspace-tree-label">{row.entry.name}</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  key={row.entry.path}
-                  className="workspace-tree-file"
-                  aria-pressed={selection === row.entry.path}
-                  style={indent(row.depth)}
-                  title={row.entry.path}
-                  onClick={() => select(row.entry.path)}
-                >
-                  <span className="workspace-tree-label">{row.entry.name}</span>
-                  {row.entry.size !== null ? (
-                    <span className="workspace-tree-size">{formatSize(row.entry.size)}</span>
-                  ) : null}
-                </button>
-              )
+              entryRow(row)
             ) : row.kind === "loading" ? (
               <div
                 key={`loading:${row.path}`}

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
-    Project, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceGitFileDiff,
-    WorkspaceGitStatus, WorkspaceIsolation,
+    Project, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
+    WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
 };
 use tauri::State;
 
@@ -142,4 +142,36 @@ pub async fn workspace_file_read(
 ) -> Result<WorkspaceFileContent, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.workspace_file_read(&workspace_id, &path)).await
+}
+
+/// Rename one workspace entry — the first write behind this bridge. Same
+/// shape as the reads above: `workspace_id` names the folder, `path` is the
+/// entry's own spelling, and the daemon re-validates the name before it
+/// touches anything. Bounded like the other workspace roads: `RPC_TIMEOUT`
+/// (30 s) is what this caller feels, and the daemon's own work is one walk,
+/// one stat and either a `git mv` (60 s house timeout) or a rename. The wait
+/// leaves the window's thread the way the other long roads do.
+#[tauri::command]
+pub async fn workspace_file_rename(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+    name: String,
+) -> Result<WorkspaceFileMutation, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_file_rename(&workspace_id, &path, &name)).await
+}
+
+/// Duplicate one workspace entry — the daemon picks the free name and copies
+/// exclusively, so nothing is ever overwritten. Bounded and off-thread the
+/// same way the rename above is; a folder copy is one stat per entry with no
+/// timeout of its own, which `RPC_TIMEOUT` bounds like the listing's scan.
+#[tauri::command]
+pub async fn workspace_file_duplicate(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceFileMutation, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_file_duplicate(&workspace_id, &path)).await
 }

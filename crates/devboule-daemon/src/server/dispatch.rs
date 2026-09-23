@@ -151,14 +151,18 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::ProjectsList { .. }
         | ClientMessage::ProjectAdd { .. }
         | ClientMessage::WorkspacesList { .. }
-        // A workspace's own reads resolve the journal's workspace row by id —
-        // the git status, one file's diff, one folder's entries and one
-        // file's content — so all four ride the journal capability with the
-        // rest of the workspace inventory.
+        // A workspace's own frames resolve the journal's workspace row by id —
+        // the four reads (the git status, one file's diff, one folder's
+        // entries, one file's content) and the two write acts of the Files
+        // panel (a rename, a duplicate) — so all six ride the journal
+        // capability with the rest of the workspace inventory: the id is
+        // the door, read or write.
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
+        | ClientMessage::WorkspaceFileRename { .. }
+        | ClientMessage::WorkspaceFileDuplicate { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. } => {
             if !journal_ok {

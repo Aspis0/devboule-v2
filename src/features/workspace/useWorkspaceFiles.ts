@@ -29,16 +29,35 @@ export interface WorkspaceFiles {
   expanded: ReadonlySet<string>;
   toggle: (path: string) => void;
   refresh: () => void;
+  /**
+   * Re-read one folder through the same generation guard every read here
+   * takes — the refresh an act already performed in this tree owes to its
+   * own parent folder (and to a renamed folder's children).
+   */
+  refreshPath: (path: string) => void;
+  /**
+   * Move a subtree's keys after a rename: the entry's own key and every key
+   * below it take the new spelling — replies and expansion included — so an
+   * expanded folder stays expanded under its new name instead of collapsing
+   * into a path nothing addresses any more. Keys only: a still-in-flight
+   * read of the old spelling lands under it and is unreachable from the
+   * rows, and the fresh reads this triggers win by the generation numbers
+   * they take on arrival.
+   */
+  rekey: (oldPath: string, newPath: string) => void;
 }
 
 /**
  * The Files panel's data source: one directory per request, lazily — the
  * root on open, a folder the moment its row expands, and every folder on
- * screen again on Refresh (DECISIONS §5: read-only; the brief's schedule:
- * expansion is the update, the manual button is the refresh). No poll and no
- * watcher — an unattended tree would be a background reader of the checkout
- * for a decoration nobody asked about — and every command this hook calls is
- * a read: no rename, no delete, no create exists on this side.
+ * screen again on Refresh (the brief's schedule: expansion is the update,
+ * the manual button is the refresh). No poll and no watcher — an unattended
+ * tree would be a background reader of the checkout for a decoration nobody
+ * asked about — and every command this hook calls is a read: no rename, no
+ * delete, no create exists **on this side**. The panel does write now — its
+ * two acts live in `useWorkspaceFileActions`, which borrows `refreshPath`
+ * and `rekey` from here: a hook that reads stays a hook that reads, and
+ * this guarantee remains checkable by reading this file's imports.
  */
 export function useWorkspaceFiles(workspaceId: string | null): WorkspaceFiles {
   const [state, setState] = useState<TreeState>(() => ({
@@ -115,6 +134,27 @@ export function useWorkspaceFiles(workspaceId: string | null): WorkspaceFiles {
     for (const path of state.expanded) void read(path);
   }, [read, state.expanded]);
 
+  const rekey = useCallback(
+    (oldPath: string, newPath: string): void => {
+      setState((current) => {
+        if (current.workspaceId !== workspaceId) return current;
+        const prefix = `${oldPath}/`;
+        const move = (path: string): string =>
+          path === oldPath
+            ? newPath
+            : path.startsWith(prefix)
+              ? newPath + path.slice(oldPath.length)
+              : path;
+        const cells: Record<string, DirectoryCell> = {};
+        for (const [path, cell] of Object.entries(current.cells)) cells[move(path)] = cell;
+        const expanded = new Set<string>();
+        for (const path of current.expanded) expanded.add(move(path));
+        return { ...current, cells, expanded };
+      });
+    },
+    [workspaceId],
+  );
+
   useEffect(() => {
     if (workspaceId === null) return;
     // Named and called through a local, the way the Changes panel starts its
@@ -133,5 +173,7 @@ export function useWorkspaceFiles(workspaceId: string | null): WorkspaceFiles {
     expanded: current ? state.expanded : new Set<string>(),
     toggle,
     refresh,
+    refreshPath: read,
+    rekey,
   };
 }

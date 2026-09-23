@@ -141,7 +141,9 @@ function DiffCard({ path, diff }: { path: string; diff: ChangesReply<WorkspaceGi
  * Every state the wire can produce is its own screen — loading, not a
  * repository, a clean tree, a caveat (the wire's sentence, verbatim), the row
  * list, and the selected file's diff — and none of them is reached by a write:
- * Stage, Discard and commit do not exist here, by decision (DECISIONS §4).
+ * Stage, Discard and commit do not exist here **yet**. The owner overturned
+ * DECISIONS §4 on 2026-09-22; they arrive with the git-write slice, and
+ * until that slice lands this panel still only reads.
  */
 export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: ChangesSurfaceProps) {
   const { status, diff, selection, select, refresh } = useWorkspaceChanges(workspaceId);

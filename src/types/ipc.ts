@@ -220,6 +220,21 @@ export interface WorkspaceFileContent {
   error: string | null;
 }
 
+/**
+ * The outcome of one workspace write — a rename or a duplicate, the reply
+ * of `workspace_file_rename` / `workspace_file_duplicate` — same pair
+ * discipline as `WorkspaceDirectory`: exactly one field is non-null. A
+ * success carries `newPath` — the entry's new spelling, `/`-joined the way
+ * the tree's own paths are, so it can be keyed, selected and re-read like
+ * any path a listing handed back — and `error: null`; a refusal carries a
+ * synthetic sentence (no absolute path, no OS error text) and
+ * `newPath: null`, and the panel claims nothing about where anything is.
+ */
+export interface WorkspaceFileMutation {
+  newPath: string | null;
+  error: string | null;
+}
+
 export type SessionKind = "terminal" | "acp" | "claude" | "pi" | "codex";
 
 export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" | "codex" {

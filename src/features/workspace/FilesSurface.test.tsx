@@ -9,12 +9,19 @@ import type { WorkspaceDirectory, WorkspaceFileEntry } from "../../types/ipc";
 vi.mock("../../lib/tauri", () => ({
   workspaceFilesList: vi.fn(),
   workspaceFileRead: vi.fn(),
+  workspaceFileRename: vi.fn(),
+  workspaceFileDuplicate: vi.fn(),
   reasonFromCause: vi.fn((cause: unknown) =>
     cause instanceof Error && cause.message ? cause.message : "the app did not answer",
   ),
 }));
 
-import { workspaceFileRead, workspaceFilesList } from "../../lib/tauri";
+import {
+  workspaceFileDuplicate,
+  workspaceFileRename,
+  workspaceFileRead,
+  workspaceFilesList,
+} from "../../lib/tauri";
 import { FilesSurface } from "./FilesSurface";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -64,6 +71,10 @@ describe("FilesSurface", () => {
       modifiedAt: 0,
       error: null,
     });
+    // No test here acts on a row, but defaults keep an accidental click from
+    // reaching `undefined` and passing for a silent no-op.
+    vi.mocked(workspaceFileRename).mockResolvedValue({ newPath: "README.md", error: null });
+    vi.mocked(workspaceFileDuplicate).mockResolvedValue({ newPath: "README copy.md", error: null });
   });
 
   afterEach(async () => {
@@ -295,12 +306,14 @@ describe("FilesSurface", () => {
     expect(reads("src")).toBe(2);
   });
 
-  // Kills the mock-era guarantees in their new home: the note is gone with
-  // the data, files are rows that open a preview (a read) rather than dead
-  // controls, and no operation the app cannot perform is drawn — anchored on
+  // The doctrine's new shape: the writes EXIST (the two acts that lose no
+  // data, behind the row's own menu), and the absences that remain are the
+  // ones this slice does not carry — delete (its own slice, behind a
+  // confirmation), create, download (the phone workstream's), and the
+  // Changes panel's stage/discard, which belong to that panel. Anchored on
   // the real reply's names first, so the absences cannot pass on an empty
   // panel.
-  it("offers no write action and no mockup note, anchored on the real rows", async () => {
+  it("offers the two acts that lose no data, and none that can", async () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("crates", "dir"), entry("real-file.rs", "file", 2048)]),
     );
@@ -311,19 +324,32 @@ describe("FilesSurface", () => {
     expect(container.textContent).not.toContain("Mockup");
     expect(container.querySelector('[role="note"]')).toBeNull();
     expect(container.querySelectorAll(".workspace-tree-file")).toHaveLength(1);
-    // The only buttons are the refresh control, the folder toggles and the
-    // file rows themselves — the last two being how the panel reads, not an
-    // operation it performs.
+    // With every menu closed, the buttons on screen are only the refresh
+    // control, the folder toggles, the file rows and the rows' own menu
+    // triggers — how the panel reads and how it reaches its two acts.
     for (const button of Array.from(container.querySelectorAll("button"))) {
       expect(
         button.classList.contains("workspace-tree-dir") ||
           button.classList.contains("workspace-tree-file") ||
+          button.classList.contains("workspace-tree-menu-trigger") ||
           button.textContent === "Refresh",
       ).toBe(true);
     }
-    const names = controls();
-    for (const forbidden of ["New", "Rename", "Delete", "Download", "Stage", "Discard"]) {
-      expect(names).not.toContain(forbidden);
+    // The acts exist: open the file row's menu and they are named there.
+    const trigger = container.querySelector<HTMLButtonElement>(".workspace-tree-menu-trigger");
+    if (trigger === null) throw new Error("the row's menu trigger did not render");
+    await act(async () => {
+      trigger.click();
+    });
+    const menuItems = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).map((item) => item.textContent);
+    expect(menuItems).toEqual(["Rename", "Duplicate"]);
+    // And the absences this slice keeps: delete enters with confirmation in
+    // its own slice; the rest never lands in this panel.
+    for (const forbidden of ["New", "Delete", "Download", "Stage", "Discard"]) {
+      expect(menuItems).not.toContain(forbidden);
+      expect(controls()).not.toContain(forbidden);
     }
     expect(container.textContent).not.toContain("No workspace file tree is read yet");
   });

@@ -40,7 +40,9 @@ What is wired and what is not:
   results exists, and an invented number beside real data is worse than an
   empty space.
 
-- **The Files panel is real, and read-only.** `FilesSurface.tsx` reads
+- **The Files panel is real — it reads, and it now writes two ways.** The owner
+  reopened DECISIONS §5 on 2026-09-22 (marked in that file), so rename and
+  duplicate joined the reads. `FilesSurface.tsx` reads
   `workspace_files_list` through the typed command, driven by
   `useWorkspaceFiles.ts`: one directory per request, lazily — the root on
   open, a folder the moment its row expands, and every folder on screen
@@ -64,11 +66,22 @@ What is wired and what is not:
   cap belong to `capped`). Every
   state is its own screen — loading, no workspace, an empty folder, the
   wire's refusal sentence (root and per-folder are separate places), the
-  partial-list note and the not-listed note. Folders toggle; files are rows; no rename, delete,
-  create or download exists here — the panel reads, it never writes. The
-  badge beside the panel's name is `read-only`, a property of the panel:
-  no live source for a count exists, and an invented number beside real
-  data is the defect the old mock carried.
+  partial-list note and the not-listed note. Folders toggle; files are
+  rows. Each row carries a menu — **Rename** (inline edit, Enter commits)
+  and **Duplicate**, the two acts that lose no data and therefore ask no
+  confirmation — driven by `useWorkspaceFileActions.ts` over
+  `workspace_file_rename` / `workspace_file_duplicate`: named write
+  requests, confined and walked exactly like the reads, the workspace's own
+  folder and `.git` refused in every spelling, a taken name refused (a
+  case-only rename of the same entry is allowed), a tracked file renamed
+  with `git mv` so the act lands **staged**, and a duplicate that never
+  overwrites (`a copy`, `a copy 2`, …). **Delete does not exist yet** — it
+  arrives with its own slice, behind a confirmation, because it is the act
+  that makes something disappear; nor do create or download here (the
+  phone workstream's). The badge beside the panel's name is `read-only`,
+  which names one thing only: no live source for a **count** exists, and an
+  invented number beside real data is the defect the old mock carried — it
+  says nothing about the row actions above.
 
 - **The app and PR panels are still mock, and no longer pretend
   otherwise.** Their bodies in `sidePanels.tsx` render hardcoded examples

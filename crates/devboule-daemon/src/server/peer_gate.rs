@@ -303,6 +303,11 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::WorkspaceGitDiff { .. } => None,
         ClientMessage::WorkspaceFilesList { .. } => None,
         ClientMessage::WorkspaceFileRead { .. } => None,
+        // The two write acts act on this machine's own disk, never on an
+        // agent: there is no mode here to vet (the capability table below
+        // is what guards them).
+        ClientMessage::WorkspaceFileRename { .. } => None,
+        ClientMessage::WorkspaceFileDuplicate { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
@@ -529,6 +534,8 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
+        | ClientMessage::WorkspaceFileRename { .. }
+        | ClientMessage::WorkspaceFileDuplicate { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }

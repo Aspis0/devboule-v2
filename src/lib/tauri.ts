@@ -38,6 +38,7 @@ import type {
   Workspace,
   WorkspaceDirectory,
   WorkspaceFileContent,
+  WorkspaceFileMutation,
   WorkspaceGitFileDiff,
   WorkspaceGitStatus,
   SessionEvent,
@@ -108,6 +109,8 @@ export type CommandArgs = {
   workspace_git_diff: { workspaceId: Id; path: string };
   workspace_files_list: { workspaceId: Id; path: string };
   workspace_file_read: { workspaceId: Id; path: string };
+  workspace_file_rename: { workspaceId: Id; path: string; name: string };
+  workspace_file_duplicate: { workspaceId: Id; path: string };
   session_create: {
     workspaceId: Id | null;
     kind: SessionKind;
@@ -224,6 +227,8 @@ type CommandResults = {
   workspace_git_diff: WorkspaceGitFileDiff;
   workspace_files_list: WorkspaceDirectory;
   workspace_file_read: WorkspaceFileContent;
+  workspace_file_rename: WorkspaceFileMutation;
+  workspace_file_duplicate: WorkspaceFileMutation;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
@@ -358,6 +363,8 @@ export const COMMAND_ARG_KEYS = {
   workspace_git_diff: ["workspaceId", "path"],
   workspace_files_list: ["workspaceId", "path"],
   workspace_file_read: ["workspaceId", "path"],
+  workspace_file_rename: ["workspaceId", "path", "name"],
+  workspace_file_duplicate: ["workspaceId", "path"],
   session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -562,6 +569,22 @@ export const workspaceFilesList = (workspaceId: Id, path: string) =>
  */
 export const workspaceFileRead = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_file_read", { workspaceId, path });
+/**
+ * Rename one workspace entry — the Files panel's inline rename. `path` is
+ * the entry's own spelling from a listing reply and `name` is one name (the
+ * daemon re-validates both: the frontend's check is a courtesy). The reply
+ * carries the entry's new spelling for the tree to key on, or the refusal's
+ * sentence — a rename loses no data, so this road asks for no confirmation.
+ */
+export const workspaceFileRename = (workspaceId: Id, path: string, name: string) =>
+  invokeTyped("workspace_file_rename", { workspaceId, path, name });
+/**
+ * Duplicate one workspace entry — the daemon picks the free name (`a copy`,
+ * `a copy 2`, …) and never overwrites, so the reply's `newPath` is where the
+ * copy landed, not a name this side asked for.
+ */
+export const workspaceFileDuplicate = (workspaceId: Id, path: string) =>
+  invokeTyped("workspace_file_duplicate", { workspaceId, path });
 /**
  * Creates a workspace inside a project. Only `local` isolation exists today;
  * `worktree` and any `branch` are refused by the daemon with `unimplemented`
