@@ -59,7 +59,7 @@ function renderMenu(options: { creating?: boolean; workspaceSelected?: boolean }
     );
   });
   const entry = (label: string): HTMLButtonElement => {
-    const item = [...container.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
+    const item = [...document.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
       (button) => button.textContent === label,
     );
     if (item === undefined) throw new Error(`menu item did not render: ${label}`);

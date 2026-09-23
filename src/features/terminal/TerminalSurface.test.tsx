@@ -55,14 +55,21 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("./createTerminalView", () => ({
-  createTerminalView: async () => ({
-    write: (_data: string, callback?: () => void) => callback?.(),
-    applySnapshot: (_snapshot: unknown, callback: () => void) => callback(),
-    fit: () => true,
-    dispose: () => undefined,
-    cols: () => 80,
-    rows: () => 24,
-  }),
+  createTerminalView: async (host: HTMLElement) => {
+    // What xterm's terminal.open() leaves in the host: the helper textarea
+    // the surface's autoFocus prop is expected to focus.
+    const helper = document.createElement("textarea");
+    helper.className = "xterm-helper-textarea";
+    host.appendChild(helper);
+    return {
+      write: (_data: string, callback?: () => void) => callback?.(),
+      applySnapshot: (_snapshot: unknown, callback: () => void) => callback(),
+      fit: () => true,
+      dispose: () => undefined,
+      cols: () => 80,
+      rows: () => 24,
+    };
+  },
 }));
 
 class ResizeObserverStub {
@@ -192,6 +199,98 @@ describe("TerminalSurface observer wiring", () => {
       root = null;
     }
     document.body.replaceChildren();
+  });
+
+  it("takes the + menu's focus request: autoFocus focuses the xterm helper once the view is open", async () => {
+    const onAutoFocusTaken = vi.fn();
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          autoFocus
+          onAutoFocusTaken={onAutoFocusTaken}
+        />,
+      );
+    });
+    // start() opens the view (helper textarea appears) and settles on its own.
+    await act(async () => flush(400));
+
+    const helper = container.querySelector(".xterm-helper-textarea");
+    expect(helper).not.toBeNull();
+    expect(document.activeElement).toBe(helper);
+    expect(onAutoFocusTaken).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes focus when the request arrives after the view is already open (reverse order)", async () => {
+    const onAutoFocusTaken = vi.fn();
+    root = createRoot(container);
+    // start() opens the view first: no request yet, so nothing is focused.
+    await act(async () => {
+      root!.render(<TerminalSurface workspaceId="w1" sessionId="session-1" />);
+    });
+    await act(async () => flush(400));
+    const helper = container.querySelector(".xterm-helper-textarea");
+    expect(helper).not.toBeNull();
+    expect(document.activeElement).not.toBe(helper);
+
+    // The + menu's request lands only now — the prop-change path must take it.
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          autoFocus
+          onAutoFocusTaken={onAutoFocusTaken}
+        />,
+      );
+    });
+
+    expect(document.activeElement).toBe(helper);
+    expect(onAutoFocusTaken).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the request when the user has moved focus before it is armed", async () => {
+    const onAutoFocusTaken = vi.fn();
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    const guard = () => document.activeElement === null || document.activeElement === document.body;
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          autoFocusGuard={guard}
+          onAutoFocusTaken={onAutoFocusTaken}
+        />,
+      );
+    });
+    await act(async () => flush(400));
+    const helper = container.querySelector(".xterm-helper-textarea");
+    expect(helper).not.toBeNull();
+
+    // The user clicks elsewhere while startup is pending; THEN the request is
+    // armed. Focus must stay where the user put it, and the request is spent.
+    await act(async () => {
+      outside.focus();
+    });
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          autoFocus
+          autoFocusGuard={guard}
+          onAutoFocusTaken={onAutoFocusTaken}
+        />,
+      );
+    });
+
+    expect(document.activeElement).toBe(outside);
+    expect(document.activeElement).not.toBe(helper);
+    expect(onAutoFocusTaken).toHaveBeenCalledTimes(1);
   });
 
   it("resizes through the replacement session after the controller is recreated", async () => {

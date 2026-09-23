@@ -761,17 +761,13 @@
 /* The provider choice menu opened from the tab strip floats below the +
    button; the strip itself keeps its fixed height. */
 .workspace-session-add-wrap {
-  position: relative;
   display: flex;
 }
 
-.workspace-session-add-wrap .workspace-surface-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 30;
-  min-width: 220px;
-}
+/* The + menu and the provider picker no longer open inside the strip: they
+   portal to document.body and take position: fixed from their anchor's
+   rectangle (popoverPlace.tsx), so the scoped anchor rule above them is
+   gone with the clipping it could not prevent. */
 
 .workspace-session-add:hover,
 .workspace-session-add:focus-visible {
@@ -1660,6 +1656,12 @@
   flex: none;
   padding: 8px;
   background: var(--surface);
+  /* Raised over the page the way the app's own anchored popup is raised
+     (.workspace-command-menu): the portal has no panel behind it, so the
+     right panel's text used to show through beside the entries. */
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  box-shadow: 0 12px 30px rgba(var(--ink-rgb), 0.16);
   animation: rise 0.18s ease both;
 }
 

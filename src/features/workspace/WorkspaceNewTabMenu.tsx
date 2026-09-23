@@ -2,15 +2,19 @@
 // Agent continues into the provider flow, Terminal creates a plain session of
 // kind "terminal". Slice 3 adds Browser as one more entry in the list. The
 // keyboard lives on the menu element itself: once focus is elsewhere, the
-// keys are not the menu's.
+// keys are not the menu's. The menu renders through AnchoredPopover: a body
+// portal, because the centre panel clipped it at its edge and the resize
+// handle covered its entries when the strip was full.
 
 import {
+  useCallback,
   useEffect,
   useRef,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
 } from "react";
+import { AnchoredPopover } from "./popoverPlace";
 
 interface WorkspaceNewTabMenuProps {
   /** The "+" button the menu hangs from: Escape hands focus back to it, and a press on it is not an outside click. */
@@ -76,6 +80,14 @@ export function WorkspaceNewTabMenu({
 }: WorkspaceNewTabMenuProps) {
   const rootRef = useRef<HTMLDivElement>(null);
 
+  const firstEntryRef = useRef<HTMLButtonElement>(null);
+  // The first entry takes focus WITHOUT scrolling: the portal sits at the
+  // end of document.body, and the scroll a bare focus causes live fired the
+  // popover's own dismissal as it opened (measured over CDP, 64 ms).
+  useEffect(() => {
+    firstEntryRef.current?.focus({ preventScroll: true });
+  }, []);
+
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof Node)) return;
@@ -89,14 +101,38 @@ export function WorkspaceNewTabMenu({
     };
   }, [onClose, triggerRef]);
 
+  // One close for every dismissal that must hand focus back when it was
+  // inside the menu: resize (below), and the portal lifecycle (an ancestor
+  // scroll or a lost anchor) through onDismiss.
+  const closeMenu = useCallback(() => {
+    if (rootRef.current?.contains(document.activeElement) === true) {
+      triggerRef.current?.focus({ preventScroll: true });
+    }
+    onClose();
+  }, [onClose, triggerRef]);
+
+  // Open over a viewport that then moves is stale: close (the brief picked
+  // closing over repositioning). Focus is only handed back when it sits
+  // inside the menu that is about to unmount — a resize must not steal it
+  // from wherever the user put it.
+  useEffect(() => {
+    window.addEventListener("resize", closeMenu);
+    return () => {
+      window.removeEventListener("resize", closeMenu);
+    };
+  }, [closeMenu]);
+
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
-      triggerRef.current?.focus();
+      triggerRef.current?.focus({ preventScroll: true });
       onClose();
       return;
     }
     if (event.key === "Tab") {
-      onClose();
+      // The menu is a body portal: letting the browser continue from here
+      // would resume at the end of document.body. Continue from "+" instead.
+      event.preventDefault();
+      closeMenu();
       return;
     }
     if (
@@ -116,21 +152,23 @@ export function WorkspaceNewTabMenu({
     event.preventDefault();
     const current = enabled.indexOf(document.activeElement as HTMLButtonElement);
     if (event.key === "Home") {
-      enabled[0].focus();
+      enabled[0].focus({ preventScroll: true });
       return;
     }
     if (event.key === "End") {
-      enabled[enabled.length - 1].focus();
+      enabled[enabled.length - 1].focus({ preventScroll: true });
       return;
     }
     if (current === -1) {
-      enabled[event.key === "ArrowDown" ? 0 : enabled.length - 1].focus();
+      enabled[event.key === "ArrowDown" ? 0 : enabled.length - 1].focus({
+        preventScroll: true,
+      });
       return;
     }
     if (enabled.length === 1) return;
     const next =
       enabled[(current + (event.key === "ArrowDown" ? 1 : -1) + enabled.length) % enabled.length];
-    next.focus();
+    next.focus({ preventScroll: true });
   };
 
   const entries: NewTabEntry[] = [
@@ -144,8 +182,10 @@ export function WorkspaceNewTabMenu({
   ];
 
   return (
-    <div
-      ref={rootRef}
+    <AnchoredPopover
+      containerRef={rootRef}
+      anchorRef={triggerRef}
+      onDismiss={closeMenu}
       className="workspace-surface-menu"
       role="menu"
       aria-label="New tab"
@@ -157,7 +197,7 @@ export function WorkspaceNewTabMenu({
           role="menuitem"
           className="workspace-surface-option"
           key={entry.label}
-          autoFocus={index === 0}
+          ref={index === 0 ? firstEntryRef : undefined}
           disabled={entry.disabled}
           onClick={entry.onSelect}
         >
@@ -165,6 +205,6 @@ export function WorkspaceNewTabMenu({
           <span className="workspace-surface-name">{entry.label}</span>
         </button>
       ))}
-    </div>
+    </AnchoredPopover>
   );
 }

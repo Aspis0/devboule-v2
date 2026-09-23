@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { PermissionRequest, PermissionResolved, SessionState } from "../../types/ipc";
 import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
@@ -19,6 +19,18 @@ interface TerminalSurfaceProps {
     request: PermissionRequest,
   ) => void;
   onPermissionResolved?: (sessionId: string, resolution: PermissionResolved) => void;
+  /**
+   * Set only for the tab the "+" menu's Terminal entry just created: take
+   * focus once, when the xterm is open. Selecting a tab never sets it.
+   */
+  autoFocus?: boolean;
+  /**
+   * Asked at the moment of focus: false means focus has since moved (the
+   * user clicked elsewhere) — the request is spent and nothing is focused.
+   */
+  autoFocusGuard?: () => boolean;
+  /** Reports the request spent (focus taken, or declined), so the strip can forget it. */
+  onAutoFocusTaken?: () => void;
 }
 
 function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -94,11 +106,44 @@ export const TerminalSurface = memo(function TerminalSurface({
   onExited,
   onPermissionRequest,
   onPermissionResolved,
+  autoFocus,
+  autoFocusGuard,
+  onAutoFocusTaken,
 }: TerminalSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<TerminalSession | null>(null);
   const [banner, setBanner] = useState<TerminalBanner>(null);
   const [ctrlCArmed, setCtrlCArmed] = useState(false);
+
+  const autoFocusRef = useRef(autoFocus);
+  const autoFocusGuardRef = useRef(autoFocusGuard);
+  const onAutoFocusTakenRef = useRef(onAutoFocusTaken);
+  const focusTakenRef = useRef(false);
+  // The request and the open view arrive in either order (the prop can flip
+  // true after start() already resolved, or before it), so both the prop
+  // change and the start() continuation call this; the refs keep it callable
+  // from the session effect without widening that effect's rebuild triggers.
+  const takeAutoFocus = useCallback(() => {
+    if (focusTakenRef.current || !autoFocusRef.current) return;
+    const helper = hostRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
+    if (helper === null || helper === undefined) return;
+    // Spent at the first open attempt either way: if the guard declines —
+    // the user clicked elsewhere during startup — their focus stays, and a
+    // later re-render must not reopen the question.
+    focusTakenRef.current = true;
+    if (autoFocusGuardRef.current && !autoFocusGuardRef.current()) {
+      onAutoFocusTakenRef.current?.();
+      return;
+    }
+    helper.focus();
+    onAutoFocusTakenRef.current?.();
+  }, []);
+  useEffect(() => {
+    autoFocusRef.current = autoFocus;
+    autoFocusGuardRef.current = autoFocusGuard;
+    onAutoFocusTakenRef.current = onAutoFocusTaken;
+    if (autoFocus) takeAutoFocus();
+  }, [autoFocus, autoFocusGuard, onAutoFocusTaken, takeAutoFocus]);
 
   // A terminal attachment is valid for exactly one `(sessionId, generation)`
   // pair. Resume keeps the id but increments the generation, so this is the
@@ -141,9 +186,16 @@ export const TerminalSurface = memo(function TerminalSurface({
     });
     sessionRef.current = session;
 
-    void session.start().catch(() => {
-      if (mounted) setBanner({ kind: "error", message: "Could not start the terminal." });
-    });
+    void session
+      .start()
+      .then(() => {
+        // start() resolves only after createView opened the xterm, so the
+        // helper textarea exists here — take the armed request if any.
+        if (mounted) takeAutoFocus();
+      })
+      .catch(() => {
+        if (mounted) setBanner({ kind: "error", message: "Could not start the terminal." });
+      });
 
     return () => {
       mounted = false;
@@ -157,6 +209,7 @@ export const TerminalSurface = memo(function TerminalSurface({
     onPermissionRequest,
     onPermissionResolved,
     observedState?.generation,
+    takeAutoFocus,
   ]);
 
   useEffect(() => {
