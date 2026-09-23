@@ -38,6 +38,7 @@ fn arrival_is_on_disk_before_the_request_reaches_the_queue_and_names_nothing_els
     let wire = serde_json::to_string(&message).expect("serialize") + "\n";
 
     let (accepted_tx, accepted_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
     let acceptor = thread::spawn(move || {
         let file = listener.accept().expect("accept");
         accepted_tx.send(file).expect("hand the connection over");
@@ -45,7 +46,13 @@ fn arrival_is_on_disk_before_the_request_reaches_the_queue_and_names_nothing_els
     let client = thread::spawn(move || {
         let mut file = crate::transport::connect_pipe(&paths.pipe_name).expect("connect");
         std::io::Write::write_all(&mut file, wire.as_bytes()).expect("write request");
-        // The drop closes the pipe: the reader sees EOF and stops.
+        // The pipe is held open until the body releases it: a client that
+        // closes before the server reaches `accept` makes the overlapped
+        // `ConnectNamedPipe` complete with ERROR_BROKEN_PIPE (232) on
+        // Windows — a race with the scheduler under suite load, not a fault.
+        // After the release the thread ends, the drop closes the pipe, and
+        // the reader sees EOF and stops.
+        let _ = release_rx.recv();
     });
 
     let file = accepted_rx
@@ -97,6 +104,9 @@ fn arrival_is_on_disk_before_the_request_reaches_the_queue_and_names_nothing_els
     assert!(!log.contains("TRACE-SENTINEL"), "{log}");
     assert!(!log.contains("session-a"), "{log}");
 
+    // The arrival is verified: the client may close now, and its drop is
+    // the EOF that lets the reader finish.
+    drop(release_tx);
     reader.join().expect("reader thread");
     client.join().expect("client thread");
     drop(stop);
