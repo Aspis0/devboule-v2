@@ -304,6 +304,7 @@ pub(super) fn start_spawned_session(
             if wait_runtime.should_publish_exit_transition() {
                 wait_registry.notify_session_transition(&wait_owner, &wait_id);
             }
+            release_preserved_pty_after_drain(&wait_registry, &wait_id, EXIT_DRAIN);
             code
         })
         .ok();
@@ -632,7 +633,11 @@ fn flush_coalesced(
 /// Returns whether the registry entry was removed (so the caller can
 /// decrement the live-session count). `None` from the lock means another
 /// path already took the session — do not session_finished again.
-fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &SessionRuntime) -> bool {
+pub(super) fn finish_reader_session(
+    registry: &SessionRegistry,
+    id: &str,
+    runtime: &SessionRuntime,
+) -> bool {
     let Ok(mut map) = registry.inner.lock() else {
         return false;
     };
@@ -651,6 +656,17 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
         let coalesce = session.coalesce_handle.take();
         let mcp_session = session.mcp_session.take();
         session.exited.store(true, Ordering::SeqCst);
+        // A preserved terminal keeps its row and transcript for History, but
+        // its master-side handles keep the ConPTY host alive: a stopped
+        // terminal must not leave a headless conhost behind. Agents hold no
+        // master and keep their pipes.
+        let released = (session.metadata.kind == SessionKind::Terminal).then(|| {
+            let master = session.master.take();
+            ReleasedPtyMaster {
+                master,
+                writer: Arc::clone(&session.writer),
+            }
+        });
         let ended = owner.clone().map(|owner| {
             (
                 live_session_view(session),
@@ -659,6 +675,12 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
             )
         });
         drop(map);
+        // Released outside the registry lock: closing the pseudoconsole must
+        // not happen under the map lock, the same reason teardown_session
+        // drops its handles only after the removal.
+        if let Some(released) = released {
+            released.close();
+        }
         drop(mcp_session);
         join_coalesce(coalesce, runtime);
         journal_mark_ended(registry, runtime);
@@ -741,6 +763,102 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
         }
     }
     true
+}
+
+/// The master-side handles of a preserved terminal, taken when its child has
+/// ended. The ConPTY host lives until both are gone — the pseudoconsole
+/// owner and the input-pipe writer — so `close` gives them up in the order
+/// teardown uses: the writer first, then the master whose drop closes the
+/// pseudoconsole and ends the host.
+struct ReleasedPtyMaster {
+    master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+}
+
+impl ReleasedPtyMaster {
+    fn close(self) {
+        if let Ok(mut writer) = self.writer.lock() {
+            *writer = Box::new(ClosedPtyWriter);
+        }
+        drop(self.master);
+    }
+}
+
+/// The writer left in a preserved terminal's slot once its pipe is gone.
+/// Writes fail the way the closed pipe would, so a late prompt gets an
+/// honest refusal instead of vanishing into a dead host.
+struct ClosedPtyWriter;
+
+impl Write for ClosedPtyWriter {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "the terminal was archived",
+        ))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "the terminal was archived",
+        ))
+    }
+}
+
+/// Release a preserved terminal's master-side handles once its child has
+/// been reaped. The kill road needs this because its reader never gets
+/// there: the killed shell's ConPTY host keeps the pipes open and the
+/// reader stays blocked, so the preserve branch at EOF never runs (the
+/// journal schema's own reaped-but-still-live sweep is the same hole seen
+/// from a daemon restart). After `drain` — the same budget the exit
+/// announcement gives the reader to pump the last bytes — take the handles
+/// under one hold of the map lock and close them outside it. A second
+/// read of `preserve_on_exit` under that hold keeps a resume's replacement
+/// entry, which never inherits the flag, out of the release.
+pub(super) fn release_preserved_pty_after_drain(
+    registry: &SessionRegistry,
+    id: &str,
+    drain: Duration,
+) {
+    let preserved_terminal = |map: &HashMap<String, RegistryEntry>| {
+        map.get(id)
+            .and_then(RegistryEntry::as_child_process)
+            .is_some_and(|session| {
+                session.metadata.kind == SessionKind::Terminal
+                    && session.preserve_on_exit.load(Ordering::SeqCst)
+            })
+    };
+    {
+        let Ok(map) = registry.inner.lock() else {
+            return;
+        };
+        if !preserved_terminal(&map) {
+            return;
+        }
+    }
+    std::thread::sleep(drain);
+    let released = {
+        let Ok(mut map) = registry.inner.lock() else {
+            return;
+        };
+        if !preserved_terminal(&map) {
+            return;
+        }
+        let Some(session) = map
+            .get_mut(id)
+            .and_then(RegistryEntry::as_child_process_mut)
+        else {
+            return;
+        };
+        let master = session.master.take();
+        Some(ReleasedPtyMaster {
+            master,
+            writer: Arc::clone(&session.writer),
+        })
+    };
+    if let Some(released) = released {
+        released.close();
+    }
 }
 
 /// End a stillborn row without stalling the dispatch thread. The blocking

@@ -3134,3 +3134,131 @@ fn control_traffic_is_answered_within_bound_during_flood() {
         CONTROL_BOUND.as_millis(),
     );
 }
+
+/// The ConPTY hosts (`--headless … --server`) the daemon at `pid` owns, one
+/// per pseudoconsole it has opened and not closed. The query matches on the
+/// command line because the daemon itself, spawned with CREATE_NO_WINDOW,
+/// may carry its own interactive console host under the same parent id.
+/// This is the measurement the archive leak was found with (Win32_Process).
+fn conpty_hosts_of(pid: u32) -> Vec<u32> {
+    let query = format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='conhost.exe' AND \
+         ParentProcessId={pid}\" \
+         | Where-Object {{ $_.CommandLine -match '--server' }} \
+         | ForEach-Object {{ $_.ProcessId }}"
+    );
+    let mut last_error = None;
+    for powershell in powershell_candidates() {
+        let output = match std::process::Command::new(&powershell)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &query,
+            ])
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                last_error = Some(format!("{}: {error}", powershell.display()));
+                continue;
+            }
+        };
+        assert!(
+            output.status.success(),
+            "conhost query failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect();
+    }
+    panic!("no powershell could run: {last_error:?}");
+}
+
+/// Windows ships Windows PowerShell at a fixed System32 location, but the
+/// test process's PATH has proved unreliable for resolving it, so try the
+/// system root first and the bare name last.
+fn powershell_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(system_root) = std::env::var("SystemRoot") {
+        candidates.push(
+            PathBuf::from(system_root).join("System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+        );
+    }
+    candidates.push(PathBuf::from("powershell.exe"));
+    candidates
+}
+
+/// The archive road, end to end on the real binary: create a terminal, stop
+/// it (session_stop — the tab strip's archive), and its ConPTY host must
+/// leave with the shell. The preserved session stays listed as ended and
+/// the History panel's delete — `session_delete`, with no close before it —
+/// must remove it.
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn archiving_a_terminal_ends_its_conhost() {
+    let harness = Harness::spawn();
+    let daemon_pid = harness.child.as_ref().expect("daemon child").child.id();
+    queue_command(&harness.paths, cmd_keep());
+    let client = harness.client("archive");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let hosts = conpty_hosts_of(daemon_pid);
+        if hosts.len() == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected exactly one ConPTY host for the session, saw {hosts:?}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let conhost_pid = conpty_hosts_of(daemon_pid)[0];
+    println!(
+        "session {} daemon {daemon_pid} conhost {conhost_pid}",
+        session.id
+    );
+    assert!(
+        process_is_alive(conhost_pid),
+        "conhost {conhost_pid} must be alive while the terminal is live"
+    );
+
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach");
+    client.session_stop(&session.id).expect("stop");
+
+    // The shell dies with the stop; the conhost must follow once the
+    // preserved entry gives up the pseudoconsole. Before the release fix
+    // this wait burns its deadline and fails: the conhost stayed.
+    wait_for_process_exit(conhost_pid, Duration::from_secs(15));
+    println!("conhost {conhost_pid} exited after the archive");
+
+    let listed = client.sessions_list().expect("list");
+    let row = listed
+        .iter()
+        .find(|row| row.id == session.id)
+        .expect("the archived session stays listed");
+    assert!(
+        matches!(row.state, SessionState::Ended { .. }),
+        "the archived session reads ended: {:?}",
+        row.state
+    );
+
+    client.session_delete(&session.id).expect("delete archived");
+    assert!(
+        client
+            .sessions_list()
+            .expect("list")
+            .iter()
+            .all(|row| row.id != session.id),
+        "the deleted session must leave the roster"
+    );
+}

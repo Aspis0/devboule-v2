@@ -1383,7 +1383,15 @@ impl SessionRegistry {
                     // re-audit's P1-1): a session a peer can see holds a
                     // running child, and an unrefused delete here would
                     // remove that child's row and entry out from under it.
-                    if entry.as_peer_visible().is_some() {
+                    // A child that has already ended holds nothing the
+                    // delete could strand — the preserved entry keeps only
+                    // the transcript, and its PTY handles went when it
+                    // ended — and the History panel deletes such a row
+                    // without a close first.
+                    if entry
+                        .as_peer_visible()
+                        .is_some_and(|session| !session.exited.load(Ordering::Acquire))
+                    {
                         return Err(WireError::new(
                             ErrorCode::InvalidRequest,
                             "Close the session before deleting it.",

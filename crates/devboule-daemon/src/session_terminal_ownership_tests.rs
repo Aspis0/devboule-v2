@@ -7,8 +7,11 @@
 //! refusing another user's row and a live session. Every line below is
 //! byte-identical to its text there apart from this header; `insert_transcript`
 //! is promoted to `pub(super)` for this move, and the other fixtures come from
-//! the provider's own imports.
+//! the provider's own imports. The two tests at the end (`delete_session_
+//! allows_archived_terminal…`, `finishing_a_preserved_terminal…`) are later
+//! additions for the archive/conhost release, not part of the moved block.
 
+use super::session_spawn::{finish_reader_session, release_preserved_pty_after_drain};
 use super::tests::{
     attach_live_agent_for_test, ended_record, insert_live, insert_live_agent,
     insert_live_agent_with_writer, insert_transcript, test_owner, tmp_delete_registry,
@@ -657,6 +660,164 @@ fn delete_session_refuses_live_registry_entry_until_closed() {
             .is_some(),
         "live registry entry must stay"
     );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn delete_session_allows_archived_terminal_once_its_child_has_ended() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let original = test_owner("S-1-5-21-1", "process-1111");
+    let caller = test_owner("S-1-5-21-1", "process-2222");
+    let session_id = compose_session_id(&original.session_token(), "archived01").expect("id");
+    journal
+        .upsert_blocking(ended_record(&session_id, &original.user))
+        .expect("row");
+    insert_live(&registry, &session_id, original);
+    // The registry state a completed archive (stop, then the preserved
+    // entry's child end) leaves: the entry is still `Live`, and the
+    // child has ended.
+    {
+        let mut map = registry.inner.lock().expect("registry");
+        let session = map
+            .get_mut(&session_id)
+            .and_then(RegistryEntry::as_child_process_mut)
+            .expect("live entry");
+        session.preserve_on_exit.store(true, Ordering::SeqCst);
+        session.exited.store(true, Ordering::SeqCst);
+    }
+
+    let result = registry.delete_session(&session_id, &caller);
+    assert!(
+        result.is_ok(),
+        "an ended child holds nothing the delete could strand, and the \
+         History panel deletes without a close: {result:?}"
+    );
+    assert!(
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .get(&session_id)
+            .is_none(),
+        "archived registry entry must be removed"
+    );
+    assert!(journal
+        .list()
+        .expect("list")
+        .iter()
+        .all(|row| row.id != session_id));
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn finishing_a_preserved_terminal_closes_its_writer() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-release", "process-release");
+    let session_id = "archived-release";
+    journal
+        .upsert_blocking(ended_record(session_id, &owner.user))
+        .expect("row");
+    insert_live(&registry, session_id, owner);
+    let (writer, runtime) = {
+        let mut map = registry.inner.lock().expect("registry");
+        let session = map
+            .get_mut(session_id)
+            .and_then(RegistryEntry::as_child_process_mut)
+            .expect("live entry");
+        session.preserve_on_exit.store(true, Ordering::SeqCst);
+        (Arc::clone(&session.writer), Arc::clone(&session.runtime))
+    };
+
+    finish_reader_session(&registry, session_id, &runtime);
+
+    let still_listed = registry
+        .inner
+        .lock()
+        .expect("registry")
+        .get(session_id)
+        .and_then(RegistryEntry::as_child_process)
+        .is_some();
+    assert!(
+        still_listed,
+        "a preserved entry stays in the map for History"
+    );
+    let error = writer
+        .lock()
+        .expect("writer")
+        .write_all(b"late input")
+        .expect_err("the writer slot must be closed with the pipe");
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preserved_terminal_release_leaves_a_running_child_alone() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-release", "process-release");
+    let session_id = "running-release";
+    insert_live(&registry, session_id, owner);
+    let writer = {
+        let mut map = registry.inner.lock().expect("registry");
+        let session = map
+            .get_mut(session_id)
+            .and_then(RegistryEntry::as_child_process_mut)
+            .expect("live entry");
+        Arc::clone(&session.writer)
+    };
+
+    release_preserved_pty_after_drain(&registry, session_id, Duration::ZERO);
+
+    writer
+        .lock()
+        .expect("writer")
+        .write_all(b"typed input")
+        .expect("a child that is still running keeps its pipe");
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preserved_terminal_release_closes_the_writer_after_the_child_is_reaped() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("S-1-5-21-release", "process-release");
+    let session_id = "reaped-release";
+    journal
+        .upsert_blocking(ended_record(session_id, &owner.user))
+        .expect("row");
+    insert_live(&registry, session_id, owner);
+    let writer = {
+        let mut map = registry.inner.lock().expect("registry");
+        let session = map
+            .get_mut(session_id)
+            .and_then(RegistryEntry::as_child_process_mut)
+            .expect("live entry");
+        let writer = Arc::clone(&session.writer);
+        session.preserve_on_exit.store(true, Ordering::SeqCst);
+        session.exited.store(true, Ordering::SeqCst);
+        writer
+    };
+
+    release_preserved_pty_after_drain(&registry, session_id, Duration::ZERO);
+
+    assert!(
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .get(session_id)
+            .and_then(RegistryEntry::as_child_process)
+            .is_some(),
+        "the preserved entry stays in the map for History"
+    );
+    let error = writer
+        .lock()
+        .expect("writer")
+        .write_all(b"late input")
+        .expect_err("the writer slot must be closed with the pipe");
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
