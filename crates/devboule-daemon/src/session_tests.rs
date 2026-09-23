@@ -2498,6 +2498,7 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::WorkspaceFileRead { .. } => None,
         ClientMessage::WorkspaceFileRename { .. } => None,
         ClientMessage::WorkspaceFileDuplicate { .. } => None,
+        ClientMessage::WorkspaceFileDelete { .. } => None,
         ClientMessage::WorkspaceFilePreviewStage { .. } => None,
         ClientMessage::WorkspaceFilePreviewUnstage { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,

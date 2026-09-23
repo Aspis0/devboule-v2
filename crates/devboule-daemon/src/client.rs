@@ -953,6 +953,28 @@ impl DaemonClient {
         }
     }
 
+    /// Delete one workspace entry: the act that loses data. The caller has
+    /// already confirmed with the user — the wire carries no confirmation of
+    /// its own — and the daemon re-judges the path with every guard the
+    /// reads and the other writes use before removing anything.
+    pub fn workspace_file_delete(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceFileMutation, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFileDelete {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+            idempotency_key: None,
+        })? {
+            DaemonMessage::WorkspaceFileDeleted { change, .. } => Ok(change),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// Stage one workspace file for the panel's full-size preview. The id, a
     /// workspace id and a relative `path` are the whole argument; the daemon
     /// confines the path, refuses links, the repository's metadata and any
@@ -2006,6 +2028,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::WorkspaceFileContent { id, .. }
         | DaemonMessage::WorkspaceFileRenamed { id, .. }
         | DaemonMessage::WorkspaceFileDuplicated { id, .. }
+        | DaemonMessage::WorkspaceFileDeleted { id, .. }
         | DaemonMessage::WorkspaceFilePreviewStaged { id, .. }
         | DaemonMessage::SessionAttached { id, .. }
         | DaemonMessage::JournalUsage { id, .. }

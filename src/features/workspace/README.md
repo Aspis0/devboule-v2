@@ -67,18 +67,22 @@ What is wired and what is not:
   state is its own screen — loading, no workspace, an empty folder, the
   wire's refusal sentence (root and per-folder are separate places), the
   partial-list note and the not-listed note. Folders toggle; files are
-  rows. Each row carries a menu — **Rename** (inline edit, Enter commits)
-  and **Duplicate**, the two acts that lose no data and therefore ask no
-  confirmation — driven by `useWorkspaceFileActions.ts` over
-  `workspace_file_rename` / `workspace_file_duplicate`: named write
-  requests, confined and walked exactly like the reads, the workspace's own
-  folder and `.git` refused in every spelling, a taken name refused (a
-  case-only rename of the same entry is allowed), a tracked file renamed
-  with `git mv` so the act lands **staged**, and a duplicate that never
-  overwrites (`a copy`, `a copy 2`, …). **Delete does not exist yet** — it
-  arrives with its own slice, behind a confirmation, because it is the act
-  that makes something disappear; nor do create or download here (the
-  phone workstream's). The badge beside the panel's name is `read-only`,
+  rows. Each row carries a menu — **Rename** (inline edit, Enter commits),
+  **Duplicate**, and **Delete** — driven by `useWorkspaceFileActions.ts`
+  over `workspace_file_rename` / `workspace_file_duplicate` /
+  `workspace_file_delete`: named write requests, confined and walked
+  exactly like the reads, the workspace's own folder and `.git` refused in
+  every spelling, a taken name refused (a case-only rename of the same
+  entry is allowed), a tracked file renamed with `git mv` so the act lands
+  **staged**, and a duplicate that never overwrites (`a copy`, `a copy 2`,
+  …). **Delete is the one act that loses data, and the only one that asks
+  first**: the native dialog (`confirm` of `@tauri-apps/plugin-dialog`)
+  names the entry — a folder's question says everything inside it goes —
+  and a No stops everything before any command exists; a link is refused,
+  never deleted nor followed (one rule for the whole tree, kept where
+  Paseo's own delete unlinks it), and a folder goes whole. The gate lives
+  in the writer hook, so no caller of the delete can skip it. Create and
+  download still do not exist here (the phone workstream's). The badge beside the panel's name is `read-only`,
   which names one thing only: no live source for a **count** exists, and an
   invented number beside real data is the defect the old mock carried — it
   says nothing about the row actions above.

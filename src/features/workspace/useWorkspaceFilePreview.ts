@@ -40,6 +40,12 @@ export interface WorkspaceFilePreviewSource {
   /** The selected file's path, already resolved against the current workspace. */
   selection: string | null;
   select: (path: string) => void;
+  /** The selection dies: nothing renders for it, and the copy a stage may
+   * have put down is revoked. The panel owes this when the selected entry
+   * stops existing (a delete that took it) — a preview that keeps showing
+   * bytes of a file that is no longer there is the one state this panel
+   * must not reach. */
+  deselect: () => void;
   refresh: () => void;
 }
 
@@ -165,6 +171,20 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
     [workspaceId],
   );
 
+  const deselect = useCallback((): void => {
+    // The mirror of select: the selection goes, the cell goes with it, and
+    // the effect below revokes the copy through `selectionPath` turning
+    // null. An in-flight read of the old path may still land — it renders
+    // nothing, because nothing is selected, and the next select resets the
+    // cell anyway.
+    setSelection(null);
+    setState({
+      workspaceId,
+      path: null,
+      cell: { reply: null, staged: null, failure: null },
+    });
+  }, [workspaceId]);
+
   const selectionPath =
     selection !== null && selection.workspaceId === workspaceId ? selection.path : null;
 
@@ -210,5 +230,5 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
       ? state.cell
       : { reply: null, staged: null, failure: null };
 
-  return { preview, selection: selectionPath, select, refresh };
+  return { preview, selection: selectionPath, select, deselect, refresh };
 }

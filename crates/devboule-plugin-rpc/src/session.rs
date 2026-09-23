@@ -293,16 +293,18 @@ impl PluginSession {
                         | DaemonMessage::WorkspaceGitFile { id, .. }
                         | DaemonMessage::WorkspaceFiles { id, .. }
                         | DaemonMessage::WorkspaceFileContent { id, .. }
-                        // The two Files-panel writes are replies with ids
+                        // The three Files-panel writes are replies with ids
                         // for the same reason as the four reads above: a
-                        // plugin backend neither renames nor duplicates
-                        // inside this machine's checkout. Listed, not
-                        // swept — the match stays exhaustive on purpose.
-                        // The preview's staged copy is that panel's fifth
-                        // read-shaped reply: a plugin backend never stages
-                        // a preview either, listed for the same reason.
+                        // plugin backend neither renames nor duplicates nor
+                        // deletes inside this machine's checkout. Listed,
+                        // not swept — the match stays exhaustive on
+                        // purpose. The preview's staged copy is that
+                        // panel's fifth read-shaped reply: a plugin
+                        // backend never stages a preview either, listed
+                        // for the same reason.
                         | DaemonMessage::WorkspaceFileRenamed { id, .. }
                         | DaemonMessage::WorkspaceFileDuplicated { id, .. }
+                        | DaemonMessage::WorkspaceFileDeleted { id, .. }
                         | DaemonMessage::WorkspaceFilePreviewStaged { id, .. }
                         | DaemonMessage::DelegationState { id, .. }
                         | DaemonMessage::DelegationSetOk { id, .. } => Some(*id),

@@ -106,6 +106,7 @@ pub fn run() {
             backend::workspace::workspace_file_preview_unstage,
             backend::workspace::workspace_file_rename,
             backend::workspace::workspace_file_duplicate,
+            backend::workspace::workspace_file_delete,
             backend::workspace::workspace_files_list,
             backend::devices::devices_list,
             backend::devices::pairing_start,

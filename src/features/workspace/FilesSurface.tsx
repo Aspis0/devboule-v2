@@ -93,7 +93,7 @@ interface Renaming {
 
 /**
  * The Files panel: a presenter over the reads `useWorkspaceFiles` and
- * `useWorkspaceFilePreview` make, and over the two write acts
+ * `useWorkspaceFilePreview` make, and over the three write acts
  * `useWorkspaceFileActions` runs. Every state the wire can produce is its
  * own screen — loading, no workspace, an empty folder, the wire's refusal
  * sentence, the capped and skipped notes, the tree itself, a per-folder
@@ -101,14 +101,16 @@ interface Renaming {
  * below it (loading / text / staged image, video or PDF / binary / too
  * large / the refusal's sentence, one screen each), and — since the owner
  * reopened DECISIONS §5 on 2026-09-22 — each row's own menu (Rename,
- * Duplicate; Delete arrives with its own slice, behind a confirmation),
- * the inline rename it starts, and a write's refusal under the toolbar as
- * the alert it is. Neither act loses data, so neither asks for
- * confirmation: no delete, create or download control exists here,
- * nothing coming from this module's imports either — they reach two read
- * commands, those two writes, and the preview's stage and unstage, whose
- * writes touch only the daemon's own `previews` folder (a staged copy and
- * its revoke), never this checkout.
+ * Duplicate, and Delete behind the native confirmation the one act that
+ * loses data owes), the inline rename it starts, and a write's refusal
+ * under the toolbar as the alert it is. The confirmation lives in the
+ * writer hook, not here — this menu can reach the delete only through it.
+ * Rename and duplicate lose no data, so they ask for nothing: no create
+ * or download control exists here, nothing coming from this module's
+ * imports either — they reach two read commands, those three writes, and
+ * the preview's stage and unstage, whose writes touch only the daemon's
+ * own `previews` folder (a staged copy and its revoke), never this
+ * checkout.
  */
 export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSurfaceProps) {
   const { cells, expanded, toggle, refresh, refreshPath, rekey } = useWorkspaceFiles(workspaceId);
@@ -116,14 +118,16 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
     preview,
     selection,
     select,
+    deselect,
     refresh: refreshPreview,
   } = useWorkspaceFilePreview(workspaceId);
-  const { renameEntry, duplicateEntry } = useWorkspaceFileActions({
+  const { renameEntry, duplicateEntry, deleteEntry } = useWorkspaceFileActions({
     workspaceId,
     refreshPath,
     rekey,
     selection,
     select,
+    deselect,
   });
   const [menuPath, setMenuPath] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Renaming | null>(null);
@@ -159,6 +163,17 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
     setActionError(null);
     setActing(true);
     const error = await duplicateEntry(entry);
+    setActing(false);
+    if (error !== null) setActionError(error);
+  };
+  // The confirmation the act owes is asked inside `deleteEntry` — a No
+  // resolves with nothing done and nothing to report; only a wire refusal
+  // becomes the alert under the toolbar.
+  const runDelete = async (entry: WorkspaceFileEntry): Promise<void> => {
+    setMenuPath(null);
+    setActionError(null);
+    setActing(true);
+    const error = await deleteEntry(entry);
     setActing(false);
     if (error !== null) setActionError(error);
   };
@@ -248,6 +263,15 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
               onClick={() => void runDuplicate(entry)}
             >
               Duplicate
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="workspace-tree-menu-item"
+              disabled={acting}
+              onClick={() => void runDelete(entry)}
+            >
+              Delete
             </button>
           </div>
         ) : null}

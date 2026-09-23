@@ -1,5 +1,5 @@
-//! The Files panel's two write acts — rename and duplicate — over one
-//! workspace folder.
+//! The Files panel's three write acts — rename, duplicate, delete — over
+//! one workspace folder.
 //! Orchestration only, the writing twin of [`crate::workspace_file_read`]:
 //! resolve the folder from a workspace id — never a request field — confine
 //! the requested path to it with the same two-layer rule the reads use
@@ -10,10 +10,15 @@
 //! registry's own: no path reaches a sentence.
 //!
 //! Two races are part of this module's contract and both are fought where
-//! they occur: the destination is stat'ed and then **claimed exclusively**
-//! ([`claim_then_move`]) — a name created in between is refused, never
-//! replaced — and `git mv` keeps its own window, which [`rename_on_disk`]
-//! measures and states instead of assuming away.
+//! they occur: the rename destination is stat'ed and then **claimed
+//! exclusively** ([`claim_then_move`]) — a name created in between is
+//! refused, never replaced — and `git mv` keeps its own window, which
+//! [`rename_on_disk`] measures and states instead of assuming away. The
+//! delete has no window of its own to close: the walk vouches the entry
+//! **before** anything is touched, and the act removes under the walked
+//! spelling itself — a link swapped in between is the same stat→act race
+//! the other two acts declare, and `remove_dir_all` would still unlink
+//! such a swap rather than traverse it.
 
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
@@ -29,8 +34,8 @@ use crate::ServerState;
 
 /// The workspace's own folder: the id resolved it, so there is no parent to
 /// act from and no second spelling to give it (Paseo refuses the same three
-/// spellings, `service.ts:640-697`). Pathless, like every sentence here.
-const THE_ROOT: &str = "the workspace's own folder cannot be renamed or duplicated";
+/// spellings, `service.ts:640-697-752`). Pathless, like every sentence here.
+const THE_ROOT: &str = "the workspace's own folder cannot be renamed, duplicated or deleted";
 const NAME_EMPTY: &str = "the new name is empty";
 const NAME_SEPARATOR: &str = "the new name must not contain a path separator";
 const NAME_DOT: &str = "the new name must not be `.` or `..`";
@@ -45,6 +50,10 @@ const NAME_TRAILING: &str = "the new name must not end in a dot or a space";
 const NAME_TAKEN: &str = "an entry with that new name already exists";
 const RENAME_FAILED: &str = "the entry could not be renamed";
 const COPY_FAILED: &str = "the entry could not be duplicated";
+/// Bare constant on arms no test can force open (declared, like its two
+/// siblings above): there is no deterministic way to make a removal of a
+/// path this suite owns fail — a vanished entry dies at the walk instead.
+const DELETE_FAILED: &str = "the entry could not be deleted";
 /// The one rule this tree keeps everywhere: a link is never followed and
 /// never recreated. A folder copy that meets one is removed whole, so the
 /// sentence is true — nothing was copied.
@@ -87,6 +96,23 @@ pub(crate) fn reply_duplicate(
     DaemonMessage::WorkspaceFileDuplicated { id, change }
 }
 
+/// Resolve `workspace_id` through the registry — never a request field.
+pub(crate) fn reply_delete(
+    state: &ServerState,
+    id: u64,
+    workspace_id: &str,
+    path: &str,
+) -> DaemonMessage {
+    let change = match state.sessions.workspace_cwd(workspace_id) {
+        Ok(root) => match deleted(&root, path) {
+            Ok(()) => erased(),
+            Err(sentence) => refused(sentence),
+        },
+        Err(error) => refused(error.message),
+    };
+    DaemonMessage::WorkspaceFileDeleted { id, change }
+}
+
 /// One write succeeded: the entry's new spelling, `/`-joined the way the
 /// listing builds its entries.
 fn answered(new_path: String) -> WorkspaceFileMutation {
@@ -105,10 +131,27 @@ fn refused(sentence: impl Into<String>) -> WorkspaceFileMutation {
     }
 }
 
+/// The delete's own success shape: no new spelling to name and nothing
+/// left to say it about — both fields `None`, the one reply of this module
+/// that speaks entirely through its emptiness.
+fn erased() -> WorkspaceFileMutation {
+    WorkspaceFileMutation {
+        new_path: None,
+        error: None,
+    }
+}
+
 /// The entry a write acts on, vouched the way the reads are: the workspace's
 /// own folder (in any spelling, `""` included) refused first, then
 /// confinement, then the listing's `.git` guard, then the walk.
 fn entry_at(root: &Path, requested: &str) -> Result<PathBuf, String> {
+    vouched_entry(root, requested).map(|(path, _metadata)| path)
+}
+
+/// The same vouching with the walk's own stat kept: the delete reads its
+/// folder-vs-file branch off the stat that vouched the entry, rather than
+/// stat'ing the name a second time and trusting two lookups more than one.
+fn vouched_entry(root: &Path, requested: &str) -> Result<(PathBuf, std::fs::Metadata), String> {
     // The root itself — no parent to act from. Checked ahead of the
     // confinement, which would call the empty spelling an escape.
     if Path::new(requested)
@@ -126,7 +169,7 @@ fn entry_at(root: &Path, requested: &str) -> Result<PathBuf, String> {
     match walk(root, requested) {
         Walked::Link(sentence) => Err(sentence.to_string()),
         Walked::Missing => Err(DOES_NOT_EXIST.to_string()),
-        Walked::Inside(_) => Ok(target),
+        Walked::Inside(metadata) => Ok((target, metadata)),
     }
 }
 
@@ -444,6 +487,28 @@ fn copy_file(source: &Path, destination: &Path) -> Result<(), String> {
         })
 }
 
+/// Delete one entry, the act that loses data and never gets a second
+/// chance. Private on purpose: callers outside this module arrive through
+/// [`reply_delete`], and the test module is a child.
+///
+/// The walk has already vouched the entry — root refused, `.git` refused
+/// in any spelling, and **a link refused rather than deleted or followed**:
+/// the walk's one rule, kept here where Paseo's delete unlinks the link
+/// itself (`service.ts:758-762`), because one rule for the whole tree costs
+/// less than two truths (`DECISIONS-write.md` §6). The branch reads the
+/// stat the walk vouched: a folder goes whole — children with it, one
+/// `remove_dir_all` — and a folder that holds a link unlinks the link
+/// without ever traversing to its target, so the rule holds one level
+/// deeper than the walk can see.
+fn deleted(root: &Path, requested: &str) -> Result<(), String> {
+    let (target, metadata) = vouched_entry(root, requested)?;
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|_| DELETE_FAILED.to_string())
+    } else {
+        std::fs::remove_file(&target).map_err(|_| DELETE_FAILED.to_string())
+    }
+}
+
 /// The wire spelling of a path below the root: its normal components
 /// rejoined with `/`, the same rule the listing builds entry paths with.
 fn wire_join<'a>(components: impl Iterator<Item = Component<'a>>) -> String {
@@ -456,6 +521,9 @@ fn wire_join<'a>(components: impl Iterator<Item = Component<'a>>) -> String {
         .join("/")
 }
 
+#[cfg(test)]
+#[path = "workspace_file_delete_tests.rs"]
+mod delete_tests;
 #[cfg(test)]
 #[path = "workspace_file_mutations_tests.rs"]
 mod tests;

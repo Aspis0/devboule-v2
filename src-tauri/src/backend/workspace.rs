@@ -211,3 +211,19 @@ pub async fn workspace_file_duplicate(
     let client = require_client(&bridge)?;
     off_main_thread(move || client.workspace_file_duplicate(&workspace_id, &path)).await
 }
+
+/// Delete one workspace entry — the act that loses data. The frontend has
+/// confirmed with the user before invoking this; the daemon re-judges the
+/// path with every guard the reads use and refuses (never silently
+/// widens) anything outside the one checkout. Bounded and off-thread like
+/// the other workspace roads: a folder deletion is bounded by
+/// `RPC_TIMEOUT` the same way a folder copy is.
+#[tauri::command]
+pub async fn workspace_file_delete(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceFileMutation, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_file_delete(&workspace_id, &path)).await
+}

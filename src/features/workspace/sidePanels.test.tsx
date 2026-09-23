@@ -44,8 +44,8 @@ describe("side panel dead controls", () => {
   }
 
   // The Changes panel's tests moved to `ChangesSurface.test.tsx` and the
-  // Files panel's to `FilesSurface.test.tsx` (and, for the Files panel's two
-  // writes, to `FilesFileActions.test.tsx`): both panels render real data
+  // Files panel's to `FilesSurface.test.tsx` (and, for the Files panel's row
+  // acts, to `FilesFileActions.test.tsx`): both panels render real data
   // now, so their guarantees — which controls each panel may draw, and no
   // mockup notice — are anchored there against real content instead of the
   // mock's.

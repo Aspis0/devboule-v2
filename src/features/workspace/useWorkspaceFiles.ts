@@ -54,10 +54,11 @@ export interface WorkspaceFiles {
  * the manual button is the refresh). No poll and no watcher — an unattended
  * tree would be a background reader of the checkout for a decoration nobody
  * asked about — and every command this hook calls is a read: no rename, no
- * delete, no create exists **on this side**. The panel does write now — its
- * two acts live in `useWorkspaceFileActions`, which borrows `refreshPath`
- * and `rekey` from here: a hook that reads stays a hook that reads, and
- * this guarantee remains checkable by reading this file's imports.
+ * duplicate, no delete, no create exists **on this side**. The panel does
+ * write now — its three row acts live in `useWorkspaceFileActions`, which
+ * borrows `refreshPath` and `rekey` from here: a hook that reads stays a
+ * hook that reads, and this guarantee remains checkable by reading this
+ * file's imports.
  */
 export function useWorkspaceFiles(workspaceId: string | null): WorkspaceFiles {
   const [state, setState] = useState<TreeState>(() => ({

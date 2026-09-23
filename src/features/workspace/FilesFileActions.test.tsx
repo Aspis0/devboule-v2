@@ -11,21 +11,24 @@ vi.mock("../../lib/tauri", () => ({
   workspaceFileRead: vi.fn(),
   workspaceFileRename: vi.fn(),
   workspaceFileDuplicate: vi.fn(),
+  workspaceFileDelete: vi.fn(),
   reasonFromCause: vi.fn((cause: unknown) =>
     cause instanceof Error && cause.message ? cause.message : "the app did not answer",
   ),
 }));
 
-// Neither act asks for confirmation — they lose no data, so the confirmation
-// belongs to delete (its own slice). The mock answers `false` on purpose:
-// were a confirm() gate ever added to this road, the rename below would stop
-// before its command and this file's assertions would die with it.
+// The confirmation belongs to the one act that loses data: the delete's gate
+// lives inside `deleteEntry`, and this mock answers `false` on purpose —
+// were the gate ever dropped from that road, the No-answers-nothing case
+// below would die first. The two acts that lose no data must never reach it
+// at all, which their own tests assert.
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   confirm: vi.fn(async () => false),
 }));
 
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
+  workspaceFileDelete,
   workspaceFileDuplicate,
   workspaceFileRead,
   workspaceFileRename,
@@ -80,6 +83,7 @@ describe("FilesFileActions", () => {
     });
     vi.mocked(workspaceFileRename).mockResolvedValue({ newPath: "README.md", error: null });
     vi.mocked(workspaceFileDuplicate).mockResolvedValue({ newPath: "README copy.md", error: null });
+    vi.mocked(workspaceFileDelete).mockResolvedValue({ newPath: null, error: null });
   });
 
   afterEach(async () => {
@@ -319,5 +323,144 @@ describe("FilesFileActions", () => {
       '.workspace-tree-file[aria-pressed="true"]',
     );
     expect(selected?.getAttribute("title")).toBe("GUIDE.md");
+  });
+
+  // The slice's own shape (plan-write §2.4): a No at the confirmation stops
+  // EVERYTHING — no command reaches the wire, and the tree is not even
+  // re-read, because nothing happened to re-read. Kills the mutation that
+  // drops the confirmation gate from `deleteEntry`.
+  it("asks before deleting, and a No stops everything before the wire", async () => {
+    vi.mocked(confirm).mockResolvedValue(false);
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    await act(async () => undefined);
+
+    expect(vi.mocked(confirm)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+    expect(vi.mocked(workspaceFilesList).mock.calls).toEqual([[WORKSPACE, ""]]);
+    expect(container.textContent).toContain("README.md");
+    expect(alertText()).toBeNull();
+  });
+
+  it("deletes once confirmed: the parent is re-read and a dead selection drops its preview", async () => {
+    vi.mocked(confirm).mockResolvedValue(true);
+    // The mock plays daemon AND disk: the entry is gone, so the parent
+    // re-read below must not find it any more.
+    vi.mocked(workspaceFileDelete).mockImplementation(async () => {
+      rootEntries = rootEntries.filter((item) => item.path !== "README.md");
+      return { newPath: null, error: null };
+    });
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    const fileRow = container.querySelector<HTMLButtonElement>(
+      '.workspace-tree-file[title="README.md"]',
+    );
+    if (fileRow === null) throw new Error("the file row did not render");
+    await act(async () => {
+      fileRow.click();
+    });
+    expect(vi.mocked(workspaceFileRead).mock.calls).toEqual([[WORKSPACE, "README.md"]]);
+    expect(container.querySelector(".workspace-diff-card")).not.toBeNull();
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    await act(async () => undefined);
+
+    expect(vi.mocked(workspaceFileDelete).mock.calls).toEqual([[WORKSPACE, "README.md"]]);
+    expect(container.textContent).not.toContain("README.md");
+    // The preview died with the file: no card still showing bytes of it, no
+    // row left pressed, and no re-read of the dead path ever issued.
+    expect(container.querySelector(".workspace-diff-card")).toBeNull();
+    expect(container.querySelector('[aria-pressed="true"]')).toBeNull();
+    expect(vi.mocked(workspaceFileRead).mock.calls).toEqual([[WORKSPACE, "README.md"]]);
+    expect(alertText()).toBeNull();
+  });
+
+  it("deleting a folder takes the selection under it and names the folder in the confirmation", async () => {
+    vi.mocked(confirm).mockResolvedValue(true);
+    vi.mocked(workspaceFileDelete).mockImplementation(async (_workspaceId, path) => {
+      rootEntries = rootEntries.filter((item) => item.path !== path);
+      rootEntries = rootEntries.filter((item) => !item.path.startsWith(`${path}/`));
+      return { newPath: null, error: null };
+    });
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    const srcRow = container.querySelector<HTMLButtonElement>('.workspace-tree-dir[title="src"]');
+    if (srcRow === null) throw new Error("the src row did not render");
+    await act(async () => {
+      srcRow.click();
+    });
+    const indexRow = container.querySelector<HTMLButtonElement>(
+      '.workspace-tree-file[title="src/index.ts"]',
+    );
+    if (indexRow === null) throw new Error("the index.ts row did not render");
+    await act(async () => {
+      indexRow.click();
+    });
+    expect(container.querySelector(".workspace-diff-card")).not.toBeNull();
+
+    await openMenu("src");
+    await menuItem("Delete");
+    await act(async () => undefined);
+
+    expect(vi.mocked(workspaceFileDelete).mock.calls).toEqual([[WORKSPACE, "src"]]);
+    expect(container.querySelector(".workspace-diff-card")).toBeNull();
+  });
+
+  // The confirmation's words name the entry and say what is being answered
+  // for — a folder deletion takes everything inside it, and the text the
+  // user confirms must say so, not just "this entry".
+  it("names the entry in the confirmation, differently for a file and a folder", async () => {
+    vi.mocked(confirm).mockResolvedValue(false);
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    const fileCalls = vi.mocked(confirm).mock.calls;
+    expect(fileCalls).toHaveLength(1);
+    const fileMessage = fileCalls[0][0];
+    expect(fileMessage).toContain("README.md");
+    expect(fileMessage).toContain("file");
+
+    await openMenu("src");
+    await menuItem("Delete");
+    const folderCalls = vi.mocked(confirm).mock.calls;
+    expect(folderCalls).toHaveLength(2);
+    const folderMessage = folderCalls[1][0];
+    expect(folderMessage).toContain("src");
+    expect(folderMessage).toContain("folder");
+    expect(folderMessage).not.toBe(fileMessage);
+    expect(vi.mocked(workspaceFileDelete)).not.toHaveBeenCalled();
+  });
+
+  it("shows a delete refusal under the toolbar and refreshes the tree anyway", async () => {
+    const refusal = "the workspace's own folder cannot be renamed, duplicated or deleted";
+    vi.mocked(confirm).mockResolvedValue(true);
+    vi.mocked(workspaceFileDelete).mockResolvedValue({ newPath: null, error: refusal });
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+    const reads = vi.mocked(workspaceFilesList).mock.calls.length;
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    await act(async () => undefined);
+
+    expect(alertText()).toBe(refusal);
+    expect(vi.mocked(workspaceFilesList).mock.calls.length).toBe(reads + 1);
+  });
+
+  it("shows a transport failure after a confirmed delete the same way", async () => {
+    vi.mocked(confirm).mockResolvedValue(true);
+    vi.mocked(workspaceFileDelete).mockRejectedValue(new Error("the daemon did not answer"));
+    await render(<FilesSurface workspaceId={WORKSPACE} />);
+
+    await openMenu("README.md");
+    await menuItem("Delete");
+    await act(async () => undefined);
+
+    expect(alertText()).toBe("the daemon did not answer");
+    // The parent was re-read despite the dead transport: the act may have
+    // landed, and this tree has no poll to discover that later.
+    const calls = vi.mocked(workspaceFilesList).mock.calls;
+    expect(calls.at(-1)).toEqual([WORKSPACE, ""]);
   });
 });

@@ -466,6 +466,7 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
+        | ClientMessage::WorkspaceFileDelete { .. }
         | ClientMessage::WorkspaceFilePreviewStage { .. }
         | ClientMessage::WorkspaceFilePreviewUnstage { .. }
         | ClientMessage::WorkspaceCreate { .. }
@@ -855,6 +856,9 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
         }
         DaemonMessage::WorkspaceFileDuplicated { change, .. } => {
             DaemonMessage::WorkspaceFileDuplicated { id, change }
+        }
+        DaemonMessage::WorkspaceFileDeleted { change, .. } => {
+            DaemonMessage::WorkspaceFileDeleted { id, change }
         }
         DaemonMessage::Error(error) => DaemonMessage::Error(error.with_id(id)),
         other => other,

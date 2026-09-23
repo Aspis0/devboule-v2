@@ -105,12 +105,14 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 /// with `workspace_file_rename` and `workspace_file_duplicate` (fetta 2),
 /// then 53 → 55 with `workspace_file_preview_stage` and
 /// `workspace_file_preview_unstage` (fetta immagini): both wait on the
-/// daemon like every other workspace road.
+/// daemon like every other workspace road. Then 55 → 56 with
+/// `workspace_file_delete` (fetta 3 delle scritture): the delete waits on
+/// the daemon like its two siblings.
 #[test]
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 55,
+        scan.helper_calls, 56,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }

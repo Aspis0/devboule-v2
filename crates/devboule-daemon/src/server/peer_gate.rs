@@ -310,6 +310,7 @@ pub(super) fn peer_mode_refusal_for_conn(
         // reason.
         ClientMessage::WorkspaceFileRename { .. } => None,
         ClientMessage::WorkspaceFileDuplicate { .. } => None,
+        ClientMessage::WorkspaceFileDelete { .. } => None,
         ClientMessage::WorkspaceFilePreviewStage { .. } => None,
         ClientMessage::WorkspaceFilePreviewUnstage { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
@@ -540,6 +541,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
+        | ClientMessage::WorkspaceFileDelete { .. }
         | ClientMessage::WorkspaceFilePreviewStage { .. }
         | ClientMessage::WorkspaceFilePreviewUnstage { .. }
         | ClientMessage::WorkspaceCreate { .. }

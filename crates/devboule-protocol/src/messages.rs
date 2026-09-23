@@ -587,6 +587,28 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
+    /// Delete one entry inside a workspace — the Files panel's Delete, the
+    /// one act of the group that **loses data** and the one that is asked
+    /// twice: the frontend confirms with the user before this frame is sent
+    /// (the wire carries no confirmation of its own), and the daemon then
+    /// re-judges everything anyway. A **write** like
+    /// [`Self::WorkspaceFileRename`], with the same confinement and the
+    /// same guards — the workspace's own folder refused, the repository's
+    /// metadata refused in every spelling, and a link refused rather than
+    /// deleted or followed (the walk's one rule, kept where Paseo's delete
+    /// unlinks it — one rule for the whole tree). A folder is deleted
+    /// whole, its children with it; nothing is ever followed or read
+    /// through a link inside it. The act is irreversible: there is no
+    /// undo on this frame, which is why the confirmation exists. The reply
+    /// is [`DaemonMessage::WorkspaceFileDeleted`].
+    WorkspaceFileDelete {
+        id: u64,
+        workspace_id: String,
+        /// Path relative to the workspace folder of the entry to delete.
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
     /// Stage one workspace file as the Files panel's preview: the daemon
     /// confines `path` like [`Self::WorkspaceFileRead`] and refuses what
     /// that read refuses — plus any extension the panel never shows as
@@ -845,6 +867,7 @@ impl ClientMessage {
             | Self::WorkspaceFileRead { id, .. }
             | Self::WorkspaceFileRename { id, .. }
             | Self::WorkspaceFileDuplicate { id, .. }
+            | Self::WorkspaceFileDelete { id, .. }
             | Self::WorkspaceFilePreviewStage { id, .. }
             | Self::WorkspaceFilePreviewUnstage { id }
             | Self::WorkspaceCreate { id, .. }
@@ -900,6 +923,9 @@ impl ClientMessage {
                 idempotency_key, ..
             }
             | Self::WorkspaceFileDuplicate {
+                idempotency_key, ..
+            }
+            | Self::WorkspaceFileDelete {
                 idempotency_key, ..
             } => idempotency_key.as_deref(),
             Self::Hello(_)
@@ -999,6 +1025,7 @@ impl ClientMessage {
             Self::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             Self::WorkspaceFileRename { .. } => "WorkspaceFileRename",
             Self::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
+            Self::WorkspaceFileDelete { .. } => "WorkspaceFileDelete",
             Self::WorkspaceFilePreviewStage { .. } => "WorkspaceFilePreviewStage",
             Self::WorkspaceFilePreviewUnstage { .. } => "WorkspaceFilePreviewUnstage",
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
@@ -1082,6 +1109,9 @@ impl ClientMessage {
             | Self::WorkspaceDelete { .. }
             | Self::WorkspaceFileRename { .. }
             | Self::WorkspaceFileDuplicate { .. }
+            // The one act that destroys data — audited like the two writes
+            // above, and the reason its frame exists at all.
+            | Self::WorkspaceFileDelete { .. }
             // Both write the runtime directory's `previews` folder — a
             // stage creates a copy, an unstage deletes it — so both earn an
             // audit row like the two writes above them.
@@ -1221,6 +1251,14 @@ pub enum DaemonMessage {
     /// spelling (the daemon chose the name), or the sentence the refusal
     /// stopped on.
     WorkspaceFileDuplicated {
+        id: u64,
+        #[serde(flatten)]
+        change: WorkspaceFileMutation,
+    },
+    /// The reply to [`ClientMessage::WorkspaceFileDelete`]: the sentence
+    /// the refusal stopped on, or — the one success shape that carries
+    /// neither field — the silence that says the entry is gone.
+    WorkspaceFileDeleted {
         id: u64,
         #[serde(flatten)]
         change: WorkspaceFileMutation,
@@ -1732,12 +1770,14 @@ pub struct WorkspaceFileContent {
     pub error: Option<String>,
 }
 
-/// The outcome of one Files-panel write — a rename or a duplicate — as both
-/// replies carry it. Exactly one field is `Some`: a success carries
-/// `new_path` — the entry's new spelling relative to the workspace folder,
-/// `/`-joined the way a listing builds its entries — and no sentence; a
-/// refusal carries a static `error` sentence and `new_path: null`, so a
-/// refusal claims nothing about where anything is. The same pair discipline
+/// The outcome of one Files-panel write — a rename, a duplicate, or the
+/// delete — as the three replies carry it. A rename or duplicate success
+/// carries `new_path` — the entry's new spelling relative to the workspace
+/// folder, `/`-joined the way a listing builds its entries — and no
+/// sentence; a delete success carries **neither** field, because there is
+/// no spelling to name and nothing left to say it about; a refusal carries
+/// a static `error` sentence and `new_path: null`, so a refusal claims
+/// nothing about where anything is. The same pair discipline
 /// [`WorkspaceDirectory`] and [`WorkspaceFileContent`] keep, and the same
 /// debt: `error` is free text on a frame the redaction seam does not touch,
 /// so its sentences are static or the registry's own (which echoes the

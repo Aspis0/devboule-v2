@@ -182,7 +182,8 @@ fn a_name_that_parses_as_a_drive_path_is_refused_as_not_one_name() {
 /// Mutant `m:root` — drop the root guard: the workspace's own folder falls
 /// through to the confinement, which answers "outside" about a path that is
 /// inside — a false sentence about an internal path, and the exact words
-/// this case pins. The same refusal covers both acts.
+/// this case pins. The same refusal covers all three acts (the delete's
+/// own root case is in `workspace_file_delete_tests.rs`).
 #[test]
 fn the_workspaces_own_folder_is_never_renamed_or_duplicated() {
     let repo = Repo::new("root");

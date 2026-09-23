@@ -195,6 +195,44 @@ pub(super) fn dispatch_journal(
             }
             reply
         }
+        // The delete is keyed like the two writes above — the one act where
+        // a replayed "success" over an already-dead path would answer
+        // `does not exist` instead of the first success — and only a
+        // success is remembered (a refusal costs nothing to retry, and
+        // caching it would freeze a sentence over a tree that has since
+        // changed). The success carries no new path: the shape this match
+        // pins is "no error", the delete's own silence.
+        ClientMessage::WorkspaceFileDelete {
+            id,
+            workspace_id,
+            path,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("delete:{workspace_id}:{path}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            let reply =
+                crate::workspace_file_mutations::reply_delete(state, id, &workspace_id, &path);
+            if matches!(
+                &reply,
+                DaemonMessage::WorkspaceFileDeleted {
+                    change: devboule_protocol::WorkspaceFileMutation { error: None, .. },
+                    ..
+                }
+            ) {
+                remember(
+                    state,
+                    owner,
+                    idempotency_key.as_deref(),
+                    &fingerprint,
+                    &reply,
+                );
+            }
+            reply
+        }
         // The preview's two frames: no idempotency key on either, and none
         // wanted — a re-staged copy is the same copy (every stage clears
         // the folder first) and a re-run unstage deletes a folder that is

@@ -306,14 +306,15 @@ describe("FilesSurface", () => {
     expect(reads("src")).toBe(2);
   });
 
-  // The doctrine's new shape: the writes EXIST (the two acts that lose no
-  // data, behind the row's own menu), and the absences that remain are the
-  // ones this slice does not carry — delete (its own slice, behind a
-  // confirmation), create, download (the phone workstream's), and the
-  // Changes panel's stage/discard, which belong to that panel. Anchored on
-  // the real reply's names first, so the absences cannot pass on an empty
-  // panel.
-  it("offers the two acts that lose no data, and none that can", async () => {
+  // The doctrine's shape after the delete slice: the row menu carries the
+  // three acts — the two that lose no data, and the delete, which loses
+  // data and is therefore the only one gated (its confirmation is asserted
+  // in FilesFileActions.test.tsx, where the wire can be watched). The
+  // absences that remain are create, download (the phone workstream's),
+  // and the Changes panel's stage/discard, which belong to that panel.
+  // Anchored on the real reply's names first, so the absences cannot pass
+  // on an empty panel.
+  it("offers the two acts that lose no data plus the gated delete, and none beyond", async () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("crates", "dir"), entry("real-file.rs", "file", 2048)]),
     );
@@ -326,7 +327,7 @@ describe("FilesSurface", () => {
     expect(container.querySelectorAll(".workspace-tree-file")).toHaveLength(1);
     // With every menu closed, the buttons on screen are only the refresh
     // control, the folder toggles, the file rows and the rows' own menu
-    // triggers — how the panel reads and how it reaches its two acts.
+    // triggers — how the panel reads and how it reaches its three acts.
     for (const button of Array.from(container.querySelectorAll("button"))) {
       expect(
         button.classList.contains("workspace-tree-dir") ||
@@ -344,10 +345,10 @@ describe("FilesSurface", () => {
     const menuItems = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
     ).map((item) => item.textContent);
-    expect(menuItems).toEqual(["Rename", "Duplicate"]);
-    // And the absences this slice keeps: delete enters with confirmation in
-    // its own slice; the rest never lands in this panel.
-    for (const forbidden of ["New", "Delete", "Download", "Stage", "Discard"]) {
+    expect(menuItems).toEqual(["Rename", "Duplicate", "Delete"]);
+    // And the absences this panel keeps: the rest never lands here — and
+    // the gated delete is the LAST item, after the two harmless acts.
+    for (const forbidden of ["New", "Download", "Stage", "Discard"]) {
       expect(menuItems).not.toContain(forbidden);
       expect(controls()).not.toContain(forbidden);
     }

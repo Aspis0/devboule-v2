@@ -116,6 +116,7 @@ export type CommandArgs = {
   workspace_file_preview_unstage: undefined;
   workspace_file_rename: { workspaceId: Id; path: string; name: string };
   workspace_file_duplicate: { workspaceId: Id; path: string };
+  workspace_file_delete: { workspaceId: Id; path: string };
   session_create: {
     workspaceId: Id | null;
     kind: SessionKind;
@@ -236,6 +237,7 @@ type CommandResults = {
   workspace_file_preview_unstage: void;
   workspace_file_rename: WorkspaceFileMutation;
   workspace_file_duplicate: WorkspaceFileMutation;
+  workspace_file_delete: WorkspaceFileMutation;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
@@ -374,6 +376,7 @@ export const COMMAND_ARG_KEYS = {
   workspace_file_preview_unstage: [],
   workspace_file_rename: ["workspaceId", "path", "name"],
   workspace_file_duplicate: ["workspaceId", "path"],
+  workspace_file_delete: ["workspaceId", "path"],
   session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -630,6 +633,16 @@ export const workspaceFileRename = (workspaceId: Id, path: string, name: string)
  */
 export const workspaceFileDuplicate = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_file_duplicate", { workspaceId, path });
+/**
+ * Delete one workspace entry — the act that loses data, and the only one
+ * of the group that asks first: the caller confirms with the user through
+ * the native dialog before invoking this, and this road must never be
+ * reached without that answer. The daemon re-judges the path with every
+ * guard the reads use, and a success carries nothing to name — the entry
+ * is gone.
+ */
+export const workspaceFileDelete = (workspaceId: Id, path: string) =>
+  invokeTyped("workspace_file_delete", { workspaceId, path });
 /**
  * Creates a workspace inside a project. Only `local` isolation exists today;
  * `worktree` and any `branch` are refused by the daemon with `unimplemented`

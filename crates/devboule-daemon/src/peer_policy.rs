@@ -300,12 +300,14 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // behind them: one directory per request, links never followed. The
         // content of one file discloses the lines themselves — no more than
         // the checkout's owner already reads from this machine, confined to
-        // that checkout the same way before anything opens. Two writes ride
+        // that checkout the same way before anything opens. Three writes ride
         // the same grant: a rename and a duplicate change a name inside that
-        // checkout and nothing else — no deletion exists behind this door —
-        // every path is confined and walked before the act, and the
-        // administrative surface is one grant, not two (the same reason the
-        // journal verbs give above). The preview's stage and unstage join
+        // checkout and nothing else, and the delete removes one confined
+        // entry — the act that loses data, asked twice on the sending side
+        // (the frontend confirms with the user before the frame exists) and
+        // re-judged here by the same guards; every path is confined and
+        // walked before the act, and the administrative surface is one
+        // grant, not two (the same reason the journal verbs give above). The preview's stage and unstage join
         // that same grant: a staged copy is the file the content read
         // already discloses (the frame cap is a wire limit, not a
         // permission), it rests only in the daemon's own previews folder,
@@ -317,6 +319,7 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
+        | ClientMessage::WorkspaceFileDelete { .. }
         | ClientMessage::WorkspaceFilePreviewStage { .. }
         | ClientMessage::WorkspaceFilePreviewUnstage { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProvidersList { .. } => with_capability(caps, CAP_ADMIN),
@@ -1256,6 +1259,12 @@ pub(crate) mod tests {
                 path: "README.md".to_string(),
                 idempotency_key: None,
             },
+            ClientMessage::WorkspaceFileDelete {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                idempotency_key: None,
+            },
             ClientMessage::WorkspaceFilePreviewStage {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
@@ -2031,6 +2040,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceFileRead { .. } => administrative(),
             ClientMessage::WorkspaceFileRename { .. } => administrative(),
             ClientMessage::WorkspaceFileDuplicate { .. } => administrative(),
+            ClientMessage::WorkspaceFileDelete { .. } => administrative(),
             ClientMessage::WorkspaceFilePreviewStage { .. } => administrative(),
             ClientMessage::WorkspaceFilePreviewUnstage { .. } => administrative(),
             ClientMessage::WorkspaceCreate { .. } => administrative(),
@@ -2061,7 +2071,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 61;
+    pub(crate) const VARIANT_COUNT: usize = 62;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2108,6 +2118,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             ClientMessage::WorkspaceFileRename { .. } => "WorkspaceFileRename",
             ClientMessage::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
+            ClientMessage::WorkspaceFileDelete { .. } => "WorkspaceFileDelete",
             ClientMessage::WorkspaceFilePreviewStage { .. } => "WorkspaceFilePreviewStage",
             ClientMessage::WorkspaceFilePreviewUnstage { .. } => "WorkspaceFilePreviewUnstage",
             ClientMessage::WorkspaceCreate { .. } => "WorkspaceCreate",
@@ -2321,6 +2332,12 @@ pub(crate) mod tests {
                 idempotency_key: None,
             },
             ClientMessage::WorkspaceFileDuplicate {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+                idempotency_key: None,
+            },
+            ClientMessage::WorkspaceFileDelete {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 path: "README.md".to_string(),

@@ -2958,6 +2958,79 @@ fn workspace_file_writes_round_trip_with_their_wire_words() {
     assert_eq!(duplicate.idempotency_key(), None);
 }
 
+/// The third write frame — the one that loses data — pinned the same way:
+/// the `type` tags, the camelCase `idempotencyKey`, and the success shape
+/// unique to this act, `newPath` **and** `error` travelling as explicit
+/// `null` because there is no spelling left to name. The refusal carries
+/// the sentence, never a path.
+#[test]
+fn workspace_file_delete_round_trips_with_its_wire_words() {
+    let deleted = DaemonMessage::WorkspaceFileDeleted {
+        id: 23,
+        change: WorkspaceFileMutation {
+            new_path: None,
+            error: None,
+        },
+    };
+    let json = serde_json::to_string(&deleted).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_file_deleted\"",
+        "\"newPath\":null",
+        "\"error\":null",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        deleted
+    );
+
+    let refused = DaemonMessage::WorkspaceFileDeleted {
+        id: 24,
+        change: WorkspaceFileMutation {
+            new_path: None,
+            error: Some(
+                "the workspace's own folder cannot be renamed, duplicated or deleted".to_string(),
+            ),
+        },
+    };
+    let json = serde_json::to_string(&refused).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_file_deleted\"",
+        "\"newPath\":null",
+        "\"error\":\"the workspace's own folder",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        refused
+    );
+
+    let request = ClientMessage::WorkspaceFileDelete {
+        id: 23,
+        workspace_id: "ws.1".to_string(),
+        path: "old-notes.txt".to_string(),
+        idempotency_key: Some("k-23".to_string()),
+    };
+    let json = serde_json::to_string(&request).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_file_delete\"",
+        "\"path\":\"old-notes.txt\"",
+        "\"idempotencyKey\":\"k-23\"",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        request
+    );
+    assert_eq!(request.name(), "WorkspaceFileDelete");
+    assert!(request.is_state_changing(), "a delete is audited");
+    assert_eq!(request.request_id(), Some(23));
+    assert_eq!(request.idempotency_key(), Some("k-23"));
+}
+
 /// The preview's two frames, pinned the way the read's and the writes' are:
 /// the `type` tags, the camelCase keys, `path`/`size`/`modifiedAt`/`error`
 /// travelling as explicit `null` on the refusal — and both frames on the
