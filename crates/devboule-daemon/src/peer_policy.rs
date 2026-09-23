@@ -297,10 +297,15 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // machine; `path` is confined to that checkout before anything opens.
         // The folder listing discloses the names of everything in the
         // checkout — which is what the panel shows its user — and nothing
-        // behind them: one directory per request, links never followed.
+        // behind them: one directory per request, links never followed. The
+        // content of one file discloses the lines themselves — no more than
+        // the checkout's owner already reads from this machine, confined to
+        // that checkout the same way before anything opens, and read-only:
+        // no write frame exists behind this door.
         ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
-        | ClientMessage::WorkspaceFilesList { .. } => with_capability(caps, CAP_ADMIN),
+        | ClientMessage::WorkspaceFilesList { .. }
+        | ClientMessage::WorkspaceFileRead { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProvidersList { .. } => with_capability(caps, CAP_ADMIN),
     }
 }
@@ -1220,6 +1225,11 @@ pub(crate) mod tests {
                 workspace_id: "ws.1".to_string(),
                 path: String::new(),
             },
+            ClientMessage::WorkspaceFileRead {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
+            },
             ClientMessage::ProvidersList { id: 1 },
             ClientMessage::Status { id: 1 },
             ClientMessage::DaemonDiagnostics { id: 1 },
@@ -1986,6 +1996,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitStatus { .. } => administrative(),
             ClientMessage::WorkspaceGitDiff { .. } => administrative(),
             ClientMessage::WorkspaceFilesList { .. } => administrative(),
+            ClientMessage::WorkspaceFileRead { .. } => administrative(),
             ClientMessage::WorkspaceCreate { .. } => administrative(),
             ClientMessage::WorkspaceDelete { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
@@ -2014,7 +2025,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 56;
+    pub(crate) const VARIANT_COUNT: usize = 57;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2058,6 +2069,7 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
             ClientMessage::WorkspaceGitDiff { .. } => "WorkspaceGitDiff",
             ClientMessage::WorkspaceFilesList { .. } => "WorkspaceFilesList",
+            ClientMessage::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             ClientMessage::WorkspaceCreate { .. } => "WorkspaceCreate",
             ClientMessage::WorkspaceDelete { .. } => "WorkspaceDelete",
             ClientMessage::ProvidersList { .. } => "ProvidersList",
@@ -2255,6 +2267,11 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 path: "crates".to_string(),
+            },
+            ClientMessage::WorkspaceFileRead {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "README.md".to_string(),
             },
             ClientMessage::WorkspaceCreate {
                 id: 1,

@@ -189,6 +189,37 @@ export interface WorkspaceDirectory {
   error: string | null;
 }
 
+/** What one file-content reply says happened — four words that never
+ * collapse: `binary` and `too_large` are complete answers about a file
+ * deliberately carried without content, `refused` with an `error` sentence
+ * is a failure, `ok` carries the bytes. */
+export type WorkspaceFileContentStatus = "ok" | "too_large" | "binary" | "refused";
+
+/** How to read `content`: UTF-8 text, base64 for an image recognized by its
+ * extension, or the bytes' own class beside a `binary` status. `null` when
+ * the bytes were never read (over cap, refused). */
+export type WorkspaceFileContentKind = "text" | "image" | "binary";
+
+/**
+ * The content of one workspace file, the reply of `workspace_file_read` —
+ * same pair discipline as `WorkspaceDirectory`: `binary` and `too_large`
+ * (the sentence carries the 128 KiB measure) are complete answers without
+ * content, a sentence in `error` is a refusal, and `ok` carries the bytes —
+ * base64 when `kind` is `image`, UTF-8 otherwise. `size` (bytes) and
+ * `modifiedAt` (ms since the epoch) come from the stat and are `null`
+ * exactly on a refusal, which claims nothing about the file it rejected.
+ * The panel knows which path it asked for — the row it clicked — so the
+ * reply echoes none.
+ */
+export interface WorkspaceFileContent {
+  status: WorkspaceFileContentStatus;
+  kind: WorkspaceFileContentKind | null;
+  content: string | null;
+  size: number | null;
+  modifiedAt: number | null;
+  error: string | null;
+}
+
 export type SessionKind = "terminal" | "acp" | "claude" | "pi" | "codex";
 
 export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" | "codex" {

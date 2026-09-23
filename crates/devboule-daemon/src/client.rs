@@ -13,8 +13,8 @@ use devboule_protocol::{
     JournalUsage, OwnerId, PairingSecret, PeerRole, PeerRow, PermissionOutcome, Persistence,
     Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
     SessionEventEnvelope, SessionKind, SessionStateSnapshot, StoredAttachment, SubscriptionId,
-    WireError, Workspace, WorkspaceDirectory, WorkspaceGitFileDiff, WorkspaceGitStatus,
-    WorkspaceIsolation,
+    WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceGitFileDiff,
+    WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -882,6 +882,27 @@ impl DaemonClient {
             path: path.to_string(),
         })? {
             DaemonMessage::WorkspaceFiles { directory, .. } => Ok(directory),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// The content of one workspace file. The id and a relative `path` are
+    /// the whole argument — of an ordinary file, never a folder — and the
+    /// daemon confines the rest to a directory inside it before opening
+    /// anything, caps the read, and classifies the bytes.
+    pub fn workspace_file_read(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceFileContent, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFileRead {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::WorkspaceFileContent { file, .. } => Ok(file),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -1902,6 +1923,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::WorkspaceGit { id, .. }
         | DaemonMessage::WorkspaceGitFile { id, .. }
         | DaemonMessage::WorkspaceFiles { id, .. }
+        | DaemonMessage::WorkspaceFileContent { id, .. }
         | DaemonMessage::SessionAttached { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }

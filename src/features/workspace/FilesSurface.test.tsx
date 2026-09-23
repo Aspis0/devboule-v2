@@ -8,12 +8,13 @@ import type { WorkspaceDirectory, WorkspaceFileEntry } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   workspaceFilesList: vi.fn(),
+  workspaceFileRead: vi.fn(),
   reasonFromCause: vi.fn((cause: unknown) =>
     cause instanceof Error && cause.message ? cause.message : "the app did not answer",
   ),
 }));
 
-import { workspaceFilesList } from "../../lib/tauri";
+import { workspaceFileRead, workspaceFilesList } from "../../lib/tauri";
 import { FilesSurface } from "./FilesSurface";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -53,6 +54,16 @@ describe("FilesSurface", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(workspaceFilesList).mockResolvedValue(listing([]));
+    // No test here clicks a file, but a default keeps an accidental click
+    // from reaching `undefined` and passing for a rendered preview.
+    vi.mocked(workspaceFileRead).mockResolvedValue({
+      status: "ok",
+      kind: "text",
+      content: "",
+      size: 0,
+      modifiedAt: 0,
+      error: null,
+    });
   });
 
   afterEach(async () => {
@@ -285,9 +296,10 @@ describe("FilesSurface", () => {
   });
 
   // Kills the mock-era guarantees in their new home: the note is gone with
-  // the data, files are rows rather than dead controls, and no operation the
-  // app cannot perform is drawn — anchored on the real reply's names first,
-  // so the absences cannot pass on an empty panel.
+  // the data, files are rows that open a preview (a read) rather than dead
+  // controls, and no operation the app cannot perform is drawn — anchored on
+  // the real reply's names first, so the absences cannot pass on an empty
+  // panel.
   it("offers no write action and no mockup note, anchored on the real rows", async () => {
     vi.mocked(workspaceFilesList).mockResolvedValue(
       listing([entry("crates", "dir"), entry("real-file.rs", "file", 2048)]),
@@ -299,10 +311,14 @@ describe("FilesSurface", () => {
     expect(container.textContent).not.toContain("Mockup");
     expect(container.querySelector('[role="note"]')).toBeNull();
     expect(container.querySelectorAll(".workspace-tree-file")).toHaveLength(1);
-    // The only buttons are the refresh control and the folder toggles.
+    // The only buttons are the refresh control, the folder toggles and the
+    // file rows themselves — the last two being how the panel reads, not an
+    // operation it performs.
     for (const button of Array.from(container.querySelectorAll("button"))) {
       expect(
-        button.classList.contains("workspace-tree-dir") || button.textContent === "Refresh",
+        button.classList.contains("workspace-tree-dir") ||
+          button.classList.contains("workspace-tree-file") ||
+          button.textContent === "Refresh",
       ).toBe(true);
     }
     const names = controls();

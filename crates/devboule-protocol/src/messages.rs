@@ -535,6 +535,18 @@ pub enum ClientMessage {
         /// folder's own top level.
         path: String,
     },
+    /// The content of one workspace file, for the Files panel's preview. A read
+    /// like [`Self::WorkspaceFilesList`]: the daemon resolves the directory
+    /// from `workspace_id` and confines `path` to a relative path inside it
+    /// before anything is opened — and nothing is written behind this frame.
+    /// The reply is [`DaemonMessage::WorkspaceFileContent`].
+    WorkspaceFileRead {
+        id: u64,
+        workspace_id: String,
+        /// Path relative to the workspace folder, of a file — the spelling a
+        /// listing entry already handed back.
+        path: String,
+    },
     WorkspaceCreate {
         id: u64,
         project_id: String,
@@ -765,6 +777,7 @@ impl ClientMessage {
             | Self::WorkspaceGitStatus { id, .. }
             | Self::WorkspaceGitDiff { id, .. }
             | Self::WorkspaceFilesList { id, .. }
+            | Self::WorkspaceFileRead { id, .. }
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
             | Self::ProvidersList { id }
@@ -845,6 +858,7 @@ impl ClientMessage {
             | Self::WorkspaceGitStatus { .. }
             | Self::WorkspaceGitDiff { .. }
             | Self::WorkspaceFilesList { .. }
+            | Self::WorkspaceFileRead { .. }
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
             | Self::Invoke { .. }
@@ -905,6 +919,7 @@ impl ClientMessage {
             Self::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
             Self::WorkspaceGitDiff { .. } => "WorkspaceGitDiff",
             Self::WorkspaceFilesList { .. } => "WorkspaceFilesList",
+            Self::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
             Self::WorkspaceDelete { .. } => "WorkspaceDelete",
             Self::ProvidersList { .. } => "ProvidersList",
@@ -950,6 +965,7 @@ impl ClientMessage {
             | Self::WorkspaceGitStatus { .. }
             | Self::WorkspaceGitDiff { .. }
             | Self::WorkspaceFilesList { .. }
+            | Self::WorkspaceFileRead { .. }
             | Self::ProvidersList { .. }
             | Self::DevicesList { .. }
             | Self::PeerAgentsList { .. }
@@ -1085,6 +1101,15 @@ pub enum DaemonMessage {
     WorkspaceFiles {
         id: u64,
         directory: WorkspaceDirectory,
+    },
+    /// The reply to [`ClientMessage::WorkspaceFileRead`]: the content of one
+    /// file, a deliberate withholding of it (`too_large`, `binary`), or a
+    /// refusal of it. Flattened, so the wire is one flat object beside
+    /// `id` — the same shape [`DaemonMessage::Status`] gives its body.
+    WorkspaceFileContent {
+        id: u64,
+        #[serde(flatten)]
+        file: WorkspaceFileContent,
     },
     Workspace {
         id: u64,
@@ -1526,6 +1551,71 @@ pub struct WorkspaceFileEntry {
 pub enum WorkspaceFileKind {
     Dir,
     File,
+}
+
+/// What one file-content reply says happened. The four answer different
+/// questions and must never collapse, like the pair on
+/// [`WorkspaceDirectory`]: `binary` and `too_large` are complete answers
+/// about a file deliberately carried without content, while `refused` with
+/// a sentence in `error` is a failure.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceFileContentStatus {
+    /// The bytes came back; `kind` says how to read `content`.
+    Ok,
+    /// Past the content cap: refused whole with the measure in `error`,
+    /// never cut short.
+    TooLarge,
+    /// Read and sniffed as binary: no content, by decision, not by loss.
+    Binary,
+    /// Refused before any byte was handed back; `error` says why, in the
+    /// sentences the rest of the panel already shows.
+    Refused,
+}
+
+/// How to read `content`: UTF-8 text, base64 for an image recognized by its
+/// extension, or the bytes' own class beside a `binary` status. `null`
+/// whenever the bytes were never read (`too_large`, `refused`).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceFileContentKind {
+    Text,
+    Image,
+    Binary,
+}
+
+/// The content of one workspace file, as the Files panel's preview renders
+/// it. Carve-outs, each stated rather than implied: `error` is `Some`
+/// exactly for `refused` and `too_large` (the cap's own sentence carries
+/// the measure) and `null` for `ok` and `binary`, which are answers;
+/// `content` is `Some` only for `ok` — base64 when `kind` is `image`, UTF-8
+/// otherwise — and `null` for every other status, never a decoded binary;
+/// `size` and `modified_at` come from the stat and are `null` exactly when
+/// the status is `refused`, because a refusal claims nothing about the
+/// file it rejected; `kind` is `Some` exactly when the bytes were read, an
+/// over-cap file never being opened at all.
+///
+/// **Debt, the same one `WorkspaceDirectory` records:** `error` is free text
+/// on a frame that does **not** pass `redact_for_conn`. The sentences this
+/// module composes are static or built from an operation name and a number —
+/// never a path, never an OS error string — but the registry's own failure
+/// rides this field too, and that sentence carries the `workspace_id` the
+/// caller sent (`session_workspaces.rs`, `Workspace '{workspace_id}' is
+/// unavailable…`), plus the journal's reason text a local writer chose:
+/// the R4 debt `WorkspaceDirectory` already records, nominated here rather
+/// than denied. The only caller text in an echo is that id — never a path.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileContent {
+    pub status: WorkspaceFileContentStatus,
+    pub kind: Option<WorkspaceFileContentKind>,
+    pub content: Option<String>,
+    /// Bytes, as `stat` reported them before the read. `null` on `refused`.
+    pub size: Option<u64>,
+    /// Milliseconds since the Unix epoch, as `stat` reported them; `null`
+    /// when the filesystem gave no stamp, and on `refused`.
+    pub modified_at: Option<i64>,
+    pub error: Option<String>,
 }
 
 /// The three-valued answer to "what does this provider offer". The three are

@@ -37,6 +37,7 @@ import type {
   ToolPolicyReply,
   Workspace,
   WorkspaceDirectory,
+  WorkspaceFileContent,
   WorkspaceGitFileDiff,
   WorkspaceGitStatus,
   SessionEvent,
@@ -106,6 +107,7 @@ export type CommandArgs = {
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
   workspace_files_list: { workspaceId: Id; path: string };
+  workspace_file_read: { workspaceId: Id; path: string };
   session_create: {
     workspaceId: Id | null;
     kind: SessionKind;
@@ -221,6 +223,7 @@ type CommandResults = {
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
   workspace_files_list: WorkspaceDirectory;
+  workspace_file_read: WorkspaceFileContent;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
@@ -354,6 +357,7 @@ export const COMMAND_ARG_KEYS = {
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
   workspace_files_list: ["workspaceId", "path"],
+  workspace_file_read: ["workspaceId", "path"],
   session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -548,6 +552,16 @@ export const workspaceGitDiff = (workspaceId: Id, path: string) =>
  */
 export const workspaceFilesList = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_files_list", { workspaceId, path });
+/**
+ * The content of one workspace file — the Files panel's preview behind a
+ * clicked file row. `path` is relative to the workspace folder: the daemon
+ * resolves the folder from the id, confines the path, refuses anything that
+ * would leave it, caps the read at 128 KiB and classifies the bytes, so this
+ * takes only paths the daemon's own replies handed back. One file per call,
+ * on click — never a whole folder, never on a schedule.
+ */
+export const workspaceFileRead = (workspaceId: Id, path: string) =>
+  invokeTyped("workspace_file_read", { workspaceId, path });
 /**
  * Creates a workspace inside a project. Only `local` isolation exists today;
  * `worktree` and any `branch` are refused by the daemon with `unimplemented`

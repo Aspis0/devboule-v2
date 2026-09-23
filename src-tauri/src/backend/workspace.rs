@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
-    Project, Workspace, WorkspaceDirectory, WorkspaceGitFileDiff, WorkspaceGitStatus,
-    WorkspaceIsolation,
+    Project, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceGitFileDiff,
+    WorkspaceGitStatus, WorkspaceIsolation,
 };
 use tauri::State;
 
@@ -122,4 +122,24 @@ pub async fn workspace_files_list(
 ) -> Result<WorkspaceDirectory, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.workspace_files_list(&workspace_id, &path)).await
+}
+
+/// The content of one workspace file — the Files panel's preview behind a
+/// clicked file row. `workspace_id` names the folder and `path` is relative
+/// to it; the daemon confines the path, refuses links and the repository's
+/// metadata, caps the read at 128 KiB before opening anything, and only
+/// reads: no write exists behind this road.
+///
+/// Bounded like the other three workspace roads: `RPC_TIMEOUT` (30 s) is
+/// what this caller feels, and the daemon's own work is one stat plus a read
+/// of at most 128 KiB — no process is spawned for this frame at all. The
+/// wait leaves the window's thread the way the other long roads do.
+#[tauri::command]
+pub async fn workspace_file_read(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceFileContent, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_file_read(&workspace_id, &path)).await
 }

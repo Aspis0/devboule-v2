@@ -24,11 +24,15 @@ mod read;
 /// the walk statted that the panel may still name but never list.
 const NOT_A_FOLDER: &str = "the requested path is not a folder";
 /// A path whose component never had a stat: nothing exists there to list.
-const DOES_NOT_EXIST: &str = "the requested path does not exist";
+/// `pub(crate)`: the file read shows this same sentence for the same fact.
+pub(crate) const DOES_NOT_EXIST: &str = "the requested path does not exist";
 /// `.git` is excluded from every listing; naming it directly is the same
 /// exclusion, not a second way in (DECISIONS §6: the tree lists everything
 /// *but* this, and git stays the authority for everything inside it).
-const NOT_PART_OF_THE_TREE: &str = "the repository's own metadata folder is not part of the tree";
+/// `pub(crate)`: the file read refuses the same spellings with this same
+/// sentence — two copies of one refusal would be two truths.
+pub(crate) const NOT_PART_OF_THE_TREE: &str =
+    "the repository's own metadata folder is not part of the tree";
 
 /// Resolve `workspace_id` through the registry — never a request field.
 pub(crate) fn reply(state: &ServerState, id: u64, workspace_id: &str, path: &str) -> DaemonMessage {
@@ -73,8 +77,9 @@ fn directory_of(root: &Path, requested: &str) -> WorkspaceDirectory {
 /// ([`read::is_git_metadata`]: NTFS folds case, Win32 drops trailing
 /// dots and spaces). Checked after confinement (so the components are
 /// provably inside the root) and before the walk (so no stat of the metadata
-/// folder happens at all).
-fn names_git_metadata(requested: &str) -> bool {
+/// folder happens at all). `pub(crate)`: `workspace_file_read` runs the very
+/// same check — one function for both panels.
+pub(crate) fn names_git_metadata(requested: &str) -> bool {
     Path::new(requested)
         .components()
         .any(|component| match component {

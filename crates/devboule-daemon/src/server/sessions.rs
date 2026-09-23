@@ -463,6 +463,7 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
+        | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }

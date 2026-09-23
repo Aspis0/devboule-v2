@@ -2495,6 +2495,7 @@ fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> 
         ClientMessage::WorkspaceGitStatus { .. } => None,
         ClientMessage::WorkspaceGitDiff { .. } => None,
         ClientMessage::WorkspaceFilesList { .. } => None,
+        ClientMessage::WorkspaceFileRead { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::ProvidersList { .. } => None,

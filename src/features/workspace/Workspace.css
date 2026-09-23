@@ -1954,9 +1954,10 @@
   font-size: 11px;
 }
 
-/* One row of the tree. A folder is the only button — it toggles; a file is
-   a row, because nothing happens when it is clicked (read-only: no content
-   view, no action). Depth padding arrives inline from the row's depth. */
+/* One row of the tree. A folder is a button — it toggles — and a file is
+   a button too: it opens the content preview below the tree (a read; the
+   panel still has no write control of any kind). Depth padding arrives
+   inline from the row's depth. */
 .workspace-tree-dir {
   display: flex;
   align-items: center;
@@ -1985,7 +1986,9 @@
   color: var(--ink-soft);
   text-align: left;
   background: transparent;
+  border: 0;
   border-radius: 8px;
+  cursor: pointer;
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
 }
@@ -2014,6 +2017,24 @@
   color: var(--silence);
   font-size: 10.5px;
   line-height: 1.6;
+}
+
+/* The Files panel's content preview: raw text and an image, in the same
+   card shape the diff's screens use (`.workspace-diff-card` and friends —
+   one card vocabulary for both panels, not two that can drift). */
+.workspace-file-preview-text {
+  margin: 0;
+  padding: 4px 11px 12px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.workspace-file-preview-image {
+  display: block;
+  max-width: 100%;
+  padding: 4px 11px 12px;
 }
 
 .workspace-tree-row-note-error {

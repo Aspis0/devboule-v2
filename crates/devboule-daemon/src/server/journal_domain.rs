@@ -110,6 +110,11 @@ pub(super) fn dispatch_journal(
             workspace_id,
             path,
         } => crate::workspace_files::reply(state, id, &workspace_id, &path),
+        ClientMessage::WorkspaceFileRead {
+            id,
+            workspace_id,
+            path,
+        } => crate::workspace_file_read::reply(state, id, &workspace_id, &path),
         ClientMessage::WorkspaceCreate {
             id,
             project_id,

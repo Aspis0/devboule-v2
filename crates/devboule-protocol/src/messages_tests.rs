@@ -2776,6 +2776,93 @@ fn workspace_files_list_round_trips_with_its_wire_words() {
     );
 }
 
+/// The file-read frame and its reply, pinned to the exact words TypeScript
+/// reads (`src/types/ipc.ts`): the `type` tags, the camelCase keys, the four
+/// status words spelled in `snake_case`, `content`/`size`/`kind` travelling
+/// as explicit `null` rather than vanishing, and — the reason this frame is
+/// allowed on the wire at all — `is_state_changing` staying `false`: a read
+/// writes nothing.
+#[test]
+fn workspace_file_read_round_trips_with_its_wire_words() {
+    let reply = DaemonMessage::WorkspaceFileContent {
+        id: 13,
+        file: WorkspaceFileContent {
+            status: WorkspaceFileContentStatus::Ok,
+            kind: Some(WorkspaceFileContentKind::Text),
+            content: Some("hello\n".to_string()),
+            size: Some(6),
+            modified_at: Some(1_758_000_000_000),
+            error: None,
+        },
+    };
+    let json = serde_json::to_string(&reply).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_file_content\"",
+        "\"status\":\"ok\"",
+        "\"kind\":\"text\"",
+        "\"content\":\"hello\\n\"",
+        "\"modifiedAt\":1758000000000",
+        "\"error\":null",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        reply
+    );
+
+    let request = ClientMessage::WorkspaceFileRead {
+        id: 13,
+        workspace_id: "ws.1".to_string(),
+        path: "README.md".to_string(),
+    };
+    let json = serde_json::to_string(&request).expect("serialize");
+    assert!(json.contains("\"type\":\"workspace_file_read\""), "{json}");
+    assert!(json.contains("\"workspaceId\":\"ws.1\""), "{json}");
+    assert!(json.contains("\"path\":\"README.md\""), "{json}");
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        request
+    );
+    assert_eq!(request.name(), "WorkspaceFileRead");
+    assert!(!request.is_state_changing(), "a read writes nothing");
+    assert_eq!(request.request_id(), Some(13));
+
+    for (status, spelled) in [
+        (WorkspaceFileContentStatus::Ok, "\"ok\""),
+        (WorkspaceFileContentStatus::TooLarge, "\"too_large\""),
+        (WorkspaceFileContentStatus::Binary, "\"binary\""),
+        (WorkspaceFileContentStatus::Refused, "\"refused\""),
+    ] {
+        assert_eq!(serde_json::to_string(&status).expect("serialize"), spelled);
+    }
+
+    // A withholding carries no content and a refusal no size: both travel
+    // as explicit `null`, because an omitted key is a field TypeScript
+    // types as nullable and cannot see.
+    let refused = DaemonMessage::WorkspaceFileContent {
+        id: 14,
+        file: WorkspaceFileContent {
+            status: WorkspaceFileContentStatus::Refused,
+            kind: None,
+            content: None,
+            size: None,
+            modified_at: None,
+            error: Some("the requested path is outside the workspace folder".to_string()),
+        },
+    };
+    let json = serde_json::to_string(&refused).expect("serialize");
+    for needle in [
+        "\"status\":\"refused\"",
+        "\"kind\":null",
+        "\"content\":null",
+        "\"size\":null",
+        "\"error\":\"the requested path",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+}
+
 /// The request trace names a command through `name()`, which is a
 /// `&'static str` constant — never through `Debug`, whose rendering carries
 /// the payload (a prompt's text) inside.

@@ -23,6 +23,12 @@ use crate::ServerState;
 #[path = "workspace_git_diff_parse.rs"]
 mod parse;
 
+/// The walk vouched for the path and it is not an ordinary file — the
+/// folder itself, in any spelling, lands here too. Shared with
+/// `workspace_file_read`, which refuses the same fact with these same
+/// words: one sentence, one truth.
+pub(crate) const NOT_A_FILE: &str = "the requested path is a folder, not a file";
+
 /// Bytes of one file this reply will read or diff: Paseo's per-file cap
 /// (`checkout-git.ts:2101`). Past it the file comes back `too_large` with no
 /// lines — refused whole, never cut short. Checked with one `stat` before
@@ -70,7 +76,7 @@ fn diff_of(root: &Path, requested: &str) -> WorkspaceGitFileDiff {
     // deletion from a name git never knew.
     if let Some(metadata) = final_metadata {
         if metadata.is_dir() {
-            return refused(requested, "the requested path is a folder, not a file");
+            return refused(requested, NOT_A_FILE);
         }
         if metadata.len() > DIFF_FILE_MAX_BYTES {
             return withheld(

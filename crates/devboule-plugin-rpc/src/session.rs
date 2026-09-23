@@ -287,10 +287,12 @@ impl PluginSession {
                         // never makes, but it is a reply and carries an id:
                         // listed, not swept — the same reason as above. The
                         // workspace folder listing is that read's third
-                        // sibling and rides here for the same reason.
+                        // sibling and rides here for the same reason; the
+                        // content of one file is the fourth, same deal.
                         | DaemonMessage::WorkspaceGit { id, .. }
                         | DaemonMessage::WorkspaceGitFile { id, .. }
                         | DaemonMessage::WorkspaceFiles { id, .. }
+                        | DaemonMessage::WorkspaceFileContent { id, .. }
                         | DaemonMessage::DelegationState { id, .. }
                         | DaemonMessage::DelegationSetOk { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)

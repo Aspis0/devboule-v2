@@ -100,12 +100,14 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 /// Every wait goes through the helper, and the total is a declared number —
 /// read from the parsed tree, not from comment-visible text. A road that
 /// starts calling its client directly drops the count; raising it is a
-/// reviewable act, never a silent one.
+/// reviewable act, never a silent one. Raised 50 → 51 with
+/// `workspace_file_read` (fetta 1 della sidebar «come Paseo»): the new road
+/// waits on the daemon like every other workspace read.
 #[test]
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 50,
+        scan.helper_calls, 51,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }

@@ -107,10 +107,10 @@ pub use messages::{
     ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit, RetentionPatch, RetentionSource,
     SelfInfo, SessionEventEnvelope, StoredAttachment, ToolDescriptor, ToolPolicyEntry,
     Unreclaimable, VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource,
-    VocabularyState, WorkspaceDirectory, WorkspaceFileEntry, WorkspaceFileKind,
-    WorkspaceGitDiffLine, WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff,
-    WorkspaceGitFileStatus, WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS,
-    PEER_DEFAULT_CAPS,
+    VocabularyState, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileContentKind,
+    WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind, WorkspaceGitDiffLine,
+    WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff, WorkspaceGitFileStatus,
+    WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};

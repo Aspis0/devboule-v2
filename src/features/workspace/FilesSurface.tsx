@@ -1,5 +1,7 @@
 import { memo } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
+import { FilesPreview, formatSize } from "./FilesPreview";
+import { useWorkspaceFilePreview } from "./useWorkspaceFilePreview";
 import { useWorkspaceFiles, type DirectoryCell } from "./useWorkspaceFiles";
 
 interface FilesSurfaceProps {
@@ -80,26 +82,33 @@ function visibleRows(
   return rows;
 }
 
-/** Byte counts as the row shows them: the stat's own number, rounded for a label. */
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 const indent = (depth: number): { paddingLeft: string } => ({ paddingLeft: `${8 + depth * 14}px` });
 
 /**
- * The Files panel: a presenter over the reads `useWorkspaceFiles` makes.
- * Every state the wire can produce is its own screen — loading, no
- * workspace, an empty folder, the wire's refusal sentence, the capped and
- * skipped notes, the tree itself, and a per-folder loading/error row under
- * an expanded folder. Read-only by decision (DECISIONS §5): folders toggle, files are
- * rows, and no rename, delete, create or download control exists here — and
- * none is coming from this module's imports, which reach one command.
+ * The Files panel: a presenter over the reads `useWorkspaceFiles` and
+ * `useWorkspaceFilePreview` make. Every state the wire can produce is its
+ * own screen — loading, no workspace, an empty folder, the wire's refusal
+ * sentence, the capped and skipped notes, the tree itself, a per-folder
+ * loading/error row under an expanded folder, and the clicked file's
+ * preview below it (loading / text / image / binary / too large / the
+ * refusal's sentence, one screen each). Read-only by decision (DECISIONS
+ * §5, which asked for exactly this: navigate the tree **and see a file's
+ * content**): folders toggle, files open a preview — both reads — and no
+ * rename, delete, create or download control exists here, nothing coming
+ * from this module's imports either, which reach two read commands.
  */
 export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSurfaceProps) {
   const { cells, expanded, toggle, refresh } = useWorkspaceFiles(workspaceId);
+  const {
+    preview,
+    selection,
+    select,
+    refresh: refreshPreview,
+  } = useWorkspaceFilePreview(workspaceId);
+  const refreshAll = (): void => {
+    refresh();
+    refreshPreview();
+  };
   const root = cells[""] ?? null;
   const rootFailure = root?.failure ?? null;
   const rootReply = root?.reply ?? null;
@@ -112,7 +121,7 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
         // No workspace, no refresh: with nothing to read, a control that
         // cannot do anything is a small lie (the Changes panel's fix, R5).
         <div className="workspace-files-toolbar">
-          <button type="button" className="workspace-secondary-action" onClick={refresh}>
+          <button type="button" className="workspace-secondary-action" onClick={refreshAll}>
             Refresh
           </button>
         </div>
@@ -154,17 +163,20 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
                   <span className="workspace-tree-label">{row.entry.name}</span>
                 </button>
               ) : (
-                <div
+                <button
+                  type="button"
                   key={row.entry.path}
                   className="workspace-tree-file"
+                  aria-pressed={selection === row.entry.path}
                   style={indent(row.depth)}
                   title={row.entry.path}
+                  onClick={() => select(row.entry.path)}
                 >
                   <span className="workspace-tree-label">{row.entry.name}</span>
                   {row.entry.size !== null ? (
                     <span className="workspace-tree-size">{formatSize(row.entry.size)}</span>
                   ) : null}
-                </div>
+                </button>
               )
             ) : row.kind === "loading" ? (
               <div
@@ -197,6 +209,10 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
           )}
         </div>
       )}
+      {/* The clicked file's own answer, below the tree the way the Changes
+          panel puts its diff below the rows: its states are the preview's,
+          and a selection this panel never made renders nothing. */}
+      {selection !== null ? <FilesPreview path={selection} preview={preview} /> : null}
     </div>
   );
 });

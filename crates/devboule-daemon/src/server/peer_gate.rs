@@ -302,6 +302,7 @@ pub(super) fn peer_mode_refusal_for_conn(
         // mode to vet here either.
         ClientMessage::WorkspaceGitDiff { .. } => None,
         ClientMessage::WorkspaceFilesList { .. } => None,
+        ClientMessage::WorkspaceFileRead { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
@@ -527,6 +528,7 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
+        | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }
