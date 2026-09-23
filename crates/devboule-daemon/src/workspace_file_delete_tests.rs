@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{deleted, DOES_NOT_EXIST, NOT_PART_OF_THE_TREE, THE_ROOT};
+use super::{delete_vouched, deleted};
+use crate::workspace_file_mutations::{vouched_entry, THE_ROOT};
+use crate::workspace_files::{DOES_NOT_EXIST, NOT_PART_OF_THE_TREE};
+use crate::workspace_git_support::OUTSIDE_THE_WORKSPACE;
 
 /// A repository under `temp_dir`, the fixture the sibling mutation tests
 /// use: a real checkout, so the `.git` the guard refuses is real. Hard-
@@ -66,6 +69,22 @@ impl Drop for Repo {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// One junction planted at `at`, pointing at `target` — the planter the
+/// link refusals and the swap races below share.
+fn plant_junction(at: &Path, target: &Path) {
+    let created = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(at)
+        .arg(target)
+        .output()
+        .expect("mklink");
+    assert!(
+        created.status.success(),
+        "mklink /J failed: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
 }
 
 /// A unique path under `temp_dir`, for the link targets of the escape cases.
@@ -172,10 +191,11 @@ fn the_repository_metadata_folder_is_never_deleted_in_any_spelling() {
     );
 }
 
-/// Mutant `m:walk` — let the walk pass a link: the act would remove the
-/// link itself (or reach at its target through it) where this tree refuses
-/// the act outright — the divergence from Paseo's delete declared in
-/// `DECISIONS-write.md` §6, kept as the walk's one rule.
+/// The link rule's first half, pinned: a link named **as the act's
+/// target** is refused outright (the divergence from Paseo's delete
+/// declared in `DECISIONS-write.md` §6) — not deleted as the link, not
+/// followed to its target. Mutant `m:walk` — let the walk pass a link —
+/// dies here.
 #[test]
 #[cfg(windows)]
 fn a_link_is_refused_not_deleted_nor_followed() {
@@ -184,17 +204,7 @@ fn a_link_is_refused_not_deleted_nor_followed() {
     std::fs::create_dir(&outside).expect("outside dir");
     std::fs::write(outside.join("present.txt"), "outside reached\n").expect("outside file");
     let junction = repo.root.join("dirlink");
-    let created = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(&junction)
-        .arg(&outside)
-        .output()
-        .expect("mklink");
-    assert!(
-        created.status.success(),
-        "mklink /J failed: {}",
-        String::from_utf8_lossy(&created.stderr)
-    );
+    plant_junction(&junction, &outside);
     let dangling = repo.root.join("vanished.txt");
     std::os::windows::fs::symlink_file(outside.join("present.txt"), &dangling).expect("symlink");
 
@@ -219,10 +229,11 @@ fn a_link_is_refused_not_deleted_nor_followed() {
     let _ = std::fs::remove_dir_all(&outside);
 }
 
-/// One level deeper than the walk can see: a folder **being deleted** that
-/// holds a link loses the link and never its target — `remove_dir_all`
-/// unlinks without traversing, so the one rule holds inside the recursion.
-/// The folder's ordinary children go with it.
+/// The link rule's second half: a link **inside** a folder being deleted
+/// is removed as an entry — unlinked, never followed — while a link named
+/// as the act's target would have been refused above. `remove_dir_all`
+/// unlinks without traversing, so the rule holds inside the recursion, and
+/// the target outside the workspace stays byte for byte itself.
 #[test]
 #[cfg(windows)]
 fn a_deleted_folder_unlinks_a_child_link_and_never_its_target() {
@@ -234,17 +245,7 @@ fn a_deleted_folder_unlinks_a_child_link_and_never_its_target() {
     // Two joins, not one: `join("tree/inner")` would hand `cmd` a slash it
     // parses as a switch.
     let link = repo.root.join("tree").join("inner");
-    let created = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(&link)
-        .arg(&outside)
-        .output()
-        .expect("mklink");
-    assert!(
-        created.status.success(),
-        "mklink /J failed: {}",
-        String::from_utf8_lossy(&created.stderr)
-    );
+    plant_junction(&link, &outside);
 
     deleted(&repo.root, "tree").expect("delete folder with a child link");
 
@@ -277,6 +278,91 @@ fn a_missing_entry_is_refused_with_the_listings_own_sentence() {
     );
 }
 
+/// The file race, made callable the way `claim_then_move` is the rename's
+/// window: the walk's verdict is taken on the honest tree, the **parent
+/// folder is swapped for a junction to an outside folder** inside the
+/// window that verdict leaves open, and the act is driven on the vouched
+/// name. The handle's own location verdict refuses what the name now
+/// resolves to, and the outside target keeps its bytes. Kills the mutant
+/// that removes by name — the removal would follow the junction and the
+/// outside file would die with it.
+#[test]
+#[cfg(windows)]
+fn a_parent_swapped_between_the_verdict_and_the_act_is_refused_and_spares_the_outside_target() {
+    let repo = Repo::new("race-parent");
+    repo.write(
+        "dir/inner.txt",
+        "inner
+",
+    );
+    let outside = unique_directory("race-parent-target");
+    std::fs::create_dir(&outside).expect("outside dir");
+    std::fs::write(
+        outside.join("inner.txt"),
+        "outside reached
+",
+    )
+    .expect("outside file");
+    let planted = repo.root.join("planted");
+    plant_junction(&planted, &outside);
+
+    let (target, metadata) = vouched_entry(&repo.root, "dir/inner.txt").expect("vouched");
+
+    // The swap, in the window: the folder the verdict walked becomes a
+    // junction to the outside folder.
+    std::fs::remove_dir_all(repo.root.join("dir")).expect("the honest folder away");
+    std::fs::rename(&planted, repo.root.join("dir")).expect("the junction planted");
+
+    let error = delete_vouched(&repo.root, target, metadata).expect_err("refused");
+    assert_eq!(error, OUTSIDE_THE_WORKSPACE);
+    assert_eq!(
+        std::fs::read_to_string(outside.join("inner.txt")).unwrap(),
+        "outside reached
+",
+        "the outside target is intact"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+/// The folder half of the same race: the vouched folder itself swapped for
+/// a junction between the verdict and the act. The folder road's handle
+/// verdict asks where the open actually landed, refuses the outside
+/// answer, and the outside folder is intact — a recursive removal through
+/// the junction never happened.
+#[test]
+#[cfg(windows)]
+fn a_folder_swapped_for_a_junction_between_the_verdict_and_the_act_is_refused() {
+    let repo = Repo::new("race-folder");
+    repo.write(
+        "dir/inner.txt",
+        "inner
+",
+    );
+    let outside = unique_directory("race-folder-target");
+    std::fs::create_dir(&outside).expect("outside dir");
+    std::fs::write(
+        outside.join("present.txt"),
+        "outside reached
+",
+    )
+    .expect("outside file");
+    let planted = repo.root.join("planted");
+    plant_junction(&planted, &outside);
+
+    let (target, metadata) = vouched_entry(&repo.root, "dir").expect("vouched");
+
+    std::fs::remove_dir_all(repo.root.join("dir")).expect("the honest folder away");
+    std::fs::rename(&planted, repo.root.join("dir")).expect("the junction planted");
+
+    let error = delete_vouched(&repo.root, target, metadata).expect_err("refused");
+    assert_eq!(error, OUTSIDE_THE_WORKSPACE);
+    assert!(
+        outside.join("present.txt").is_file(),
+        "the outside folder is intact"
+    );
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 /// The same double assertion the sibling mutation tests pin: no refusal of
 /// this act ever carries this run's workspace root or any path-shaped text
 /// (`/`, `\`, `:`) — every sentence is static or the walk's own.
@@ -294,8 +380,11 @@ fn assert_no_root(error: &str, root: &Path) {
 /// class the delete composes around a confined path; the two link
 /// refusals run [`assert_no_root`] in their own test above. Never in any
 /// list, and declared rather than hidden: `DELETE_FAILED` — a bare
-/// constant on an arm no test can force open (there is no deterministic
-/// way to make a removal of a path this suite owns fail).
+/// constant on arms no test can force open (there is no deterministic way
+/// to make a removal of a path this suite owns fail) — and
+/// `LOCATION_UNCONFIRMED`, the handle verdict's own refusal, which no
+/// deterministic test can force either (canonicalize and
+/// `GetFinalPathNameByHandle` do not fail on a tree this suite owns).
 #[test]
 fn no_refusal_sentence_carries_the_workspace_root() {
     let repo = Repo::new("pathless");

@@ -303,9 +303,11 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // that checkout the same way before anything opens. Three writes ride
         // the same grant: a rename and a duplicate change a name inside that
         // checkout and nothing else, and the delete removes one confined
-        // entry — the act that loses data, asked twice on the sending side
-        // (the frontend confirms with the user before the frame exists) and
-        // re-judged here by the same guards; every path is confined and
+        // entry — the act that loses data. No confirmation rides this wire:
+        // it is the sending screen's own gate, and a peer holding this
+        // capability can send the frame and acts under it as behind every
+        // administrative door (whether a paired device may delete without a
+        // dialog is an open product question); every path is confined and
         // walked before the act, and the administrative surface is one
         // grant, not two (the same reason the journal verbs give above). The preview's stage and unstage join
         // that same grant: a staged copy is the file the content read

@@ -588,19 +588,22 @@ pub enum ClientMessage {
         idempotency_key: Option<String>,
     },
     /// Delete one entry inside a workspace — the Files panel's Delete, the
-    /// one act of the group that **loses data** and the one that is asked
-    /// twice: the frontend confirms with the user before this frame is sent
-    /// (the wire carries no confirmation of its own), and the daemon then
-    /// re-judges everything anyway. A **write** like
-    /// [`Self::WorkspaceFileRename`], with the same confinement and the
-    /// same guards — the workspace's own folder refused, the repository's
-    /// metadata refused in every spelling, and a link refused rather than
-    /// deleted or followed (the walk's one rule, kept where Paseo's delete
-    /// unlinks it — one rule for the whole tree). A folder is deleted
-    /// whole, its children with it; nothing is ever followed or read
-    /// through a link inside it. The act is irreversible: there is no
-    /// undo on this frame, which is why the confirmation exists. The reply
-    /// is [`DaemonMessage::WorkspaceFileDeleted`].
+    /// one act of the group that **loses data**. The wire carries **no
+    /// confirmation**: this frame performs no confirmation and checks none.
+    /// The confirmation is the local Files screen's own gate (the panel
+    /// asks through a native dialog before it sends); a peer holding the
+    /// admin capability can send this frame and the daemon acts under that
+    /// capability, as behind every administrative door — whether a paired
+    /// device may delete without a dialog is an open product question
+    /// (`DECISIONS-write.md`, for the owner). The daemon re-judges the path
+    /// with the same guards the reads use — the workspace's own folder
+    /// refused, the repository's metadata refused in every spelling, and a
+    /// link named as the act's target refused, never followed (where
+    /// Paseo's delete unlinks the link, one rule for the whole tree). A
+    /// link **inside** a deleted folder goes with the folder — removed as
+    /// an entry, never followed — and the folder goes whole, its children
+    /// with it. The act is irreversible: no undo exists on this frame. The
+    /// reply is [`DaemonMessage::WorkspaceFileDeleted`].
     WorkspaceFileDelete {
         id: u64,
         workspace_id: String,

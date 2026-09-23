@@ -953,10 +953,11 @@ impl DaemonClient {
         }
     }
 
-    /// Delete one workspace entry: the act that loses data. The caller has
-    /// already confirmed with the user — the wire carries no confirmation of
-    /// its own — and the daemon re-judges the path with every guard the
-    /// reads and the other writes use before removing anything.
+    /// Delete one workspace entry: the act that loses data. No confirmation
+    /// exists on this road — the confirmation is the caller's screen (the
+    /// Files panel asks before it calls), never the wire's — and the daemon
+    /// re-judges the path with every guard the reads and the other writes
+    /// use before removing anything.
     pub fn workspace_file_delete(
         &self,
         workspace_id: &str,

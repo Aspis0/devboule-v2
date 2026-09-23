@@ -14,11 +14,15 @@
 //! exclusively** ([`claim_then_move`]) — a name created in between is
 //! refused, never replaced — and `git mv` keeps its own window, which
 //! [`rename_on_disk`] measures and states instead of assuming away. The
-//! delete has no window of its own to close: the walk vouches the entry
-//! **before** anything is touched, and the act removes under the walked
-//! spelling itself — a link swapped in between is the same stat→act race
-//! the other two acts declare, and `remove_dir_all` would still unlink
-//! such a swap rather than traverse it.
+//! delete is vouched the same way **before** anything is touched, and
+//! because it is the one act that loses data its act is anchored where the
+//! platform allows — the open and the disposition on a handle for a file,
+//! a handle's own location verdict before the recursive removal for a
+//! folder, with the window that remains declared there. That act lives in
+//! its own file, [`delete`], split by responsibility. The confirmation is
+//! not on this wire at all: it is the Files screen's own gate, and a peer
+//! holding the admin capability acts under it as behind every
+//! administrative door — an open product question, `DECISIONS-write.md`.
 
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
@@ -50,10 +54,6 @@ const NAME_TRAILING: &str = "the new name must not end in a dot or a space";
 const NAME_TAKEN: &str = "an entry with that new name already exists";
 const RENAME_FAILED: &str = "the entry could not be renamed";
 const COPY_FAILED: &str = "the entry could not be duplicated";
-/// Bare constant on arms no test can force open (declared, like its two
-/// siblings above): there is no deterministic way to make a removal of a
-/// path this suite owns fail — a vanished entry dies at the walk instead.
-const DELETE_FAILED: &str = "the entry could not be deleted";
 /// The one rule this tree keeps everywhere: a link is never followed and
 /// never recreated. A folder copy that meets one is removed whole, so the
 /// sentence is true — nothing was copied.
@@ -104,7 +104,7 @@ pub(crate) fn reply_delete(
     path: &str,
 ) -> DaemonMessage {
     let change = match state.sessions.workspace_cwd(workspace_id) {
-        Ok(root) => match deleted(&root, path) {
+        Ok(root) => match delete::deleted(&root, path) {
             Ok(()) => erased(),
             Err(sentence) => refused(sentence),
         },
@@ -487,28 +487,6 @@ fn copy_file(source: &Path, destination: &Path) -> Result<(), String> {
         })
 }
 
-/// Delete one entry, the act that loses data and never gets a second
-/// chance. Private on purpose: callers outside this module arrive through
-/// [`reply_delete`], and the test module is a child.
-///
-/// The walk has already vouched the entry — root refused, `.git` refused
-/// in any spelling, and **a link refused rather than deleted or followed**:
-/// the walk's one rule, kept here where Paseo's delete unlinks the link
-/// itself (`service.ts:758-762`), because one rule for the whole tree costs
-/// less than two truths (`DECISIONS-write.md` §6). The branch reads the
-/// stat the walk vouched: a folder goes whole — children with it, one
-/// `remove_dir_all` — and a folder that holds a link unlinks the link
-/// without ever traversing to its target, so the rule holds one level
-/// deeper than the walk can see.
-fn deleted(root: &Path, requested: &str) -> Result<(), String> {
-    let (target, metadata) = vouched_entry(root, requested)?;
-    if metadata.is_dir() {
-        std::fs::remove_dir_all(&target).map_err(|_| DELETE_FAILED.to_string())
-    } else {
-        std::fs::remove_file(&target).map_err(|_| DELETE_FAILED.to_string())
-    }
-}
-
 /// The wire spelling of a path below the root: its normal components
 /// rejoined with `/`, the same rule the listing builds entry paths with.
 fn wire_join<'a>(components: impl Iterator<Item = Component<'a>>) -> String {
@@ -521,9 +499,12 @@ fn wire_join<'a>(components: impl Iterator<Item = Component<'a>>) -> String {
         .join("/")
 }
 
-#[cfg(test)]
-#[path = "workspace_file_delete_tests.rs"]
-mod delete_tests;
+/// The delete's own file: the vouching stays here (it is the door every
+/// act walks through), the removal roads and their platform anchoring go
+/// with the act, and the delete's tests are its children.
+#[path = "workspace_file_delete.rs"]
+mod delete;
+
 #[cfg(test)]
 #[path = "workspace_file_mutations_tests.rs"]
 mod tests;

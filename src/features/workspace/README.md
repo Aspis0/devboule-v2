@@ -76,12 +76,14 @@ What is wired and what is not:
   entry is allowed), a tracked file renamed with `git mv` so the act lands
   **staged**, and a duplicate that never overwrites (`a copy`, `a copy 2`,
   …). **Delete is the one act that loses data, and the only one that asks
-  first**: the native dialog (`confirm` of `@tauri-apps/plugin-dialog`)
-  names the entry — a folder's question says everything inside it goes —
-  and a No stops everything before any command exists; a link is refused,
-  never deleted nor followed (one rule for the whole tree, kept where
-  Paseo's own delete unlinks it), and a folder goes whole. The gate lives
-  in the writer hook, so no caller of the delete can skip it. Create and
+  first** — and the asking is this screen's own gate, not anything the
+  wire carries: the native dialog (`confirm` of
+  `@tauri-apps/plugin-dialog`) names the entry — a folder's question says
+  everything inside it goes — and a No stops everything before any
+  command exists. The daemon refuses a link named **as the entry**, never
+  following it; a link **inside** a deleted folder is removed as an
+  entry, never followed, and the folder goes whole. The gate lives in the
+  writer hook, so no caller of the delete can skip it. Create and
   download still do not exist here (the phone workstream's). The badge beside the panel's name is `read-only`,
   which names one thing only: no live source for a **count** exists, and an
   invented number beside real data is the defect the old mock carried — it

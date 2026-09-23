@@ -635,11 +635,11 @@ export const workspaceFileDuplicate = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_file_duplicate", { workspaceId, path });
 /**
  * Delete one workspace entry — the act that loses data, and the only one
- * of the group that asks first: the caller confirms with the user through
- * the native dialog before invoking this, and this road must never be
- * reached without that answer. The daemon re-judges the path with every
- * guard the reads use, and a success carries nothing to name — the entry
- * is gone.
+ * of the group that asks first: the confirmation is the Files screen's
+ * own (its writer hook asks through the native dialog before the one
+ * caller in this app reaches this road), never a check the road itself
+ * performs. The daemon re-judges the path with every guard the reads
+ * use, and a success carries nothing to name — the entry is gone.
  */
 export const workspaceFileDelete = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_file_delete", { workspaceId, path });
