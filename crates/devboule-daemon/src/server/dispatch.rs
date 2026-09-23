@@ -161,6 +161,10 @@ pub(super) fn dispatch_immediate(
         // wrote itself) and rides the same grant as the panel that serves.
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
+        | ClientMessage::WorkspaceGitStage { .. }
+        | ClientMessage::WorkspaceGitUnstage { .. }
+        | ClientMessage::WorkspaceGitDiscard { .. }
+        | ClientMessage::WorkspaceGitCommit { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }

@@ -107,12 +107,14 @@ fn the_blocking_roads_outside_the_bridge_stay_async() {
 /// `workspace_file_preview_unstage` (fetta immagini): both wait on the
 /// daemon like every other workspace road. Then 55 → 56 with
 /// `workspace_file_delete` (fetta 3 delle scritture): the delete waits on
-/// the daemon like its two siblings.
+/// the daemon like its two siblings. Then 56 → 57 with the four git
+/// writes (fetta 4 delle scritture): stage, unstage, discard and commit
+/// share one bridge road, so the four add a single helper call.
 #[test]
 fn every_wait_goes_through_the_blocking_helper() {
     let scan = command_scan::scan();
     assert_eq!(
-        scan.helper_calls, 56,
+        scan.helper_calls, 57,
         "one helper call per waiting road, plus the thread test below that calls the helper itself"
     );
 }

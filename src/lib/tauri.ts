@@ -110,6 +110,10 @@ export type CommandArgs = {
   };
   workspace_git_status: { workspaceId: Id };
   workspace_git_diff: { workspaceId: Id; path: string };
+  workspace_git_stage: { workspaceId: Id; paths: string[] };
+  workspace_git_unstage: { workspaceId: Id; paths: string[] };
+  workspace_git_discard: { workspaceId: Id; paths: string[] };
+  workspace_git_commit: { workspaceId: Id; message: string };
   workspace_files_list: { workspaceId: Id; path: string };
   workspace_file_read: {
     workspaceId: Id;
@@ -236,6 +240,12 @@ type CommandResults = {
   workspace_create: Workspace;
   workspace_git_status: WorkspaceGitStatus;
   workspace_git_diff: WorkspaceGitFileDiff;
+  /** The one reply the four git writes share: `null` is the act landed, a
+   * sentence is the refusal — already pathless by the daemon's rule. */
+  workspace_git_stage: string | null;
+  workspace_git_unstage: string | null;
+  workspace_git_discard: string | null;
+  workspace_git_commit: string | null;
   workspace_files_list: WorkspaceDirectory;
   workspace_file_read: WorkspaceFileContent;
   workspace_file_preview_stage: WorkspaceFilePreview;
@@ -375,6 +385,10 @@ export const COMMAND_ARG_KEYS = {
   workspace_create: ["projectId", "isolation", "branch"],
   workspace_git_status: ["workspaceId"],
   workspace_git_diff: ["workspaceId", "path"],
+  workspace_git_stage: ["workspaceId", "paths"],
+  workspace_git_unstage: ["workspaceId", "paths"],
+  workspace_git_discard: ["workspaceId", "paths"],
+  workspace_git_commit: ["workspaceId", "message"],
   workspace_files_list: ["workspaceId", "path"],
   workspace_file_read: ["workspaceId", "path", "fromLine", "lineCount"],
   workspace_file_preview_stage: ["workspaceId", "path"],
@@ -566,6 +580,38 @@ export const workspaceGitStatus = (workspaceId: Id) =>
  */
 export const workspaceGitDiff = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_git_diff", { workspaceId, path });
+/**
+ * Stage paths in the workspace's index — the Changes panel's Stage. The
+ * paths are the panel's own rows (relative, from a status reply): the
+ * daemon re-judges every one of them — confinement, `.git` in any
+ * spelling, links, the 500-path cap — before it spawns anything, so this
+ * wrapper sends rows and never filesystem paths of its own.
+ */
+export const workspaceGitStage = (workspaceId: Id, paths: string[]) =>
+  invokeTyped("workspace_git_stage", { workspaceId, paths });
+/**
+ * Unstage paths — the index entry returns to `HEAD` and the worktree keeps
+ * its bytes. Same row paths, same daemon-side judgement as the stage.
+ */
+export const workspaceGitUnstage = (workspaceId: Id, paths: string[]) =>
+  invokeTyped("workspace_git_unstage", { workspaceId, paths });
+/**
+ * Discard paths — the act that loses data: the selection returns to `HEAD`
+ * and untracked paths are deleted. The confirmation is the panel's own
+ * gate (its writer hook asks through the native dialog before the one
+ * caller in this app reaches this road), never a check the road itself
+ * performs — the same discipline as `workspaceFileDelete`.
+ */
+export const workspaceGitDiscard = (workspaceId: Id, paths: string[]) =>
+  invokeTyped("workspace_git_discard", { workspaceId, paths });
+/**
+ * Commit what is staged — and nothing else: the daemon runs `git commit`
+ * over the index exactly as it stands (no `add -A` exists behind this
+ * road, `DECISIONS-write.md` §2), with this message — written by hand,
+ * empty refused by the daemon before anything spawns.
+ */
+export const workspaceGitCommit = (workspaceId: Id, message: string) =>
+  invokeTyped("workspace_git_commit", { workspaceId, message });
 /**
  * The entries of one workspace folder — the Files panel's tree. `path` is
  * relative to the workspace folder and empty means the folder itself: the

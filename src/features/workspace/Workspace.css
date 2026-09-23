@@ -1813,11 +1813,70 @@
   margin-bottom: 13px;
 }
 
+.workspace-file-change-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* The row's own actions beside the select control: Stage and Unstage on
+   every row (the status word does not say which half is dirty, and both
+   acts are safe no-ops on the half that is not), the menu trigger last
+   with Discard behind it. */
+.workspace-file-change-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.workspace-file-change-action {
+  height: 22px;
+  padding: 0 8px;
+  color: var(--silence);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+}
+
+.workspace-file-change-action:hover,
+.workspace-file-change-action:focus-visible {
+  color: var(--ink);
+  background: var(--surface-muted);
+}
+
+.workspace-file-change-action:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.workspace-commit-message {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+.workspace-commit-message::placeholder {
+  color: var(--silence);
+}
+
 .workspace-file-change {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 27px;
   padding: 0 8px;
   color: var(--ink-soft);

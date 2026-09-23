@@ -866,6 +866,86 @@ impl DaemonClient {
         }
     }
 
+    /// One git write's shared shape: send the frame, take the one reply
+    /// the four share, and hand back `null` (landed) or the refusing
+    /// sentence — the wire's own, never composed here. The key rides as
+    /// `None` the way the file writes send it: this road is the local
+    /// app's, and the protocol's key exists for a retrying peer.
+    fn workspace_git_write(
+        &self,
+        request: impl FnOnce(u64, Option<String>) -> ClientMessage,
+    ) -> Result<Option<String>, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(request(id, None))? {
+            DaemonMessage::WorkspaceGitWrite { error, .. } => Ok(error),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Stage paths in one workspace's index — `git add` over a confined
+    /// selection, the daemon judging every path before it spawns. `null`
+    /// is the act landed; a string is the refusal.
+    pub fn workspace_git_stage(
+        &self,
+        workspace_id: &str,
+        paths: &[String],
+    ) -> Result<Option<String>, DaemonError> {
+        self.workspace_git_write(|id, idempotency_key| ClientMessage::WorkspaceGitStage {
+            id,
+            workspace_id: workspace_id.to_string(),
+            paths: paths.to_vec(),
+            idempotency_key,
+        })
+    }
+
+    /// Unstage paths in one workspace's index — the index entry returns to
+    /// `HEAD`, the worktree keeps its bytes.
+    pub fn workspace_git_unstage(
+        &self,
+        workspace_id: &str,
+        paths: &[String],
+    ) -> Result<Option<String>, DaemonError> {
+        self.workspace_git_write(|id, idempotency_key| ClientMessage::WorkspaceGitUnstage {
+            id,
+            workspace_id: workspace_id.to_string(),
+            paths: paths.to_vec(),
+            idempotency_key,
+        })
+    }
+
+    /// Discard paths in one workspace — the act that loses data: the
+    /// selection returns to `HEAD` and untracked paths are deleted. The
+    /// confirmation is the sending screen's own, never this road's.
+    pub fn workspace_git_discard(
+        &self,
+        workspace_id: &str,
+        paths: &[String],
+    ) -> Result<Option<String>, DaemonError> {
+        self.workspace_git_write(|id, idempotency_key| ClientMessage::WorkspaceGitDiscard {
+            id,
+            workspace_id: workspace_id.to_string(),
+            paths: paths.to_vec(),
+            idempotency_key,
+        })
+    }
+
+    /// Commit what is staged in one workspace — never `add -A`: the
+    /// daemon runs `git commit` over the index exactly as it stands, with
+    /// the caller's own message (empty refused before anything spawns).
+    pub fn workspace_git_commit(
+        &self,
+        workspace_id: &str,
+        message: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        self.workspace_git_write(|id, idempotency_key| ClientMessage::WorkspaceGitCommit {
+            id,
+            workspace_id: workspace_id.to_string(),
+            message: message.to_string(),
+            idempotency_key,
+        })
+    }
+
     /// The entries of one workspace folder. The id and a relative `path` are
     /// the whole argument — the empty string is the folder itself — and the
     /// daemon confines the rest to a directory inside it before opening
@@ -2032,6 +2112,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Workspace { id, .. }
         | DaemonMessage::WorkspaceGit { id, .. }
         | DaemonMessage::WorkspaceGitFile { id, .. }
+        | DaemonMessage::WorkspaceGitWrite { id, .. }
         | DaemonMessage::WorkspaceFiles { id, .. }
         | DaemonMessage::WorkspaceFileContent { id, .. }
         | DaemonMessage::WorkspaceFileRenamed { id, .. }

@@ -34,11 +34,19 @@ What is wired and what is not:
   mark, never an exact-looking number), and the selected file's diff (loading /
   binary / too large / refused / lines). The badge beside the panel's name is
   the label the open panel last read for that workspace (`changesBadge.ts`);
-  closed, it keeps that value, and a workspace never read shows "—". Stage,
-  Discard and commit do not exist here — the panel reads, it never writes — and
-  the `cargo test · 142 passed` card is gone with them: no source of test
-  results exists, and an invented number beside real data is worse than an
-  empty space.
+  closed, it keeps that value, and a workspace never read shows "—". The
+  panel also **writes four named acts** — the owner reopened DECISIONS §4
+  on 2026-09-22: **Stage** and **Unstage** on every row, **Discard** in
+  the row's menu, and **Commit** in the toolbar over a hand-written
+  message. Only Discard asks first: the native `confirm()` inside
+  `useWorkspaceGitActions.ts` stands between the click and the wire, and
+  a No reaches no command; the commit is **staged only** — no `add -A`
+  exists behind this panel — and no message is ever generated. Every act
+  refreshes the panel immediately, whatever the answer, and a refusal
+  appears as the wire's own pathless sentence under the toolbar. The
+  `cargo test · 142 passed` card stays gone: no source of test results
+  exists, and an invented number beside real data is worse than an empty
+  space.
 
 - **The Files panel is real — it reads, and it now writes two ways.** The owner
   reopened DECISIONS §5 on 2026-09-22 (marked in that file), so rename and
@@ -93,8 +101,9 @@ What is wired and what is not:
   otherwise.** Their bodies in `sidePanels.tsx` render hardcoded examples
   under a note saying so, their rows are non-interactive rather than
   buttons that do nothing, and the controls that named operations this app
-  cannot perform — Reindex, Export, Generate, Stage, Discard — stay removed
-  instead of left drawn. "Open Design" is real and selects the Design
+  cannot perform — Reindex, Export, Generate — stay removed
+  instead of left drawn. (Stage and Discard left that list on 2026-09-22:
+  they are real controls in the Changes panel now.) "Open Design" is real and selects the Design
   surface.
 
 History lives in the left sidebar footer beside the daemon status. It is a

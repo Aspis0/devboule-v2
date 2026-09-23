@@ -37,6 +37,21 @@ const GIT_UNAVAILABLE: &str = "git could not be run";
 /// sentences contains an absolute path — `error` travels on a wire whose
 /// redaction seam does not touch these frames.
 pub(crate) const OUTSIDE_THE_WORKSPACE: &str = "the requested path is outside the workspace folder";
+/// The one git collision an owner creates by working in their own
+/// terminal while a write act runs here. Matched on stderr **locally** by
+/// [`crate::workspace_git_write::write_failure`] and answered with this
+/// static sentence: git's own wording carries this machine's absolute
+/// `.git/index.lock` path, and `error` on these frames is not redacted on
+/// the way out.
+pub(crate) const INDEX_LOCKED: &str =
+    "another git process is using this repository; try again in a moment";
+/// The most common refusal the panel's Commit meets — the index holds
+/// nothing new — matched on git's own words (measured: `git commit`
+/// prints `no changes added to commit` / `nothing added to commit` /
+/// `nothing to commit` to **stdout** and exits 1) and answered with this
+/// static sentence instead of `exited with code 1`, which would be true
+/// and useless. Pathless like every sentence here.
+pub(crate) const NOTHING_STAGED: &str = "there is nothing staged to commit";
 pub(crate) const LINK_FINAL: &str = "the requested path is a symbolic link; its target is not read";
 const LINK_CROSSED: &str = "the requested path crosses a link and is not read";
 
@@ -111,6 +126,35 @@ pub(crate) fn exit_error(operation: &str, output: &GitOutput) -> String {
         Some(code) => format!("{operation} exited with code {code}"),
         None => format!("{operation} was terminated before it could report a code"),
     }
+}
+
+/// A **write's** failure sentence: the one collision every owner creates
+/// by working in their own terminal while an act runs here — `index.lock`
+/// — is matched on stderr **locally** and answered with the shared static
+/// [`INDEX_LOCKED`]; every other failure is [`exit_error`]. Reading
+/// stderr to *choose* a static sentence is not letting it travel: the
+/// measured stderr (git's own wording, carrying this machine's absolute
+/// `.git/index.lock` path) never leaves this function, and the mutation
+/// that hands it to the sentence instead dies on the pathless tests
+/// (`workspace_git_write_tests.rs`).
+pub(crate) fn write_failure(operation: &str, output: &GitOutput) -> String {
+    if output.stderr.contains("index.lock") {
+        return INDEX_LOCKED.to_string();
+    }
+    // `git commit`'s three measured ways of saying the index holds nothing
+    // new — stdout or stderr, whichever git's version writes them to.
+    const UNCOMMITTED: [&str; 3] = [
+        "no changes added to commit",
+        "nothing added to commit",
+        "nothing to commit",
+    ];
+    if UNCOMMITTED
+        .iter()
+        .any(|phrase| output.stdout.contains(phrase) || output.stderr.contains(phrase))
+    {
+        return NOTHING_STAGED.to_string();
+    }
+    exit_error(operation, output)
 }
 
 /// The requested path, confined: non-empty, relative (no root, no prefix,

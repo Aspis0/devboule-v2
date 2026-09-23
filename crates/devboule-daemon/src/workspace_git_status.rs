@@ -41,6 +41,7 @@ fn status_of(root: &Path) -> WorkspaceGitStatus {
         Probe::Refused(message) => return unavailable(message),
     }
     let arguments = [
+        "--no-optional-locks",
         "status",
         "--porcelain=v2",
         "--branch",
@@ -126,8 +127,8 @@ fn numstat(root: &Path) -> (HashMap<String, parse::Counted>, Option<String>) {
     let mut counts = HashMap::new();
     let mut error: Option<String> = None;
     let calls: [&[&str]; 2] = [
-        &["diff", "--numstat", "-z"],
-        &["diff", "--cached", "--numstat", "-z"],
+        &["--no-optional-locks", "diff", "--numstat", "-z"],
+        &["--no-optional-locks", "diff", "--cached", "--numstat", "-z"],
     ];
     for subcommand in calls {
         let failure = match git(root, subcommand) {

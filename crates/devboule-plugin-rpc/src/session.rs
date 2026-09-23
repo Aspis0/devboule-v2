@@ -291,6 +291,12 @@ impl PluginSession {
                         // content of one file is the fourth, same deal.
                         | DaemonMessage::WorkspaceGit { id, .. }
                         | DaemonMessage::WorkspaceGitFile { id, .. }
+                        // The Changes panel's git writes answer with an id
+                        // for the same reason these reads are listed: a
+                        // plugin backend neither stages nor unstages nor
+                        // discards nor commits inside this machine's
+                        // checkout. Listed, not swept.
+                        | DaemonMessage::WorkspaceGitWrite { id, .. }
                         | DaemonMessage::WorkspaceFiles { id, .. }
                         | DaemonMessage::WorkspaceFileContent { id, .. }
                         // The three Files-panel writes are replies with ids

@@ -159,6 +159,14 @@ pub struct ServerState {
     /// like the inbound budgets.
     pub(super) outbound_dials: super::peer_dial::DialSlots,
     pairing: Arc<crate::pairing::PairingService>,
+    /// One write mutex per repository root: stage, unstage, discard,
+    /// commit and the rename's `git mv` — this daemon's five index-touching
+    /// acts — take it before spawning, so two of our own writers never
+    /// cross and meet `index.lock` (the first cause of a spurious exit
+    /// 128). Keyed by the resolved root rather than the workspace id, so
+    /// two ids naming one checkout share one lock; entries are never
+    /// removed (a bounded set: one per workspace this daemon ever wrote).
+    git_write_locks: Mutex<HashMap<std::path::PathBuf, Arc<Mutex<()>>>>,
     /// Test-only: real `peers` loads, so a test can prove the cache held.
     #[cfg(test)]
     peer_table_loads: AtomicU64,
@@ -330,6 +338,7 @@ impl ServerState {
             peer_transport: OnceLock::new(),
             outbound_dials: super::peer_dial::DialSlots::default(),
             pairing: Arc::new(crate::pairing::PairingService::new()),
+            git_write_locks: Mutex::new(HashMap::new()),
             #[cfg(test)]
             peer_table_loads: AtomicU64::new(0),
             #[cfg(test)]
@@ -366,6 +375,19 @@ impl ServerState {
 
     pub fn alloc_conn(&self) -> u64 {
         self.conn_ids.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// This repository root's write mutex: fetched (created on first use)
+    /// under the map lock, then locked by the caller across the whole act
+    /// — the map lock is never held across a spawn. A poisoned guard is
+    /// unwrapped (`into_inner`): a panicking act must not stop the next
+    /// write for the life of the process.
+    pub(crate) fn git_write_lock(&self, root: &Path) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .git_write_locks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Arc::clone(locks.entry(root.to_path_buf()).or_default())
     }
 
     pub(super) fn watch_sessions(&self, owner: &OwnerId, conn: &Arc<ConnHandle>) {

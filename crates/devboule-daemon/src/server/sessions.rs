@@ -462,6 +462,10 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspacesList { .. }
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
+        | ClientMessage::WorkspaceGitStage { .. }
+        | ClientMessage::WorkspaceGitUnstage { .. }
+        | ClientMessage::WorkspaceGitDiscard { .. }
+        | ClientMessage::WorkspaceGitCommit { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }

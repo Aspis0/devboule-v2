@@ -68,10 +68,17 @@ pub(crate) fn reply_rename(
     name: &str,
 ) -> DaemonMessage {
     let change = match state.sessions.workspace_cwd(workspace_id) {
-        Ok(root) => match renamed(&root, path, name) {
-            Ok(new_path) => answered(new_path),
-            Err(sentence) => refused(sentence),
-        },
+        Ok(root) => {
+            // The fifth index-touching act: `git mv` writes the index,
+            // so it takes the same per-workspace write lock as the four
+            // git writes — two of our own writers never cross.
+            let lock = state.git_write_lock(&root);
+            let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+            match renamed(&root, path, name) {
+                Ok(new_path) => answered(new_path),
+                Err(sentence) => refused(sentence),
+            }
+        }
         // The sentence comes from the registry and names no path (see
         // `workspace_cwd`): it is safe to echo on this frame.
         Err(error) => refused(error.message),
@@ -297,7 +304,10 @@ fn rename_on_disk(
     };
     let old_path = wire_join(Path::new(requested).components());
     if probe(root).refusal().is_none() {
-        let listed = match git(root, &["ls-files", "-z", "--", &old_path]) {
+        let listed = match git(
+            root,
+            &["--no-optional-locks", "ls-files", "-z", "--", &old_path],
+        ) {
             Ok(output) if output.success => output,
             Ok(output) => return Err(exit_error("git ls-files", &output)),
             Err(error) => return Err(run_error(error, "git ls-files")),

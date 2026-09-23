@@ -86,11 +86,11 @@ fn detect_git_repository_with_program(
     prefix_args: &[OsString],
 ) -> GitRepositoryStatus {
     let mut command = Command::new(program);
-    command
-        .args(prefix_args)
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--show-toplevel"]);
+    command.args(prefix_args).arg("-C").arg(path).args([
+        "--no-optional-locks",
+        "rev-parse",
+        "--show-toplevel",
+    ]);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

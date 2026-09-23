@@ -3174,6 +3174,92 @@ fn workspace_file_preview_frames_round_trip_with_their_wire_words() {
 /// `&'static str` constant — never through `Debug`, whose rendering carries
 /// the payload (a prompt's text) inside.
 #[test]
+fn workspace_git_write_frames_round_trip_with_their_wire_words() {
+    // The four git writes and their one shared reply: the wire words
+    // (snake_case variants, camelCase fields), the closed-match answers
+    // that name and audit them, and the request/idempotency arms the
+    // protocol pins for every frame.
+    let frames = [
+        ClientMessage::WorkspaceGitStage {
+            id: 7,
+            workspace_id: "ws.1".to_string(),
+            paths: vec!["-f".to_string(), "a[1].txt".to_string()],
+            idempotency_key: Some("k-7".to_string()),
+        },
+        ClientMessage::WorkspaceGitUnstage {
+            id: 8,
+            workspace_id: "ws.1".to_string(),
+            paths: vec!["src/lib.rs".to_string()],
+            idempotency_key: None,
+        },
+        ClientMessage::WorkspaceGitDiscard {
+            id: 9,
+            workspace_id: "ws.1".to_string(),
+            paths: vec!["notes/todo.md".to_string()],
+            idempotency_key: None,
+        },
+        ClientMessage::WorkspaceGitCommit {
+            id: 10,
+            workspace_id: "ws.1".to_string(),
+            message: "say what changed".to_string(),
+            idempotency_key: None,
+        },
+    ];
+    for (index, frame) in frames.iter().enumerate() {
+        let json = serde_json::to_string(frame).expect("serialize");
+        let variant = [
+            "workspace_git_stage",
+            "workspace_git_unstage",
+            "workspace_git_discard",
+            "workspace_git_commit",
+        ][index];
+        assert!(
+            json.contains(&format!("\"type\":\"{variant}\"")),
+            "{variant}: {json}"
+        );
+        assert!(json.contains("\"workspaceId\":\"ws.1\""), "{json}");
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+            *frame,
+            "{variant}"
+        );
+        assert_eq!(frame.request_id(), Some(frame.request_id().expect("id")));
+        assert!(frame.is_state_changing(), "{variant}: a write is audited");
+        assert_eq!(
+            frame.idempotency_key(),
+            if index == 0 { Some("k-7") } else { None },
+            "{variant}"
+        );
+    }
+    assert_eq!(frames[0].name(), "WorkspaceGitStage");
+    assert_eq!(frames[1].name(), "WorkspaceGitUnstage");
+    assert_eq!(frames[2].name(), "WorkspaceGitDiscard");
+    assert_eq!(frames[3].name(), "WorkspaceGitCommit");
+
+    // The one reply: null is landed, a sentence is the refusal — and the
+    // reply itself carries no path (the message is the guard; `error`
+    // does not pass the redaction seam).
+    let landed = DaemonMessage::WorkspaceGitWrite {
+        id: 11,
+        error: None,
+    };
+    let refused = DaemonMessage::WorkspaceGitWrite {
+        id: 12,
+        error: Some(
+            "another git process is using this repository; try again in a moment".to_string(),
+        ),
+    };
+    for reply in [landed, refused] {
+        let json = serde_json::to_string(&reply).expect("serialize");
+        assert!(json.contains("\"type\":\"workspace_git_write\""), "{json}");
+        assert_eq!(
+            serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+            reply
+        );
+    }
+}
+
+#[test]
 fn trace_name_is_a_static_constant_and_never_carries_the_payload() {
     let text = "TRACE-SENTINEL-8f31 the prompt body must not be logged";
     let message = ClientMessage::AgentMessageSend {

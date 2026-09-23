@@ -43,12 +43,13 @@ describe("side panel dead controls", () => {
     });
   }
 
-  // The Changes panel's tests moved to `ChangesSurface.test.tsx` and the
-  // Files panel's to `FilesSurface.test.tsx` (and, for the Files panel's row
+  // The Changes panel's tests moved to `ChangesSurface.test.tsx` (and, for
+  // its row acts, to `ChangesSurface.actions.test.tsx`) and the Files
+  // panel's to `FilesSurface.test.tsx` (and, for the Files panel's row
   // acts, to `FilesFileActions.test.tsx`): both panels render real data
-  // now, so their guarantees — which controls each panel may draw, and no
-  // mockup notice — are anchored there against real content instead of the
-  // mock's.
+  // now, so their guarantees — which controls each panel may draw (and
+  // that the one act that loses data asks first), and no mockup notice —
+  // are anchored there against real content instead of the mock's.
   describe("AppSurface", () => {
     it("no longer renders the dead Reindex and Export buttons", async () => {
       await render(<AppSurface appBuild={41} onReload={() => undefined} />);

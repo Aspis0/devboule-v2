@@ -322,6 +322,16 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
         | ClientMessage::WorkspaceFileDelete { .. }
+        // Four more writes behind the same grant, for the same reason the
+        // file writes are: they act inside that checkout — the index and
+        // its history — which the id already opens for the reads above.
+        // Discard is the one that loses data, and it is the sending
+        // screen's own gate, not anything this wire carries (the same
+        // open question the delete frames record).
+        | ClientMessage::WorkspaceGitStage { .. }
+        | ClientMessage::WorkspaceGitUnstage { .. }
+        | ClientMessage::WorkspaceGitDiscard { .. }
+        | ClientMessage::WorkspaceGitCommit { .. }
         | ClientMessage::WorkspaceFilePreviewStage { .. }
         | ClientMessage::WorkspaceFilePreviewUnstage { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProvidersList { .. } => with_capability(caps, CAP_ADMIN),
@@ -1238,6 +1248,30 @@ pub(crate) mod tests {
                 workspace_id: "ws.1".to_string(),
                 path: "src/lib.rs".to_string(),
             },
+            ClientMessage::WorkspaceGitStage {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                paths: vec!["src/lib.rs".to_string()],
+                idempotency_key: None,
+            },
+            ClientMessage::WorkspaceGitUnstage {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                paths: vec!["src/lib.rs".to_string()],
+                idempotency_key: None,
+            },
+            ClientMessage::WorkspaceGitDiscard {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                paths: vec!["src/lib.rs".to_string()],
+                idempotency_key: None,
+            },
+            ClientMessage::WorkspaceGitCommit {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                message: "say what changed".to_string(),
+                idempotency_key: None,
+            },
             ClientMessage::WorkspaceFilesList {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
@@ -2047,6 +2081,10 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceFileDelete { .. } => administrative(),
             ClientMessage::WorkspaceFilePreviewStage { .. } => administrative(),
             ClientMessage::WorkspaceFilePreviewUnstage { .. } => administrative(),
+            ClientMessage::WorkspaceGitStage { .. } => administrative(),
+            ClientMessage::WorkspaceGitUnstage { .. } => administrative(),
+            ClientMessage::WorkspaceGitDiscard { .. } => administrative(),
+            ClientMessage::WorkspaceGitCommit { .. } => administrative(),
             ClientMessage::WorkspaceCreate { .. } => administrative(),
             ClientMessage::WorkspaceDelete { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
@@ -2075,7 +2113,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 62;
+    pub(crate) const VARIANT_COUNT: usize = 66;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2118,6 +2156,10 @@ pub(crate) mod tests {
             ClientMessage::WorkspacesList { .. } => "WorkspacesList",
             ClientMessage::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
             ClientMessage::WorkspaceGitDiff { .. } => "WorkspaceGitDiff",
+            ClientMessage::WorkspaceGitStage { .. } => "WorkspaceGitStage",
+            ClientMessage::WorkspaceGitUnstage { .. } => "WorkspaceGitUnstage",
+            ClientMessage::WorkspaceGitDiscard { .. } => "WorkspaceGitDiscard",
+            ClientMessage::WorkspaceGitCommit { .. } => "WorkspaceGitCommit",
             ClientMessage::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             ClientMessage::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             ClientMessage::WorkspaceFileRename { .. } => "WorkspaceFileRename",
@@ -2317,6 +2359,30 @@ pub(crate) mod tests {
                 id: 1,
                 workspace_id: "ws.1".to_string(),
                 path: "src/lib.rs".to_string(),
+            },
+            ClientMessage::WorkspaceGitStage {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                paths: vec!["src/lib.rs".to_string()],
+                idempotency_key: None,
+            },
+            ClientMessage::WorkspaceGitUnstage {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                paths: vec!["src/lib.rs".to_string()],
+                idempotency_key: None,
+            },
+            ClientMessage::WorkspaceGitDiscard {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                paths: vec!["src/lib.rs".to_string()],
+                idempotency_key: None,
+            },
+            ClientMessage::WorkspaceGitCommit {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                message: "say what changed".to_string(),
+                idempotency_key: None,
             },
             ClientMessage::WorkspaceFilesList {
                 id: 1,

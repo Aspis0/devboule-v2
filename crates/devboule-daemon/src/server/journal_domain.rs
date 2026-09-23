@@ -105,6 +105,109 @@ pub(super) fn dispatch_journal(
             workspace_id,
             path,
         } => crate::workspace_git_diff::reply(state, id, &workspace_id, &path),
+        // The four git writes: keyed like the file writes below (a retry
+        // with the same key replays the first success instead of acting
+        // twice — a second commit would find nothing staged), and only a
+        // success is remembered: a refusal costs nothing to retry, and
+        // caching it would freeze a sentence over an index that has since
+        // changed.
+        ClientMessage::WorkspaceGitStage {
+            id,
+            workspace_id,
+            paths,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("stage:{workspace_id}:{paths:?}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            let reply = crate::workspace_git_write::reply_stage(state, id, &workspace_id, &paths);
+            if matches!(&reply, DaemonMessage::WorkspaceGitWrite { error: None, .. }) {
+                remember(
+                    state,
+                    owner,
+                    idempotency_key.as_deref(),
+                    &fingerprint,
+                    &reply,
+                );
+            }
+            reply
+        }
+        ClientMessage::WorkspaceGitUnstage {
+            id,
+            workspace_id,
+            paths,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("unstage:{workspace_id}:{paths:?}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            let reply = crate::workspace_git_write::reply_unstage(state, id, &workspace_id, &paths);
+            if matches!(&reply, DaemonMessage::WorkspaceGitWrite { error: None, .. }) {
+                remember(
+                    state,
+                    owner,
+                    idempotency_key.as_deref(),
+                    &fingerprint,
+                    &reply,
+                );
+            }
+            reply
+        }
+        ClientMessage::WorkspaceGitDiscard {
+            id,
+            workspace_id,
+            paths,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("discard:{workspace_id}:{paths:?}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            let reply = crate::workspace_git_write::reply_discard(state, id, &workspace_id, &paths);
+            if matches!(&reply, DaemonMessage::WorkspaceGitWrite { error: None, .. }) {
+                remember(
+                    state,
+                    owner,
+                    idempotency_key.as_deref(),
+                    &fingerprint,
+                    &reply,
+                );
+            }
+            reply
+        }
+        ClientMessage::WorkspaceGitCommit {
+            id,
+            workspace_id,
+            message,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("commit:{workspace_id}:{message}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            let reply =
+                crate::workspace_git_write::reply_commit(state, id, &workspace_id, &message);
+            if matches!(&reply, DaemonMessage::WorkspaceGitWrite { error: None, .. }) {
+                remember(
+                    state,
+                    owner,
+                    idempotency_key.as_deref(),
+                    &fingerprint,
+                    &reply,
+                );
+            }
+            reply
+        }
         ClientMessage::WorkspaceFilesList {
             id,
             workspace_id,

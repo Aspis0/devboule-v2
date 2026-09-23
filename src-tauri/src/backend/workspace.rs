@@ -124,6 +124,82 @@ pub async fn workspace_files_list(
     off_main_thread(move || client.workspace_files_list(&workspace_id, &path)).await
 }
 
+/// One git write's shared shape behind this bridge — stage, unstage,
+/// discard and commit below. The reply is `null` (the act landed) or the
+/// refusing sentence, already pathless by the daemon's own rule. Bounded
+/// like the other workspace roads: `RPC_TIMEOUT` (30 s) is what this
+/// caller feels, and the daemon's own work is at most the house's 60 s
+/// per git command — a slow `pre-commit` hook is the long pole, and the
+/// wait leaves the window's thread the way the other long roads do.
+async fn workspace_git_write_bridge(
+    bridge: &State<'_, DaemonBridge>,
+    run: impl FnOnce(Arc<DaemonClient>) -> Result<Option<String>, devboule_daemon::DaemonError>
+        + Send
+        + 'static,
+) -> Result<Option<String>, CommandError> {
+    let client = require_client(bridge)?;
+    off_main_thread(move || run(client)).await
+}
+
+/// Stage paths in one workspace's index — the Changes panel's Stage.
+/// `paths` are the panel's own rows; the daemon re-judges every one of
+/// them (confinement, `.git`, links, cap) before it spawns anything.
+#[tauri::command]
+pub async fn workspace_git_stage(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    paths: Vec<String>,
+) -> Result<Option<String>, CommandError> {
+    workspace_git_write_bridge(&bridge, move |client| {
+        client.workspace_git_stage(&workspace_id, &paths)
+    })
+    .await
+}
+
+/// Unstage paths in one workspace's index — the index entry returns to
+/// `HEAD` and the worktree keeps its bytes.
+#[tauri::command]
+pub async fn workspace_git_unstage(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    paths: Vec<String>,
+) -> Result<Option<String>, CommandError> {
+    workspace_git_write_bridge(&bridge, move |client| {
+        client.workspace_git_unstage(&workspace_id, &paths)
+    })
+    .await
+}
+
+/// Discard paths in one workspace — the act that loses data. The
+/// confirmation is the panel's own (the native dialog asks before this
+/// command is reached); this road performs none of its own.
+#[tauri::command]
+pub async fn workspace_git_discard(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    paths: Vec<String>,
+) -> Result<Option<String>, CommandError> {
+    workspace_git_write_bridge(&bridge, move |client| {
+        client.workspace_git_discard(&workspace_id, &paths)
+    })
+    .await
+}
+
+/// Commit what is staged in one workspace — never `add -A`: the daemon
+/// commits the index exactly as it stands, with this message (empty
+/// refused by the daemon before anything spawns).
+#[tauri::command]
+pub async fn workspace_git_commit(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    message: String,
+) -> Result<Option<String>, CommandError> {
+    workspace_git_write_bridge(&bridge, move |client| {
+        client.workspace_git_commit(&workspace_id, &message)
+    })
+    .await
+}
+
 /// The content of one workspace file — the Files panel's preview behind a
 /// clicked file row. `workspace_id` names the folder and `path` is relative
 /// to it; the daemon confines the path, refuses links and the repository's

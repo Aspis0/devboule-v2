@@ -268,9 +268,13 @@ describe("ChangesSurface", () => {
     expect(container.textContent).not.toContain("a.ts");
   });
 
-  // Kills mutation (d) — the invented `cargo test · 142 passed` card — and is
-  // the replacement for the mock-era guarantee: no write action may appear.
-  it("offers no write action and no invented test result, anchored on its real rows", async () => {
+  // Rewritten with the doctrine it asserts (§2.5.7): the owner reopened
+  // DECISIONS §4 on 2026-09-22, so Stage/Unstage/Discard/Commit have the
+  // right to exist here — the absences that remain mandatory are the
+  // invented test result (kills mutation (d), the `cargo test · 142 passed`
+  // card) and Stash, which was never implemented. Anchored on the real
+  // rows first, so none of it can pass on an empty panel.
+  it("offers the write actions the owner approved and no invented test result", async () => {
     vi.mocked(workspaceGitStatus).mockResolvedValue(
       statusReply({
         dirty: true,
@@ -286,9 +290,10 @@ describe("ChangesSurface", () => {
     expect(container.textContent).toContain("+14 −3");
     const labels = controls();
     expect(labels).toContain("Refresh");
-    for (const forbidden of ["Stage", "Discard", "Commit", "Stash"]) {
-      expect(labels).not.toContain(forbidden);
-    }
+    expect(labels).toContain("Stage");
+    expect(labels).toContain("Unstage");
+    expect(labels).toContain("Commit");
+    expect(labels).not.toContain("Stash");
     expect(container.textContent).not.toContain("142 passed");
     expect(container.textContent).not.toContain("cargo test");
     expect(container.querySelector(".workspace-test-card")).toBeNull();

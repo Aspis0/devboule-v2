@@ -521,6 +521,80 @@ pub enum ClientMessage {
         /// `git status` printed it.
         path: String,
     },
+    /// Stage paths in the Changes panel's index — `git add` over a
+    /// confined selection (modified, new, or a tracked file's deletion),
+    /// literal pathspecs and `--` so a file named `-f` is a file. A
+    /// **write** like [`Self::WorkspaceFileRename`]: the daemon resolves
+    /// the folder from `workspace_id`, confines every path of `paths`
+    /// through the same two layers the reads use **before spawning
+    /// anything**, refuses the repository's metadata in any spelling and
+    /// the workspace's own folder, and runs under the workspace's write
+    /// mutex (two of this daemon's writes never cross; the owner's own
+    /// git in a terminal stays `index.lock`'s arbitrage, answered with a
+    /// static sentence). No confirmation: staging loses nothing. The cap
+    /// is **500 paths per frame**, refused before any spawn. The reply is
+    /// [`DaemonMessage::WorkspaceGitWrite`] — one reply for this frame
+    /// and the three git writes below, because only the caller knows
+    /// which act it sent.
+    WorkspaceGitStage {
+        id: u64,
+        workspace_id: String,
+        /// Paths relative to the repository root, spelled the way `git
+        /// status` printed them; at most 500 per frame.
+        paths: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
+    /// Unstage paths — the index entry goes back to `HEAD` and the
+    /// worktree keeps its bytes, with the declared fallback for an `HEAD`
+    /// that does not resolve (the paths leave the index directly,
+    /// Paseo's own step). A **write** like [`Self::WorkspaceGitStage`],
+    /// same guards, same cap, same mutex, no confirmation: this act
+    /// loses nothing. The reply is [`DaemonMessage::WorkspaceGitWrite`].
+    WorkspaceGitUnstage {
+        id: u64,
+        workspace_id: String,
+        /// Paths relative to the repository root; at most 500 per frame.
+        paths: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
+    /// Discard paths — the act of this group that **loses data**: the
+    /// selection returns to `HEAD` and untracked paths are deleted. The
+    /// wire carries **no confirmation**, like [`Self::WorkspaceFileDelete`]:
+    /// the asking screen is the local Changes panel's own gate (it
+    /// confirms through a native dialog before it sends), and a peer
+    /// holding the admin capability acts under that capability as behind
+    /// every administrative door. Paseo's sequence, pathspec-scoped at
+    /// every step. A **write** like [`Self::WorkspaceGitStage`], same
+    /// guards, same cap, same mutex. The reply is
+    /// [`DaemonMessage::WorkspaceGitWrite`].
+    WorkspaceGitDiscard {
+        id: u64,
+        workspace_id: String,
+        /// Paths relative to the repository root; at most 500 per frame.
+        paths: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
+    /// Commit **what is staged and nothing else** — no `add -A` exists on
+    /// this frame (the divergence from Paseo's `commitChanges`, which
+    /// stages everything because it has no separate stage; this panel
+    /// does, `DECISIONS-write.md` §2), and the message is the caller's
+    /// own: empty after trimming is refused before anything spawns —
+    /// no message is ever generated. A **write**: same folder resolution,
+    /// same probe, same mutex; a hook that dies answers as operation plus
+    /// exit code, never git's stderr. The reply is
+    /// [`DaemonMessage::WorkspaceGitWrite`].
+    WorkspaceGitCommit {
+        id: u64,
+        workspace_id: String,
+        /// The commit message, written by hand; must be non-empty after
+        /// trimming.
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
     /// The entries of one workspace folder, for the Files panel's tree. A read
     /// like [`Self::WorkspaceGitStatus`]: the daemon resolves the directory
     /// from `workspace_id`, and `path` is a relative path inside it — empty
@@ -879,6 +953,10 @@ impl ClientMessage {
             | Self::WorkspacesList { id, .. }
             | Self::WorkspaceGitStatus { id, .. }
             | Self::WorkspaceGitDiff { id, .. }
+            | Self::WorkspaceGitStage { id, .. }
+            | Self::WorkspaceGitUnstage { id, .. }
+            | Self::WorkspaceGitDiscard { id, .. }
+            | Self::WorkspaceGitCommit { id, .. }
             | Self::WorkspaceFilesList { id, .. }
             | Self::WorkspaceFileRead { id, .. }
             | Self::WorkspaceFileRename { id, .. }
@@ -942,6 +1020,18 @@ impl ClientMessage {
                 idempotency_key, ..
             }
             | Self::WorkspaceFileDelete {
+                idempotency_key, ..
+            }
+            | Self::WorkspaceGitStage {
+                idempotency_key, ..
+            }
+            | Self::WorkspaceGitUnstage {
+                idempotency_key, ..
+            }
+            | Self::WorkspaceGitDiscard {
+                idempotency_key, ..
+            }
+            | Self::WorkspaceGitCommit {
                 idempotency_key, ..
             } => idempotency_key.as_deref(),
             Self::Hello(_)
@@ -1037,6 +1127,10 @@ impl ClientMessage {
             Self::WorkspacesList { .. } => "WorkspacesList",
             Self::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
             Self::WorkspaceGitDiff { .. } => "WorkspaceGitDiff",
+            Self::WorkspaceGitStage { .. } => "WorkspaceGitStage",
+            Self::WorkspaceGitUnstage { .. } => "WorkspaceGitUnstage",
+            Self::WorkspaceGitDiscard { .. } => "WorkspaceGitDiscard",
+            Self::WorkspaceGitCommit { .. } => "WorkspaceGitCommit",
             Self::WorkspaceFilesList { .. } => "WorkspaceFilesList",
             Self::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             Self::WorkspaceFileRename { .. } => "WorkspaceFileRename",
@@ -1128,6 +1222,13 @@ impl ClientMessage {
             // The one act that destroys data — audited like the two writes
             // above, and the reason its frame exists at all.
             | Self::WorkspaceFileDelete { .. }
+            // The four git writes: they move paths through the index and
+            // (commit) into history — a disk sink an audit row must cover,
+            // exactly like the file writes above them.
+            | Self::WorkspaceGitStage { .. }
+            | Self::WorkspaceGitUnstage { .. }
+            | Self::WorkspaceGitDiscard { .. }
+            | Self::WorkspaceGitCommit { .. }
             // Both write the runtime directory's `previews` folder — a
             // stage creates a copy, an unstage deletes it — so both earn an
             // audit row like the two writes above them.
@@ -1229,6 +1330,19 @@ pub enum DaemonMessage {
     WorkspaceGitFile {
         id: u64,
         file: WorkspaceGitFileDiff,
+    },
+    /// The reply to [`ClientMessage::WorkspaceGitStage`],
+    /// [`ClientMessage::WorkspaceGitUnstage`],
+    /// [`ClientMessage::WorkspaceGitDiscard`] and
+    /// [`ClientMessage::WorkspaceGitCommit`] — one reply for the four
+    /// git writes, because only the caller knows which act it sent:
+    /// `error` is `null` when the act landed and the refusing sentence
+    /// otherwise. Like `WorkspaceGitStatus.error` on these frames the
+    /// sentence is written without any path and without git's stderr —
+    /// `error` here does not pass the redaction seam.
+    WorkspaceGitWrite {
+        id: u64,
+        error: Option<String>,
     },
     /// The reply to [`ClientMessage::WorkspaceFilesList`]: the entries of one
     /// folder, or a refusal of it.

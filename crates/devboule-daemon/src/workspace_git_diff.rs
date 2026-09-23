@@ -94,6 +94,7 @@ fn diff_of(root: &Path, requested: &str) -> WorkspaceGitFileDiff {
     let status_output = match git(
         root,
         &[
+            "--no-optional-locks",
             "status",
             "--porcelain=v2",
             "--untracked-files=all",
@@ -162,7 +163,10 @@ fn diff_of(root: &Path, requested: &str) -> WorkspaceGitFileDiff {
         // an ignored file exists too without ever being a change of the
         // workspace — both are refused below for what is true of each: git
         // tracks no diff to give.
-        None => match git(root, &["ls-files", "-z", "--", &pathspec]) {
+        None => match git(
+            root,
+            &["--no-optional-locks", "ls-files", "-z", "--", &pathspec],
+        ) {
             Ok(output) if output.success => {
                 if output.stdout.is_empty() {
                     refused(
@@ -184,10 +188,16 @@ fn diff_of(root: &Path, requested: &str) -> WorkspaceGitFileDiff {
 /// has no `HEAD` (git exits 128, measured) and `git diff --cached` answers
 /// for its index instead. Any other failure reports as itself.
 fn diff_output(root: &Path, pathspec: &str) -> Result<GitOutput, String> {
-    match git(root, &["diff", "HEAD", "--", pathspec]) {
+    match git(
+        root,
+        &["--no-optional-locks", "diff", "HEAD", "--", pathspec],
+    ) {
         Ok(output) if output.success => Ok(output),
         Ok(output) if output.code == Some(128) => {
-            match git(root, &["diff", "--cached", "--", pathspec]) {
+            match git(
+                root,
+                &["--no-optional-locks", "diff", "--cached", "--", pathspec],
+            ) {
                 Ok(staged) if staged.success => Ok(staged),
                 Ok(staged) => Err(exit_error("git diff", &staged)),
                 Err(error) => Err(run_error(error, "git diff")),

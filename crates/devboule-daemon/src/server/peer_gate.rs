@@ -301,6 +301,13 @@ pub(super) fn peer_mode_refusal_for_conn(
         // A read like the status list: it reaches no agent, so there is no
         // mode to vet here either.
         ClientMessage::WorkspaceGitDiff { .. } => None,
+        // The four git writes act on this machine's disk through git —
+        // same reason as the file writes below: no mode to vet (the
+        // capability table is what guards them).
+        ClientMessage::WorkspaceGitStage { .. } => None,
+        ClientMessage::WorkspaceGitUnstage { .. } => None,
+        ClientMessage::WorkspaceGitDiscard { .. } => None,
+        ClientMessage::WorkspaceGitCommit { .. } => None,
         ClientMessage::WorkspaceFilesList { .. } => None,
         ClientMessage::WorkspaceFileRead { .. } => None,
         // The write acts act on this machine's own disk, never on an
@@ -537,6 +544,10 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspacesList { .. }
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
+        | ClientMessage::WorkspaceGitStage { .. }
+        | ClientMessage::WorkspaceGitUnstage { .. }
+        | ClientMessage::WorkspaceGitDiscard { .. }
+        | ClientMessage::WorkspaceGitCommit { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }
