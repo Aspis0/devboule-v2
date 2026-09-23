@@ -1359,6 +1359,11 @@ pub struct InstalledAgent {
     /// then carries no `tools` key on the wire and the panel hides the tool
     /// section rather than offering toggles with nothing behind them.
     pub tools: Vec<devboule_protocol::ToolDescriptor>,
+    /// The PATH env pair this row's spawn must carry when the executable's
+    /// folder is named only by the registry PATH the inherited PATH predates
+    /// (Windows; `None` otherwise, including every row of the injected
+    /// `*_in_paths` seam, which stay pure). Never serialized to the wire.
+    pub(crate) spawn_path_env: Option<(String, String)>,
 }
 
 /// PATH scan result. `unreadable_dirs` is the number of unique PATH entries
@@ -1371,11 +1376,61 @@ pub struct ProviderDiscovery {
 
 /// Return the known agents whose executable can be resolved from PATH.
 pub fn discover() -> ProviderDiscovery {
-    let directories = match std::env::var_os("PATH") {
-        Some(paths) => std::env::split_paths(&paths).collect(),
-        None => Vec::new(),
-    };
-    discover_in_paths(&directories)
+    #[cfg(windows)]
+    {
+        discover_with_path_source(&crate::windows_path_env::RegistryPathSource)
+    }
+    #[cfg(not(windows))]
+    {
+        discover_in_paths(&discovery_directories())
+    }
+}
+
+/// The directories discovery searches. On Windows the daemon's inherited PATH
+/// can predate folders the machine or user PATH registry values name (the
+/// launcher's login-time environment), so discovery merges those entries in
+/// behind the process PATH; on unix the login-shell capture already refreshed
+/// the process PATH and nothing is added.
+pub(crate) fn discovery_directories() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        crate::windows_path_env::merged_path_directories(
+            &crate::windows_path_env::RegistryPathSource,
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        match std::env::var_os("PATH") {
+            Some(paths) => std::env::split_paths(&paths).collect(),
+            None => Vec::new(),
+        }
+    }
+}
+
+/// [`discover`] with the environment behind the seam: the exact discovery
+/// path the daemon runs, driven from an injected source, so a test reproduces
+/// a stale inherited PATH without touching the registry. Rows found in a
+/// folder only the registry PATH names carry their spawn PATH override.
+#[cfg(windows)]
+pub(crate) fn discover_with_path_source(
+    source: &dyn crate::windows_path_env::WindowsPathSource,
+) -> ProviderDiscovery {
+    let mut discovery =
+        discover_in_paths(&crate::windows_path_env::merged_path_directories(source));
+    crate::windows_path_env::attach_spawn_path_env(&mut discovery.agents, source);
+    discovery
+}
+
+/// Bind the real registry source for callers that discover with
+/// [`path_directories`] directly (the refresh path) and still need rows to
+/// carry their spawn PATH override.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn attach_spawn_path_env(discovery: &mut ProviderDiscovery) {
+    #[cfg(windows)]
+    crate::windows_path_env::attach_spawn_path_env(
+        &mut discovery.agents,
+        &crate::windows_path_env::RegistryPathSource,
+    );
 }
 
 pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
@@ -1431,6 +1486,7 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
                 install_channel,
                 npm_package: spec.npm_package,
                 tools: mcp_tools_for(spec.id),
+                spawn_path_env: None,
             })
         })
         .collect();
@@ -1536,14 +1592,30 @@ pub fn first_acp_available() -> Option<InstalledAgent> {
 
 /// Return the discovered provider with this catalog id, if it is on PATH.
 pub fn find_available(id: &str) -> Option<InstalledAgent> {
-    find_available_in_paths(id, &path_directories_for_available())
+    #[cfg(windows)]
+    {
+        find_available_with_path_source(id, &crate::windows_path_env::RegistryPathSource)
+    }
+    #[cfg(not(windows))]
+    {
+        find_available_in_paths(id, &discovery_directories())
+    }
 }
 
-pub(crate) fn path_directories_for_available() -> Vec<PathBuf> {
-    match std::env::var_os("PATH") {
-        Some(paths) => std::env::split_paths(&paths).collect(),
-        None => Vec::new(),
-    }
+/// [`find_available`] with the environment behind the seam: the same
+/// resolution the daemon runs, driven from an injected source. The returned
+/// row carries its spawn PATH override when the registry named its folder.
+#[cfg(windows)]
+pub(crate) fn find_available_with_path_source(
+    id: &str,
+    source: &dyn crate::windows_path_env::WindowsPathSource,
+) -> Option<InstalledAgent> {
+    let mut agent = find_available_in_paths(
+        id,
+        &crate::windows_path_env::merged_path_directories(source),
+    )?;
+    crate::windows_path_env::attach_spawn_path_env(std::slice::from_mut(&mut agent), source);
+    Some(agent)
 }
 
 pub(crate) fn find_available_in_paths(id: &str, directories: &[PathBuf]) -> Option<InstalledAgent> {
@@ -1555,10 +1627,7 @@ pub(crate) fn find_available_in_paths(id: &str, directories: &[PathBuf]) -> Opti
 
 #[cfg(feature = "server")]
 pub(crate) fn path_directories() -> Vec<PathBuf> {
-    match std::env::var_os("PATH") {
-        Some(paths) => std::env::split_paths(&paths).collect(),
-        None => Vec::new(),
-    }
+    discovery_directories()
 }
 
 /// Local PATH scan plus ACP-registry npx rows. Native ids/aliases win.
@@ -1567,7 +1636,13 @@ pub fn discover_catalog(
     fetch: &dyn crate::registry::RegistryFetch,
     cache_dir: &Path,
 ) -> ProviderDiscovery {
-    discover_catalog_in_paths(fetch, cache_dir, &path_directories())
+    let mut discovery = discover_catalog_in_paths(fetch, cache_dir, &discovery_directories());
+    #[cfg(windows)]
+    crate::windows_path_env::attach_spawn_path_env(
+        &mut discovery.agents,
+        &crate::windows_path_env::RegistryPathSource,
+    );
+    discovery
 }
 
 #[cfg(feature = "server")]
@@ -1626,6 +1701,7 @@ fn add_missing_npm_rows(
             install_channel: InstallChannel::Npm,
             npm_package: Some(package),
             tools: mcp_tools_for(spec.id),
+            spawn_path_env: None,
         });
     }
     local
@@ -1662,6 +1738,7 @@ fn registry_agent(
         install_channel: InstallChannel::NpxRegistry,
         npm_package: None,
         tools,
+        spawn_path_env: None,
     }
 }
 
@@ -1738,7 +1815,38 @@ pub fn find_in_catalog(
     fetch: &dyn crate::registry::RegistryFetch,
     cache_dir: &Path,
 ) -> Option<InstalledAgent> {
-    find_in_catalog_in_paths(id, fetch, cache_dir, &path_directories())
+    #[cfg(windows)]
+    {
+        find_in_catalog_with_path_source(
+            id,
+            fetch,
+            cache_dir,
+            &crate::windows_path_env::RegistryPathSource,
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        find_in_catalog_in_paths(id, fetch, cache_dir, &discovery_directories())
+    }
+}
+
+/// [`find_in_catalog`] with the environment behind the seam, mirroring
+/// [`find_available_with_path_source`].
+#[cfg(all(windows, feature = "server"))]
+pub(crate) fn find_in_catalog_with_path_source(
+    id: &str,
+    fetch: &dyn crate::registry::RegistryFetch,
+    cache_dir: &Path,
+    source: &dyn crate::windows_path_env::WindowsPathSource,
+) -> Option<InstalledAgent> {
+    let mut agent = find_in_catalog_in_paths(
+        id,
+        fetch,
+        cache_dir,
+        &crate::windows_path_env::merged_path_directories(source),
+    )?;
+    crate::windows_path_env::attach_spawn_path_env(std::slice::from_mut(&mut agent), source);
+    Some(agent)
 }
 
 #[cfg(feature = "server")]

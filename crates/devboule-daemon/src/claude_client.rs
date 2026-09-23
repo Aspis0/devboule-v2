@@ -98,13 +98,18 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
             format!("Could not determine agent working directory: {error}"),
         )
     })?;
-    let mut argv: Vec<String> = match std::env::var(COMMAND_ENV) {
-        Ok(argv) => serde_json::from_str(&argv).map_err(|error| {
-            WireError::new(
-                ErrorCode::InvalidRequest,
-                format!("{COMMAND_ENV} must be a non-empty JSON string array: {error}"),
-            )
-        })?,
+    let (mut argv, spawn_path_env): (Vec<String>, Option<(String, String)>) = match std::env::var(
+        COMMAND_ENV,
+    ) {
+        Ok(argv) => (
+            serde_json::from_str(&argv).map_err(|error| {
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("{COMMAND_ENV} must be a non-empty JSON string array: {error}"),
+                )
+            })?,
+            None,
+        ),
         Err(_) => {
             let Some(agent) = crate::provider_catalog::find_available("claude") else {
                 return Err(WireError::new(
@@ -120,7 +125,7 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
                     "Claude is installed but has no stream-json launch args.",
                 ));
             };
-            stream_json
+            (stream_json, agent.spawn_path_env)
         }
     };
     if argv.is_empty() || argv[0].trim().is_empty() {
@@ -130,7 +135,10 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
         ));
     }
     let program = argv.remove(0);
-    Ok(PtyCommand::new(program, argv, cwd, Vec::new()).with_provider_id("claude"))
+    Ok(
+        PtyCommand::new(program, argv, cwd, spawn_path_env.into_iter().collect())
+            .with_provider_id("claude"),
+    )
 }
 
 fn launch_in_bypass_mode(argv: Vec<String>) -> Vec<String> {

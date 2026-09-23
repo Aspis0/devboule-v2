@@ -60,7 +60,8 @@ fn refresh_provider_catalog(
     state: &Arc<ServerState>,
 ) -> crate::provider_catalog::ProviderDiscovery {
     let directories = crate::provider_catalog::path_directories();
-    let local = crate::provider_catalog::discover_in_paths(&directories);
+    let mut local = crate::provider_catalog::discover_in_paths(&directories);
+    crate::provider_catalog::attach_spawn_path_env(&mut local);
     let cache_dir = state.sessions.runtime_dir().to_path_buf();
 
     let registry_cache_dir = cache_dir.clone();
@@ -120,11 +121,13 @@ fn refresh_provider_catalog(
 
     let _ = state.claude_models();
 
-    crate::provider_catalog::discover_catalog_in_paths(
+    let mut discovery = crate::provider_catalog::discover_catalog_in_paths(
         &crate::registry::CdnRegistryFetch,
         state.sessions.runtime_dir(),
         &directories,
-    )
+    );
+    crate::provider_catalog::attach_spawn_path_env(&mut discovery);
+    discovery
 }
 
 fn wire_provider(
@@ -336,6 +339,11 @@ pub(super) fn probe_native_version(
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        // Same rule as a session spawn: a provider found through a registry
+        // PATH folder is probed with that folder visible.
+        if let Some((key, value)) = &agent.spawn_path_env {
+            command.env(key, value);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

@@ -158,7 +158,13 @@ pub(super) fn resolve_command(paths: &RuntimePaths) -> Result<PtyCommand, WireEr
         ));
     }
     let program = argv.remove(0);
-    Ok(PtyCommand::new(program, argv, cwd, Vec::new()).with_provider_id("codex"))
+    Ok(PtyCommand::new(
+        program,
+        argv,
+        cwd,
+        agent.spawn_path_env.into_iter().collect(),
+    )
+    .with_provider_id("codex"))
 }
 
 /// Whether a Codex child in this mode answers its own permission prompts —

@@ -717,7 +717,7 @@ impl ServerState {
     }
 
     pub(crate) fn claude_models(self: &Arc<Self>) -> crate::claude_catalog::ClaudeCatalogSnapshot {
-        self.claude_models_in_paths(&crate::provider_catalog::path_directories_for_available())
+        self.claude_models_in_paths(&crate::provider_catalog::discovery_directories())
     }
 
     /// `claude_models` with the PATH scan injected: the same body over

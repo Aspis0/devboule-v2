@@ -1723,3 +1723,157 @@ fn the_create_agent_schema_cannot_express_a_provider_or_a_preset() {
     }
     assert_eq!(schema["additionalProperties"], serde_json::json!(false));
 }
+
+/// The registry-PATH seam: discovery must not depend on the PATH the daemon
+/// inherited (the 2026-09-23 picker defect — `claude` and `grok` live in
+/// per-user folders the user PATH names, and a daemon started before those
+/// folders were added could not see them). A test drives the real discovery
+/// entry with the environment behind the seam and never touches `HKLM` or
+/// `HKCU`.
+#[cfg(windows)]
+mod registry_path {
+    use super::{canonical, temporary_directory};
+    use crate::provider_catalog::discover_with_path_source;
+    use crate::windows_path_env::WindowsPathSource;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// A daemon environment whose inherited PATH predates the registry: the
+    /// owner's machine, with a native provider's folder only on the user PATH.
+    struct StalePathSource {
+        process: OsString,
+        machine: Option<String>,
+        user: Mutex<Option<String>>,
+    }
+
+    impl WindowsPathSource for StalePathSource {
+        fn process_path(&self) -> Option<OsString> {
+            Some(self.process.clone())
+        }
+
+        fn machine_path(&self) -> Option<String> {
+            self.machine.clone()
+        }
+
+        fn user_path(&self) -> Option<String> {
+            self.user.lock().expect("user path lock").clone()
+        }
+    }
+
+    fn grok_install_directory(label: &str) -> PathBuf {
+        let dir = temporary_directory(label);
+        fs::create_dir_all(&dir).expect("grok install directory");
+        fs::write(dir.join("grok.exe"), b"stub").expect("grok stub executable");
+        dir
+    }
+
+    #[test]
+    fn a_provider_whose_folder_is_only_on_the_registry_path_is_discovered() {
+        let installed = grok_install_directory("registry-path-grok");
+        let inherited = temporary_directory("registry-path-inherited");
+        fs::create_dir_all(&inherited).expect("inherited directory");
+        let source = StalePathSource {
+            process: OsString::from(inherited.as_os_str()),
+            machine: None,
+            user: Mutex::new(Some(installed.to_string_lossy().into_owned())),
+        };
+
+        let discovery = discover_with_path_source(&source);
+
+        let grok = discovery
+            .agents
+            .iter()
+            .find(|agent| agent.id == "grok")
+            .expect("grok discovered through the user PATH registry value");
+        assert_eq!(grok.executable, canonical(&installed.join("grok.exe")));
+
+        fs::remove_dir_all(installed).expect("temporary directory cleanup");
+        fs::remove_dir_all(inherited).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn discovery_rerun_sees_a_provider_installed_after_the_first_run() {
+        let source = StalePathSource {
+            process: OsString::from("devboule-no-such-inherited-path"),
+            machine: None,
+            user: Mutex::new(None),
+        };
+
+        let before = discover_with_path_source(&source);
+        assert!(
+            before.agents.iter().all(|agent| agent.id != "grok"),
+            "grok is absent before its installer adds the folder to the user PATH"
+        );
+
+        let installed = grok_install_directory("registry-path-late");
+        *source.user.lock().expect("user path lock") =
+            Some(installed.to_string_lossy().into_owned());
+
+        let after = discover_with_path_source(&source);
+        let grok = after
+            .agents
+            .iter()
+            .find(|agent| agent.id == "grok")
+            .expect("a rerun of discovery sees the provider without a daemon restart");
+        assert_eq!(grok.executable, canonical(&installed.join("grok.exe")));
+
+        fs::remove_dir_all(installed).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn a_provider_found_only_through_the_registry_path_spawns_with_the_registry_folders() {
+        let installed = grok_install_directory("registry-path-spawn");
+        let inherited = temporary_directory("registry-path-spawn-base");
+        fs::create_dir_all(&inherited).expect("inherited directory");
+        let source = StalePathSource {
+            process: OsString::from(inherited.as_os_str()),
+            machine: None,
+            user: Mutex::new(Some(installed.to_string_lossy().into_owned())),
+        };
+
+        let discovery = discover_with_path_source(&source);
+
+        let grok = discovery
+            .agents
+            .iter()
+            .find(|agent| agent.id == "grok")
+            .expect("grok discovered through the registry PATH");
+        assert_eq!(
+            grok.spawn_path_env,
+            Some((
+                "PATH".to_string(),
+                format!(
+                    "{};{}",
+                    inherited.to_string_lossy(),
+                    installed.to_string_lossy()
+                )
+            ))
+        );
+
+        fs::remove_dir_all(installed).expect("temporary directory cleanup");
+        fs::remove_dir_all(inherited).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn a_provider_the_inherited_path_finds_spawns_without_an_override() {
+        let inherited = grok_install_directory("registry-path-covered");
+        let source = StalePathSource {
+            process: OsString::from(inherited.as_os_str()),
+            machine: None,
+            user: Mutex::new(None),
+        };
+
+        let discovery = discover_with_path_source(&source);
+
+        let grok = discovery
+            .agents
+            .iter()
+            .find(|agent| agent.id == "grok")
+            .expect("grok discovered through the inherited PATH");
+        assert_eq!(grok.spawn_path_env, None);
+
+        fs::remove_dir_all(inherited).expect("temporary directory cleanup");
+    }
+}

@@ -104,6 +104,8 @@ mod tool_policy;
 mod transport;
 #[cfg(feature = "server")]
 mod user_providers;
+#[cfg(windows)]
+mod windows_path_env;
 #[cfg(feature = "server")]
 mod wire_json;
 #[cfg(feature = "server")]

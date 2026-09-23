@@ -650,7 +650,13 @@ pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand
         ));
     }
     let program = argv.remove(0);
-    Ok(PtyCommand::new(program, argv, cwd, Vec::new()).with_provider_id(id.to_string()))
+    Ok(PtyCommand::new(
+        program,
+        argv,
+        cwd,
+        agent.spawn_path_env.into_iter().collect(),
+    )
+    .with_provider_id(id.to_string()))
 }
 
 /// Spawn the ACP peer directly, complete initialize + session/new, and return
