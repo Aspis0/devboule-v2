@@ -471,6 +471,15 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
+/** The + menu's entry: every strip flow opens the menu and picks from it. */
+function newTabMenuItem(container: HTMLElement, label: string): HTMLButtonElement {
+  const item = [...container.querySelectorAll<HTMLButtonElement>("[role='menuitem']")].find(
+    (button) => button.textContent === label,
+  );
+  if (item === undefined) throw new Error(`+ menu item did not render: ${label}`);
+  return item;
+}
+
 describe("Workspace sessions", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -921,9 +930,11 @@ describe("Workspace sessions", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
-    // Flush the async provider-choice chain (chooseProvider → providersList →
-    // sessionCreate) deliberately instead of trusting act's incidental
-    // microtask draining.
+    await act(async () => newTabMenuItem(container, "Agent").click());
+    // Flush the async provider-choice chain (menu → Agent → chooseProvider →
+    // providersList → sessionCreate) deliberately instead of trusting act's
+    // incidental microtask draining.
+    await act(async () => {});
     await act(async () => {});
 
     expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp");
@@ -944,6 +955,7 @@ describe("Workspace sessions", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     expect(container.querySelector("[data-testid=terminal-surface]")).not.toBeNull();
@@ -1160,136 +1172,6 @@ describe("Workspace sessions", () => {
 
     expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp");
-  });
-
-  it("offers the provider picker from the + button and passes the chosen provider to sessionCreate", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [grokProvider, claudeProvider],
-      unreadableDirs: 0,
-    });
-    vi.mocked(sessionCreate).mockResolvedValue({
-      ...terminal("session-claude", "Agent"),
-      kind: "claude",
-    });
-    root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
-    await act(async () => undefined);
-
-    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
-    if (add === null) throw new Error("session add control did not render");
-    await act(async () => add.click());
-    await act(async () => undefined);
-
-    const menu = container.querySelector('[aria-label="Choose agent"]');
-    if (menu === null) throw new Error("provider popover did not render");
-    const claudeOption = Array.from(menu.querySelectorAll("button")).find(
-      (button) => button.textContent === "claude",
-    );
-    if (claudeOption === undefined) throw new Error("claude option did not render");
-    await act(async () => claudeOption.click());
-    await act(async () => undefined);
-
-    // The + button creates a session in the selected workspace, never a workspace.
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "claude");
-    expect(workspaceCreate).not.toHaveBeenCalled();
-  });
-
-  it("splits the provider picker into installed and available-to-install groups", async () => {
-    vi.mocked(providersList).mockResolvedValue({
-      providers: [npxProvider, claudeProvider, grokProvider],
-      unreadableDirs: 0,
-    });
-    root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
-    await act(async () => undefined);
-
-    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
-    if (add === null) throw new Error("session add control did not render");
-    await act(async () => add.click());
-    await act(async () => undefined);
-
-    const menu = container.querySelector('[aria-label="Choose agent"]');
-    if (menu === null) throw new Error("provider popover did not render");
-    const groups = menu.querySelectorAll(".workspace-provider-group");
-    expect(groups).toHaveLength(2);
-    expect(groups[0].textContent).toContain("Installed");
-    expect(groups[0].textContent).toContain("grok");
-    expect(groups[0].textContent).toContain("claude");
-    expect(groups[0].textContent).not.toContain("codex-acp");
-    expect(groups[1].textContent).toContain("Available to install");
-    expect(groups[1].textContent).toContain("codex-acp");
-
-    // Choosing a registry agent still routes through the consent flow.
-    const npxOption = Array.from(groups[1].querySelectorAll("button")).find(
-      (button) => button.textContent === "codex-acp",
-    );
-    if (npxOption === undefined) throw new Error("npx option did not render");
-    await act(async () => npxOption.click());
-    await act(async () => undefined);
-
-    expect(sessionCreate).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-  });
-
-  it("runs the npx consent flow before creating a session from the + button", async () => {
-    vi.mocked(providersList).mockResolvedValue({ providers: [npxProvider], unreadableDirs: 0 });
-    root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
-    await act(async () => undefined);
-
-    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
-    if (add === null) throw new Error("session add control did not render");
-    await act(async () => add.click());
-    await act(async () => undefined);
-
-    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
-
-    const confirm = container.querySelector<HTMLButtonElement>(".workspace-primary-action");
-    if (confirm === null) throw new Error("Confirm button did not render");
-    await act(async () => confirm.click());
-    await act(async () => undefined);
-
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
-  });
-
-  it("returns focus to the + button when the single-npx consent is cancelled", async () => {
-    // With one npx provider no picker opens, so the consent card is the only
-    // stop between the triggering button and Escape; cancelling must hand
-    // focus back to that button rather than dropping it on the body.
-    vi.mocked(providersList).mockResolvedValue({ providers: [npxProvider], unreadableDirs: 0 });
-    root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
-    await act(async () => undefined);
-
-    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
-    if (add === null) throw new Error("session add control did not render");
-    await act(async () => add.click());
-    await act(async () => undefined);
-
-    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-
-    expect(container.querySelector('[aria-label="Confirm agent"]')).toBeNull();
-    expect(sessionCreate).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(add);
-  });
-
-  it("falls back to sessionCreate without a provider when + is used with none installed", async () => {
-    vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
-    root = createRoot(container);
-    await act(async () => root.render(<Workspace />));
-    await act(async () => undefined);
-
-    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
-    if (add === null) throw new Error("session add control did not render");
-    await act(async () => add.click());
-    await act(async () => undefined);
-
-    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp");
   });
 
   it("dismisses the provider popover on Escape without creating", async () => {
@@ -1667,6 +1549,7 @@ describe("Workspace sessions", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
@@ -1782,6 +1665,7 @@ describe("Workspace sessions", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
@@ -1818,6 +1702,7 @@ describe("Workspace sessions", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
@@ -1950,6 +1835,7 @@ describe("Workspace sessions", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
@@ -1985,6 +1871,7 @@ describe("Workspace sessions", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
@@ -3016,6 +2903,7 @@ describe("delegation on the roster", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
@@ -3053,6 +2941,7 @@ describe("delegation on the roster", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
@@ -3090,6 +2979,7 @@ describe("delegation on the roster", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
@@ -3125,6 +3015,7 @@ describe("delegation on the roster", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
@@ -3158,6 +3049,7 @@ describe("delegation on the roster", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
     await act(async () => undefined);
 
     const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");

@@ -6,6 +6,7 @@ import { AgentChatSurface } from "./AgentChatSurface";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { SessionTabSwipe } from "./SessionTabSwipe";
 import { PendingUndoBar } from "./PendingUndoBar";
+import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
 import {
   UNDO_WINDOW_MS,
   pendingFate,
@@ -431,6 +432,9 @@ export function Workspace({
   const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
   const [providerPicker, setProviderPicker] = useState<ProviderInfo[] | null>(null);
   const [providerAnchor, setProviderAnchor] = useState<ProviderAnchor | null>(null);
+  const [newTabMenuOpen, setNewTabMenuOpen] = useState(false);
+  const [providerChoosing, setProviderChoosing] = useState(false);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
   const providerChoiceInFlightRef = useRef(false);
   const afterProviderChoiceRef = useRef<((provider: ProviderInfo | undefined) => void) | null>(
     null,
@@ -439,6 +443,13 @@ export function Workspace({
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
   const [providerError, setProviderError] = useState<string | null>(null);
+  // A provider choice is a create in waiting: between the click and the
+  // chosen provider's create, the strip must not start another session —
+  // the shared controller would drop it silently.
+  const endProviderChoice = useCallback(() => {
+    providerChoiceInFlightRef.current = false;
+    setProviderChoosing(false);
+  }, []);
   const loadChatProviders = useCallback(async (): Promise<ProviderInfo[]> => {
     const catalog = await providersList();
     return chatCapableProviders(catalog.providers);
@@ -454,16 +465,16 @@ export function Workspace({
     async (projectId: string, provider: ProviderInfo | undefined) => {
       const workspace = await addWorkspace(projectId);
       if (workspace !== null) startAgentSession(provider, workspace.id);
-      providerChoiceInFlightRef.current = false;
+      endProviderChoice();
     },
-    [addWorkspace, startAgentSession],
+    [addWorkspace, endProviderChoice, startAgentSession],
   );
   const addSessionToWorkspace = useCallback(
     (provider: ProviderInfo | undefined) => {
       startAgentSession(provider, selectedWorkspace);
-      providerChoiceInFlightRef.current = false;
+      endProviderChoice();
     },
-    [selectedWorkspace, startAgentSession],
+    [endProviderChoice, selectedWorkspace, startAgentSession],
   );
   const handleConsentConfirmed = useCallback((provider: ProviderInfo) => {
     setProviderPicker(null);
@@ -494,22 +505,23 @@ export function Workspace({
     ) => {
       if (providerChoiceInFlightRef.current) return;
       providerChoiceInFlightRef.current = true;
+      setProviderChoosing(true);
       setProviderError(null);
       let capable: ProviderInfo[];
       try {
         capable = await loadChatProviders();
       } catch (cause: unknown) {
-        providerChoiceInFlightRef.current = false;
+        endProviderChoice();
         setProviderError(reasonFromCause(cause));
         return;
       }
       if (capable.length === 0) {
-        providerChoiceInFlightRef.current = false;
+        endProviderChoice();
         afterChoice(undefined);
         return;
       }
       if (capable.length === 1 && !requiresConsent(capable[0])) {
-        providerChoiceInFlightRef.current = false;
+        endProviderChoice();
         afterChoice(capable[0]);
         return;
       }
@@ -525,7 +537,7 @@ export function Workspace({
       }
       setProviderPicker(capable);
     },
-    [loadChatProviders, requestConsent],
+    [endProviderChoice, loadChatProviders, requestConsent],
   );
   const handleNewWorkspace = useCallback(
     (trigger: HTMLButtonElement, projectId: string) => {
@@ -538,17 +550,56 @@ export function Workspace({
     [chooseProvider, createWorkspaceAndAgent],
   );
   const handleNewSession = useCallback(
-    (trigger: HTMLButtonElement) => {
-      void chooseProvider({ kind: "strip" }, addSessionToWorkspace, trigger);
+    (trigger: HTMLButtonElement | null) => {
+      void chooseProvider({ kind: "strip" }, addSessionToWorkspace, trigger ?? undefined);
     },
     [addSessionToWorkspace, chooseProvider],
   );
+  const dismissNewTabMenu = useCallback(() => setNewTabMenuOpen(false), []);
+  // The menu's Agent entry: the flow the "+" owned before the menu, focused
+  // from the "+" itself so a cancelled consent card hands focus back to it.
+  const handleNewTabAgent = useCallback(() => {
+    dismissNewTabMenu();
+    const trigger = addButtonRef.current;
+    trigger?.focus();
+    handleNewSession(trigger);
+  }, [dismissNewTabMenu, handleNewSession]);
+  // One focus rule for the strip's failed flows. While "+" is disabled its
+  // focus is dropped, and when it re-enables after a FAILURE — a refused
+  // terminal create (sessionsError) or a failed provider lookup
+  // (providerError) — the focus was lost (body or null): give it back to
+  // "+". A successful create re-enables "+" under the same conditions and
+  // deliberately keeps focus where it is: the new tab is the outcome, not
+  // the button. The errors ride in the same state commit as the re-enable,
+  // so the effect cannot see one without the other.
+  const addDisabled = sessionCreating || providerChoosing;
+  const addWasDisabled = useRef(false);
+  useEffect(() => {
+    if (addDisabled) {
+      addWasDisabled.current = true;
+      return;
+    }
+    if (!addWasDisabled.current) return;
+    addWasDisabled.current = false;
+    if (sessionsError === null && providerError === null) return;
+    const active = document.activeElement;
+    if (active === addButtonRef.current || active === document.body || active === null) {
+      addButtonRef.current?.focus();
+    }
+  }, [addDisabled, providerError, sessionsError]);
+  // Terminal closes the menu exactly like Agent and needs a selected
+  // workspace (the entry is disabled without one). A refused create hands
+  // focus back to "+" through the rule above.
+  const handleNewTabTerminal = useCallback(() => {
+    dismissNewTabMenu();
+    void createSession("terminal", null, selectedWorkspace);
+  }, [createSession, dismissNewTabMenu, selectedWorkspace]);
   const consentCancel = useCallback(() => {
     // The picker stays anchored behind the consent card; cancelling only
     // removes the card and returns to the option list.
-    providerChoiceInFlightRef.current = false;
+    endProviderChoice();
     cancelProviderConsent();
-  }, [cancelProviderConsent]);
+  }, [cancelProviderConsent, endProviderChoice]);
   useEffect(() => {
     if (consentProvider !== null) {
       consentConfirmRef.current?.focus();
@@ -574,10 +625,10 @@ export function Workspace({
   );
   const dismissProviderPicker = useCallback(() => {
     afterProviderChoiceRef.current = null;
-    providerChoiceInFlightRef.current = false;
+    endProviderChoice();
     setProviderPicker(null);
     setProviderAnchor(null);
-  }, []);
+  }, [endProviderChoice]);
   useEffect(() => {
     if (providerAnchor === null && consentProvider === null) return;
     const onKey = (event: KeyboardEvent) => {
@@ -708,7 +759,7 @@ export function Workspace({
   const sessionStatusText = sessionsError
     ? sessionsError
     : sessionCreating
-      ? "Starting agent session…"
+      ? "Starting session…"
       : sessionsLoading && sessions.length === 0
         ? "Loading sessions…"
         : `${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
@@ -1005,12 +1056,17 @@ export function Workspace({
       />
 
       <main className="workspace-center-panel">
-        <div className="workspace-session-tabs" role="tablist" aria-label="Sessions">
-          {/* The row of tabs scrolls; the add button below it stays outside the
-              scrollport, so a full strip cannot carry it off screen. One more
-              box between the tablist and its tabs, hence presentational like the
-              swipe boxes in `SessionTabSwipe`. */}
-          <div className="workspace-session-tabs-scroll workspace-scroll" role="presentation">
+        {/* The tab strip is a plain row: the tablist is the scrollport itself,
+            so the "New tab" button and its menu are siblings of the tablist,
+            never descendants of it. */}
+        <div className="workspace-session-tabs">
+          {/* The row of tabs scrolls; the add button below it stays outside
+              the scrollport, so a full strip cannot carry it off screen. */}
+          <div
+            className="workspace-session-tabs-scroll workspace-scroll"
+            role="tablist"
+            aria-label="Sessions"
+          >
             {visibleSessions.map((session) => {
               const originBadge = sessionOriginBadge(session, peerNames);
               // A badge for a session the daemon described as a peer's, or the
@@ -1147,15 +1203,28 @@ export function Workspace({
             ref={providerAnchor?.kind === "strip" ? providerPickerRef : undefined}
           >
             <button
+              ref={addButtonRef}
               type="button"
               className="workspace-session-add"
-              onClick={(event) => handleNewSession(event.currentTarget)}
-              title="New agent session"
-              aria-label="New agent session"
-              disabled={sessionCreating}
+              onClick={() => setNewTabMenuOpen((open) => !open)}
+              title="New tab"
+              aria-label="New tab"
+              aria-haspopup="menu"
+              aria-expanded={newTabMenuOpen}
+              disabled={sessionCreating || providerChoosing}
             >
               +
             </button>
+            {newTabMenuOpen ? (
+              <WorkspaceNewTabMenu
+                triggerRef={addButtonRef}
+                creating={sessionCreating || providerChoosing}
+                workspaceSelected={selectedWorkspace !== null}
+                onAgent={handleNewTabAgent}
+                onTerminal={handleNewTabTerminal}
+                onClose={dismissNewTabMenu}
+              />
+            ) : null}
             {providerAnchor?.kind === "strip" ? providerMenu : null}
           </div>
           <span className="workspace-tabs-spacer" />
@@ -1290,7 +1359,7 @@ export function Workspace({
               {sessionsError ??
                 (sessionsLoading
                   ? "Loading sessions…"
-                  : "No sessions. Use + to start chatting with an agent.")}
+                  : "No tabs yet. Use + to open an agent or a terminal.")}
             </div>
           </div>
         )}
