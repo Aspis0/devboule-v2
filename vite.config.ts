@@ -9,7 +9,7 @@ export default defineConfig({
     exclude: ["plugins/**"],
   },
   server: {
-    port: 1420,
+    port: 1421,
     strictPort: true,
     watch: {
       ignored: ["**/target/**"],

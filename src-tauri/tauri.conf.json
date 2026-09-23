@@ -2,10 +2,10 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Devboule",
   "version": "0.1.0",
-  "identifier": "com.devboule.desktop",
+  "identifier": "com.devboule.spike",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1421",
     "beforeDevCommand": "cargo build -p devboule-daemon && pnpm dev",
     // The app spawns the daemon and looks for it beside its own executable, so a
     // build that produces only `devboule.exe` produces an app that cannot start

@@ -24,7 +24,13 @@ tauri-build = { version = "=2.6.3", features = ["config-json5"] }
 # `asset://` scheme and exposes `Manager::asset_protocol_scope()`, whose
 # patterns come from `app.security.assetProtocol` in `tauri.conf.json`
 # (checked with bytes in `backend/tests/asset_scope.rs`).
-tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset"] }
+tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset", "unstable"] }
+# Spike only (this branch never merges): child-webview COM driving. Versions
+# must match Cargo.lock exactly so we name the SAME types wry/tauri use.
+webview2-com = "=0.38.2"
+windows = "0.61"
+# Page.captureScreenshot returns base64; already in the lock (0.22.1).
+base64 = "0.22"
 # Direct because the public session contract derives Serialize/Deserialize. The exact
 # version is already present transitively through Tauri; this does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }

@@ -4,6 +4,7 @@ mod client;
 mod oracle;
 mod plugins;
 mod preview_scope;
+mod spike;
 mod surface_settings;
 
 use tauri::Manager;
@@ -29,6 +30,8 @@ pub fn run() {
         // managed before any window can ask for a plugin file.
         .manage(plugins::PluginRegistry::default())
         .manage(plugins::rpc::PluginRuntime::default())
+        // Spike: file-RPC cursor for the main-page harness (never merges).
+        .manage(spike::SpikeCmdLast(std::sync::Mutex::new(0)))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // The asset scope in tauri.conf.json concedes the DEFAULT
@@ -64,6 +67,10 @@ pub fn run() {
             let endpoint = app.state::<oracle::OracleEndpoint>();
             if let Err(error) = endpoint.start(app.handle().clone()) {
                 eprintln!("devboule: Oracle endpoint did not start: {error}");
+            }
+            // Spike only: add the child webview(s) to the main window.
+            if let Err(error) = spike::setup(app) {
+                eprintln!("devboule: spike child webview setup failed: {error}");
             }
             Ok(())
         })
@@ -152,6 +159,21 @@ pub fn run() {
             plugins::rpc::plugin_backend_ensure,
             plugins::rpc::plugin_backend_stop,
             plugins::rpc::plugin_invoke,
+            spike::spike_set_bounds,
+            spike::spike_bounds,
+            spike::spike_hide,
+            spike::spike_show,
+            spike::spike_window_info,
+            spike::spike_resize_main,
+            spike::spike_focus,
+            spike::spike_exec,
+            spike::spike_exec_b,
+            spike::spike_cdp,
+            spike::spike_cdp_b,
+            spike::spike_screenshot,
+            spike::spike_create_child_b,
+            spike::spike_cmd_poll,
+            spike::spike_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Devboule")
@@ -160,8 +182,13 @@ pub fn run() {
                 let oracle = app_handle.state::<oracle::OracleRuntime>();
                 oracle.shutdown();
                 app_handle.state::<oracle::OracleEndpoint>().stop();
-                let daemon = app_handle.state::<client::DaemonBridge>();
-                daemon.shutdown();
+                // SPIKE: do NOT call `daemon.shutdown()` here. It sends
+                // ClientMessage::Shutdown, which the daemon honors with
+                // request_shutdown() — and the shared daemon (same
+                // %LOCALAPPDATA%\Devboule pipe) belongs to the OTHER running
+                // Devboule app. Killing it is forbidden by the spike brief.
+                // A plain disconnect (process exit) is handled as a normal
+                // client drop and shuts nothing down.
                 app_handle.state::<plugins::rpc::PluginRuntime>().stop_all();
             }
         })

@@ -2705,6 +2705,7 @@ name = "devboule"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "devboule-daemon",
  "devboule-plugin-rpc",
  "devboule-protocol",
@@ -2718,6 +2719,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tempfile",
+ "webview2-com",
+ "windows 0.61.3",
 ]
 
 [[package]]
