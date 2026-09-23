@@ -109,9 +109,9 @@ pub use messages::{
     Unreclaimable, VocabularyModels, VocabularyModes, VocabularyOrigin, VocabularySource,
     VocabularyState, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileContentKind,
     WorkspaceFileContentStatus, WorkspaceFileEntry, WorkspaceFileKind, WorkspaceFileMutation,
-    WorkspaceGitDiffLine, WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff,
-    WorkspaceGitFileStatus, WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS,
-    PEER_DEFAULT_CAPS,
+    WorkspaceFilePreview, WorkspaceFilePreviewStatus, WorkspaceGitDiffLine,
+    WorkspaceGitDiffLineKind, WorkspaceGitDiffStatus, WorkspaceGitFileDiff, WorkspaceGitFileStatus,
+    WorkspaceGitRow, WorkspaceGitStatus, WorkspaceGitTotals, PEER_CAPS, PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};

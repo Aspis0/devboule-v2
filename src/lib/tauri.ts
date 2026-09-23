@@ -1,4 +1,4 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
   ActiveTurnBehavior,
   AgentProfilesDocument,
@@ -39,6 +39,9 @@ import type {
   WorkspaceDirectory,
   WorkspaceFileContent,
   WorkspaceFileMutation,
+  WorkspaceFilePreview,
+  WorkspaceFileStaged,
+  PreviewMediaKind,
   WorkspaceGitFileDiff,
   WorkspaceGitStatus,
   SessionEvent,
@@ -109,6 +112,8 @@ export type CommandArgs = {
   workspace_git_diff: { workspaceId: Id; path: string };
   workspace_files_list: { workspaceId: Id; path: string };
   workspace_file_read: { workspaceId: Id; path: string };
+  workspace_file_preview_stage: { workspaceId: Id; path: string };
+  workspace_file_preview_unstage: undefined;
   workspace_file_rename: { workspaceId: Id; path: string; name: string };
   workspace_file_duplicate: { workspaceId: Id; path: string };
   session_create: {
@@ -227,6 +232,8 @@ type CommandResults = {
   workspace_git_diff: WorkspaceGitFileDiff;
   workspace_files_list: WorkspaceDirectory;
   workspace_file_read: WorkspaceFileContent;
+  workspace_file_preview_stage: WorkspaceFilePreview;
+  workspace_file_preview_unstage: void;
   workspace_file_rename: WorkspaceFileMutation;
   workspace_file_duplicate: WorkspaceFileMutation;
   session_create: Session;
@@ -363,6 +370,8 @@ export const COMMAND_ARG_KEYS = {
   workspace_git_diff: ["workspaceId", "path"],
   workspace_files_list: ["workspaceId", "path"],
   workspace_file_read: ["workspaceId", "path"],
+  workspace_file_preview_stage: ["workspaceId", "path"],
+  workspace_file_preview_unstage: [],
   workspace_file_rename: ["workspaceId", "path", "name"],
   workspace_file_duplicate: ["workspaceId", "path"],
   session_create: ["workspaceId", "kind", "provider", "mode"],
@@ -569,6 +578,42 @@ export const workspaceFilesList = (workspaceId: Id, path: string) =>
  */
 export const workspaceFileRead = (workspaceId: Id, path: string) =>
   invokeTyped("workspace_file_read", { workspaceId, path });
+/**
+ * Stage one workspace file for the panel's full-size preview: the daemon
+ * confines the path exactly as the read above does, refuses what that read
+ * refuses (plus any extension the panel never draws), clears its
+ * `previews` folder and copies the file there — the reply is the copy's
+ * absolute path beside the source file's stat, or the refusal's sentence.
+ * This wrapper turns the path into the asset URL with Tauri's own
+ * `convertFileSrc` — which exists only in the injected JS
+ * (`scripts/core.js`), so the conversion stays on the side that owns it —
+ * and attaches the `kind` the caller already decided to draw it as; the
+ * absolute path itself never leaves this function.
+ */
+export const workspaceFilePreviewStage = async (
+  workspaceId: Id,
+  path: string,
+  kind: PreviewMediaKind,
+): Promise<WorkspaceFileStaged> => {
+  const reply = await invokeTyped("workspace_file_preview_stage", { workspaceId, path });
+  if (reply.status === "refused") return reply;
+  return {
+    status: "ok",
+    url: convertFileSrc(reply.path),
+    kind,
+    size: reply.size,
+    modifiedAt: reply.modifiedAt,
+  };
+};
+/**
+ * Revoke the staged preview: the daemon deletes the copies in its
+ * `previews` folder. Takes no path — the only path worth naming is one
+ * that must stop existing, and nothing here is aimable — and answers
+ * `void` for the same reason. The panel sends it when the selection
+ * leaves a staged file, when the workspace stops being the current one,
+ * and when it closes.
+ */
+export const workspaceFilePreviewUnstage = () => invokeTyped("workspace_file_preview_unstage");
 /**
  * Rename one workspace entry — the Files panel's inline rename. `path` is
  * the entry's own spelling from a listing reply and `name` is one name (the

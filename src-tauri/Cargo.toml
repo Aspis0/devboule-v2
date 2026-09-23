@@ -20,7 +20,11 @@ tauri-build = { version = "=2.6.3", features = ["config-json5"] }
 
 [dependencies]
 # Rust crates and npm packages follow separate release trains; do not align these versions.
-tauri = { version = "=2.11.5", features = ["config-json5"] }
+# `protocol-asset` is the Files panel's full-size preview: it registers the
+# `asset://` scheme and exposes `Manager::asset_protocol_scope()`, whose
+# patterns come from `app.security.assetProtocol` in `tauri.conf.json`
+# (checked with bytes in `backend/tests/asset_scope.rs`).
+tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset"] }
 # Direct because the public session contract derives Serialize/Deserialize. The exact
 # version is already present transitively through Tauri; this does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }
@@ -46,6 +50,7 @@ getrandom = "=0.4.3"
 [dev-dependencies]
 # Already in the workspace; used to assert the Tauri error payload JSON.
 serde_json = "=1.0.151"
+tauri = { version = "=2.11.5", features = ["test"] }
 # Used by the command-boundary fake embedder in Oracle runtime tests.
 anyhow = "1"
 # Parses the sources the asyncness pins read at test time (backend/tests):

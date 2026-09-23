@@ -3,7 +3,7 @@ use std::sync::Arc;
 use devboule_daemon::DaemonClient;
 use devboule_protocol::{
     Project, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
-    WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
+    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
 };
 use tauri::State;
 
@@ -142,6 +142,42 @@ pub async fn workspace_file_read(
 ) -> Result<WorkspaceFileContent, CommandError> {
     let client = require_client(&bridge)?;
     off_main_thread(move || client.workspace_file_read(&workspace_id, &path)).await
+}
+
+/// Stage one workspace file for the panel's full-size preview. Same shape
+/// as the read above: `workspace_id` names the folder, `path` is relative
+/// to it, and the daemon confines, guards and walks it before anything is
+/// copied — this caller never joins a filesystem path of its own (an
+/// app-side join + copy would follow a link the listing had just refused).
+/// Bounded like the other workspace roads: `RPC_TIMEOUT` (30 s) is what
+/// this caller feels, and the daemon's own work is one walk and one copy.
+/// The wait leaves the window's thread the way the other roads do.
+///
+/// The reply's `path` is the daemon's absolute copy; the frontend turns it
+/// into an asset URL with Tauri's own `convertFileSrc`, which exists only
+/// in the injected JS (`scripts/core.js`) — reimplementing that formula
+/// here would fork it, so the conversion stays on the side that owns it.
+#[tauri::command]
+pub async fn workspace_file_preview_stage(
+    bridge: State<'_, DaemonBridge>,
+    workspace_id: String,
+    path: String,
+) -> Result<WorkspaceFilePreview, CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_file_preview_stage(&workspace_id, &path)).await
+}
+
+/// Revoke the staged preview: the daemon deletes the copies in its
+/// `previews` folder. Takes no path — the only path worth naming is one
+/// that must stop existing, and a renderer aims no delete — so nothing
+/// about this frame is joinable. Bounded and off-thread like the stage
+/// above: one folder removal behind `RPC_TIMEOUT`.
+#[tauri::command]
+pub async fn workspace_file_preview_unstage(
+    bridge: State<'_, DaemonBridge>,
+) -> Result<(), CommandError> {
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.workspace_file_preview_unstage()).await
 }
 
 /// Rename one workspace entry — the first write behind this bridge. Same

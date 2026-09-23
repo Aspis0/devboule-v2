@@ -2958,6 +2958,108 @@ fn workspace_file_writes_round_trip_with_their_wire_words() {
     assert_eq!(duplicate.idempotency_key(), None);
 }
 
+/// The preview's two frames, pinned the way the read's and the writes' are:
+/// the `type` tags, the camelCase keys, `path`/`size`/`modifiedAt`/`error`
+/// travelling as explicit `null` on the refusal — and both frames on the
+/// state-changing side, because a stage creates a copy in the runtime
+/// directory and an unstage deletes it: each earns an audit row, and
+/// neither carries an idempotency key (a re-staged copy is the same copy,
+/// a re-run unstage deletes the same folder).
+#[test]
+fn workspace_file_preview_frames_round_trip_with_their_wire_words() {
+    let staged = DaemonMessage::WorkspaceFilePreviewStaged {
+        id: 31,
+        staged: WorkspaceFilePreview {
+            status: WorkspaceFilePreviewStatus::Ok,
+            path: Some(r"C:\Users\u\AppData\Local\Devboule\previews\ab12.png".to_string()),
+            size: Some(8),
+            modified_at: Some(1_758_000_000_000),
+            error: None,
+        },
+    };
+    let json = serde_json::to_string(&staged).expect("serialize");
+    for needle in [
+        "\"type\":\"workspace_file_preview_staged\"",
+        "\"status\":\"ok\"",
+        "\"path\":\"C:\\\\Users\\\\u",
+        "\"modifiedAt\":1758000000000",
+        "\"error\":null",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        staged
+    );
+
+    // The refusal half: nothing travels but the sentence, and every other
+    // field is an explicit `null` — a refusal claims nothing about a file
+    // it never copied.
+    let refused = DaemonMessage::WorkspaceFilePreviewStaged {
+        id: 32,
+        staged: WorkspaceFilePreview {
+            status: WorkspaceFilePreviewStatus::Refused,
+            path: None,
+            size: None,
+            modified_at: None,
+            error: Some("the requested path is outside the workspace folder".to_string()),
+        },
+    };
+    let json = serde_json::to_string(&refused).expect("serialize");
+    for needle in [
+        "\"status\":\"refused\"",
+        "\"path\":null",
+        "\"size\":null",
+        "\"modifiedAt\":null",
+        "\"error\":\"the requested path",
+    ] {
+        assert!(json.contains(needle), "{needle} missing from {json}");
+    }
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&json).expect("parse"),
+        refused
+    );
+
+    let stage = ClientMessage::WorkspaceFilePreviewStage {
+        id: 31,
+        workspace_id: "ws.1".to_string(),
+        path: "docs/shot.png".to_string(),
+    };
+    let json = serde_json::to_string(&stage).expect("serialize");
+    assert!(
+        json.contains("\"type\":\"workspace_file_preview_stage\""),
+        "{json}"
+    );
+    assert!(json.contains("\"workspaceId\":\"ws.1\""), "{json}");
+    assert!(json.contains("\"path\":\"docs/shot.png\""), "{json}");
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        stage
+    );
+    assert_eq!(stage.name(), "WorkspaceFilePreviewStage");
+    assert!(stage.is_state_changing(), "a stage writes a copy to disk");
+    assert_eq!(stage.request_id(), Some(31));
+    assert_eq!(stage.idempotency_key(), None);
+
+    let unstage = ClientMessage::WorkspaceFilePreviewUnstage { id: 32 };
+    let json = serde_json::to_string(&unstage).expect("serialize");
+    assert!(
+        json.contains("\"type\":\"workspace_file_preview_unstage\""),
+        "{json}"
+    );
+    assert_eq!(
+        serde_json::from_str::<ClientMessage>(&json).expect("parse"),
+        unstage
+    );
+    assert_eq!(unstage.name(), "WorkspaceFilePreviewUnstage");
+    assert!(
+        unstage.is_state_changing(),
+        "an unstage deletes a copy from disk"
+    );
+    assert_eq!(unstage.request_id(), Some(32));
+    assert_eq!(unstage.idempotency_key(), None);
+}
+
 /// The request trace names a command through `name()`, which is a
 /// `&'static str` constant — never through `Debug`, whose rendering carries
 /// the payload (a prompt's text) inside.

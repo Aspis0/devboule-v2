@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { reasonFromCause, workspaceFileRead } from "../../lib/tauri";
-import type { WorkspaceFileContent } from "../../types/ipc";
+import {
+  reasonFromCause,
+  workspaceFilePreviewStage,
+  workspaceFilePreviewUnstage,
+  workspaceFileRead,
+} from "../../lib/tauri";
+import type { WorkspaceFileContent, WorkspaceFileStaged } from "../../types/ipc";
+import { previewMediaKind } from "./previewMedia";
 
-/** One file's preview: a reply, or the sentence the wire refused with. */
+/** One file's preview: a read's reply, a stage's copy, or the sentence
+ * either road refused with — exactly one of the three at a time. */
 export interface PreviewCell {
   reply: WorkspaceFileContent | null;
+  staged: WorkspaceFileStaged | null;
   failure: string | null;
 }
 
@@ -26,7 +34,7 @@ interface Selection {
   path: string;
 }
 
-export interface WorkspaceFilePreview {
+export interface WorkspaceFilePreviewSource {
   /** The cell for the current workspace's selection — empty until one is. */
   preview: PreviewCell;
   /** The selected file's path, already resolved against the current workspace. */
@@ -36,35 +44,80 @@ export interface WorkspaceFilePreview {
 }
 
 /**
- * The Files panel's preview source: one file's content, read the moment its
- * row is clicked and again on the panel's manual Refresh. No poll and no
- * watcher — the same rule the tree gives itself (`useWorkspaceFiles`: an
- * unattended reader of the checkout is the background nobody asked for) —
- * and every command this hook calls is a read, which is why the preview
- * lives here instead of inside `useWorkspaceFiles`: that hook's own
- * guarantee ("every command this hook calls is a read") stays checkable by
- * reading its imports, and this hook is a second reader beside it, never a
- * writer.
+ * The Files panel's preview source: one file, read or staged the moment
+ * its row is clicked and again on the panel's manual Refresh. No poll and
+ * no watcher — the same rule the tree gives itself (`useWorkspaceFiles`:
+ * an unattended reader of the checkout is the background nobody asked
+ * for).
+ *
+ * What is new with the staged copy, stated where the old guarantee lived:
+ * this hook now issues two **writes** — a stage and its revoke — and they
+ * touch the daemon's own `previews` folder, never the checkout. The
+ * workspace itself stays read-only from here (the two checkout writes
+ * remain `useWorkspaceFileActions`, their own hook), and the stage obeys
+ * the read's confinement on the daemon side because it goes through the
+ * same wire road.
  */
-export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFilePreview {
+export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFilePreviewSource {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [state, setState] = useState<PreviewState>(() => ({
     workspaceId,
     path: null,
-    cell: { reply: null, failure: null },
+    cell: { reply: null, staged: null, failure: null },
   }));
-  // The newest read wins: two clicks can be in flight at the same moment,
-  // and the slower one must not overwrite the fresher answer's cell.
+  // The newest request wins: two clicks can be in flight at the same
+  // moment, and the slower one must not overwrite the fresher answer's
+  // cell. Bumped at a load's start, checked after every await.
   const generation = useRef(0);
+  // Whether a stage has put — or may yet have put — a copy in the
+  // daemon's `previews` folder. Set when a stage is *sent*: the copy can
+  // exist before its reply lands, and a stage whose reply never arrives
+  // must still be revocable. Only `release` clears it, never a reply, so
+  // a late reply can never wave off the revoke its own copy needs.
+  const stagedRef = useRef(false);
+  // The revoke chain. Unstages are serialized behind it, and every load
+  // awaits it before its own stage — so two clicks can never reach the
+  // daemon as "an unstage after the stage it was meant to revoke": the
+  // wire order is the order the panel decided in, whatever threads the
+  // bridge happened to send them on.
+  const revokeChain = useRef<Promise<void>>(Promise.resolve());
 
-  const read = useCallback(
+  /** Revoke whatever a stage may have left, and resolve when the folder
+   * has been through an unstage (or when there was nothing to revoke —
+   * the chain tail is awaited either way, which is the ordering above). */
+  const release = useCallback((): Promise<void> => {
+    if (stagedRef.current) {
+      stagedRef.current = false;
+      revokeChain.current = revokeChain.current.then(() =>
+        // A failed revoke is not retried from here: a closing panel must
+        // not hang on a delete, and the copy dies at the next stage
+        // (every stage clears the folder) or at the daemon's start sweep.
+        workspaceFilePreviewUnstage().catch(() => undefined),
+      );
+    }
+    return revokeChain.current;
+  }, []);
+
+  const load = useCallback(
     async (path: string): Promise<void> => {
       if (workspaceId === null) return;
       const own = ++generation.current;
+      // Revocation first, and awaited: the previous selection's copy
+      // dies before this file's stage is sent, not after it.
+      await release();
+      if (generation.current !== own) return;
+      const media = previewMediaKind(path);
       try {
-        const reply = await workspaceFileRead(workspaceId, path);
-        if (generation.current !== own) return;
-        setState({ workspaceId, path, cell: { reply, failure: null } });
+        if (media !== null) {
+          stagedRef.current = true;
+          const staged = await workspaceFilePreviewStage(workspaceId, path, media);
+          if (generation.current !== own) return;
+          setState({ workspaceId, path, cell: { reply: null, staged, failure: null } });
+        } else {
+          const reply = await workspaceFileRead(workspaceId, path);
+          if (generation.current !== own) return;
+          setState({ workspaceId, path, cell: { reply, staged: null, failure: null } });
+        }
       } catch (cause: unknown) {
         if (generation.current !== own) return;
         const failure = reasonFromCause(cause);
@@ -72,19 +125,23 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
           workspaceId,
           path,
           cell: {
-            // A read that did not answer may not hide the content the user
-            // was looking at — the same rule the tree and the diff give
-            // their own cells, and only for the same (workspace, path).
+            // A request that did not answer may not hide what the user was
+            // looking at — the same rule the tree and the diff give their
+            // own cells, and only for the same (workspace, path).
             reply:
               current.workspaceId === workspaceId && current.path === path
                 ? current.cell.reply
+                : null,
+            staged:
+              current.workspaceId === workspaceId && current.path === path
+                ? current.cell.staged
                 : null,
             failure,
           },
         }));
       }
     },
-    [workspaceId],
+    [workspaceId, release],
   );
 
   const select = useCallback(
@@ -102,7 +159,7 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
       setState((current) =>
         current.workspaceId === workspaceId && current.path === path
           ? current
-          : { workspaceId, path, cell: { reply: null, failure: null } },
+          : { workspaceId, path, cell: { reply: null, staged: null, failure: null } },
       );
     },
     [workspaceId],
@@ -111,31 +168,47 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
   const selectionPath =
     selection !== null && selection.workspaceId === workspaceId ? selection.path : null;
 
-  // The first read starts NOW, at activation — including the moment a
+  // The first request starts NOW, at activation — including the moment a
   // remembered selection becomes current again after a workspace
-  // round-trip, which re-arms this effect through `read`'s own dependency
-  // on the workspace. No interval: unlike the Changes panel's diff, nothing
-  // polls the preview (DECISIONS §3's cadence belongs to git status).
-  // Named and called through a local, the way `useWorkspaceFiles` starts
-  // its first read: the request itself is asynchronous, and the linter's
-  // rule about state-setting effects reads a directly-called hook closure
-  // as if it ran inline.
+  // round-trip, which re-arms this effect through `load`'s own dependency
+  // on the workspace. No interval: unlike the Changes panel's diff,
+  // nothing polls the preview (DECISIONS §3's cadence belongs to git
+  // status). A selection this workspace does not have (`null` here — a
+  // workspace switch) revokes instead of loading: nothing will stage over
+  // the copy, so the copy does not wait for the next click to die.
   useEffect(() => {
-    if (selectionPath === null) return;
+    if (selectionPath === null) {
+      void release();
+      return;
+    }
+    // Named and called through a local, the way `useWorkspaceFiles` starts
+    // its first read: the request itself is asynchronous, and the linter's
+    // rule about state-setting effects reads a directly-called hook
+    // closure as if it ran inline.
     const first = () => {
-      void read(selectionPath);
+      void load(selectionPath);
     };
     first();
-  }, [read, selectionPath]);
+  }, [load, selectionPath, release]);
+
+  // The panel closed: this cleanup runs on unmount — and only there,
+  // because a workspace switch's copy is already revoked by the effect
+  // above through its `selectionPath` turning null.
+  useEffect(
+    () => () => {
+      void release();
+    },
+    [release],
+  );
 
   const refresh = useCallback((): void => {
-    if (selectionPath !== null) void read(selectionPath);
-  }, [read, selectionPath]);
+    if (selectionPath !== null) void load(selectionPath);
+  }, [load, selectionPath]);
 
   const preview: PreviewCell =
     state.workspaceId === workspaceId && selectionPath !== null && state.path === selectionPath
       ? state.cell
-      : { reply: null, failure: null };
+      : { reply: null, staged: null, failure: null };
 
   return { preview, selection: selectionPath, select, refresh };
 }

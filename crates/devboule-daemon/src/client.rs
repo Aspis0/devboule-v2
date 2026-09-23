@@ -14,7 +14,7 @@ use devboule_protocol::{
     Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
     SessionEventEnvelope, SessionKind, SessionStateSnapshot, StoredAttachment, SubscriptionId,
     WireError, Workspace, WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileMutation,
-    WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
+    WorkspaceFilePreview, WorkspaceGitFileDiff, WorkspaceGitStatus, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -948,6 +948,41 @@ impl DaemonClient {
             idempotency_key: None,
         })? {
             DaemonMessage::WorkspaceFileDuplicated { change, .. } => Ok(change),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Stage one workspace file for the panel's full-size preview. The id, a
+    /// workspace id and a relative `path` are the whole argument; the daemon
+    /// confines the path, refuses links, the repository's metadata and any
+    /// extension the panel never draws, clears its `previews` folder and
+    /// copies the file there — the answer carries the copy's absolute path.
+    pub fn workspace_file_preview_stage(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<WorkspaceFilePreview, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFilePreviewStage {
+            id,
+            workspace_id: workspace_id.to_string(),
+            path: path.to_string(),
+        })? {
+            DaemonMessage::WorkspaceFilePreviewStaged { staged, .. } => Ok(staged),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Revoke the staged preview: delete every copy the stage above left.
+    /// The panel sends this when the selection leaves a staged file and
+    /// when it closes — revoking is deleting the copy, never withdrawing a
+    /// scope (a Tauri concession lives until the process restarts).
+    pub fn workspace_file_preview_unstage(&self) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceFilePreviewUnstage { id })? {
+            DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -1971,6 +2006,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::WorkspaceFileContent { id, .. }
         | DaemonMessage::WorkspaceFileRenamed { id, .. }
         | DaemonMessage::WorkspaceFileDuplicated { id, .. }
+        | DaemonMessage::WorkspaceFilePreviewStaged { id, .. }
         | DaemonMessage::SessionAttached { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }

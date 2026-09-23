@@ -305,13 +305,20 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // checkout and nothing else — no deletion exists behind this door —
         // every path is confined and walked before the act, and the
         // administrative surface is one grant, not two (the same reason the
-        // journal verbs give above).
+        // journal verbs give above). The preview's stage and unstage join
+        // that same grant: a staged copy is the file the content read
+        // already discloses (the frame cap is a wire limit, not a
+        // permission), it rests only in the daemon's own previews folder,
+        // and the unstage is its deletion — confinement before the copy,
+        // the folder never a workspace path.
         ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }
-        | ClientMessage::WorkspaceFileDuplicate { .. } => with_capability(caps, CAP_ADMIN),
+        | ClientMessage::WorkspaceFileDuplicate { .. }
+        | ClientMessage::WorkspaceFilePreviewStage { .. }
+        | ClientMessage::WorkspaceFilePreviewUnstage { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::ProvidersList { .. } => with_capability(caps, CAP_ADMIN),
     }
 }
@@ -1249,6 +1256,12 @@ pub(crate) mod tests {
                 path: "README.md".to_string(),
                 idempotency_key: None,
             },
+            ClientMessage::WorkspaceFilePreviewStage {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "docs/shot.png".to_string(),
+            },
+            ClientMessage::WorkspaceFilePreviewUnstage { id: 1 },
             ClientMessage::ProvidersList { id: 1 },
             ClientMessage::Status { id: 1 },
             ClientMessage::DaemonDiagnostics { id: 1 },
@@ -2018,6 +2031,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceFileRead { .. } => administrative(),
             ClientMessage::WorkspaceFileRename { .. } => administrative(),
             ClientMessage::WorkspaceFileDuplicate { .. } => administrative(),
+            ClientMessage::WorkspaceFilePreviewStage { .. } => administrative(),
+            ClientMessage::WorkspaceFilePreviewUnstage { .. } => administrative(),
             ClientMessage::WorkspaceCreate { .. } => administrative(),
             ClientMessage::WorkspaceDelete { .. } => administrative(),
             ClientMessage::ProvidersList { .. } => administrative(),
@@ -2046,7 +2061,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 59;
+    pub(crate) const VARIANT_COUNT: usize = 61;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2093,6 +2108,8 @@ pub(crate) mod tests {
             ClientMessage::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             ClientMessage::WorkspaceFileRename { .. } => "WorkspaceFileRename",
             ClientMessage::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
+            ClientMessage::WorkspaceFilePreviewStage { .. } => "WorkspaceFilePreviewStage",
+            ClientMessage::WorkspaceFilePreviewUnstage { .. } => "WorkspaceFilePreviewUnstage",
             ClientMessage::WorkspaceCreate { .. } => "WorkspaceCreate",
             ClientMessage::WorkspaceDelete { .. } => "WorkspaceDelete",
             ClientMessage::ProvidersList { .. } => "ProvidersList",
@@ -2309,6 +2326,12 @@ pub(crate) mod tests {
                 path: "README.md".to_string(),
                 idempotency_key: None,
             },
+            ClientMessage::WorkspaceFilePreviewStage {
+                id: 1,
+                workspace_id: "ws.1".to_string(),
+                path: "docs/shot.png".to_string(),
+            },
+            ClientMessage::WorkspaceFilePreviewUnstage { id: 1 },
             ClientMessage::WorkspaceCreate {
                 id: 1,
                 project_id: "p.1".to_string(),

@@ -156,13 +156,17 @@ pub(super) fn dispatch_immediate(
         // entries, one file's content) and the two write acts of the Files
         // panel (a rename, a duplicate) — so all six ride the journal
         // capability with the rest of the workspace inventory: the id is
-        // the door, read or write.
+        // the door, read or write. The preview's stage resolves the row the
+        // same way; its unstage resolves none (it deletes copies the daemon
+        // wrote itself) and rides the same grant as the panel that serves.
         | ClientMessage::WorkspaceGitStatus { .. }
         | ClientMessage::WorkspaceGitDiff { .. }
         | ClientMessage::WorkspaceFilesList { .. }
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
+        | ClientMessage::WorkspaceFilePreviewStage { .. }
+        | ClientMessage::WorkspaceFilePreviewUnstage { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. } => {
             if !journal_ok {

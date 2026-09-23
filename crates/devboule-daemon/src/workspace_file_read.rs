@@ -36,10 +36,12 @@ const READ_FAILED: &str = "the file could not be read";
 /// Extensions handed back as image content — recognized by spelling alone,
 /// the way Paseo does it (`service.ts:91-95`), because an image's bytes are
 /// binary and would otherwise never be shown. `svg` is absent on purpose:
-/// it is text and reads better as text. The panel's data-URL subtypes
-/// (`FilesPreview.tsx`) mirror this list — an extension joins both or
-/// neither.
-const IMAGE_EXTENSIONS: [&str; 9] = [
+/// it is text and reads better as text. Shared with
+/// [`crate::workspace_file_preview`], whose stage gate needs this list for
+/// the same reason; the panel's mirror of every extension the preview draws
+/// lives in `src/features/workspace/previewMedia.ts` — an image extension
+/// joins that mirror and this list or neither.
+pub(crate) const IMAGE_EXTENSIONS: [&str; 9] = [
     "avif", "bmp", "gif", "ico", "jpeg", "jpg", "png", "tiff", "webp",
 ];
 
@@ -180,8 +182,9 @@ fn refused(sentence: impl Into<String>) -> WorkspaceFileContent {
 }
 
 /// The stat's mtime, milliseconds since the epoch; `None` when the
-/// filesystem gave no stamp.
-fn stamped(metadata: &std::fs::Metadata) -> Option<i64> {
+/// filesystem gave no stamp. Shared with the preview's stage, which sends
+/// the same number for the same file's own stat.
+pub(crate) fn stamped(metadata: &std::fs::Metadata) -> Option<i64> {
     let time = metadata.modified().ok()?;
     Some(match time.duration_since(UNIX_EPOCH) {
         Ok(after) => after.as_millis() as i64,

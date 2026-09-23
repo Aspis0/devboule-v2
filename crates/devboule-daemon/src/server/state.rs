@@ -236,6 +236,11 @@ impl ServerState {
         npm_install_runner: Arc<dyn NpmInstallRunner>,
     ) -> Result<Arc<Self>, DaemonError> {
         let _ = paths.ensure_dir();
+        // Every preview copy rests in a folder the app has conceded to the
+        // asset protocol for the life of its process, so the copies a
+        // killed previous process left die here, at start — the sweep the
+        // module's doc names, before any request can stage another.
+        crate::workspace_file_preview::sweep(&paths.dir);
         let process_job = Arc::new(JobObject::new()?);
         let mcp = Arc::new(crate::mcp_broker::McpBroker::new(&paths.dir)?);
         // Read before `paths` moves into the session registry below.

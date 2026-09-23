@@ -2123,6 +2123,23 @@
   padding: 4px 11px 12px;
 }
 
+/* The staged video and PDF, same card padding as the image: the video is
+   its own size up to the card's width, the PDF a fixed stage — an <embed>
+   has no intrinsic height, and a viewer that collapses to nothing is a
+   preview nobody can see. */
+.workspace-file-preview-video {
+  display: block;
+  max-width: 100%;
+  padding: 4px 11px 12px;
+}
+
+.workspace-file-preview-pdf {
+  display: block;
+  width: calc(100% - 22px);
+  height: 360px;
+  margin: 4px 11px 12px;
+}
+
 .workspace-tree-row-note-error {
   color: var(--danger-deep);
 }

@@ -4,17 +4,29 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceDirectory, WorkspaceFileContent, WorkspaceFileEntry } from "../../types/ipc";
+import type {
+  WorkspaceDirectory,
+  WorkspaceFileContent,
+  WorkspaceFileEntry,
+  WorkspaceFileStaged,
+} from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   workspaceFilesList: vi.fn(),
   workspaceFileRead: vi.fn(),
+  workspaceFilePreviewStage: vi.fn(),
+  workspaceFilePreviewUnstage: vi.fn(),
   reasonFromCause: vi.fn((cause: unknown) =>
     cause instanceof Error && cause.message ? cause.message : "the app did not answer",
   ),
 }));
 
-import { workspaceFileRead, workspaceFilesList } from "../../lib/tauri";
+import {
+  workspaceFilePreviewStage,
+  workspaceFilePreviewUnstage,
+  workspaceFileRead,
+  workspaceFilesList,
+} from "../../lib/tauri";
 import { FilesSurface } from "./FilesSurface";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -22,6 +34,10 @@ import { FilesSurface } from "./FilesSurface";
 const WORKSPACE = "workspace-preview-subject";
 /** A fixed stamp: the header must show THIS file's date, not "some date". */
 const STAMP = 1_758_000_000_000;
+/** The asset URL of a staged copy, Windows spelling included: what
+ * `convertFileSrc` hands back and what the card must draw — never a data
+ * URL, never the daemon's raw path. */
+const ASSET_URL = "http://asset.localhost/C%3A%5CUsers%5Cu%5Cpreviews%5Cab12.png";
 
 function entry(path: string, kind: WorkspaceFileEntry["kind"], size: number | null = null) {
   const segments = path.split("/");
@@ -42,6 +58,14 @@ function content(overrides: Partial<WorkspaceFileContent> = {}): WorkspaceFileCo
     error: null,
     ...overrides,
   };
+}
+
+/** A successful stage, the way the wrapper hands it back: URL, the kind
+ * the caller asked to draw, and the source file's own stat. */
+function staged(
+  overrides: Partial<Extract<WorkspaceFileStaged, { status: "ok" }>> = {},
+): WorkspaceFileStaged {
+  return { status: "ok", url: ASSET_URL, kind: "image", size: 8, modifiedAt: STAMP, ...overrides };
 }
 
 /** A promise the test settles itself, so a pending state is asserted, not raced. */
@@ -68,6 +92,8 @@ describe("FilesPreview", () => {
     document.body.appendChild(container);
     vi.mocked(workspaceFilesList).mockResolvedValue(listing([]));
     vi.mocked(workspaceFileRead).mockResolvedValue(content());
+    vi.mocked(workspaceFilePreviewStage).mockResolvedValue(staged());
+    vi.mocked(workspaceFilePreviewUnstage).mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
@@ -254,19 +280,143 @@ describe("FilesPreview", () => {
     expect(meta()).toContain("binary");
   });
 
-  it("renders an image as an image under its own subtype", async () => {
-    vi.mocked(workspaceFileRead).mockResolvedValue(
-      content({ kind: "image", content: "aGVsbG8=", size: 5 }),
-    );
+  it("stages an image and draws it from the asset URL, never base64", async () => {
+    vi.mocked(workspaceFilePreviewStage).mockResolvedValue(staged({ kind: "image", size: 8 }));
     await renderFiles("logo.png");
 
     await act(async () => {
       fileRow("logo.png").click();
     });
 
+    // The image road is the stage, not the read: the frame's 128 KiB cap
+    // is no longer anywhere near this pixel path, so the old base64
+    // transport must not be asked at all.
+    expect(vi.mocked(workspaceFilePreviewStage).mock.calls).toEqual([
+      [WORKSPACE, "logo.png", "image"],
+    ]);
+    expect(vi.mocked(workspaceFileRead)).not.toHaveBeenCalled();
+
     const image = card().querySelector("img");
-    expect(image?.getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
+    expect(image?.getAttribute("src")).toBe(ASSET_URL);
+    expect(image?.getAttribute("src") ?? "").not.toContain("data:");
     expect(card().querySelector("pre")).toBeNull();
+    expect(meta()).toContain("8 B");
+    expect(meta()).toContain(new Date(STAMP).toLocaleString());
+  });
+
+  // Video and PDF ride the same stage — the two extra elements the card
+  // gained, each pinned by its own tag and the same URL.
+  it("stages a video and draws it as a video element", async () => {
+    vi.mocked(workspaceFilePreviewStage).mockResolvedValue(staged({ kind: "video", size: 4096 }));
+    await renderFiles("clip.mp4");
+
+    await act(async () => {
+      fileRow("clip.mp4").click();
+    });
+
+    expect(vi.mocked(workspaceFilePreviewStage).mock.calls).toEqual([
+      [WORKSPACE, "clip.mp4", "video"],
+    ]);
+    expect(vi.mocked(workspaceFileRead)).not.toHaveBeenCalled();
+    const video = card().querySelector("video");
+    expect(video?.getAttribute("src")).toBe(ASSET_URL);
+    expect(card().querySelector("img")).toBeNull();
+  });
+
+  it("stages a PDF and draws it as an embed", async () => {
+    vi.mocked(workspaceFilePreviewStage).mockResolvedValue(staged({ kind: "pdf" }));
+    await renderFiles("manual.pdf");
+
+    await act(async () => {
+      fileRow("manual.pdf").click();
+    });
+
+    expect(vi.mocked(workspaceFilePreviewStage).mock.calls).toEqual([
+      [WORKSPACE, "manual.pdf", "pdf"],
+    ]);
+    const embed = card().querySelector("embed");
+    expect(embed?.getAttribute("src")).toBe(ASSET_URL);
+    expect(embed?.getAttribute("type")).toBe("application/pdf");
+  });
+
+  // The revoke, on a selection that is not a staged file: the copy dies
+  // before the new selection's own request goes out — the call order below
+  // is the ordering guarantee `useWorkspaceFilePreview` builds from its
+  // revoke chain.
+  it("revokes the staged copy when the selection leaves it, before the next read", async () => {
+    await renderFiles("logo.png", "README.md");
+    await act(async () => {
+      fileRow("logo.png").click();
+    });
+    expect(vi.mocked(workspaceFilePreviewStage)).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fileRow("README.md").click();
+    });
+
+    expect(vi.mocked(workspaceFilePreviewUnstage)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(workspaceFileRead).mock.calls).toEqual([[WORKSPACE, "README.md"]]);
+    expect(
+      vi.mocked(workspaceFilePreviewUnstage).mock.invocationCallOrder[0],
+      "the unstage must be sent before the read of the new selection",
+    ).toBeLessThan(vi.mocked(workspaceFileRead).mock.invocationCallOrder[0]);
+  });
+
+  // …and on close: this panel unmounting is the panel being closed or
+  // switched away, and a copy that outlives it would stay readable through
+  // the asset scope until the next stage.
+  it("revokes the staged copy when the panel unmounts", async () => {
+    await renderFiles("logo.png");
+    await act(async () => {
+      fileRow("logo.png").click();
+    });
+    expect(vi.mocked(workspaceFilePreviewStage)).toHaveBeenCalledTimes(1);
+    vi.mocked(workspaceFilePreviewUnstage).mockClear();
+
+    await act(async () => {
+      root.unmount();
+    });
+
+    expect(vi.mocked(workspaceFilePreviewUnstage)).toHaveBeenCalledTimes(1);
+    // Leave a live root behind for the shared afterEach: this one is spent.
+    root = createRoot(document.createElement("div"));
+  });
+
+  // A stage the daemon refused: the wire's own sentence, shown as the
+  // alert it is — no element, no stat, and the card claims nothing.
+  it("shows the stage's refusal sentence with no media element", async () => {
+    vi.mocked(workspaceFilePreviewStage).mockResolvedValue({
+      status: "refused",
+      error: "the requested path is outside the workspace folder",
+    });
+    await renderFiles("shot.png");
+
+    await act(async () => {
+      fileRow("shot.png").click();
+    });
+
+    const alert = card().querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe("the requested path is outside the workspace folder");
+    expect(card().querySelector("img")).toBeNull();
+    expect(card().querySelector("pre")).toBeNull();
+    expect(meta()).toBe("refused");
+    expect(vi.mocked(workspaceFileRead)).not.toHaveBeenCalled();
+  });
+
+  // The other half of the extension mirror: `svg` is text in both lists,
+  // so it goes down the read road like every other text file — a mirror
+  // that drifted would stage what the daemon refuses (a sentence, not a
+  // preview) or read what should have been drawn.
+  it("reads an svg as text instead of staging it", async () => {
+    await renderFiles("icon.svg");
+
+    await act(async () => {
+      fileRow("icon.svg").click();
+    });
+
+    expect(vi.mocked(workspaceFilePreviewStage)).not.toHaveBeenCalled();
+    expect(vi.mocked(workspaceFileRead).mock.calls).toEqual([[WORKSPACE, "icon.svg"]]);
+    expect(card().querySelector("pre")?.textContent).toBe("hello\n");
   });
 
   // The newest click wins: a late reply of a previously clicked file must

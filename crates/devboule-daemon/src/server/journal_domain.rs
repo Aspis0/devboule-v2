@@ -195,6 +195,18 @@ pub(super) fn dispatch_journal(
             }
             reply
         }
+        // The preview's two frames: no idempotency key on either, and none
+        // wanted — a re-staged copy is the same copy (every stage clears
+        // the folder first) and a re-run unstage deletes a folder that is
+        // already gone, so replaying either is the same act.
+        ClientMessage::WorkspaceFilePreviewStage {
+            id,
+            workspace_id,
+            path,
+        } => crate::workspace_file_preview::reply_stage(state, id, &workspace_id, &path),
+        ClientMessage::WorkspaceFilePreviewUnstage { id } => {
+            crate::workspace_file_preview::reply_unstage(state, id)
+        }
         ClientMessage::WorkspaceCreate {
             id,
             project_id,

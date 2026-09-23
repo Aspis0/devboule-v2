@@ -56,7 +56,20 @@
         // string becomes executable, unlike 'unsafe-eval'.
         "connect-src": "'self' ipc: http://ipc.localhost http://plugin.localhost ws://localhost:6767 ws://127.0.0.1:6767",
         "font-src": "'self'",
-        "img-src": "'self' data: http://plugin.localhost",
+        // `asset:` (macOS/Linux) and `http://asset.localhost` (Windows,
+        // where the custom scheme becomes an HTTP origin) are the Files
+        // panel's staged previews: the `<img>`/`<video>`/`<embed>` below
+        // loads one copy from the daemon's `previews` folder through
+        // Tauri's asset protocol. img-src for the image, media-src for the
+        // video, object-src for the PDF `<embed>` — the last two are new
+        // keys, because media and object do NOT fall back to `default-src`
+        // for this purpose in any way that would admit them: absent, they
+        // deny. The scope of what may be read is separate and narrower
+        // (`assetProtocol.scope` below); this line only lets the origin
+        // speak at all.
+        "img-src": "'self' data: http://plugin.localhost asset: http://asset.localhost",
+        "media-src": "asset: http://asset.localhost",
+        "object-src": "asset: http://asset.localhost",
         // Still no 'unsafe-eval', and M5 does not need it, contrary to what this
         // comment used to say. PixiJS compiles shader glue with `new Function`,
         // but it ships `pixi.js/unsafe-eval` — a patch whose npm description is
@@ -70,6 +83,24 @@
         "script-src": "'self' http://plugin.localhost",
         "style-src": "'self' 'unsafe-inline'",
         "worker-src": "'self' blob:"
+      },
+      // The Files panel's full-size preview: the webview fetches staged
+      // copies through Tauri's asset protocol instead of base64 through the
+      // wire, so the 128 KiB frame cap stops being the display limit. The
+      // scope is ONE directory — the daemon's `<runtime dir>/previews`
+      // folder — and never the workspace: `$CACHE` resolves to
+      // `%LOCALAPPDATA%` (no identifier), which is exactly where
+      // `RuntimePaths::from_env` puts `Devboule` — while `$APPLOCALDATA`
+      // carries `com.devboule.desktop` and would cover a folder nothing
+      // writes. The daemon is that folder's only writer, it clears it on
+      // every stage and at start, and the panel's unstage deletes the copy
+      // — a concession cannot be withdrawn until restart, so deletion is
+      // the revoke. `*` is one level (`require_literal_separator`), which
+      // is the flat folder the daemon writes; a subfolder would be outside
+      // this scope. Verified with bytes in `backend/tests/asset_scope.rs`.
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$CACHE/Devboule/previews/*"]
       }
     }
   },

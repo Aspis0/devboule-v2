@@ -107,6 +107,8 @@ mod workspace;
 #[cfg(feature = "server")]
 mod workspace_file_mutations;
 #[cfg(feature = "server")]
+mod workspace_file_preview;
+#[cfg(feature = "server")]
 mod workspace_file_read;
 #[cfg(feature = "server")]
 mod workspace_files;

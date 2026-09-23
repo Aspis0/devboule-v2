@@ -98,14 +98,17 @@ interface Renaming {
  * own screen — loading, no workspace, an empty folder, the wire's refusal
  * sentence, the capped and skipped notes, the tree itself, a per-folder
  * loading/error row under an expanded folder, the clicked file's preview
- * below it (loading / text / image / binary / too large / the refusal's
- * sentence, one screen each), and — since the owner reopened DECISIONS §5
- * on 2026-09-22 — each row's own menu (Rename, Duplicate; Delete arrives
- * with its own slice, behind a confirmation), the inline rename it starts,
- * and a write's refusal under the toolbar as the alert it is. Neither act
- * loses data, so neither asks for confirmation: no delete, create or
- * download control exists here, nothing coming from this module's imports
- * either, which reach two read commands and those two writes.
+ * below it (loading / text / staged image, video or PDF / binary / too
+ * large / the refusal's sentence, one screen each), and — since the owner
+ * reopened DECISIONS §5 on 2026-09-22 — each row's own menu (Rename,
+ * Duplicate; Delete arrives with its own slice, behind a confirmation),
+ * the inline rename it starts, and a write's refusal under the toolbar as
+ * the alert it is. Neither act loses data, so neither asks for
+ * confirmation: no delete, create or download control exists here,
+ * nothing coming from this module's imports either — they reach two read
+ * commands, those two writes, and the preview's stage and unstage, whose
+ * writes touch only the daemon's own `previews` folder (a staged copy and
+ * its revoke), never this checkout.
  */
 export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSurfaceProps) {
   const { cells, expanded, toggle, refresh, refreshPath, rekey } = useWorkspaceFiles(workspaceId);

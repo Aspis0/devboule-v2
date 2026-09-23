@@ -466,6 +466,8 @@ pub(super) fn dispatch_session(
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
+        | ClientMessage::WorkspaceFilePreviewStage { .. }
+        | ClientMessage::WorkspaceFilePreviewUnstage { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }

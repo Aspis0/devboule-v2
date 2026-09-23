@@ -1,28 +1,23 @@
 import type { WorkspaceFileContent } from "../../types/ipc";
 import type { PreviewCell } from "./useWorkspaceFilePreview";
 
-/**
- * The subtypes of the daemon's `IMAGE_EXTENSIONS`
- * (`workspace_file_read.rs`) that a data URL spells differently from the
- * file's own extension — an extension joins that list and this one or
- * neither, or its image silently stops rendering.
- */
-const IMAGE_SUBTYPE: Record<string, string> = { ico: "x-icon", jpg: "jpeg" };
-
-/** `logo.png` → `data:image/png;base64,…`, the way an `<img>` reads it. */
-function dataUrlOf(path: string, base64: string): string {
-  const dot = path.lastIndexOf(".");
-  const extension = dot < 0 ? "" : path.slice(dot + 1).toLowerCase();
-  const subtype = IMAGE_SUBTYPE[extension] ?? extension;
-  return `data:image/${subtype};base64,${base64}`;
-}
-
-/**
- * The reply's own words for the header's right side: what the stat knew and
- * which of the four answers arrived. A refusal knew nothing (its `size` is
- * null), so it says only that it is one.
- */
-function metaOf(reply: WorkspaceFileContent | null, failure: string | null): string {
+/** `logo.png` → `formatSize`, the date, or the reply's own words: what the
+ * stat knew and which road answered. A refusal knew nothing (its `size` is
+ * null), so it says only that it is one — the staged copy's header reads
+ * exactly like the read's, because the numbers come from the same stat. */
+function metaOf(
+  reply: WorkspaceFileContent | null,
+  staged: PreviewCell["staged"],
+  failure: string | null,
+): string {
+  if (staged !== null) {
+    if (staged.status === "refused") return "refused";
+    if (staged.size === null) return "ok";
+    const size = formatSize(staged.size);
+    if (staged.modifiedAt !== null)
+      return `${size} · ${new Date(staged.modifiedAt).toLocaleString()}`;
+    return size;
+  }
   if (reply === null) return failure !== null ? "error" : "…";
   if (reply.size === null) return reply.status;
   const size = formatSize(reply.size);
@@ -41,21 +36,25 @@ export function formatSize(bytes: number): string {
 
 /**
  * The preview under the Files tree: one card, every wire state its own
- * screen — loading, the wire's refusal or the cap's sentence (both travel
- * in `error` and both are shown as the alert they are), binary (no
- * content, by decision), an image as an image, and text whole — the
- * rendering budget is the frame's own 128 KiB, so there is no second
- * threshold to invent (DECISIONS-write §8).
+ * screen — loading, the wire's refusal or the transport's failure (both
+ * shown as the alert they are), binary (no content, by decision), and the
+ * staged copy drawn as what it is: an image, a video or a PDF, loaded
+ * from the asset URL of the daemon's copy — never base64, and never a
+ * path this side built. An image the read would have answered as base64
+ * does not reach this card through the read at all any more: the hook
+ * stages it, so the 128 KiB frame cap stopped being the display limit
+ * (DECISIONS-write §8 still governs the text below).
  */
 export function FilesPreview({ path, preview }: { path: string; preview: PreviewCell }) {
   const reply = preview.reply;
+  const staged = preview.staged;
   return (
     <div className="workspace-diff-card">
       <div className="workspace-diff-header">
         <span title={path}>{path}</span>
-        <span>{metaOf(reply, preview.failure)}</span>
+        <span>{metaOf(reply, staged, preview.failure)}</span>
       </div>
-      {reply === null ? (
+      {reply === null && staged === null ? (
         preview.failure !== null ? (
           <div className="workspace-diff-note workspace-diff-note-error" role="alert">
             {preview.failure}
@@ -65,24 +64,32 @@ export function FilesPreview({ path, preview }: { path: string; preview: Preview
             Loading file…
           </div>
         )
-      ) : reply.error !== null ? (
-        // `refused` and `too_large` are the only two statuses that carry a
+      ) : staged !== null ? (
+        staged.status === "refused" ? (
+          // The stage's own sentence, shown as the refusal it is — there
+          // is no copy, so the card claims nothing about the file.
+          <div className="workspace-diff-note workspace-diff-note-error" role="alert">
+            {staged.error}
+          </div>
+        ) : staged.kind === "video" ? (
+          <video className="workspace-file-preview-video" src={staged.url} controls />
+        ) : staged.kind === "pdf" ? (
+          <embed className="workspace-file-preview-pdf" src={staged.url} type="application/pdf" />
+        ) : (
+          <img className="workspace-file-preview-image" src={staged.url} alt={path} />
+        )
+      ) : reply !== null && reply.error !== null ? (
+        // `refused` and `too_large` are the only statuses that carry a
         // sentence (`error` is null exactly when the status is ok or
         // binary), and both are shown as the refusal they are — the cap's
         // sentence carries the measure.
         <div className="workspace-diff-note workspace-diff-note-error" role="alert">
           {reply.error}
         </div>
-      ) : reply.status === "binary" ? (
+      ) : reply !== null && reply.status === "binary" ? (
         <div className="workspace-diff-note">This file is binary; there is no content to show.</div>
-      ) : reply.kind === "image" ? (
-        <img
-          className="workspace-file-preview-image"
-          src={dataUrlOf(path, reply.content ?? "")}
-          alt={path}
-        />
       ) : (
-        <pre className="workspace-file-preview-text">{reply.content}</pre>
+        <pre className="workspace-file-preview-text">{reply?.content}</pre>
       )}
     </div>
   );

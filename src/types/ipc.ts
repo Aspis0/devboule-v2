@@ -235,6 +235,57 @@ export interface WorkspaceFileMutation {
   error: string | null;
 }
 
+/**
+ * How the Files panel draws a staged preview — decided from the spelling
+ * alone, the way the daemon decides what it will stage at all: the three
+ * words here and the daemon's three lists (`IMAGE_EXTENSIONS` in
+ * `workspace_file_read.rs`, `VIDEO_EXTENSIONS` + `pdf` in
+ * `workspace_file_preview.rs`) are mirrors, and an extension joins both or
+ * neither — a panel that staged something the daemon refuses would show
+ * the wire's sentence, which is safe but not a preview.
+ */
+export type PreviewMediaKind = "image" | "video" | "pdf";
+
+/**
+ * The reply of `workspace_file_preview_stage` — the daemon's answer before
+ * the app turns its path into an asset URL. A discriminated pair with the
+ * same discipline as `WorkspaceFileContent`'s invariants, checkable by the
+ * compiler: `ok` carries the absolute path of the copy (inside the
+ * daemon's `previews` folder, the only folder the asset protocol
+ * concedes) beside the source file's own stat — `size` is bytes,
+ * `modifiedAt` milliseconds since the epoch, each `null` only when the
+ * filesystem gave no number; `refused` carries the sentence and claims
+ * nothing: no path, no stat, no copy.
+ */
+export type WorkspaceFilePreview =
+  | {
+      status: "ok";
+      path: string;
+      size: number | null;
+      modifiedAt: number | null;
+      error: null;
+    }
+  | { status: "refused"; path: null; size: null; modifiedAt: null; error: string };
+
+/**
+ * What the panel holds after a stage: the copy's asset URL — built from
+ * the daemon's path with Tauri's own `convertFileSrc` inside
+ * `workspaceFilePreviewStage`, so the URL is the only form of the copy
+ * that ever reaches this module — plus the media kind the panel draws it
+ * as and the source stat for the header; or the refusal's sentence.
+ * Unstage has its own reply shape: it answers `void`, because the only
+ * path worth naming is one that must stop existing.
+ */
+export type WorkspaceFileStaged =
+  | {
+      status: "ok";
+      url: string;
+      kind: PreviewMediaKind;
+      size: number | null;
+      modifiedAt: number | null;
+    }
+  | { status: "refused"; error: string };
+
 export type SessionKind = "terminal" | "acp" | "claude" | "pi" | "codex";
 
 export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" | "codex" {

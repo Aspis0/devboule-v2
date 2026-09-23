@@ -587,6 +587,31 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
+    /// Stage one workspace file as the Files panel's preview: the daemon
+    /// confines `path` like [`Self::WorkspaceFileRead`] and refuses what
+    /// that read refuses — plus any extension the panel never shows as
+    /// media — then copies the bytes into the runtime directory's
+    /// `previews` folder, the one folder the app concedes to Tauri's asset
+    /// protocol (the workspace itself is never in that scope). The reply is
+    /// [`DaemonMessage::WorkspaceFilePreviewStaged`], carrying the copy's
+    /// absolute path; a stage also clears the copies of earlier stages, so
+    /// at most one copy rests in the folder at a time.
+    WorkspaceFilePreviewStage {
+        id: u64,
+        workspace_id: String,
+        /// Path relative to the workspace folder, of a file — the spelling
+        /// a listing entry already handed back.
+        path: String,
+    },
+    /// Delete every copy [`Self::WorkspaceFilePreviewStage`] left — the
+    /// preview's revoke. The panel sends it when the selection leaves a
+    /// staged file and when the panel closes: revoking is deleting the
+    /// copy, never withdrawing a scope (a Tauri asset concession cannot be
+    /// taken back until the process restarts). The reply is
+    /// [`DaemonMessage::Ok`].
+    WorkspaceFilePreviewUnstage {
+        id: u64,
+    },
     WorkspaceCreate {
         id: u64,
         project_id: String,
@@ -820,6 +845,8 @@ impl ClientMessage {
             | Self::WorkspaceFileRead { id, .. }
             | Self::WorkspaceFileRename { id, .. }
             | Self::WorkspaceFileDuplicate { id, .. }
+            | Self::WorkspaceFilePreviewStage { id, .. }
+            | Self::WorkspaceFilePreviewUnstage { id }
             | Self::WorkspaceCreate { id, .. }
             | Self::WorkspaceDelete { id, .. }
             | Self::ProvidersList { id }
@@ -907,6 +934,8 @@ impl ClientMessage {
             | Self::WorkspaceGitDiff { .. }
             | Self::WorkspaceFilesList { .. }
             | Self::WorkspaceFileRead { .. }
+            | Self::WorkspaceFilePreviewStage { .. }
+            | Self::WorkspaceFilePreviewUnstage { .. }
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
             | Self::Invoke { .. }
@@ -970,6 +999,8 @@ impl ClientMessage {
             Self::WorkspaceFileRead { .. } => "WorkspaceFileRead",
             Self::WorkspaceFileRename { .. } => "WorkspaceFileRename",
             Self::WorkspaceFileDuplicate { .. } => "WorkspaceFileDuplicate",
+            Self::WorkspaceFilePreviewStage { .. } => "WorkspaceFilePreviewStage",
+            Self::WorkspaceFilePreviewUnstage { .. } => "WorkspaceFilePreviewUnstage",
             Self::WorkspaceCreate { .. } => "WorkspaceCreate",
             Self::WorkspaceDelete { .. } => "WorkspaceDelete",
             Self::ProvidersList { .. } => "ProvidersList",
@@ -1051,6 +1082,11 @@ impl ClientMessage {
             | Self::WorkspaceDelete { .. }
             | Self::WorkspaceFileRename { .. }
             | Self::WorkspaceFileDuplicate { .. }
+            // Both write the runtime directory's `previews` folder — a
+            // stage creates a copy, an unstage deletes it — so both earn an
+            // audit row like the two writes above them.
+            | Self::WorkspaceFilePreviewStage { .. }
+            | Self::WorkspaceFilePreviewUnstage { .. }
             | Self::ProvidersRefresh { .. }
             | Self::ProviderUpdate { .. }
             | Self::Invoke { .. }
@@ -1162,6 +1198,15 @@ pub enum DaemonMessage {
         id: u64,
         #[serde(flatten)]
         file: WorkspaceFileContent,
+    },
+    /// The reply to [`ClientMessage::WorkspaceFilePreviewStage`]: the copy's
+    /// absolute path beside the source file's stat, or the sentence the
+    /// refusal stopped on. Flattened beside `id` the same way
+    /// [`DaemonMessage::WorkspaceFileContent`] flattens its body.
+    WorkspaceFilePreviewStaged {
+        id: u64,
+        #[serde(flatten)]
+        staged: WorkspaceFilePreview,
     },
     /// The reply to [`ClientMessage::WorkspaceFileRename`]: the entry's new
     /// spelling, or the sentence the refusal stopped on. Flattened beside
@@ -1703,6 +1748,52 @@ pub struct WorkspaceFileMutation {
     /// The entry's new spelling on success; `null` on a refusal.
     pub new_path: Option<String>,
     /// Why the act was refused; `null` on a success.
+    pub error: Option<String>,
+}
+
+/// What one preview-stage reply says happened. The two answer different
+/// questions and must never collapse, like [`WorkspaceFileContentStatus`]:
+/// `ok` means a copy of the file rests in the runtime directory's
+/// `previews` folder, while `refused` with a sentence in `error` means the
+/// daemon copied nothing and claims nothing about the file.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceFilePreviewStatus {
+    /// The copy exists; `path` names it and `size`/`modified_at` are the
+    /// source file's own stat.
+    Ok,
+    /// Refused before anything was copied; `error` says why, in the
+    /// sentences the rest of the panel already shows.
+    Refused,
+}
+
+/// The staged copy of one workspace file, as the Files panel's preview
+/// renders it. Carve-outs stated, the same pair discipline as
+/// [`WorkspaceFileContent`]: `path`, `size` and `modified_at` are `Some`
+/// exactly when the status is `ok`, and `error` is `Some` exactly when it
+/// is `refused` — a refusal claims nothing about a file it never copied.
+/// `path` is absolute and inside the `previews` folder by construction;
+/// the frontend turns it into an asset URL and never draws it as content.
+///
+/// **Debt, the same one `WorkspaceFileContent` records:** `error` is free
+/// text on a frame that does not pass `redact_for_conn`, so every sentence
+/// it carries is static or the registry's own (which echoes the
+/// `workspace_id` the caller sent — never a path).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFilePreview {
+    pub status: WorkspaceFilePreviewStatus,
+    /// Absolute path of the copy under the `previews` folder; `null` on a
+    /// refusal.
+    pub path: Option<String>,
+    /// Bytes, as `stat` reported them on the source file. `null` on a
+    /// refusal.
+    pub size: Option<u64>,
+    /// Milliseconds since the Unix epoch, as `stat` reported them on the
+    /// source file; `null` when the filesystem gave no stamp, and on a
+    /// refusal.
+    pub modified_at: Option<i64>,
+    /// Why the stage was refused; `null` on a success.
     pub error: Option<String>,
 }
 

@@ -303,11 +303,15 @@ pub(super) fn peer_mode_refusal_for_conn(
         ClientMessage::WorkspaceGitDiff { .. } => None,
         ClientMessage::WorkspaceFilesList { .. } => None,
         ClientMessage::WorkspaceFileRead { .. } => None,
-        // The two write acts act on this machine's own disk, never on an
+        // The write acts act on this machine's own disk, never on an
         // agent: there is no mode here to vet (the capability table below
-        // is what guards them).
+        // is what guards them). The preview's stage and unstage write and
+        // delete bytes in the daemon's own previews folder for the same
+        // reason.
         ClientMessage::WorkspaceFileRename { .. } => None,
         ClientMessage::WorkspaceFileDuplicate { .. } => None,
+        ClientMessage::WorkspaceFilePreviewStage { .. } => None,
+        ClientMessage::WorkspaceFilePreviewUnstage { .. } => None,
         ClientMessage::WorkspaceCreate { .. } => None,
         ClientMessage::WorkspaceDelete { .. } => None,
         ClientMessage::ProvidersList { .. } => None,
@@ -536,6 +540,8 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::WorkspaceFileRead { .. }
         | ClientMessage::WorkspaceFileRename { .. }
         | ClientMessage::WorkspaceFileDuplicate { .. }
+        | ClientMessage::WorkspaceFilePreviewStage { .. }
+        | ClientMessage::WorkspaceFilePreviewUnstage { .. }
         | ClientMessage::WorkspaceCreate { .. }
         | ClientMessage::WorkspaceDelete { .. }
         | ClientMessage::ProvidersList { .. }
