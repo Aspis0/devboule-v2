@@ -29,6 +29,11 @@ import {
   sessionDetach,
   sessionDeposit,
   sessionInterrupt,
+  sessionQueueAdd,
+  sessionQueueEdit,
+  sessionQueueMove,
+  sessionQueueRemove,
+  sessionQueueSendNow,
   sessionPermissionRespond,
   sessionResize,
   sessionSend,
@@ -478,9 +483,10 @@ describe("create and attach command wrappers", () => {
     await sessionSend("s.owner.1", 41, "keep going", undefined, "steer");
 
     // The key is absent, not `undefined`, for a plain send (asserted above):
-    // an absent `activeTurnBehavior` is the daemon's interrupt-and-replace
-    // default, and the Rust parity guard checks this manifest against the
-    // command's own parameter list.
+    // an absent `activeTurnBehavior` names no daemon-side behaviour at all —
+    // the prompt reaches the provider exactly as it stands — and the Rust
+    // parity guard checks this manifest against the command's own parameter
+    // list.
     expect(invoke).toHaveBeenCalledWith("session_send", {
       id: "s.owner.1",
       subscriptionId: 41,
@@ -955,5 +961,82 @@ describe("agent profiles command wrappers", () => {
   it("pins the wire keys of both agent profile commands", () => {
     expect(COMMAND_ARG_KEYS.agent_profiles_get).toEqual([]);
     expect(COMMAND_ARG_KEYS.agent_profiles_set).toEqual(["document"]);
+  });
+});
+
+describe("queue wrappers (Q1)", () => {
+  it("adds a queued message and names its attachments only when it has any", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionQueueAdd("s.owner.1", "  queued for later  ");
+
+    // Absent, never empty — the same rule `session_send` states for its two
+    // attachment lists, so a text-only queue frame grows no keys.
+    expect(invoke).toHaveBeenCalledWith("session_queue_add", {
+      id: "s.owner.1",
+      text: "queued for later",
+    });
+
+    const reference = { sessionId: "s.owner.1", digest: "a".repeat(64), storedBytes: 512 };
+    await sessionQueueAdd("s.owner.1", "with a deck", undefined, [reference]);
+    expect(invoke).toHaveBeenLastCalledWith("session_queue_add", {
+      id: "s.owner.1",
+      text: "with a deck",
+      attachmentReferences: [reference],
+    });
+    expect(COMMAND_ARG_KEYS.session_queue_add).toEqual([
+      "id",
+      "text",
+      "attachments",
+      "attachmentReferences",
+    ]);
+  });
+
+  it("edits, removes and moves one queued item by its id", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionQueueEdit("s.owner.1", "queue-2", "edited text");
+    expect(invoke).toHaveBeenLastCalledWith("session_queue_edit", {
+      id: "s.owner.1",
+      itemId: "queue-2",
+      text: "edited text",
+    });
+
+    await sessionQueueRemove("s.owner.1", "queue-2");
+    expect(invoke).toHaveBeenLastCalledWith("session_queue_remove", {
+      id: "s.owner.1",
+      itemId: "queue-2",
+    });
+
+    await sessionQueueMove("s.owner.1", "queue-2", 0);
+    expect(invoke).toHaveBeenLastCalledWith("session_queue_move", {
+      id: "s.owner.1",
+      itemId: "queue-2",
+      toIndex: 0,
+    });
+
+    expect(COMMAND_ARG_KEYS.session_queue_edit).toEqual(["id", "itemId", "text"]);
+    expect(COMMAND_ARG_KEYS.session_queue_remove).toEqual(["id", "itemId"]);
+    expect(COMMAND_ARG_KEYS.session_queue_move).toEqual(["id", "itemId", "toIndex"]);
+  });
+
+  it("send-now carries its subscription, because send-now is a send", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionQueueSendNow("s.owner.1", 41, "queue-1");
+
+    expect(invoke).toHaveBeenCalledWith("session_queue_send_now", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+      itemId: "queue-1",
+    });
+    expect(COMMAND_ARG_KEYS.session_queue_send_now).toEqual([
+      "id",
+      "subscriptionId",
+      "itemId",
+    ]);
   });
 });

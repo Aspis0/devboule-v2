@@ -51,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 15;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 16;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -700,6 +700,19 @@ impl JournalStats {
     }
 }
 
+/// One persisted queue row: a session's queued message as the restart reads
+/// it back. The bytes of an attachment never rest here — an inline image is
+/// deposited to the store at queue time and travels as a reference — so this
+/// is text a person typed, the digests it names, and the error of the send
+/// that last failed it, if any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueRecord {
+    pub item_id: String,
+    pub text: String,
+    pub attachment_references: Vec<devboule_protocol::AttachmentReference>,
+    pub error: Option<String>,
+}
+
 enum JournalCmd {
     Upsert(SessionRecord),
     CreateSession {
@@ -814,6 +827,18 @@ enum JournalCmd {
     },
     DeleteSession {
         session_id: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    QueueLoad {
+        session_id: String,
+        reply: mpsc::Sender<Result<Vec<QueueRecord>, JournalError>>,
+    },
+    /// Replace one session's whole persisted queue with exactly `rows` —
+    /// rows, or none when `rows` is empty. One command because one queue
+    /// mutation is one state: half of a queue is not a queue.
+    QueueStore {
+        session_id: String,
+        rows: Vec<QueueRecord>,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
     Usage {
@@ -1378,6 +1403,25 @@ impl Journal {
         })
     }
 
+    /// One session's persisted queue, in position order. A session nobody
+    /// ever queued for answers the empty list — the same answer as no journal
+    /// at all, which is what makes the two interchangeable at restore.
+    pub fn queue_load(&self, session_id: &str) -> Result<Vec<QueueRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::QueueLoad {
+            session_id: session_id.to_string(),
+            reply,
+        })
+    }
+
+    /// Replace one session's persisted queue with exactly `rows`.
+    pub fn queue_store(&self, session_id: &str, rows: &[QueueRecord]) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::QueueStore {
+            session_id: session_id.to_string(),
+            rows: rows.to_vec(),
+            reply,
+        })
+    }
+
     pub fn usage(&self) -> Result<JournalUsage, JournalError> {
         self.rpc(|reply| JournalCmd::Usage { reply })
     }
@@ -1677,6 +1721,71 @@ impl Drop for Journal {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// Read one session's queue rows in position order. A payload that is not
+/// the JSON we wrote is corruption, and corruption answers the corrupt-
+/// journal error rather than the empty queue: a queue that lost its rows
+/// must not read as a queue that was emptied.
+fn queue_load(conn: &Connection, session_id: &str) -> Result<Vec<QueueRecord>, JournalError> {
+    let mut stmt = conn.prepare(
+        "SELECT item_id, text, attachment_references, error FROM session_queue
+         WHERE session_id = ?1 ORDER BY position",
+    )?;
+    let mut rows = stmt.query([session_id])?;
+    let mut loaded = Vec::new();
+    while let Some(row) = rows.next()? {
+        let references_json: String = row.get(2)?;
+        let attachment_references = serde_json::from_str(&references_json).map_err(|error| {
+            JournalError::Corrupt(format!("queue attachment references unreadable: {error}"))
+        })?;
+        loaded.push(QueueRecord {
+            item_id: row.get(0)?,
+            text: row.get(1)?,
+            attachment_references,
+            error: row.get(3)?,
+        });
+    }
+    Ok(loaded)
+}
+
+/// Replace one session's queue rows in a single transaction: delete what is
+/// there, insert what the caller says is there now.
+fn queue_store(
+    conn: &Connection,
+    session_id: &str,
+    rows: &[QueueRecord],
+) -> Result<(), JournalError> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM session_queue WHERE session_id = ?1",
+        [session_id],
+    )?;
+    for (position, row) in rows.iter().enumerate() {
+        let position = i64::try_from(position)
+            .map_err(|_| JournalError::InvalidRequest("queue holds too many rows".to_string()))?;
+        let references_json =
+            serde_json::to_string(&row.attachment_references).map_err(|error| {
+                JournalError::Corrupt(format!(
+                    "queue attachment references not serializable: {error}"
+                ))
+            })?;
+        tx.execute(
+            "INSERT INTO session_queue
+             (session_id, position, item_id, text, attachment_references, error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                session_id,
+                position,
+                row.item_id,
+                row.text,
+                references_json,
+                row.error
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 fn journal_loop(
@@ -2008,6 +2117,20 @@ fn journal_loop(
                 if result.is_ok() {
                     retention_state.session_set_changed();
                     session_set_revision.fetch_add(1, Ordering::AcqRel);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::QueueLoad { session_id, reply } => {
+                let _ = reply.send(queue_load(&conn, &session_id));
+            }
+            JournalCmd::QueueStore {
+                session_id,
+                rows,
+                reply,
+            } => {
+                let result = queue_store(&conn, &session_id, &rows);
+                if let Err(error) = &result {
+                    on_write_error(error);
                 }
                 let _ = reply.send(result);
             }

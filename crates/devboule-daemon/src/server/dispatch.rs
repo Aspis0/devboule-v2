@@ -186,6 +186,11 @@ pub(super) fn dispatch_immediate(
         | ClientMessage::SessionClose { .. }
         | ClientMessage::SessionStop { .. }
         | ClientMessage::SessionSend { .. }
+        | ClientMessage::SessionQueueAdd { .. }
+        | ClientMessage::SessionQueueEdit { .. }
+        | ClientMessage::SessionQueueRemove { .. }
+        | ClientMessage::SessionQueueMove { .. }
+        | ClientMessage::SessionQueueSendNow { .. }
         | ClientMessage::AgentMessageSend { .. }
         | ClientMessage::SessionDeposit { .. }
         | ClientMessage::SessionAttachmentRead { .. }

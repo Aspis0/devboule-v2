@@ -23,12 +23,26 @@ pub enum SessionKind {
 }
 
 /// What a send does when the target agent already has a turn running.
-/// Omitting this field preserves the interrupt-and-replace behavior; only
-/// steering is an explicit alternative in this protocol revision.
+///
+/// Omitting this field does **not** interrupt anything: the daemon writes the
+/// prompt to the provider exactly as it stands, and what the provider does
+/// with a prompt that arrives mid-turn (queue it, join it, let it replace the
+/// turn) is the provider's own behaviour — no code in this protocol decides
+/// it. The two explicit values are the two acts the daemon performs itself:
+/// [`Self::Steer`] delivers the text into the running turn when the provider
+/// can take a steer, and [`Self::Interrupt`] stops the running turn, waits for
+/// it to end (bounded on the daemon side), then sends the text as a new turn.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActiveTurnBehavior {
     Steer,
+    /// Cancel the running turn, wait for it to end (the daemon bounds the
+    /// wait), then send this text as a new turn. With no turn running this is
+    /// a plain send. Pending permission cards are cancelled, as on every
+    /// interrupt. This is the wire word behind the UI's "Steer" button
+    /// (`DECISIONS.md` 3: interrupt-and-send, for every provider — native
+    /// steer is not used for user messages) and behind the queue's send-now.
+    Interrupt,
 }
 
 impl SessionKind {
@@ -674,6 +688,33 @@ pub struct FinishArtifact {
     pub parts: Vec<FinishArtifactPart>,
 }
 
+/// One message waiting in a session's queue, as [`SessionEvent::QueueSnapshot`]
+/// carries it.
+///
+/// The shape a row is rendered from and an edit is aimed at: `item_id` is the
+/// daemon's stable name for the item (kept across edits and moves, never
+/// reused after the item leaves the queue), `text` is the whole message, and
+/// the references are attachments already deposited under this session — the
+/// bytes never ride the snapshot, for the same reason they never ride a
+/// journal row: images are stored once, by digest, and named here.
+///
+/// `error` is the failure of the send this item was last taken for, when that
+/// send failed and put it back — absent means "no failure recorded", never an
+/// empty string.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedMessage {
+    pub item_id: String,
+    pub text: String,
+    /// References to attachments deposited under this session (see
+    /// [`crate::messages::AttachmentReference`]). Inline bytes are deposited
+    /// at queue time and travel here as digests only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_references: Vec<crate::messages::AttachmentReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Events sent over the Tauri Channel supplied to `session_attach`.
 ///
 /// [`SessionEvent::SessionsSnapshot`] is the exception: it is carried in the
@@ -745,6 +786,16 @@ pub enum SessionEvent {
     Steered {
         message_id: Option<String>,
         text: String,
+    },
+    /// The whole per-session message queue, as a snapshot and never a diff.
+    ///
+    /// Every queue change publishes the current list, and the publish is
+    /// journaled like any agent-report row — so a client attaching late
+    /// receives the latest snapshot with the rest of its replay and never has
+    /// to ask what is queued. A snapshot supersedes the one before it; a
+    /// client treats the last one it saw as the queue, whole.
+    QueueSnapshot {
+        items: Vec<QueuedMessage>,
     },
     /// Agent reasoning, one ACP `agent_thought_chunk` at a time.
     AgentThought {

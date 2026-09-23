@@ -185,6 +185,15 @@
     "type": "permission_resolved"
   },
   {
+    "items": [
+      {
+        "itemId": "queue-1",
+        "text": ""
+      }
+    ],
+    "type": "queue_snapshot"
+  },
+  {
     "integrity": {
       "droppedBytes": 0,
       "droppedFrames": 0,

@@ -484,6 +484,13 @@ export class TerminalSession {
         // Journaled for audit and not emitted to observers; listed so a leak
         // is ignored rather than reported as an unknown protocol event.
         break;
+      case "queue_snapshot":
+        // The whole per-session message queue, published on every queue change.
+        // The terminal view renders no queue rows and never queues (a terminal
+        // refuses the queue frames), so there is nothing to draw — listed
+        // rather than defaulted so the `never` guard below stays honest for the
+        // shared protocol enum.
+        break;
       case "sessions_snapshot":
         // Roster snapshots are consumed by the connection watcher before
         // attach events reach this channel. Ignore a leak rather than

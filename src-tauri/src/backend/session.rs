@@ -136,12 +136,13 @@ pub async fn session_presence(
 /// against the session's store. Optional for the same reason as the inline list
 /// — a caller that predates deposits sends no key and gets the empty list.
 ///
-/// `active_turn_behavior` is the same kind of optional key for the slice-4
-/// steering field: `"steer"` asks the daemon to deliver this text into a turn
-/// that is already running, `"queue"` asks it to hold the text for the next
-/// turn, and an absent key keeps the old interrupt-and-replace default. The
-/// value travels as the protocol's own string; the daemon owns what the two
-/// words mean.
+/// `active_turn_behavior` is the same kind of optional key: `"steer"`
+/// delivers the text into the running turn when the provider can take a
+/// steer, `"interrupt"` stops the running turn, waits for it to end (the
+/// daemon bounds the wait) and sends the text as a new turn, and an absent
+/// key names no daemon-side behaviour — the prompt reaches the provider as
+/// it stands. The values travel as the protocol's own strings; the daemon
+/// owns what they mean.
 ///
 /// The word is parsed to the protocol's own type on the way in
 /// (`parse_active_turn_behavior` below), so a value the daemon would refuse is
@@ -291,6 +292,97 @@ pub async fn session_interrupt(
     off_main_thread(move || {
         inner.ensure_subscription_attached(subscription_id)?;
         client.session_interrupt_with_subscription(&id, subscription_id)
+    })
+    .await
+}
+
+/// Queue one message for a session's next free turn.
+///
+/// The forwarder is `session_send`'s minus the behavior: the same id
+/// validation, the same write cap, the same attachment limits — because a
+/// queued message is the same message, only later, and the daemon judges it
+/// the same way. The reply is `Ok`; the queue itself arrives as
+/// `queue_snapshot` events on the session's own channel.
+#[tauri::command]
+pub async fn session_queue_add(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    text: String,
+    attachments: Option<Vec<PromptAttachment>>,
+    attachment_references: Option<Vec<AttachmentReference>>,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    require_write_size(&text)?;
+    let attachments = attachments.unwrap_or_default();
+    require_attachment_limits(&attachments)?;
+    let attachment_references = attachment_references.unwrap_or_default();
+    require_attachment_reference_limits(&id, &attachment_references)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || {
+        client.session_queue_add(&id, &text, &attachments, &attachment_references)
+    })
+    .await
+}
+
+/// Replace one queued item's text, keeping its place; the daemon trims,
+/// requires it non-empty and clears the item's recorded error.
+#[tauri::command]
+pub async fn session_queue_edit(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    item_id: String,
+    text: String,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    require_write_size(&text)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_queue_edit(&id, &item_id, &text)).await
+}
+
+/// Take one item out of the queue — an item the drain has already taken
+/// answers with the daemon's own "no such queued message" refusal.
+#[tauri::command]
+pub async fn session_queue_remove(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    item_id: String,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_queue_remove(&id, &item_id)).await
+}
+
+/// Move one queued item to another position; 0 is the front the drain sends
+/// from. An index past the queue is refused by the daemon, not guessed at.
+#[tauri::command]
+pub async fn session_queue_move(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    item_id: String,
+    to_index: usize,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
+    off_main_thread(move || client.session_queue_move(&id, &item_id, to_index)).await
+}
+
+/// Send one queued item now: the running turn is interrupted (the daemon
+/// waits for it to end, bounded) and the text goes as a new turn; a failure
+/// puts the item back at the queue's front with its error. The subscription
+/// is required because this *is* a send, exactly like `session_send`'s.
+#[tauri::command]
+pub async fn session_queue_send_now(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    subscription_id: SubscriptionId,
+    item_id: String,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
+    let inner = bridge.shared();
+    off_main_thread(move || {
+        inner.ensure_subscription_attached(subscription_id)?;
+        client.session_queue_send_now(&id, subscription_id, &item_id)
     })
     .await
 }
@@ -452,8 +544,8 @@ fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
 
 /// The app's `active_turn_behavior` word, as the protocol's own type.
 ///
-/// The word travels as the protocol's (`"steer"`; absent is the daemon's
-/// interrupt-and-replace default), so the parse is the protocol's too: serde is
+/// The word travels as the protocol's (`"steer"`, `"interrupt"`; absent names
+/// no daemon-side behaviour), so the parse is the protocol's too: serde is
 /// what says which words exist, and a word the daemon would refuse is refused
 /// here as `InvalidRequest` instead of travelling as a frame the daemon answers
 /// with an error.
@@ -500,11 +592,15 @@ mod tests {
         assert_eq!(
             parse_active_turn_behavior(None).expect("absent"),
             None,
-            "an absent key is the daemon's interrupt-and-replace default"
+            "an absent key names no daemon-side behaviour"
         );
         assert_eq!(
             parse_active_turn_behavior(Some("steer")).expect("steer"),
             Some(ActiveTurnBehavior::Steer)
+        );
+        assert_eq!(
+            parse_active_turn_behavior(Some("interrupt")).expect("interrupt"),
+            Some(ActiveTurnBehavior::Interrupt)
         );
         // `"queue"` is the word the app's TS union deliberately does not have:
         // no daemon branch implements it, so it is refused here rather than

@@ -342,6 +342,58 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachment_references: Vec<AttachmentReference>,
     },
+    /// Queue one message for this session's next free turn: the daemon holds
+    /// it (persistently), publishes the session's whole queue as a
+    /// [`crate::SessionEvent::QueueSnapshot`] on every change, and sends item
+    /// 0 through the ordinary send path when the running turn ends. The
+    /// payload is [`Self::SessionSend`]'s — text plus the same two attachment
+    /// lists — because a queued message is the same message, only later;
+    /// inline attachments are deposited to the session's store at queue time
+    /// and travel on from there as references.
+    SessionQueueAdd {
+        id: u64,
+        session_id: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<PromptAttachment>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachment_references: Vec<AttachmentReference>,
+    },
+    /// Replace the text of one queued item, keeping its place in the queue.
+    /// A refusal's recorded error is cleared: new text has not failed yet.
+    SessionQueueEdit {
+        id: u64,
+        session_id: String,
+        item_id: String,
+        text: String,
+    },
+    /// Take one item out of the queue. An item the drain has already taken is
+    /// not in the queue any more, and this answers accordingly.
+    SessionQueueRemove {
+        id: u64,
+        session_id: String,
+        item_id: String,
+    },
+    /// Move one item to another position (0 is the front — the slot the drain
+    /// sends from). The index is the position the item should occupy after it
+    /// has been taken out and reinserted.
+    SessionQueueMove {
+        id: u64,
+        session_id: String,
+        item_id: String,
+        to_index: usize,
+    },
+    /// Take one item out of the queue **now**: send it with
+    /// [`ActiveTurnBehavior::Interrupt`] — the running turn is stopped, the
+    /// text goes as a new turn — and, should that fail, put the item back at
+    /// the front of the queue with its error. Needs the subscription a send
+    /// needs, because this *is* a send.
+    SessionQueueSendNow {
+        id: u64,
+        session_id: String,
+        subscription_id: SubscriptionId,
+        item_id: String,
+    },
     /// Deliver text from one live agent session to another.
     AgentMessageSend {
         id: u64,
@@ -930,6 +982,11 @@ impl ClientMessage {
             | Self::SessionClose { id, .. }
             | Self::SessionStop { id, .. }
             | Self::SessionSend { id, .. }
+            | Self::SessionQueueAdd { id, .. }
+            | Self::SessionQueueEdit { id, .. }
+            | Self::SessionQueueRemove { id, .. }
+            | Self::SessionQueueMove { id, .. }
+            | Self::SessionQueueSendNow { id, .. }
             | Self::AgentMessageSend { id, .. }
             | Self::SessionDeposit { id, .. }
             | Self::SessionAttachmentRead { id, .. }
@@ -1040,6 +1097,11 @@ impl ClientMessage {
             | Self::DaemonDiagnostics { .. }
             | Self::Shutdown { .. }
             | Self::SessionAttach { .. }
+            | Self::SessionQueueAdd { .. }
+            | Self::SessionQueueEdit { .. }
+            | Self::SessionQueueRemove { .. }
+            | Self::SessionQueueMove { .. }
+            | Self::SessionQueueSendNow { .. }
             | Self::SessionDetach { .. }
             | Self::SessionClaim { .. }
             | Self::SessionStop { .. }
@@ -1104,6 +1166,11 @@ impl ClientMessage {
             Self::SessionClose { .. } => "SessionClose",
             Self::SessionStop { .. } => "SessionStop",
             Self::SessionSend { .. } => "SessionSend",
+            Self::SessionQueueAdd { .. } => "SessionQueueAdd",
+            Self::SessionQueueEdit { .. } => "SessionQueueEdit",
+            Self::SessionQueueRemove { .. } => "SessionQueueRemove",
+            Self::SessionQueueMove { .. } => "SessionQueueMove",
+            Self::SessionQueueSendNow { .. } => "SessionQueueSendNow",
             Self::AgentMessageSend { .. } => "AgentMessageSend",
             Self::SessionDeposit { .. } => "SessionDeposit",
             Self::SessionAttachmentRead { .. } => "SessionAttachmentRead",
@@ -1201,6 +1268,11 @@ impl ClientMessage {
             | Self::SessionClose { .. }
             | Self::SessionStop { .. }
             | Self::SessionSend { .. }
+            | Self::SessionQueueAdd { .. }
+            | Self::SessionQueueEdit { .. }
+            | Self::SessionQueueRemove { .. }
+            | Self::SessionQueueMove { .. }
+            | Self::SessionQueueSendNow { .. }
             | Self::AgentMessageSend { .. }
             | Self::SessionDeposit { .. }
             | Self::SessionResize { .. }
@@ -2668,3 +2740,7 @@ pub struct SessionEventEnvelope {
 #[cfg(test)]
 #[path = "messages_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "queue_frames_tests.rs"]
+mod queue_frame_tests;

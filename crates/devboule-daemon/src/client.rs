@@ -594,6 +594,106 @@ impl DaemonClient {
         }
     }
 
+    /// Queue one message for a session's next free turn. The reply is `Ok`;
+    /// the queue itself arrives as `queue_snapshot` events on the session's
+    /// own stream, which every change and every attach replay carries.
+    pub fn session_queue_add(
+        &self,
+        session_id: &str,
+        text: &str,
+        attachments: &[PromptAttachment],
+        attachment_references: &[AttachmentReference],
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueAdd {
+            id,
+            session_id: session_id.to_string(),
+            text: text.to_string(),
+            attachments: attachments.to_vec(),
+            attachment_references: attachment_references.to_vec(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Replace one queued item's text, keeping its place in the queue.
+    pub fn session_queue_edit(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        text: &str,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueEdit {
+            id,
+            session_id: session_id.to_string(),
+            item_id: item_id.to_string(),
+            text: text.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Take one item out of a session's queue.
+    pub fn session_queue_remove(&self, session_id: &str, item_id: &str) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueRemove {
+            id,
+            session_id: session_id.to_string(),
+            item_id: item_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Move one queued item to another position (0 is the front).
+    pub fn session_queue_move(
+        &self,
+        session_id: &str,
+        item_id: &str,
+        to_index: usize,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueMove {
+            id,
+            session_id: session_id.to_string(),
+            item_id: item_id.to_string(),
+            to_index,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    /// Send one queued item now: the running turn is interrupted, the text
+    /// goes as a new turn, and a failure puts the item back at the queue's
+    /// front with its error.
+    pub fn session_queue_send_now(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+        item_id: &str,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionQueueSendNow {
+            id,
+            session_id: session_id.to_string(),
+            subscription_id,
+            item_id: item_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     /// Store one prompt attachment for a session and answer the reference the
     /// send that follows names it by.
     ///

@@ -9,8 +9,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     cursor_replay_ok, AgentActivityState, Attention, AttentionReason, Cursor, ErrorCode,
-    NoticeSeverity, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionModel,
-    SessionOrigin, TranscriptIntegrity, UserMessageAuthor, UserMessageKind, WireError,
+    NoticeSeverity, QueuedMessage, Session, SessionEvent, SessionEventEnvelope, SessionKind,
+    SessionModel, SessionOrigin, TranscriptIntegrity, UserMessageAuthor, UserMessageKind,
+    WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -835,6 +836,7 @@ impl SessionRuntime {
                 | SessionEvent::PermissionResolved { .. }
                 | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionNotice { .. }
+                | SessionEvent::QueueSnapshot { .. }
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. } => {
@@ -1251,6 +1253,52 @@ impl SessionRuntime {
             let seq = stream.next_seq;
             stream.next_seq = stream.next_seq.saturating_add(1);
             let event = SessionEvent::SessionNotice { text, severity };
+            enqueue_agent(&mut stream, event.clone(), Some(seq));
+            self.published_frames.fetch_add(1, Ordering::Relaxed);
+            self.published_bytes.fetch_add(
+                serde_json::to_vec(&event)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(0),
+                Ordering::Relaxed,
+            );
+            notify_observers(&stream);
+            (event, generation, seq)
+        };
+        if let Some(journal) = &self.journal {
+            if let Some(record) = crate::journal::agent_report_record(
+                self.session_id.clone(),
+                generation,
+                seq,
+                &event,
+            ) {
+                let accepted = journal.try_append(record);
+                if !accepted || journal.is_session_degraded(&self.session_id) {
+                    self.mark_journal_degraded();
+                }
+            }
+        }
+        true
+    }
+
+    /// Publish the whole message queue as a snapshot, journalled like any
+    /// agent-report row — a client that reconnects *without* reattaching is
+    /// resynchronized from the rows the change left behind.
+    ///
+    /// Deliberately unlike `publish_journaled_agent_event` in what it does NOT
+    /// do: a queue edit is not a sign of life from the agent (no activity
+    /// record, no disposition change) and not a reason for anyone's attention.
+    pub(crate) fn publish_queue_snapshot(&self, items: Vec<QueuedMessage>) -> bool {
+        let (event, generation, seq) = {
+            let Ok(mut stream) = self.lock_stream() else {
+                return false;
+            };
+            if stream.output_closed {
+                return false;
+            }
+            let generation = stream.generation;
+            let seq = stream.next_seq;
+            stream.next_seq = stream.next_seq.saturating_add(1);
+            let event = SessionEvent::QueueSnapshot { items };
             enqueue_agent(&mut stream, event.clone(), Some(seq));
             self.published_frames.fetch_add(1, Ordering::Relaxed);
             self.published_bytes.fetch_add(
@@ -2409,6 +2457,7 @@ impl SessionRuntime {
                 | SessionEvent::PermissionResolved { .. }
                 | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionNotice { .. }
+                | SessionEvent::QueueSnapshot { .. }
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. }

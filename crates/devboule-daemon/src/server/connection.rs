@@ -548,6 +548,7 @@ fn send_pending_event(
             SessionEvent::PermissionAnswered { .. } => " permission_answered".to_string(),
             SessionEvent::SessionManifest { .. } => " session_manifest".to_string(),
             SessionEvent::SessionNotice { .. } => " session_notice".to_string(),
+            SessionEvent::QueueSnapshot { .. } => " queue_snapshot".to_string(),
             SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
             SessionEvent::AgentCreated { .. } => " agent_created".to_string(),
             SessionEvent::ChildFinished { .. } => " child_finished".to_string(),

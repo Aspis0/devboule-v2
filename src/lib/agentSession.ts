@@ -923,6 +923,15 @@ export class AgentSession {
           scheduleDelegatedDesignMirror(event);
         }
         return;
+      case "queue_snapshot":
+        // The whole per-session message queue as a snapshot (protocol
+        // `SessionEvent::QueueSnapshot`): every change publishes it, and a late
+        // attach receives it with the replay. The rows are the queue surface's
+        // to draw, over the daemon-backed `MessageQueue` the wiring step (Q3)
+        // builds on `src/lib/tauri.ts`'s queue wrappers — until that lands
+        // there is no reader here, so the snapshot is listed and skipped rather
+        // than dropped into the `never` guard below.
+        return;
       default: {
         // Every `SessionEvent` arm is a case above, so this branch is
         // unreachable for the protocol as typed: the `never` assignment is a

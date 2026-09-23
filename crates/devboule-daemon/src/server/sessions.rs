@@ -171,6 +171,99 @@ pub(super) fn dispatch_session(
             audit_peer_unauthorized(state, conn, "SessionSend", Some(session_id), &reply);
             reply
         }
+        // The queue's four edits and its one send. Each answers `Ok` and
+        // publishes the new snapshot on the session's own stream — there is
+        // no per-frame reply body to carry, because the snapshot is the state
+        // and every attached client receives it. The audit row is the send
+        // arm's, because these are state-changing frames a paired device can
+        // reach (`peer_policy`), exactly like the send beside them.
+        ClientMessage::SessionQueueAdd {
+            id,
+            session_id,
+            text,
+            attachments,
+            attachment_references,
+        } => {
+            let reply = reply_result(
+                id,
+                state
+                    .sessions
+                    .queue_add(
+                        &session_id,
+                        &text,
+                        &attachments,
+                        &attachment_references,
+                        owner,
+                        conn,
+                    )
+                    .map(|()| DaemonMessage::Ok { id }),
+            );
+            audit_peer_unauthorized(state, conn, "SessionQueueAdd", Some(session_id), &reply);
+            reply
+        }
+        ClientMessage::SessionQueueEdit {
+            id,
+            session_id,
+            item_id,
+            text,
+        } => {
+            let reply = reply_result(
+                id,
+                state
+                    .sessions
+                    .queue_edit(&session_id, &item_id, &text, owner, conn)
+                    .map(|()| DaemonMessage::Ok { id }),
+            );
+            audit_peer_unauthorized(state, conn, "SessionQueueEdit", Some(session_id), &reply);
+            reply
+        }
+        ClientMessage::SessionQueueRemove {
+            id,
+            session_id,
+            item_id,
+        } => {
+            let reply = reply_result(
+                id,
+                state
+                    .sessions
+                    .queue_remove(&session_id, &item_id, owner, conn)
+                    .map(|()| DaemonMessage::Ok { id }),
+            );
+            audit_peer_unauthorized(state, conn, "SessionQueueRemove", Some(session_id), &reply);
+            reply
+        }
+        ClientMessage::SessionQueueMove {
+            id,
+            session_id,
+            item_id,
+            to_index,
+        } => {
+            let reply = reply_result(
+                id,
+                state
+                    .sessions
+                    .queue_move(&session_id, &item_id, to_index, owner, conn)
+                    .map(|()| DaemonMessage::Ok { id }),
+            );
+            audit_peer_unauthorized(state, conn, "SessionQueueMove", Some(session_id), &reply);
+            reply
+        }
+        ClientMessage::SessionQueueSendNow {
+            id,
+            session_id,
+            subscription_id,
+            item_id,
+        } => {
+            let reply = reply_result(
+                id,
+                state
+                    .sessions
+                    .queue_send_now(&session_id, subscription_id, &item_id, owner, conn)
+                    .map(|()| DaemonMessage::Ok { id }),
+            );
+            audit_peer_unauthorized(state, conn, "SessionQueueSendNow", Some(session_id), &reply);
+            reply
+        }
         ClientMessage::AgentMessageSend {
             id,
             from_session,

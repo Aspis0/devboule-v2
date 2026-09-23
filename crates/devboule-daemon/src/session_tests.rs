@@ -1151,6 +1151,81 @@ impl SessionKiller for NoopKiller {
     }
 }
 
+/// A killer that answers an interrupt the way a provider does — synchronously
+/// reporting the turn finished — and records what the writer already held
+/// when it did. Installed by every harness whose test sends with
+/// `interrupt`: that send waits for the turn to end, so a killer that does
+/// nothing would run the wait to its bound and fail the send.
+pub(super) struct EndTurnKiller {
+    runtime: Arc<SessionRuntime>,
+    bytes: Arc<Mutex<Vec<u8>>>,
+    interrupts: Arc<AtomicU64>,
+    text_present_at_interrupt: Arc<Mutex<Option<bool>>>,
+}
+
+impl SessionKiller for EndTurnKiller {
+    fn kill(&mut self) {}
+
+    fn interrupt(&mut self) {
+        self.interrupts.fetch_add(1, Ordering::AcqRel);
+        *self.text_present_at_interrupt.lock().expect("record") =
+            Some(!self.bytes.lock().expect("writer").is_empty());
+        self.runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "interrupted".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+    }
+
+    fn clone_killer(&self) -> Box<dyn SessionKiller> {
+        Box::new(Self {
+            runtime: Arc::clone(&self.runtime),
+            bytes: Arc::clone(&self.bytes),
+            interrupts: Arc::clone(&self.interrupts),
+            text_present_at_interrupt: Arc::clone(&self.text_present_at_interrupt),
+        })
+    }
+}
+
+/// What the killer recorded, in handles a test can keep.
+#[derive(Clone)]
+pub(super) struct EndTurnProbe {
+    pub(super) interrupts: Arc<AtomicU64>,
+    pub(super) text_present_at_interrupt: Arc<Mutex<Option<bool>>>,
+}
+
+/// Swap a turn-ending killer into a live session — the stand-in for a
+/// provider that reports its turn finished when interrupted.
+pub(super) fn install_end_turn_killer(
+    registry: &SessionRegistry,
+    session_id: &str,
+    runtime: &Arc<SessionRuntime>,
+    bytes: &Arc<Mutex<Vec<u8>>>,
+) -> EndTurnProbe {
+    let probe = EndTurnProbe {
+        interrupts: Arc::new(AtomicU64::new(0)),
+        text_present_at_interrupt: Arc::new(Mutex::new(None)),
+    };
+    let killer = EndTurnKiller {
+        runtime: Arc::clone(runtime),
+        bytes: Arc::clone(bytes),
+        interrupts: Arc::clone(&probe.interrupts),
+        text_present_at_interrupt: Arc::clone(&probe.text_present_at_interrupt),
+    };
+    registry
+        .inner
+        .lock()
+        .expect("registry")
+        .get_mut(session_id)
+        .and_then(RegistryEntry::as_peer_visible_mut)
+        .expect("live entry")
+        .killer = Box::new(killer);
+    probe
+}
+
 struct RecordingSwitcher(Arc<AtomicU64>);
 
 impl ModelSwitcher for RecordingSwitcher {
@@ -2134,6 +2209,34 @@ fn ownership_paths(
         // order: it goes last, or every row behind it would run against the
         // session it just removed, answer `SessionNotFound`, and satisfy the
         // positive loops' "not `Unauthorized`" for the wrong reason (HND-03).
+        // The queue's five: same door as the send they stand beside —
+        // `peer_entry`, so the same ownership and origin decision. The ids
+        // name nothing: an unknown item is an `InvalidRequest` about the
+        // queue, never a question about the session these rows answer for.
+        // Last before `close` (and only there) because `queue_add` wakes the
+        // drain: on a live idle agent it starts a turn, and every row between
+        // it and here would then be answering a session the walk itself put
+        // to work rather than the one it was handed.
+        (
+            "queue_add",
+            registry.queue_add(id, "hi", &[], &[], owner, conn),
+        ),
+        (
+            "queue_edit",
+            registry.queue_edit(id, "queue-1", "hi", owner, conn),
+        ),
+        (
+            "queue_remove",
+            registry.queue_remove(id, "queue-1", owner, conn),
+        ),
+        (
+            "queue_move",
+            registry.queue_move(id, "queue-1", 0, owner, conn),
+        ),
+        (
+            "queue_send_now",
+            registry.queue_send_now(id, 1, "queue-1", owner, conn),
+        ),
         (
             "close",
             registry.close(id, owner, &conn.conn_peer).map(|_| ()),
@@ -2438,6 +2541,11 @@ fn a_daemon_peer_is_scoped_by_origin_and_delivers_agent_messages() {
 fn session_paths_of(request: &ClientMessage) -> Option<&'static [&'static str]> {
     match request {
         ClientMessage::SessionSend { .. } => Some(&["send"]),
+        ClientMessage::SessionQueueAdd { .. } => Some(&["queue_add"]),
+        ClientMessage::SessionQueueEdit { .. } => Some(&["queue_edit"]),
+        ClientMessage::SessionQueueRemove { .. } => Some(&["queue_remove"]),
+        ClientMessage::SessionQueueMove { .. } => Some(&["queue_move"]),
+        ClientMessage::SessionQueueSendNow { .. } => Some(&["queue_send_now"]),
         ClientMessage::SessionDeposit { .. } => Some(&["deposit"]),
         ClientMessage::SessionAttachmentRead { .. } => Some(&["read_attachment"]),
         ClientMessage::AgentMessageSend { .. } => Some(&["agent_message_send"]),

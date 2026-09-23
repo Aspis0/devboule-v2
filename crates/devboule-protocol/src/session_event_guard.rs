@@ -64,6 +64,14 @@ fn session_event_samples() -> Vec<SessionEvent> {
             message_id: None,
             text: String::new(),
         },
+        QueueSnapshot => SessionEvent::QueueSnapshot {
+            items: vec![crate::QueuedMessage {
+                item_id: "queue-1".to_string(),
+                text: String::new(),
+                attachment_references: Vec::new(),
+                error: None,
+            }],
+        },
         AgentThought => SessionEvent::AgentThought {
             message_id: None,
             text: String::new(),

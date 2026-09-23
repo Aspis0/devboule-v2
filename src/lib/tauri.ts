@@ -145,9 +145,11 @@ export type CommandArgs = {
      */
     attachments?: readonly PromptAttachment[];
     /**
-     * Omitted for a plain send, which is what every caller before steering
-     * did: the daemon's default for an absent field is interrupt-and-replace.
-     * Present only when a turn is already running and the send must join it.
+     * Omitted for a plain send, which names no daemon-side behaviour at all:
+     * the prompt reaches the provider as it stands. Present only when a send
+     * must act on the running turn — `"steer"` delivers the text into it,
+     * `"interrupt"` stops it (the daemon waits, bounded) and sends the text
+     * as a new turn.
      */
     activeTurnBehavior?: ActiveTurnBehavior;
     /**
@@ -165,6 +167,16 @@ export type CommandArgs = {
   session_deposit: { id: Id; attachment: PromptAttachment };
   session_attachment_read: { reference: AttachmentReference };
   session_interrupt: { id: Id; subscriptionId: SubscriptionId };
+  session_queue_add: {
+    id: Id;
+    text: string;
+    attachments?: readonly PromptAttachment[];
+    attachmentReferences?: readonly AttachmentReference[];
+  };
+  session_queue_edit: { id: Id; itemId: Id; text: string };
+  session_queue_remove: { id: Id; itemId: Id };
+  session_queue_move: { id: Id; itemId: Id; toIndex: number };
+  session_queue_send_now: { id: Id; subscriptionId: SubscriptionId; itemId: Id };
   session_claim: { subscriptionId: SubscriptionId };
   session_set_model: { id: Id; modelId?: string; effort?: string };
   session_set_mode: { id: Id; modeId: string };
@@ -262,6 +274,11 @@ type CommandResults = {
   /** The stored bytes and MIME type, exactly as the daemon stated them. */
   session_attachment_read: StoredAttachment;
   session_interrupt: void;
+  session_queue_add: void;
+  session_queue_edit: void;
+  session_queue_remove: void;
+  session_queue_move: void;
+  session_queue_send_now: void;
   session_claim: void;
   session_set_model: void;
   session_set_mode: void;
@@ -410,6 +427,11 @@ export const COMMAND_ARG_KEYS = {
   session_deposit: ["id", "attachment"],
   session_attachment_read: ["reference"],
   session_interrupt: ["id", "subscriptionId"],
+  session_queue_add: ["id", "text", "attachments", "attachmentReferences"],
+  session_queue_edit: ["id", "itemId", "text"],
+  session_queue_remove: ["id", "itemId"],
+  session_queue_move: ["id", "itemId", "toIndex"],
+  session_queue_send_now: ["id", "subscriptionId", "itemId"],
   session_claim: ["subscriptionId"],
   session_set_model: ["id", "modelId", "effort"],
   session_set_mode: ["id", "modeId"],
@@ -727,9 +749,9 @@ export const sessionSend = (
     subscriptionId,
     text,
     ...(attachments === undefined || attachments.length === 0 ? {} : { attachments }),
-    // Absent for a plain send: the daemon reads an absent field as
-    // interrupt-and-replace, and an explicit `undefined` would travel as a
-    // key the old wire never carried.
+    // Absent for a plain send, which names no daemon-side behaviour at all —
+    // and an explicit `undefined` would travel as a key the old wire never
+    // carried.
     ...(activeTurnBehavior === undefined ? {} : { activeTurnBehavior }),
     // Same rule for the references: absent, never empty. A send that names no
     // stored attachment is every send that predates the deposit path, and its
@@ -760,6 +782,33 @@ export const sessionAttachmentRead = (reference: AttachmentReference) =>
   invokeTyped("session_attachment_read", { reference });
 export const sessionInterrupt = (id: Id, subscriptionId: SubscriptionId) =>
   invokeTyped("session_interrupt", { id, subscriptionId });
+/** Queue one message for the session's next free turn; inline attachments are deposited now, so only their references are queued after this. */
+export const sessionQueueAdd = (
+  id: Id,
+  text: string,
+  attachments?: readonly PromptAttachment[],
+  attachmentReferences?: readonly AttachmentReference[],
+) =>
+  invokeTyped("session_queue_add", {
+    id,
+    text: text.trim(),
+    ...(attachments === undefined || attachments.length === 0 ? {} : { attachments }),
+    ...(attachmentReferences === undefined || attachmentReferences.length === 0
+      ? {}
+      : { attachmentReferences }),
+  });
+/** Replace one queued item's text, keeping its place in the queue (the daemon trims and requires it non-empty). */
+export const sessionQueueEdit = (id: Id, itemId: Id, text: string) =>
+  invokeTyped("session_queue_edit", { id, itemId, text });
+/** Take one item out of the queue — an item the drain has already taken answers as gone. */
+export const sessionQueueRemove = (id: Id, itemId: Id) =>
+  invokeTyped("session_queue_remove", { id, itemId });
+/** Move one queued item to another position; 0 is the front the drain sends from. */
+export const sessionQueueMove = (id: Id, itemId: Id, toIndex: number) =>
+  invokeTyped("session_queue_move", { id, itemId, toIndex });
+/** Send one queued item now — the running turn is interrupted (bounded wait), and a failure puts the item back at the front with its error. */
+export const sessionQueueSendNow = (id: Id, subscriptionId: SubscriptionId, itemId: Id) =>
+  invokeTyped("session_queue_send_now", { id, subscriptionId, itemId });
 export const sessionClaim = (subscriptionId: SubscriptionId) =>
   invokeTyped("session_claim", { subscriptionId });
 export const sessionSetModel = (id: Id, modelId?: string, effort?: string) =>

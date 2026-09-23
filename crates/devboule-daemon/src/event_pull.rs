@@ -441,6 +441,7 @@ impl ConnHandle {
                 | SessionEvent::PermissionAnswered { .. }
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::SessionNotice { .. }
+                | SessionEvent::QueueSnapshot { .. }
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. } => {
                     if let (Some(cursor), Some(seq)) = (

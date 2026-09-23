@@ -9,6 +9,14 @@
 use super::*;
 use crate::release_guard::ReleaseGuard;
 
+/// How long an `interrupt` send waits for the turn it interrupted to end
+/// before it gives up. Bounded because the wait sits on a caller's request:
+/// a provider that never reports the end must fail the send (which returns
+/// any queued item to its place with this sentence) rather than park the
+/// connection. Ten seconds is several providers' whole interrupt round trip
+/// plus slack; the bound is stated here so one number is the whole rule.
+pub(crate) const INTERRUPT_WAIT_BOUND: Duration = Duration::from_secs(10);
+
 impl super::SessionRegistry {
     /// Store one prompt attachment for a session and answer the reference the
     /// send that follows will name.
@@ -290,6 +298,19 @@ impl super::SessionRegistry {
         conn: &ConnHandle,
         active_turn_behavior: Option<ActiveTurnBehavior>,
     ) -> Result<(), WireError> {
+        // `interrupt` is the act `SessionInterrupt` decides, and no capability
+        // opens that to a peer — so it must not arrive the long way through a
+        // send's behavior field (the same rule S4-01 keeps for a steer's
+        // fallback). The peer gate charges the frame `admin` on top of this;
+        // this is the send path's own copy of the rule.
+        if active_turn_behavior == Some(ActiveTurnBehavior::Interrupt)
+            && !session_origin_for(&conn.conn_peer).is_local()
+        {
+            return Err(WireError::new(
+                ErrorCode::Unauthorized,
+                "interrupting a running turn is not permitted for a paired device",
+            ));
+        }
         self.send_with_subscription_timeout(&SendRequest {
             session_id,
             subscription_id,
@@ -736,6 +757,46 @@ impl super::SessionRegistry {
             }
             if has_prompt && !runtime.can_publish_agent_user_message() {
                 return Err(internal("Agent input could not be recorded."));
+            }
+        }
+        if active_turn_behavior == Some(ActiveTurnBehavior::Interrupt) && is_agent {
+            // Arm FIRST, against the turn that is running now: the arm and
+            // that turn's end take the same critical section, so `None` means
+            // it was already over — nothing to interrupt, nothing to wait
+            // for, and the plain write below is the whole send ("if no turn
+            // is running, it is a plain send").
+            let expected_turn = runtime.turn_counter();
+            let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+            let armed = runtime.on_turn_end_if_active(expected_turn, move || {
+                let _ = ended_tx.send(());
+            });
+            if let Some(hook) = armed {
+                // Cloned, not moved: the steer branch below owns the original
+                // binding, and the two behaviours are separate `if` statements
+                // the borrow checker cannot tell apart. Every provider's own
+                // killer cancels its pending permission cards inside
+                // `interrupt()`, as on every interrupt path there is.
+                let mut killer = killer.clone_killer();
+                killer.interrupt();
+                if ended_rx.recv_timeout(INTERRUPT_WAIT_BOUND).is_err() {
+                    runtime.off_turn_end(hook);
+                    return Err(WireError::new(
+                        ErrorCode::Internal,
+                        format!(
+                            "the running turn did not end within {} seconds of an interrupt",
+                            INTERRUPT_WAIT_BOUND.as_secs()
+                        ),
+                    ));
+                }
+                // The turn ended because the user's message interrupted it,
+                // and both halves of the record are this one call: a pushed
+                // `SessionNotice` for the transcript and the agent-report row
+                // `publish_session_notice` writes for the journal, so a later
+                // attach replays the same sentence.
+                runtime.publish_session_notice(
+                    "The running turn was interrupted by the user's message.".to_string(),
+                    devboule_protocol::NoticeSeverity::Info,
+                );
             }
         }
         if active_turn_behavior == Some(ActiveTurnBehavior::Steer) && is_agent {

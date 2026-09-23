@@ -190,10 +190,36 @@ use session_messaging::{
     boundary_reached_message_slot, finish_message_delivery, rearm_message_slot_boundary,
     reserve_message_brake,
 };
+#[cfg(test)]
+#[path = "session_interrupt_tests.rs"]
+mod session_interrupt_tests;
 #[path = "session_items.rs"]
 mod session_items;
 #[path = "session_messaging.rs"]
 mod session_messaging;
+/// The per-session message queue (Q1): the state and its journal seam.
+#[path = "session_queue.rs"]
+mod session_queue;
+/// The drain itself: the pass a turn's end or a queue frame runs.
+#[path = "session_queue_drain.rs"]
+mod session_queue_drain;
+#[cfg(test)]
+#[path = "session_queue_drain_tests.rs"]
+mod session_queue_drain_tests;
+/// The four queue frame edits, one method per frame.
+#[path = "session_queue_ops.rs"]
+mod session_queue_ops;
+#[cfg(test)]
+#[path = "session_queue_persist_tests.rs"]
+mod session_queue_persist_tests;
+#[cfg(test)]
+#[path = "session_queue_race_tests.rs"]
+mod session_queue_race_tests;
+/// Send-now, the queue's one synchronous send — declared after the state it
+/// claims from.
+#[path = "session_queue_send.rs"]
+mod session_queue_send;
+use session_queue::{no_such_item, QueueState, SessionQueues, MAX_QUEUE_ITEMS};
 /// The attachment and prompt planning carved out of `session_items`: the path
 /// lines a prompt carries, the reference resolution behind them, and the ACP
 /// prompt plan. A move, not a rewrite - its proof is the byte comparison
@@ -410,6 +436,9 @@ mod session_envelope_card_tests;
 #[cfg(test)]
 #[path = "session_envelope_finish_tests.rs"]
 mod session_envelope_finish_tests;
+#[cfg(test)]
+#[path = "session_queue_tests.rs"]
+mod session_queue_tests;
 /// The road a session that cannot be reopened is replaced by: a new session of
 /// the same family carrying the conversation read back from the journal. A
 /// sibling like the resume phases, and taken only where the resume road proves
@@ -599,6 +628,9 @@ pub struct SessionRegistry {
     /// the message brakes and under the same discipline: one lock over the
     /// whole table, taken on its own and never across another.
     creations: Arc<Mutex<AgentCreationTable>>,
+    /// The per-session message queues (Q1), behind one lock of their own —
+    /// see `session_queue.rs` for the order the two locks are taken in.
+    queues: Arc<SessionQueues>,
     #[cfg(test)]
     journal_list_calls: Arc<AtomicU64>,
     #[cfg(test)]
@@ -673,6 +705,7 @@ impl SessionRegistry {
             workspace_paths: Arc::new(Mutex::new(WorkspacePathCache::default())),
             state_roster_cache: Arc::new(Mutex::new(HashMap::new())),
             message_brakes: Arc::new(Mutex::new(MessageBrakeTable::default())),
+            queues: Arc::new(SessionQueues::new()),
             creations: Arc::new(Mutex::new(AgentCreationTable::default())),
             #[cfg(test)]
             journal_list_calls: Arc::new(AtomicU64::new(0)),
@@ -1762,6 +1795,27 @@ impl SessionRegistry {
         // attach must import that fact before returning even when the PTY is
         // otherwise quiet and no status request or later output occurs.
         runtime.refresh_journal_degradation();
+        // The queue, in whatever this attach receives (Q1): loaded here, and
+        // — when there is one — published right after the subscription is
+        // tracked, because the attach's replay window starts at the runtime's
+        // own next sequence: the row this publish writes is the first one that
+        // window covers, so the hand-over arrives *as* the attach's replay —
+        // live-pending items wait behind the replay, journal rows ride inside
+        // it. An empty queue publishes nothing: absence is the empty queue a
+        // client starts from, and the windowed replay carries every *change*
+        // a reconnecting client missed.
+        {
+            let mut queues = self.queues.lock();
+            if self.ensure_queue_loaded(session_id, &mut queues).is_ok() {
+                if let Some(items) = queues
+                    .get(session_id)
+                    .map(QueueState::snapshot)
+                    .filter(|items| !items.is_empty())
+                {
+                    runtime.publish_queue_snapshot(items);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1926,6 +1980,10 @@ impl SessionRegistry {
         ) {
             Ok(()) => {
                 state.record_provider_health(&health_provider, Ok(()));
+                // The queue this session was left with (Q1): loaded and —
+                // live and idle as a fresh resume is — drained through the
+                // same wake every client frame uses.
+                self.queue_restore_and_drain(session_id);
                 // The provider honoured this exact handle: a refusal recorded
                 // against it is stale — the one fact that can prove a mark
                 // wrong — and it is recorded on the same road as the health
@@ -2681,6 +2739,10 @@ impl SessionRegistry {
             // this arm, and teardown is the one thing the delivery window
             // must never block.
             Some(RegistryEntry::Live(session)) | Some(RegistryEntry::Configuring(session)) => {
+                // The queue goes with the session (Q1): this entry was
+                // ownership-checked in the critical section that removed it,
+                // so the discard is authorized like every other teardown here.
+                self.queue_forget(session_id);
                 // The last chance to report this child to its creator (`S5` §3,
                 // audit S5-01): the row is out of the map, the runtime is still
                 // here, and the report is claimed exactly once, so a child whose
@@ -2710,6 +2772,8 @@ impl SessionRegistry {
                 Ok(true)
             }
             Some(RegistryEntry::Transcript(_)) => {
+                // Its queue goes with it, like the live arm's (Q1).
+                self.queue_forget(session_id);
                 // A transcript carries no runtime to report with, so it only
                 // gives a slot back. A child that ended by EOF was released by
                 // `finish_reader_session` already, and a recovered transcript
@@ -2732,6 +2796,10 @@ impl SessionRegistry {
                         if session_owner.user != owner.user {
                             return Err(unauthorized());
                         }
+                        // The queue goes too — after the journal's own
+                        // owner check above, which is the authorization this
+                        // whole arm waits for (Q1).
+                        self.queue_forget(session_id);
                         journal.try_mark_closed(session_id);
                         self.invalidate_journal_roster();
                         self.attachments.remove_session(session_id);

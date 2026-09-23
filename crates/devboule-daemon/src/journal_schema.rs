@@ -300,6 +300,27 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // would die reading the column on a user's journal.
             validate_v15_columns(&tx)?;
         }
+        if version < 16 {
+            // The per-session message queue (Q1). Its own table, not the
+            // event log: the queue is mutable STATE whose current value is
+            // the whole point, and its history is not transcript — replaying
+            // it would hand a late attach every intermediate queue as if they
+            // were things that happened. The separate `queue_snapshot` event
+            // rows (agent-report kind) are what replay delivers instead.
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS session_queue (
+                    session_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    item_id TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    attachment_references TEXT NOT NULL,
+                    error TEXT,
+                    PRIMARY KEY (session_id, position)
+                 );",
+            )?;
+            // The pre-stamp guard, same ordering as v12 to v15.
+            validate_queue_table(&tx)?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -316,6 +337,8 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     validate_v14_columns(&conn)?;
     // The v15 column, the same way (see [`is_our_cwd_shape`]).
     validate_v15_columns(&conn)?;
+    // The v16 queue table, the same way.
+    validate_queue_table(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -485,6 +508,51 @@ fn validate_v15_columns(conn: &Connection) -> Result<(), JournalError> {
     if !is_our_cwd_shape(column_shape(conn, "cwd")?) {
         return Err(JournalError::Corrupt(
             "journal schema has an unexpected sessions.cwd column".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The one shape `session_queue` may have: the six columns this daemon
+/// writes, in the order it writes them, with the types and nullability it
+/// writes (`error` alone may be NULL — an item with no failed send). Checked
+/// before the stamp inside the migration transaction — so a colliding table
+/// leaves the file at 15, openable by the previous build — and again after
+/// the commit, so a file this build cannot read is refused rather than used.
+fn validate_queue_table(conn: &Connection) -> Result<(), JournalError> {
+    let expected: [(&str, &str, i32); 6] = [
+        ("session_id", "TEXT", 1),
+        ("position", "INTEGER", 1),
+        ("item_id", "TEXT", 1),
+        ("text", "TEXT", 1),
+        ("attachment_references", "TEXT", 1),
+        ("error", "TEXT", 0),
+    ];
+    let mut stmt = conn.prepare("PRAGMA table_info('session_queue')")?;
+    let mut rows = stmt.query([])?;
+    let mut index = 0usize;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        let kind: String = row.get(2)?;
+        let notnull: i32 = row.get(3)?;
+        let Some((expected_name, expected_kind, expected_notnull)) = expected.get(index) else {
+            return Err(JournalError::Corrupt(
+                "journal schema has an unexpected session_queue table".to_string(),
+            ));
+        };
+        if name != *expected_name
+            || !kind.eq_ignore_ascii_case(expected_kind)
+            || notnull != *expected_notnull
+        {
+            return Err(JournalError::Corrupt(format!(
+                "journal schema has an unexpected session_queue.{name} column"
+            )));
+        }
+        index += 1;
+    }
+    if index != expected.len() {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected session_queue table".to_string(),
         ));
     }
     Ok(())

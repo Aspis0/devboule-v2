@@ -323,17 +323,19 @@ export type SendIntent = "interrupt" | "steer" | "queue";
 /**
  * What a `session_send` does when the target session already has a turn
  * running: the protocol's `SessionSend.activeTurnBehavior`. Omitting the field
- * is the daemon's default — interrupt the running turn and replace it — so the
- * only member here is the one value that differs from it: `"steer"` delivers
- * the text into the running turn. The protocol's third word, `"interrupt"`, is
- * never sent and is expressed by leaving the field off; the wider `SendIntent`
- * above spells all three and has no caller.
+ * interrupts nothing: the daemon writes the prompt to the provider as it
+ * stands and the provider decides what a mid-turn prompt means. The two
+ * explicit words are the two acts the daemon performs itself: `"steer"`
+ * delivers the text into the running turn when the provider can take a steer,
+ * and `"interrupt"` stops the running turn, waits for it to end (the daemon
+ * bounds the wait), then sends the text as a new turn — a plain send with no
+ * turn running.
  *
  * `"queue"` is deliberately absent: no daemon branch implements it, and a
- * value the daemon silently treats as interrupt-and-replace would be a type
- * that promises behaviour nothing delivers. It can come back with the branch.
+ * value the daemon silently ignores would be a type that promises behaviour
+ * nothing delivers. It can come back with the branch.
  */
-export type ActiveTurnBehavior = "steer";
+export type ActiveTurnBehavior = "steer" | "interrupt";
 
 /**
  * Who authored one `agent_user_message` echo (protocol `UserMessageAuthor`).
@@ -562,6 +564,29 @@ export interface SessionNotice {
   type: "session_notice";
   text: string;
   severity: NoticeSeverity;
+}
+
+/**
+ * One message waiting in a session's queue, as the `queue_snapshot` event
+ * carries it (protocol `QueuedMessage`).
+ *
+ * `attachmentReferences` is the same wire shape as `AttachmentReference` in
+ * `src/lib/tauri.ts` — spelled here because this module owns the event that
+ * carries it and must not import the command module. The bytes never ride the
+ * snapshot: they are deposited under the session and named by digest.
+ */
+export interface QueuedMessage {
+  /** The daemon's stable name for the item: kept across edits and moves. */
+  itemId: Id;
+  text: string;
+  attachmentReferences?: {
+    sessionId: Id;
+    /** SHA-256 of the bytes as stored (64 hex characters). */
+    digest: string;
+    storedBytes: number;
+  }[];
+  /** The failure of the send this item was last taken for, when it failed. */
+  error?: string;
 }
 
 export type RetentionSource = "default" | "user";
@@ -1045,6 +1070,12 @@ export interface SessionSnapshot {
 export type SessionEvent =
   | { type: "output"; seq: number; data: string }
   | SessionNotice
+  /**
+   * The whole per-session message queue (protocol `SessionEvent::QueueSnapshot`).
+   * A snapshot and never a diff: the last one received *is* the queue, whole.
+   * Delivered on every change and with the replay a late attach receives.
+   */
+  | { type: "queue_snapshot"; items: QueuedMessage[] }
   /** Text emitted by an ACP agent message chunk. */
   | {
       type: "agent_message";

@@ -99,6 +99,7 @@ pub fn event_kind(event: &SessionEvent) -> &'static str {
         SessionEvent::AgentMessage { .. } => "agent_message",
         SessionEvent::AgentUserMessage { .. } => "agent_user_message",
         SessionEvent::Steered { .. } => "steered",
+        SessionEvent::QueueSnapshot { .. } => "queue_snapshot",
         SessionEvent::AgentThought { .. } => "agent_thought",
         SessionEvent::AvailableCommands { .. } => "available_commands",
         SessionEvent::AgentToolCall { .. } => "agent_tool_call",

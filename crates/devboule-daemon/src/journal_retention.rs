@@ -431,6 +431,10 @@ fn delete_session(
     conn.execute("DELETE FROM snapshots WHERE session_id = ?1", [id])?;
     conn.execute("DELETE FROM turns WHERE session_id = ?1", [id])?;
     conn.execute("DELETE FROM permissions WHERE session_id = ?1", [id])?;
+    // The queue goes with the session it was queued for, on the user's delete
+    // and on retention's alike: a row without its session has nothing to
+    // drain into, and a restart must not resurrect it (Q1).
+    conn.execute("DELETE FROM session_queue WHERE session_id = ?1", [id])?;
     conn.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
     conn.execute(
         "INSERT INTO deleted_sessions (

@@ -133,7 +133,8 @@ pub(super) fn peer_refusal_before_mode(
     // construction. The id the refusal carries is the frame's own, exactly as
     // it was when this arm was `SessionSend`'s alone.
     let carries_attachment = match request {
-        ClientMessage::SessionSend { attachments, .. } => !attachments.is_empty(),
+        ClientMessage::SessionSend { attachments, .. }
+        | ClientMessage::SessionQueueAdd { attachments, .. } => !attachments.is_empty(),
         ClientMessage::SessionDeposit { .. } => true,
         _ => false,
     };
@@ -150,7 +151,12 @@ pub(super) fn peer_refusal_before_mode(
     let scope = match request {
         ClientMessage::SessionAttach { session_id, .. }
         | ClientMessage::SessionSend { session_id, .. }
-        | ClientMessage::SessionSetMode { session_id, .. } => {
+        | ClientMessage::SessionSetMode { session_id, .. }
+        | ClientMessage::SessionQueueAdd { session_id, .. }
+        | ClientMessage::SessionQueueEdit { session_id, .. }
+        | ClientMessage::SessionQueueRemove { session_id, .. }
+        | ClientMessage::SessionQueueMove { session_id, .. }
+        | ClientMessage::SessionQueueSendNow { session_id, .. } => {
             state.sessions.session_scope(session_id, owner, conn_peer)
         }
         // An agent message names two sessions and its *target* is the one that
@@ -243,7 +249,16 @@ pub(super) fn peer_mode_refusal_for_conn(
         // A send puts a prompt into a session, so the mode that session is in
         // *now* is what decides.
         ClientMessage::SessionSend { session_id, .. }
-        | ClientMessage::SessionAttach { session_id, .. } => {
+        | ClientMessage::SessionAttach { session_id, .. }
+        // Every queue frame puts (or will put) a prompt into that session:
+        // the add carries it, the edit and send-now revise or fire it, and the
+        // remove/move decide *when* it goes out — so the session's mode is
+        // vetted for all five, like the `SessionSend` they stand beside.
+        | ClientMessage::SessionQueueAdd { session_id, .. }
+        | ClientMessage::SessionQueueEdit { session_id, .. }
+        | ClientMessage::SessionQueueRemove { session_id, .. }
+        | ClientMessage::SessionQueueMove { session_id, .. }
+        | ClientMessage::SessionQueueSendNow { session_id, .. } => {
             prompt_into_session_refusal(state, session_id)
         }
         // An agent message is a send whose session is its *target*: the target
@@ -516,6 +531,11 @@ pub(super) fn request_session_id(request: &ClientMessage) -> Option<String> {
         | ClientMessage::SessionSetMode { session_id, .. }
         | ClientMessage::SessionPermissionRespond { session_id, .. }
         | ClientMessage::SessionReportAgent { session_id, .. }
+        | ClientMessage::SessionQueueAdd { session_id, .. }
+        | ClientMessage::SessionQueueEdit { session_id, .. }
+        | ClientMessage::SessionQueueRemove { session_id, .. }
+        | ClientMessage::SessionQueueMove { session_id, .. }
+        | ClientMessage::SessionQueueSendNow { session_id, .. }
         | ClientMessage::SessionDelete { session_id, .. } => Some(session_id.clone()),
         // The reference names its session the way a frame names one: the
         // digest resolves only inside it.

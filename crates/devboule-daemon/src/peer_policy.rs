@@ -19,7 +19,7 @@
 //! reaches — is not decided here: it is the owner projection in `server.rs`
 //! plus the origin branch of `check_user_owner`.
 
-use devboule_protocol::{ClientMessage, SessionKind, SessionOrigin};
+use devboule_protocol::{ActiveTurnBehavior, ClientMessage, SessionKind, SessionOrigin};
 
 /// The role a peer was paired as. Stored in the `peers` row; the transcript
 /// separates the two Noise handshakes, so the role cannot be changed by the
@@ -180,7 +180,24 @@ pub fn peer_allows(role: PeerRole, caps: &[String], request: &ClientMessage) -> 
         // target scope, because its sender may live on the far device.
         ClientMessage::SessionAttach { .. } => with_capability(caps, CAP_VIEW),
         ClientMessage::SessionCreate { .. } => with_capability(caps, CAP_CREATE_SESSIONS),
+        // An interrupt-carrying send is the act `SessionInterrupt` names, so it
+        // charges `admin` even though it arrives on `SessionSend`'s id — the
+        // new `interrupt` word must not open a door the old frame kept shut.
+        ClientMessage::SessionSend {
+            active_turn_behavior: Some(ActiveTurnBehavior::Interrupt),
+            ..
+        } => with_capability(caps, CAP_ADMIN),
         ClientMessage::SessionSend { .. } => with_capability(caps, CAP_SEND),
+        // The four queue edits are the act `send` names: they decide what this
+        // session will be asked next, so a peer that may send may queue, and
+        // one that may not send may not queue either.
+        ClientMessage::SessionQueueAdd { .. }
+        | ClientMessage::SessionQueueEdit { .. }
+        | ClientMessage::SessionQueueRemove { .. }
+        | ClientMessage::SessionQueueMove { .. } => with_capability(caps, CAP_SEND),
+        // Send-now is an interrupt plus a send, so it charges what
+        // `SessionInterrupt` charges: `admin` (peer_policy.rs:284).
+        ClientMessage::SessionQueueSendNow { .. } => with_capability(caps, CAP_ADMIN),
         ClientMessage::AgentMessageSend { .. } => with_capability(caps, CAP_SEND),
         // A deposit is meaningless except as the precursor to a send, so it
         // holds no opinion of its own: the same predicate, deliberately. A
@@ -1180,6 +1197,15 @@ pub(crate) mod tests {
                 id: 1,
                 enabled: true,
             },
+            // Q1: send-now takes an item out of a session's queue and sends
+            // it as an interrupt — an act no operational capability opens, so
+            // it belongs to the parity walk exactly like the session verbs.
+            ClientMessage::SessionQueueSendNow {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                item_id: "queue-1".to_string(),
+            },
             // The rest of the surface that used to be denied to every peer:
             // the session verbs outside the view/send pair, the read half of
             // the deposit, the watch set, the project/workspace/provider
@@ -1356,11 +1382,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// The twelve frames no `Deny` arm has ever covered: the handshake pair and
-    /// the ten act-named arms. Spelled as wire names so the walk above can prove
-    /// it covers every *other* variant — with `VARIANT_COUNT` that is a closed
-    /// statement, not a guess.
-    const ALWAYS_ALLOWED_VARIANTS: [&str; 12] = [
+    /// The frames the act-named capabilities open on their own — the
+    /// handshake pair and the fourteen act-named arms (the four queue edits
+    /// joined `send`'s door in Q1). Spelled as wire names so the walk above
+    /// can prove it covers every *other* variant — with `VARIANT_COUNT` that
+    /// is a closed statement, not a guess.
+    const ALWAYS_ALLOWED_VARIANTS: [&str; 16] = [
         "Hello",
         "Ping",
         "SessionsList",
@@ -1373,6 +1400,10 @@ pub(crate) mod tests {
         "SessionDeposit",
         "SessionPermissionRespond",
         "SessionSetMode",
+        "SessionQueueAdd",
+        "SessionQueueEdit",
+        "SessionQueueRemove",
+        "SessionQueueMove",
     ];
 
     /// The five wire variants of the three permission-model acts — start or
@@ -2036,6 +2067,15 @@ pub(crate) mod tests {
             ClientMessage::SessionSend { .. } | ClientMessage::SessionSetMode { .. } => {
                 under(CAP_SEND)
             }
+            // The four queue edits decide what the session will be asked
+            // next: the act `send` names, and nothing beyond it.
+            ClientMessage::SessionQueueAdd { .. }
+            | ClientMessage::SessionQueueEdit { .. }
+            | ClientMessage::SessionQueueRemove { .. }
+            | ClientMessage::SessionQueueMove { .. } => under(CAP_SEND),
+            // Send-now is an interrupt plus a send: the administrative
+            // capability, like `SessionInterrupt` itself.
+            ClientMessage::SessionQueueSendNow { .. } => administrative(),
             // An agent message is a send: it puts text into a session, so it
             // needs the capability `SessionSend` needs and nothing more.
             ClientMessage::AgentMessageSend { .. } => under(CAP_SEND),
@@ -2113,7 +2153,7 @@ pub(crate) mod tests {
     /// also has a sample to assert its row on. Both halves are needed: the
     /// match proves the *decisions* are complete, the count proves the
     /// *frames* are.
-    pub(crate) const VARIANT_COUNT: usize = 66;
+    pub(crate) const VARIANT_COUNT: usize = 71;
 
     /// The wire name of every variant, as a closed match with no `_` arm: the
     /// compile-time half of the matrix. The test compares each arm against
@@ -2133,6 +2173,11 @@ pub(crate) mod tests {
             ClientMessage::SessionClose { .. } => "SessionClose",
             ClientMessage::SessionStop { .. } => "SessionStop",
             ClientMessage::SessionSend { .. } => "SessionSend",
+            ClientMessage::SessionQueueAdd { .. } => "SessionQueueAdd",
+            ClientMessage::SessionQueueEdit { .. } => "SessionQueueEdit",
+            ClientMessage::SessionQueueRemove { .. } => "SessionQueueRemove",
+            ClientMessage::SessionQueueMove { .. } => "SessionQueueMove",
+            ClientMessage::SessionQueueSendNow { .. } => "SessionQueueSendNow",
             ClientMessage::SessionDeposit { .. } => "SessionDeposit",
             ClientMessage::SessionAttachmentRead { .. } => "SessionAttachmentRead",
             ClientMessage::AgentMessageSend { .. } => "AgentMessageSend",
@@ -2243,6 +2288,36 @@ pub(crate) mod tests {
                 active_turn_behavior: None,
                 attachment_references: Vec::new(),
                 idempotency_key: None,
+            },
+            ClientMessage::SessionQueueAdd {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                text: "hi".to_string(),
+                attachments: Vec::new(),
+                attachment_references: Vec::new(),
+            },
+            ClientMessage::SessionQueueEdit {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                item_id: "queue-1".to_string(),
+                text: "hi".to_string(),
+            },
+            ClientMessage::SessionQueueRemove {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                item_id: "queue-1".to_string(),
+            },
+            ClientMessage::SessionQueueMove {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                item_id: "queue-1".to_string(),
+                to_index: 0,
+            },
+            ClientMessage::SessionQueueSendNow {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 1,
+                item_id: "queue-1".to_string(),
             },
             ClientMessage::SessionDeposit {
                 id: 1,
@@ -2659,5 +2734,66 @@ pub(crate) mod tests {
             budget_for(&SessionOrigin::peer("device-phone", PeerRole::Client)),
             derived
         );
+    }
+
+    /// Q1: a queue frame needs what the act it performs needs — the four
+    /// edits ride `send` (they decide what the session will be asked), and
+    /// send-now rides `admin`, the capability `SessionInterrupt` names,
+    /// because send-now *is* an interrupt plus a send.
+    #[test]
+    fn queue_frames_ride_the_capability_of_the_act_they_perform() {
+        let add = ClientMessage::SessionQueueAdd {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            text: "hi".to_string(),
+            attachments: Vec::new(),
+            attachment_references: Vec::new(),
+        };
+        let edit = ClientMessage::SessionQueueEdit {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            item_id: "queue-1".to_string(),
+            text: "hi".to_string(),
+        };
+        let remove = ClientMessage::SessionQueueRemove {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            item_id: "queue-1".to_string(),
+        };
+        let reorder = ClientMessage::SessionQueueMove {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            item_id: "queue-1".to_string(),
+            to_index: 0,
+        };
+        let send_now = ClientMessage::SessionQueueSendNow {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 1,
+            item_id: "queue-1".to_string(),
+        };
+        for role in [PeerRole::Client, PeerRole::Daemon] {
+            for frame in [&add, &edit, &remove, &reorder] {
+                assert_eq!(
+                    peer_allows(role, &caps(&[CAP_SEND]), frame),
+                    PeerDecision::Allow,
+                    "{frame:?}"
+                );
+                assert_eq!(
+                    peer_allows(role, &caps(&[CAP_VIEW]), frame),
+                    PeerDecision::Deny(CAP_SEND),
+                    "{frame:?}"
+                );
+            }
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_SEND]), &send_now),
+                PeerDecision::Deny(CAP_ADMIN),
+                "send-now is an interrupt: `send` alone must not reach it"
+            );
+            assert_eq!(
+                peer_allows(role, &caps(&[CAP_ADMIN]), &send_now),
+                PeerDecision::Allow
+            );
+        }
     }
 }
