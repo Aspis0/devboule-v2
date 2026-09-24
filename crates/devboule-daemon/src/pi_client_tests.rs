@@ -799,6 +799,111 @@ fn attached_runtime(
     (runtime, conn)
 }
 
+/// One pi row derives two events — the finish and its context reading — and
+/// BOTH must carry the row's journal seq. The attach seam drops a queued copy
+/// only by seq (`remove_replayed_agent_items`), so a `None`-seq sibling
+/// survives beside the copy replay derives from the same row and the reading
+/// arrives twice.
+#[test]
+fn a_turn_end_line_delivers_each_event_exactly_once_across_a_fresh_attach() {
+    use crate::journal::{new_session_record, Journal};
+
+    let session_id = "s.pi.attach.once";
+    let dir = crate::test_dirs::test_temp_dir("devboule-pi-attach-once");
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    journal
+        .upsert_blocking(new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            devboule_protocol::SessionKind::Pi,
+            "Agent",
+        ))
+        .expect("upsert");
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    {
+        let mut stream = runtime.stream.lock().unwrap();
+        stream.screen = None;
+        stream.transcript = false;
+    }
+
+    // No observer yet — the app is on another tab. The client journals the
+    // frame and publishes its views into the shared backlog, exactly as a
+    // live turn does.
+    let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+    let broker =
+        super::super::permission_broker::PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    let mut reader = PiReader::new(
+        Vec::new(),
+        SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: None,
+        },
+        Arc::clone(&broker),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(AtomicU64::new(1)),
+        Arc::new(PiControl::new(
+            Arc::clone(&stdin),
+            Arc::new(AtomicU64::new(1)),
+        )),
+        Arc::clone(&stdin),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    // The recorded turn_end of `pi_view.rs`'s own fixture: totalTokens 25 851.
+    let turn_end = serde_json::from_str::<serde_json::Value>(
+        r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851,"cost":{"input":0.0019386,"output":7.5e-7,"cacheRead":0,"cacheWrite":0,"total":0.00193935}},"stopReason":"stop","timestamp":1788993862485,"responseId":"gen-1788993862-4cxcarrKksRnXEICsFHO","rawStopReason":"stop"},"toolResults":[]}"#,
+    )
+    .expect("recorded turn_end frame");
+    reader
+        .dispatch_value(turn_end, &runtime)
+        .expect("dispatch the turn end");
+    journal.flush().expect("flush");
+
+    // The fresh attach replays the journaled row (both views) and scans the
+    // backlog for copies the seam has to drop by seq.
+    let conn = crate::session::ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+    let (mut finishes, mut readings) = (0_u64, 0_u64);
+    loop {
+        let batch = conn.pull_events();
+        if batch.is_empty() {
+            break;
+        }
+        for pending in &batch {
+            match &pending.envelope.event {
+                SessionEvent::AgentFinished { .. } => finishes += 1,
+                SessionEvent::ContextUsage { .. } => readings += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(
+        (finishes, readings),
+        (1, 1),
+        "one turn-end row delivers one finish and one reading; a None-seq \
+         sibling would survive the seam beside its replayed twin"
+    );
+
+    drop(runtime);
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn pi_bearer_is_redacted_from_stderr_before_delivery() {
     // Broker-4, pi half: same defect as Codex (a bearer in the child env

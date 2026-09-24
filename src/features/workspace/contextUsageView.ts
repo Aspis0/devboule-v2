@@ -11,7 +11,8 @@ import type { ContextUsage, PlanWindow, SessionManifest } from "../../types/ipc"
 export interface ContextMeterNumbers {
   used: number | null;
   max: number | null;
-  /** Rounded percent; present only when both sides are known and max > 0. */
+  /** Rounded percent clamped to the ring's 0-100; present only when both
+      sides are known and max > 0. */
   percent: number | null;
 }
 
@@ -54,7 +55,10 @@ export function contextMeterNumbers(
     return NOTHING;
   }
   const max = windowForUsage(usage, manifest);
-  const percent = max !== null && max > 0 ? Math.round((usage.usedTokens / max) * 100) : null;
+  // Clamped where the arc is clamped: an overcount must not print 300% next
+  // to a ring pinned at 100.
+  const percent =
+    max !== null && max > 0 ? Math.round(Math.min(1, usage.usedTokens / max) * 100) : null;
   return { used: usage.usedTokens, max, percent };
 }
 

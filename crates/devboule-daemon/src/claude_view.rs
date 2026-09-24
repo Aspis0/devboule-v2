@@ -355,7 +355,7 @@ impl ClaudeView {
             .map(str::to_string)
             .or_else(|| self.current_model.clone());
         let (usage, context_used) = match envelope.get("usage").and_then(usage_from_claude) {
-            Some(parsed) => (Some(parsed.turn), Some(parsed.context_used)),
+            Some(parsed) => (Some(parsed.turn), parsed.context_used),
             None => (None, None),
         };
         let mut events = vec![SessionEvent::AgentFinished {
@@ -705,16 +705,53 @@ fn spawn_depth(envelope: &Value) -> Option<u32> {
 }
 
 /// What one Claude `usage` object says about a finished turn: the counters
-/// the transcript line renders, and the context total the meter shows.
+/// the transcript line renders — the top-level object, which is what the CLI
+/// bills for the turn — and the context total the meter shows.
 ///
-/// Claude bills the cache separately, so `input_tokens` excludes it — the
-/// meter adds `cache_read_input_tokens` and `cache_creation_input_tokens`
-/// (and the response itself, which is now in the context) back, the
-/// summation Paseo performs in `readUsageTokenTotal`
-/// (`providers/claude/agent.ts:1860-1870`).
+/// The meter's number is Paseo's `readActiveUsageTokens`: the four-counter
+/// sum (`readUsageTokenTotal`, `providers/claude/agent.ts:1846-1868`) over
+/// the **last** entry of `usage.iterations[]` (`readLastUsageIteration`,
+/// `:1832-1843`), falling back to the top-level object only when the frame
+/// carries no iterations (their legacy branch at `:1972-1975`). The
+/// distinction is the whole point: one turn can make several API calls, each
+/// re-sending the conversation, so the top level is the turn's billing while
+/// the last iteration is what sits in the context window. Claude bills the
+/// cache separately, so `input_tokens` alone would understate either number
+/// badly — the cache counters and the response are part of the context.
 struct ClaudeUsage {
     turn: TurnUsage,
-    context_used: u64,
+    context_used: Option<u64>,
+}
+
+/// The meter's reading off one `usage` object: Paseo's `readUsageTokenTotal`
+/// over the entry their `readLastUsageIteration` would pick. `None` when the
+/// sum is 0 — their `total > 0` gate — so an all-zero frame claims no
+/// reading instead of claiming an empty window.
+fn context_used_from_claude(usage: &Value) -> Option<u64> {
+    let source = usage
+        .get("iterations")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.iter().rev().find(|entry| entry.is_object()))
+        .unwrap_or(usage);
+    // Only counters the frame sent add up; an absent one contributes nothing
+    // rather than a stand-in the provider never sent.
+    let total = source
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        + source
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+        + source
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+        + source
+            .get("output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+    (total > 0).then_some(total)
 }
 
 fn usage_from_claude(usage: &Value) -> Option<ClaudeUsage> {
@@ -736,12 +773,6 @@ fn usage_from_claude(usage: &Value) -> Option<ClaudeUsage> {
     {
         return None;
     }
-    // Only what the frame sent is added; a counter it omitted contributes
-    // nothing rather than a stand-in zero.
-    let context_used = input_tokens.unwrap_or(0)
-        + cache_read.unwrap_or(0)
-        + cache_creation.unwrap_or(0)
-        + output_tokens.unwrap_or(0);
     Some(ClaudeUsage {
         turn: TurnUsage {
             input_tokens,
@@ -749,7 +780,7 @@ fn usage_from_claude(usage: &Value) -> Option<ClaudeUsage> {
             total_tokens: None,
             thought_tokens,
         },
-        context_used,
+        context_used: context_used_from_claude(usage),
     })
 }
 
@@ -1853,44 +1884,105 @@ mod tests {
     }
 
     #[test]
-    fn result_context_usage_adds_the_cache_tokens_input_tokens_excludes() {
-        // Source: Claude's stream-json `result.usage` field names
-        // (`input_tokens`, `cache_read_input_tokens`,
-        // `cache_creation_input_tokens`, `output_tokens`). No recorded result
-        // envelope with cache counters exists under `fixtures/wire` — the only
-        // capture there is `claude-set-mode.jsonl`, which has none — so the
-        // frame is built from the schema; the summation follows Paseo's
-        // `readUsageTokenTotal` (`providers/claude/agent.ts:1860-1870`).
+    fn result_context_usage_sums_the_last_iteration_of_each_measured_turn() {
+        // Source: reports/foundations/wire/E1.jsonl lines 17 and 54 — two
+        // `result` envelopes of ONE session (44e75940…), copied verbatim into
+        // fixtures/wire/claude-e1-results.jsonl. Every captured frame has
+        // exactly one iteration, equal to the top level (E1–E4 checked), so
+        // these two pin the summands — the cache counters included — while
+        // the constructed turn below pins WHICH entry is read.
+        let frames: Vec<Value> = include_str!("../fixtures/wire/claude-e1-results.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("measured result envelope"))
+            .collect();
+        assert_eq!(frames.len(), 2, "E1.jsonl lines 17 and 54");
         let mut mapper = view();
         let _ = mapper.ingest(&init_frame());
-        let events = mapper.ingest(&json!({
-            "type": "result",
-            "subtype": "success",
-            "stop_reason": "end_turn",
-            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
-            "usage": {
-                "input_tokens": 500,
-                "cache_read_input_tokens": 1200,
-                "cache_creation_input_tokens": 240,
-                "output_tokens": 60,
-                "output_tokens_details": {"thinking_tokens": 5}
+        // 2 + 6301 + 16519 + 4, then 2 + 121 + 22820 + 4 — input alone is 2,
+        // so a mapper that forgot the cache counters fails right here.
+        for (frame, expected) in frames.iter().zip([22_826_u64, 22_947]) {
+            let events = mapper.ingest(frame);
+            match events.as_slice() {
+                [SessionEvent::AgentFinished {
+                    model_id, usage, ..
+                }, SessionEvent::ContextUsage {
+                    model_id: context_model,
+                    used_tokens,
+                    max_tokens,
+                    live,
+                }] => {
+                    // The transcript line keeps the top-level counters.
+                    assert_eq!(usage.as_ref().expect("usage").input_tokens, Some(2));
+                    // The result frame carries no `model`; the id is the init
+                    // frame's, and the reading rides the same session.
+                    assert_eq!(model_id.as_deref(), Some("claude-opus-5[1m]"));
+                    assert_eq!(context_model.as_deref(), model_id.as_deref());
+                    assert_eq!(*used_tokens, expected);
+                    assert_eq!(*max_tokens, None);
+                    assert!(!live);
+                }
+                other => panic!("expected AgentFinished then ContextUsage, got {other:?}"),
             }
-        }));
+        }
+    }
+
+    #[test]
+    fn a_multi_iteration_turn_reads_the_last_iteration_not_the_turn_total() {
+        // No capture in reports/foundations/wire has usage.iterations longer
+        // than one (E1–E4 checked), so the turn below is CONSTRUCTED from the
+        // two measured iterations of E1:17/:54: the entries are verbatim and
+        // the top level is their element-wise sum — the shape of a turn that
+        // made two API calls, where the top level is the turn's billing and
+        // the last entry is what remains in the context window. Reading the
+        // top level fails the equality below.
+        let frames: Vec<Value> = include_str!("../fixtures/wire/claude-e1-results.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("measured result envelope"))
+            .collect();
+        const COUNTERS: [&str; 4] = [
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "output_tokens",
+        ];
+        let mut turn = frames[1].clone();
+        let first_iteration = frames[0]["usage"]["iterations"][0].clone();
+        let last_iteration = frames[1]["usage"]["iterations"][0].clone();
+        turn["usage"]["iterations"] = json!([first_iteration, last_iteration]);
+        for counter in COUNTERS {
+            let top = turn["usage"][counter].as_u64().expect("measured top");
+            let first = frames[0]["usage"][counter]
+                .as_u64()
+                .expect("measured first");
+            turn["usage"][counter] = json!(top + first);
+        }
+        let top_total: u64 = COUNTERS
+            .iter()
+            .map(|&counter| turn["usage"][counter].as_u64().expect("measured top"))
+            .sum();
+        let last_total: u64 = COUNTERS
+            .iter()
+            .map(|&counter| {
+                last_iteration[counter]
+                    .as_u64()
+                    .expect("measured iteration")
+            })
+            .sum();
+        assert_ne!(
+            top_total, last_total,
+            "the premise: a two-call turn's billing differs from its last iteration"
+        );
+
+        let mut mapper = view();
+        let _ = mapper.ingest(&init_frame());
+        let events = mapper.ingest(&turn);
         match events.as_slice() {
-            [SessionEvent::AgentFinished { usage, .. }, SessionEvent::ContextUsage {
-                model_id,
-                used_tokens,
-                max_tokens,
-                live,
-            }] => {
-                // The transcript line keeps Claude's bare input; the meter's
-                // number is the full context: 500 + 1,200 + 240 + 60.
-                let usage = usage.as_ref().expect("usage");
-                assert_eq!(usage.input_tokens, Some(500));
-                assert_eq!(*used_tokens, 2_000);
-                assert_eq!(model_id.as_deref(), Some("claude-opus-5[1m]"));
-                assert_eq!(*max_tokens, None);
-                assert!(!live);
+            [SessionEvent::AgentFinished { .. }, SessionEvent::ContextUsage { used_tokens, .. }] => {
+                assert_eq!(
+                    *used_tokens, last_total,
+                    "the meter reads the last iteration (Paseo's readActiveUsageTokens), \
+                     never the turn's top-level billing ({top_total})"
+                );
             }
             other => panic!("expected AgentFinished then ContextUsage, got {other:?}"),
         }

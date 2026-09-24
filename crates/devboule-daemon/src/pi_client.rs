@@ -2615,9 +2615,13 @@ impl PiReader {
                 .dispatch_ui_request(&value, runtime, event_seq)
                 .map_err(|error| format!("Pi UI request failed: {error}"));
         }
-        let mut event_seq = event_seq;
+        // Every event derived from one row carries that row's journal seq —
+        // the contract claude, acp and codex keep — so an attach's replay
+        // seam can match a backlog copy against the copy replay derives from
+        // the same row. A `None` here would make the finish's context reading
+        // survive the seam beside its replayed twin and deliver twice.
         for event in crate::pi_view::events_from_line(&value) {
-            self.publish(runtime, event, event_seq.take());
+            self.publish(runtime, event, event_seq);
         }
         Ok(())
     }

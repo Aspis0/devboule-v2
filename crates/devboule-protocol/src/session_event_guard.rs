@@ -127,7 +127,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
             ],
             credits: Some(crate::PlanCredits {
                 balance: Some("0".to_string()),
-                unlimited: false,
+                unlimited: Some(false),
             }),
         },
         AgentCreated => SessionEvent::AgentCreated {

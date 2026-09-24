@@ -434,8 +434,11 @@ fn replayed_usage_events_come_back_exactly_once() {
     record.kind = SessionKind::Codex;
     journal.upsert_blocking(record).expect("upsert");
 
-    // Measured frames: fixture lines 25-26 (`thread/tokenUsage/updated` and
-    // `account/rateLimits/updated`) of the Codex handshake capture.
+    // Measured frames: the Codex handshake capture. The tokenUsage frame is
+    // the first where `total` and `last` diverge (capture line 56: 42 231 vs
+    // 21 172), so asserting the replayed reading's CONTENT proves the replay
+    // path reads `last`, not the running total; the rateLimits frame is the
+    // capture's line 26.
     let frames = crate::codex_view::fixture_frames(include_str!(
         "../fixtures/wire/codex/E1-step1-handshake.jsonl"
     ));
@@ -444,8 +447,18 @@ fn replayed_usage_events_come_back_exactly_once() {
         .find(|frame| {
             frame.get("method").and_then(serde_json::Value::as_str)
                 == Some("thread/tokenUsage/updated")
+                && frame
+                    .pointer("/params/tokenUsage/total/totalTokens")
+                    .and_then(serde_json::Value::as_u64)
+                    != frame
+                        .pointer("/params/tokenUsage/last/totalTokens")
+                        .and_then(serde_json::Value::as_u64)
         })
-        .expect("fixture line 25");
+        .expect("fixture line 56: total and last diverge");
+    let last_total = token_usage
+        .pointer("/params/tokenUsage/last/totalTokens")
+        .and_then(serde_json::Value::as_u64)
+        .expect("last turn");
     let rate_limits = frames
         .iter()
         .find(|frame| {
@@ -462,18 +475,63 @@ fn replayed_usage_events_come_back_exactly_once() {
     journal.flush().expect("flush");
 
     let replay = journal.replay("s.replay.usage").expect("replay");
-    let context = replay
+    let contexts: Vec<&SessionEvent> = replay
         .events
         .iter()
         .filter(|event| matches!(event, SessionEvent::ContextUsage { .. }))
-        .count();
-    assert_eq!(context, 1, "one envelope row must yield one ContextUsage");
-    let plan = replay
+        .collect();
+    let [context] = contexts.as_slice() else {
+        panic!(
+            "one envelope row must yield one ContextUsage, got {}",
+            contexts.len()
+        );
+    };
+    match context {
+        SessionEvent::ContextUsage {
+            model_id,
+            used_tokens,
+            max_tokens,
+            live,
+        } => {
+            assert_eq!(*used_tokens, last_total, "the replayed reading is `last`");
+            assert_eq!(*max_tokens, Some(258_400), "the frame's own window");
+            assert!(*live, "Codex reports during the turn");
+            assert_eq!(model_id.as_deref(), None, "the frame names no model");
+        }
+        other => panic!("expected ContextUsage, got {other:?}"),
+    }
+    let plans: Vec<&SessionEvent> = replay
         .events
         .iter()
         .filter(|event| matches!(event, SessionEvent::PlanUsage { .. }))
-        .count();
-    assert_eq!(plan, 1, "one envelope row must yield one PlanUsage");
+        .collect();
+    let [plan] = plans.as_slice() else {
+        panic!(
+            "one envelope row must yield one PlanUsage, got {}",
+            plans.len()
+        );
+    };
+    match plan {
+        SessionEvent::PlanUsage {
+            provider_id,
+            plan_label,
+            windows,
+            credits,
+        } => {
+            assert_eq!(provider_id, "codex");
+            assert_eq!(plan_label.as_deref(), Some("plus"));
+            assert_eq!(windows.len(), 2, "only the windows the frame carried");
+            assert_eq!(windows[0].duration_mins, 300);
+            assert_eq!(windows[0].used_percent, Some(82));
+            assert_eq!(windows[0].resets_at, Some(1_789_057_213));
+            assert_eq!(windows[1].duration_mins, 10_080);
+            assert_eq!(windows[1].used_percent, Some(39));
+            let credits = credits.as_ref().expect("the frame carried credits");
+            assert_eq!(credits.balance.as_deref(), Some("0"));
+            assert_eq!(credits.unlimited, Some(false), "the frame said false");
+        }
+        other => panic!("expected PlanUsage, got {other:?}"),
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

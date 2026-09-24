@@ -1352,8 +1352,10 @@ pub struct PlanCredits {
     /// string), carried only when the frame sent one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub balance: Option<String>,
-    /// Whether the balance is unlimited; `false` when the frame did not say.
-    pub unlimited: bool,
+    /// Whether the balance is unlimited — `None` when the frame did not say,
+    /// the wire's third state: a missing field is never rendered as `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlimited: Option<bool>,
 }
 
 /// One family's resume handle. Terminal sessions always use [`PersistenceKind::None`].

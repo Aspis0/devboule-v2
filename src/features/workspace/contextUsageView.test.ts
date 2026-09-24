@@ -96,6 +96,15 @@ describe("contextMeterNumbers", () => {
       0,
     );
   });
+
+  it("clamps an overcount to the ring's 100", () => {
+    // The arc is clamped; the label beside it must not claim 300%.
+    expect(contextMeterNumbers(usage({ usedTokens: 300_000, maxTokens: 100_000 }), null)).toEqual({
+      used: 300_000,
+      max: 100_000,
+      percent: 100,
+    });
+  });
 });
 
 describe("formatContextTokens", () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useSyncExternalStore, useRef, useState } from "react";
 import type { ContextUsage, SessionManifest } from "../../types/ipc";
 import { usePlanUsage } from "../../lib/planUsageStore";
 import { contextMeterNumbers, formatContextTokens } from "./contextUsageView";
@@ -13,6 +13,34 @@ export interface ContextMeterProps {
   /** A turn is running: with no reading yet, the track-only ring reserves
       the spot instead of leaving the row to jump later. */
   running: boolean;
+}
+
+/** What the meter needs of the session: its own slice of the store, with its
+    own subscribers — the transcript surface never re-renders for a reading. */
+export interface UsageSource {
+  subscribeUsage(listener: () => void): () => void;
+  getContextUsage(): ContextUsage | null;
+}
+
+export interface SessionContextMeterProps {
+  session: UsageSource | null;
+  manifest: SessionManifest | null;
+  running: boolean;
+}
+
+/**
+ * The meter bound to its session's store. It re-renders when a reading
+ * arrives (or is retired); the surface that mounts it does not — its own
+ * `state` lane never sees the frame.
+ */
+export function SessionContextMeter({ session, manifest, running }: SessionContextMeterProps) {
+  const subscribe = useCallback(
+    (listener: () => void) => session?.subscribeUsage(listener) ?? (() => {}),
+    [session],
+  );
+  const read = useCallback(() => session?.getContextUsage() ?? null, [session]);
+  const usage = useSyncExternalStore(subscribe, read);
+  return <ContextMeter usage={usage} manifest={manifest} running={running} />;
 }
 
 /**

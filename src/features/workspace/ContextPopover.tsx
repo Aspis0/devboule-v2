@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { PlanUsage } from "../../types/ipc";
 import {
   formatContextTokens,
@@ -79,20 +79,21 @@ function readingBody(numbers: ContextMeterNumbers, live: boolean): ReactNode {
   );
 }
 
-function planBody(plan: PlanUsage | null): ReactNode {
+function planBody(plan: PlanUsage | null, nowMs: number): ReactNode {
   if (plan === null) {
     return <div className="workspace-context-note">This provider does not report plan usage.</div>;
   }
-  const nowMs = Date.now();
   return (
     <>
       {plan.planLabel !== undefined ? (
         <span className="workspace-context-plan-chip">{plan.planLabel}</span>
       ) : null}
-      {plan.windows.map((window) => {
+      {plan.windows.map((window, index) => {
         const meta = planWindowMeta(window, nowMs);
         return (
-          <div className="workspace-context-window" key={window.durationMins}>
+          // The pair (position, duration) — duration alone is not a key: the
+          // frame is free to carry two windows of one length.
+          <div className="workspace-context-window" key={`${index}-${window.durationMins}`}>
             <div className="workspace-context-window-row">
               <span className="workspace-context-window-label">
                 {planWindowLabel(window.durationMins)}
@@ -125,10 +126,17 @@ function planBody(plan: PlanUsage | null): ReactNode {
  * the provider sends none. Every number here is one the provider sent.
  */
 export function ContextPopover({ numbers, live, plan }: ContextPopoverProps) {
+  // The countdown must keep counting while the popover sits open; a render
+  // that never happens would freeze "resets in" at whatever it said on open.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = globalThis.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => globalThis.clearInterval(timer);
+  }, []);
   return (
     <div className="workspace-context-popover" role="dialog" aria-label="Context usage">
       <div className="workspace-context-popover-head">{readingBody(numbers, live)}</div>
-      <div className="workspace-context-popover-plan">{planBody(plan)}</div>
+      <div className="workspace-context-popover-plan">{planBody(plan, nowMs)}</div>
     </div>
   );
 }

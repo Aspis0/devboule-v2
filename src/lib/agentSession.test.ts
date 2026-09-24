@@ -2834,4 +2834,68 @@ describe("context and plan usage", () => {
     expect(planUsageFor("some-other-provider")).toBeNull();
     expect(harness.session.getState().contextUsage).toBeNull();
   });
+
+  it("sends readings down their own lane and drops a repeated one", async () => {
+    // The transcript surface re-renders exactly once per `subscribe`
+    // notification (AgentChatSurface wires setState to it), so the count of
+    // those notifications IS the count of transcript re-renders: a reading
+    // must add zero, and a frame identical to the stored one must move
+    // nothing at all.
+    const harness = makeHarness();
+    await harness.session.start();
+    let transcriptRenders = 0;
+    let usageRenders = 0;
+    const unsubscribeTranscript = harness.session.subscribe(() => {
+      transcriptRenders += 1;
+    });
+    const unsubscribeUsage = harness.session.subscribeUsage(() => {
+      usageRenders += 1;
+    });
+
+    const reading = {
+      type: "context_usage" as const,
+      usedTokens: 76_000,
+      maxTokens: 200_000,
+      live: true,
+    };
+    harness.emit(reading);
+    expect(usageRenders).toBe(1);
+    expect(transcriptRenders, "a reading never re-renders the transcript").toBe(0);
+
+    // The Codex capture repeats its last frame verbatim: nobody may be told.
+    harness.emit({ ...reading });
+    expect(usageRenders, "an identical reading notifies no one").toBe(1);
+
+    harness.emit({ ...reading, usedTokens: 90_000 });
+    expect(usageRenders).toBe(2);
+    expect(transcriptRenders).toBe(0);
+    expect(harness.session.getState().contextUsage).toMatchObject({ usedTokens: 90_000 });
+
+    unsubscribeUsage();
+    unsubscribeTranscript();
+  });
+
+  it("retires a stored reading when the session's model changes", async () => {
+    // A Codex-shaped reading: it carries its own window and names no model,
+    // so the manifest switch is the only thing that can retire it — before
+    // the next turn's first frame, the old model's window must not show.
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({ type: "context_usage", usedTokens: 21_059, maxTokens: 258_400, live: true });
+    expect(harness.session.getState().contextUsage).not.toBeNull();
+
+    harness.emit({
+      type: "session_manifest",
+      currentModelId: "model-a",
+      models: [{ modelId: "model-a", name: "A", contextTokens: 258_400 }],
+    });
+    expect(harness.session.getState().contextUsage).not.toBeNull();
+
+    harness.emit({
+      type: "session_manifest",
+      currentModelId: "model-b",
+      models: [{ modelId: "model-b", name: "B", contextTokens: 128_000 }],
+    });
+    expect(harness.session.getState().contextUsage).toBeNull();
+  });
 });

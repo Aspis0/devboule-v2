@@ -572,8 +572,9 @@ export interface PlanWindow {
 export interface PlanCredits {
   /** The balance exactly as the provider spelled it, when it sent one. */
   balance?: string;
-  /** Whether the balance is unlimited; false when the frame did not say. */
-  unlimited: boolean;
+  /** Whether the balance is unlimited; absent when the frame did not say —
+   * an absent field is never rendered as `false`. */
+  unlimited?: boolean;
 }
 
 export type NoticeSeverity = "info" | "warning";

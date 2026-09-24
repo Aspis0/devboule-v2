@@ -786,10 +786,9 @@ fn plan_usage(limits: Option<&Value>) -> Option<SessionEvent> {
             .get("balance")
             .and_then(Value::as_str)
             .map(str::to_string),
-        unlimited: credits
-            .get("unlimited")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        // Absent stays absent: `None` is the frame not saying, never a
+        // stand-in `false`.
+        unlimited: credits.get("unlimited").and_then(Value::as_bool),
     });
     Some(SessionEvent::PlanUsage {
         provider_id: "codex".to_string(),
@@ -1395,9 +1394,54 @@ mod tests {
                 ],
                 credits: Some(devboule_protocol::PlanCredits {
                     balance: Some("0".to_string()),
-                    unlimited: false,
+                    unlimited: Some(false),
                 }),
             }]
+        );
+    }
+
+    #[test]
+    fn the_live_reading_is_the_last_turn_not_the_running_total() {
+        // Capture line 56 — the first `thread/tokenUsage/updated` where the
+        // two blocks disagree: `total.totalTokens` 42 231 is the session's
+        // running spend, `last.totalTokens` 21 172 the context after this
+        // turn, which is what Paseo reads (`codex-app-server-agent.ts:982-999`).
+        // On line 25 the two are equal, so the whole-event test above passes
+        // even for a mapper reading `total`; this one does not.
+        let frames = fixture_frames(include_str!(
+            "../fixtures/wire/codex/E1-step1-handshake.jsonl"
+        ));
+        let diverging = frames
+            .iter()
+            .find(|frame| {
+                frame.get("method").and_then(Value::as_str) == Some("thread/tokenUsage/updated")
+                    && frame
+                        .pointer("/params/tokenUsage/total/totalTokens")
+                        .and_then(Value::as_u64)
+                        != frame
+                            .pointer("/params/tokenUsage/last/totalTokens")
+                            .and_then(Value::as_u64)
+            })
+            .expect("capture line 56: total and last diverge");
+        let running = diverging
+            .pointer("/params/tokenUsage/total/totalTokens")
+            .and_then(Value::as_u64)
+            .expect("running total");
+        let last = diverging
+            .pointer("/params/tokenUsage/last/totalTokens")
+            .and_then(Value::as_u64)
+            .expect("last turn");
+        assert_ne!(running, last, "the premise: this frame's blocks differ");
+        let mut view = CodexView::new(None);
+        assert_eq!(
+            view.ingest(diverging),
+            vec![SessionEvent::ContextUsage {
+                model_id: None,
+                used_tokens: last,
+                max_tokens: Some(258_400),
+                live: true,
+            }],
+            "the reading is `last.totalTokens`, never the running `total` ({running})"
         );
     }
 

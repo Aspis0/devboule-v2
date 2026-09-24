@@ -2,10 +2,10 @@
 
 import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContextUsage, PlanUsage, SessionManifest } from "../../types/ipc";
 import { recordPlanUsage } from "../../lib/planUsageStore";
-import { ContextMeter } from "./ContextMeter";
+import { ContextMeter, SessionContextMeter, type UsageSource } from "./ContextMeter";
 
 let container: HTMLDivElement | null = null;
 let unmount: (() => Promise<void>) | null = null;
@@ -206,5 +206,63 @@ describe("the context popover", () => {
     );
     const popover = await openPopover(host);
     expect(popover.textContent).toContain("This provider does not report plan usage.");
+  });
+
+  it("keeps the countdown moving while the popover sits open", async () => {
+    // F10: the copy is computed from a clock the popover owns; without the
+    // timer it would freeze at whatever "resets in" said when it opened.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      recordPlanUsage({
+        type: "plan_usage",
+        providerId: "codex-countdown",
+        windows: [{ durationMins: 300, usedPercent: 82, resetsAt: nowSeconds + 61 * 60 }],
+      });
+      const host = await render(
+        meter({
+          usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }),
+          manifest: manifest({ providerId: "codex-countdown", models: [] }),
+        }),
+      );
+      const popover = await openPopover(host);
+      expect(popover.textContent).toContain("resets in 1 h");
+      await act(async () => {
+        vi.advanceTimersByTime(60 * 60_000);
+      });
+      expect(popover.textContent).toContain("resets in 1 min");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("binding the meter to its session", () => {
+  it("re-renders from the session's usage lane alone", async () => {
+    // The surface re-renders on `subscribe`; this component must move on
+    // `subscribeUsage` — the two lanes are the whole F5 fix.
+    let notifyUsage: (() => void) | null = null;
+    let stored: ContextUsage | null = null;
+    const source: UsageSource = {
+      subscribeUsage(listener) {
+        notifyUsage = listener;
+        return () => {
+          notifyUsage = null;
+        };
+      },
+      getContextUsage: () => stored,
+    };
+    const host = await render(
+      <SessionContextMeter session={source} manifest={null} running={false} />,
+    );
+    // No reading, nothing running: nothing at all.
+    expect(host.querySelector(".workspace-context-meter-button")).toBeNull();
+    await act(async () => {
+      stored = { type: "context_usage", usedTokens: 76_000, maxTokens: 200_000, live: true };
+      notifyUsage?.();
+    });
+    expect(host.querySelector(".workspace-context-meter-text")?.textContent).toBe(
+      "38% · 76k / 200k",
+    );
   });
 });

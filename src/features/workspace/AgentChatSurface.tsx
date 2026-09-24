@@ -51,7 +51,7 @@ import {
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { WorkspaceComposer } from "./WorkspaceComposer";
-import { ContextMeter } from "./ContextMeter";
+import { SessionContextMeter } from "./ContextMeter";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
@@ -919,8 +919,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         }
         onStop={() => void sessionRef.current?.interrupt()}
         contextMeter={
-          <ContextMeter
-            usage={state.contextUsage}
+          <SessionContextMeter
+            session={sessionRef.current}
             manifest={manifest}
             running={state.streaming && !osGone}
           />

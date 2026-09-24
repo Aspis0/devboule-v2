@@ -300,6 +300,8 @@ function normalizeTaskNotificationStatus(
 export class AgentSession {
   private state: AgentSessionState = INITIAL_STATE;
   private readonly listeners = new Set<() => void>();
+  /** Context readings have their own lane (see `subscribeUsage`). */
+  private readonly usageListeners = new Set<() => void>();
   private readonly blocks = new Map<string, number>();
   private readonly activeBlocks = new Map<string, string>();
   private activeRole: MessageRole | null = null;
@@ -341,6 +343,23 @@ export class AgentSession {
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Subscribe to the session's context readings only. The transcript surface
+   * re-renders on `subscribe`; the meter re-renders on this — a chatty
+   * provider (five `thread/tokenUsage/updated` frames in the Codex capture's
+   * twelve seconds) must not re-map the whole transcript per frame.
+   */
+  subscribeUsage(listener: () => void): () => void {
+    this.usageListeners.add(listener);
+    return () => {
+      this.usageListeners.delete(listener);
+    };
+  }
+
+  getContextUsage(): ContextUsage | null {
+    return this.state.contextUsage;
   }
 
   async start(): Promise<void> {
@@ -823,9 +842,11 @@ export class AgentSession {
         });
         return;
       case "context_usage":
-        // The provider's own reading of this session's context window; the
-        // meter renders it, nothing else acts on it.
-        this.update({ contextUsage: event });
+        // The provider's own reading of this session's context window. It
+        // travels the usage lane, not the transcript lane, and a reading
+        // identical to the stored one is dropped before anyone is notified —
+        // the Codex capture repeats its last frame verbatim.
+        this.writeContextUsage(event);
         return;
       case "plan_usage":
         // Account-scoped, so it is recorded beside this session's stream but
@@ -899,6 +920,16 @@ export class AgentSession {
         }
         if (pendingSwitch === null) this.clearSwitchTimer();
         if (pendingModeId === null) this.clearModeTimer();
+        // A model switch retires the stored reading: for Codex — the only
+        // provider whose reading names no model — the number would keep the
+        // old model's window after the switch, and nothing else can dislodge
+        // it before the next turn's first frame.
+        const modelSwitched =
+          previous !== null &&
+          previous.currentModelId !== undefined &&
+          event.currentModelId !== undefined &&
+          previous.currentModelId !== event.currentModelId;
+        if (modelSwitched) this.writeContextUsage(null);
         this.update({ manifest: event, pendingSwitch, pendingModeId });
         return;
       }
@@ -1045,6 +1076,7 @@ export class AgentSession {
     }
     if (this.subscriptionId !== null) void this.detach();
     this.listeners.clear();
+    this.usageListeners.clear();
   }
 
   /**
@@ -1488,5 +1520,26 @@ export class AgentSession {
     // A listener may dispose or unsubscribe during notification; a snapshot prevents that
     // mutation from skipping listeners that were already subscribed for this update.
     for (const listener of [...this.listeners]) listener();
+  }
+
+  /**
+   * The one writer of `state.contextUsage`: it notifies the usage lane and
+   * deliberately not the transcript lane — a reading changes the ring, never
+   * the transcript — and drops a reading identical to the stored one so a
+   * repeated frame notifies no one at all. The field itself lives in `state`
+   * so `getState()` stays the single read.
+   */
+  private writeContextUsage(next: ContextUsage | null): void {
+    const current = this.state.contextUsage;
+    const identical =
+      next !== null &&
+      current !== null &&
+      current.modelId === next.modelId &&
+      current.usedTokens === next.usedTokens &&
+      current.maxTokens === next.maxTokens &&
+      current.live === next.live;
+    if (identical || (next === null && current === null)) return;
+    this.state = { ...this.state, contextUsage: next };
+    for (const listener of [...this.usageListeners]) listener();
   }
 }
