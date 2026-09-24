@@ -120,7 +120,12 @@ pub(crate) fn plain_path(path: &str) -> String {
             .is_some_and(is_verbatim_drive_path)
     {
         let plain = &path[VERBATIM_PREFIX.len()..];
-        if plain.len() < MAX_PATH && !has_verbatim_only_component(plain) {
+        // Windows counts MAX_PATH in UTF-16 code units plus the terminating
+        // NUL, not in bytes: non-ASCII characters cost two UTF-8 bytes each,
+        // so a plainly usable path can exceed 260 bytes while staying under
+        // 260 units — counting bytes would keep `\\?\` on it and hand a
+        // verbatim cwd to cmd.exe.
+        if plain.encode_utf16().count() < MAX_PATH && !has_verbatim_only_component(plain) {
             return plain.to_string();
         }
     }
@@ -139,28 +144,35 @@ fn is_verbatim_unc_suffix(path: &str) -> bool {
 }
 
 /// A plain path that would resolve differently from its verbatim spelling:
-/// any component that Win32 treats as a device, or trims, in the plain
-/// namespace but takes literally under `\\?\`.
+/// **any** component — not just the last — that Win32 treats as a device, or
+/// trims, in the plain namespace but takes literally under `\\?\`: a child
+/// stripped of the prefix starts somewhere else when `release.` becomes
+/// `release` or `CON` is claimed mid-path.
 fn has_verbatim_only_component(path: &str) -> bool {
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
-    let Some(component) = path
+    let mut seen = false;
+    for component in path
         .split(['\\', '/'])
-        .rev()
-        .find(|component| !component.is_empty())
-    else {
-        return true;
-    };
-    let name = component
-        .split_once('.')
-        .map_or(component, |(name, _)| name);
-    RESERVED
-        .iter()
-        .any(|device| name.eq_ignore_ascii_case(device))
-        || component.ends_with('.')
-        || component.ends_with(' ')
+        .filter(|component| !component.is_empty())
+    {
+        seen = true;
+        let name = component
+            .split_once('.')
+            .map_or(component, |(name, _)| name);
+        if RESERVED
+            .iter()
+            .any(|device| name.eq_ignore_ascii_case(device))
+            || component.ends_with('.')
+            || component.ends_with(' ')
+        {
+            return true;
+        }
+    }
+    // No component at all is not a path a plain caller can name.
+    !seen
 }
 
 fn project_name(path: &Path) -> String {
@@ -198,6 +210,39 @@ mod tests {
         let error = canonical_directory("relative-project").expect_err("relative path");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert!(error.message.contains("absolute"));
+    }
+
+    /// The review's path: the last component is clean, but `release.` is
+    /// normalized away in the plain namespace, so a child stripped of the
+    /// prefix would start in `C:\release\repo` while the workspace is
+    /// `C:\release.\repo`. Every component has to be checked, not just the
+    /// last non-empty one.
+    #[test]
+    fn plain_path_keeps_the_prefix_when_a_middle_component_is_verbatim_only() {
+        assert_eq!(plain_path(r"\\?\C:\release.\repo"), r"\\?\C:\release.\repo");
+        assert_eq!(plain_path(r"\\?\C:\release \repo"), r"\\?\C:\release \repo");
+        // A reserved device name mid-path, with and without an extension:
+        // Win32 claims the stem before the dot anywhere in the plain
+        // namespace.
+        assert_eq!(
+            plain_path(r"\\?\C:\repo\con.txt\src"),
+            r"\\?\C:\repo\con.txt\src"
+        );
+        assert_eq!(plain_path(r"\\?\C:\repo\lpt3\src"), r"\\?\C:\repo\lpt3\src");
+    }
+
+    /// Windows' MAX_PATH counts UTF-16 code units plus the terminating
+    /// NUL, not UTF-8 bytes: this path is 263 bytes but only 133 units,
+    /// so the plain spelling is usable and the prefix must come off.
+    #[test]
+    fn plain_path_measures_the_windows_limit_in_utf16_units_and_the_nul() {
+        let plain = format!(r"C:\{}", "é".repeat(130));
+        assert!(
+            plain.len() >= 260,
+            "the fixture is over the byte count: {}",
+            plain.len()
+        );
+        assert_eq!(plain_path(&format!(r"\\?\{plain}")), plain);
     }
 
     #[test]

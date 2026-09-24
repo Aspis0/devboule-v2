@@ -14,13 +14,17 @@ pub(super) struct ResolvedCreation {
     pub(super) kind: SessionKind,
     pub(super) command: PtyCommand,
     pub(super) session_provider: Option<String>,
+    /// What the birth row records: the cwd in its **stored** spelling (the
+    /// journal's canonical path, or the carried one as it arrived), while
+    /// `command.cwd` is the plain spelling the child starts in.
+    pub(super) row_cwd: PathBuf,
 }
 
 impl super::SessionRegistry {
     /// The cwd/id/provider/command resolution. The only lock it reaches is
-    /// `workspace_paths` inside `workspace_cwd`, and the workspace lookup
-    /// deliberately runs before the `meta.cwd` override: an unknown workspace
-    /// refuses even when the create carries its own directory.
+    /// `workspace_paths` inside `workspace_stored_path`, and the workspace
+    /// lookup deliberately runs before the `meta.cwd` override: an unknown
+    /// workspace refuses even when the create carries its own directory.
     // The caller's creation request travels as arguments, the same tail the
     // entry point itself is allowed to take.
     #[allow(clippy::too_many_arguments)]
@@ -34,16 +38,18 @@ impl super::SessionRegistry {
         command: Option<PtyCommand>,
         meta: &SessionCreateMeta,
     ) -> Result<ResolvedCreation, WireError> {
-        let workspace_cwd = workspace_id
-            .map(|workspace_id| self.workspace_cwd(workspace_id))
+        let stored_workspace = workspace_id
+            .map(|workspace_id| self.workspace_stored_path(workspace_id))
             .transpose()?;
         // A created child may start in a subdirectory of the creator's
         // workspace. It was resolved and confined on the way in
         // (`confined_child_cwd`), so a path that reaches here is already inside
-        // the workspace, canonical, and an existing directory.
-        let workspace_cwd = match meta.cwd.clone() {
+        // the workspace, canonical, and an existing directory. Both sources
+        // arrive in their stored spelling; the row below keeps that spelling
+        // and the command takes the plain one at the hand-off.
+        let stored_cwd = match meta.cwd.clone() {
             Some(cwd) => Some(cwd),
-            None => workspace_cwd,
+            None => stored_workspace,
         };
         let id = match meta.session_id.clone() {
             Some(id) => id,
@@ -72,9 +78,20 @@ impl super::SessionRegistry {
                 family.resolve_command(&self.paths, provider.as_deref())?
             }
         };
-        if let Some(cwd) = workspace_cwd {
-            command.cwd = cwd;
-        }
+        let row_cwd = match &stored_cwd {
+            Some(stored) => {
+                // The hand-off: this is the one place a carried or stored cwd
+                // becomes what a child process gets. `plain_path` keeps the
+                // prefix when the plain spelling would name a different path
+                // (a trailing dot or space, a reserved name) or one Windows
+                // cannot address without it (over MAX_PATH, UNC).
+                command.cwd = super::session_workspaces::plain_cwd(stored);
+                stored.clone()
+            }
+            // Nothing was recorded: the row keeps the family's own default
+            // cwd, spelled as the command resolved it.
+            None => command.cwd.clone(),
+        };
         let session_provider = provider::catalog_registry()
             .provider_for_kind(&kind)
             .stamp_session_provider(provider.clone(), command.provider_id.clone());
@@ -83,6 +100,7 @@ impl super::SessionRegistry {
             kind,
             command,
             session_provider,
+            row_cwd,
         })
     }
 
@@ -186,10 +204,11 @@ pub(super) fn build_birth_record(
     record.provider = session_provider.clone();
     // The directory this session is about to be launched in, recorded at
     // birth: the one fact that lets a later resume check where it worked
-    // before it spawns anything. Raw, not the display form — this value is
-    // handed back to a process one day (the brief's "the cwd the daemon really
-    // used"), and only `to_session` renders it.
-    record.cwd = Some(resolved.command.cwd.to_string_lossy().into_owned());
+    // before it spawns anything. The stored spelling (`row_cwd`), neither
+    // the child's plain cwd nor the display form: a later resume hands it
+    // to a process only through the same plain conversion, and only
+    // `to_session` renders it.
+    record.cwd = Some(resolved.row_cwd.to_string_lossy().into_owned());
     // The name a human reads and the session that asked for this one are
     // the row's, not just the wire metadata's (audit S5-12): an app that
     // attaches to this daemon after a restart lists its sessions from the

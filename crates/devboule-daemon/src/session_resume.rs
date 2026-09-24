@@ -183,9 +183,13 @@ impl SessionRegistry {
             // recorded.
             None => {
                 if let Some(cwd) = record.cwd.as_deref() {
-                    let path = PathBuf::from(cwd);
+                    // The row keeps its stored spelling; the child takes the
+                    // plain one here, at the hand-off — a legacy `\\?\` row
+                    // would otherwise send cmd.exe back to `C:\Windows`.
+                    let cwd = crate::workspace::plain_path(cwd);
+                    let path = PathBuf::from(&cwd);
                     if !path.is_dir() {
-                        return Err(session_folder_gone(cwd));
+                        return Err(session_folder_gone(&cwd));
                     }
                     command.cwd = path;
                 }

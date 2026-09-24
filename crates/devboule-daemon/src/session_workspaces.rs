@@ -332,18 +332,13 @@ impl super::SessionRegistry {
         Ok(())
     }
 
-    /// `pub(crate)` because the workspace git-status read resolves its root
-    /// from an id the same way a session does, and never from a request field.
-    ///
-    /// The answer is the plain spelling (`plain_path`), because this is the
-    /// value every child process receives as its cwd and every agent reads
-    /// as its workspace: a verbatim cwd sends cmd-side commands to
-    /// `C:\Windows` and prints an alien PowerShell prompt. The cache and the
-    /// journal keep the stored verbatim form.
-    pub(crate) fn workspace_cwd(&self, workspace_id: &str) -> Result<PathBuf, WireError> {
+    /// The folder a workspace's row names, in the **stored** spelling
+    /// (canonical, `\\?\…`): what a birth row records, and what
+    /// [`Self::workspace_cwd`] converts on its way to a child.
+    pub(super) fn workspace_stored_path(&self, workspace_id: &str) -> Result<PathBuf, WireError> {
         if let Some(path) = self.cached_workspace_path(workspace_id) {
             if path.is_dir() {
-                return Ok(plain_cwd(&path));
+                return Ok(path);
             }
             // The path can disappear after it was cached. Drop it before a
             // bounded journal refresh so a later mutation can repair it.
@@ -367,7 +362,20 @@ impl super::SessionRegistry {
             ));
         }
         self.remember_workspace_path(workspace_id, path.clone());
-        Ok(plain_cwd(&path))
+        Ok(path)
+    }
+
+    /// `pub(crate)` because the workspace git-status read resolves its root
+    /// from an id the same way a session does, and never from a request field.
+    ///
+    /// The answer is the plain spelling (`plain_path`), because this is the
+    /// value every child process receives as its cwd and every agent reads
+    /// as its workspace: a verbatim cwd sends cmd-side commands to
+    /// `C:\Windows` and prints an alien PowerShell prompt. The cache and the
+    /// journal keep the stored verbatim form.
+    pub(crate) fn workspace_cwd(&self, workspace_id: &str) -> Result<PathBuf, WireError> {
+        self.workspace_stored_path(workspace_id)
+            .map(|path| plain_cwd(&path))
     }
 
     pub(super) fn apply_workspace_cwd(

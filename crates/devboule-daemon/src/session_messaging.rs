@@ -1225,9 +1225,12 @@ impl super::SessionRegistry {
         if !canonical.starts_with(&canonical_root) || !canonical.is_dir() {
             return Err(refused());
         }
-        // The confinement comparison ran on canonical spellings; the answer
-        // goes to a child process, so it leaves in the plain spelling.
-        Ok(Some(super::session_workspaces::plain_cwd(&canonical)))
+        // The confinement comparison ran on canonical spellings, and this
+        // answer stays in them: the birth row records it, and the child's
+        // plain cwd is taken once, at the creation hand-off
+        // (`resolve_creation_inputs`) — converting here would write the
+        // plain form into the journal.
+        Ok(Some(canonical))
     }
 
     /// What a creation needs to know about the session that asked for it.

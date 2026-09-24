@@ -82,6 +82,36 @@ fn resume_locate_record_finds_the_row_by_id_and_keeps_its_own_refusals() {
     fixture.finish();
 }
 
+/// Mutant: the recorded cwd restored into the command as the row spells it —
+/// a legacy `\\?\` row must be converted at this hand-off, or the resumed
+/// child's cmd.exe runs in `C:\Windows` from a no-workspace session.
+#[test]
+fn a_recorded_verbatim_cwd_reaches_the_resumed_child_in_its_plain_spelling() {
+    let fixture = ResumeFixture::new("stage-verbatim-cwd");
+    let id = fixture.id("stage-verbatim-cwd");
+    let _env = AcpEnv::missing_agent();
+
+    let stored = std::fs::canonicalize(&fixture.dir).expect("canonical fixture");
+    let stored = stored.to_string_lossy().into_owned();
+    assert!(
+        stored.starts_with(r"\\?\"),
+        "the fixture is verbatim: {stored}"
+    );
+    let mut row = acp_row(&id, &fixture.owner, "handle-verbatim");
+    let plain = crate::workspace::plain_path(&stored);
+    row.cwd = Some(stored);
+    let (command, _) = fixture
+        .registry()
+        .resume_stage_command(&row, "devboule-acp-stub")
+        .expect("a directory that is there stages");
+    assert_eq!(
+        command.cwd,
+        PathBuf::from(&plain),
+        "the child takes the plain spelling at the hand-off"
+    );
+    fixture.finish();
+}
+
 /// Mutants: the generation not bumped (the row keeps its own) or bumped by
 /// wrapping (a row at the end of the range opens generation 0).
 #[test]
