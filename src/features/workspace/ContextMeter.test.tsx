@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContextUsage, PlanUsage, SessionManifest } from "../../types/ipc";
 import { recordPlanUsage } from "../../lib/planUsageStore";
 import { ContextMeter, SessionContextMeter, type UsageSource } from "./ContextMeter";
+import { placeContextPopover } from "./ContextPopover";
 
 let container: HTMLDivElement | null = null;
 let unmount: (() => Promise<void>) | null = null;
@@ -54,6 +55,31 @@ async function openPopover(host: HTMLElement): Promise<HTMLElement> {
   const popover = document.querySelector<HTMLElement>(".workspace-context-popover");
   if (popover === null) throw new Error("context popover did not open");
   return popover;
+}
+
+/** The geometry happy-dom cannot compute (no layout): a box at given edges. */
+function rect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+    toJSON: () => ({ left, top, width, height, right: left + width, bottom: top + height }),
+  };
+}
+
+/** Pin `window.innerWidth` (happy-dom's viewport) for one test. */
+function setViewportWidth(width: number): () => void {
+  const original = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+  return () => {
+    if (original !== undefined) Object.defineProperty(window, "innerWidth", original);
+    else delete (window as { innerWidth?: number }).innerWidth;
+  };
 }
 
 describe("the composer's context meter", () => {
@@ -234,6 +260,97 @@ describe("the context popover", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("draws the panel from the body, outside the pane that would clip it", async () => {
+    // The live check: `.workspace-center-panel` has `overflow: hidden` and
+    // cut the old in-pane popover at 974 px, losing its right edge and the
+    // "resets in …" labels. A body child cannot be clipped by that pane.
+    const host = await render(meter({ usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }) }));
+    const popover = await openPopover(host);
+    expect(popover.parentElement).toBe(document.body);
+    expect(popover.closest(".workspace-context-meter")).toBeNull();
+    expect(host.querySelector(".workspace-context-popover")).toBeNull();
+  });
+
+  it("keeps the panel inside a narrow viewport at the right edge", async () => {
+    const host = await render(meter({ usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }) }));
+    const trigger = host.querySelector<HTMLButtonElement>(".workspace-context-meter-button");
+    if (trigger === null) throw new Error("context meter did not render");
+    // Live geometry, injected: the meter at 380..394 of a 400 px viewport —
+    // centring a 300 px panel would span 237..537, past the right edge.
+    trigger.getBoundingClientRect = () => rect(380, 500, 14, 14);
+    const restoreWidth = setViewportWidth(400);
+    try {
+      const popover = await openPopover(host);
+      expect(popover.style.position).toBe("fixed");
+      const left = Number.parseFloat(popover.style.left);
+      // 400 − 8 margin − 300 width = 92; centre would be 237.
+      expect(left).toBe(92);
+      expect(left + 300).toBeLessThanOrEqual(400 - 8);
+    } finally {
+      restoreWidth();
+    }
+  });
+
+  it("follows the meter when the composer moves under it", async () => {
+    const host = await render(meter({ usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }) }));
+    const trigger = host.querySelector<HTMLButtonElement>(".workspace-context-meter-button");
+    if (trigger === null) throw new Error("context meter did not render");
+    trigger.getBoundingClientRect = () => rect(300, 500, 14, 14);
+    const restoreWidth = setViewportWidth(1024);
+    try {
+      const popover = await openPopover(host);
+      // Centre 307 − 150 = 157, inside [8, 716].
+      expect(popover.style.left).toBe("157px");
+      trigger.getBoundingClientRect = () => rect(100, 300, 14, 14);
+      await act(async () => {
+        window.dispatchEvent(new Event("resize"));
+      });
+      // Centre 107 − 150 = −43, clamped to the 8 px margin.
+      expect(popover.style.left).toBe("8px");
+    } finally {
+      restoreWidth();
+    }
+  });
+});
+
+describe("placeContextPopover", () => {
+  const VIEWPORT = { width: 1024, height: 768 };
+
+  it("centres the panel above its anchor with the gap", () => {
+    // Anchor centre 507 − 150 = 357; top 400 − 8 gap − 160 height = 232.
+    expect(
+      placeContextPopover(
+        { left: 500, right: 514, top: 400, bottom: 414 },
+        { width: 300, height: 160 },
+        VIEWPORT,
+        8,
+      ),
+    ).toEqual({ left: 357, top: 232, width: 300, above: true });
+  });
+
+  it("flips below when the top has no room", () => {
+    const placement = placeContextPopover(
+      { left: 100, right: 114, top: 30, bottom: 44 },
+      { width: 300, height: 160 },
+      VIEWPORT,
+      8,
+    );
+    expect(placement.above).toBe(false);
+    expect(placement.top).toBe(52); // anchor.bottom 44 + gap 8
+  });
+
+  it("clamps a panel wider than the viewport to the margins", () => {
+    const placement = placeContextPopover(
+      { left: 170, right: 184, top: 400, bottom: 414 },
+      { width: 400, height: 160 },
+      { width: 360, height: 768 },
+      8,
+    );
+    expect(placement.width).toBe(344); // 360 − 2 × 8 margin
+    expect(placement.left).toBe(8);
+    expect(placement.left + placement.width).toBeLessThanOrEqual(360 - 8);
   });
 });
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useSyncExternalStore, useRef, useState } from "react";
+import { useCallback, useSyncExternalStore, useRef, useState } from "react";
 import type { ContextUsage, SessionManifest } from "../../types/ipc";
 import { usePlanUsage } from "../../lib/planUsageStore";
 import { contextMeterNumbers, formatContextTokens } from "./contextUsageView";
@@ -52,29 +52,14 @@ export function SessionContextMeter({ session, manifest, running }: SessionConte
  */
 export function ContextMeter({ usage, manifest, running }: ContextMeterProps) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLSpanElement>(null);
+  // The popover anchors to the button, not to the span: it is centred above
+  // this rect, and it renders on the body (see ContextPopover), so the
+  // Escape/outside-close lives with the panel that can see both elements.
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const numbers = contextMeterNumbers(usage, manifest);
   const plan = usePlanUsage(manifest?.providerId ?? null);
 
   const close = useCallback(() => setOpen(false), []);
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      close();
-    };
-    const onPointerDown = (event: PointerEvent): void => {
-      const target = event.target;
-      if (target instanceof Node && !rootRef.current?.contains(target)) close();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("pointerdown", onPointerDown);
-    };
-  }, [close, open]);
 
   const { used, max, percent } = numbers;
   if (used === null && max === null && !running) return null;
@@ -90,8 +75,9 @@ export function ContextMeter({ usage, manifest, running }: ContextMeterProps) {
   const arcPercent = hasRatio ? Math.max(0, Math.min(100, percent)) : null;
 
   return (
-    <span className="workspace-context-meter" ref={rootRef}>
+    <span className="workspace-context-meter">
       <button
+        ref={buttonRef}
         type="button"
         className="workspace-context-meter-button"
         aria-label="Context usage"
@@ -130,7 +116,15 @@ export function ContextMeter({ usage, manifest, running }: ContextMeterProps) {
         </svg>
         {label !== null ? <span className="workspace-context-meter-text">{label}</span> : null}
       </button>
-      {open ? <ContextPopover numbers={numbers} live={usage?.live ?? false} plan={plan} /> : null}
+      {open ? (
+        <ContextPopover
+          anchorRef={buttonRef}
+          onClose={close}
+          numbers={numbers}
+          live={usage?.live ?? false}
+          plan={plan}
+        />
+      ) : null}
     </span>
   );
 }

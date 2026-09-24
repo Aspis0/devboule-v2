@@ -1734,7 +1734,6 @@
    and the actions. Track is --line-strong, arc is --accent — the two colors
    the spec gives it, and nothing else. */
 .workspace-context-meter {
-  position: relative;
   display: inline-flex;
   flex: none;
 }
@@ -1761,10 +1760,11 @@
   color: var(--ink);
 }
 
+/* The panel renders from `document.body` (a portal — the center pane clips
+   its own children), positioned `fixed` by ContextPopover's placement; left,
+   top and width are set there, so only the look lives here. */
 .workspace-context-popover {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
+  position: fixed;
   z-index: 40;
   width: 300px;
   padding: 12px;
