@@ -2994,14 +2994,14 @@ fn creation_card(
         // A placeholder: the permission broker stamps the creator's own origin
         // on the way in, exactly as it does for a provider's own card.
         origin: SessionOrigin::unknown(),
-        create_agent: Some(CreateAgentCard {
+        create_agent: Some(Box::new(CreateAgentCard {
             creator_session_id: creator_session_id.to_string(),
             provider: profile.provider.clone(),
             profile: profile.name.clone(),
             title: request.title.clone(),
             tools: card_tools.as_str().to_string(),
             caps,
-        }),
+        })),
     }
 }
 

@@ -27,6 +27,20 @@ pub(super) fn park_card(runtime: &Arc<SessionRuntime>, card_id: &str) {
         .expect("the card parks");
 }
 
+pub(super) fn park_chooser_card(runtime: &Arc<SessionRuntime>, card_id: &str) {
+    let broker = runtime.permission_broker().expect("broker");
+    broker
+        .register(
+            1,
+            permission_broker::permission_with_kinds(
+                card_id,
+                &[("once", "allow_once"), ("once-again", "allow_once")],
+            ),
+            runtime,
+        )
+        .expect("the chooser parks");
+}
+
 pub(super) fn answer(
     registry: &SessionRegistry,
     creator: &str,
@@ -360,6 +374,54 @@ fn a_card_whose_session_is_not_live_names_the_callers_card_id() {
         error, "permission card card-gone is not pending on one of your live sessions",
         "the caller's own card id in the sentence: {error}"
     );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review A2a P1 — the delegated door's own first-pick: a chooser passes
+/// `select_option` because the FIRST `allow_once` matches, so a creator's
+/// answer would grant an option nobody chose. The MCP tool carries no
+/// option id and the envelope the creator saw lists no options, so no
+/// answer this door can give is explicit: the card is refused here and
+/// stays pending with the person, where the chooser rule says it goes.
+#[test]
+fn a_creator_cannot_answer_a_chooser_and_the_card_stays_pending() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("c3-chooser");
+    let creator = compose_session_id(&owner.session_token(), "cr1").expect("creator id");
+    let child = compose_session_id(&owner.session_token(), "ch1").expect("child id");
+    let store = Arc::new(crate::delegation_store::DelegationStore::load(&dir));
+    registry.attach_delegation(Arc::clone(&store));
+    store.set(true).expect("set on");
+    insert_live_agent(&registry, &creator, owner.clone());
+    let runtime = insert_child(&registry, &child, owner.clone(), &creator);
+    park_chooser_card(&runtime, "card-chooser");
+
+    let expected = "permission card card-chooser is a chooser; only a person can choose between its options, so it stays pending";
+    let allow_error = answer(
+        &registry,
+        &creator,
+        "card-chooser",
+        PermissionOutcome::AllowOnce,
+        vec![],
+    )
+    .expect_err("a chooser has no answer this tool can give");
+    assert_eq!(allow_error, expected, "the creator hears why, exactly");
+    let deny_error = answer(
+        &registry,
+        &creator,
+        "card-chooser",
+        PermissionOutcome::Deny,
+        vec![],
+    )
+    .expect_err("nor can this door refuse a chooser");
+    assert_eq!(deny_error, expected, "neither outcome answers it");
+    assert_eq!(
+        runtime.permission_broker().expect("broker").pending_len(),
+        1,
+        "the request is still the human's to answer"
+    );
+    store.set(false).expect("set off");
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }

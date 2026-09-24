@@ -3463,10 +3463,10 @@ fn a_steer_the_provider_cannot_take_is_refused_for_a_paired_device() {
 }
 
 /// The wire carries the daemon's chooser verdict: a request whose option
-/// set trips Paseo's rule (the same allow kind offered twice) is marked so
-/// the app renders one control per option, and an ordinary
-/// allow-once/reject-once pair is left unmarked. The app must never
-/// re-derive the rule from the option list — the daemon says it.
+/// set trips Paseo's rule (the same kind offered twice — allow **or**
+/// reject) is marked so the app renders one control per option, while an
+/// ordinary pair and a set of distinct kinds are left unmarked. The app
+/// must never re-derive the rule from the option list — the daemon says it.
 #[test]
 fn the_daemon_marks_a_chooser_on_the_wire_and_does_not_mark_a_standard_pair() {
     let (broker, _sent) = permission_broker::test_broker();
@@ -3496,6 +3496,24 @@ fn the_daemon_marks_a_chooser_on_the_wire_and_does_not_mark_a_standard_pair() {
         None,
     );
     runtime.publish_agent_event(permission_broker::permission("standard-1"), None);
+    runtime.publish_agent_event(
+        permission_broker::permission_with_kinds(
+            "reject-chooser-1",
+            &[
+                ("deploy", "allow_once"),
+                ("skip", "reject_once"),
+                ("cancel", "reject_once"),
+            ],
+        ),
+        None,
+    );
+    runtime.publish_agent_event(
+        permission_broker::permission_with_kinds(
+            "distinct-1",
+            &[("once", "allow_once"), ("always", "allow_always")],
+        ),
+        None,
+    );
 
     let events = conn.pull_events();
     let wire_json = |tool_call_id: &str| {
@@ -3521,6 +3539,15 @@ fn the_daemon_marks_a_chooser_on_the_wire_and_does_not_mark_a_standard_pair() {
     assert!(
         wire_json("standard-1").get("isChooser").is_none(),
         "an ordinary allow-once/reject-once pair is not marked: {events:?}"
+    );
+    assert_eq!(
+        wire_json("reject-chooser-1").get("isChooser"),
+        Some(&serde_json::Value::Bool(true)),
+        "a repeated reject kind is a chooser too: {events:?}"
+    );
+    assert!(
+        wire_json("distinct-1").get("isChooser").is_none(),
+        "two distinct kinds are an ordinary request, not a question: {events:?}"
     );
 }
 

@@ -187,7 +187,21 @@ fn session_event_samples() -> Vec<SessionEvent> {
             args: Some(Vec::new()),
             cwd: None,
             env: Some(Vec::new()),
-            options: Vec::new(),
+            // The sample's options repeat a kind — two `allow_once` — so the
+            // verdict below is what the rule would actually write, not a
+            // frame the daemon cannot produce.
+            options: vec![
+                crate::PermissionOption {
+                    option_id: "alpha".to_string(),
+                    name: "Alpha".to_string(),
+                    kind: "allow_once".to_string(),
+                },
+                crate::PermissionOption {
+                    option_id: "beta".to_string(),
+                    name: "Beta".to_string(),
+                    kind: "allow_once".to_string(),
+                },
+            ],
             // The sample carries the marked form rather than `None`, the
             // same reason it carries `create_agent`: the committed snapshot
             // is what pins the wire name, and a sample that omitted the
@@ -198,7 +212,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
             // ordinary card is the same variant with the field absent, and a
             // sample that omitted it would leave the app's union member for a
             // creation card unexercised by the committed snapshot.
-            create_agent: Some(crate::CreateAgentCard {
+            create_agent: Some(Box::new(crate::CreateAgentCard {
                 creator_session_id: "s.1.1".to_string(),
                 provider: "claude".to_string(),
                 profile: "worker".to_string(),
@@ -214,7 +228,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
                     live_agent_sessions: 1,
                     max_live_agent_sessions: 8,
                 },
-            }),
+            })),
         },
         PermissionResolved => SessionEvent::PermissionResolved {
             tool_call_id: String::new(),

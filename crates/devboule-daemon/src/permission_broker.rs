@@ -277,12 +277,15 @@ impl PermissionBroker {
         request: SessionEvent,
         runtime: &Arc<SessionRuntime>,
     ) -> Result<Arc<PendingPermission>, PermissionResponseError> {
-        // The origin is stamped here, at the one point a request becomes
-        // pending: the card renders a `peer` origin as its own first line, and
-        // the request's own text must never be able to imitate it (§8b A14).
-        // `publish_agent_event_with_seq` writes the same value again on the way
+        // The origin and the verdict are stamped here, at the one point a
+        // request becomes pending: the card renders a `peer` origin as its
+        // own first line, and the request's own text must never be able to
+        // imitate it (§8b A14). The verdict has to be here too — the stored
+        // copy is what the audit row and the replay roads read (review A2a
+        // #4). `publish_agent_event_with_seq` writes both again on the way
         // out, which is what covers publishers that never come through here.
         let request = stamp_origin(request, runtime.origin());
+        let request = stamp_chooser(request);
         let tool_call_id = match &request {
             SessionEvent::PermissionRequest { tool_call_id, .. } => tool_call_id.clone(),
             _ => {
@@ -390,16 +393,29 @@ impl PermissionBroker {
         #[cfg(test)]
         self.run_after_take_hook();
         let Some(option) = option else {
-            let reason = unsupported_outcome_reason(&options, outcome);
-            return match self.complete(
+            let completed = self.complete(
                 &pending,
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
                 None,
                 "cancelled",
                 None,
-            ) {
-                Ok(()) => Err(PermissionResponseError::InvalidRequest(reason)),
-                Err(error) => Err(error),
+            );
+            return match outcome {
+                // A deny on a CHOOSER with nothing to name: ACP's only
+                // refusal for this request is a cancellation, and the
+                // daemon delivered one — an answer, so the card reads
+                // Denied, not an error and not the queue again (review A2a
+                // #3). Every other unhonored outcome keeps the sentence
+                // saying what the daemon did: the ordinary card disables
+                // Deny whenever the request offers no reject option, so a
+                // chooser's enabled Deny is the only door into this arm.
+                PermissionOutcome::Deny if options_form_a_chooser(&options) => completed,
+                _ => match completed {
+                    Ok(()) => Err(PermissionResponseError::InvalidRequest(
+                        unsupported_outcome_reason(&options, outcome),
+                    )),
+                    Err(error) => Err(error),
+                },
             };
         };
         // Only the exact one-shot kind is resolved implicitly; a durable
@@ -412,6 +428,14 @@ impl PermissionBroker {
             result,
             Some(&option),
             match outcome {
+                // The journal records the kind that was really granted,
+                // never a one-shot constant (auto_answer's rule) — in the
+                // journal's own vocabulary, where the only durable allow
+                // word is `allow_always`. An open allow kind outside that
+                // vocabulary falls back to the posted outcome rather than a
+                // word `decision_from_outcome` would read as cancelled and
+                // deny a grant that happened.
+                PermissionOutcome::AllowOnce if option.kind == "allow_always" => "allow_always",
                 PermissionOutcome::AllowOnce => "allow_once",
                 PermissionOutcome::Deny => "deny",
             },
@@ -531,18 +555,31 @@ impl PermissionBroker {
             .map(|broker| broker.peek_delegated(tool_call_id))
             .unwrap_or(DelegatedPeek::Absent);
         let selected = match &peek {
-            DelegatedPeek::Found { options, .. } => match select_option(options, outcome, None) {
-                Ok(Some(option)) => Some(option),
-                // A durable option is never chosen implicitly, and the
-                // delegated tool names no option at all: a card offering only
-                // `allow_always`/`reject_always` is not answerable here.
-                Ok(None) | Err(_) => {
+            DelegatedPeek::Found { options, .. } => {
+                // A chooser has no answer this door can give: the MCP tool
+                // carries no option id and the envelope the creator saw
+                // lists no options, so anything sent here would be the
+                // first-pick the wire field exists to remove. Refused with
+                // the card still pending — the chooser rule says the
+                // question belongs to the person.
+                if options_form_a_chooser(options) {
                     return Err(format!(
-                        "this card offers no one-shot option for {outcome:?} (offered: {}); it stays pending for a person",
-                        offered_kinds(options)
+                        "permission card {tool_call_id} is a chooser; only a person can choose between its options, so it stays pending"
                     ));
                 }
-            },
+                match select_option(options, outcome, None) {
+                    Ok(Some(option)) => Some(option),
+                    // A durable option is never chosen implicitly, and the
+                    // delegated tool names no option at all: a card offering only
+                    // `allow_always`/`reject_always` is not answerable here.
+                    Ok(None) | Err(_) => {
+                        return Err(format!(
+                            "this card offers no one-shot option for {outcome:?} (offered: {}); it stays pending for a person",
+                            offered_kinds(options)
+                        ));
+                    }
+                }
+            }
             DelegatedPeek::Absent => None,
         };
         // Check 2: the switch, read now — the answer that was true when the
@@ -612,8 +649,8 @@ impl PermissionBroker {
     /// the one list, shared with the `unattended` marker a child's birth
     /// writes — and only when the agent offers one allow choice; chooser
     /// requests stay with the client. Paseo's chooser rule:
-    /// the same allow kind twice (two `allow_once` with different names) is a
-    /// question, the standard `allow_once`/`allow_always`/`reject_once` batch
+    /// the same kind twice — allow or reject — is a question, the standard
+    /// `allow_once`/`allow_always`/`reject_once` batch (three distinct kinds)
     /// is not. Prefer allow_once, then allow_always; a request with no allow
     /// option stays pending for the user. The journal records the kind that
     /// was really granted, never a one-shot constant.
@@ -752,7 +789,7 @@ impl PermissionBroker {
             SessionEvent::PermissionRequest { options, .. } => options.clone(),
             _ => return Ok(None),
         };
-        if is_allow_chooser(&options) {
+        if options_form_a_chooser(&options) {
             return Ok(None);
         }
         let Some(option) = select_allow_option(&options).cloned() else {
@@ -1022,13 +1059,16 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
 
 /// The same event with the daemon's chooser verdict written into it, when it
 /// is a permission request: `Some(true)` exactly when the option set trips the
-/// rule [`is_allow_chooser`] names, absent otherwise.
+/// rule [`options_form_a_chooser`] names, absent otherwise.
 ///
-/// Called from `SessionRuntime::publish_agent_event_with_seq` — the one place
-/// a request leaves for a subscriber — so every copy the app can see carries
-/// the verdict, and the card renders one control per option without ever
-/// re-deriving the rule from the option list. Like the origin stamp this
-/// **overwrites**: a value a provider client wrote cannot survive to the wire.
+/// Called from `PermissionBroker::register_with`, where the copy the audit row
+/// and the replay roads read becomes pending, and from
+/// `SessionRuntime::publish_agent_event_with_seq` on the way out — the one
+/// place a request leaves for a subscriber — so every copy that can reach the
+/// app carries the verdict, and the card renders one control per option
+/// without ever re-deriving the rule from the option list. Like the origin
+/// stamp this **overwrites**: a value a provider client wrote cannot survive
+/// to the wire.
 pub(super) fn stamp_chooser(mut request: SessionEvent) -> SessionEvent {
     if let SessionEvent::PermissionRequest {
         options,
@@ -1036,7 +1076,7 @@ pub(super) fn stamp_chooser(mut request: SessionEvent) -> SessionEvent {
         ..
     } = &mut request
     {
-        *is_chooser = is_allow_chooser(options).then_some(true);
+        *is_chooser = options_form_a_chooser(options).then_some(true);
     }
     request
 }
@@ -1120,10 +1160,21 @@ fn validate_permission_request(
             "permission request has more than the maximum of {MAX_ACP_PERMISSION_OPTIONS} options"
         )));
     }
+    let mut option_ids: Vec<&str> = Vec::new();
     for option in options {
         validate_permission_field("option_id", &option.option_id)?;
         validate_permission_field("option name", &option.name)?;
         validate_permission_field("option kind", &option.kind)?;
+        // Two options cannot share the id the answer names: resolution is
+        // the first match, so a shared id would tell the agent one thing
+        // about "Beta" and the card another (review A2a #10).
+        if option_ids.contains(&option.option_id.as_str()) {
+            return Err(PermissionResponseError::InvalidRequest(format!(
+                "permission request has two options with the id '{}'",
+                option.option_id
+            )));
+        }
+        option_ids.push(&option.option_id);
     }
     Ok(())
 }
@@ -1192,14 +1243,12 @@ fn select_option(
     Ok(None)
 }
 
-/// Paseo's chooser rule: the same allow kind offered twice means the agent is
-/// asking which one to use, so the request must reach the user.
-fn is_allow_chooser(options: &[PermissionOption]) -> bool {
+/// Paseo's chooser rule, on either side: the same kind offered twice —
+/// allow or reject — means the agent is asking which one to use, so the
+/// request must reach the user.
+fn options_form_a_chooser(options: &[PermissionOption]) -> bool {
     let mut seen: Vec<&str> = Vec::new();
-    for option in options
-        .iter()
-        .filter(|option| option.kind.starts_with("allow"))
-    {
+    for option in options {
         if seen.contains(&option.kind.as_str()) {
             return true;
         }
@@ -1480,6 +1529,44 @@ mod tests {
         assert!(sent.lock().expect("sent lock").is_empty());
     }
 
+    /// Review A2a #6 — the rule is not allow-side: a repeated reject kind
+    /// is the agent asking which refusal to take, and that question stays
+    /// the person's just like a repeated allow kind.
+    #[test]
+    fn bypass_mode_leaves_a_reject_side_chooser_for_the_client() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "bypass".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(
+                64,
+                permission_with_kinds(
+                    "reject-chooser",
+                    &[
+                        ("deploy", "allow_once"),
+                        ("skip", "reject_once"),
+                        ("cancel", "reject_once"),
+                    ],
+                ),
+                &runtime,
+            )
+            .expect("register");
+
+        assert!(!broker
+            .auto_answer("reject-chooser", &runtime)
+            .expect("chooser policy"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
     #[test]
     fn bypass_mode_auto_answers_the_standard_option_triple() {
         let (broker, sent) = test_broker();
@@ -1612,6 +1699,116 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// The same rule held to the person's own door (review A2a #2): a
+    /// durable option the person names is durable in the ledger too, and
+    /// the card's resolution reads the granted kind — never a one-shot
+    /// constant for a grant that is not one-shot.
+    #[test]
+    fn a_durable_choice_the_person_named_is_journaled_as_durable() {
+        let path = permission_path("durable-human");
+        let journal = Arc::new(Journal::open(&path).expect("journal"));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sent_for_sender = Arc::clone(&sent);
+        let sender: Arc<PermissionSender> = Arc::new(move |id, result| {
+            sent_for_sender
+                .lock()
+                .expect("sent lock")
+                .push((id, result));
+            Ok(())
+        });
+        let broker = PermissionBroker::with_sender(sender);
+        let runtime = SessionRuntime::for_acp(
+            "s.permission.durable-human".to_string(),
+            Some(Arc::clone(&journal)),
+            Arc::clone(&broker),
+        );
+        broker
+            .register(
+                66,
+                permission_with_kinds(
+                    "durable-human",
+                    &[("once", "allow_once"), ("always", "allow_always")],
+                ),
+                &runtime,
+            )
+            .expect("register");
+
+        broker
+            .respond_with_option(
+                "durable-human",
+                PermissionOutcome::AllowOnce,
+                Some("always".to_string()),
+            )
+            .expect("the named durable option is honored");
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["optionId"],
+            "always"
+        );
+        journal.flush().expect("journal flush");
+        let conn = Connection::open(&path).expect("inspect journal");
+        let outcome: String = conn
+            .query_row(
+                "SELECT outcome FROM permissions WHERE session_id = ?1 AND request_id = ?2",
+                ["s.permission.durable-human", "durable-human"],
+                |row| row.get(0),
+            )
+            .expect("permission row");
+        assert_eq!(outcome, "allow_always");
+        drop(conn);
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Review A2a #4 — the registered copy is the durable one: the audit
+    /// row and the replay road read what `register_with` stored, so the
+    /// verdict has to be stamped there too, not only on the way out.
+    #[test]
+    fn a_journalled_chooser_replays_with_its_mark() {
+        let (broker, _sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        let pending = broker
+            .register(
+                67,
+                permission_with_kinds(
+                    "chooser-journal",
+                    &[("a", "allow_once"), ("b", "allow_once")],
+                ),
+                &runtime,
+            )
+            .expect("register");
+        let record = crate::journal::agent_report_record(
+            "s.chooser.journal".to_string(),
+            1,
+            1,
+            &pending.request,
+        )
+        .expect("the row serialises");
+        let path = permission_path("chooser-journal");
+        let journal = Journal::open(&path).expect("journal");
+        journal
+            .upsert_blocking(crate::journal::new_session_record(
+                "s.chooser.journal",
+                "tester",
+                None,
+                devboule_protocol::SessionKind::Terminal,
+                "chooser",
+            ))
+            .expect("session row");
+        journal.append_blocking(record).expect("row lands");
+        let replay = journal.replay("s.chooser.journal").expect("replay");
+        let marked = replay.events.iter().find_map(|event| match event {
+            SessionEvent::PermissionRequest { is_chooser, .. } => Some(*is_chooser),
+            _ => None,
+        });
+        assert_eq!(
+            marked,
+            Some(Some(true)),
+            "a chooser replayed from the journal comes back marked"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn legacy_deny_without_a_one_shot_option_stays_pending() {
         let (broker, sent) = test_broker();
@@ -1630,6 +1827,59 @@ mod tests {
         assert!(error.to_string().contains("reject_once"));
         assert_eq!(broker.pending_len(), 1);
         assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    /// Review A2a #3 — a deny ACP cannot carry as a rejection is delivered
+    /// as a cancellation, which IS ACP's refusal for this request: an
+    /// answer, not an error the person is shown and not a card put back in
+    /// the queue.
+    #[test]
+    fn a_deny_with_no_reject_option_is_delivered_as_a_cancellation_not_an_error() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(
+                68,
+                permission_with_kinds("no-reject", &[("a", "allow_once"), ("b", "allow_once")]),
+                &runtime,
+            )
+            .expect("register");
+
+        broker
+            .respond("no-reject", PermissionOutcome::Deny)
+            .expect("one cancellation was delivered, so one refusal was given");
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["outcome"],
+            "cancelled",
+            "the agent gets what ACP lets it get"
+        );
+        assert_eq!(
+            broker.pending_len(),
+            0,
+            "the card is resolved — neither pending nor an error"
+        );
+    }
+
+    /// Review A2a #10 — two options cannot share the id the answer names:
+    /// the first match would win, and the card and the daemon would then
+    /// disagree about which one was pressed.
+    #[test]
+    fn a_request_repeating_an_option_id_is_refused_at_registration() {
+        let (broker, _sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        let error = match broker.register(
+            69,
+            permission_with_kinds("dup-id", &[("x", "allow_once"), ("x", "allow_always")]),
+            &runtime,
+        ) {
+            Ok(_) => panic!("two options cannot share an id the answer names"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "permission request has two options with the id 'x'"
+        );
+        assert_eq!(broker.pending_len(), 0, "a refused request parks nothing");
     }
 
     #[test]

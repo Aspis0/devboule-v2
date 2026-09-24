@@ -103,6 +103,12 @@
   background: var(--danger);
 }
 
+/* A durable grant wears the allowance's colour; the words carry the
+   duration. */
+.permission-card-allowed_always {
+  background: var(--green);
+}
+
 /* An answered card whose outcome the daemon did not name: it is not a denial
    and must not wear one's colour, so the dot goes neutral. */
 .permission-card-unclaimed {

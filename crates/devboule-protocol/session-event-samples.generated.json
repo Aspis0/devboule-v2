@@ -180,7 +180,18 @@
     },
     "env": [],
     "isChooser": true,
-    "options": [],
+    "options": [
+      {
+        "kind": "allow_once",
+        "name": "Alpha",
+        "optionId": "alpha"
+      },
+      {
+        "kind": "allow_once",
+        "name": "Beta",
+        "optionId": "beta"
+      }
+    ],
     "origin": {
       "kind": "unknown"
     },

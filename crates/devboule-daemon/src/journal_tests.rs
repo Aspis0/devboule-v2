@@ -810,7 +810,7 @@ fn a_preset_spelled_creation_card_hydrates_on_replay() {
         }],
         is_chooser: None,
         origin: devboule_protocol::SessionOrigin::local(),
-        create_agent: Some(devboule_protocol::CreateAgentCard {
+        create_agent: Some(Box::new(devboule_protocol::CreateAgentCard {
             creator_session_id: "s.p.card".to_string(),
             provider: "claude".to_string(),
             profile: "design".to_string(),
@@ -826,7 +826,7 @@ fn a_preset_spelled_creation_card_hydrates_on_replay() {
                 live_agent_sessions: 1,
                 max_live_agent_sessions: 8,
             },
-        }),
+        })),
     };
     // The rename, applied to the serialized frame: exactly the bytes an
     // older daemon journalled, before `profile` existed and before `tools`

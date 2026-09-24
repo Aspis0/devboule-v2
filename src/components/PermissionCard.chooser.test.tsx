@@ -41,6 +41,18 @@ const standardRequest: PermissionRequest = {
   ],
 };
 
+/** A chooser whose second option grants for good. */
+const durableChooserRequest: PermissionRequest = {
+  type: "permission_request",
+  toolCallId: "tool-durable",
+  title: "Pick a region",
+  isChooser: true,
+  options: [
+    { optionId: "opt-once", name: "Alpha", kind: "allow_once" },
+    { optionId: "opt-always", name: "Beta, always", kind: "allow_always" },
+  ],
+};
+
 async function renderCard(request: PermissionRequest) {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -129,6 +141,41 @@ describe("PermissionCard chooser answers", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("a durable choice reads as allowed always and names the option picked", async () => {
+    const { root, card } = await renderCard(durableChooserRequest);
+    const always = findButton(card, "Beta, always");
+    if (always === undefined) throw new Error("the durable option button did not render");
+
+    await act(async () => always.click());
+
+    // The journal's rule is the card's rule: the granted kind is what the
+    // resolved state says, never a one-shot constant.
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Allowed always \u00b7 running",
+    );
+    expect(card.querySelector(".permission-card-choice")?.textContent).toBe("Chosen: Beta, always");
+
+    await act(async () => root.unmount());
+  });
+
+  it("Deny on a chooser with no reject option resolves as Denied, with no error", async () => {
+    const { root, card } = await renderCard(chooserRequest);
+    const deny = findButton(card, "Deny");
+    if (deny === undefined) throw new Error("the kept Deny button did not render");
+
+    await act(async () => deny.click());
+
+    // ACP's only refusal for this request is the cancellation the daemon
+    // delivers — an answer, so the card reads Denied: not an error slot,
+    // not back to waiting.
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Denied \u2014 the turn continues without it",
+    );
+    expect(card.querySelector("[role=alert]")).toBeNull();
+
+    await act(async () => root.unmount());
+  });
 });
 
 describe("optionOutcome", () => {
@@ -138,5 +185,12 @@ describe("optionOutcome", () => {
     expect(optionOutcome("allow_always")).toBe("allow_once");
     expect(optionOutcome("reject_once")).toBe("deny");
     expect(optionOutcome("reject_always")).toBe("deny");
+  });
+
+  it("never claims a grant for a kind it does not know", () => {
+    // Fail closed: an unknown kind is never posted, or styled, as a grant —
+    // the daemon validates the pairing either way.
+    expect(optionOutcome("info")).toBe("deny");
+    expect(optionOutcome("editor")).toBe("deny");
   });
 });

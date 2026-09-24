@@ -700,13 +700,6 @@ pub struct FinishArtifact {
 /// so a reconnecting client can tell a recreated process from the stream it
 /// left. Putting generation on every output chunk would change the Channel
 /// payload the frontend already parses.
-///
-/// Each variant's fields are a frame's fields, and every construction and
-/// pattern site in this crate names them — boxing one of them to shrink the
-/// enum would ripple through all of them. `PermissionRequest` also already
-/// sits within a few bytes of the size lint's difference threshold, so the
-/// next wire field would trip it anyway.
-#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(
     tag = "type",
@@ -967,13 +960,14 @@ pub enum SessionEvent {
         env: Option<Vec<PermissionEnvVar>>,
         options: Vec<PermissionOption>,
         /// The daemon's chooser verdict, computed from `options` by the same
-        /// rule the broker's auto-answer uses (`is_allow_chooser`): the same
-        /// allow kind offered twice means the agent is asking which one to
-        /// use, so the app renders one control per option instead of the
-        /// ordinary pair. `Some(true)` exactly when the rule fired; absent
-        /// otherwise — an ordinary permission, or a frame from a daemon
-        /// older than this field, which the app renders as the ordinary
-        /// card. The app never re-derives the rule from the option list.
+        /// rule the broker's auto-answer uses (`options_form_a_chooser`): the
+        /// same kind offered twice — allow or reject — means the agent is
+        /// asking which one to use, so the app renders one control per option
+        /// instead of the ordinary pair. `Some(true)` exactly when the rule
+        /// fired; absent otherwise — an ordinary permission, or a frame from
+        /// a daemon older than this field, which the app renders as the
+        /// ordinary card. The app never re-derives the rule from the option
+        /// list.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         is_chooser: Option<bool>,
         /// The origin of the session this request belongs to. Always on the
@@ -992,8 +986,15 @@ pub enum SessionEvent {
         /// *what* is being created. Absent on every other permission request,
         /// which is why it is an extension of this variant and not a variant of
         /// its own (see [`CreateAgentCard`]).
+        ///
+        /// Boxed after measurement: this variant is the wire enum's largest —
+        /// 377 bytes against `AgentToolCall`'s 176 (the split clippy flagged
+        /// the enum for), with this payload alone `size_of` 152 of the enum's
+        /// 384. `Option<Box<_>>` holds the payload at 8 and the enum at 240,
+        /// which clears the lint without an `#[allow]` that would silence it
+        /// for every variant added later.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        create_agent: Option<CreateAgentCard>,
+        create_agent: Option<Box<CreateAgentCard>>,
     },
     /// The pending permission is no longer waiting (allow, deny, timeout, or
     /// cancel). `tool_call_id` matches the request the UI is displaying.

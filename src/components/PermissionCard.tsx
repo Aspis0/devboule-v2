@@ -7,12 +7,13 @@ import { ErrorText } from "./ErrorText";
 import type { DaemonConnectionState, PermissionRequest, SessionOrigin } from "../types/ipc";
 import "./PermissionCard.css";
 
-export type PermissionState = "waiting" | "submitting" | "allowed" | "denied";
+export type PermissionState = "waiting" | "submitting" | "allowed" | "allowed_always" | "denied";
 
 export const PERMISSION_LABELS: Record<PermissionState, string> = {
   waiting: "Waiting on you",
   submitting: "Sending decision…",
   allowed: "Allowed once · running",
+  allowed_always: "Allowed always · running",
   denied: "Denied — the turn continues without it",
 };
 
@@ -456,11 +457,22 @@ export function PermissionCard({
               optionId,
             )));
       if (!mountedRef.current || generationRef.current !== generation) return;
-      setPermission(outcome === "allow_once" ? "allowed" : "denied");
-      if (optionId !== undefined) {
-        setLocalChoice(
-          request.options.find((option) => option.optionId === optionId)?.name ?? null,
-        );
+      const chosen =
+        optionId === undefined
+          ? undefined
+          : request.options.find((option) => option.optionId === optionId);
+      // The granted kind is what the label claims: a durable grant the
+      // person named reads as durable, never as a one-shot — the same rule
+      // the journal keeps (review A2a #2).
+      setPermission(
+        outcome === "deny"
+          ? "denied"
+          : chosen?.kind === "allow_always"
+            ? "allowed_always"
+            : "allowed",
+      );
+      if (chosen !== undefined) {
+        setLocalChoice(chosen.name);
       }
       onResolved?.(sessionId, request.toolCallId);
     } catch (cause) {
