@@ -463,6 +463,8 @@ impl ConnHandle {
                 | SessionEvent::AgentToolCall { .. }
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
+                | SessionEvent::ContextUsage { .. }
+                | SessionEvent::PlanUsage { .. }
                 | SessionEvent::AgentTaskStarted { .. }
                 | SessionEvent::AgentTaskNotification { .. }
                 | SessionEvent::AgentBackgroundTasksChanged { .. }
@@ -711,15 +713,16 @@ fn pull_live_agent_replay_events(
                                 view.ingest(&value)
                             } else if replay.is_pi {
                                 crate::pi_view::events_from_line(&value)
-                            } else if let Some(event) =
-                                crate::acp_view::view_from_envelope(&value, "")
-                            {
-                                vec![event]
                             } else {
-                                let view = replay.claude_view.get_or_insert_with(|| {
-                                    crate::claude_view::ClaudeView::new(None)
-                                });
-                                view.ingest(&value)
+                                let views = crate::acp_view::view_from_envelope(&value, "");
+                                if !views.is_empty() {
+                                    views
+                                } else {
+                                    let view = replay.claude_view.get_or_insert_with(|| {
+                                        crate::claude_view::ClaudeView::new(None)
+                                    });
+                                    view.ingest(&value)
+                                }
                             }
                         }
                         Err(error) => {
@@ -952,9 +955,14 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
             })
             .collect();
         let cursor_seq = cursor.unwrap_or(0);
-        for ((generation, seq), event) in &stream.transcript_agent_reports {
+        for ((generation, seq), row_events) in &stream.transcript_agent_reports {
             if transcript_row_owed(*generation, *seq, pull.generation, cursor_seq) {
-                replay.push(((*generation, *seq), event.clone()));
+                // One row can hold several views (a finish and the context
+                // reading off the same frame); `sort_by_key` is stable, so
+                // they reach the wire in the order the view produced them.
+                for event in row_events {
+                    replay.push(((*generation, *seq), event.clone()));
+                }
             }
         }
         replay.sort_by_key(|(key, _)| *key);

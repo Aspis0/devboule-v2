@@ -35,13 +35,14 @@ pub(crate) fn classify_line(value: &serde_json::Value) -> Option<AcpLineKind> {
     }
 }
 
-/// Derive the UI view from an inbound envelope. `None` means we do not model
+/// Derive the UI views from an inbound envelope. Empty means we do not model
 /// this message yet; the envelope is still the source of truth and must be
-/// kept.
+/// kept. Most envelopes model to one event; a prompt response models the
+/// finish **and** the context reading it proves.
 pub(crate) fn view_from_envelope(
     value: &serde_json::Value,
     expected_session_id: &str,
-) -> Option<SessionEvent> {
+) -> Vec<SessionEvent> {
     view_from_envelope_in(value, expected_session_id, None)
 }
 
@@ -49,18 +50,24 @@ pub(crate) fn view_from_envelope_in(
     value: &serde_json::Value,
     expected_session_id: &str,
     cwd: Option<&Path>,
-) -> Option<SessionEvent> {
+) -> Vec<SessionEvent> {
     if value.get("method").and_then(serde_json::Value::as_str) == Some("session/update") {
-        return view_from_session_update(value, expected_session_id, cwd);
+        return view_from_session_update(value, expected_session_id, cwd)
+            .into_iter()
+            .collect();
     }
     if value.get("method").and_then(serde_json::Value::as_str) == Some("_x.ai/models/update") {
-        let params = value.get("params")?;
-        return session_manifest_from_models_update(params, None);
+        let Some(params) = value.get("params") else {
+            return Vec::new();
+        };
+        return session_manifest_from_models_update(params, None)
+            .into_iter()
+            .collect();
     }
     if classify_line(value) == Some(AcpLineKind::Response) {
-        return view_from_prompt_response(value, expected_session_id);
+        return views_from_prompt_response(value, expected_session_id);
     }
-    None
+    Vec::new()
 }
 
 fn view_from_session_update(
@@ -225,6 +232,51 @@ fn view_from_prompt_response(
         model_id,
         usage,
     })
+}
+
+/// The finish, then the context reading off the same prompt response.
+///
+/// `used` is `_meta.totalTokens` (with the `result.usage` fallback the finish
+/// already takes). grok's `inputTokens` **already includes** the cached read
+/// — measured on `fixtures/wire/grok-v1.jsonl`: the `response_completed`
+/// frame's `input_tokens` 14,737 + `cache_read_input_tokens` 6,016 =
+/// `_meta.inputTokens` 20,753, and `totalTokens` 20,783 = input + output — so
+/// the cache is never added again here. The window lives on the vendor model
+/// list (`_meta.totalContextTokens`), not on this response, so
+/// `max_tokens` is absent and the app reads the manifest entry of this same
+/// `model_id`.
+fn views_from_prompt_response(
+    value: &serde_json::Value,
+    expected_session_id: &str,
+) -> Vec<SessionEvent> {
+    let Some(finish) = view_from_prompt_response(value, expected_session_id) else {
+        return Vec::new();
+    };
+    let model_id = match &finish {
+        SessionEvent::AgentFinished { model_id, .. } => model_id.clone(),
+        _ => None,
+    };
+    let mut events = vec![finish];
+    let result = value.get("result").expect("prompt response checked above");
+    let used_tokens = result
+        .get("_meta")
+        .and_then(usage_from_meta)
+        .and_then(|usage| usage.total_tokens)
+        .or_else(|| {
+            result
+                .get("usage")
+                .and_then(usage_from_meta)
+                .and_then(|usage| usage.total_tokens)
+        });
+    if let Some(used_tokens) = used_tokens {
+        events.push(SessionEvent::ContextUsage {
+            model_id,
+            used_tokens,
+            max_tokens: None,
+            live: false,
+        });
+    }
+    events
 }
 
 fn text_from_content(content: Option<&serde_json::Value>) -> Option<&str> {
@@ -1216,6 +1268,15 @@ mod tests {
         serde_json::from_str(line).expect("probe json")
     }
 
+    /// The one view of an envelope that models to exactly one event. A second
+    /// event here would mean an envelope grew a meaning the asserting test
+    /// does not describe.
+    fn one_view(views: Vec<SessionEvent>) -> SessionEvent {
+        let mut views = views;
+        assert_eq!(views.len(), 1, "expected exactly one view, got {views:?}");
+        views.pop().expect("one view")
+    }
+
     #[test]
     fn request_with_id_is_not_classified_as_a_response() {
         let line = parse(
@@ -1234,7 +1295,7 @@ mod tests {
         let line = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Reply with exactly one word: PONG"},"_meta":{"modelId":"grok-4.6","promptIndex":0}}}}"#,
         );
-        let view = view_from_envelope(&line, SESSION).expect("user chunk is modeled");
+        let view = one_view(view_from_envelope(&line, SESSION));
         assert_eq!(
             view,
             SessionEvent::AgentUserMessage {
@@ -1258,8 +1319,8 @@ mod tests {
         let second = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":" user"}}}}"#,
         );
-        let a = view_from_envelope(&first, SESSION).expect("thought chunk");
-        let b = view_from_envelope(&second, SESSION).expect("thought chunk");
+        let a = one_view(view_from_envelope(&first, SESSION));
+        let b = one_view(view_from_envelope(&second, SESSION));
         assert_eq!(
             a,
             SessionEvent::AgentThought {
@@ -1288,8 +1349,8 @@ mod tests {
         let second = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ONG"}}}}"#,
         );
-        let a = view_from_envelope(&first, SESSION).expect("message chunk");
-        let b = view_from_envelope(&second, SESSION).expect("message chunk");
+        let a = one_view(view_from_envelope(&first, SESSION));
+        let b = one_view(view_from_envelope(&second, SESSION));
         assert_eq!(
             a,
             SessionEvent::AgentMessage {
@@ -1315,8 +1376,8 @@ mod tests {
         let line = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"compact","description":"Compress conversation history to save context window","input":{"hint":"optional context"}}]}}}"#,
         );
-        match view_from_envelope(&line, SESSION) {
-            Some(SessionEvent::AvailableCommands { commands }) => {
+        match view_from_envelope(&line, SESSION).as_slice() {
+            [SessionEvent::AvailableCommands { commands }] => {
                 assert_eq!(commands.len(), 1);
                 assert_eq!(commands[0].name, "compact");
                 assert_eq!(
@@ -1334,21 +1395,62 @@ mod tests {
         let line = parse(
             r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","modelId":"grok-4.6","inputTokens":18883,"outputTokens":43,"totalTokens":18926}}}"#,
         );
-        match view_from_envelope(&line, SESSION) {
-            Some(SessionEvent::AgentFinished {
+        match view_from_envelope(&line, SESSION).as_slice() {
+            [SessionEvent::AgentFinished {
                 stop_reason,
                 model_id,
                 usage,
                 ..
-            }) => {
+            }, SessionEvent::ContextUsage {
+                model_id: context_model,
+                used_tokens,
+                max_tokens,
+                live,
+            }] => {
                 assert_eq!(stop_reason, "end_turn");
                 assert_eq!(model_id.as_deref(), Some("grok-4.6"));
-                let usage = usage.expect("usage from _meta");
+                let usage = usage.as_ref().expect("usage from _meta");
                 assert_eq!(usage.input_tokens, Some(18883));
                 assert_eq!(usage.output_tokens, Some(43));
                 assert_eq!(usage.total_tokens, Some(18926));
+                // The finish is followed by the meter's reading of the same
+                // response: `totalTokens`, no window on the frame, end of turn.
+                assert_eq!(context_model.as_deref(), Some("grok-4.6"));
+                assert_eq!(*used_tokens, 18926);
+                assert_eq!(*max_tokens, None);
+                assert!(!live);
             }
-            other => panic!("expected agent finished, got {other:?}"),
+            other => panic!("expected agent finished then context usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn measured_prompt_response_reports_context_usage_with_cache_already_inside() {
+        // `fixtures/wire/grok-v1.jsonl` line 100: the prompt response `_meta`
+        // of the recorded run. That capture is a different session than the
+        // probe's `SESSION` const, so the gate gets the id the frame itself
+        // carries.
+        let line = measured_raw(GROK_CAPTURE, r#""id":3,"result":{"stopReason"#);
+        let session = line["result"]["_meta"]["sessionId"]
+            .as_str()
+            .expect("measured session id");
+        match view_from_envelope(&line, session).as_slice() {
+            [SessionEvent::AgentFinished { .. }, SessionEvent::ContextUsage {
+                model_id,
+                used_tokens,
+                max_tokens,
+                live,
+            }] => {
+                assert_eq!(model_id.as_deref(), Some("grok-4.6"));
+                // `totalTokens` 20,783 = input 20,753 + output 30, and the
+                // input already contains the 6,016 cached reads (the
+                // `response_completed` frame's 14,737 + 6,016 = 20,753) —
+                // adding the cache again would nearly double the meter.
+                assert_eq!(*used_tokens, 20_783);
+                assert_eq!(*max_tokens, None);
+                assert!(!live);
+            }
+            other => panic!("expected finish then context usage, got {other:?}"),
         }
     }
 
@@ -1357,7 +1459,7 @@ mod tests {
         let line = parse(
             r#"{"jsonrpc":"2.0","method":"_x.ai/mcp/servers_updated","params":{"mcpServers":[]}}"#,
         );
-        assert!(view_from_envelope(&line, SESSION).is_none());
+        assert!(view_from_envelope(&line, SESSION).is_empty());
         assert_eq!(line["method"], "_x.ai/mcp/servers_updated");
         assert_eq!(
             classify_line(&line),
@@ -1372,7 +1474,7 @@ mod tests {
         let line = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"other","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"no"}}}}"#,
         );
-        assert!(view_from_envelope(&line, SESSION).is_none());
+        assert!(view_from_envelope(&line, SESSION).is_empty());
     }
 
     /// A shape demonstration on SYNTHETIC input, not a measurement.
@@ -1394,9 +1496,13 @@ mod tests {
         }
         fn view_len(value: &serde_json::Value) -> usize {
             view_from_envelope(value, SESSION)
-                .and_then(|view| serde_json::to_vec(&view).ok())
-                .map(|bytes| bytes.len())
-                .unwrap_or(0)
+                .iter()
+                .map(|view| {
+                    serde_json::to_vec(view)
+                        .map(|bytes| bytes.len())
+                        .unwrap_or(0)
+                })
+                .sum()
         }
 
         // Thought-chunk envelopes in recon/probes/grok-acp-fullcaps.txt are
@@ -1640,7 +1746,7 @@ mod tests {
         assert_eq!(response["result"], serde_json::json!({}));
 
         let private = measured_raw(QWEN_CAPTURE, "qwen/notify/session/mode-update");
-        assert!(view_from_envelope(&private, result["sessionId"].as_str().unwrap()).is_none());
+        assert!(view_from_envelope(&private, result["sessionId"].as_str().unwrap()).is_empty());
 
         let standard = serde_json::json!({
             "jsonrpc": "2.0",
@@ -1966,7 +2072,7 @@ mod tests {
         let envelope = parse(&format!(
             r#"{{"jsonrpc":"2.0","method":"_x.ai/models/update","params":{GROK_MODELS}}}"#
         ));
-        let view = view_from_envelope(&envelope, SESSION).expect("models update is modeled");
+        let view = one_view(view_from_envelope(&envelope, SESSION));
         let SessionEvent::SessionManifest {
             current_model_id, ..
         } = view
@@ -1982,16 +2088,16 @@ mod tests {
         let line = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"Read lib.rs","status":"pending","kind":"read","locations":[{"path":"C:\\work\\src\\lib.rs","line":12}]}}}"#,
         );
-        match view_from_envelope_in(&line, SESSION, Some(cwd)) {
-            Some(SessionEvent::AgentToolCall {
+        match view_from_envelope_in(&line, SESSION, Some(cwd)).as_slice() {
+            [SessionEvent::AgentToolCall {
                 tool_call_id,
                 kind,
                 locations,
                 ..
-            }) => {
+            }] => {
                 assert_eq!(tool_call_id, "call-1");
                 assert_eq!(kind.as_deref(), Some("read"));
-                let locations = locations.expect("locations");
+                let locations = locations.as_ref().expect("locations");
                 assert_eq!(locations.len(), 1);
                 assert_eq!(
                     locations[0].path,
@@ -2011,16 +2117,16 @@ mod tests {
         let line = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed","kind":"edit","locations":[{"path":"C:\\work\\src\\main.rs"}]}}}"#,
         );
-        match view_from_envelope_in(&line, SESSION, Some(cwd)) {
-            Some(SessionEvent::AgentToolUpdate {
+        match view_from_envelope_in(&line, SESSION, Some(cwd)).as_slice() {
+            [SessionEvent::AgentToolUpdate {
                 kind,
                 locations,
                 status,
                 ..
-            }) => {
+            }] => {
                 assert_eq!(status.as_deref(), Some("completed"));
                 assert_eq!(kind.as_deref(), Some("edit"));
-                let locations = locations.expect("replaced locations");
+                let locations = locations.as_ref().expect("replaced locations");
                 assert_eq!(locations.len(), 1);
                 assert_eq!(
                     locations[0].path,
@@ -2039,8 +2145,8 @@ mod tests {
         let line = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"in_progress","title":"cargo test"}}}"#,
         );
-        match view_from_envelope(&line, SESSION) {
-            Some(SessionEvent::AgentToolUpdate { title, status, .. }) => {
+        match view_from_envelope(&line, SESSION).as_slice() {
+            [SessionEvent::AgentToolUpdate { title, status, .. }] => {
                 assert_eq!(status.as_deref(), Some("in_progress"));
                 assert_eq!(title.as_deref(), Some("cargo test"));
             }
@@ -2049,8 +2155,8 @@ mod tests {
         let untitled = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1"}}}"#,
         );
-        match view_from_envelope(&untitled, SESSION) {
-            Some(SessionEvent::AgentToolUpdate { title, .. }) => {
+        match view_from_envelope(&untitled, SESSION).as_slice() {
+            [SessionEvent::AgentToolUpdate { title, .. }] => {
                 assert!(title.is_none());
             }
             other => panic!("expected tool update without title, got {other:?}"),
@@ -2058,8 +2164,8 @@ mod tests {
         let empty = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","title":""}}}"#,
         );
-        match view_from_envelope(&empty, SESSION) {
-            Some(SessionEvent::AgentToolUpdate { title, .. }) => {
+        match view_from_envelope(&empty, SESSION).as_slice() {
+            [SessionEvent::AgentToolUpdate { title, .. }] => {
                 assert!(title.is_none(), "empty title must not overwrite the row");
             }
             other => panic!("expected tool update with empty title, got {other:?}"),
@@ -2137,7 +2243,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"image","mimeType":"image/png","data":"AAAA"}}}}"#,
         );
         assert_eq!(unmodeled_content_kind(&image), Some("image".to_string()));
-        assert!(view_from_envelope(&image, "s").is_none());
+        assert!(view_from_envelope(&image, "s").is_empty());
 
         let resource = parse(
             r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"resource"}}}}"#,

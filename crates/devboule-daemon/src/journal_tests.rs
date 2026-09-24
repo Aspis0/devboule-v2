@@ -420,6 +420,63 @@ fn ended_clean_replays_exit_only_and_reports_complete() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The usage events are re-derived from the journaled envelopes on replay
+/// (`journal_replay.rs`), so they must never be journaled as rows of their
+/// own: one envelope row yields each event exactly once. The live road
+/// publishes them with no journal text (`publish_agent_event_with_seq` with
+/// `journal_text = None`), which leaves the replay below as the only place
+/// a double would become visible.
+#[test]
+fn replayed_usage_events_come_back_exactly_once() {
+    let (dir, path) = tmp_journal();
+    let journal = Journal::open(&path).expect("open");
+    let mut record = sample_session("s.replay.usage");
+    record.kind = SessionKind::Codex;
+    journal.upsert_blocking(record).expect("upsert");
+
+    // Measured frames: fixture lines 25-26 (`thread/tokenUsage/updated` and
+    // `account/rateLimits/updated`) of the Codex handshake capture.
+    let frames = crate::codex_view::fixture_frames(include_str!(
+        "../fixtures/wire/codex/E1-step1-handshake.jsonl"
+    ));
+    let token_usage = frames
+        .iter()
+        .find(|frame| {
+            frame.get("method").and_then(serde_json::Value::as_str)
+                == Some("thread/tokenUsage/updated")
+        })
+        .expect("fixture line 25");
+    let rate_limits = frames
+        .iter()
+        .find(|frame| {
+            frame.get("method").and_then(serde_json::Value::as_str)
+                == Some("account/rateLimits/updated")
+        })
+        .expect("fixture line 26");
+    journal
+        .append_blocking(acp_envelope_record("s.replay.usage", 1, 1, token_usage).expect("rec"))
+        .expect("append tokenUsage");
+    journal
+        .append_blocking(acp_envelope_record("s.replay.usage", 1, 2, rate_limits).expect("rec"))
+        .expect("append rateLimits");
+    journal.flush().expect("flush");
+
+    let replay = journal.replay("s.replay.usage").expect("replay");
+    let context = replay
+        .events
+        .iter()
+        .filter(|event| matches!(event, SessionEvent::ContextUsage { .. }))
+        .count();
+    assert_eq!(context, 1, "one envelope row must yield one ContextUsage");
+    let plan = replay
+        .events
+        .iter()
+        .filter(|event| matches!(event, SessionEvent::PlanUsage { .. }))
+        .count();
+    assert_eq!(plan, 1, "one envelope row must yield one PlanUsage");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn enqueue_drops_count_the_exact_payload_sizes() {
     let (dir, path) = tmp_journal();

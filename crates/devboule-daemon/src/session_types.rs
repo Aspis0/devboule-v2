@@ -259,8 +259,11 @@ pub(crate) struct StreamState {
     /// Journaled agent reports for a recovered transcript, keyed by the
     /// record's `(generation, seq)` — seqs restart per generation, so the
     /// pair is the key the whole history orders by — so attach replay can
-    /// interleave them with output.
-    pub(super) transcript_agent_reports: BTreeMap<(u64, u64), SessionEvent>,
+    /// interleave them with output. The value is a `Vec` because one row can
+    /// derive several views: a Claude/pi/ACP finish row yields the finish
+    /// AND the context reading off the same frame, and both ride the row's
+    /// key in view order.
+    pub(super) transcript_agent_reports: BTreeMap<(u64, u64), Vec<SessionEvent>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

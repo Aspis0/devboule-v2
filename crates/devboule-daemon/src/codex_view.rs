@@ -8,9 +8,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use devboule_protocol::{
-    ErrorCode, NoticeSeverity, PermissionOption, SessionEvent, SessionModeStateView,
-    SessionModeView, SessionModel, SessionModelEffort, ToolLocation, TurnUsage, UnattendedState,
-    WireError,
+    ErrorCode, NoticeSeverity, PermissionOption, PlanCredits, PlanWindow, SessionEvent,
+    SessionModeStateView, SessionModeView, SessionModel, SessionModelEffort, ToolLocation,
+    TurnUsage, UnattendedState, WireError,
 };
 use serde_json::Value;
 
@@ -698,9 +698,9 @@ impl CodexView {
             "item/fileChange/outputDelta" => tool_delta(params, "edit"),
             "item/started" => item_event(params.get("item"), false, self.cwd.as_deref()),
             "item/completed" => item_event(params.get("item"), true, self.cwd.as_deref()),
-            "thread/tokenUsage/updated" => {
-                self.note_usage(params.get("tokenUsage"));
-                Vec::new()
+            "thread/tokenUsage/updated" => self.note_usage(params.get("tokenUsage")),
+            "account/rateLimits/updated" => {
+                plan_usage(params.get("rateLimits")).into_iter().collect()
             }
             "turn/completed" => turn_completed(params, self.usage.take()),
             "error" => params
@@ -722,15 +722,22 @@ impl CodexView {
         self.context_window_update.take()
     }
 
-    fn note_usage(&mut self, value: Option<&Value>) {
+    /// Latch the turn's usage for `turn/completed` and, when the frame names a
+    /// total, announce the live context reading. Codex is the one provider
+    /// that reports during the turn, so `live` is `true`; `model_id` stays
+    /// `None` because the frame names no model — its window rides the same
+    /// frame (`modelContextWindow`), which is exactly what Paseo uses
+    /// (`codex-app-server-agent.ts:982-999`, `last.totalTokens` as used).
+    fn note_usage(&mut self, value: Option<&Value>) -> Vec<SessionEvent> {
         let Some(value) = value else {
-            return;
+            return Vec::new();
         };
-        if let Some(context_window) = value.get("modelContextWindow").and_then(Value::as_u64) {
+        let context_window = value.get("modelContextWindow").and_then(Value::as_u64);
+        if let Some(context_window) = context_window {
             self.context_window_update = Some(context_window);
         }
         let Some(last) = value.get("last") else {
-            return;
+            return Vec::new();
         };
         let usage = TurnUsage {
             input_tokens: last.get("inputTokens").and_then(Value::as_u64),
@@ -745,12 +752,74 @@ impl CodexView {
         {
             self.usage = Some(usage);
         }
+        match last.get("totalTokens").and_then(Value::as_u64) {
+            Some(used_tokens) => vec![SessionEvent::ContextUsage {
+                model_id: None,
+                used_tokens,
+                max_tokens: context_window,
+                live: true,
+            }],
+            // No total was sent, so there is nothing to show: the meter keeps
+            // its previous reading instead of receiving a stand-in zero.
+            None => Vec::new(),
+        }
     }
 }
 
 #[cfg(test)]
 pub(crate) fn events_from_envelope(value: &Value) -> Vec<SessionEvent> {
     CodexView::new(None).ingest(value)
+}
+
+/// The plan-usage view of one `account/rateLimits/updated` frame: the plan's
+/// own label, the windows the frame actually carries, and the credits block
+/// when it carries one. No token counter and no account id crosses here.
+fn plan_usage(limits: Option<&Value>) -> Option<SessionEvent> {
+    let limits = limits?;
+    let windows = ["primary", "secondary"]
+        .into_iter()
+        .filter_map(|key| limits.get(key))
+        .filter_map(plan_window)
+        .collect::<Vec<_>>();
+    let credits = limits.get("credits").map(|credits| PlanCredits {
+        balance: credits
+            .get("balance")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        unlimited: credits
+            .get("unlimited")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    });
+    Some(SessionEvent::PlanUsage {
+        provider_id: "codex".to_string(),
+        plan_label: limits
+            .get("planType")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        windows,
+        credits,
+    })
+}
+
+/// One window of a rate-limit frame. A block without its duration has no
+/// label and no measured frame has ever been without it, so it is dropped
+/// rather than shown half-named.
+fn plan_window(window: &Value) -> Option<PlanWindow> {
+    let duration_mins = window.get("windowDurationMins").and_then(Value::as_u64)?;
+    let used_percent = match window.get("usedPercent") {
+        Some(Value::Number(number)) if number.is_u64() => number.as_u64(),
+        // The popover rounds percents for display anyway; rounding here keeps
+        // a fractional `usedPercent` (82.5) from being dropped as "no percent"
+        // while the wire field stays integral.
+        Some(Value::Number(number)) => number.as_f64().map(|value| value.round() as u64),
+        _ => None,
+    };
+    Some(PlanWindow {
+        duration_mins,
+        used_percent,
+        resets_at: window.get("resetsAt").and_then(Value::as_i64),
+    })
 }
 
 /// Shared by the codex view and client tests to replay a measured wire file.
@@ -968,6 +1037,7 @@ mod tests {
         CodexState, CodexView,
     };
     use devboule_protocol::SessionEvent;
+    use serde_json::Value;
 
     fn response_frame(source: &str, id: u64) -> serde_json::Value {
         fixture_frames(source)
@@ -1272,6 +1342,77 @@ mod tests {
             SessionEvent::AgentFinished { usage: Some(usage), .. }
                 if usage.total_tokens == Some(21059)
         )));
+    }
+
+    #[test]
+    fn measured_frames_yield_a_live_context_reading_and_the_plan_windows() {
+        // Fixture lines 25-26: the first `thread/tokenUsage/updated` and the
+        // first `account/rateLimits/updated` of the capture — the two frames
+        // this view models that the transcript line does not consume.
+        let frames = fixture_frames(include_str!(
+            "../fixtures/wire/codex/E1-step1-handshake.jsonl"
+        ));
+        let token_usage = frames
+            .iter()
+            .find(|frame| {
+                frame.get("method").and_then(Value::as_str) == Some("thread/tokenUsage/updated")
+            })
+            .expect("fixture line 25");
+        let rate_limits = frames
+            .iter()
+            .find(|frame| {
+                frame.get("method").and_then(Value::as_str) == Some("account/rateLimits/updated")
+            })
+            .expect("fixture line 26");
+        let mut view = CodexView::new(None);
+        assert_eq!(
+            view.ingest(token_usage),
+            vec![SessionEvent::ContextUsage {
+                model_id: None,
+                used_tokens: 21_059,
+                max_tokens: Some(258_400),
+                live: true,
+            }]
+        );
+        // `resetsAt` values are Unix seconds (see `PlanWindow`'s doc), and
+        // every window here is one the frame itself carried.
+        assert_eq!(
+            view.ingest(rate_limits),
+            vec![SessionEvent::PlanUsage {
+                provider_id: "codex".to_string(),
+                plan_label: Some("plus".to_string()),
+                windows: vec![
+                    devboule_protocol::PlanWindow {
+                        duration_mins: 300,
+                        used_percent: Some(82),
+                        resets_at: Some(1_789_057_213),
+                    },
+                    devboule_protocol::PlanWindow {
+                        duration_mins: 10_080,
+                        used_percent: Some(39),
+                        resets_at: Some(1_789_600_427),
+                    },
+                ],
+                credits: Some(devboule_protocol::PlanCredits {
+                    balance: Some("0".to_string()),
+                    unlimited: false,
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_token_usage_frame_without_a_total_announces_nothing() {
+        // The rule the meter lives by: a missing number shows nothing, never
+        // a stand-in zero.
+        let mut view = CodexView::new(None);
+        let events = view.ingest(&parse(
+            r#"{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"th","tokenUsage":{"last":{"inputTokens":5,"outputTokens":1},"modelContextWindow":1000}}}"#,
+        ));
+        assert!(events.is_empty());
+        // The window still reaches the manifest latch — that is a separate
+        // road this frame must keep feeding.
+        assert_eq!(view.take_context_window_update(), Some(1000));
     }
 
     fn parse(value: &str) -> serde_json::Value {

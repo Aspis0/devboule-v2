@@ -2358,6 +2358,8 @@ fn live_attach_ends_with_snapshot_output_then_exit() {
             SessionEvent::AgentReported { .. } => "agent_reported",
             SessionEvent::AgentCreated { .. } => "agent_created",
             SessionEvent::ChildFinished { .. } => "child_finished",
+            SessionEvent::ContextUsage { .. } => "context_usage",
+            SessionEvent::PlanUsage { .. } => "plan_usage",
         })
         .collect();
     assert_eq!(kinds, ["snapshot", "output", "exit"]);
@@ -2639,6 +2641,8 @@ fn recovered_pull_ends_with_recovered_not_exit() {
             SessionEvent::AgentReported { .. } => "agent_reported",
             SessionEvent::AgentCreated { .. } => "agent_created",
             SessionEvent::ChildFinished { .. } => "child_finished",
+            SessionEvent::ContextUsage { .. } => "context_usage",
+            SessionEvent::PlanUsage { .. } => "plan_usage",
         })
         .collect();
     assert_eq!(kinds, ["output", "recovered"]);

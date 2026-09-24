@@ -131,6 +131,13 @@
     "type": "child_finished"
   },
   {
+    "live": true,
+    "maxTokens": 200000,
+    "modelId": "grok-4.6",
+    "type": "context_usage",
+    "usedTokens": 76000
+  },
+  {
     "type": "detached"
   },
   {
@@ -183,6 +190,25 @@
   {
     "toolCallId": "",
     "type": "permission_resolved"
+  },
+  {
+    "credits": {
+      "balance": "0",
+      "unlimited": false
+    },
+    "planLabel": "plus",
+    "providerId": "codex",
+    "type": "plan_usage",
+    "windows": [
+      {
+        "durationMins": 300,
+        "resetsAt": 1789057213,
+        "usedPercent": 82
+      },
+      {
+        "durationMins": 10080
+      }
+    ]
   },
   {
     "integrity": {

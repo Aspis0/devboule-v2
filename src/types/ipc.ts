@@ -556,6 +556,26 @@ export interface SessionManifest {
   modes?: SessionModeState;
 }
 
+/** One rate-limit window a plan-usage frame actually carried (protocol
+ * `PlanWindow`). `durationMins` labels the window — Codex sends 300 for the
+ * 5-hour window and 10080 for the weekly one. `resetsAt` is Unix seconds. */
+export interface PlanWindow {
+  durationMins: number;
+  /** Absent when the frame named the window but not its consumption — the
+   * popover then shows no percent, never a stand-in 0. */
+  usedPercent?: number;
+  resetsAt?: number;
+}
+
+/** The credits block of a plan-usage frame, when the frame had one
+ * (protocol `PlanCredits`). */
+export interface PlanCredits {
+  /** The balance exactly as the provider spelled it, when it sent one. */
+  balance?: string;
+  /** Whether the balance is unlimited; false when the frame did not say. */
+  unlimited: boolean;
+}
+
 export type NoticeSeverity = "info" | "warning";
 
 export interface SessionNotice {
@@ -1093,6 +1113,34 @@ export type SessionEvent =
       };
     }
   /**
+   * How full the context window is, in the provider's own words (protocol
+   * `SessionEvent::ContextUsage`). `live` is false when the number is the end
+   * of the last turn rather than a mid-turn push. `maxTokens` is absent when
+   * no frame carried the window; the app may then read the window from the
+   * manifest entry for the SAME `modelId`, never from another model.
+   */
+  | {
+      type: "context_usage";
+      modelId?: string;
+      usedTokens: number;
+      maxTokens?: number;
+      live: boolean;
+    }
+  /**
+   * Plan windows a provider pushed on the wire (protocol
+   * `SessionEvent::PlanUsage`) — today only Codex `account/rateLimits/updated`.
+   * One entry per window the frame carried; a window the frame did not send
+   * is never added, and a missing percent stays missing rather than becoming
+   * zero. Account-scoped: the app keeps the latest event per `providerId`.
+   */
+  | {
+      type: "plan_usage";
+      providerId: string;
+      planLabel?: string;
+      windows: PlanWindow[];
+      credits?: PlanCredits;
+    }
+  /**
    * Echo of the user prompt, one ACP `user_message_chunk` at a time.
    *
    * `author` names who spoke. `messageKind` separately names the part this
@@ -1223,6 +1271,12 @@ export type SessionEvent =
   /** Connection-scoped roster update; not an attach-channel event. */
   | { type: "sessions_snapshot"; sessions: SessionStateSnapshot[] }
   | SessionSnapshot;
+
+/** The `context_usage` member, named for the state and components that carry it. */
+export type ContextUsage = Extract<SessionEvent, { type: "context_usage" }>;
+
+/** The `plan_usage` member, named for the per-provider store that keeps it. */
+export type PlanUsage = Extract<SessionEvent, { type: "plan_usage" }>;
 
 export type DaemonConnectionState =
   | "connected"

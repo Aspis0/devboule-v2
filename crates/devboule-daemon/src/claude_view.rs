@@ -354,12 +354,27 @@ impl ClaudeView {
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| self.current_model.clone());
-        let usage = envelope.get("usage").and_then(usage_from_claude);
-        vec![SessionEvent::AgentFinished {
+        let (usage, context_used) = match envelope.get("usage").and_then(usage_from_claude) {
+            Some(parsed) => (Some(parsed.turn), Some(parsed.context_used)),
+            None => (None, None),
+        };
+        let mut events = vec![SessionEvent::AgentFinished {
             stop_reason,
-            model_id,
+            model_id: model_id.clone(),
             usage,
-        }]
+        }];
+        if let Some(used_tokens) = context_used {
+            // The window lives in the daemon's model catalog, not on this
+            // envelope, so the app takes it from the manifest entry of this
+            // same `model_id`.
+            events.push(SessionEvent::ContextUsage {
+                model_id,
+                used_tokens,
+                max_tokens: None,
+                live: false,
+            });
+        }
+        events
     }
 
     fn ingest_task_started(&self, envelope: &Value) -> Vec<SessionEvent> {
@@ -689,21 +704,52 @@ fn spawn_depth(envelope: &Value) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
-fn usage_from_claude(usage: &Value) -> Option<TurnUsage> {
+/// What one Claude `usage` object says about a finished turn: the counters
+/// the transcript line renders, and the context total the meter shows.
+///
+/// Claude bills the cache separately, so `input_tokens` excludes it — the
+/// meter adds `cache_read_input_tokens` and `cache_creation_input_tokens`
+/// (and the response itself, which is now in the context) back, the
+/// summation Paseo performs in `readUsageTokenTotal`
+/// (`providers/claude/agent.ts:1860-1870`).
+struct ClaudeUsage {
+    turn: TurnUsage,
+    context_used: u64,
+}
+
+fn usage_from_claude(usage: &Value) -> Option<ClaudeUsage> {
     let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
     let output_tokens = usage.get("output_tokens").and_then(Value::as_u64);
+    let cache_read = usage.get("cache_read_input_tokens").and_then(Value::as_u64);
+    let cache_creation = usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64);
     let thought_tokens = usage
         .get("output_tokens_details")
         .and_then(|details| details.get("thinking_tokens"))
         .and_then(Value::as_u64);
-    if input_tokens.is_none() && output_tokens.is_none() && thought_tokens.is_none() {
+    if input_tokens.is_none()
+        && output_tokens.is_none()
+        && thought_tokens.is_none()
+        && cache_read.is_none()
+        && cache_creation.is_none()
+    {
         return None;
     }
-    Some(TurnUsage {
-        input_tokens,
-        output_tokens,
-        total_tokens: None,
-        thought_tokens,
+    // Only what the frame sent is added; a counter it omitted contributes
+    // nothing rather than a stand-in zero.
+    let context_used = input_tokens.unwrap_or(0)
+        + cache_read.unwrap_or(0)
+        + cache_creation.unwrap_or(0)
+        + output_tokens.unwrap_or(0);
+    Some(ClaudeUsage {
+        turn: TurnUsage {
+            input_tokens,
+            output_tokens,
+            total_tokens: None,
+            thought_tokens,
+        },
+        context_used,
     })
 }
 
@@ -1795,14 +1841,58 @@ mod tests {
                 model_id,
                 usage,
                 ..
-            }] => {
+            }, SessionEvent::ContextUsage { .. }] => {
                 assert_eq!(stop_reason, "end_turn");
                 assert_eq!(model_id.as_deref(), Some("claude-opus-5[1m]"));
                 let usage = usage.as_ref().expect("usage");
                 assert_eq!(usage.input_tokens, Some(4));
                 assert_eq!(usage.output_tokens, Some(230));
             }
-            other => panic!("expected AgentFinished, got {other:?}"),
+            other => panic!("expected AgentFinished then ContextUsage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn result_context_usage_adds_the_cache_tokens_input_tokens_excludes() {
+        // Source: Claude's stream-json `result.usage` field names
+        // (`input_tokens`, `cache_read_input_tokens`,
+        // `cache_creation_input_tokens`, `output_tokens`). No recorded result
+        // envelope with cache counters exists under `fixtures/wire` — the only
+        // capture there is `claude-set-mode.jsonl`, which has none — so the
+        // frame is built from the schema; the summation follows Paseo's
+        // `readUsageTokenTotal` (`providers/claude/agent.ts:1860-1870`).
+        let mut mapper = view();
+        let _ = mapper.ingest(&init_frame());
+        let events = mapper.ingest(&json!({
+            "type": "result",
+            "subtype": "success",
+            "stop_reason": "end_turn",
+            "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
+            "usage": {
+                "input_tokens": 500,
+                "cache_read_input_tokens": 1200,
+                "cache_creation_input_tokens": 240,
+                "output_tokens": 60,
+                "output_tokens_details": {"thinking_tokens": 5}
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentFinished { usage, .. }, SessionEvent::ContextUsage {
+                model_id,
+                used_tokens,
+                max_tokens,
+                live,
+            }] => {
+                // The transcript line keeps Claude's bare input; the meter's
+                // number is the full context: 500 + 1,200 + 240 + 60.
+                let usage = usage.as_ref().expect("usage");
+                assert_eq!(usage.input_tokens, Some(500));
+                assert_eq!(*used_tokens, 2_000);
+                assert_eq!(model_id.as_deref(), Some("claude-opus-5[1m]"));
+                assert_eq!(*max_tokens, None);
+                assert!(!live);
+            }
+            other => panic!("expected AgentFinished then ContextUsage, got {other:?}"),
         }
     }
 

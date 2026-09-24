@@ -816,7 +816,9 @@ impl SessionRuntime {
                     let generation = journal_seq.map_or(replay.generation, |(g, _)| g);
                     stream
                         .transcript_agent_reports
-                        .insert((generation, seq), event);
+                        .entry((generation, seq))
+                        .or_default()
+                        .push(event);
                 }
                 SessionEvent::AgentMessage { .. }
                 | SessionEvent::AgentUserMessage { .. }
@@ -837,15 +839,21 @@ impl SessionRuntime {
                 | SessionEvent::SessionNotice { .. }
                 | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentCreated { .. }
-                | SessionEvent::ChildFinished { .. } => {
+                | SessionEvent::ChildFinished { .. }
+                | SessionEvent::ContextUsage { .. }
+                | SessionEvent::PlanUsage { .. } => {
                     // Same key as AgentReported above: (generation, seq),
-                    // so colliding seqs across the resume seam coexist.
+                    // so colliding seqs across the resume seam coexist. A row
+                    // that derived several views keeps them all, in view
+                    // order — the key is the row, not the event.
                     let Some((generation, seq)) = journal_seq else {
                         continue;
                     };
                     stream
                         .transcript_agent_reports
-                        .insert((generation, seq), event);
+                        .entry((generation, seq))
+                        .or_default()
+                        .push(event);
                 }
                 // Detached names one observer's view and is never journalled;
                 // a replay can only meet it as a no-op marker.
@@ -2425,6 +2433,8 @@ impl SessionRuntime {
                 | SessionEvent::AgentCreated { .. }
                 | SessionEvent::ChildFinished { .. }
                 | SessionEvent::AgentReported { .. }
+                | SessionEvent::ContextUsage { .. }
+                | SessionEvent::PlanUsage { .. }
                 | SessionEvent::Detached => None,
             })
             .collect()

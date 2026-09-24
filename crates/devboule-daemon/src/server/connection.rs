@@ -543,6 +543,8 @@ fn send_pending_event(
             SessionEvent::AgentToolCall { .. } => " agent_tool_call".to_string(),
             SessionEvent::AgentToolUpdate { .. } => " agent_tool_update".to_string(),
             SessionEvent::AgentFinished { .. } => " agent_finished".to_string(),
+            SessionEvent::ContextUsage { .. } => " context_usage".to_string(),
+            SessionEvent::PlanUsage { .. } => " plan_usage".to_string(),
             SessionEvent::AgentTaskStarted { .. } => " agent_task_started".to_string(),
             SessionEvent::AgentTaskNotification { .. } => " agent_task_notification".to_string(),
             SessionEvent::AgentBackgroundTasksChanged { .. } => {

@@ -33,7 +33,7 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
         "toolcall_end" => toolcall_end(value).into_iter().collect(),
         "tool_execution_start" => tool_execution_start(value).into_iter().collect(),
         "tool_execution_end" => tool_execution_end(value).into_iter().collect(),
-        "turn_end" => turn_end(value).into_iter().collect(),
+        "turn_end" => turn_end(value),
         _ => Vec::new(),
     }
 }
@@ -155,21 +155,46 @@ fn tool_result_text(value: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn turn_end(value: &Value) -> Option<SessionEvent> {
-    let message = value.get("message")?;
+/// The turn's finish, then the context reading it proves: pi's own
+/// `usage.totalTokens` is the same sum Codex and grok report, so the meter
+/// shows it as-is (`live: false` — the number is the end of this turn). The
+/// window comes from the model list into the manifest, not from this
+/// message, so `max_tokens` is absent and the app reads the manifest entry
+/// of this same `model_id`.
+///
+/// `AgentFinished` comes first because the pi client hands its journal
+/// sequence to the first event of a line and the finish is what the
+/// transcript cursor belongs to.
+fn turn_end(value: &Value) -> Vec<SessionEvent> {
+    let Some(message) = value.get("message") else {
+        return Vec::new();
+    };
+    let model_id = message
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let usage_value = message.get("usage");
-    Some(SessionEvent::AgentFinished {
+    let mut events = vec![SessionEvent::AgentFinished {
         stop_reason: message
             .get("stopReason")
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string(),
-        model_id: message
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        model_id: model_id.clone(),
         usage: usage_value.and_then(usage_from_pi),
-    })
+    }];
+    if let Some(used_tokens) = usage_value
+        .and_then(|usage| usage.get("totalTokens"))
+        .and_then(Value::as_u64)
+    {
+        events.push(SessionEvent::ContextUsage {
+            model_id,
+            used_tokens,
+            max_tokens: None,
+            live: false,
+        });
+    }
+    events
 }
 
 fn usage_from_pi(value: &Value) -> Option<TurnUsage> {
@@ -256,12 +281,31 @@ mod tests {
         let line = parse(
             r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"OK"}],"api":"openai-completions","provider":"openrouter","model":"z-ai/glm-5.3-flash","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851,"cost":{"input":0.0019386,"output":7.5e-7,"cacheRead":0,"cacheWrite":0,"total":0.00193935}},"stopReason":"stop","timestamp":1788993862485,"responseId":"gen-1788993862-4cxcarrKksRnXEICsFHO","rawStopReason":"stop"},"toolResults":[]}"#,
         );
+        // The finish first — the pi client hands its journal sequence to the
+        // first event of a line — then the meter's reading of the same
+        // `usage.totalTokens`. The window lives in the model list, not on
+        // this message, so it arrives with the manifest instead.
         assert!(matches!(
             events_from_line(&line).as_slice(),
-            [SessionEvent::AgentFinished { stop_reason, model_id, usage }]
-                if stop_reason == "stop"
-                    && model_id.as_deref() == Some("z-ai/glm-5.3-flash")
-                    && usage.as_ref().and_then(|value| value.total_tokens) == Some(25851)
+            [
+                SessionEvent::AgentFinished {
+                    stop_reason,
+                    model_id,
+                    usage
+                },
+                SessionEvent::ContextUsage {
+                    model_id: context_model,
+                    used_tokens,
+                    max_tokens,
+                    live,
+                },
+            ] if stop_reason == "stop"
+                && model_id.as_deref() == Some("z-ai/glm-5.3-flash")
+                && usage.as_ref().and_then(|value| value.total_tokens) == Some(25851)
+                && context_model.as_deref() == Some("z-ai/glm-5.3-flash")
+                && *used_tokens == 25_851
+                && max_tokens.is_none()
+                && !live
         ));
     }
 }

@@ -104,6 +104,32 @@ fn session_event_samples() -> Vec<SessionEvent> {
             model_id: None,
             usage: None,
         },
+        ContextUsage => SessionEvent::ContextUsage {
+            model_id: Some("grok-4.6".to_string()),
+            used_tokens: 76_000,
+            max_tokens: Some(200_000),
+            live: true,
+        },
+        PlanUsage => SessionEvent::PlanUsage {
+            provider_id: "codex".to_string(),
+            plan_label: Some("plus".to_string()),
+            windows: vec![
+                crate::PlanWindow {
+                    duration_mins: 300,
+                    used_percent: Some(82),
+                    resets_at: Some(1_789_057_213),
+                },
+                crate::PlanWindow {
+                    duration_mins: 10_080,
+                    used_percent: None,
+                    resets_at: None,
+                },
+            ],
+            credits: Some(crate::PlanCredits {
+                balance: Some("0".to_string()),
+                unlimited: false,
+            }),
+        },
         AgentCreated => SessionEvent::AgentCreated {
             message_id: Some("agent-created-1".to_string()),
             child_session_id: "s.1.2".to_string(),

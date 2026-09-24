@@ -809,6 +809,40 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
     },
+    /// How full the context window is, in the provider's own words — the
+    /// meter's number, never a guess. A provider that sent no number gets no
+    /// event; the app shows nothing rather than a stand-in zero.
+    ///
+    /// `live` names the source: Codex pushes it during the turn; Claude, pi
+    /// and ACP report at the turn's end, and the popover labels those
+    /// "as of the last turn". `max_tokens` is absent when the view's frame
+    /// carried no window — the app may then take the window from the
+    /// manifest entry of the SAME `model_id`, never from another model.
+    ContextUsage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_id: Option<String>,
+        used_tokens: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_tokens: Option<u64>,
+        live: bool,
+    },
+    /// The account's plan consumption as the provider pushed it — today only
+    /// Codex `account/rateLimits/updated`, which the wire already carried
+    /// before this variant existed. Account-scoped, not session-scoped: the
+    /// app keeps the latest event per provider id.
+    ///
+    /// Carries no token counter and no account id — only what the popover
+    /// shows: the plan's own label, one window per window the frame actually
+    /// sent, and the credits block when the frame had one. A window the
+    /// frame did not send is never added.
+    PlanUsage {
+        provider_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan_label: Option<String>,
+        windows: Vec<PlanWindow>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credits: Option<PlanCredits>,
+    },
     /// An agent asked for, and got, a child session (`S5` §1).
     ///
     /// Published and journaled on the **creator's** session, never on the
@@ -1288,6 +1322,38 @@ pub struct TurnUsage {
     pub total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thought_tokens: Option<u64>,
+}
+
+/// One rate-limit window a plan-usage frame actually carried.
+///
+/// `duration_mins` identifies the window and labels it: Codex sends 300 for
+/// the 5-hour window and 10080 for the weekly one. `resets_at` is Unix
+/// **seconds** — the unit measured in
+/// `fixtures/wire/codex/E1-step1-handshake.jsonl`, where `emittedAtMs`
+/// 1789053466049 precedes `resetsAt` 1789057213 by ~62 min inside a
+/// 300-minute window at 82 % used.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanWindow {
+    pub duration_mins: u64,
+    /// Absent when the frame named the window but not its consumption —
+    /// the app then shows the window and its reset, never a stand-in 0 %.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_percent: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+}
+
+/// The credits block of a plan-usage frame, when the frame had one.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanCredits {
+    /// The balance exactly as the provider spelled it (Codex sends a decimal
+    /// string), carried only when the frame sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<String>,
+    /// Whether the balance is unlimited; `false` when the frame did not say.
+    pub unlimited: bool,
 }
 
 /// One family's resume handle. Terminal sessions always use [`PersistenceKind::None`].

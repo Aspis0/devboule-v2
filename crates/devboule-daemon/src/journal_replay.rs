@@ -372,13 +372,18 @@ pub(super) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                                 gen_events.push(view);
                                 gen_seqs.push(seq);
                             }
-                        } else if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
-                            gen_events.push(view);
-                            gen_seqs.push(seq);
                         } else {
-                            for view in claude_view.ingest(&value) {
-                                gen_events.push(view);
-                                gen_seqs.push(seq);
+                            let views = crate::acp_view::view_from_envelope(&value, "");
+                            if views.is_empty() {
+                                for view in claude_view.ingest(&value) {
+                                    gen_events.push(view);
+                                    gen_seqs.push(seq);
+                                }
+                            } else {
+                                for view in views {
+                                    gen_events.push(view);
+                                    gen_seqs.push(seq);
+                                }
                             }
                         }
                     }
@@ -443,11 +448,16 @@ pub(super) fn replay_session(conn: &Connection, session_id: &str) -> Result<Repl
                         for view in crate::pi_view::events_from_line(&value) {
                             covered_reports.push((seq, view));
                         }
-                    } else if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
-                        covered_reports.push((seq, view));
                     } else {
-                        for view in covered_claude.ingest(&value) {
-                            covered_reports.push((seq, view));
+                        let views = crate::acp_view::view_from_envelope(&value, "");
+                        if views.is_empty() {
+                            for view in covered_claude.ingest(&value) {
+                                covered_reports.push((seq, view));
+                            }
+                        } else {
+                            for view in views {
+                                covered_reports.push((seq, view));
+                            }
                         }
                     }
                 }

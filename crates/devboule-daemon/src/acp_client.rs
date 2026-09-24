@@ -3244,22 +3244,24 @@ impl AcpReader {
                     self.dispatch_sessions_changed(&value, runtime, event_seq);
                     return;
                 }
-                if let Some(view) =
-                    view_from_envelope_in(&value, &self.session_id, Some(self.host.cwd()))
-                {
-                    let view = self.with_provider(view);
-                    if value.get("method").and_then(serde_json::Value::as_str)
-                        == Some("_x.ai/models/update")
-                    {
-                        if let Some(transport) = &self.transport {
-                            let shape = add_vendor_surface(transport.model_switch_shape(), &view);
-                            transport.set_model_switch_shape(shape);
+                let views = view_from_envelope_in(&value, &self.session_id, Some(self.host.cwd()));
+                if !views.is_empty() {
+                    let models_updated = value.get("method").and_then(serde_json::Value::as_str)
+                        == Some("_x.ai/models/update");
+                    for view in views {
+                        let view = self.with_provider(view);
+                        if models_updated && matches!(view, SessionEvent::SessionManifest { .. }) {
+                            if let Some(transport) = &self.transport {
+                                let shape =
+                                    add_vendor_surface(transport.model_switch_shape(), &view);
+                                transport.set_model_switch_shape(shape);
+                            }
                         }
+                        self.publish_at_seq(runtime, view, event_seq);
                     }
-                    self.publish_at_seq(runtime, view, event_seq);
                 } else if let Some(content_type) = unmodeled_content_kind(&value) {
                     // A text-bearing chunk whose content block is not text: the
-                    // view returned `None`. Count and name it so a discarded
+                    // view returned nothing. Count and name it so a discarded
                     // image is not indistinguishable from an absent one.
                     let previous = self.unmodeled_content_count.fetch_add(1, Ordering::Relaxed);
                     if previous == 0 {
@@ -3786,7 +3788,7 @@ impl AcpReader {
             publish_turn_finished(runtime, "error");
             return;
         }
-        if let Some(view) = view_from_envelope_in(value, &self.session_id, Some(self.host.cwd())) {
+        for view in view_from_envelope_in(value, &self.session_id, Some(self.host.cwd())) {
             self.publish_at_seq(runtime, view, event_seq);
         }
     }
