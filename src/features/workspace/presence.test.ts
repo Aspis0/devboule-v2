@@ -243,7 +243,9 @@ describe("presence reporting", () => {
     let hidden = false;
     // A holder, not a bare `let`: the assignment happens inside the
     // subscription callback, which TypeScript's narrowing cannot see.
-    const focusHandlerHolder: { handler: (() => void) | null } = { handler: null };
+    const focusHandlerHolder: {
+      handler: ((event: { payload: boolean }) => void) | null;
+    } = { handler: null };
     const reporter = startPresenceReporting({
       invoke: env.invoke as unknown as PresenceDeps["invoke"],
       window: env.window,
@@ -255,9 +257,9 @@ describe("presence reporting", () => {
       }),
       onWindowFocusChange: (handler) => {
         focusHandlerHolder.handler = handler;
-        return () => {
+        return Promise.resolve(() => {
           focusHandlerHolder.handler = null;
-        };
+        });
       },
     });
     await flush();
@@ -265,7 +267,7 @@ describe("presence reporting", () => {
     // The window hides: no DOM event fires inside WebView2, but the focus
     // change subscription re-asks the state at once.
     hidden = true;
-    focusHandlerHolder.handler?.();
+    focusHandlerHolder.handler?.({ payload: false });
     await flush();
     expect(env.invoke).toHaveBeenCalledWith("session_presence", {
       focusedSessionId: null,
@@ -273,6 +275,63 @@ describe("presence reporting", () => {
     });
     reporter.dispose();
     vi.useRealTimers();
+  });
+
+  it("an older read never overwrites a newer one", async () => {
+    const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
+    const reads: Array<(state: WindowState) => void> = [];
+    const reporter = startPresenceReporting({
+      invoke: env.invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      windowState: (): Promise<WindowState> =>
+        new Promise((resolve) => {
+          reads.push(resolve);
+        }),
+    });
+    await flush();
+    expect(reads.length).toBe(1);
+    // The window hides while the first read is still in flight; a second
+    // read starts (the selection change re-emits).
+    reporter.onSelectionChanged("session-a");
+    expect(reads.length).toBe(2);
+    // The newer read answers hidden first.
+    reads[1]({ visible: false, focused: false, minimized: false });
+    await flush();
+    expect(env.invoke).toHaveBeenLastCalledWith("session_presence", {
+      focusedSessionId: null,
+      appVisible: false,
+    });
+    // The older read answers visible and focused, late: it is dropped (it
+    // was the startup read), so the daemon keeps the hidden answer.
+    reads[0]({ visible: true, focused: true, minimized: false });
+    await flush();
+    expect(env.invoke).toHaveBeenCalledTimes(1);
+    expect(env.invoke).toHaveBeenLastCalledWith("session_presence", {
+      focusedSessionId: null,
+      appVisible: false,
+    });
+    reporter.dispose();
+  });
+
+  it("removes the subscription when dispose lands before setup resolves", async () => {
+    const env = createEnvironment();
+    const unlisten = vi.fn();
+    let resolveSubscription: (un: () => void) => void = () => undefined;
+    const reporter = startPresenceReporting({
+      invoke: env.invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      onWindowFocusChange: () =>
+        new Promise((resolve) => {
+          resolveSubscription = resolve;
+        }),
+    });
+    // Cleanup lands while the subscription setup is still pending.
+    reporter.dispose();
+    resolveSubscription(unlisten);
+    await flush();
+    expect(unlisten).toHaveBeenCalledTimes(1);
   });
 
   it("stops listening and sending after dispose", () => {

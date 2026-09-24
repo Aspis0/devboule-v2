@@ -55,7 +55,7 @@ export interface PresenceDeps {
    * net for the gaps, because a raise in those gaps is dropped by the
    * daemon, not delayed.
    */
-  onWindowFocusChange?: (handler: () => void) => () => void;
+  onWindowFocusChange?: (handler: (event: { payload: boolean }) => void) => Promise<() => void>;
 }
 
 export interface PresenceReporter {
@@ -92,9 +92,16 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   let focusedSessionId: string | null = null;
   let lastSent: Presence | null = null;
   let disposed = false;
+  // Every window-state read takes its sequence number before its await; a
+  // read applies only if its number is newer than the last one applied. The
+  // poll and the focus subscription overlap, so a read that started earlier
+  // and resolves later is dropped instead of overwriting a newer answer.
+  let lastRequestedRead = 0;
+  let lastAppliedRead = 0;
 
   const emit = async (): Promise<void> => {
     if (disposed) return;
+    const readNumber = ++lastRequestedRead;
     // A rejected read can never be replaced by the document's answer: the
     // live check measured that answer lying for a hidden window. Not seen
     // is the only honest reading when the window cannot be asked.
@@ -109,6 +116,10 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     // `disposed` again: dispose may have landed while the state read was in
     // flight, and a late report must never re-assert an attended session.
     if (disposed) return;
+    // A read that started earlier and resolves later is dropped: the newer
+    // answer has already been applied.
+    if (readNumber <= lastAppliedRead) return;
+    lastAppliedRead = readNumber;
     const appVisible = deps?.windowState
       ? !readFailed && asked !== null && asked.visible && asked.focused && !asked.minimized
       : doc.visibilityState === "visible" && doc.hasFocus();
@@ -144,7 +155,19 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   win.addEventListener("focus", onFocusChange);
   win.addEventListener("blur", onFocusChange);
   doc.addEventListener("visibilitychange", onVisibilityChange);
-  const unsubscribeFocusChange = deps?.onWindowFocusChange?.(emitForgotten);
+  let unsubscribeFocusChange: (() => void) | undefined;
+  if (deps?.onWindowFocusChange) {
+    // Setup resolving after dispose (or after a remount replaced this
+    // reporter) removes the subscription at once, so two live listeners
+    // can never pile up.
+    void deps
+      .onWindowFocusChange(emitForgotten)
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else unsubscribeFocusChange = unlisten;
+      })
+      .catch(() => undefined);
+  }
   const pollTimer =
     deps?.windowState !== undefined
       ? setInterval(emitForgotten, deps?.pollIntervalMs ?? DEFAULT_WINDOW_POLL_INTERVAL_MS)

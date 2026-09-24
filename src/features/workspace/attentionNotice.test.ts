@@ -68,6 +68,15 @@ describe("attentionRaised", () => {
     // A late push carrying the older event is not a new event.
     expect(attentionRaised(second, first)).toBe(false);
   });
+
+  it("treats a same-millisecond reason change as a new raise", () => {
+    // The daemon can replace a lower-priority raise with a higher-priority
+    // one in the same millisecond: the escalation is new news.
+    const first = attention("finished", 1000);
+    const escalation = attention("permission", 1000);
+    expect(attentionRaised(first, escalation)).toBe(true);
+    expect(attentionRaised(undefined, escalation)).toBe(true);
+  });
 });
 
 describe("toastGate", () => {
@@ -439,6 +448,24 @@ describe("fireAttentionToast window gate", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("toasts a same-millisecond escalation of an announced raise", async () => {
+    forgetAttentionFor(new Set());
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    fireAttentionToast("e0", "agent zero", attention("finished", 1000), {
+      send,
+      windowState: hiddenInTray,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    // The same millisecond, a different reason: the second produces a toast.
+    fireAttentionToast("e0", "agent zero", attention("permission", 1000), {
+      send,
+      windowState: hiddenInTray,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(2);
   });
 
   it("toasts a minimized window", async () => {

@@ -30,7 +30,11 @@ export function attentionRaised(
 ): boolean {
   if (next === undefined) return false;
   if (previous === undefined) return true;
-  return next.atMs > previous.atMs;
+  // The daemon can replace a raise with a higher-priority reason in the
+  // same millisecond: equal stamps with a changed reason are new news.
+  return (
+    next.atMs > previous.atMs || (next.atMs === previous.atMs && next.reason !== previous.reason)
+  );
 }
 
 /**
@@ -296,16 +300,17 @@ export async function productionWindowState(): Promise<WindowState> {
  * at once — the daemon drops a raise for a session it believes is
  * attended. Returns the unsubscribe.
  */
-export function productionOnWindowFocusChange(handler: () => void): () => void {
-  let unlisten: (() => void) | undefined;
-  void (async () => {
+export function productionOnWindowFocusChange(
+  handler: (event: { payload: boolean }) => void,
+): Promise<() => void> {
+  return (async () => {
     const window = (await import("@tauri-apps/api/window")).getCurrentWindow();
-    unlisten = await window.onFocusChanged(() => handler());
+    return window.onFocusChanged((event) => handler({ payload: event.payload }));
   })().catch(() => {
     // No window to subscribe to (or the API is unavailable): the 5 s poll
     // remains the safety net, so the failure only costs immediacy.
+    return () => undefined;
   });
-  return () => unlisten?.();
 }
 
 export function fireAttentionToast(
