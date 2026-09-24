@@ -2535,7 +2535,10 @@ function ProjectsPanel() {
                     {(workspaces ?? []).map((workspace) =>
                       // Render exactly what the daemon sent: no project-path
                       // fallback, no joined path. Same contract as Session.cwd.
-                      workspace.path ? (
+                      // A local workspace's path IS its project's path by
+                      // construction, so repeating it prints the same line
+                      // three times — skip only that duplicate.
+                      workspace.path && workspace.path !== project.path ? (
                         <span className="settings-card-meta" key={workspace.id}>
                           {workspace.path}
                         </span>

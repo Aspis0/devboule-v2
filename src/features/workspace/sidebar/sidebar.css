@@ -1,0 +1,371 @@
+/* sidebar.css — the sidebar region's look (SPEC-regions.md "Sidebar"): the
+   44px wordmark row, the host header, project headers with avatars and a
+   hover-revealed "+", workspace rows with avatar, optional meta, `+N −M`
+   stats and a trailing state dot, the quiet "New workspace" row, and the
+   foot. Behaviour class names (workspace-row, workspace-project-add, …) are
+   kept so the suite keeps pinning the same behaviours. */
+
+.sidebar-top {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-sidebar-top);
+  padding: 0 var(--space-8);
+}
+
+.sidebar-wordmark {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--type-display-sm);
+  white-space: nowrap;
+}
+
+.sidebar-top-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-search {
+  display: flex;
+  min-width: 0;
+  max-width: 130px;
+  flex: 1;
+  align-items: center;
+  height: var(--control-default);
+  padding: 0 var(--space-2);
+  overflow: hidden;
+  background: var(--panel-card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-6);
+}
+
+.sidebar-search:focus-within {
+  border-color: var(--accent);
+}
+
+.sidebar-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 0 var(--space-1);
+  color: var(--ink);
+  background: transparent;
+  font-size: var(--type-meta);
+  outline: none;
+}
+
+.sidebar-search input::placeholder {
+  color: var(--muted);
+}
+
+.sidebar-top .sidebar-top-button {
+  width: var(--control-default);
+  height: var(--control-default);
+  border-radius: var(--radius-6);
+  color: var(--muted);
+  font-size: var(--type-interface);
+}
+
+.sidebar-top .sidebar-top-button:hover,
+.sidebar-top .sidebar-top-button:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.sidebar-body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-1) var(--space-2);
+  overflow-y: auto;
+}
+
+/* One section per device; several hosts are lane B3, so today: one header. */
+.sidebar-host {
+  margin-bottom: var(--space-4);
+}
+
+.sidebar-host-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 28px;
+  padding: 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
+}
+
+.sidebar-host-icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.sidebar-project {
+  margin-top: var(--space-2);
+}
+
+.workspace-project-heading.sidebar-project-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 28px;
+  padding: 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.sidebar-avatar {
+  display: grid;
+  flex: none;
+  place-items: center;
+  border-radius: var(--radius-5);
+}
+
+.sidebar-avatar-project {
+  width: 16px;
+  height: 16px;
+  font-family: var(--font-display);
+  font-size: 11px;
+}
+
+.sidebar-avatar-workspace {
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+  font-weight: var(--weight-label);
+}
+
+/* The per-project "+" is revealed by the header's hover, per the spec. */
+.workspace-project-heading .workspace-project-add {
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  border-radius: var(--radius-5);
+  font-size: var(--type-interface);
+  line-height: 1;
+  opacity: 0;
+}
+
+.workspace-project-heading:hover .workspace-project-add,
+.workspace-project-heading:focus-within .workspace-project-add,
+.workspace-project-add:hover,
+.workspace-project-add:focus-visible {
+  opacity: 1;
+}
+
+.sidebar-project-head .workspace-project-add:hover,
+.sidebar-project-head .workspace-project-add:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-project-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.workspace-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 36px;
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink);
+  background: transparent;
+  border-radius: var(--radius-8);
+}
+
+.workspace-new-row {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-row {
+  cursor: pointer;
+}
+
+.workspace-row:hover,
+.workspace-row:focus-visible {
+  background: var(--fill-hover);
+}
+
+.workspace-row-selected,
+.workspace-row-selected:hover,
+.workspace-row-selected:focus-visible {
+  background: var(--fill-selected);
+}
+
+.workspace-row-copy {
+  display: block;
+  min-width: 0;
+  flex: 1;
+}
+
+.workspace-row-title,
+.workspace-row-meta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-row-title {
+  color: var(--ink-soft);
+  font-size: var(--type-meta);
+}
+
+.workspace-row-selected .workspace-row-title {
+  color: var(--ink);
+}
+
+.workspace-row-meta {
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+.sidebar-row-stats {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  white-space: nowrap;
+}
+
+.sidebar-stat-add {
+  color: var(--tone-add);
+}
+
+.sidebar-stat-del {
+  color: var(--tone-del);
+}
+
+/* The row's trailing state dot, in the tab chips' vocabulary. Idle rows show
+   none; a running row breathes. */
+.sidebar-row-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+
+.sidebar-row-dot-pulse {
+  background: var(--tone-live);
+}
+
+.sidebar-row-dot-attention {
+  background: var(--tone-attention);
+}
+
+.sidebar-row-dot-unattended {
+  background: var(--tone-unattended);
+}
+
+.workspace-new-row-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.workspace-new-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 28px;
+  margin-top: var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-6);
+  font-size: var(--type-meta);
+  white-space: nowrap;
+}
+
+.workspace-new-row:hover,
+.workspace-new-row:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-new-row > span {
+  font-size: var(--type-interface);
+  line-height: 1;
+}
+
+.workspace-empty {
+  padding: var(--space-3) var(--space-2);
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+.workspace-secondary-action {
+  color: var(--ink-soft);
+}
+
+/* The foot: the quiet History row above the daemon strip. */
+.workspace-sidebar-footer {
+  flex: none;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  border-top: 1px solid var(--line);
+}
+
+.workspace-history-button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 28px;
+  margin-bottom: var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--muted);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-6);
+  cursor: pointer;
+  font-size: var(--type-meta);
+}
+
+.workspace-history-button:hover,
+.workspace-history-button:focus-visible {
+  color: var(--ink);
+  background: var(--fill-hover);
+}
+
+.workspace-history-button[aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--fill-selected);
+}
+
+.sidebar-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 28px;
+  padding: 0 var(--space-2);
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.workspace-daemon-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

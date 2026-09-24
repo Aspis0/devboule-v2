@@ -4,7 +4,6 @@ import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
-import { HistoryPanel } from "../history/HistoryPanel";
 import { CloseConfirm } from "./CloseConfirm";
 import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
 import { SessionTabMenu } from "./SessionTabMenu";
@@ -23,6 +22,8 @@ import {
   useWorkspacePanelResize,
 } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
+import { Sidebar } from "./sidebar/Sidebar";
+import { useWorkspaceStats } from "./sidebar/useWorkspaceStats";
 import { useProviderConsent } from "./useProviderConsent";
 import { focusIsWhereTheFlowLeftIt, useStripFocus } from "./stripFocus";
 import { AnchoredPopover } from "./popoverPlace";
@@ -64,13 +65,7 @@ import {
 } from "./attentionNotice";
 import { RecoveredSessionBar } from "./recoveredSessionBar";
 import { DaemonRestartNotice } from "./daemonRestartNotice";
-import type {
-  DaemonStatus,
-  PermissionRequest,
-  PermissionResolved,
-  ProviderInfo,
-  Session,
-} from "../../types/ipc";
+import type { PermissionRequest, PermissionResolved, ProviderInfo, Session } from "../../types/ipc";
 import type { DelegationBadge } from "./workspaceSessions";
 import { isAgentKind } from "../../types/ipc";
 import {
@@ -92,27 +87,6 @@ type ActiveSidePanel = SidePanelEntry["id"];
  */
 type ProviderAnchor = { kind: "project"; projectId: string } | { kind: "strip" };
 const WORKSPACE_TERMINAL_PANEL_ID = "workspace-panel-terminal";
-
-function daemonDotTone(state: DaemonStatus["state"]): string {
-  if (state === "connected") return "green";
-  if (state === "connecting") return "border";
-  return "terracotta";
-}
-
-function daemonLabel(status: DaemonStatus): string {
-  if (status.state === "connected") {
-    const pid = status.pid !== null ? `pid ${status.pid}` : "connected";
-    return status.message ? `daemon · ${pid} · ${status.message}` : `daemon · ${pid}`;
-  }
-  if (status.state === "connecting") return "daemon · connecting";
-  if (status.state === "unresponsive") {
-    // The supervisor's sentence, verbatim — this strip is also what keeps the
-    // state visible after the user declines the restart dialog.
-    return status.message ? `daemon · ${status.message}` : "daemon · not answering";
-  }
-  if (status.message) return `daemon · ${status.message}`;
-  return "daemon · disconnected";
-}
 
 export { WorkspacePermissionCard, formatPermissionCommand };
 
@@ -152,10 +126,9 @@ interface WorkspaceProps {
  * The session whose pane the centre may render: the selected id counts only
  * while the strip still has its tab. A row the strip hides (its close is in
  * flight, the roster carried it away) must never keep a pane up, and an empty
- * strip means the empty state. Tabs are not filtered by workspace today, so a
- * selected id from another workspace stays in this global list and passes this
- * check — workspace isolation is the tab-strip slice's filtering (recorded
- * defect), not this function's.
+ * strip means the empty state. Since the strip is filtered to the selected
+ * workspace's tabs (R2a's navigation rule), membership here is also workspace
+ * isolation: another workspace's session cannot appear in the strip's list.
  */
 export function paneSessionOf<S extends { id: string }>(
   selectedSessionId: string | null,
@@ -192,13 +165,13 @@ export function Workspace({
     setSessionFacts,
     search,
     handleSearchChange,
-    addWorkspace,
     projectDialogOpen,
     openProjectDialog,
     closeProjectDialog,
     handleCreateProject,
     newProjectTriggerRef,
     retryProjects,
+    reuseOrCreateWorkspace,
   } = useWorkspaceProjects();
   const {
     leftWidth,
@@ -271,14 +244,20 @@ export function Workspace({
   );
   const visibleSessions = useMemo(() => {
     const hiding = new Set(closingIds);
-    return sessions.filter((session) => !hiding.has(session.id));
-  }, [sessions, closingIds]);
+    // Selection is navigation (Paseo's rule): the strip shows only the
+    // selected workspace's tabs, so an empty workspace shows the empty state
+    // instead of another workspace's tabs.
+    return sessions.filter(
+      (session) => !hiding.has(session.id) && session.workspaceId === selectedWorkspace,
+    );
+  }, [sessions, closingIds, selectedWorkspace]);
   // What a toast may quote for a session: the pending permission card's text
   // and the last assistant message, and only for a row this window's tab
   // strip actually renders. The provider is rebuilt from the rendered rows
   // and the queue as they are now, and asks the close marks per call — a row
   // hidden by an in-flight close is not "visible in this window" even before
-  // the daemon removes it from the roster.
+  // the daemon removes it from the roster. With the strip scoped to the
+  // selected workspace, "rendered" means rendered there.
   const renderedSessionIds = useMemo(
     () => new Set(visibleSessions.map((session) => session.id)),
     [visibleSessions],
@@ -298,6 +277,14 @@ export function Workspace({
     );
     return () => setAttentionHeldContentProvider(null);
   }, [renderedSessionIds, permissionQueue, closeActions]);
+  // The pane's session is one the strip renders. After a workspace switch
+  // the selection moves with it — that workspace's first tab, or none (the
+  // empty state); an external open (History) navigates its own workspace
+  // first, in handleReopenSession.
+  useEffect(() => {
+    if (visibleSessions.some((session) => session.id === selectedSessionId)) return;
+    selectSession(visibleSessions[0]?.id ?? null);
+  }, [visibleSessions, selectedSessionId, selectSession]);
   // The strip scrolls its selected tab into full view. The arithmetic and the
   // effect live in stripScroll.ts, unit-tested there — happy-dom computes no
   // layout to prove them against here.
@@ -446,10 +433,13 @@ export function Workspace({
   const handleReopenSession = useCallback(
     (session: Session) => {
       openSession(session);
+      // Selection is navigation: reopening a History session moves the view
+      // to the workspace that session lives in.
+      if (session.workspaceId !== null) setSelectedWorkspace(session.workspaceId);
       setHistoryOpen(false);
       setHistorySearch("");
     },
-    [openSession],
+    [openSession, setSelectedWorkspace],
   );
   // A failed resume leaves the row's verdict changed on the daemon side; the
   // bar must not keep its offer on the roster data this surface already held.
@@ -494,11 +484,15 @@ export function Workspace({
   );
   const createWorkspaceAndAgent = useCallback(
     async (projectId: string, provider: ProviderInfo | undefined) => {
-      const workspace = await addWorkspace(projectId);
+      // Defect (a): the project's local workspace is reused — selected, then
+      // the agent spawns there — and minted only when the project has none,
+      // so "+" stops producing look-alike "devboule-v2" rows. Distinct
+      // workspaces arrive with the worktree slice (R2b).
+      const workspace = await reuseOrCreateWorkspace(projectId);
       if (workspace !== null) startAgentSession(provider, workspace.id);
       endProviderChoice();
     },
-    [addWorkspace, endProviderChoice, startAgentSession],
+    [endProviderChoice, reuseOrCreateWorkspace, startAgentSession],
   );
   const addSessionToWorkspace = useCallback(
     (provider: ProviderInfo | undefined) => {
@@ -847,7 +841,11 @@ export function Workspace({
     ? "Starting session…"
     : sessionsLoading && sessions.length === 0
       ? "Loading sessions…"
-      : `${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
+      : // The count reads the strip, not the roster: a session the strip has
+        // dropped (its close succeeded) is not a session on screen. The
+        // daemon still owes a roster push after session_stop — a recorded
+        // daemon item — and a successful stop refreshes the roster once.
+        `${visibleSessions.length} session${visibleSessions.length === 1 ? "" : "s"}`;
 
   // One instance of the provider choice UI, anchored where the flow was
   // opened. It renders only the choice and consent; what happens afterwards
@@ -956,213 +954,62 @@ export function Workspace({
       </AnchoredPopover>
     );
 
+  const sidebarWorkspaceIds = useMemo(
+    () => visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id)),
+    [visibleProjects],
+  );
+  const endedKey = useMemo(
+    () =>
+      sessions
+        .filter((session) => session.state.type === "ended")
+        .map((session) => session.id)
+        .join("\n"),
+    [sessions],
+  );
+  const workspaceStats = useWorkspaceStats(sidebarWorkspaceIds, {
+    connected: daemon.state === "connected",
+    selectedWorkspace,
+    endedKey,
+  });
+
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
-      <aside
-        className="workspace-panel workspace-left-panel"
-        style={{ width: leftCollapsed ? "30px" : `${leftWidth}px` }}
-        aria-label={historyOpen ? "History" : "Workspaces"}
-      >
-        {leftCollapsed ? (
-          <button
-            type="button"
-            className="workspace-collapsed-panel"
-            onClick={() => setLeftCollapsed(false)}
-            title="Show workspaces"
-            aria-label="Show workspaces"
-          >
-            <span aria-hidden="true">›</span>
-            <span className="workspace-vertical-label">workspaces</span>
-          </button>
-        ) : (
-          <div className="workspace-panel-open">
-            <div className="workspace-left-toolbar">
-              <button
-                type="button"
-                className="workspace-icon-button"
-                onClick={() => setLeftCollapsed(true)}
-                title="Collapse"
-                aria-label="Collapse workspaces"
-              >
-                ‹
-              </button>
-              <label className="workspace-search">
-                <span className="sr-only">
-                  {historyOpen ? "Search history" : "Search workspaces"}
-                </span>
-                <input
-                  value={historyOpen ? historySearch : search}
-                  onChange={(event) => {
-                    if (historyOpen) {
-                      setHistorySearch(event.target.value);
-                    } else {
-                      handleSearchChange(event);
-                    }
-                  }}
-                  placeholder="Search"
-                />
-              </label>
-              <button
-                type="button"
-                className="workspace-add-button"
-                ref={newProjectTriggerRef}
-                onClick={openProjectDialog}
-                title="New project"
-                aria-label="New project"
-              >
-                +
-              </button>
-            </div>
-
-            <div className="workspace-scroll workspace-project-list">
-              {historyOpen ? (
-                <HistoryPanel search={historySearch} onReopen={handleReopenSession} />
-              ) : (
-                <>
-                  {projectsLoading ? (
-                    <div className="workspace-empty" role="status">
-                      Loading projects…
-                    </div>
-                  ) : null}
-                  {projectsError !== null ? (
-                    <div className="workspace-project-error" role="alert">
-                      <ErrorText
-                        sentence={projectsError.sentence}
-                        detail={projectsError.detail}
-                        id="workspace-projects-error"
-                      />
-                      <button
-                        type="button"
-                        className="workspace-secondary-action"
-                        onClick={() => void retryProjects()}
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  ) : null}
-                  {providerError !== null ? (
-                    <div className="workspace-project-error" role="alert">
-                      <ErrorText
-                        sentence={providerError.sentence}
-                        detail={providerError.detail}
-                        id="workspace-provider-error"
-                      />
-                    </div>
-                  ) : null}
-                  {visibleProjects.map((project) => (
-                    <div className="workspace-project" key={project.id}>
-                      <div className="workspace-project-heading">
-                        <span>{project.name}</span>
-                        <button
-                          type="button"
-                          className="workspace-project-add"
-                          onClick={(event) =>
-                            void handleNewWorkspace(event.currentTarget, project.id)
-                          }
-                          title="New workspace in this project"
-                          aria-label={`New workspace in ${project.name}`}
-                        >
-                          +
-                        </button>
-                      </div>
-                      {project.workspaceError !== undefined ? (
-                        <div className="workspace-project-error" role="alert">
-                          <ErrorText
-                            sentence={`Could not load this project's workspaces: ${project.workspaceError.sentence}`}
-                            detail={project.workspaceError.detail}
-                            id={`workspace-project-workspaces-error-${project.id}`}
-                          />
-                          <button
-                            type="button"
-                            className="workspace-secondary-action"
-                            onClick={() => void retryProjects()}
-                          >
-                            Retry
-                          </button>
-                        </div>
-                      ) : null}
-                      <div className="workspace-project-items">
-                        {project.workspaces.map((workspace) => (
-                          <button
-                            type="button"
-                            className={`workspace-row${selectedWorkspace === workspace.id ? " workspace-row-selected" : ""}`}
-                            key={workspace.id}
-                            onClick={() => setSelectedWorkspace(workspace.id)}
-                            aria-pressed={selectedWorkspace === workspace.id}
-                            title={workspace.path ? workspace.path : undefined}
-                          >
-                            <span
-                              className={`workspace-status-dot workspace-dot-${workspace.dotTone}`}
-                            />
-                            <span className="workspace-row-copy">
-                              <span className="workspace-row-title">{workspace.title}</span>
-                              <span className="workspace-row-meta">{workspace.meta}</span>
-                            </span>
-                            <span className="workspace-isolation">{workspace.isolation}</span>
-                          </button>
-                        ))}
-                        <div className="workspace-new-row-wrap">
-                          <button
-                            type="button"
-                            className="workspace-new-row"
-                            onClick={(event) =>
-                              void handleNewWorkspace(event.currentTarget, project.id)
-                            }
-                          >
-                            <span aria-hidden="true">+</span>New workspace
-                          </button>
-                          {providerAnchor?.kind === "project" &&
-                          providerAnchor.projectId === project.id
-                            ? providerMenu
-                            : null}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  {projectsError === null && !projectsLoading && visibleProjects.length === 0 ? (
-                    <div className="workspace-empty">No matching workspaces</div>
-                  ) : null}
-                </>
-              )}
-            </div>
-
-            <div className="workspace-sidebar-footer">
-              <button
-                type="button"
-                className="workspace-history-button"
-                aria-pressed={historyOpen}
-                aria-controls="workspace-history-panel"
-                onClick={() => setHistoryOpen((open) => !open)}
-                title={historyOpen ? "Show workspaces" : "Show history"}
-              >
-                History
-              </button>
-              <div className="workspace-daemon-status" title={daemon.message ?? undefined}>
-                <span
-                  className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`}
-                />
-                <span className="workspace-daemon-status-label">{daemonLabel(daemon)}</span>
-                {restartFailureNote !== null ? (
-                  <span className="workspace-recovery-note">{restartFailureNote}</span>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        )}
-      </aside>
-
-      <button
-        type="button"
-        className="workspace-resize-handle"
-        onMouseDown={(event) => startDrag("left", event)}
-        onDoubleClick={() => setLeftCollapsed((collapsed) => !collapsed)}
-        onKeyDown={(event) => handleResizeKey("left", event)}
-        title="Drag to resize · double-click to collapse"
-        aria-label="Resize workspaces panel"
-        aria-orientation="vertical"
-        aria-valuemin={MIN_LEFT_WIDTH}
-        aria-valuemax={MAX_LEFT_WIDTH}
-        aria-valuenow={leftWidth}
+      <Sidebar
+        width={leftWidth}
+        collapsed={leftCollapsed}
+        onCollapsedChange={setLeftCollapsed}
+        onResizeStart={(event) => startDrag("left", event)}
+        onResizeKeyDown={(event) => handleResizeKey("left", event)}
+        resizeMin={MIN_LEFT_WIDTH}
+        resizeMax={MAX_LEFT_WIDTH}
+        historyOpen={historyOpen}
+        onToggleHistory={() => setHistoryOpen((open) => !open)}
+        history={{
+          searchValue: historySearch,
+          onSearchChange: (event) => setHistorySearch(event.target.value),
+          onReopen: handleReopenSession,
+        }}
+        searchValue={search}
+        onSearchChange={handleSearchChange}
+        onAddProject={openProjectDialog}
+        addProjectRef={newProjectTriggerRef}
+        daemon={daemon}
+        daemonNote={restartFailureNote}
+        tree={{
+          projects: visibleProjects,
+          loading: projectsLoading,
+          error: projectsError,
+          providerError,
+          selectedWorkspace,
+          onRetryProjects: () => void retryProjects(),
+          onSelectWorkspace: setSelectedWorkspace,
+          onNewWorkspace: handleNewWorkspace,
+          providerMenuFor: (projectId) =>
+            providerAnchor?.kind === "project" && providerAnchor.projectId === projectId
+              ? providerMenu
+              : null,
+          stats: workspaceStats,
+        }}
       />
 
       <main className="workspace-center-panel">

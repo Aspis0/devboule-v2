@@ -821,7 +821,7 @@ describe("the + new-tab menu", () => {
     expect(document.activeElement).not.toBe(addButton(container));
   });
 
-  it("switching workspace cancels a pending terminal autofocus request", async () => {
+  it("a create that lands after a workspace switch stays in its own workspace's strip", async () => {
     vi.mocked(workspacesList).mockResolvedValue([workspace, workspaceTwo]);
     const pending = deferred<Session>();
     vi.mocked(sessionCreate).mockImplementationOnce(() => pending.promise);
@@ -833,7 +833,7 @@ describe("the + new-tab menu", () => {
     expect(addButton(container).disabled).toBe(true);
 
     const otherRow = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
-      (row) => row.getAttribute("aria-pressed") === "false",
+      (row) => row.textContent?.includes("rust") === true,
     );
     if (otherRow === undefined) throw new Error("second workspace row did not render");
     await act(async () => otherRow.click());
@@ -844,11 +844,18 @@ describe("the + new-tab menu", () => {
     await act(async () => undefined);
     await act(async () => undefined);
 
-    const surface = container.querySelector("[data-testid=terminal-surface]");
-    expect(surface?.textContent).toContain("session-2");
-    // The request was armed for the workspace the create ran under; the user
-    // has since selected another one, so the tab may not take focus later.
-    expect(surface?.getAttribute("data-autofocus")).toBe("false");
+    // Selection is navigation: the user moved to workspace-2, so the tab the
+    // pending create made for workspace-1 does not follow them here.
+    expect(container.querySelector("#workspace-session-tab-session-2")).toBeNull();
+    expect(container.textContent).toContain("No tabs yet");
+
+    // Navigating back reveals the created tab in its own workspace.
+    const homeRow = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
+      (row) => row.textContent?.includes("main") === true,
+    );
+    if (homeRow === undefined) throw new Error("workspace-1 row did not render");
+    await act(async () => homeRow.click());
+    expect(container.querySelector("#workspace-session-tab-session-2")).not.toBeNull();
   });
 
   it("re-measures the strip when its size changes, and leaves a hand scroll alone without one", async () => {

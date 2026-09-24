@@ -129,7 +129,6 @@
 }
 
 .workspace-icon-button,
-.workspace-add-button,
 .workspace-project-add,
 .workspace-session-add,
 .workspace-browser-reload {
@@ -147,64 +146,6 @@
   height: 20px;
   border-radius: 6px;
   font-size: 12px;
-}
-
-.workspace-icon-button:hover,
-.workspace-icon-button:focus-visible,
-.workspace-project-add:hover,
-.workspace-project-add:focus-visible {
-  color: var(--terracotta-deep);
-  background: var(--selection);
-}
-
-.workspace-search {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  align-items: center;
-  height: 27px;
-  padding: 0 10px;
-  overflow: hidden;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-}
-
-.workspace-search input {
-  width: 100%;
-  min-width: 0;
-  padding: 0;
-  color: var(--ink-soft);
-  background: transparent;
-  border: 0;
-  outline: 0;
-  font-size: 11.5px;
-}
-
-.workspace-search input::placeholder {
-  color: var(--silence);
-  opacity: 1;
-}
-
-.workspace-search:focus-within {
-  border-color: var(--terracotta);
-}
-
-.workspace-add-button {
-  width: 27px;
-  height: 27px;
-  color: var(--surface);
-  background: var(--terracotta-deep);
-  border-radius: 999px;
-  font-size: 15px;
-  line-height: 1;
-}
-
-.workspace-add-button:hover,
-.workspace-add-button:focus-visible,
-.workspace-primary-action:hover,
-.workspace-primary-action:focus-visible {
-  background: var(--ink-soft);
 }
 
 .workspace-scroll {
@@ -228,75 +169,10 @@
   background: transparent;
 }
 
-.workspace-project-list {
-  flex: 1;
-  min-height: 0;
-  padding: 12px 10px;
-  overflow-y: auto;
-}
-
-.workspace-project {
-  margin-bottom: 16px;
-}
-
-.workspace-project-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 6px 7px;
-  color: var(--silence);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.workspace-project-add {
-  width: 18px;
-  height: 18px;
-  margin-left: auto;
-  border-radius: 6px;
-  font-size: 13px;
-  line-height: 1;
-}
-
-.workspace-project-items {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.workspace-row,
 .workspace-new-row {
   width: 100%;
   text-align: left;
   cursor: pointer;
-}
-
-.workspace-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  padding: 7px 9px;
-  color: var(--ink);
-  background: transparent;
-  border-radius: 11px;
-}
-
-.workspace-row:hover,
-.workspace-row:focus-visible {
-  background: var(--surface);
-}
-
-.workspace-row-selected {
-  background: var(--selection);
-}
-
-.workspace-row-selected:hover,
-.workspace-row-selected:focus-visible {
-  background: var(--selection);
 }
 
 .workspace-status-dot {
@@ -330,154 +206,12 @@
   background: var(--ochre);
 }
 
-.workspace-row-copy {
-  display: block;
-  min-width: 0;
-}
-
-.workspace-row-title,
-.workspace-row-meta {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-row-title {
-  font-size: 12.5px;
-  font-weight: 500;
-}
-
-.workspace-row-meta {
-  margin-top: 2px;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-}
-
-.workspace-isolation {
-  flex: none;
-  margin-left: auto;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 9px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.workspace-new-row-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.workspace-new-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 7px 9px;
-  color: var(--silence);
-  background: transparent;
-  border: 1px dashed var(--border-strong);
-  border-radius: 11px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.workspace-new-row:hover,
-.workspace-new-row:focus-visible {
-  color: var(--terracotta-deep);
-  border-color: var(--terracotta);
-}
-
-.workspace-new-row > span {
-  width: 7px;
-  font-size: 13px;
-  line-height: 1;
-  text-align: center;
-}
-
-.workspace-empty {
-  padding: 12px 6px;
-  color: var(--silence);
-  font-size: 11px;
-}
-
-.workspace-sidebar-footer {
-  flex: none;
-  padding: 4px 8px 7px;
-}
-
-.workspace-history-button {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  height: 28px;
-  padding: 0 9px;
-  color: var(--ink-soft);
-  text-align: left;
-  background: transparent;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.workspace-history-button:hover,
-.workspace-history-button:focus-visible {
-  color: var(--terracotta-deep);
-  background: var(--surface);
-}
-
-.workspace-history-button[aria-pressed="true"] {
-  color: var(--terracotta-deep);
-  background: var(--selection);
-}
-
-.workspace-daemon-status {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  padding: 0 12px;
-  overflow: hidden;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  white-space: nowrap;
-}
-
 /* The strip is a flex row, so bare text in it is an anonymous item no ellipsis
    can reach; the label clips inside its own box, and min-width: 0 lets that box
-   shrink; the dot keeps its size and the note yields beside it. */
-.workspace-daemon-status-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A restart that did not complete: an additional fact beside the daemon's own
-   unresponsive sentence, held together in the same strip. */
-.workspace-recovery-note::before {
-  content: "· ";
-  color: var(--terracotta-deep);
-}
-
-/* The yielding fragment: capped under half the strip so a short label and the
+   shrink; the dot keeps its size and the note yields beside it/* A restart that did not complete: an additional fact beside the daemon's own
+   unresponsive sentence, held together in the same strip/* The yielding fragment: capped under half the strip so a short label and the
    note share it without contest, and clipped in its own box so a contested
-   strip announces both cuts instead of silently clipping at the edge. */
-.workspace-recovery-note {
-  max-width: 40%;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--terracotta-deep);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-daemon-status .workspace-status-dot,
-.workspace-browser-status .workspace-status-dot {
+   strip announces both cuts instead of silently clipping at the edge.workspace-browser-status .workspace-status-dot {
   width: 5px;
   height: 5px;
 }
@@ -2246,10 +1980,6 @@
 
 .workspace-diff-context {
   color: var(--silence);
-}
-
-.workspace-diff-removed {
-  color: var(--danger-deep);
 }
 
 .workspace-diff-added {

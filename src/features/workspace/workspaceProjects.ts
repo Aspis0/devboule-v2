@@ -10,8 +10,10 @@ export interface WorkspaceProject extends Project {
 }
 
 export interface WorkspaceView extends Workspace {
-  meta: string;
-  dotTone: "green" | "border";
+  /** A word only when the row differs from the norm; null renders no line. */
+  meta: string | null;
+  /** The row's trailing state dot, in the tab chips' vocabulary. */
+  stateDot: "pulse" | "attention" | "unattended" | null;
 }
 
 interface ProjectRecord extends Project {
@@ -44,14 +46,20 @@ export function workspaceView(
   workspace: Workspace,
   sessions: readonly Session[] = [],
 ): WorkspaceView {
-  const liveSessions = sessions.filter(
-    (session) => session.workspaceId === workspace.id && session.state.type === "live",
-  ).length;
-  const sessionLabel = `${liveSessions} live session${liveSessions === 1 ? "" : "s"}`;
+  const sessionsOfWorkspace = sessions.filter((session) => session.workspaceId === workspace.id);
+  const recovered = sessionsOfWorkspace.filter((session) => session.state.type === "recovered");
+  // The meta line appears only when the row differs from the norm (spec): a
+  // recovered transcript is the anomaly worth a word. Live counts and the
+  // isolation word are the norm and stay off the row.
+  const meta = recovered.length > 0 ? `${recovered.length} recovered` : null;
+  // The trailing dot speaks the tab chips' vocabulary; the avatar never does.
+  const attention = sessionsOfWorkspace.some((session) => session.attention !== undefined);
+  const unattended = sessionsOfWorkspace.some((session) => session.unattended === "yes");
+  const running = sessionsOfWorkspace.some((session) => session.state.type === "live");
   return {
     ...workspace,
-    meta: `${sessionLabel} · ${workspace.isolation}`,
-    dotTone: liveSessions > 0 ? "green" : "border",
+    meta,
+    stateDot: attention ? "attention" : unattended ? "unattended" : running ? "pulse" : null,
   };
 }
 
@@ -145,6 +153,26 @@ export function useWorkspaceProjects() {
     }
   }, []);
 
+  /**
+   * The project-level "+" policy: reuse the project's existing local
+   * workspace — selecting it — and mint one only when the project has none.
+   * Spawning an agent is not a reason to create a look-alike row; distinct
+   * workspaces arrive with the worktree slice.
+   */
+  const reuseOrCreateWorkspace = useCallback(
+    async (projectId: string): Promise<Workspace | null> => {
+      const existing = projectRecords
+        .find((project) => project.id === projectId)
+        ?.workspaces.find((workspace) => workspace.isolation === "local");
+      if (existing !== undefined) {
+        setSelectedWorkspace(existing.id);
+        return existing;
+      }
+      return addWorkspace(projectId);
+    },
+    [addWorkspace, projectRecords],
+  );
+
   const openProjectDialog = useCallback(() => setProjectDialogOpen(true), []);
   const closeProjectDialog = useCallback(() => {
     setProjectDialogOpen(false);
@@ -181,7 +209,9 @@ export function useWorkspaceProjects() {
           workspaces: project.workspaces.filter(
             (workspace) =>
               !query ||
-              `${project.name} ${workspace.title} ${workspace.meta}`.toLowerCase().includes(query),
+              `${project.name} ${workspace.title} ${workspace.meta ?? ""}`
+                .toLowerCase()
+                .includes(query),
           ),
         }))
         .filter(
@@ -204,6 +234,7 @@ export function useWorkspaceProjects() {
     search,
     handleSearchChange,
     addWorkspace,
+    reuseOrCreateWorkspace,
     projectDialogOpen,
     openProjectDialog,
     closeProjectDialog,

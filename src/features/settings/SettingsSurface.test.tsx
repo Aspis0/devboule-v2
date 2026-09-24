@@ -1259,6 +1259,35 @@ describe("Settings projects", () => {
     expect(container.textContent).toContain("D:\\real-project.worktrees\\feature-x-9f2e1a");
   });
 
+  it("does not repeat a workspace path that equals its project's", async () => {
+    // A local workspace's path IS the project's path by construction, so the
+    // card would print the same line once per workspace.
+    vi.mocked(workspacesList).mockResolvedValue([
+      {
+        id: "workspace-local",
+        projectId: project.id,
+        title: "real-project",
+        isolation: "local",
+        path: "D:\\real-project",
+      },
+      {
+        id: "workspace-worktree",
+        projectId: project.id,
+        title: "feature-y",
+        isolation: "worktree",
+        path: "D:\\real-project.worktrees\\feature-y-1a2b3c",
+      },
+    ]);
+    await renderProjects();
+
+    expect(container.textContent).toContain("D:\\real-project.worktrees\\feature-y-1a2b3c");
+    // The project's own line: exactly one, never repeated per workspace.
+    const projectPaths = [
+      ...container.querySelectorAll(".settings-project-card .settings-card-meta"),
+    ].filter((meta) => meta.textContent === "D:\\real-project");
+    expect(projectPaths).toHaveLength(1);
+  });
+
   it("keeps other projects visible when one workspace list fails and retries", async () => {
     const brokenProject: Project = {
       id: "project-settings-broken",

@@ -64,6 +64,7 @@ vi.mock("../../lib/tauri", () => ({
     error: null,
   })),
   sessionsList: vi.fn(),
+  sessionResume: vi.fn(),
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),
   sessionCreate: vi.fn(),
@@ -274,6 +275,7 @@ import {
   sessionPermissionRespond,
   createSessionStateChannel,
   sessionsList,
+  sessionResume,
   sessionsWatch,
 } from "../../lib/tauri";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -540,9 +542,81 @@ describe("Workspace sessions", () => {
     const row = container.querySelector<HTMLButtonElement>(
       "button[aria-pressed='true'].workspace-row",
     );
-    expect(row?.textContent).toContain("1 live session · local");
-    expect(row?.textContent).not.toContain("dirty");
+    // A live session is the norm: the row says nothing about it in words —
+    // the running dot breathes, and the isolation word is gone (spec).
+    expect(row?.textContent).not.toContain("live session");
+    expect(row?.querySelector(".sidebar-row-dot-pulse")).not.toBeNull();
     expect(row?.title).toBe("C:\\devboule");
+  });
+
+  it("selecting a workspace shows only its tabs, and an empty workspace shows the empty state", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one", "workspace-1")]);
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    expect(container.querySelector("#workspace-session-tab-session-1")).not.toBeNull();
+
+    // workspace-2 has no sessions: switching to it hides workspace-1's tab
+    // and shows the empty state, never the other workspace's pane.
+    const otherRow = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
+      (row) => row.textContent?.includes("other-main") === true,
+    );
+    if (otherRow === undefined) throw new Error("second workspace row did not render");
+    await act(async () => otherRow.click());
+
+    expect(container.querySelector("#workspace-session-tab-session-1")).toBeNull();
+    expect(container.textContent).toContain("No tabs yet");
+  });
+
+  it("reopening a History session navigates to its workspace", async () => {
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    // A recovered session lives in workspace-1; workspace-2 stays empty.
+    vi.mocked(sessionsList).mockResolvedValue([
+      {
+        id: "session-1",
+        workspaceId: "workspace-1",
+        kind: "terminal",
+        title: "Saved build history",
+        state: {
+          type: "recovered",
+          generation: 2,
+          integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+        },
+        elapsedMs: null,
+        resumable: true,
+      },
+    ]);
+    vi.mocked(sessionResume).mockResolvedValue({
+      type: "resumed",
+      session: terminal("session-1", "Saved build history", "workspace-1"),
+    });
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    // Start from the empty workspace-2.
+    const otherRow = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
+      (row) => row.textContent?.includes("other-main") === true,
+    );
+    if (otherRow === undefined) throw new Error("second workspace row did not render");
+    await act(async () => otherRow.click());
+    expect(container.textContent).toContain("No tabs yet");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".workspace-history-button")?.click();
+    });
+    await act(async () => undefined);
+    const reopen = container.querySelector<HTMLButtonElement>(".history-reopen-action");
+    if (reopen === null) throw new Error("history reopen button did not render");
+    await act(async () => reopen.click());
+    await act(async () => undefined);
+
+    // The reopen navigated to the session's workspace and its tab is up.
+    expect(container.querySelector("#workspace-session-tab-session-1")).not.toBeNull();
+    expect(container.textContent).not.toContain("No tabs yet");
   });
 
   it("renders and selects an extra panel supplied through the registry", async () => {
@@ -616,7 +690,9 @@ describe("Workspace sessions", () => {
       vi.mocked(workspaceGitStatus).mockReturnValue(pending.promise);
       await renderWorkspace();
 
-      expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(1);
+      // Two readers now: the sidebar's row stat and the open panel's badge —
+      // each reads for itself, and neither shows anything known yet.
+      expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
       expect(badge()).toBe("—");
 
       await act(async () => {
@@ -1008,11 +1084,14 @@ describe("Workspace sessions", () => {
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
 
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "grok");
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "grok");
     expect(container.querySelector("[data-testid=agent-chat-surface]")).not.toBeNull();
   });
 
   it("shows a workspace creation error without falling back or creating a session", async () => {
+    // The reuse policy only mints when the project has no local workspace,
+    // so this flow's refusal needs a project that has none.
+    vi.mocked(workspacesList).mockResolvedValue([]);
     vi.mocked(workspaceCreate).mockRejectedValueOnce(
       new Error("worktree isolation is unimplemented"),
     );
@@ -1091,7 +1170,7 @@ describe("Workspace sessions", () => {
     await act(async () => claudeOption.click());
     await act(async () => undefined);
 
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "claude");
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "claude");
     expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
   });
 
@@ -1112,7 +1191,7 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "grok");
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "grok");
   });
 
   it("requires consent for the only npx provider before creating a session", async () => {
@@ -1137,7 +1216,7 @@ describe("Workspace sessions", () => {
     await act(async () => confirm.click());
     await act(async () => undefined);
 
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "codex-acp");
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
   });
 
   it("surfaces a provider-list failure without creating a workspace or session", async () => {
@@ -1257,7 +1336,7 @@ describe("Workspace sessions", () => {
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
-  it("adds one workspace when New workspace is clicked twice before providersList resolves", async () => {
+  it("clicking New workspace twice before providersList resolves runs one flow and never mints a workspace", async () => {
     let release:
       | ((value: { providers: (typeof grokProvider)[]; unreadableDirs: number }) => void)
       | undefined;
@@ -1290,9 +1369,12 @@ describe("Workspace sessions", () => {
     });
     await act(async () => undefined);
 
-    expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore + 1);
+    // The reuse policy: no look-alike row is minted — the agent spawns in
+    // the project's existing local workspace.
+    expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore);
+    expect(workspaceCreate).not.toHaveBeenCalled();
     expect(sessionCreate).toHaveBeenCalledTimes(1);
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "grok");
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "grok");
   });
 
   it("dismisses the provider popover on outside mousedown without creating", async () => {
@@ -2142,7 +2224,7 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     expect(sessionCreate).toHaveBeenCalledTimes(1);
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "codex-acp");
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
     expect(document.querySelector('[aria-label="Confirm agent"]')).toBeNull();
     expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
   });
@@ -2254,8 +2336,9 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     expect(sessionCreate).toHaveBeenCalledTimes(1);
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "codex-acp");
-    expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore + 1);
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
+    // Reuse, not mint: the row count is unchanged.
+    expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore);
   });
 
   describe("session attention badges", () => {
@@ -2346,7 +2429,8 @@ describe("Workspace sessions", () => {
 
       const strip = container.querySelector(".workspace-daemon-status");
       if (strip === null) throw new Error("daemon status strip did not render");
-      expect(strip.textContent).toContain(UNRESPONSIVE_MESSAGE);
+      expect(strip.textContent).toContain("Daemon");
+      expect(strip.getAttribute("title")).toContain(UNRESPONSIVE_MESSAGE);
     });
 
     it("asks once when a session is live, and a decline keeps the state visible without restarting", async () => {
@@ -2365,10 +2449,12 @@ describe("Workspace sessions", () => {
       expect(message).toContain("stop");
       expect(message).toContain("conversations are kept");
 
-      // The state stays visible after the decline instead of disappearing.
+      // The state stays visible after the decline: the dot turns and the
+      // sentence rides in the tooltip.
       const strip = container.querySelector(".workspace-daemon-status");
       if (strip === null) throw new Error("daemon status strip did not render");
-      expect(strip.textContent).toContain(UNRESPONSIVE_MESSAGE);
+      expect(strip.textContent).toContain("Daemon");
+      expect(strip.getAttribute("title")).toContain(UNRESPONSIVE_MESSAGE);
     });
 
     it("restarts without asking when no session is live", async () => {
@@ -2395,9 +2481,11 @@ describe("Workspace sessions", () => {
 
       const strip = container.querySelector(".workspace-daemon-status");
       if (strip === null) throw new Error("daemon status strip did not render");
-      // Both facts at once: the daemon's own sentence and the failed attempt.
-      expect(strip.textContent).toContain(UNRESPONSIVE_MESSAGE);
-      expect(strip.textContent).toContain("a restart was attempted, but it did not complete");
+      // Both facts at once, in the tooltip: the daemon's own sentence and the
+      // failed attempt.
+      const tooltip = strip.getAttribute("title") ?? "";
+      expect(tooltip).toContain(UNRESPONSIVE_MESSAGE);
+      expect(tooltip).toContain("a restart was attempted, but it did not complete");
     });
   });
 

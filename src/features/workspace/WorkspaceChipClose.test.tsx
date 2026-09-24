@@ -198,3 +198,23 @@ describe("the close chip", () => {
     expect(tabElement("session-2")).not.toBeNull();
   });
 });
+
+describe("the strip's session count", () => {
+  it("reads the strip, not the roster: a closed tab stops counting at once", async () => {
+    await renderWorkspace();
+    const countText = () => document.body.textContent ?? "";
+
+    expect(countText()).toContain("3 sessions");
+    expect(countText()).not.toContain("2 sessions");
+
+    await chipClick("session-2");
+    await clickDialogButton("Close");
+    await settleCloseActs();
+
+    // The daemon does not push a roster update after session_stop, so the
+    // roster still carries the row — the count reads the strip's rows and
+    // falls the moment the tab is gone.
+    expect(countText()).toContain("2 sessions");
+    expect(countText()).not.toContain("3 sessions");
+  });
+});
