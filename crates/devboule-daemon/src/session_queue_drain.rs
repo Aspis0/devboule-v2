@@ -143,7 +143,7 @@ impl SessionRegistry {
                     state.paused = true;
                     return;
                 }
-                runtime.publish_queue_snapshot(items);
+                super::session_queue::deliver_queue_snapshot(session_id, &runtime, items);
                 state.items[0].clone()
             };
             let internal_conn = ConnHandle::with_peer(0, None);
@@ -207,7 +207,8 @@ impl SessionRegistry {
                             trial.items.insert(0, item);
                         } else {
                             item.unconfirmed = false;
-                            item.error = Some(error.message.clone());
+                            item.error =
+                                Some(super::session_queue::bounded_queue_error(&error.message));
                             trial.items.insert(0, item);
                         }
                     }
@@ -231,7 +232,7 @@ impl SessionRegistry {
                 let items = trial.snapshot();
                 state.items = trial.items;
                 state.paused = trial.paused;
-                runtime.publish_queue_snapshot(items);
+                super::session_queue::deliver_queue_snapshot(session_id, &runtime, items);
             }
             match &result {
                 Ok(_) => {}
@@ -260,11 +261,12 @@ impl SessionRegistry {
     }
 
     /// A session came back (resume): load its queue and — when it is live
-    /// and idle — send it. The restored items go through the same wake every
-    /// client frame uses, so pause, FIFO, one at a time, and waiting for the
-    /// turn's end are one code path for restored and fresh items alike; a
-    /// restored in-flight item keeps its fence (the wake will not unpause
-    /// behind an `unconfirmed` front), so nothing resends on its own.
+    /// and idle — send it. The pass here is `drain_step`, not the client
+    /// frame's wake: a resume is nobody's act on the queue, so a state that
+    /// was paused stays paused (a failed-discard keep, or a failed send the
+    /// last life parked), and a restored in-flight item keeps its fence.
+    /// Fresh rows drain: a load that was never paused has nothing to wait
+    /// for.
     pub(super) fn queue_restore_and_drain(&self, session_id: &str) {
         let has_items = {
             let mut queues = self.queues.lock();
@@ -276,7 +278,7 @@ impl SessionRegistry {
                 .is_some_and(|state| !state.items.is_empty())
         };
         if has_items {
-            self.wake_queue_drain(session_id);
+            self.drain_step(session_id);
         }
     }
 }

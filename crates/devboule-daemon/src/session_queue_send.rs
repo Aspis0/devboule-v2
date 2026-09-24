@@ -56,7 +56,7 @@ impl SessionRegistry {
             let taken = trial.items[position].clone();
             let items = trial.snapshot();
             *state = trial;
-            runtime.publish_queue_snapshot(items);
+            super::session_queue::deliver_queue_snapshot(session_id, &runtime, items);
             taken
         };
         let references = taken.attachment_references.clone();
@@ -120,7 +120,10 @@ impl SessionRegistry {
             }
             Err(error) => {
                 let failed_id = taken.item_id.clone();
-                let restored = self.edit_queue(session_id, &runtime, |state| {
+                // The settle door, not the add budget: the error this writes
+                // is the failure the add budget reserved room for, so the
+                // trial is judged against the frame cap itself (P1-2).
+                let restored = self.settle_queue_send(session_id, &runtime, |state| {
                     state.draining = false;
                     // The failed attempt parks the queue, and this call is
                     // deliberately the last thing it does: no wake, no
@@ -129,7 +132,8 @@ impl SessionRegistry {
                     if let Some(position) = state.position(&failed_id) {
                         let mut item = state.items.remove(position);
                         item.unconfirmed = false;
-                        item.error = Some(error.message.clone());
+                        item.error =
+                            Some(super::session_queue::bounded_queue_error(&error.message));
                         state.items.insert(0, item);
                     }
                     Ok(())

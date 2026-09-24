@@ -26,11 +26,28 @@ impl SessionRegistry {
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
         let runtime = self.queue_target(session_id, owner, conn)?;
-        let text = checked_text(text)?;
         validate_attachments(attachments)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         validate_attachment_references(session_id, attachment_references)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        // A prompt is whatever it carries — text, inline attachments, or the
+        // stored ones it refers to — the same three ways `SessionSend` forms
+        // one (P2-9). The size cap on the text still holds when there is
+        // text; an add with none of the three is not a prompt and is
+        // refused.
+        if text.len() > MAX_WRITE_BYTES {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Session input is too large.",
+            ));
+        }
+        let text = text.trim().to_string();
+        if text.is_empty() && attachments.is_empty() && attachment_references.is_empty() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "A queued message needs text or an attachment.",
+            ));
+        }
         let mut references = attachment_references.to_vec();
         for attachment in attachments {
             references.push(self.deposit(session_id, owner, conn, attachment)?);

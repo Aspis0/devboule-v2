@@ -307,6 +307,11 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // it would hand a late attach every intermediate queue as if they
             // were things that happened. The separate `queue_snapshot` event
             // rows (agent-report kind) are what replay delivers instead.
+            // One migration, final shape: the queue table carries the
+            // in-flight mark (`unconfirmed`, P1-4) from birth, and the id
+            // counter (P2-6) rides beside it — the intermediate shapes this
+            // branch built during the fix passes never reached a journal
+            // outside its own test runs, so there is no step from them.
             tx.execute_batch(
                 "CREATE TABLE IF NOT EXISTS session_queue (
                     session_id TEXT NOT NULL,
@@ -317,39 +322,15 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                     error TEXT,
                     unconfirmed INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (session_id, position)
-                 );",
-            )?;
-            // The pre-stamp guard, same ordering as v12 to v15.
-            validate_queue_table(&tx)?;
-        }
-        if version < 17 {
-            // Fix pass 1: the in-flight mark (P1-4) and the id counter
-            // (P2-6). The column joins the queue a claim keeps until the
-            // provider accepts the prompt; the counter is what makes an id
-            // issued before a restart unable to come back as a different
-            // message. The ALTER is guarded because a database created by
-            // the previous v16 shape already has everything else here.
-            let mut probe = tx.prepare(
-                "SELECT COUNT(*) FROM pragma_table_info('session_queue')
-                 WHERE name = 'unconfirmed'",
-            )?;
-            let present: i64 = probe.query_row([], |row| row.get(0))?;
-            drop(probe);
-            if present == 0 {
-                tx.execute(
-                    "ALTER TABLE session_queue
-                     ADD COLUMN unconfirmed INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )?;
-            }
-            tx.execute_batch(
-                "CREATE TABLE IF NOT EXISTS session_queue_counter (
+                 );
+                 CREATE TABLE IF NOT EXISTS session_queue_counter (
                     session_id TEXT NOT NULL PRIMARY KEY,
                     next_id INTEGER NOT NULL
                  );",
             )?;
-            // The pre-stamp guard, same ordering as v12 to v16.
-            validate_queue_v17(&tx)?;
+            // The pre-stamp guard, same ordering as v12 to v15.
+            validate_queue_table(&tx)?;
+            validate_queue_counter(&tx)?;
         }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
@@ -367,9 +348,9 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     validate_v14_columns(&conn)?;
     // The v15 column, the same way (see [`is_our_cwd_shape`]).
     validate_v15_columns(&conn)?;
-    // The v16 queue table, the same way, and the v17 additions beside it.
+    // The v16 queue table and its id counter, the same way.
     validate_queue_table(&conn)?;
-    validate_queue_v17(&conn)?;
+    validate_queue_counter(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -535,12 +516,15 @@ fn is_our_cwd_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
     )
 }
 
-/// The two shapes v17 adds: `session_queue.unconfirmed` — INTEGER, NOT NULL,
-/// DEFAULT 0 (the rank-less boolean a claim writes) — and the id-counter
-/// table. Checked before the stamp inside the migration and after the commit
-/// on every open, the same rule the v16 table follows: a file this daemon
-/// cannot read is refused, never guessed at.
-fn validate_queue_v17(conn: &Connection) -> Result<(), JournalError> {
+/// The two shapes the v16 migration adds beside the queue table itself:
+/// `session_queue.unconfirmed` — INTEGER, NOT NULL, DEFAULT 0 (the rank-less
+/// boolean a claim writes; the table check above pins presence and
+/// nullability, this pins the default a row written without the column
+/// reads) — and the id-counter table. Checked before the stamp inside the
+/// migration and after the commit on every open, the same rule the rest of
+/// the schema follows: a file this daemon cannot read is refused, never
+/// guessed at.
+fn validate_queue_counter(conn: &Connection) -> Result<(), JournalError> {
     let mut probe = conn.prepare(
         "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('session_queue')
          WHERE name = 'unconfirmed'",
@@ -598,7 +582,7 @@ fn validate_v15_columns(conn: &Connection) -> Result<(), JournalError> {
     Ok(())
 }
 
-/// The one shape `session_queue` may have: the six columns this daemon
+/// The one shape `session_queue` may have: the seven columns this daemon
 /// writes, in the order it writes them, with the types and nullability it
 /// writes (`error` alone may be NULL — an item with no failed send). Checked
 /// before the stamp inside the migration transaction — so a colliding table

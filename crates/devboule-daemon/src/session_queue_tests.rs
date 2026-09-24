@@ -15,10 +15,10 @@ use super::tests::{
 };
 use super::{
     Arc, ConnHandle, ConnPeer, ErrorCode, Mutex, OwnerId, SessionEvent, SessionKind,
-    SessionRegistry, MAX_QUEUE_ITEMS, MAX_WRITE_BYTES,
+    SessionRegistry, MAX_QUEUE_ITEMS,
 };
 use crate::raster_metadata::clean_png;
-use devboule_protocol::{DaemonMessage, QueuedMessage, SessionEventEnvelope, MAX_FRAME_BYTES};
+use devboule_protocol::QueuedMessage;
 
 const SESSION: &str = "s.q.1";
 
@@ -144,6 +144,50 @@ fn an_add_with_inline_attachments_queues_them_as_deposited_references() {
     );
     // The snapshot carries the reference, never the bytes.
     assert_eq!(last_snapshot(&drain(&conn)), items);
+}
+
+/// Fix pass 2, P2-9: a prompt is whatever it carries — the queue accepts
+/// what `SessionSend` accepts. An attachment with no text queues, and the
+/// item's send carries the reference the way an attachment send does.
+#[test]
+fn an_attachment_only_prompt_is_queueable() {
+    let (registry, owner, conn, _bytes) = harness();
+    registry
+        .queue_add(
+            SESSION,
+            "",
+            &[attachment("page.png", "image/png", &clean_png(0x0c))],
+            &[],
+            &owner,
+            &conn,
+        )
+        .expect("an attachment is a prompt without text");
+    let items = registry.queue_items_for_test(SESSION);
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].text, "",
+        "the text is empty; the attachment is the message"
+    );
+    assert_eq!(items[0].attachment_references.len(), 1);
+    assert_eq!(last_snapshot(&drain(&conn)), items);
+}
+
+#[test]
+fn an_add_with_neither_text_nor_attachment_is_refused() {
+    let (registry, owner, conn, _bytes) = harness();
+    let error = registry
+        .queue_add(SESSION, "", &[], &[], &owner, &conn)
+        .expect_err("nothing to queue");
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("A queued message needs"),
+        "{}",
+        error.message
+    );
+    assert!(
+        registry.queue_items_for_test(SESSION).is_empty(),
+        "the refusal queued nothing"
+    );
 }
 
 #[test]
@@ -281,107 +325,6 @@ fn send_now_failure_returns_the_item_to_the_front_with_its_error() {
     assert_eq!(items[0].item_id, front, "back at the front, Paseo's rule");
     assert!(items[0].error.is_some(), "the error rides the snapshot");
     assert_eq!(last_snapshot(&drain(&conn)), items);
-}
-
-/// The frame the connection would write for this snapshot, as the budget
-/// check (fix pass 1, P1-2) computes it — kept local so this test compiles
-/// before that check exists. The one field the mirror cannot know exactly
-/// (`sessionId`) is passed; every other variable field is at its longest, so
-/// the number is an upper bound: a queue that fits this fits the pipe.
-fn frame_bytes(session_id: &str, items: &[QueuedMessage]) -> usize {
-    let message = DaemonMessage::SubscriptionEvent {
-        subscription_id: u64::MAX,
-        envelope: SessionEventEnvelope {
-            session_id: session_id.to_string(),
-            generation: u64::MAX,
-            transcript_seq: Some(u64::MAX),
-            event: SessionEvent::QueueSnapshot {
-                items: items.to_vec(),
-            },
-        },
-    };
-    serde_json::to_vec(&message)
-        .expect("serialize the frame")
-        .len()
-}
-
-/// Fix pass 1, P1-2 (with P2-11): the whole queue travels as one frame, so
-/// an add or edit that would push its snapshot past `MAX_FRAME_BYTES` is
-/// refused — at the boundary: a queue sized to the byte still queues, one
-/// byte more does not, and the sentence says why.
-#[test]
-fn a_queue_that_would_outgrow_one_frame_is_refused_saying_why() {
-    let (registry, owner, conn, _bytes) = harness();
-    let full = "a".repeat(MAX_WRITE_BYTES);
-    registry
-        .queue_add(SESSION, &full, &[], &[], &owner, &conn)
-        .expect("the first full message fits");
-    let mut items = registry.queue_items_for_test(SESSION);
-
-    // Fill until the next full message would not fit, keeping headroom for
-    // the sized item below.
-    loop {
-        let mut probe = items.last().expect("at least one item").clone();
-        probe.item_id = format!("queue-{}", items.len() + 1);
-        probe.text = full.clone();
-        let mut probe_items = items.clone();
-        probe_items.push(probe);
-        if frame_bytes(SESSION, &probe_items) + 256 > MAX_FRAME_BYTES {
-            break;
-        }
-        registry
-            .queue_add(SESSION, &full, &[], &[], &owner, &conn)
-            .expect("a message that fits");
-        items = registry.queue_items_for_test(SESSION);
-    }
-
-    // Size one more message so the frame lands exactly on the cap.
-    let mut sized = items.last().expect("at least one item").clone();
-    sized.item_id = format!("queue-{}", items.len() + 1);
-    sized.text = String::new();
-    let mut probe_items = items.clone();
-    probe_items.push(sized.clone());
-    let base = frame_bytes(SESSION, &probe_items);
-    assert!(base <= MAX_FRAME_BYTES, "an empty item must still fit");
-    sized.text = "a".repeat(MAX_FRAME_BYTES - base);
-    let mut probe_items = items.clone();
-    probe_items.push(sized.clone());
-    assert_eq!(
-        frame_bytes(SESSION, &probe_items),
-        MAX_FRAME_BYTES,
-        "the boundary state is sized to the byte"
-    );
-    registry
-        .queue_add(SESSION, &sized.text, &[], &[], &owner, &conn)
-        .expect("exactly at the cap the queue still takes it");
-    items = registry.queue_items_for_test(SESSION);
-
-    // One byte more on an add: refused, and the refusal names the frame.
-    let mut over = items.last().expect("at least one item").clone();
-    over.item_id = format!("queue-{}", items.len() + 1);
-    over.text.push('a');
-    let mut over_items = items.clone();
-    over_items.push(over.clone());
-    assert!(frame_bytes(SESSION, &over_items) > MAX_FRAME_BYTES);
-    let error = registry
-        .queue_add(SESSION, &over.text, &[], &[], &owner, &conn)
-        .expect_err("one byte over one frame is not a queueable message");
-    assert!(error.message.contains("frame"), "{}", error.message);
-
-    // The same wall for an edit: growing the last message by one byte past
-    // the cap is refused the same way.
-    let last = items.last().expect("at least one item");
-    let mut bigger = last.text.clone();
-    bigger.push('a');
-    let error = registry
-        .queue_edit(SESSION, &last.item_id, &bigger, &owner, &conn)
-        .expect_err("an edit cannot outgrow the frame either");
-    assert!(error.message.contains("frame"), "{}", error.message);
-    assert_eq!(
-        registry.queue_items_for_test(SESSION).len(),
-        items.len(),
-        "the refused edit changed nothing"
-    );
 }
 
 /// Fix pass 1, P2-5: a close that lands between a queue op's resolve and its

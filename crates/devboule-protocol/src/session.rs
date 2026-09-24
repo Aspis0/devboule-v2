@@ -719,6 +719,12 @@ pub struct QueuedMessage {
     /// front of the restored queue, paused, flagged "may not have been
     /// sent" — the UI asks, and nothing resends it automatically (the Q1
     /// delivery decision: never lost, never resent silently).
+    ///
+    /// Defaults on read because the queue_snapshot rows an earlier build
+    /// wrote into a journal predate the field, and replay must not drop the
+    /// whole event over it: a row that cannot name the mark was never
+    /// claimed mid-flight, so `false` is the observed fact about it.
+    #[serde(default)]
     pub unconfirmed: bool,
 }
 

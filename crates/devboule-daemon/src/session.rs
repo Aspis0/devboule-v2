@@ -209,6 +209,10 @@ mod session_queue_drain_tests;
 #[cfg(test)]
 #[path = "session_queue_durability_tests.rs"]
 mod session_queue_durability_tests;
+/// The frame budget on every publish path (fix pass 2, P1-2).
+#[cfg(test)]
+#[path = "session_queue_frame_tests.rs"]
+mod session_queue_frame_tests;
 #[cfg(test)]
 #[path = "session_queue_lifecycle_tests.rs"]
 mod session_queue_lifecycle_tests;
@@ -1058,6 +1062,12 @@ impl SessionRegistry {
             return Some(rows);
         }
 
+        // A fresh read is the one moment the registry knows exactly what
+        // the journal still holds: retention deletes rows without holding
+        // this registry's locks, and this is where its deletions reach the
+        // queue map (P2-7).
+        self.retain_referenced_queue_states_after_roster_read(&rows);
+
         let mut cache = self
             .journal_roster
             .lock()
@@ -1069,6 +1079,25 @@ impl SessionRegistry {
         }
         *cache = Some((before_revision, rows.clone()));
         Some(rows)
+    }
+
+    /// The queue-map half of a fresh roster read: drop the states of
+    /// sessions neither the journal nor a live registry entry names any
+    /// more. Retention's deletions arrive here (P2-7); close and delete
+    /// discard their states themselves. A failed map lock prunes nothing —
+    /// a stale state is a leak, a dropped live state would be a loss.
+    fn retain_referenced_queue_states_after_roster_read(&self, rows: &[SessionRecord]) {
+        let roster: std::collections::HashSet<String> =
+            rows.iter().map(|row| row.id.clone()).collect();
+        let Some(live_or_configuring) = self.inner.lock().ok().map(|map| {
+            map.iter()
+                .filter(|(_, entry)| !matches!(entry, RegistryEntry::Transcript(_)))
+                .map(|(id, _)| id.clone())
+                .collect::<std::collections::HashSet<String>>()
+        }) else {
+            return;
+        };
+        self.retain_referenced_queue_states(&live_or_configuring, &roster);
     }
 
     pub(crate) fn set_transition_sink(&self, sink: TransitionSink) {
@@ -1534,8 +1563,9 @@ impl SessionRegistry {
             .map_err(WireError::from)?;
         // The journal's delete took the rows; the in-memory queue goes with
         // them — the two halves of one discard, and a later queue frame finds
-        // no state to recreate (P2-7).
-        self.queue_forget(session_id);
+        // no state to recreate (P2-7). Memory alone here: the rows are
+        // already gone, so there is no disk half left to clear.
+        self.queue_state_discard(session_id);
         self.invalidate_journal_roster();
         if transcript_in_registry {
             if let Ok(mut map) = self.inner.lock() {
@@ -1898,7 +1928,11 @@ impl SessionRegistry {
                     .map(QueueState::snapshot)
                     .filter(|items| !items.is_empty())
                 {
-                    runtime.publish_queue_snapshot(items);
+                    // Through the choke point like every publish: an old
+                    // journal can hold a queue that would not fit the frame
+                    // any more, and the hand-over must not disconnect the
+                    // subscriber it is welcoming (P1-2).
+                    session_queue::deliver_queue_snapshot(session_id, &runtime, items);
                 }
             }
         }
@@ -2828,7 +2862,11 @@ impl SessionRegistry {
                 // The queue goes with the session (Q1): this entry was
                 // ownership-checked in the critical section that removed it,
                 // so the discard is authorized like every other teardown here.
-                self.queue_forget(session_id);
+                // A discard the journal refuses is reported in the close's
+                // reply once the teardown below has finished — the session is
+                // closed either way, but the surviving rows must not be a
+                // secret (P1-3).
+                let queue_discarded = self.queue_forget(session_id);
                 // The last chance to report this child to its creator (`S5` §3,
                 // audit S5-01): the row is out of the map, the runtime is still
                 // here, and the report is claimed exactly once, so a child whose
@@ -2855,11 +2893,12 @@ impl SessionRegistry {
                 // daemon start is the fallback for a close that never ran.
                 self.attachments.remove_session(session_id);
                 self.notify_session_transition(owner, session_id);
-                Ok(true)
+                queue_discarded.map(|()| true)
             }
             Some(RegistryEntry::Transcript(_)) => {
-                // Its queue goes with it, like the live arm's (Q1).
-                self.queue_forget(session_id);
+                // Its queue goes with it, like the live arm's (Q1), and a
+                // failed discard is reported the same way (P1-3).
+                let queue_discarded = self.queue_forget(session_id);
                 // A transcript carries no runtime to report with, so it only
                 // gives a slot back. A child that ended by EOF was released by
                 // `finish_reader_session` already, and a recovered transcript
@@ -2872,7 +2911,7 @@ impl SessionRegistry {
                 }
                 self.attachments.remove_session(session_id);
                 self.notify_session_transition(owner, session_id);
-                Ok(false)
+                queue_discarded.map(|()| false)
             }
             None => {
                 if let Some(journal) = &self.journal {
@@ -2884,13 +2923,14 @@ impl SessionRegistry {
                         }
                         // The queue goes too — after the journal's own
                         // owner check above, which is the authorization this
-                        // whole arm waits for (Q1).
-                        self.queue_forget(session_id);
+                        // whole arm waits for (Q1) — and a failed discard is
+                        // reported like the other arms' (P1-3).
+                        let queue_discarded = self.queue_forget(session_id);
                         journal.try_mark_closed(session_id);
                         self.invalidate_journal_roster();
                         self.attachments.remove_session(session_id);
                         self.notify_session_transition(owner, session_id);
-                        return Ok(false);
+                        return queue_discarded.map(|()| false);
                     }
                 }
                 Err(not_found())

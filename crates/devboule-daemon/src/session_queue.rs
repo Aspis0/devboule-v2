@@ -29,6 +29,18 @@ use devboule_protocol::QueuedMessage;
 /// one counts rows, that one measures the frame they would travel in.
 pub(super) const MAX_QUEUE_ITEMS: usize = 64;
 
+/// The longest error a failed send leaves on its item. A provider's refusal
+/// text is the provider's, unbounded; the item's copy is the daemon's, and
+/// the frame budget has reserved exactly this much room for it.
+pub(super) const MAX_QUEUE_ERROR_BYTES: usize = 512;
+
+/// What the add/edit budget holds back from `MAX_FRAME_BYTES` for what the
+/// later publish paths add: the bounded error at its JSON-escaped worst (a
+/// control byte can cost six), the field's own quotes, and the claim's
+/// flag flip — so a queue accepted at the boundary can still carry its
+/// failure (P1-2).
+pub(super) const QUEUE_ERROR_HEADROOM: usize = 4096;
+
 /// One session's queue as the daemon holds it in memory. An absent entry in
 /// [`SessionQueues`] means "not looked up yet", never "empty".
 #[derive(Clone, Debug)]
@@ -56,10 +68,9 @@ pub(super) struct QueueState {
 
 impl QueueState {
     pub(super) fn new(items: Vec<QueuedMessage>, counter: Option<u64>) -> Self {
-        // The floor from the surviving rows keeps a pre-counter database
-        // (its v17 migration left no key yet) as safe as it was; a present
-        // counter wins because it never went backwards while rows were
-        // being removed.
+        // The floor from the surviving rows keeps a database the counter's
+        // row has not reached yet as safe as it was; a present counter wins
+        // because it never went backwards while rows were being removed.
         let by_rows = items
             .iter()
             .filter_map(|item| item.item_id.strip_prefix("queue-"))
@@ -138,6 +149,40 @@ fn snapshot_frame_bytes(session_id: &str, items: &[QueuedMessage]) -> usize {
     // A serialization that fails is a queue that must not be published:
     // report the impossible size so the cap refuses it.
     serde_json::to_vec(&message).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// The one door a queue snapshot leaves through. Every publish path — the
+/// edits, the drain's claim and settle, send-now, the attach hand-over —
+/// measures the frame here, so no path can hand the connection an
+/// oversized frame, which the writer would refuse *with the connection*.
+/// A snapshot over the cap is not published: the failure is logged, memory
+/// and journal keep the queue, and the next snapshot that fits carries the
+/// state instead — an undelivered update is recoverable; a disconnected
+/// subscriber is not (P1-2).
+pub(super) fn deliver_queue_snapshot(
+    session_id: &str,
+    runtime: &SessionRuntime,
+    items: Vec<QueuedMessage>,
+) {
+    if snapshot_frame_bytes(session_id, &items) > devboule_protocol::MAX_FRAME_BYTES {
+        eprintln!("queue snapshot for {session_id} is over the frame cap; it was not published");
+        return;
+    }
+    runtime.publish_queue_snapshot(items);
+}
+
+/// The error a failed send leaves on its item, cut to the stored bound at
+/// a character boundary — the headroom the add budget reserved is sized
+/// for exactly this much.
+pub(super) fn bounded_queue_error(message: &str) -> String {
+    if message.len() <= MAX_QUEUE_ERROR_BYTES {
+        return message.to_string();
+    }
+    let mut end = MAX_QUEUE_ERROR_BYTES;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message[..end].to_string()
 }
 
 impl SessionRegistry {
@@ -282,29 +327,110 @@ impl SessionRegistry {
             })
     }
 
-    /// A session is closing or being deleted: its queue goes with it, rows
-    /// and counter and memory together — which is what makes the rule the
-    /// same before and after a restart (P2-5, P2-7). A store that refuses
-    /// the clear is logged, never raised: close must not fail on it.
-    pub(super) fn queue_forget(&self, session_id: &str) {
-        self.queues.lock().remove(session_id);
+    /// A session is closing: its queue is discarded, and the disk goes
+    /// FIRST — if the clear fails, the discard did not happen, so memory
+    /// keeps the state (paused, so nothing auto-sends it) and the error is
+    /// returned for the close to report. That keeps both halves of the rule
+    /// (P1-3): a queue the user discarded by closing never sends on its
+    /// own — the discarded ones are gone on disk and in memory — and memory
+    /// never claims a state the disk does not hold. A state that was never
+    /// loaded is loaded now, so the paused mark lands on what the surviving
+    /// rows actually say.
+    pub(super) fn queue_forget(&self, session_id: &str) -> Result<(), WireError> {
         if let Some(journal) = &self.journal {
             if let Err(error) = journal.queue_clear(session_id) {
                 eprintln!("message queue rows could not be cleared for {session_id}: {error}");
+                let mut queues = self.queues.lock();
+                if self.ensure_queue_loaded(session_id, &mut queues).is_ok() {
+                    if let Some(state) = queues.get_mut(session_id) {
+                        state.paused = true;
+                    }
+                }
+                return Err(WireError::new(
+                    ErrorCode::Journal,
+                    "This session's queued messages could not be discarded and \
+                     remain in the journal; try closing it again.",
+                ));
             }
         }
+        self.queue_state_discard(session_id);
+        Ok(())
     }
 
-    /// Run one mutation against a session's state under this module's lock,
-    /// persist it, and publish the resulting snapshot before the lock lets
-    /// go — the mutation, its rows and its snapshot are one step, so a reader
-    /// can never see a snapshot older than the last mutation it has already
-    /// seen applied. The mutation runs on a trial copy: a refusal (the
-    /// caller's own, the frame cap below, or the store) commits nothing.
+    /// Drop one session's in-memory queue state, and nothing else — the
+    /// road for a discard the journal has already made true (`delete_session`
+    /// and retention remove the rows in their own writes; the map entry is
+    /// the half they cannot reach).
+    pub(super) fn queue_state_discard(&self, session_id: &str) {
+        self.queues.lock().remove(session_id);
+    }
+
+    /// Drop the states of sessions nothing references any more: no live or
+    /// configuring registry entry and no journal row. Retention deletes
+    /// rows without holding this registry's locks (P2-7), so this runs
+    /// where a fresh roster has just proven what the journal still has.
+    pub(super) fn retain_referenced_queue_states(
+        &self,
+        live_or_configuring: &std::collections::HashSet<String>,
+        roster: &std::collections::HashSet<String>,
+    ) {
+        self.queues.lock().retain(|session_id, _| {
+            live_or_configuring.contains(session_id) || roster.contains(session_id)
+        });
+    }
+
+    /// Run one user mutation against a session's state under this module's
+    /// lock, persist it, and publish the resulting snapshot before the lock
+    /// lets go — the mutation, its rows and its snapshot are one step, so a
+    /// reader can never see a snapshot older than the last mutation it has
+    /// already seen applied. The mutation runs on a trial copy: a refusal
+    /// (the caller's own, the frame budget below, or the store) commits
+    /// nothing. The budget is the add budget: headroom for a later failure
+    /// is reserved here (P1-2).
     pub(super) fn edit_queue(
         &self,
         session_id: &str,
         runtime: &Arc<SessionRuntime>,
+        change: impl FnOnce(&mut QueueState) -> Result<(), WireError>,
+    ) -> Result<(), WireError> {
+        self.mutate_queue(
+            session_id,
+            runtime,
+            devboule_protocol::MAX_FRAME_BYTES.saturating_sub(QUEUE_ERROR_HEADROOM),
+            "This session's queue would no longer fit the frame the whole \
+             queue travels in; queue fewer or shorter messages.",
+            change,
+        )
+    }
+
+    /// The settle a queue send makes — the drain parking a failed item with
+    /// its error, or send-now restoring one. Not a user growth: the error
+    /// it writes on the item is the failure the add budget reserved room
+    /// for, so the trial is judged against the frame cap itself. A trial
+    /// even past that is refused and the caller parks the queue (P1-2).
+    pub(super) fn settle_queue_send(
+        &self,
+        session_id: &str,
+        runtime: &Arc<SessionRuntime>,
+        change: impl FnOnce(&mut QueueState) -> Result<(), WireError>,
+    ) -> Result<(), WireError> {
+        self.mutate_queue(
+            session_id,
+            runtime,
+            devboule_protocol::MAX_FRAME_BYTES,
+            "This session's queue outcome no longer fits the frame the whole \
+             queue travels in.",
+            change,
+        )
+    }
+
+    /// The one mutation body the two doors above share.
+    fn mutate_queue(
+        &self,
+        session_id: &str,
+        runtime: &Arc<SessionRuntime>,
+        frame_budget: usize,
+        refusal: &'static str,
         change: impl FnOnce(&mut QueueState) -> Result<(), WireError>,
     ) -> Result<(), WireError> {
         let mut queues = self.queues.lock();
@@ -317,17 +443,13 @@ impl SessionRegistry {
             .cloned()
             .expect("ensure_queue_loaded inserts the state");
         change(&mut trial)?;
-        if snapshot_frame_bytes(session_id, &trial.items) > devboule_protocol::MAX_FRAME_BYTES {
-            return Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                "This session's queue would no longer fit the frame the whole \
-                 queue travels in; queue fewer or shorter messages.",
-            ));
+        if snapshot_frame_bytes(session_id, &trial.items) > frame_budget {
+            return Err(WireError::new(ErrorCode::InvalidRequest, refusal));
         }
         self.persist_queue(session_id, &trial.items, trial.next_id)?;
         let items = trial.snapshot();
         queues.insert(session_id.to_string(), trial);
-        runtime.publish_queue_snapshot(items);
+        deliver_queue_snapshot(session_id, runtime, items);
         Ok(())
     }
 
