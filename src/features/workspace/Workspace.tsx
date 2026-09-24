@@ -66,6 +66,7 @@ import {
   useWorkspaceSessions,
 } from "./workspaceSessions";
 import {
+  flushParkedAttentionRaises,
   heldAssistantTextFor,
   productionOnWindowFocusChange,
   productionWindowState,
@@ -505,10 +506,14 @@ export function Workspace({
   const presenceReporterRef = useRef<PresenceReporter | null>(null);
   useEffect(() => {
     // Presence reads the same OS truth the toast gate does: the document
-    // inside a hidden WebView2 keeps claiming visible and focused.
+    // inside a hidden WebView2 keeps claiming visible and focused. The
+    // seen→unseen transition is also when parked attention raises (the
+    // window was focused but the strip did not render the row) get
+    // announced — the reporter detects the flip, the flush does the rest.
     const reporter = startPresenceReporting({
       windowState: productionWindowState,
       onWindowFocusChange: productionOnWindowFocusChange,
+      onWindowBecameUnseen: flushParkedAttentionRaises,
     });
     presenceReporterRef.current = reporter;
     return () => {

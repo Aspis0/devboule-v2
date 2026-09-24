@@ -56,6 +56,14 @@ export interface PresenceDeps {
    * daemon, not delayed.
    */
   onWindowFocusChange?: (handler: (event: { payload: boolean }) => void) => Promise<() => void>;
+  /**
+   * Called when an applied window-state answer flips the window from seen
+   * to unseen (hide, minimise, blur). This is the transition the parked
+   * attention raises wait for, so the Workspace hands the flush in here —
+   * the same place that reports presence is the same place that knows the
+   * user stopped looking.
+   */
+  onWindowBecameUnseen?: () => void;
 }
 
 export interface PresenceReporter {
@@ -98,6 +106,10 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   // and resolves later is dropped instead of overwriting a newer answer.
   let lastRequestedRead = 0;
   let lastAppliedRead = 0;
+  // The previously applied answer's visibility: the seen→unseen flip is the
+  // parked-raise flush trigger. Tracked separately from `lastSent` so a
+  // failed presence send can never hide or repeat a transition.
+  let lastAppliedVisible: boolean | null = null;
 
   const emit = async (): Promise<void> => {
     if (disposed) return;
@@ -123,6 +135,10 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     const appVisible = deps?.windowState
       ? !readFailed && asked !== null && asked.visible && asked.focused && !asked.minimized
       : doc.visibilityState === "visible" && doc.hasFocus();
+    if (lastAppliedVisible === true && appVisible === false) {
+      deps?.onWindowBecameUnseen?.();
+    }
+    lastAppliedVisible = appVisible;
     const presence: Presence = {
       focusedSessionId: appVisible ? focusedSessionId : null,
       appVisible,

@@ -9,7 +9,10 @@ import type { Attention, AttentionReason } from "../../types/ipc";
  * looking at (daemon-side policy); nothing here repeats that rule. This
  * module's own gate is the window-level one: a toast is for a user who is
  * not looking at Devboule at all — hidden in the tray, minimized, or
- * unfocused.
+ * unfocused. A raise the gate holds back because the window is seen but the
+ * session's row is NOT rendered is parked, not consumed: the same place
+ * that reports presence announces parked raises when the window next goes
+ * unseen (`flushParkedAttentionRaises`).
  */
 
 /**
@@ -183,13 +186,17 @@ export function heldContentForSession(
  */
 /**
  * What a window that renders sessions registers: the held-content function
- * the toast wording uses, and the rendered-row predicate it was built from.
- * One registration, one source for "this window can see" — wording and
- * dedupe ask the same predicate, never a second copy of the strip's rows.
+ * the toast wording uses, and the rendered-row and pending-permission
+ * predicates it was built from. One registration, one source — wording,
+ * dedupe and the parked-raise lifecycle ask the same predicates, never a
+ * second copy of the strip's rows or the permission queue.
  */
 export interface AttentionWindowProvider {
   heldContent: (sessionId: string) => HeldContent | undefined;
   rendered: (sessionId: string) => boolean;
+  /** The session's unresolved permission request, if any: the oracle a
+   *  parked permission raise is dropped by when it is answered. */
+  pending: (sessionId: string) => { title: string; description?: string } | undefined;
 }
 
 export function workspaceHeldContentProvider(inputs: {
@@ -205,6 +212,7 @@ export function workspaceHeldContentProvider(inputs: {
         inputs.heldAssistantText(sessionId),
       ),
     rendered: inputs.rendered,
+    pending: inputs.pending,
   };
 }
 
@@ -233,19 +241,69 @@ export function heldAssistantTextFor(sessionId: string): string | undefined {
  */
 let heldContentProvider: ((sessionId: string) => HeldContent | undefined) | null = null;
 let renderedInWindow: ((sessionId: string) => boolean) | null = null;
+let providerPending:
+  | ((sessionId: string) => { title: string; description?: string } | undefined)
+  | null = null;
 
 export function setAttentionHeldContentProvider(provider: AttentionWindowProvider | null): void {
   heldContentProvider = provider?.heldContent ?? null;
   renderedInWindow = provider?.rendered ?? null;
+  providerPending = provider?.pending ?? null;
 }
 
 /** The last raise a toast fired (or was gate-blocked) for, per session. */
 const lastFired = new Map<string, Attention>();
 
-/** Forget raises of sessions that left the roster, so the map cannot grow forever. */
+/**
+ * Raises the seen gate parked (the review's pending set): the window was
+ * focused, but the strip did not render the session's row, so nobody saw
+ * them. One per session — a newer raise supersedes the parked one. They are
+ * announced by `flushParkedAttentionRaises` when the window next goes
+ * unseen, and dropped when they become rendered, resolved, superseded, or
+ * their session leaves the roster. Module-level on purpose: Workspace
+ * unmounting on another surface (provider null) must not lose them.
+ */
+interface ParkedRaise {
+  title: string;
+  attention: Attention;
+}
+const parkedRaises = new Map<string, ParkedRaise>();
+
+/** Forget raises of sessions that left the roster, so the maps cannot grow forever. */
 export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
   for (const id of [...lastFired.keys()]) {
     if (!sessionIds.has(id)) lastFired.delete(id);
+  }
+  for (const id of [...parkedRaises.keys()]) {
+    if (!sessionIds.has(id)) parkedRaises.delete(id);
+  }
+}
+
+/**
+ * Announces parked raises once, then consumes them: the window just went
+ * unseen (hide, minimise, blur), so "seen" can no longer hold any of them
+ * back. At flush each raise is dropped if the user has since reached its
+ * row (rendered), or — permission raises only — the request was answered
+ * while it sat parked. Finished/error raises have no resolution oracle;
+ * they survive until flushed, rendered, superseded, or the session leaves
+ * the roster. Without a registered provider the oracles are simply
+ * unavailable: nothing is dropped for being "seen" or "resolved" — the
+ * raises still announce, so an unmounted Workspace loses nothing.
+ */
+export function flushParkedAttentionRaises(deps?: Partial<ToastDeps>): void {
+  if (parkedRaises.size === 0) return;
+  const parked = [...parkedRaises];
+  parkedRaises.clear();
+  for (const [sessionId, raise] of parked) {
+    if (renderedInWindow?.(sessionId) ?? false) continue;
+    if (
+      raise.attention.reason === "permission" &&
+      providerPending !== null &&
+      providerPending(sessionId) === undefined
+    ) {
+      continue;
+    }
+    fireAttentionToast(sessionId, raise.title, raise.attention, deps);
   }
 }
 
@@ -352,6 +410,9 @@ export function fireAttentionToast(
   deps?: Partial<ToastDeps>,
 ): void {
   if (!attentionRaised(lastFired.get(sessionId), attention)) return;
+  // A raise that gets this far is newer than anything parked: it supersedes
+  // the parked one (and may re-park itself below, under the same key).
+  parkedRaises.delete(sessionId);
   lastFired.set(sessionId, attention);
   const state = deps?.windowState ?? productionWindowState;
   const send = deps?.send ?? defaultSend;
@@ -372,10 +433,13 @@ export function fireAttentionToast(
     if (!toastGate(snapshot)) {
       // Seen is window seen AND row rendered: a raise whose row this
       // window's strip does not show (another workspace's tab, search
-      // hidden) was seen by nobody, so it must not stay in the dedupe —
-      // when the window later hides, the next roster re-push announces it.
-      // (The stale check above guarantees the slot still holds this raise.)
-      if (!(renderedInWindow?.(sessionId) ?? false)) lastFired.delete(sessionId);
+      // hidden) was seen by nobody, so it is not consumed — it is parked,
+      // and the unseen transition announces it once. (The stale check
+      // above guarantees the slot still holds this raise.)
+      if (!(renderedInWindow?.(sessionId) ?? false)) {
+        lastFired.delete(sessionId);
+        parkedRaises.set(sessionId, { title, attention });
+      }
       // Seen but not raised: the user was looking at the window.
       return;
     }

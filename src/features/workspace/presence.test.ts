@@ -159,6 +159,41 @@ describe("presence reporting", () => {
     expect(env.invoke).toHaveBeenCalledTimes(callsAfterSettling + 1);
   });
 
+  it("calls onWindowBecameUnseen once per applied seen-to-unseen flip", async () => {
+    // The parked attention raises wait for exactly this transition, so it
+    // must fire once per flip — not on startup-unseen, not on repeated
+    // unseen answers, and independently of presence-send success.
+    const env = createEnvironment();
+    const becameUnseen = vi.fn();
+    startPresenceReporting({
+      invoke: env.invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      onWindowBecameUnseen: becameUnseen,
+    });
+    await flush();
+    // Startup while seen: no transition.
+    expect(becameUnseen).not.toHaveBeenCalled();
+
+    env.state.hasFocus = false;
+    env.fire("blur");
+    await flush();
+    expect(becameUnseen).toHaveBeenCalledTimes(1);
+
+    // Still unseen: another blur is not another transition.
+    env.fire("blur");
+    await flush();
+    expect(becameUnseen).toHaveBeenCalledTimes(1);
+
+    env.state.hasFocus = true;
+    env.fire("focus");
+    await flush();
+    env.state.hasFocus = false;
+    env.fire("blur");
+    await flush();
+    expect(becameUnseen).toHaveBeenCalledTimes(2);
+  });
+
   it("asks the window state, so a hidden window is reported hidden even while the page lies", async () => {
     // The live check measured this: hidden in the tray, the document still
     // claims visible and focused. The window state is the truth.
