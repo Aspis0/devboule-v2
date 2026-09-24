@@ -74,10 +74,15 @@ button:focus-visible {
   background: var(--selection);
 }
 
+/* The band the closed crescent's sliver lives in: the page layer — and with it
+   every surface — starts below it, so the sliver sits over no tab and no other
+   click target. It is the shell's own top padding rather than a bar, so the band
+   paints the shell's ground and reads as the window's edge. */
 .app-shell {
   position: relative;
   height: 100vh;
   min-width: 1280px;
+  padding-top: var(--crescent-band);
   overflow: hidden;
   background: var(--ground-app);
 }
@@ -293,7 +298,9 @@ button:focus-visible {
   top: 0;
   left: 310px;
   width: 260px;
-  height: 13px;
+  /* The band's own token, so the line's hit area and the space reserved for it
+     cannot drift apart. */
+  height: var(--crescent-band);
   padding: 0;
   cursor: pointer;
   pointer-events: auto;

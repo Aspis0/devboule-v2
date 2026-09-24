@@ -110,6 +110,7 @@ const SHARED_TOKENS = [
   "app-pad",
   "app-gap",
   "region-radius",
+  "crescent-band",
   "assistant-rule",
   "assistant-pad",
 ] as const;

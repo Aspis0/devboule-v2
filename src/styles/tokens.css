@@ -95,6 +95,9 @@
   --app-pad: 0px;
   --app-gap: 0px;
   --region-radius: 0px;
+  /* the band at the window's top edge that holds the closed crescent's sliver:
+     the surfaces start below it, so the sliver never sits over a tab */
+  --crescent-band: 13px;
 
   /* agent-voice marker: unused in A and C, kept as a hook */
   --assistant-rule: transparent;
