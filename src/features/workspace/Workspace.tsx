@@ -223,6 +223,27 @@ export function Workspace({
     open: openSession,
     dismissError: dismissSessionsError,
   } = useWorkspaceSessions(selectedWorkspace);
+
+  const sidebarWorkspaceIds = useMemo(
+    () => visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id)),
+    [visibleProjects],
+  );
+  const endedKey = useMemo(
+    () =>
+      sessions
+        .filter((session) => session.state.type === "ended")
+        .map((session) => session.id)
+        .join("\n"),
+    [sessions],
+  );
+  const { stats: workspaceStats, refresh: refreshWorkspaceStats } = useWorkspaceStats(
+    sidebarWorkspaceIds,
+    {
+      connected: daemon.state === "connected",
+      selectedWorkspace,
+      endedKey,
+    },
+  );
   useEffect(() => {
     setSessionFacts(sessions);
   }, [sessions, setSessionFacts]);
@@ -237,6 +258,11 @@ export function Workspace({
       destroy: (id) => sessionClose(id),
     }),
   );
+  const knownWorkspaceIds = useMemo(
+    () => new Set(visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id))),
+    [visibleProjects],
+  );
+
   const closingIds = useSyncExternalStore(closeActions.subscribe, closeActions.getClosingSnapshot);
   const closeFailures = useSyncExternalStore(
     closeActions.subscribe,
@@ -247,8 +273,12 @@ export function Workspace({
     // Selection is navigation (Paseo's rule): the strip shows only the
     // selected workspace's tabs, so an empty workspace shows the empty state
     // instead of another workspace's tabs.
+    // A session with no workspace (a legacy record) has no home to navigate
+    // to, so it renders in every strip; hiding it would make it unreachable.
     return sessions.filter(
-      (session) => !hiding.has(session.id) && session.workspaceId === selectedWorkspace,
+      (session) =>
+        !hiding.has(session.id) &&
+        (session.workspaceId === selectedWorkspace || session.workspaceId === null),
     );
   }, [sessions, closingIds, selectedWorkspace]);
   // What a toast may quote for a session: the pending permission card's text
@@ -277,10 +307,21 @@ export function Workspace({
     );
     return () => setAttentionHeldContentProvider(null);
   }, [renderedSessionIds, permissionQueue, closeActions]);
-  // The pane's session is one the strip renders. After a workspace switch
-  // the selection moves with it — that workspace's first tab, or none (the
-  // empty state); an external open (History) navigates its own workspace
-  // first, in handleReopenSession.
+  // Selection is navigation (Paseo): a restored or pushed selection that
+  // lives in another workspace selects that workspace — until the user has
+  // navigated by row click once, after which their clicks alone steer the
+  // view (a create that lands after a switch must not yank it back), and
+  // only into a workspace the daemon still lists.
+  useEffect(() => {
+    if (userNavigatedRef.current) return;
+    const selected = sessions.find((session) => session.id === selectedSessionId);
+    if (selected === undefined || selected.workspaceId === null) return;
+    if (selected.workspaceId !== selectedWorkspace && knownWorkspaceIds.has(selected.workspaceId)) {
+      setSelectedWorkspace(selected.workspaceId);
+    }
+  }, [sessions, selectedSessionId, selectedWorkspace, knownWorkspaceIds, setSelectedWorkspace]);
+  // The pane's session is one the strip renders: after any workspace switch
+  // the selection falls to that workspace's first tab or the empty state.
   useEffect(() => {
     if (visibleSessions.some((session) => session.id === selectedSessionId)) return;
     selectSession(visibleSessions[0]?.id ?? null);
@@ -301,6 +342,17 @@ export function Workspace({
       skipped: ReadonlyArray<{ id: string; title: string; generation: number }>,
       onFailed?: (sessionId: string) => void,
     ) => {
+      // A successful stop refreshes the closed sessions' workspace stats
+      // once (the daemon sends no stop transition, so `+N −M` would otherwise
+      // lag until the 30-second cadence). The stats refresh is deliberately
+      // NOT a roster refresh: the roster still reports the rows live, and a
+      // refresh would unmark the closes and resurrect them.
+      const closedWorkspaceIds = new Set(
+        matched
+          .map((session) => sessions.find((roster) => roster.id === session.id)?.workspaceId)
+          .filter((workspaceId) => workspaceId !== null && workspaceId !== undefined),
+      );
+      if (closedWorkspaceIds.size > 0) refreshWorkspaceStats([...closedWorkspaceIds]);
       for (const session of matched) {
         closeActions.act(
           kind,
@@ -314,7 +366,7 @@ export function Workspace({
       }
       for (const target of skipped) closeActions.skipped(kind, target);
     },
-    [closeActions],
+    [closeActions, refreshWorkspaceStats, sessions],
   );
   // Multi-select (ours) and the tab close flow (Paseo's menu plus the
   // confirmation) live in their own files; the strip only wires handlers.
@@ -450,6 +502,9 @@ export function Workspace({
   const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
   const [providerPicker, setProviderPicker] = useState<ProviderInfo[] | null>(null);
   const [providerAnchor, setProviderAnchor] = useState<ProviderAnchor | null>(null);
+  /** Set on the first row-click navigation: afterwards the user steers the
+   * view, and automatic selection-to-workspace navigation stands down. */
+  const userNavigatedRef = useRef(false);
   const [newTabMenuOpen, setNewTabMenuOpen] = useState(false);
   const [providerChoosing, setProviderChoosing] = useState(false);
   const providerChoiceInFlightRef = useRef(false);
@@ -556,7 +611,10 @@ export function Workspace({
         return;
       }
       if (capable.length === 1 && !requiresConsent(capable[0])) {
-        endProviderChoice();
+        // The in-flight guard must hold until the afterChoice callback has
+        // fully settled: the callback releases it (defect: releasing here let
+        // a second click mint a second workspace while the first create was
+        // still running).
         afterChoice(capable[0]);
         return;
       }
@@ -954,24 +1012,6 @@ export function Workspace({
       </AnchoredPopover>
     );
 
-  const sidebarWorkspaceIds = useMemo(
-    () => visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id)),
-    [visibleProjects],
-  );
-  const endedKey = useMemo(
-    () =>
-      sessions
-        .filter((session) => session.state.type === "ended")
-        .map((session) => session.id)
-        .join("\n"),
-    [sessions],
-  );
-  const workspaceStats = useWorkspaceStats(sidebarWorkspaceIds, {
-    connected: daemon.state === "connected",
-    selectedWorkspace,
-    endedKey,
-  });
-
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
       <Sidebar
@@ -1002,7 +1042,15 @@ export function Workspace({
           providerError,
           selectedWorkspace,
           onRetryProjects: () => void retryProjects(),
-          onSelectWorkspace: setSelectedWorkspace,
+          onSelectWorkspace: (workspaceId) => {
+            userNavigatedRef.current = true;
+            setSelectedWorkspace(workspaceId);
+            // The session selection moves with the navigation: the
+            // workspace's first tab, or none (its empty state).
+            selectSession(
+              sessions.find((session) => session.workspaceId === workspaceId)?.id ?? null,
+            );
+          },
           onNewWorkspace: handleNewWorkspace,
           providerMenuFor: (projectId) =>
             providerAnchor?.kind === "project" && providerAnchor.projectId === projectId

@@ -29,15 +29,11 @@ function reconcileProjectRecords(
   const loadedIds = new Set(loaded.map((project) => project.id));
   const reconciled = loaded.map((project) => {
     const currentProject = currentById.get(project.id);
-    if (currentProject === undefined) return project;
-    const loadedWorkspaceIds = new Set(project.workspaces.map((workspace) => workspace.id));
-    return {
-      ...project,
-      workspaces: [
-        ...project.workspaces,
-        ...currentProject.workspaces.filter((workspace) => !loadedWorkspaceIds.has(workspace.id)),
-      ],
-    };
+    // The reply is authoritative per project: a workspace the daemon no
+    // longer lists is dropped (removed elsewhere), and a workspace created
+    // through this UI is in the reply, because the daemon minted it before
+    // the create returned.
+    return currentProject === undefined ? project : { ...project, workspaces: project.workspaces };
   });
   return [...reconciled, ...current.filter((project) => !loadedIds.has(project.id))];
 }
@@ -46,7 +42,26 @@ export function workspaceView(
   workspace: Workspace,
   sessions: readonly Session[] = [],
 ): WorkspaceView {
-  const sessionsOfWorkspace = sessions.filter((session) => session.workspaceId === workspace.id);
+  return workspaceViewFromIndex(workspace, sessionsOf(sessions).get(workspace.id) ?? []);
+}
+
+function sessionsOf(sessions: readonly Session[]): Map<string, Session[]> {
+  // One pass over the roster, not one filter per workspace: pushes arrive
+  // often and the sidebar derives every row from the same array.
+  const index = new Map<string, Session[]>();
+  for (const session of sessions) {
+    if (session.workspaceId === null) continue;
+    const list = index.get(session.workspaceId);
+    if (list === undefined) index.set(session.workspaceId, [session]);
+    else list.push(session);
+  }
+  return index;
+}
+
+function workspaceViewFromIndex(
+  workspace: Workspace,
+  sessionsOfWorkspace: readonly Session[],
+): WorkspaceView {
   const recovered = sessionsOfWorkspace.filter((session) => session.state.type === "recovered");
   // The meta line appears only when the row differs from the norm (spec): a
   // recovered transcript is the anomaly worth a word. Live counts and the
@@ -64,9 +79,12 @@ export function workspaceView(
 }
 
 function projectView(project: ProjectRecord, sessions: readonly Session[]): WorkspaceProject {
+  const byWorkspace = sessionsOf(sessions);
   return {
     ...project,
-    workspaces: project.workspaces.map((workspace) => workspaceView(workspace, sessions)),
+    workspaces: project.workspaces.map((workspace) =>
+      workspaceViewFromIndex(workspace, byWorkspace.get(workspace.id) ?? []),
+    ),
   };
 }
 

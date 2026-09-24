@@ -1262,6 +1262,11 @@ describe("the production view wiring at the PTY boundary", () => {
   it("a missing proposal sends no session_resize", async () => {
     await startSession();
 
+    // The shared hostSpec was collapsed by the previous test; restore a live
+    // host so THIS test exercises the missing-proposal guard specifically,
+    // not the collapsed-host guard again.
+    hostSpec.clientWidth = 800;
+    hostSpec.clientHeight = 384;
     fitAddon.proposal = null;
     session.requestResize();
     await wait(300);

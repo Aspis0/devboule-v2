@@ -1,6 +1,6 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import { ErrorText } from "../../../components/ErrorText";
-import { boundByGraphemes } from "../../../lib/graphemeBound";
+import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
 import type { WorkspaceProject } from "../workspaceProjects";
 import { avatarStyle } from "./avatars";
@@ -25,7 +25,13 @@ export interface WorkspaceTreeProps {
  * hover-revealed "+", workspace rows with avatar, title, optional meta, `+N −M`
  * stats and the trailing state dot, and the quiet "New workspace" row.
  */
-export function WorkspaceTree({
+const DOT_LABELS: Record<string, string> = {
+  pulse: "running",
+  attention: "needs attention",
+  unattended: "running unattended",
+};
+
+function WorkspaceTreeImpl({
   projects,
   loading,
   error,
@@ -62,14 +68,14 @@ export function WorkspaceTree({
         </div>
       ) : null}
       {projects.map((project) => (
-        <div className="workspace-project" key={project.id}>
+        <div className="workspace-project" key={project.id} role="group" aria-label={project.name}>
           <div className="workspace-project-heading sidebar-project-head">
             <span
               className="sidebar-avatar sidebar-avatar-project"
               style={avatarStyle(project.id)}
               aria-hidden="true"
             >
-              {boundByGraphemes(project.name, 1)}
+              {firstGrapheme(project.name)}
             </span>
             <span className="workspace-project-name">{project.name}</span>
             <button
@@ -110,6 +116,9 @@ export function WorkspaceTree({
                   key={workspace.id}
                   onClick={() => onSelectWorkspace(workspace.id)}
                   aria-pressed={selectedWorkspace === workspace.id}
+                  aria-label={`${workspace.title}, ${project.name}${
+                    workspace.stateDot !== null ? `, ${DOT_LABELS[workspace.stateDot]}` : ""
+                  }`}
                   title={workspace.path ? workspace.path : undefined}
                 >
                   <span
@@ -117,7 +126,7 @@ export function WorkspaceTree({
                     style={avatarStyle(workspace.id)}
                     aria-hidden="true"
                   >
-                    {boundByGraphemes(workspace.title, 1)}
+                    {firstGrapheme(workspace.title)}
                   </span>
                   <span className="workspace-row-copy">
                     <span className="workspace-row-title">{workspace.title}</span>
@@ -133,10 +142,11 @@ export function WorkspaceTree({
                   ) : null}
                   {workspace.stateDot !== null ? (
                     <span
+                      role="img"
+                      aria-label={DOT_LABELS[workspace.stateDot]}
                       className={`sidebar-row-dot sidebar-row-dot-${workspace.stateDot}${
                         workspace.stateDot === "pulse" ? " dot-pulse" : ""
                       }`}
-                      aria-hidden="true"
                     />
                   ) : null}
                 </button>
@@ -161,3 +171,5 @@ export function WorkspaceTree({
     </>
   );
 }
+
+export const WorkspaceTree = memo(WorkspaceTreeImpl);

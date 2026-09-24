@@ -27,13 +27,13 @@ function HookProbe(props: {
   endedKey: string;
   onStats: (stats: ReadonlyMap<string, { additions: number; deletions: number }>) => void;
 }) {
-  const stats = useWorkspaceStats(props.ids, {
+  const { stats, refresh } = useWorkspaceStats(props.ids, {
     connected: props.connected,
     selectedWorkspace: props.selectedWorkspace,
     endedKey: props.endedKey,
   });
   props.onStats(stats);
-  return null;
+  return <button type="button" data-testid="probe-refresh" onClick={() => refresh(props.ids)} />;
 }
 
 describe("useWorkspaceStats", () => {
@@ -105,19 +105,24 @@ describe("useWorkspaceStats", () => {
     expect(latest.has("ws-1")).toBe(false);
   });
 
-  it("runs one request in flight per workspace: an overlapping refresh is skipped", async () => {
+  it("a trigger during an in-flight read marks the row dirty: one follow-up runs after it settles", async () => {
     let release!: (value: ReturnType<typeof totals>) => void;
     vi.mocked(workspaceGitStatus).mockImplementationOnce(
       () => new Promise((resolve) => (release = resolve)),
     );
+    vi.mocked(workspaceGitStatus).mockResolvedValueOnce(totals(5, 6));
     await mount({ ids: ["ws-1"], connected: true, selectedWorkspace: null, endedKey: "" });
-    // A second trigger for the same id while the first is in flight.
+    // A second trigger for the same id while the first is in flight must not
+    // fire a second request yet — and must not be silently dropped either:
+    // one follow-up runs after the read settles.
     await mount2ndRefresh();
     expect(workspaceGitStatus).toHaveBeenCalledTimes(1);
     release(totals(1, 2));
     await vi.advanceTimersByTimeAsync(0);
     await reread();
-    expect(latest.get("ws-1")).toEqual({ additions: 1, deletions: 2 });
+    expect(workspaceGitStatus).toHaveBeenCalledTimes(2);
+    // The follow-up's fresh numbers, not the first read's stale ones.
+    expect(latest.get("ws-1")).toEqual({ additions: 5, deletions: 6 });
   });
 
   async function mount2ndRefresh() {
@@ -191,6 +196,23 @@ describe("useWorkspaceStats", () => {
       root!.render(<HookProbe {...props} onStats={onStats} />);
     });
   }
+
+  it("every trigger answers to the connection: focus and selection while disconnected send nothing", async () => {
+    await mount({ ids: ["ws-1"], connected: false, selectedWorkspace: null, endedKey: "" });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(workspaceGitStatus).not.toHaveBeenCalled();
+
+    await mount2({
+      ids: ["ws-1"],
+      connected: false,
+      selectedWorkspace: "ws-1",
+      endedKey: "",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await reread();
+    expect(workspaceGitStatus).not.toHaveBeenCalled();
+  });
 
   it("a settled refresh after unmount changes nothing", async () => {
     let release!: (value: ReturnType<typeof totals>) => void;

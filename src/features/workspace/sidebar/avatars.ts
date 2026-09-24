@@ -26,10 +26,20 @@ export function avatarTone(id: string): AvatarTone {
   return TONES[Math.abs(hash) % TONES.length];
 }
 
+const STYLE_CACHE = new Map<string, CSSProperties>();
+
 export function avatarStyle(id: string): CSSProperties {
+  const cached = STYLE_CACHE.get(id);
+  if (cached !== undefined) return cached;
   const tone = avatarTone(id);
-  return {
+  // The letter mixes the tone into ink: the raw tone misses 4.5:1 against its
+  // own 20-25% background in the dark theme (idle 2.28, recovered 2.76,
+  // unattended 4.34); 45% tone over ink clears it in both themes while the
+  // hue — the identity — stays the tone's.
+  const style: CSSProperties = {
     background: `color-mix(in srgb, var(--tone-${tone}) ${MIX_PERCENT[tone]}%, transparent)`,
-    color: `var(--tone-${tone})`,
+    color: `color-mix(in srgb, var(--tone-${tone}) 45%, var(--ink))`,
   };
+  STYLE_CACHE.set(id, style);
+  return style;
 }

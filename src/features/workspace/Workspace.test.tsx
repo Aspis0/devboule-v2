@@ -549,6 +549,57 @@ describe("Workspace sessions", () => {
     expect(row?.title).toBe("C:\\devboule");
   });
 
+  it("a workspace removed on reload is dropped, and the selection moves to a survivor", async () => {
+    // The daemon hook polls every 2 s; the disconnect/reconnect ticks are
+    // driven with fake timers like the reconnect test above.
+    vi.useFakeTimers();
+    try {
+      let answer!: (status: DaemonStatus) => void;
+      vi.mocked(daemonStatus).mockImplementation(
+        () =>
+          new Promise<DaemonStatus>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      vi.mocked(workspacesList)
+        .mockResolvedValueOnce([workspace, secondWorkspace])
+        .mockResolvedValue([workspace]);
+      vi.mocked(sessionsList).mockResolvedValue([]);
+      root = createRoot(container);
+      await act(async () => root.render(<Workspace />));
+      await act(async () => answer(daemonConnected));
+      await act(async () => undefined);
+      await act(async () => vi.advanceTimersByTimeAsync(2_100));
+
+      const doomedRow = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
+        (row) => row.textContent?.includes("other-main") === true,
+      );
+      if (doomedRow === undefined) throw new Error("doomed workspace row did not render");
+      await act(async () => doomedRow.click());
+      expect(doomedRow.getAttribute("aria-pressed")).toBe("true");
+
+      // A disconnect/reconnect cycle reloads the workspaces; the daemon no
+      // longer lists the doomed one, so it leaves the view and the selection
+      // moves to the surviving workspace. Each advance fires one poll; each
+      // poll's answer must be written only after that poll exists.
+      await act(async () => {
+        answer({ ...daemonConnected, state: "disconnected" });
+        await vi.advanceTimersByTimeAsync(2_100);
+      });
+      await act(async () => {
+        answer(daemonConnected);
+        await vi.advanceTimersByTimeAsync(2_100);
+      });
+      await act(async () => undefined);
+
+      expect(container.textContent).not.toContain("other-main");
+      const survivor = container.querySelector<HTMLButtonElement>(".workspace-row");
+      expect(survivor?.getAttribute("aria-pressed")).toBe("true");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("selecting a workspace shows only its tabs, and an empty workspace shows the empty state", async () => {
     vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
     vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one", "workspace-1")]);
@@ -686,13 +737,22 @@ describe("Workspace sessions", () => {
       // A workspace id no other test has read: the badge store is module-level
       // and only ever grows, so "never read" needs an id nothing has reported.
       vi.mocked(workspacesList).mockResolvedValue([{ ...workspace, id: "workspace-badge-unread" }]);
+      // The restored selection lives in the fresh workspace too: selection is
+      // navigation, so the view must land there and read THAT workspace.
+      vi.mocked(sessionsList).mockResolvedValue([
+        terminal("session-1", "shell one", "workspace-badge-unread"),
+      ]);
       const pending = deferred<WorkspaceGitStatus>();
       vi.mocked(workspaceGitStatus).mockReturnValue(pending.promise);
       await renderWorkspace();
 
       // Two readers now: the sidebar's row stat and the open panel's badge —
       // each reads for itself, and neither shows anything known yet.
-      expect(vi.mocked(workspaceGitStatus)).toHaveBeenCalledTimes(2);
+      // The sidebar's row stat and the open panel's badge each read for
+      // themselves here (the sidebar's cadence is pinned in
+      // useWorkspaceStats.test.tsx, where the triggers are controllable);
+      // what this row pins is that nothing is KNOWN yet.
+      expect(vi.mocked(workspaceGitStatus).mock.calls.length).toBeGreaterThan(0);
       expect(badge()).toBe("—");
 
       await act(async () => {
@@ -1375,6 +1435,67 @@ describe("Workspace sessions", () => {
     expect(workspaceCreate).not.toHaveBeenCalled();
     expect(sessionCreate).toHaveBeenCalledTimes(1);
     expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "grok");
+  });
+
+  it("a session with no workspace stays visible in every workspace's strip", async () => {
+    // A null-workspace session has no home to navigate to: it renders in
+    // every strip (reopening it from History keeps it reachable), never
+    // discarded by the workspace filter.
+    vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+    vi.mocked(sessionsList).mockResolvedValue([
+      {
+        id: "legacy-1",
+        workspaceId: null,
+        kind: "terminal",
+        title: "legacy shell",
+        state: { type: "live", generation: 3 },
+        elapsedMs: 0,
+      },
+    ]);
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    expect(container.querySelector("#workspace-session-tab-legacy-1")).not.toBeNull();
+
+    const otherRow = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
+      (row) => row.textContent?.includes("other-main") === true,
+    );
+    if (otherRow === undefined) throw new Error("second workspace row did not render");
+    await act(async () => otherRow.click());
+
+    // Still there after the switch, and the pane follows it.
+    expect(container.querySelector("#workspace-session-tab-legacy-1")).not.toBeNull();
+    expect(container.querySelector("[data-testid=terminal-surface]")?.textContent).toContain(
+      "legacy-1",
+    );
+  });
+
+  it("a project with no local workspace mints one, selects it, and starts the agent there", async () => {
+    // The reuse policy only mints when the project has no local workspace;
+    // this pins the success path of that fallback (review P3).
+    vi.mocked(workspacesList).mockResolvedValue([]);
+    vi.mocked(workspaceCreate).mockResolvedValue(createdWorkspace);
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [{ ...grokProvider, protocol: "acp" }],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+
+    expect(workspaceCreate).toHaveBeenCalledWith(project.id, "local");
+    expect(sessionCreate).toHaveBeenCalledWith(createdWorkspace.id, "acp", "grok");
+    // The created workspace is the selected one: its row is the pressed row.
+    const selectedRow = container.querySelector<HTMLButtonElement>(
+      "button[aria-pressed='true'].workspace-row",
+    );
+    expect(selectedRow?.textContent).toContain(createdWorkspace.title);
   });
 
   it("dismisses the provider popover on outside mousedown without creating", async () => {

@@ -856,6 +856,16 @@ describe("the + new-tab menu", () => {
     if (homeRow === undefined) throw new Error("workspace-1 row did not render");
     await act(async () => homeRow.click());
     expect(container.querySelector("#workspace-session-tab-session-2")).not.toBeNull();
+
+    // And the autofocus regression the old test pinned stays fixed: the
+    // request was armed for workspace-1's create, the user navigated away,
+    // so the terminal must not take focus when its tab is opened.
+    const tab = container.querySelector<HTMLButtonElement>("#workspace-session-tab-session-2");
+    if (tab === null) throw new Error("session-2 tab did not render");
+    await act(async () => tab.click());
+    await act(async () => undefined);
+    const surface = container.querySelector("[data-testid=terminal-surface]");
+    expect(surface?.getAttribute("data-autofocus")).toBe("false");
   });
 
   it("re-measures the strip when its size changes, and leaves a hand scroll alone without one", async () => {
