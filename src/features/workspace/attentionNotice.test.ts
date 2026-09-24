@@ -214,8 +214,8 @@ describe("workspaceHeldContentProvider", () => {
       pending: () => ({ title: "Run npm install" }),
       heldAssistantText: () => "Deploy finished successfully",
     });
-    expect(provider("agent-1")?.permissionText).toContain("Run npm install");
-    expect(provider("agent-1")?.lastAssistantText).toContain("Deploy finished");
+    expect(provider.heldContent("agent-1")?.permissionText).toContain("Run npm install");
+    expect(provider.heldContent("agent-1")?.lastAssistantText).toContain("Deploy finished");
   });
 
   it("asks the inputs on every call, so a hidden row is not quoted", () => {
@@ -225,9 +225,9 @@ describe("workspaceHeldContentProvider", () => {
       pending: () => ({ title: "Run npm install" }),
       heldAssistantText: () => "Deploy finished successfully",
     });
-    expect(provider("agent-1")).toBeDefined();
+    expect(provider.heldContent("agent-1")).toBeDefined();
     rendered = false;
-    expect(provider("agent-1")).toBeUndefined();
+    expect(provider.heldContent("agent-1")).toBeUndefined();
   });
 });
 
@@ -365,9 +365,11 @@ describe("fireAttentionToast delivery", () => {
   it("hands the provider's held content to the sender", async () => {
     vi.useFakeTimers();
     forgetAttentionFor(new Set());
-    setAttentionHeldContentProvider((sessionId) =>
-      sessionId === "s3" ? { permissionText: "Run npm install" } : undefined,
-    );
+    setAttentionHeldContentProvider({
+      heldContent: (sessionId) =>
+        sessionId === "s3" ? { permissionText: "Run npm install" } : undefined,
+      rendered: () => true,
+    });
     const send = vi.fn(async (_content: ToastContent) => undefined);
     fireAttentionToast("s3", "agent three", attention("permission", 1000), {
       send,
@@ -525,5 +527,61 @@ describe("fireAttentionToast window gate", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fireAttentionToast seen gate needs the row rendered", () => {
+  // The strip is scoped to the selected workspace, so a focused window can
+  // still not render the raising session's row (another workspace's tab,
+  // search hidden). "Seen" is window seen AND row rendered: a raise whose
+  // row nobody saw must not enter the dedupe, or hiding the window later
+  // would never announce it.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+  });
+
+  afterEach(() => {
+    setAttentionHeldContentProvider(null);
+    vi.useRealTimers();
+  });
+
+  it("an off-strip raise seen while focused still announces when the window hides", async () => {
+    setAttentionHeldContentProvider(
+      workspaceHeldContentProvider({
+        rendered: () => false,
+        pending: () => undefined,
+        heldAssistantText: () => undefined,
+      }),
+    );
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const raise = attention("permission", 1000);
+    fireAttentionToast("v1", "agent one", raise, { send, windowState: onScreenFocused });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    // The window hides; the roster re-publishes the same, unconsumed raise.
+    fireAttentionToast("v1", "agent one", raise, { send, windowState: hiddenInTray });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("an on-strip raise seen while focused stays consumed when the window hides", async () => {
+    setAttentionHeldContentProvider(
+      workspaceHeldContentProvider({
+        rendered: () => true,
+        pending: () => undefined,
+        heldAssistantText: () => undefined,
+      }),
+    );
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const raise = attention("permission", 1000);
+    fireAttentionToast("v2", "agent two", raise, { send, windowState: onScreenFocused });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    // As on main: the raise was genuinely seen, the re-publication is
+    // deduplicated even after the window hides.
+    fireAttentionToast("v2", "agent two", raise, { send, windowState: hiddenInTray });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
   });
 });

@@ -167,6 +167,7 @@ export function Workspace({
 }: WorkspaceProps = {}) {
   const delegation = delegationControllerProp ?? delegationController;
   const {
+    projects,
     visibleProjects,
     loading: projectsLoading,
     error: projectsError,
@@ -269,8 +270,10 @@ export function Workspace({
     }),
   );
   const knownWorkspaceIds = useMemo(
-    () => new Set(visibleProjects.flatMap((project) => project.workspaces.map((w) => w.id))),
-    [visibleProjects],
+    // All listed projects, not the search-filtered view: search hiding a
+    // workspace's row must not veto navigation into it.
+    () => new Set(projects.flatMap((project) => project.workspaces.map((w) => w.id))),
+    [projects],
   );
 
   const closingIds = useSyncExternalStore(closeActions.subscribe, closeActions.getClosingSnapshot);
@@ -317,25 +320,41 @@ export function Workspace({
     );
     return () => setAttentionHeldContentProvider(null);
   }, [renderedSessionIds, permissionQueue, closeActions]);
-  // Selection is navigation (Paseo): a restored or pushed selection that
-  // lives in another workspace selects that workspace — until the user has
-  // navigated by row click once, after which their clicks alone steer the
-  // view (a create that lands after a switch must not yank it back), and
-  // only into a workspace the daemon still lists.
+  // Selection is navigation (Paseo), reconciled in ONE effect from ONE
+  // snapshot so workspace and session can never undo each other across
+  // renders (two effects here once fought: one scheduled the workspace
+  // switch while the other, still closing over the old strip, pulled the
+  // session back — the next render reversed both and could loop). A restored
+  // or pushed selection that lives in another listed workspace selects that
+  // workspace and keeps the session — until the user has navigated by row
+  // click once, after which their clicks alone steer the view (a create that
+  // lands after a switch must not yank it back). Every other way of losing
+  // the selected session from the selected workspace's strip falls to that
+  // workspace's first tab or the empty state.
   useEffect(() => {
-    if (userNavigatedRef.current) return;
-    const selected = sessions.find((session) => session.id === selectedSessionId);
-    if (selected === undefined || selected.workspaceId === null) return;
-    if (selected.workspaceId !== selectedWorkspace && knownWorkspaceIds.has(selected.workspaceId)) {
-      setSelectedWorkspace(selected.workspaceId);
+    if (!userNavigatedRef.current) {
+      const selected = sessions.find((session) => session.id === selectedSessionId);
+      if (
+        selected !== undefined &&
+        selected.workspaceId !== null &&
+        selected.workspaceId !== selectedWorkspace &&
+        knownWorkspaceIds.has(selected.workspaceId)
+      ) {
+        setSelectedWorkspace(selected.workspaceId);
+        return;
+      }
     }
-  }, [sessions, selectedSessionId, selectedWorkspace, knownWorkspaceIds, setSelectedWorkspace]);
-  // The pane's session is one the strip renders: after any workspace switch
-  // the selection falls to that workspace's first tab or the empty state.
-  useEffect(() => {
     if (visibleSessions.some((session) => session.id === selectedSessionId)) return;
     selectSession(visibleSessions[0]?.id ?? null);
-  }, [visibleSessions, selectedSessionId, selectSession]);
+  }, [
+    sessions,
+    selectedSessionId,
+    selectedWorkspace,
+    knownWorkspaceIds,
+    visibleSessions,
+    setSelectedWorkspace,
+    selectSession,
+  ]);
   // The strip scrolls its selected tab into full view. The arithmetic and the
   // effect live in stripScroll.ts, unit-tested there — happy-dom computes no
   // layout to prove them against here.

@@ -181,17 +181,31 @@ export function heldContentForSession(
  * the permission queue, and the held transcripts — so a toast is never
  * worded from a snapshot older than the raise it announces.
  */
+/**
+ * What a window that renders sessions registers: the held-content function
+ * the toast wording uses, and the rendered-row predicate it was built from.
+ * One registration, one source for "this window can see" — wording and
+ * dedupe ask the same predicate, never a second copy of the strip's rows.
+ */
+export interface AttentionWindowProvider {
+  heldContent: (sessionId: string) => HeldContent | undefined;
+  rendered: (sessionId: string) => boolean;
+}
+
 export function workspaceHeldContentProvider(inputs: {
   rendered: (sessionId: string) => boolean;
   pending: (sessionId: string) => { title: string; description?: string } | undefined;
   heldAssistantText: (sessionId: string) => string | undefined;
-}): (sessionId: string) => HeldContent | undefined {
-  return (sessionId) =>
-    heldContentForSession(
-      inputs.rendered(sessionId),
-      inputs.pending(sessionId),
-      inputs.heldAssistantText(sessionId),
-    );
+}): AttentionWindowProvider {
+  return {
+    heldContent: (sessionId) =>
+      heldContentForSession(
+        inputs.rendered(sessionId),
+        inputs.pending(sessionId),
+        inputs.heldAssistantText(sessionId),
+      ),
+    rendered: inputs.rendered,
+  };
 }
 
 /**
@@ -212,16 +226,17 @@ export function heldAssistantTextFor(sessionId: string): string | undefined {
 }
 
 /**
- * Message content the app holds per session, registered by the surface that
- * holds it (the Workspace: its roster is what "this window can see" means,
- * and its permission queue is what "holds" means).
+ * What the surface that renders sessions registered (the Workspace: its
+ * roster is what "this window can see" means, its permission queue is what
+ * "holds" means). Null between registrations and in surfaces without a
+ * strip — an unknown rendered answer never claims seen.
  */
 let heldContentProvider: ((sessionId: string) => HeldContent | undefined) | null = null;
+let renderedInWindow: ((sessionId: string) => boolean) | null = null;
 
-export function setAttentionHeldContentProvider(
-  provider: ((sessionId: string) => HeldContent | undefined) | null,
-): void {
-  heldContentProvider = provider;
+export function setAttentionHeldContentProvider(provider: AttentionWindowProvider | null): void {
+  heldContentProvider = provider?.heldContent ?? null;
+  renderedInWindow = provider?.rendered ?? null;
 }
 
 /** The last raise a toast fired (or was gate-blocked) for, per session. */
@@ -291,10 +306,11 @@ export const TOAST_RETRY_DELAY_MS = 1500;
 
 /**
  * The production toast path, called by the roster controller on every
- * attention transition. The window gate marks a raise as seen (the user
- * was looking at the app) and stops there. A send that throws waits once
- * for `TOAST_RETRY_DELAY_MS` and tries again; a second failure is dropped —
- * the raise was announced as far as this app can push it.
+ * attention transition. The window gate marks a raise as seen — the user was
+ * looking at the app AND this window renders the session's row — and stops
+ * there. A send that throws waits once for `TOAST_RETRY_DELAY_MS` and tries
+ * again; a second failure is dropped — the raise was announced as far as
+ * this app can push it.
  */
 /** The OS truth about this window, asked at the moment it is needed. The
  *  document inside a hidden WebView2 keeps claiming visible and focused
@@ -354,6 +370,12 @@ export function fireAttentionToast(
     // taken the slot: the newer toast must not be followed by this one.
     if (lastFired.get(sessionId) !== attention) return;
     if (!toastGate(snapshot)) {
+      // Seen is window seen AND row rendered: a raise whose row this
+      // window's strip does not show (another workspace's tab, search
+      // hidden) was seen by nobody, so it must not stay in the dedupe —
+      // when the window later hides, the next roster re-push announces it.
+      // (The stale check above guarantees the slot still holds this raise.)
+      if (!(renderedInWindow?.(sessionId) ?? false)) lastFired.delete(sessionId);
       // Seen but not raised: the user was looking at the window.
       return;
     }

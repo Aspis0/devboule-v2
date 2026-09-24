@@ -256,6 +256,9 @@ export function useWorkspaceProjects() {
   );
 
   return {
+    // The unfiltered list: search must not veto selection-to-workspace
+    // navigation, which reads this list's workspace ids.
+    projects: projectViews,
     visibleProjects,
     loading,
     error,

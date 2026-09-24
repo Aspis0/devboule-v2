@@ -287,7 +287,7 @@ import type {
   WorkspaceGitStatus,
 } from "../../types/ipc";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
-import { resetSharedSessionControllerForTests } from "./workspaceSessions";
+import { resetSharedSessionControllerForTests, sharedSessionController } from "./workspaceSessions";
 import { createDelegationController } from "../../lib/delegation";
 import type { SessionStateSnapshot } from "../../types/ipc";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
@@ -602,6 +602,98 @@ describe("Workspace sessions", () => {
 
       expect(container.querySelector("#workspace-session-tab-session-w2")).toBeNull();
       expect(container.querySelector("#workspace-session-tab-session-1")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a pushed selection in another workspace lands there with that session, and settles", async () => {
+    // Two populated workspaces: A (workspace-1) is shown, B (workspace-2)
+    // has its own live session. The daemon pushes a restored selection that
+    // lives in B. One reconciliation must move the workspace AND keep the
+    // session — the old two-effect version scheduled the switch while the
+    // strip-follow, still closing over A's strip, pulled A's first tab back,
+    // and the two kept reversing each other.
+    vi.useFakeTimers();
+    try {
+      let answer!: (status: DaemonStatus) => void;
+      vi.mocked(daemonStatus).mockImplementation(
+        () =>
+          new Promise<DaemonStatus>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+      vi.mocked(sessionsList).mockResolvedValue([
+        terminal("session-1", "shell one", "workspace-1"),
+        terminal("session-w2", "other shell", "workspace-2"),
+      ]);
+      root = createRoot(container);
+      await act(async () => root.render(<Workspace />));
+      await act(async () => answer(daemonConnected));
+      await act(async () => vi.advanceTimersByTimeAsync(2_100));
+      await act(async () => undefined);
+
+      expect(container.querySelector("#workspace-session-tab-session-1")).not.toBeNull();
+      expect(container.querySelector("#workspace-session-tab-session-w2")).toBeNull();
+
+      // The push.
+      await act(async () => sharedSessionController().select("session-w2"));
+      await act(async () => vi.advanceTimersByTimeAsync(2_100));
+      await act(async () => undefined);
+
+      // Landed on B, with B's session — not B's first tab after a fight.
+      expect(container.querySelector("#workspace-session-tab-session-w2")).not.toBeNull();
+      expect(container.querySelector("#workspace-session-tab-session-1")).toBeNull();
+
+      // Bounded: after further ticks and roster re-resolutions the view
+      // stays where it settled — no further state updates.
+      await act(async () => vi.advanceTimersByTimeAsync(4_200));
+      await act(async () => undefined);
+      expect(container.querySelector("#workspace-session-tab-session-w2")).not.toBeNull();
+      expect(container.querySelector("#workspace-session-tab-session-1")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a pushed selection into a search-hidden workspace still lands there", async () => {
+    // Search hides B's sidebar row, but the daemon still lists B: search
+    // must not veto selection-to-workspace navigation (the known-workspace
+    // set reads all listed projects, not the filtered view).
+    vi.useFakeTimers();
+    try {
+      let answer!: (status: DaemonStatus) => void;
+      vi.mocked(daemonStatus).mockImplementation(
+        () =>
+          new Promise<DaemonStatus>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+      vi.mocked(sessionsList).mockResolvedValue([
+        terminal("session-1", "shell one", "workspace-1"),
+        terminal("session-w2", "other shell", "workspace-2"),
+      ]);
+      root = createRoot(container);
+      await act(async () => root.render(<Workspace />));
+      await act(async () => answer(daemonConnected));
+      await act(async () => vi.advanceTimersByTimeAsync(2_100));
+      await act(async () => undefined);
+
+      // The query matches only A's row ("devboule main"); B's row drops out.
+      const input = container.querySelector<HTMLInputElement>(".workspace-search input");
+      if (input === null) throw new Error("search input did not render");
+      await act(async () => setSearchValue(input, "devboule main"));
+      const rowsAfterSearch = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")];
+      expect(rowsAfterSearch.some((row) => row.textContent?.includes("other-main"))).toBe(false);
+
+      await act(async () => sharedSessionController().select("session-w2"));
+      await act(async () => vi.advanceTimersByTimeAsync(2_100));
+      await act(async () => undefined);
+
+      expect(container.querySelector("#workspace-session-tab-session-w2")).not.toBeNull();
+      expect(container.querySelector("#workspace-session-tab-session-1")).toBeNull();
     } finally {
       vi.useRealTimers();
     }
