@@ -41,7 +41,11 @@ export interface TerminalSessionDeps {
   host: HTMLElement;
   createView: (
     host: HTMLElement,
-    options: { onData: (data: string) => void; onCtrlC: () => void },
+    options: {
+      onData: (data: string) => void;
+      onCtrlC: () => void;
+      onFontFit?: () => void;
+    },
   ) => Promise<TerminalViewHandle>;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   createChannel: (onEvent: (event: TerminalEvent) => void) => TerminalChannel;
@@ -177,6 +181,10 @@ export class TerminalSession {
       view = await this.deps.createView(this.deps.host, {
         onData: (data) => this.handleViewData(data),
         onCtrlC: () => this.requestCtrlC(),
+        // A font-settle refit must end in a PTY resize like any other fit:
+        // only doResize sends session_resize, so the view hands the request
+        // here instead of fitting itself.
+        onFontFit: () => this.requestResize(),
       });
     } catch (error: unknown) {
       this.showError(`Could not open the terminal view: ${errorMessage(error)}`);

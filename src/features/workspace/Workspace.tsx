@@ -142,8 +142,11 @@ interface WorkspaceProps {
 /**
  * The session whose pane the centre may render: the selected id counts only
  * while the strip still has its tab. A row the strip hides (its close is in
- * flight, the roster carried it away) or another workspace's session must
- * never keep a pane up, and an empty strip means the empty state.
+ * flight, the roster carried it away) must never keep a pane up, and an empty
+ * strip means the empty state. Tabs are not filtered by workspace today, so a
+ * selected id from another workspace stays in this global list and passes this
+ * check — workspace isolation is the tab-strip slice's filtering (recorded
+ * defect), not this function's.
  */
 export function paneSessionOf<S extends { id: string }>(
   selectedSessionId: string | null,

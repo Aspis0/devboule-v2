@@ -64,6 +64,14 @@ export interface CreateTerminalViewOptions {
   onData: (data: string) => void;
   /** Route plain Ctrl+C through the controller's arm/confirm guard. */
   onCtrlC: () => void;
+  /**
+   * The session's resize request, called when the document's fonts settle
+   * after the opening fit. Only `TerminalSession.doResize` sends
+   * `session_resize`, so the font refit must ride the session's
+   * `requestResize` path — a direct fit here would leave xterm and the shell
+   * on different grids.
+   */
+  onFontFit?: () => void;
 }
 
 export interface TerminalViewHandle {
@@ -164,10 +172,11 @@ export function createTerminalView(
   // arithmetic if it ever overflows again, so a future box or addon change
   // degrades to a clamped fit, never a clipped prompt. Cell metrics do not
   // depend on rows/cols, so a mid-render measurement is still the right cell.
-  // The addon's own proposal is the upper bound: it reserves the scrollbar's
-  // width, which the raw content-box arithmetic does not see, so clamping to
-  // it keeps the clamp overflow-only (it can shrink, never widen).
-  const clampToFitBox = (proposal: { cols: number; rows: number } | null): void => {
+  // The addon's proposal — always present here, because runFit skips any fit
+  // without one — is the upper bound: it reserves the scrollbar's width,
+  // which the raw content-box arithmetic does not see, so the clamp can
+  // shrink, never widen.
+  const clampToFitBox = (proposal: { cols: number; rows: number }): void => {
     if (typeof host.querySelector !== "function") return; // stubbed hosts in tests
     if (terminal.rows === 0 || terminal.cols === 0) return;
     const screen: unknown = host.querySelector(".xterm-screen");
@@ -195,20 +204,35 @@ export function createTerminalView(
       width: screenBox.width / terminal.cols,
       height: screenBox.height / terminal.rows,
     };
-    if (!Number.isFinite(cell.width) || !Number.isFinite(cell.height) || cell.width <= 0) return;
+    if (
+      !Number.isFinite(cell.width) ||
+      !Number.isFinite(cell.height) ||
+      cell.width <= 0 ||
+      cell.height <= 0
+    ) {
+      return;
+    }
     const fitted = fitRowsCols(content, cell);
-    const cols = Math.min(fitted.cols, proposal?.cols ?? fitted.cols);
-    const rows = Math.min(fitted.rows, proposal?.rows ?? fitted.rows);
+    const cols = Math.min(fitted.cols, proposal.cols);
+    const rows = Math.min(fitted.rows, proposal.rows);
     if (cols !== terminal.cols || rows !== terminal.rows) {
       terminal.resize(cols, rows);
     }
   };
 
   const runFit = (): boolean => {
+    // A collapsed or hidden host has no grid to keep: skip the fit and send
+    // nothing, so the PTY keeps its last good geometry instead of a minimum
+    // 2×1 grid.
+    if (host.clientWidth <= 0 || host.clientHeight <= 0) return false;
+    // The addon returns undefined when it cannot propose (no laid-out element,
+    // or zero cell metrics). With no proposal there is no scrollbar-aware
+    // bound: no fit.
+    const proposal = fitAddon.proposeDimensions();
+    if (proposal == null || proposal.cols <= 0 || proposal.rows <= 0) return false;
     try {
-      const proposal = fitAddon.proposeDimensions();
       fitAddon.fit();
-      clampToFitBox(proposal ?? null);
+      clampToFitBox(proposal);
       return true;
     } catch {
       return false;
@@ -228,11 +252,13 @@ export function createTerminalView(
   runFit();
   // The bundled JetBrains Mono can finish loading after the first fit: the
   // cell size changes while the host box does not, so the box observer never
-  // fires and the grid keeps the fallback font's shape. One refit when the
-  // document's fonts settle.
+  // fires and the grid keeps the fallback font's shape. The refit rides the
+  // session's requestResize path (via `onFontFit`), because only
+  // TerminalSession.doResize sends `session_resize` — a direct fit here would
+  // leave the shell wrapping at the old grid.
   if (typeof document !== "undefined" && "fonts" in document) {
     void document.fonts.ready.then(() => {
-      if (!disposed) runFit();
+      if (!disposed) options.onFontFit?.();
     });
   }
 

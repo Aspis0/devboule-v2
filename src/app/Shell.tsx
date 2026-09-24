@@ -233,6 +233,11 @@ export function Shell({ activeSurface, children }: ShellProps) {
           id="devboule-crescent-navigation"
           ref={navigationRef}
           className={`crescent-nav${navOpen ? " crescent-nav-open" : ""}`}
+          // Inert when closed: opacity and tabIndex hide the points from
+          // sight and from Tab, but not from a screen reader's browse
+          // navigation. inert removes the whole landmark from the
+          // accessibility tree until the nav is actually shown.
+          inert={!navOpen}
           onPointerEnter={() => setNavOpen(true)}
           onPointerLeave={(event) => {
             if (event.clientY > 150) {
@@ -313,10 +318,17 @@ export function Shell({ activeSurface, children }: ShellProps) {
                   selectSurface(surface.key);
                   closeNav();
                   // The trigger takes focus back, but the choice just closed
-                  // the nav — the handback must not reopen it (the Escape
-                  // path suppresses the trigger's focus the same way).
-                  suppressTriggerFocusRef.current = true;
-                  triggerRef.current?.focus();
+                  // the nav — the handback must not reopen it. Arm the
+                  // suppression only when the handback will actually emit a
+                  // focus event; with the trigger already focused, focus()
+                  // emits nothing and an armed flag would eat the next
+                  // genuine focus (the Escape path arms it the same way).
+                  if (document.activeElement === triggerRef.current) {
+                    suppressTriggerFocusRef.current = false;
+                  } else {
+                    suppressTriggerFocusRef.current = true;
+                    triggerRef.current?.focus();
+                  }
                 }}
                 onFocus={() => setNavOpen(true)}
                 tabIndex={navOpen ? 0 : -1}

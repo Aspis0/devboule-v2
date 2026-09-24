@@ -204,16 +204,59 @@ describe("fitting", () => {
     vi.unstubAllGlobals();
   });
 
-  it("refits when the document's fonts finish loading", async () => {
+  it("routes the font-ready refit through onFontFit, so the session resizes the PTY", async () => {
+    let resolveFonts: (() => void) | null = null;
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "0px" }));
+    vi.stubGlobal("document", {
+      documentElement: {},
+      fonts: { ready: new Promise<void>((resolve) => (resolveFonts = resolve)) },
+    });
+    const onFontFit = vi.fn();
     const host = { querySelector: () => null };
     createTerminalView(host as unknown as HTMLElement, {
       onData: () => undefined,
       onCtrlC: () => undefined,
+      onFontFit,
     });
+    // Only the opening fit has happened; the fonts promise is still pending.
+    expect(onFontFit).not.toHaveBeenCalled();
+    resolveFonts!();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // The opening fit plus the font-settle refit: bundled JetBrains Mono can
-    // land after the first fit, changing the cell while the box never moves.
-    expect(mocks.state.fitCount).toBeGreaterThanOrEqual(2);
+    // Bundled JetBrains Mono can land after the first fit, changing the cell
+    // while the box never moves. The view must not refit itself — only
+    // TerminalSession.doResize sends session_resize — so the refit is routed
+    // to the session's requestResize path.
+    expect(onFontFit).toHaveBeenCalledTimes(1);
+    // And the view ran no fit of its own for it (the stub host has no
+    // geometry, so even the opening fit is skipped here).
+    expect(mocks.state.fitCount).toBe(0);
+  });
+
+  it("does not fit on a collapsed or hidden host, and reports no fit to the PTY", () => {
+    const host = { querySelector: () => null, clientWidth: 0, clientHeight: 0 };
+    const view = createTerminalView(host as unknown as HTMLElement, {
+      onData: () => undefined,
+      onCtrlC: () => undefined,
+    });
+    const grid = { cols: mocks.state.terminals[0]!.cols, rows: mocks.state.terminals[0]!.rows };
+    expect(view.fit()).toBe(false);
+    expect(mocks.state.fitCount).toBe(0);
+    expect(mocks.state.terminals[0]!.cols).toBe(grid.cols);
+    expect(mocks.state.terminals[0]!.rows).toBe(grid.rows);
+  });
+
+  it("does not fit without FitAddon's proposal, and reports no fit to the PTY", () => {
+    // The real addon returns undefined when it cannot propose (no element, or
+    // zero cell metrics); the mock's unset proposal stands in for it.
+    const host = { querySelector: () => null, clientWidth: 800, clientHeight: 384 };
+    const view = createTerminalView(host as unknown as HTMLElement, {
+      onData: () => undefined,
+      onCtrlC: () => undefined,
+    });
+    expect(view.fit()).toBe(false);
+    expect(mocks.state.fitCount).toBe(0);
+    expect(mocks.state.terminals[0]!.cols).toBe(80);
+    expect(mocks.state.terminals[0]!.rows).toBe(24);
   });
 
   it("the post-fit clamp treats FitAddon's proposal as the upper bound, scrollbar included", () => {

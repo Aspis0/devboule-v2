@@ -286,4 +286,58 @@ describe("Shell crescent", () => {
     expect(point.getAttribute("tabindex")).toBe("-1");
     await act(async () => root.unmount());
   });
+
+  it("a closed nav leaves the accessibility tree; an open one is reachable", async () => {
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    const navigation = container.querySelector<HTMLElement>(".crescent-nav");
+    if (sliver === null || navigation === null) throw new Error("crescent did not render");
+    // Closed: inert removes the invisible points from the accessibility tree,
+    // so browse navigation cannot find or activate them.
+    expect(navigation.hasAttribute("inert")).toBe(true);
+
+    await act(async () => sliver.focus());
+    expect(navigation.classList).toContain("crescent-nav-open");
+    expect(navigation.hasAttribute("inert")).toBe(false);
+    const point = container.querySelector<HTMLButtonElement>('[aria-label="Open Polis"]');
+    if (point === null) throw new Error("Polis point did not render");
+    await act(async () => point.focus());
+    expect(document.activeElement).toBe(point);
+
+    await act(async () => {
+      sliver.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    });
+    expect(navigation.hasAttribute("inert")).toBe(true);
+    expect(sliver.getAttribute("aria-expanded")).toBe("false");
+    await act(async () => root.unmount());
+  });
+
+  it("a selection made while the trigger already has focus does not poison the next focus", async () => {
+    const selectSurface = vi.fn();
+    useAppStore.setState({ plugins: inventory([READY]), selectSurface });
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    const navigation = container.querySelector<HTMLElement>(".crescent-nav");
+    if (sliver === null || navigation === null) throw new Error("crescent did not render");
+    await act(async () => sliver.focus());
+    expect(navigation.classList).toContain("crescent-nav-open");
+
+    // A programmatic click moves no focus: the trigger is still
+    // document.activeElement, so the handback emits no focus event and must
+    // not arm the suppression flag.
+    const point = container.querySelector<HTMLButtonElement>('[aria-label="Open Polis"]');
+    if (point === null) throw new Error("Polis point did not render");
+    await act(async () => point.click());
+
+    expect(selectSurface).toHaveBeenCalledWith("polis");
+    expect(navigation.classList).not.toContain("crescent-nav-open");
+
+    // The next genuine focus on the trigger must still open the nav.
+    await act(async () => sliver.blur());
+    await act(async () => sliver.focus());
+    expect(navigation.classList).toContain("crescent-nav-open");
+    await act(async () => root.unmount());
+  });
 });
