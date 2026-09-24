@@ -226,24 +226,22 @@ export interface NotificationPlugin {
 }
 
 /**
- * A denial is FINAL for that plugin: on the desktop the OS itself decides
- * at toast time (notifications settings, Focus Assist), so there is no ask
- * to repeat, and one measured "no" is remembered rather than re-litigated
- * for every agent that finishes. The memory is keyed by the plugin object,
- * so the production import (one module instance per app run) remembers
- * once while a test's own plugin starts clean.
+ * The permission answer is the plugin's Rust command — one cheap in-process
+ * invoke — so it is asked fresh per raise and NO denial is cached: a
+ * transient `false` must not become permanent, and a cache would need a
+ * module flag whose only saving is that cheap query. A denial (or any
+ * refusal) THROWS, so the caller treats the raise as undelivered instead
+ * of silently consuming it. On the desktop the OS still decides at toast
+ * time (notifications settings, Focus Assist); there is no ask dialog to
+ * repeat.
  */
-const deniedPlugins = new WeakSet<NotificationPlugin>();
-
 export async function sendWithPermission(
   content: ToastContent,
   plugin: NotificationPlugin,
 ): Promise<void> {
-  if (deniedPlugins.has(plugin)) return;
   const granted = await plugin.rustPermissionGranted();
   if (!granted) {
-    deniedPlugins.add(plugin);
-    return;
+    throw new Error("the OS permission answer was not granted");
   }
   await plugin.sendNotification({ title: content.title, body: content.body });
 }
@@ -292,6 +290,24 @@ export async function productionWindowState(): Promise<WindowState> {
   return { visible, focused, minimized };
 }
 
+/**
+ * Subscribes to the window's focus changes for presence: a blur or focus
+ * means the seen/hidden answer may have flipped, and presence must report
+ * at once — the daemon drops a raise for a session it believes is
+ * attended. Returns the unsubscribe.
+ */
+export function productionOnWindowFocusChange(handler: () => void): () => void {
+  let unlisten: (() => void) | undefined;
+  void (async () => {
+    const window = (await import("@tauri-apps/api/window")).getCurrentWindow();
+    unlisten = await window.onFocusChanged(() => handler());
+  })().catch(() => {
+    // No window to subscribe to (or the API is unavailable): the 5 s poll
+    // remains the safety net, so the failure only costs immediacy.
+  });
+  return () => unlisten?.();
+}
+
 export function fireAttentionToast(
   sessionId: string,
   title: string,
@@ -303,7 +319,20 @@ export function fireAttentionToast(
   const state = deps?.windowState ?? productionWindowState;
   const send = deps?.send ?? defaultSend;
   void (async () => {
-    if (!toastGate(await state())) {
+    // A rejected read cannot say the user is looking: the window might be
+    // in the tray, so behave as if they are not — toast anyway.
+    let snapshot: WindowState;
+    try {
+      snapshot = await state();
+    } catch {
+      // A rejected read cannot say the user is looking: the window might
+      // be in the tray, so behave as if they are not.
+      snapshot = { visible: false, focused: false, minimized: false };
+    }
+    // A raise paused in the read above is stale if a newer one has since
+    // taken the slot: the newer toast must not be followed by this one.
+    if (lastFired.get(sessionId) !== attention) return;
+    if (!toastGate(snapshot)) {
       // Seen but not raised: the user was looking at the window.
       return;
     }

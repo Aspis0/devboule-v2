@@ -214,15 +214,30 @@ describe("sendWithPermission", () => {
     expect(plugin.sendNotification).toHaveBeenCalledWith({ title: "t", body: "b" });
   });
 
-  it("sends nothing after a Rust-side denial, and never consults it again", async () => {
+  it("throws on a Rust-side denial, and sends nothing", async () => {
     const plugin = {
       rustPermissionGranted: vi.fn(async () => false),
       sendNotification: vi.fn(async () => undefined),
     };
-    await sendWithPermission({ title: "t", body: "b" }, plugin);
-    await sendWithPermission({ title: "t2", body: "b2" }, plugin);
-    expect(plugin.rustPermissionGranted).toHaveBeenCalledTimes(1);
+    await expect(sendWithPermission({ title: "t", body: "b" }, plugin)).rejects.toThrow(
+      "the OS permission answer was not granted",
+    );
     expect(plugin.sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("asks the Rust side again on the next raise: no denial is cached", async () => {
+    // The query is one cheap in-process invoke, so a transient `false` is
+    // re-asked, never cached into a permanent silence.
+    let granted = false;
+    const plugin = {
+      rustPermissionGranted: vi.fn(async () => granted),
+      sendNotification: vi.fn(async () => undefined),
+    };
+    await expect(sendWithPermission({ title: "t", body: "b" }, plugin)).rejects.toThrow();
+    granted = true;
+    await sendWithPermission({ title: "t2", body: "b2" }, plugin);
+    expect(plugin.rustPermissionGranted).toHaveBeenCalledTimes(2);
+    expect(plugin.sendNotification).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -333,6 +348,61 @@ describe("fireAttentionToast delivery", () => {
     expect(sent?.body).toBe("Run npm install");
     setAttentionHeldContentProvider(null);
     vi.useRealTimers();
+  });
+});
+
+describe("fireAttentionToast ordering and rejection", () => {
+  // Deferred window-state reads, resolved per fire: the only way to test
+  // the order two raises land their toasts in.
+  const deferredWindowState = (): {
+    windowState: () => Promise<WindowState>;
+    resolveNext: (state: WindowState) => void;
+  } => {
+    const resolvers: Array<(state: WindowState) => void> = [];
+    return {
+      windowState: () =>
+        new Promise<WindowState>((resolve) => {
+          resolvers.push(resolve);
+        }),
+      resolveNext: (state) => resolvers.shift()?.(state),
+    };
+  };
+
+  it("does not send a stale raise after a newer one", async () => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    const { windowState, resolveNext } = deferredWindowState();
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const deps = { send, windowState };
+    const hidden = { visible: false, focused: false, minimized: false };
+    // The older raise pauses in its window-state read; the newer one (same
+    // session) takes the slot and resolves first.
+    fireAttentionToast("s9", "agent nine", attention("finished", 1000), deps);
+    fireAttentionToast("s9", "agent nine", attention("finished", 2000), deps);
+    resolveNext(hidden); // the newer raise's read
+    await vi.advanceTimersByTimeAsync(0);
+    resolveNext(hidden); // the older raise's read, late
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("toasts when the window-state read rejects", async () => {
+    // The live rule: when the app cannot tell whether the user is looking,
+    // it behaves as if they are not.
+    forgetAttentionFor(new Set());
+    documentClaimsVisibleAndFocused();
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    fireAttentionToast("s10", "agent ten", attention("finished", 1000), {
+      send,
+      windowState: async () => {
+        throw new Error("the window could not be asked");
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
 

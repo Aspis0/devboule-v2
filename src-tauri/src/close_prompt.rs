@@ -280,6 +280,18 @@ mod tests {
             read(0, 0, 0),
             "No agents or terminals are running. Quitting stops the daemon, and paired devices lose access until Devboule starts again."
         );
+        assert_eq!(
+            read(0, 2, 0),
+            "2 terminals will stop. Quitting stops the daemon, and paired devices lose access until Devboule starts again."
+        );
+    }
+
+    #[test]
+    fn the_unreadable_daemon_variant_is_pinned_exactly() {
+        assert_eq!(
+            quit_confirmation_message(&DaemonFacts::Unknown),
+            "The daemon's status could not be read, so Devboule cannot say what is running. Quitting asks the daemon to stop; it refuses while another running Devboule is still connected."
+        );
     }
 
     #[test]

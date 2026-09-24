@@ -2,7 +2,8 @@ import { sessionPresence, type CommandArgs } from "../../lib/tauri";
 import type { WindowState } from "./attentionNotice";
 
 /** How often production re-asks the window state: hiding the window fires
- *  no DOM event inside WebView2, so a poll is the only thing that notices. */
+ *  no DOM event inside WebView2, so a poll is the safety net behind the
+ *  focus-change subscription. */
 const DEFAULT_WINDOW_POLL_INTERVAL_MS = 5_000;
 
 /**
@@ -12,7 +13,10 @@ const DEFAULT_WINDOW_POLL_INTERVAL_MS = 5_000;
  * for the session the user is actually looking at. This module only carries
  * the truth to it: which session is selected and whether the app window is
  * visible and focused right now. It coalesces — a presence report is sent
- * only when the (focusedSessionId, appVisible) pair actually changes.
+ * only when the (focusedSessionId, appVisible) pair actually changes — and
+ * it reports at once on a focus change, because the daemon DROPS a raise
+ * for an attended session: a presence lag on hide would be a lost raise,
+ * not a late one.
  */
 export interface PresenceEventTargetLike {
   addEventListener(type: string, listener: () => void): void;
@@ -39,11 +43,19 @@ export interface PresenceDeps {
    * The OS truth about the window. Inside a hidden WebView2 the document
    * keeps claiming `visibilityState: "visible"` and `hasFocus: true`, so
    * production asks the window itself; when absent (tests, plain web) the
-   * document answers.
+   * document answers. A rejected read can never say the user is looking:
+   * the window might be in the tray, so a rejection reports not visible.
    */
   windowState?: () => Promise<WindowState>;
   /** How often the window state is re-asked. Only used with `windowState`. */
   pollIntervalMs?: number;
+  /**
+   * Subscribes to the window's focus changes, returning the unsubscribe. A
+   * blur or focus re-asks the state at once — the poll is only the safety
+   * net for the gaps, because a raise in those gaps is dropped by the
+   * daemon, not delayed.
+   */
+  onWindowFocusChange?: (handler: () => void) => () => void;
 }
 
 export interface PresenceReporter {
@@ -64,8 +76,11 @@ interface Presence {
  * "Visible" honestly means the window's own state: hidden via the tray or
  * minimized flips it, and neither fires a DOM event inside WebView2 — the
  * document goes on claiming visible and focused forever. So production asks
- * the window itself and re-asks on a poll; a caller without a window source
- * (plain web) falls back to the document, where the old assumption holds.
+ * the window itself, reports at once on a focus change, and re-asks on a
+ * poll as the safety net; a caller without a window source (plain web)
+ * falls back to the document, where the old assumption holds. A rejected
+ * window-state read is reported as not visible — never as the document's
+ * lie.
  */
 export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceReporter {
   const win = deps?.window ?? (typeof window === "undefined" ? null : window);
@@ -80,9 +95,22 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
 
   const emit = async (): Promise<void> => {
     if (disposed) return;
-    const asked = deps?.windowState ? await deps.windowState().catch(() => null) : null;
-    const appVisible = asked
-      ? asked.visible && asked.focused && !asked.minimized
+    // A rejected read can never be replaced by the document's answer: the
+    // live check measured that answer lying for a hidden window. Not seen
+    // is the only honest reading when the window cannot be asked.
+    let asked: WindowState | null = null;
+    let readFailed = false;
+    if (deps?.windowState) {
+      asked = await deps.windowState().catch(() => {
+        readFailed = true;
+        return null;
+      });
+    }
+    // `disposed` again: dispose may have landed while the state read was in
+    // flight, and a late report must never re-assert an attended session.
+    if (disposed) return;
+    const appVisible = deps?.windowState
+      ? !readFailed && asked !== null && asked.visible && asked.focused && !asked.minimized
       : doc.visibilityState === "visible" && doc.hasFocus();
     const presence: Presence = {
       focusedSessionId: appVisible ? focusedSessionId : null,
@@ -116,6 +144,7 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   win.addEventListener("focus", onFocusChange);
   win.addEventListener("blur", onFocusChange);
   doc.addEventListener("visibilitychange", onVisibilityChange);
+  const unsubscribeFocusChange = deps?.onWindowFocusChange?.(emitForgotten);
   const pollTimer =
     deps?.windowState !== undefined
       ? setInterval(emitForgotten, deps?.pollIntervalMs ?? DEFAULT_WINDOW_POLL_INTERVAL_MS)
@@ -130,6 +159,7 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     dispose(): void {
       disposed = true;
       if (pollTimer !== undefined) clearInterval(pollTimer);
+      unsubscribeFocusChange?.();
       win.removeEventListener("focus", onFocusChange);
       win.removeEventListener("blur", onFocusChange);
       doc.removeEventListener("visibilitychange", onVisibilityChange);

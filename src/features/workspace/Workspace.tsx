@@ -56,6 +56,7 @@ import {
 } from "./workspaceSessions";
 import {
   heldAssistantTextFor,
+  productionOnWindowFocusChange,
   productionWindowState,
   sessionAttentionLabel,
   setAttentionHeldContentProvider,
@@ -429,7 +430,10 @@ export function Workspace({
   useEffect(() => {
     // Presence reads the same OS truth the toast gate does: the document
     // inside a hidden WebView2 keeps claiming visible and focused.
-    const reporter = startPresenceReporting({ windowState: productionWindowState });
+    const reporter = startPresenceReporting({
+      windowState: productionWindowState,
+      onWindowFocusChange: productionOnWindowFocusChange,
+    });
     presenceReporterRef.current = reporter;
     return () => {
       presenceReporterRef.current = null;

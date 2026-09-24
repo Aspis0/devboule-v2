@@ -194,6 +194,87 @@ describe("presence reporting", () => {
     reporter.dispose();
   });
 
+  it("reports not visible when the window-state read rejects, never the page's lie", async () => {
+    const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
+    const windowState = async (): Promise<WindowState> => {
+      throw new Error("the window could not be asked");
+    };
+    const reporter = startPresenceReporting({
+      invoke: env.invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      windowState,
+    });
+
+    await flush();
+    expect(env.invoke).toHaveBeenCalledWith("session_presence", {
+      focusedSessionId: null,
+      appVisible: false,
+    });
+    reporter.dispose();
+  });
+
+  it("never reports after dispose, even with a state read still in flight", async () => {
+    const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
+    let resolveState: (state: WindowState) => void = () => undefined;
+    const windowState = (): Promise<WindowState> =>
+      new Promise((resolve) => {
+        resolveState = resolve;
+      });
+    const reporter = startPresenceReporting({
+      invoke: env.invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      windowState,
+    });
+    reporter.onSelectionChanged("session-a");
+    reporter.dispose();
+
+    // The read was still pending when dispose landed; resolving it now must
+    // not conjure a late report that re-asserts an attended session.
+    resolveState({ visible: true, focused: true, minimized: false });
+    await flush();
+    expect(env.invoke).not.toHaveBeenCalled();
+  });
+
+  it("reports at once on a window focus change, with the poll only as a net", async () => {
+    vi.useFakeTimers();
+    const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
+    let hidden = false;
+    // A holder, not a bare `let`: the assignment happens inside the
+    // subscription callback, which TypeScript's narrowing cannot see.
+    const focusHandlerHolder: { handler: (() => void) | null } = { handler: null };
+    const reporter = startPresenceReporting({
+      invoke: env.invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      windowState: async (): Promise<WindowState> => ({
+        visible: !hidden,
+        focused: !hidden,
+        minimized: false,
+      }),
+      onWindowFocusChange: (handler) => {
+        focusHandlerHolder.handler = handler;
+        return () => {
+          focusHandlerHolder.handler = null;
+        };
+      },
+    });
+    await flush();
+
+    // The window hides: no DOM event fires inside WebView2, but the focus
+    // change subscription re-asks the state at once.
+    hidden = true;
+    focusHandlerHolder.handler?.();
+    await flush();
+    expect(env.invoke).toHaveBeenCalledWith("session_presence", {
+      focusedSessionId: null,
+      appVisible: false,
+    });
+    reporter.dispose();
+    vi.useRealTimers();
+  });
+
   it("stops listening and sending after dispose", () => {
     const env = createEnvironment();
     const reporter = createReporter(env);
