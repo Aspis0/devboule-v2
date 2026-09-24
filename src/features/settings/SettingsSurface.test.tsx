@@ -32,6 +32,10 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
     journalRetentionGet: vi.fn(),
     journalRetentionSet: vi.fn(),
     journalUsage: vi.fn(),
+    // The General panel's close-behavior and notification-sound rows read
+    // and write their own surface settings.
+    surfaceSettingsGet: vi.fn(async () => ({ status: "absent" })),
+    surfaceSettingsSet: vi.fn(async () => undefined),
     projectAdd: vi.fn(),
     projectsList: vi.fn(async () => []),
     providersList: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),

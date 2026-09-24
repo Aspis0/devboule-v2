@@ -27,12 +27,31 @@ impl Default for PeerTableView {
 #[derive(Default)]
 pub(super) struct Lifecycle {
     pub(super) clients: u32,
+    /// The local app connections inside `clients`: the named-pipe clients.
+    /// Only these may stop the daemon, so only their count decides a
+    /// `Shutdown` refusal; peers are invisible to it.
+    pub(super) local_clients: u32,
     pub(super) sessions: u32,
     pub(super) shutting_down: bool,
     pub(super) idle_generation: u64,
     /// Why the shutdown began. It has to be recorded here rather than inferred
     /// on the way out: by then the only witness is this flag.
     pub(super) exit_reason: Option<ExitReason>,
+}
+
+/// Which end of the wire a client slot was admitted for. The split exists
+/// for one decision: the last local app client out may stop the daemon, and
+/// a peer may neither stop it out from under a local app nor count as one.
+///
+/// `pub` only so `server` can re-export it for `peer_transport`'s accept
+/// path; the private `mod state` keeps the reach crate-local.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClientKind {
+    /// A named-pipe connection: a Devboule app window (or another local
+    /// process speaking the client protocol).
+    LocalApp,
+    /// A Noise-authenticated paired device.
+    Peer,
 }
 
 pub struct ServerState {
@@ -543,32 +562,41 @@ impl ServerState {
     /// panic in the connection's own thread cannot leave the count raised, and
     /// a `clients` that never returns to zero stops the idle exit from ever
     /// arming again for the life of the daemon.
-    pub(crate) fn admit_client(self: &Arc<Self>) -> Option<ReleaseGuard<impl FnOnce(bool)>> {
-        if !self.client_connected() {
+    pub(crate) fn admit_client(
+        self: &Arc<Self>,
+        kind: ClientKind,
+    ) -> Option<ReleaseGuard<impl FnOnce(bool)>> {
+        if !self.client_connected(kind) {
             return None;
         }
         let state = Arc::clone(self);
         Some(ReleaseGuard::armed(move |_completed: bool| {
-            state.client_disconnected()
+            state.client_disconnected(kind == ClientKind::LocalApp)
         }))
     }
 
     /// Admit a client unless shutdown has started. A reconnect that wins this
     /// lock invalidates any idle timer armed by the previous connection.
-    pub(super) fn client_connected(&self) -> bool {
+    pub(super) fn client_connected(&self, kind: ClientKind) -> bool {
         let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         if lifecycle.shutting_down {
             return false;
         }
         lifecycle.clients = lifecycle.clients.saturating_add(1);
+        if kind == ClientKind::LocalApp {
+            lifecycle.local_clients = lifecycle.local_clients.saturating_add(1);
+        }
         lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
         true
     }
 
-    pub(super) fn client_disconnected(self: &Arc<Self>) {
+    pub(super) fn client_disconnected(self: &Arc<Self>, was_local: bool) {
         let generation = {
             let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
             lifecycle.clients = lifecycle.clients.saturating_sub(1);
+            if was_local {
+                lifecycle.local_clients = lifecycle.local_clients.saturating_sub(1);
+            }
             if lifecycle.clients == 0 && lifecycle.sessions == 0 && !lifecycle.shutting_down {
                 lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
                 Some(lifecycle.idle_generation)
@@ -579,6 +607,16 @@ impl ServerState {
         if let Some(generation) = generation {
             arm_idle_shutdown(Arc::clone(self), generation);
         }
+    }
+
+    /// How many local app clients are connected right now, the caller
+    /// included when it is one. The `Shutdown` arm reads this at the moment
+    /// of the request; nothing else decides from it.
+    pub(super) fn local_client_count(&self) -> u32 {
+        self.lifecycle
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .local_clients
     }
 
     /// Register a live daemon-owned session. Create calls this; close and a
@@ -917,6 +955,7 @@ impl ServerState {
                 pid: std::process::id(),
                 uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
                 clients: lifecycle.clients,
+                local_clients: lifecycle.local_clients,
                 sessions: lifecycle.sessions,
                 capabilities: m3a_daemon_capabilities(),
                 // Wire names predate M3.5 (they described a 256 KiB byte
@@ -1362,4 +1401,14 @@ impl ServerState {
             eprintln!("daemon could not audit {action}: {error}");
         }
     }
+}
+
+/// Whether a `Shutdown` may stop the daemon: only the last local app client
+/// out. The requester's own connection is inside the count when it is local,
+/// and a peer never is — so one local app left means "yes" even while a
+/// phone stays connected, and two local apps mean the daemon outlives this
+/// quit. Counting rather than spawner-ownership, because with counting the
+/// first window to close can never kill the second window's daemon.
+pub(super) fn shutdown_accepted(local_clients: u32) -> bool {
+    local_clients <= 1
 }

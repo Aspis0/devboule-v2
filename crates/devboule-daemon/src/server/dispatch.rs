@@ -138,11 +138,33 @@ pub(super) fn dispatch_immediate(
         ClientMessage::Status { id } => state.status_body(id),
         ClientMessage::DaemonDiagnostics { id } => diagnostics_reply(state, id, owner),
         ClientMessage::Shutdown { id } => {
-            // The reply is the app's last chance to know the journal is on
-            // disk. Flush before accepting so a follow-up kill/restart cannot
-            // race the shutdown path.
-            state.sessions.flush_journal();
-            DaemonMessage::Shutdown { id, accepted: true }
+            // A shutdown that would strand another local app client is
+            // refused with the reason on the wire: the daemon outlives the
+            // quitting window, which then just exits. Peers never count —
+            // a phone neither stops the daemon out from under an app nor
+            // blocks the last app out.
+            if !shutdown_accepted(state.local_client_count()) {
+                let reason = format!(
+                    "{} local app client(s) still connected; the daemon keeps running for them",
+                    state.local_client_count()
+                );
+                eprintln!("daemon refused Shutdown: {reason}");
+                DaemonMessage::Shutdown {
+                    id,
+                    accepted: false,
+                    reason: Some(reason),
+                }
+            } else {
+                // The reply is the app's last chance to know the journal is on
+                // disk. Flush before accepting so a follow-up kill/restart cannot
+                // race the shutdown path.
+                state.sessions.flush_journal();
+                DaemonMessage::Shutdown {
+                    id,
+                    accepted: true,
+                    reason: None,
+                }
+            }
         }
         ClientMessage::JournalUsage { .. }
         | ClientMessage::JournalRetentionGet { .. }

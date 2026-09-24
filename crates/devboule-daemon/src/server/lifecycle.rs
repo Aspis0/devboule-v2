@@ -200,7 +200,7 @@ pub(super) fn accept_loop(mut listener: transport::BoundListener, state: Arc<Ser
         }
         match listener.accept() {
             Ok(stream) => {
-                let Some(slot) = state.admit_client() else {
+                let Some(slot) = state.admit_client(ClientKind::LocalApp) else {
                     reject_shutting_down(stream);
                     break;
                 };

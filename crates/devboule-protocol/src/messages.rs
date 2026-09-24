@@ -1299,6 +1299,12 @@ pub enum DaemonMessage {
     Shutdown {
         id: u64,
         accepted: bool,
+        /// Why a request was refused, present only when `accepted` is false.
+        /// The daemon refuses a `Shutdown` that would stop it out from under
+        /// another local app client; the reason is for that caller's log or
+        /// dialog, never for a peer's screen.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     Session {
         id: u64,
@@ -2555,6 +2561,13 @@ pub struct DaemonStatusBody {
     pub pid: u32,
     pub uptime_ms: u64,
     pub clients: u32,
+    /// How many of `clients` are local app connections (the named pipe). A
+    /// quitting app asks for this: a `Shutdown` is refused while another
+    /// local app client would lose the daemon out from under it. Peers do
+    /// not count — a paired device neither blocks nor performs a local
+    /// quit.
+    #[serde(default)]
+    pub local_clients: u32,
     pub sessions: u32,
     pub capabilities: Vec<Capability>,
     /// Highest live-session scrollback occupancy observed by the daemon.

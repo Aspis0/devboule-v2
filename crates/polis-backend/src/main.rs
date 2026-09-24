@@ -30,7 +30,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         if matches!(request, ClientMessage::Shutdown { .. }) {
             let id = request.request_id().unwrap_or(0);
-            backend.send(&DaemonMessage::Shutdown { id, accepted: true })?;
+            backend.send(&DaemonMessage::Shutdown {
+                id,
+                accepted: true,
+                reason: None,
+            })?;
             return Ok(());
         }
         let reply = dispatch(

@@ -1,10 +1,12 @@
 mod artifact_export;
 mod backend;
 mod client;
+mod close_prompt;
 mod oracle;
 mod plugins;
 mod preview_scope;
 mod surface_settings;
+mod tray;
 
 use tauri::Manager;
 
@@ -65,6 +67,10 @@ pub fn run() {
             if let Err(error) = endpoint.start(app.handle().clone()) {
                 eprintln!("devboule: Oracle endpoint did not start: {error}");
             }
+            // The app lives outside its window from here on: the tray is
+            // present while it runs, and closing the window is a decision,
+            // not a quit.
+            tray::build(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -153,10 +159,17 @@ pub fn run() {
             plugins::rpc::plugin_backend_stop,
             plugins::rpc::plugin_invoke,
         ])
+        .on_window_event(|window, event| {
+            // Every close of the main window becomes a decision (hide, quit,
+            // or ask) — never the plain quit it used to be.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                close_prompt::on_close_requested(window, api);
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building Devboule")
-        .run(|app_handle, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::Exit => {
                 let oracle = app_handle.state::<oracle::OracleRuntime>();
                 oracle.shutdown();
                 app_handle.state::<oracle::OracleEndpoint>().stop();
@@ -164,5 +177,18 @@ pub fn run() {
                 daemon.shutdown();
                 app_handle.state::<plugins::rpc::PluginRuntime>().stop_all();
             }
+            // macOS: with the window closed into the menu bar, a dock click
+            // is how the user comes back.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => tray::show_main_window(app_handle),
+            // macOS: Cmd+Q and the app-menu Quit arrive here as a
+            // user-requested exit (no code). The same confirmation decides;
+            // a prevented exit leaves the app and its daemon up.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::ExitRequested { code: None, api } => {
+                api.prevent_exit();
+                close_prompt::confirm_quit(app_handle.clone());
+            }
+            _ => {}
         })
 }

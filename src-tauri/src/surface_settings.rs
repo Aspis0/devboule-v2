@@ -73,7 +73,7 @@ fn validate_surface_id(surface_id: &str) -> Result<(), CommandError> {
     }
 }
 
-fn surface_settings_get_inner(
+pub(crate) fn surface_settings_get_inner(
     config_dir: &Path,
     surface_id: &str,
 ) -> Result<Option<Value>, CommandError> {

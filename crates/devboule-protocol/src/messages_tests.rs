@@ -1549,6 +1549,7 @@ fn boxing_journal_stats_and_remote_does_not_change_the_wire() {
         pid: 1,
         uptime_ms: 2,
         clients: 0,
+        local_clients: 0,
         sessions: 0,
         capabilities: Vec::new(),
         peak_ring_bytes: 0,

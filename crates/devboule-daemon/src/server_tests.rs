@@ -492,18 +492,18 @@ fn wait_for_shutdown(state: &ServerState) {
 #[test]
 fn idle_daemon_exits_after_grace_period() {
     let state = state();
-    assert!(state.client_connected());
-    state.client_disconnected();
+    assert!(state.client_connected(ClientKind::LocalApp));
+    state.client_disconnected(true);
     wait_for_shutdown(&state);
 }
 
 #[test]
 fn connected_client_prevents_idle_shutdown() {
     let state = state();
-    assert!(state.client_connected());
+    assert!(state.client_connected(ClientKind::LocalApp));
     std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(100));
     assert!(!state.is_shutting_down());
-    state.client_disconnected();
+    state.client_disconnected(true);
     wait_for_shutdown(&state);
 }
 
@@ -517,7 +517,9 @@ fn a_panicking_connection_releases_its_client_slot() {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
         let state = Arc::clone(&state);
         move || {
-            let _slot = state.admit_client().expect("the connection is admitted");
+            let _slot = state
+                .admit_client(ClientKind::LocalApp)
+                .expect("the connection is admitted");
             panic!("the connection thread panicked");
         }
     }));
@@ -542,13 +544,13 @@ fn live_session_prevents_shutdown_even_without_a_client() {
 #[test]
 fn reconnect_inside_grace_invalidates_idle_shutdown() {
     let state = state();
-    assert!(state.client_connected());
-    state.client_disconnected();
+    assert!(state.client_connected(ClientKind::LocalApp));
+    state.client_disconnected(true);
     std::thread::sleep(IDLE_SHUTDOWN_GRACE / 2);
-    assert!(state.client_connected());
+    assert!(state.client_connected(ClientKind::LocalApp));
     std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(100));
     assert!(!state.is_shutting_down());
-    state.client_disconnected();
+    state.client_disconnected(true);
     wait_for_shutdown(&state);
 }
 
@@ -556,7 +558,7 @@ fn reconnect_inside_grace_invalidates_idle_shutdown() {
 fn shutting_down_rejects_new_client_with_stable_error() {
     let state = state();
     state.request_shutdown();
-    assert!(!state.client_connected());
+    assert!(!state.client_connected(ClientKind::LocalApp));
     let conn = ConnHandle::new(1);
     let reply = dispatch(
         &state,
@@ -577,6 +579,104 @@ fn shutting_down_rejects_new_client_with_stable_error() {
             ..
         })
     ));
+}
+
+/// The counting rule the `Shutdown` arm consults, as pure logic: the daemon
+/// survives a quit while another local app client is connected, and a peer
+/// never tips the count either way.
+#[test]
+fn shutdown_is_refused_exactly_while_another_local_app_client_is_connected() {
+    // Zero local clients — a peer caller's view when no app is connected:
+    // accepted.
+    assert!(shutdown_accepted(0));
+    // One local client, the caller itself: the last app out may stop the
+    // daemon, and a connected phone does not change that.
+    assert!(shutdown_accepted(1));
+    // Two local apps: this quit must not kill the other window's daemon.
+    assert!(!shutdown_accepted(2));
+    assert!(!shutdown_accepted(5));
+}
+
+/// Two app windows share one daemon; the first to quit must be refused,
+/// never silently stop the daemon under the second window.
+#[test]
+fn shutdown_with_two_local_clients_is_refused_with_a_reason() {
+    let state = state();
+    let _first = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("first local client is admitted");
+    let _second = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("second local client is admitted");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let conn = ConnHandle::new(21);
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::Shutdown { id: 21 },
+        &conn,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("shutdown always answers");
+    let DaemonMessage::Shutdown {
+        accepted: false,
+        reason: Some(reason),
+        id: 21,
+    } = reply
+    else {
+        panic!("expected a refused shutdown with a reason, got {reply:?}");
+    };
+    assert!(
+        reason.contains("local app"),
+        "the reason must name the local app it protects: {reason}"
+    );
+    assert!(
+        !state.is_shutting_down(),
+        "a refused shutdown must not stop the daemon"
+    );
+}
+
+/// One local app and one paired phone: the phone is not a local app client,
+/// so it neither keeps the app's quit from stopping the daemon nor gets the
+/// refusal a second window would get.
+#[test]
+fn shutdown_with_one_local_client_and_a_peer_connected_is_accepted() {
+    let state = state();
+    let _app = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("the app is admitted");
+    let _phone = state
+        .admit_client(ClientKind::Peer)
+        .expect("the peer is admitted");
+    assert_eq!(
+        state.local_client_count(),
+        1,
+        "a peer must not count as a local app client"
+    );
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let conn = ConnHandle::new(22);
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::Shutdown { id: 22 },
+        &conn,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("shutdown always answers");
+    let DaemonMessage::Shutdown {
+        accepted: true,
+        reason: None,
+        ..
+    } = reply
+    else {
+        panic!("expected an accepted shutdown, got {reply:?}");
+    };
 }
 
 #[test]

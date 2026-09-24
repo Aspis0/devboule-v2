@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 
 use crate::journal::{AuditRecord, PeerRecord};
 use crate::peer_policy::{ConnPeer, PeerRole, TransportBinding};
-use crate::server::{handle_client, ServerState};
+use crate::server::{handle_client, ClientKind, ServerState};
 
 /// The steady-state handshake. Separate from the pairing pattern by name *and*
 /// by prologue, so the two transcripts cannot be confused (muse M6).
@@ -1418,7 +1418,7 @@ fn serve_noise_peer(
     // after the handshake and the binding check — counting before the Noise
     // exchange would let a connect flood park the daemon. The slot is held for
     // the whole connection, panic included.
-    let Some(_slot) = state.admit_client() else {
+    let Some(_slot) = state.admit_client(ClientKind::Peer) else {
         // Shutting down: `handle_client` would answer `ShuttingDown` and return,
         // so there is nothing to serve and no slot to hold.
         return Ok(());

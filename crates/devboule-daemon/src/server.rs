@@ -45,8 +45,8 @@ const PEER_TABLE_TTL: Duration = Duration::from_secs(10);
 
 #[path = "server/state.rs"]
 mod state;
-pub use state::ServerState;
 use state::*;
+pub use state::{ClientKind, ServerState};
 
 #[path = "server/lifecycle.rs"]
 mod lifecycle;

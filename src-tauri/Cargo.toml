@@ -23,8 +23,10 @@ tauri-build = { version = "=2.6.3", features = ["config-json5"] }
 # `protocol-asset` is the Files panel's full-size preview: it registers the
 # `asset://` scheme and exposes `Manager::asset_protocol_scope()`, whose
 # patterns come from `app.security.assetProtocol` in `tauri.conf.json`
-# (checked with bytes in `backend/tests/asset_scope.rs`).
-tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset"] }
+# (checked with bytes in `backend/tests/asset_scope.rs`). `tray-icon` is the
+# notification-area/menu-bar icon the app lives in after the window hides;
+# runtime API only — nothing in `tauri.conf.json` configures a tray.
+tauri = { version = "=2.11.5", features = ["config-json5", "protocol-asset", "tray-icon"] }
 # Direct because the public session contract derives Serialize/Deserialize. The exact
 # version is already present transitively through Tauri; this does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }

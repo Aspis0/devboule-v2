@@ -222,7 +222,14 @@ impl DaemonClient {
     pub fn shutdown(&self) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::Shutdown { id })? {
-            DaemonMessage::Shutdown { accepted, .. } if accepted => Ok(()),
+            DaemonMessage::Shutdown { accepted: true, .. } => Ok(()),
+            // A refusal is an answer, not a broken call: the daemon is saying
+            // it must outlive this client (another local app window is still
+            // connected). The caller decides what "just exit" looks like.
+            DaemonMessage::Shutdown {
+                reason: Some(reason),
+                ..
+            } => Err(DaemonError::Protocol(reason)),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
