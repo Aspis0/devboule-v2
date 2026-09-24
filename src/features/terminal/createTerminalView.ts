@@ -3,8 +3,10 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { THEME_CHANGE_EVENT } from "../../lib/theme";
 import type { SessionSnapshot } from "../../types/ipc";
 import { terminalKeyPolicy } from "./terminalKeyPolicy";
+import { fitRowsCols } from "./terminalFit";
 import { suppressAutomaticDsrReplies } from "./terminalDsr";
 
 const SCROLLBACK = 5000;
@@ -23,31 +25,37 @@ function paletteColor(host: HTMLElement, variable: string): string {
   );
 }
 
-function terminalTheme(host: HTMLElement) {
-  const color = (variable: string) => paletteColor(host, variable);
-
+/**
+ * The terminal palette, resolved through the supplied reader so it is pure and
+ * testable. The ground is `--terminal-ground` — the one surface the host and
+ * frame paint — for the background, the block cursor's under-colour and black;
+ * anything else lets the viewport's own fill diverge from the frame and show
+ * as a line at the box's edge (fix pass 2's measured 1px black line). Accent
+ * and tones flip with `[data-theme="dark"]`.
+ */
+export function terminalTheme(color: (variable: string) => string) {
   return {
-    background: color("--ink"),
-    foreground: color("--surface"),
-    cursor: color("--terracotta"),
-    cursorAccent: color("--ink"),
-    selectionBackground: color("--selection"),
-    black: color("--ink"),
+    background: color("--terminal-ground"),
+    foreground: color("--code-text"),
+    cursor: color("--accent"),
+    cursorAccent: color("--terminal-ground"),
+    selectionBackground: color("--fill-selected"),
+    black: color("--terminal-ground"),
     red: color("--danger"),
-    green: color("--green"),
-    yellow: color("--ochre"),
-    blue: color("--purple"),
-    magenta: color("--terracotta-deep"),
-    cyan: color("--green"),
-    white: color("--surface"),
-    brightBlack: color("--terminal-silence"),
+    green: color("--tone-live"),
+    yellow: color("--tone-attention"),
+    blue: color("--tone-unattended"),
+    magenta: color("--accent"),
+    cyan: color("--tone-live"),
+    white: color("--code-text"),
+    brightBlack: color("--tone-idle"),
     brightRed: color("--danger"),
-    brightGreen: color("--green"),
-    brightYellow: color("--ochre"),
-    brightBlue: color("--purple"),
-    brightMagenta: color("--terracotta"),
-    brightCyan: color("--green"),
-    brightWhite: color("--white"),
+    brightGreen: color("--tone-live"),
+    brightYellow: color("--tone-attention"),
+    brightBlue: color("--tone-unattended"),
+    brightMagenta: color("--accent"),
+    brightCyan: color("--tone-live"),
+    brightWhite: color("--lb-text"),
   };
 }
 
@@ -114,6 +122,7 @@ export function createTerminalView(
   host: HTMLElement,
   options: CreateTerminalViewOptions,
 ): TerminalViewHandle {
+  const themeFromHost = () => terminalTheme((variable) => paletteColor(host, variable));
   const terminal = new Terminal({
     // Keep stdin enabled for user onData; the parser handler below suppresses
     // only automatic CPR replies so the daemon remains the single responder.
@@ -122,24 +131,111 @@ export function createTerminalView(
     fontSize: FONT_SIZE,
     fontFamily: 'JetBrains Mono, "Fira Code", Menlo, Consolas, monospace',
     convertEol: false,
-    theme: terminalTheme(host),
+    theme: themeFromHost(),
   });
 
   const dsrDisposables = suppressAutomaticDsrReplies(terminal);
   terminal.attachCustomKeyEventHandler((event) => terminalKeyPolicy(event, options.onCtrlC));
 
+  // xterm snapshots its palette at theme-application time, so a theme change
+  // after the view opened must be re-read. The theme module announces every
+  // application; re-reading the CSS custom properties here (not caching them)
+  // is what makes a live terminal follow the switch. Guarded because this
+  // module also runs against a stubbed, event-less document in unit tests.
+  const followsTheme =
+    typeof document !== "undefined" && typeof document.addEventListener === "function";
+  const reapplyTheme = () => {
+    if (disposed) return;
+    terminal.options.theme = themeFromHost();
+  };
+  if (followsTheme) {
+    document.addEventListener(THEME_CHANGE_EVENT, reapplyTheme);
+  }
+
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   const dataDisposable = terminal.onData(options.onData);
 
-  terminal.open(host);
-  try {
-    fitAddon.fit();
-  } catch {
-    // A hidden host can have zero dimensions; ResizeObserver will retry later.
-  }
+  // FitAddon reads the host's border box and subtracts only the terminal
+  // element's own padding, so any padding it counts as content overfills the
+  // box and clips the last row and column (fix pass 1's measured defect). The
+  // host is padding-free by contract now; this re-check measures the rendered
+  // screen against the host's content box and re-fits through the pure
+  // arithmetic if it ever overflows again, so a future box or addon change
+  // degrades to a clamped fit, never a clipped prompt. Cell metrics do not
+  // depend on rows/cols, so a mid-render measurement is still the right cell.
+  // The addon's own proposal is the upper bound: it reserves the scrollbar's
+  // width, which the raw content-box arithmetic does not see, so clamping to
+  // it keeps the clamp overflow-only (it can shrink, never widen).
+  const clampToFitBox = (proposal: { cols: number; rows: number } | null): void => {
+    if (typeof host.querySelector !== "function") return; // stubbed hosts in tests
+    if (terminal.rows === 0 || terminal.cols === 0) return;
+    const screen: unknown = host.querySelector(".xterm-screen");
+    if (
+      screen === null ||
+      typeof (screen as { getBoundingClientRect?: unknown }).getBoundingClientRect !== "function"
+    ) {
+      return;
+    }
+    const screenBox = (screen as { getBoundingClientRect: () => DOMRect }).getBoundingClientRect();
+    if (typeof getComputedStyle !== "function") return;
+    const hostStyle = getComputedStyle(host);
+    const padX =
+      Number.parseFloat(hostStyle.getPropertyValue("padding-left")) +
+      Number.parseFloat(hostStyle.getPropertyValue("padding-right"));
+    const padY =
+      Number.parseFloat(hostStyle.getPropertyValue("padding-top")) +
+      Number.parseFloat(hostStyle.getPropertyValue("padding-bottom"));
+    const content = {
+      width: host.clientWidth - padX,
+      height: host.clientHeight - padY,
+    };
+    if (!Number.isFinite(content.width) || !Number.isFinite(content.height)) return;
+    const cell = {
+      width: screenBox.width / terminal.cols,
+      height: screenBox.height / terminal.rows,
+    };
+    if (!Number.isFinite(cell.width) || !Number.isFinite(cell.height) || cell.width <= 0) return;
+    const fitted = fitRowsCols(content, cell);
+    const cols = Math.min(fitted.cols, proposal?.cols ?? fitted.cols);
+    const rows = Math.min(fitted.rows, proposal?.rows ?? fitted.rows);
+    if (cols !== terminal.cols || rows !== terminal.rows) {
+      terminal.resize(cols, rows);
+    }
+  };
+
+  const runFit = (): boolean => {
+    try {
+      const proposal = fitAddon.proposeDimensions();
+      fitAddon.fit();
+      clampToFitBox(proposal ?? null);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   let disposed = false;
+
+  terminal.open(host);
+  // The construction-time palette read can race the stylesheet: until the
+  // tokens resolve, every variable reads empty and xterm paints its default
+  // black viewport — the line that showed at the box's edge (fix pass 2). By
+  // open the document is styled, so the theme is applied again from the same
+  // tokens.
+  reapplyTheme();
+  // A hidden host can have zero dimensions; ResizeObserver will retry later.
+  runFit();
+  // The bundled JetBrains Mono can finish loading after the first fit: the
+  // cell size changes while the host box does not, so the box observer never
+  // fires and the grid keeps the fallback font's shape. One refit when the
+  // document's fonts settle.
+  if (typeof document !== "undefined" && "fonts" in document) {
+    void document.fonts.ready.then(() => {
+      if (!disposed) runFit();
+    });
+  }
+
   const pendingWriteContinuations = new Set<PendingWriteContinuation>();
 
   const completeWrite = (continuation: PendingWriteContinuation): void => {
@@ -196,16 +292,14 @@ export function createTerminalView(
     },
     fit: () => {
       if (disposed) return false;
-      try {
-        fitAddon.fit();
-        return true;
-      } catch {
-        return false;
-      }
+      return runFit();
     },
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      if (followsTheme) {
+        document.removeEventListener(THEME_CHANGE_EVENT, reapplyTheme);
+      }
       completePendingWrites();
       for (const disposable of dsrDisposables) disposable.dispose();
       dataDisposable.dispose();

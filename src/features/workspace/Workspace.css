@@ -1,15 +1,13 @@
+/* The shell frame: three regions tiling edge to edge (SPEC-regions.md "Shell") —
+   no radius, no gap, no float; a 1px --region-edge hairline is the resize
+   handle between regions. Region restyling is the later slices'. */
 .workspace-screen {
   position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow:
-    0 1px 2px rgba(var(--ink-rgb), 0.06),
-    0 8px 24px rgba(var(--ink-rgb), 0.07);
+  background: var(--ground-app);
   animation: pgin 0.3s ease both;
 }
 
@@ -30,7 +28,7 @@
 
 .workspace-left-panel,
 .workspace-right-panel {
-  background: transparent;
+  background: var(--panel-side);
 }
 
 .workspace-center-panel {
@@ -40,7 +38,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: transparent;
+  background: var(--ground-center);
 }
 
 .workspace-collapsed-panel {
@@ -54,6 +52,46 @@
   color: var(--silence);
   background: transparent;
   cursor: pointer;
+}
+
+/* The spec's empty pane: centred noun phrase, one outline action (SPEC-regions
+   "Empty and error"). */
+.workspace-empty-state {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-10);
+}
+
+.workspace-empty-title {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--type-interface);
+}
+
+.workspace-empty-note {
+  color: var(--ink-soft);
+  font-size: var(--type-interface);
+}
+
+.workspace-empty-action {
+  height: var(--control-default);
+  padding: 0 var(--space-12);
+  /* An outline action: the fill must be declared, or the browser's own button
+     grey paints a light pill under light text in the dark theme. */
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-6);
+  color: var(--ink);
+  font-size: var(--type-small);
+}
+
+.workspace-empty-action:hover,
+.workspace-empty-action:focus-visible {
+  background: var(--fill-hover);
+  color: var(--ink);
 }
 
 .workspace-collapsed-panel:hover,
@@ -449,16 +487,16 @@
   flex: none;
   padding: 0;
   cursor: col-resize;
-  background: var(--border);
+  background: var(--region-edge);
   border: 0;
-  border-right: 2.5px solid var(--surface-muted);
-  border-left: 2.5px solid var(--surface-muted);
+  border-right: 2.5px solid transparent;
+  border-left: 2.5px solid transparent;
   background-clip: content-box;
 }
 
 .workspace-resize-handle:hover,
 .workspace-resize-handle:focus-visible {
-  background: var(--terracotta);
+  background: var(--accent);
   background-clip: content-box;
 }
 
@@ -901,18 +939,39 @@
   background: transparent;
 }
 
+/* The terminal's one surface in both themes. The host carries margins, not
+   padding: the fit (addon-fit) counts the measured box's padding as content,
+   which overfilled the grid and clipped the last row and column — margins put
+   the inset where the fit cannot count it, on the ground wrapper's colour. */
+.workspace-terminal-ground {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--terminal-ground);
+}
+
 .workspace-terminal-host {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  padding: 14px 16px;
+  margin: var(--space-14) var(--space-16);
   overflow: hidden;
-  background: var(--ink);
+  background: var(--terminal-ground);
 }
 
 .workspace-terminal-host .xterm {
   width: 100%;
   height: 100%;
+}
+
+/* xterm.css paints .xterm-viewport #000 and this xterm never inlines the theme
+   background onto it, so the pixel the fitted screen leaves over showed as a
+   line at the box's bottom edge. The viewport paints from the same token as
+   the frame. Three classes on purpose: xterm.css's `.xterm .xterm-viewport`
+   has two and loads after this sheet, so an equal selector loses (measured). */
+.workspace-terminal-host .xterm .xterm-viewport {
+  background: var(--terminal-ground);
 }
 
 .workspace-terminal-banner {
@@ -1675,7 +1734,8 @@
 .workspace-surface-menu {
   flex: none;
   padding: 8px;
-  background: var(--surface);
+  /* A menu, not a card: the dark theme's menu fill is a step lighter. */
+  background: var(--panel-menu);
   /* Raised over the page the way the app's own anchored popup is raised
      (.workspace-command-menu): the portal has no panel behind it, so the
      right panel's text used to show through beside the entries. */

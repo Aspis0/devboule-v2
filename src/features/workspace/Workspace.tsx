@@ -14,7 +14,13 @@ import type { CloseIntent } from "./closePolicy";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { startPresenceReporting, type PresenceReporter } from "./presence";
 import { createDaemonRecovery } from "./daemonRecovery";
-import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
+import {
+  MAX_LEFT_WIDTH,
+  MAX_RIGHT_WIDTH,
+  MIN_LEFT_WIDTH,
+  MIN_RIGHT_WIDTH,
+  useWorkspacePanelResize,
+} from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
 import { useProviderConsent } from "./useProviderConsent";
 import { focusIsWhereTheFlowLeftIt, useStripFocus } from "./stripFocus";
@@ -131,6 +137,19 @@ interface WorkspaceProps {
    * setting, and a value one flipped is what the other must read.
    */
   delegation?: DelegationController;
+}
+
+/**
+ * The session whose pane the centre may render: the selected id counts only
+ * while the strip still has its tab. A row the strip hides (its close is in
+ * flight, the roster carried it away) or another workspace's session must
+ * never keep a pane up, and an empty strip means the empty state.
+ */
+export function paneSessionOf<S extends { id: string }>(
+  selectedSessionId: string | null,
+  stripSessions: readonly S[],
+): S | null {
+  return stripSessions.find((session) => session.id === selectedSessionId) ?? null;
 }
 
 /**
@@ -315,7 +334,11 @@ export function Workspace({
     selectedSurface.liveMeta?.subscribe ?? subscribeNoMeta,
     () => selectedSurface.liveMeta?.snapshot(selectedWorkspace) ?? selectedSurface.meta,
   );
-  const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
+  // The centre pane exists only while the strip still has the selected tab:
+  // a row the strip hides (its close is in flight, the roster carried it away)
+  // or another workspace's session must never keep a pane up — an empty strip
+  // means the empty state.
+  const paneSession = paneSessionOf(selectedSessionId, visibleSessions);
   // The names the roster carries, for the badge that resolves a child's
   // `createdBy` back to the session that created it. Memoized on the roster:
   // the map is a projection of the same array the tab strip maps over, and
@@ -1043,8 +1066,8 @@ export function Workspace({
         title="Drag to resize · double-click to collapse"
         aria-label="Resize workspaces panel"
         aria-orientation="vertical"
-        aria-valuemin={MIN_PANEL_WIDTH}
-        aria-valuemax={MAX_PANEL_WIDTH}
+        aria-valuemin={MIN_LEFT_WIDTH}
+        aria-valuemax={MAX_LEFT_WIDTH}
         aria-valuenow={leftWidth}
       />
 
@@ -1323,22 +1346,22 @@ export function Workspace({
           </div>
         ) : null}
 
-        {selectedSessionId !== null ? (
+        {paneSession !== null ? (
           <>
             <RecoveredSessionBar
-              session={selectedSession}
+              session={paneSession}
               onReopened={handleReopenSession}
               onResumeFailed={handleResumeFailed}
             />
-            {selectedSession != null && isAgentKind(selectedSession.kind) ? (
+            {isAgentKind(paneSession.kind) ? (
               <AgentChatSurface
-                key={selectedSessionId}
+                key={paneSession.id}
                 id={WORKSPACE_TERMINAL_PANEL_ID}
-                sessionId={selectedSessionId}
-                title={sessionTitle(selectedSession)}
-                cwd={selectedSession.cwd}
-                observedState={selectedSession.state}
-                elapsedMs={selectedSession.elapsedMs}
+                sessionId={paneSession.id}
+                title={sessionTitle(paneSession)}
+                cwd={paneSession.cwd}
+                observedState={paneSession.state}
+                elapsedMs={paneSession.elapsedMs}
                 daemonState={daemon.state}
                 sessionRoster={sessions}
                 deviceNames={peerNames}
@@ -1346,15 +1369,15 @@ export function Workspace({
                   selectedPermission !== null ? (
                     <WorkspacePermissionCard
                       key={selectedPermission.request.toolCallId}
-                      sessionId={selectedSessionId}
+                      sessionId={paneSession.id}
                       subscriptionId={selectedPermission.subscriptionId}
                       request={selectedPermission.request}
                       capabilities={daemon.capabilities}
                       daemonState={daemon.state}
-                      origin={selectedSession?.origin}
+                      origin={paneSession.origin}
                       deviceNames={peerNames}
                       resolution={selectedPermission.resolution ?? null}
-                      creatorId={selectedSession?.createdBy ?? null}
+                      creatorId={paneSession.createdBy ?? null}
                       onResolved={dismissResolvedPermission}
                     />
                   ) : undefined
@@ -1364,12 +1387,12 @@ export function Workspace({
               />
             ) : (
               <TerminalSurface
-                key={selectedSessionId}
+                key={paneSession.id}
                 id={WORKSPACE_TERMINAL_PANEL_ID}
                 workspaceId={selectedWorkspace}
-                sessionId={selectedSessionId}
-                observedState={selectedSession?.state ?? null}
-                cwd={selectedSession?.cwd}
+                sessionId={paneSession.id}
+                observedState={paneSession.state}
+                cwd={paneSession.cwd}
                 autoFocus={terminalAutoFocus}
                 autoFocusGuard={mayTakeTerminalFocus}
                 onAutoFocusTaken={takeTerminalFocus}
@@ -1387,12 +1410,28 @@ export function Workspace({
             role="tabpanel"
             aria-label="Terminal output"
           >
-            <div role="status">
-              {sessionsError ??
-                (sessionsLoading
-                  ? "Loading sessions…"
-                  : "No tabs yet. Use + to open an agent or a terminal.")}
-            </div>
+            {sessionsError ? (
+              <div role="alert" className="workspace-empty-note">
+                {sessionsError}
+              </div>
+            ) : sessionsLoading ? (
+              <div role="status" className="workspace-empty-note">
+                Loading sessions…
+              </div>
+            ) : (
+              <div className="workspace-empty-state" role="status">
+                <p className="workspace-empty-title">No tabs yet</p>
+                {/* The spec's one outline action: the same agent flow as
+                    "+ → Agent", from the "+" itself. */}
+                <button
+                  type="button"
+                  className="workspace-empty-action"
+                  onClick={handleNewTabAgent}
+                >
+                  Open an agent
+                </button>
+              </div>
+            )}
           </div>
         )}
       </main>
@@ -1406,8 +1445,8 @@ export function Workspace({
         title="Drag to resize · double-click to collapse"
         aria-label="Resize side panel"
         aria-orientation="vertical"
-        aria-valuemin={MIN_PANEL_WIDTH}
-        aria-valuemax={MAX_PANEL_WIDTH}
+        aria-valuemin={MIN_RIGHT_WIDTH}
+        aria-valuemax={MAX_RIGHT_WIDTH}
         aria-valuenow={rightWidth}
       />
 

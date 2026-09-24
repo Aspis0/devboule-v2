@@ -191,4 +191,99 @@ describe("Shell crescent", () => {
       root.unmount();
     });
   });
+
+  it("a click on the line opens the nav when no hover preceded it", async () => {
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    const navigation = container.querySelector<HTMLElement>(".crescent-nav");
+    if (sliver === null || navigation === null) throw new Error("crescent did not render");
+    // A tap or a click with the pointer arriving too fast: no pointerenter,
+    // no focus — the click itself must open the nav.
+    await act(async () => {
+      sliver.click();
+    });
+    expect(navigation.classList).toContain("crescent-nav-open");
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("a click after the hover opened the nav keeps it open — it never toggles shut", async () => {
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    const navigation = container.querySelector<HTMLElement>(".crescent-nav");
+    if (sliver === null || navigation === null) throw new Error("crescent did not render");
+    await act(async () => {
+      // React synthesizes enter/leave from over/out, so this is how a hover
+      // arrives.
+      sliver.dispatchEvent(new Event("pointerover", { bubbles: true }));
+    });
+    expect(navigation.classList).toContain("crescent-nav-open");
+
+    await act(async () => {
+      sliver.click();
+    });
+    expect(navigation.classList).toContain("crescent-nav-open");
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("choosing a surface closes the nav, and the focus handback does not reopen it", async () => {
+    const selectSurface = vi.fn();
+    useAppStore.setState({ plugins: inventory([READY]), selectSurface });
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    const navigation = container.querySelector<HTMLElement>(".crescent-nav");
+    if (sliver === null || navigation === null) throw new Error("crescent did not render");
+    await act(async () => sliver.focus());
+    expect(navigation.classList).toContain("crescent-nav-open");
+
+    const point = container.querySelector<HTMLButtonElement>('[aria-label="Open Polis"]');
+    if (point === null) throw new Error("Polis point did not render");
+    // A real click moves focus to the point first (mousedown focuses); the
+    // handback to the trigger is then a focus CHANGE, which is what reopens.
+    await act(async () => point.focus());
+    await act(async () => point.click());
+
+    expect(selectSurface).toHaveBeenCalledWith("polis");
+    expect(navigation.classList).not.toContain("crescent-nav-open");
+    expect(sliver.getAttribute("aria-expanded")).toBe("false");
+    // Focus rides back to the trigger, and must not reopen what the choice
+    // just closed.
+    expect(document.activeElement).toBe(sliver);
+    expect(navigation.classList).not.toContain("crescent-nav-open");
+    await act(async () => root.unmount());
+  });
+
+  it("pointer leave with focus on a point closes it without leaving focus on hidden controls", async () => {
+    const { container, root } = await renderShell();
+
+    const main = container.querySelector("main");
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    const navigation = container.querySelector<HTMLElement>(".crescent-nav");
+    if (main === null || sliver === null || navigation === null) {
+      throw new Error("crescent did not render");
+    }
+    await act(async () => sliver.focus());
+    const point = container.querySelector<HTMLButtonElement>('[aria-label="Open Polis"]');
+    if (point === null) throw new Error("Polis point did not render");
+    await act(async () => point.focus());
+    expect(document.activeElement).toBe(point);
+
+    await act(async () => {
+      // React synthesizes leave from out, as with enter above.
+      main.dispatchEvent(new MouseEvent("pointerout", { bubbles: true }));
+    });
+
+    expect(navigation.classList).not.toContain("crescent-nav-open");
+    expect(sliver.getAttribute("aria-expanded")).toBe("false");
+    // Closed points are not focusable, and the focused one gave its focus up.
+    expect(navigation.contains(document.activeElement)).toBe(false);
+    expect(point.getAttribute("tabindex")).toBe("-1");
+    await act(async () => root.unmount());
+  });
 });

@@ -1170,3 +1170,67 @@
   color: var(--silence);
   font-size: 11px;
 }
+
+/* Appearance (theme choice) — new tokens only; Settings' own redesign is a
+   later slice, so these rows use the shell's type and line tokens. */
+.appearance-section {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-8);
+  margin-bottom: var(--space-16);
+}
+
+.appearance-heading {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--type-meta);
+  font-weight: var(--weight-label);
+}
+
+.appearance-options {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+}
+
+.appearance-option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  min-height: var(--control-menu);
+  padding: var(--space-4) var(--space-8);
+  cursor: pointer;
+  border-radius: var(--radius-7);
+}
+
+.appearance-option:hover {
+  background: var(--fill-hover);
+}
+
+.appearance-option-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.appearance-option-label {
+  font-size: var(--type-small);
+  color: var(--ink);
+}
+
+.appearance-option-hint {
+  font-size: var(--type-meta);
+  color: var(--muted);
+}
+
+/* The radios take the accent, not the OS default blue, in both themes. */
+.appearance-option input {
+  accent-color: var(--accent);
+}
+
+.appearance-persist-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--type-meta);
+}

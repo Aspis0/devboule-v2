@@ -3,8 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#E7E0D2" />
+    <meta name="theme-color" content="#e7e0d2" />
     <title>Devboule</title>
+    <!-- Theme before first paint: a same-origin file so script-src 'self'
+         admits it in dev and production alike. Same key and values as
+         src/lib/theme.ts; a test there walks it. -->
+    <script src="/theme-bootstrap.js"></script>
   </head>
   <body>
     <div id="root"></div>

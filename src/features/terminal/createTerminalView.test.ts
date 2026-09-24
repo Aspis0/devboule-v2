@@ -1,10 +1,20 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionSnapshot } from "../../types/ipc";
+
+interface FitProposal {
+  cols: number;
+  rows: number;
+}
 
 interface TerminalMockState {
   written: string[];
   writeCallbacks: Array<() => void>;
   disposeCount: number;
+  fitCount: number;
+  terminals: Array<{ cols: number; rows: number }>;
+  fitAddons: Array<{ proposal: FitProposal | null }>;
 }
 
 const mocks = vi.hoisted(() => {
@@ -12,6 +22,9 @@ const mocks = vi.hoisted(() => {
     written: [],
     writeCallbacks: [],
     disposeCount: 0,
+    fitCount: 0,
+    terminals: [],
+    fitAddons: [],
   };
 
   class MockTerminal {
@@ -21,6 +34,10 @@ const mocks = vi.hoisted(() => {
     };
     cols = 80;
     rows = 24;
+
+    constructor() {
+      state.terminals.push(this);
+    }
 
     attachCustomKeyEventHandler(): void {}
 
@@ -50,7 +67,19 @@ const mocks = vi.hoisted(() => {
   }
 
   class MockFitAddon {
-    fit(): void {}
+    proposal: FitProposal | null = null;
+
+    constructor() {
+      state.fitAddons.push(this);
+    }
+
+    fit(): void {
+      state.fitCount += 1;
+    }
+
+    proposeDimensions(): FitProposal | null {
+      return this.proposal;
+    }
   }
 
   return { MockFitAddon, MockTerminal, state };
@@ -59,7 +88,7 @@ const mocks = vi.hoisted(() => {
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: mocks.MockFitAddon }));
 vi.mock("@xterm/xterm", () => ({ Terminal: mocks.MockTerminal }));
 
-import { createTerminalView } from "./createTerminalView";
+import { createTerminalView, terminalTheme } from "./createTerminalView";
 
 const snapshot: SessionSnapshot = {
   type: "snapshot",
@@ -130,5 +159,75 @@ describe("createTerminalView disposal", () => {
     completeNextWrite();
 
     expect(secondCallback).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("terminalTheme", () => {
+  it("paints the terminal's one surface: the ground token for the background, under the cursor, and as black", () => {
+    // The resolver echoes each variable's own name, so any entry that reads
+    // the wrong token names itself in the failure.
+    const theme = terminalTheme((variable) => variable.slice(2));
+    expect(theme.background).toBe("terminal-ground");
+    expect(theme.cursorAccent).toBe("terminal-ground");
+    expect(theme.black).toBe("terminal-ground");
+    expect(theme.foreground).toBe("code-text");
+    expect(theme.cursor).toBe("accent");
+    expect(theme.selectionBackground).toBe("fill-selected");
+    expect(theme.brightWhite).toBe("lb-text");
+  });
+});
+
+describe("the viewport paint (static CSS contract)", () => {
+  it("paints .xterm-viewport from the terminal ground, not xterm.css's default black", () => {
+    // This xterm never inlines the theme background on the viewport, so the
+    // leftover pixel under the fitted screen showed xterm.css's #000 as a
+    // line at the box's bottom edge. The rule is what is painted, and it must
+    // outrank xterm.css's `.xterm .xterm-viewport`, which loads later.
+    const css = readFileSync(resolve(import.meta.dirname, "../workspace/Workspace.css"), "utf8");
+    const block =
+      /\.workspace-terminal-host \.xterm \.xterm-viewport\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(block, "a scoped .xterm-viewport rule is missing").not.toBe("");
+    expect(block).toContain("background: var(--terminal-ground)");
+  });
+});
+
+describe("fitting", () => {
+  beforeEach(() => {
+    mocks.state.fitCount = 0;
+    mocks.state.terminals.length = 0;
+    mocks.state.fitAddons.length = 0;
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "0px" }));
+    vi.stubGlobal("document", { documentElement: {}, fonts: { ready: Promise.resolve() } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("refits when the document's fonts finish loading", async () => {
+    const host = { querySelector: () => null };
+    createTerminalView(host as unknown as HTMLElement, {
+      onData: () => undefined,
+      onCtrlC: () => undefined,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The opening fit plus the font-settle refit: bundled JetBrains Mono can
+    // land after the first fit, changing the cell while the box never moves.
+    expect(mocks.state.fitCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("the post-fit clamp treats FitAddon's proposal as the upper bound, scrollbar included", () => {
+    // 80 columns of 10px fill the 800px box, but the addon reserved one
+    // column for the scrollbar: the clamp must not add it back.
+    const screen = { getBoundingClientRect: () => ({ width: 800, height: 384 }) };
+    const host = { querySelector: () => screen, clientWidth: 800, clientHeight: 384 };
+    const view = createTerminalView(host as unknown as HTMLElement, {
+      onData: () => undefined,
+      onCtrlC: () => undefined,
+    });
+    mocks.state.fitAddons[0]!.proposal = { cols: 79, rows: 24 };
+    view.fit();
+    expect(mocks.state.terminals[0]!.cols).toBe(79);
+    expect(mocks.state.terminals[0]!.rows).toBe(24);
   });
 });

@@ -18,9 +18,9 @@ import "./artifactPreview.css";
 // `columnHeight * ARTIFACT_PAGE_WIDTH / columnWidth` — and both factors are bounded by the
 // sidebar's own box (workspaceResize.ts), not by anything inside the page:
 //
-//   columnWidth  >= MIN_PANEL_WIDTH (180) less the sidebar's 12px gutters
+//   columnWidth  >= MIN_RIGHT_WIDTH (240) less the sidebar's 12px gutters
 //                   (.workspace-side-scroll) and the card's 1px border
-//                   (.workspace-generation-card) = 154
+//                   (.workspace-generation-card) = 214
 //   columnHeight <= 2160, the content height of a 4K window at 100% scaling, the tallest
 //                   viewport this panel is plausibly run in — the column is never taller
 //                   than the window it scrolls in

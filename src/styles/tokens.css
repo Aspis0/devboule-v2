@@ -1,0 +1,292 @@
+/*
+ * tokens.css — the one place for the redesigned design tokens.
+ *
+ * Light theme on `:root` (variant A), dark theme under `[data-theme="dark"]`
+ * on <html> (variant C); values from scout/ux-redesign/mockups/tokens-a.css
+ * and tokens-c.css, audited by palette-contrast.test.ts and tokens.test.ts.
+ * When a value is in doubt, the mockup CSS wins.
+ *
+ * The section at the foot maps the pre-redesign token names onto these tokens
+ * so the not-yet-redesigned regions keep rendering in both themes; it goes
+ * when the last region migrates.
+ */
+
+:root {
+  /* fonts */
+  --font-ui: "Inter", system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-pane-title: var(--font-ui);
+  --font-project: var(--font-ui);
+
+  /* grounds and panels */
+  --ground-app: #e7e0d2;
+  --ground-center: #e7e0d2;
+  --panel-side: #f5f1e8;
+  --panel-card: #fbf8f1;
+  --panel-composer: #fbf8f1;
+  --panel-menu: #fbf8f1;
+
+  /* fills */
+  --fill-hover: color-mix(in srgb, var(--ink) 7%, transparent);
+  --fill-chip-hover: color-mix(in srgb, var(--ink) 7%, var(--ground-center));
+  --fill-selected: #e8c4b4;
+  --fill-selected-soft: color-mix(in srgb, #e8c4b4 55%, var(--ground-center));
+  --fill-tool: #ece4d4;
+  --fill-plus: #f5f1e8;
+  --bubble-bg: #fbf8f1;
+  --code-bg: #262019;
+  --code-text: #e9e1d3;
+  --fill-code-inline: color-mix(in srgb, var(--ink) 7%, transparent);
+  --diff-add: #6dbb80;
+  --diff-del: #e08a7c;
+
+  /* text */
+  --ink: #1c1a17;
+  --ink-soft: #4a463e;
+  --muted: #686256;
+
+  /* lines */
+  --line: #ded6c4;
+  --line-strong: #c9bea8;
+  --region-edge: var(--line);
+
+  /* the one accent: terracotta */
+  --accent: #bd4a26;
+  --accent-contrast: #fdf6ec;
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+
+  /* status dot tones */
+  --tone-live: #3f7a56;
+  --tone-idle: #a49b8c;
+  --tone-attention: #b8862e;
+  --tone-unattended: #6b5b95;
+  --tone-recovered: #8a8172;
+
+  /* red is failure and destroy, nothing else */
+  --danger: #a83040;
+  --danger-contrast: #fff5f2;
+  --tone-add: #315e43;
+  --tone-del: #a83040;
+  --tone-warn: #b8862e;
+  --alert-border: color-mix(in srgb, var(--tone-unattended) 40%, var(--line));
+  --alert-bg: color-mix(in srgb, var(--tone-unattended) 6%, transparent);
+
+  /* text-safe variants of the dot tones (60% tone over ink): the dot tones do
+     not clear 4.5:1 as small text on the light grounds; these do, on the card
+     and the transcript, in both themes */
+  --tone-attention-text: #7a5b25;
+  --tone-unattended-text: #4b4163;
+
+  /* the terminal's one surface: the host, its frame and the xterm background
+     are all this token, so the terminal wears no light frame in either theme */
+  --terminal-ground: #262019;
+
+  /* overlays: lightbox and modal scrims own the window */
+  --scrim: rgba(28, 26, 23, 0.78);
+  --lb-text: #f5efe6;
+  --lb-hover: rgba(255, 255, 255, 0.12);
+
+  /* elevation: flat regions; only floating menus cast a shadow */
+  --shadow-card: none;
+  --shadow-pop: 0 4px 16px rgba(28, 26, 23, 0.14), 0 1px 3px rgba(28, 26, 23, 0.08);
+
+  /* frame: regions tile edge to edge, no floating */
+  --app-pad: 0px;
+  --app-gap: 0px;
+  --region-radius: 0px;
+
+  /* agent-voice marker: unused in A and C, kept as a hook */
+  --assistant-rule: transparent;
+  --assistant-pad: 0px;
+
+  /* type ramp: nothing below 12px; hierarchy is weight and colour */
+  --type-meta: 12px;
+  --type-small: 13px;
+  --type-interface: 14px;
+  --type-display-sm: 16px;
+  --type-display-md: 18px;
+  --type-display-lg: 20px;
+  --type-mono-sm: 12px;
+  --type-mono-cmd: 12.5px;
+  --type-mono-md: 13px;
+  --weight-body: 400;
+  --weight-label: 500;
+  --weight-heading: 600;
+
+  /* spacing scale */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+
+  /* radii */
+  --radius-2: 2px;
+  --radius-4: 4px;
+  --radius-5: 5px;
+  --radius-6: 6px;
+  --radius-7: 7px;
+  --radius-8: 8px;
+  --radius-10: 10px;
+  --radius-12: 12px;
+  --radius-16: 16px;
+  --radius-full: 999px;
+
+  /* control heights */
+  --control-dense: 24px;
+  --control-icon-small: 26px;
+  --control-default: 28px;
+  --control-menu: 30px;
+  --control-large: 32px;
+  --control-bar: 36px;
+  --control-sidebar-top: 44px;
+
+  /* motion: the one animation, the working pulse */
+  --pulse-halo: 0 0 0 3.5px color-mix(in srgb, var(--tone-live) 22%, transparent);
+  --pulse-duration: 2s;
+  --pulse-ease: ease-in-out;
+}
+
+[data-theme="dark"] {
+  --ground-app: #16120e;
+  --ground-center: #1d1814;
+  --panel-side: #231d18;
+  --panel-card: #2a231d;
+  --panel-composer: #2a231d;
+  --panel-menu: #302822;
+
+  --fill-hover: color-mix(in srgb, var(--ink) 7%, transparent);
+  --fill-chip-hover: color-mix(in srgb, var(--ink) 8%, var(--ground-center));
+  --fill-selected: #4e2f1d;
+  --fill-selected-soft: #3a2a1e;
+  --fill-tool: #251f19;
+  --fill-plus: #2a231d;
+  --bubble-bg: #2a231d;
+  --code-bg: #14100d;
+  --code-text: #e9e1d3;
+  --fill-code-inline: color-mix(in srgb, var(--ink) 9%, transparent);
+  --diff-add: #7cba92;
+  --diff-del: #e0837a;
+
+  --ink: #ece5da;
+  --ink-soft: #c8bfb0;
+  --muted: #978b7b;
+
+  --line: #382f27;
+  --line-strong: #4d4237;
+  --region-edge: var(--line);
+
+  --accent: #dd7a4e;
+  --accent-contrast: #33130a;
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+
+  --tone-live: #7cba92;
+  --tone-idle: #6f6455;
+  --tone-attention: #d1a35a;
+  --tone-unattended: #a893cf;
+  --tone-recovered: #7d7264;
+
+  --danger: #e0837a;
+  --danger-contrast: #411511;
+  --tone-add: #7cba92;
+  --tone-del: #e0837a;
+  --tone-warn: #d1a35a;
+  --alert-border: color-mix(in srgb, var(--tone-unattended) 45%, var(--line));
+  --alert-bg: color-mix(in srgb, var(--tone-unattended) 8%, transparent);
+
+  /* dark tones already clear 4.5:1 as text on the dark grounds */
+  --tone-attention-text: #d1a35a;
+  --tone-unattended-text: #a893cf;
+
+  --terminal-ground: #14100d;
+
+  --scrim: rgba(8, 6, 4, 0.82);
+  --lb-text: #ece5da;
+  --lb-hover: rgba(236, 229, 218, 0.12);
+
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* The one animation: a running dot's breathing halo. Under reduced motion the
+   halo stays, static — a frozen pulse would read as "stuck". */
+.dot-pulse {
+  box-shadow: var(--pulse-halo);
+  animation: breathe var(--pulse-duration) var(--pulse-ease) infinite;
+}
+
+@keyframes breathe {
+  from {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot-pulse {
+    animation: none;
+  }
+}
+
+/* ============================================================================
+   Legacy aliases — the pre-redesign token names, mapped onto the tokens above
+   so every region not yet redesigned renders in both themes. This block goes
+   when the last region migrates; region slices move their uses to the new
+   tokens and shrink the block behind them.
+   ========================================================================== */
+
+:root {
+  --sand: var(--ground-app);
+  --terracotta: var(--accent);
+  /* Double role today (brand AND user-voice, link, delete, errors): aliased to
+     the accent; the non-brand uses are listed in scout/ux-redesign/CODER-REPORT-R1.md
+     for their slices to move to --danger / --bubble-bg / the proper text tokens. */
+  --terracotta-deep: var(--accent);
+  /* No pressed token exists in the spec; regions replace it with fills. */
+  --terracotta-pressed: var(--accent);
+  --selection: var(--fill-selected);
+  --green: var(--tone-live);
+  --green-deep: var(--tone-add);
+  --purple: var(--tone-unattended);
+  /* Text tone: the dot tone misses 4.5:1 as small text on the light grounds. */
+  --purple-deep: var(--tone-unattended-text);
+  --ochre: var(--tone-attention);
+  /* Text tone: see --tone-attention-text. */
+  --ochre-deep: var(--tone-attention-text);
+  --silence: var(--muted);
+  --terminal-silence: var(--tone-idle);
+  --border: var(--line);
+  --border-strong: var(--line-strong);
+  --surface: var(--panel-card);
+  --surface-muted: var(--panel-side);
+  --danger-deep: var(--danger);
+  --design-canvas: var(--ground-center);
+  --design-grid: var(--line-strong);
+  /* The old value sat between --line and transparent; the mix keeps it fainter. */
+  --line-subtle: color-mix(in srgb, var(--line) 60%, transparent);
+  /* Two roles: white glyph on accent fills, and a white card fill. The fill
+     role wins the alias; glyph uses move to --accent-contrast in their slices. */
+  --white: var(--panel-card);
+  /* Shadow tint only (rgba() recipes): stays dark in both themes. */
+  --ink-rgb: 28, 26, 23;
+  --terracotta-rgb: 189, 74, 38;
+  --surface-muted-rgb: 245, 241, 232;
+}
+
+/* rgb-triplet shims follow their token per theme until the rgba() recipes
+   that consume them move to color-mix or --shadow-pop. */
+[data-theme="dark"] {
+  --terracotta-rgb: 221, 122, 78;
+  --surface-muted-rgb: 35, 29, 24;
+}

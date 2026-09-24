@@ -21,6 +21,7 @@ import {
 } from "../../lib/delegation";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
+import { AppearanceSection } from "./AppearanceSection";
 import { overlayDenialsDescription, toolOverlayForPeerRestriction } from "./profileOverlay";
 import type {
   AgentProfile,
@@ -2534,6 +2535,7 @@ function ProjectsPanel() {
 function GeneralPanel() {
   return (
     <div id="settings-panel-general" role="tabpanel" aria-label="General">
+      <AppearanceSection />
       <JournalRetentionPanel />
     </div>
   );

@@ -3,22 +3,91 @@ import type { KeyboardEvent, MouseEvent } from "react";
 
 export type ResizeSide = "left" | "right";
 
-export const MIN_PANEL_WIDTH = 180;
-export const MAX_PANEL_WIDTH = 460;
-export const INITIAL_LEFT_WIDTH = 252;
-export const INITIAL_RIGHT_WIDTH = 366;
+/**
+ * The shell frame's widths: sidebar 248 (resizable 200–360, collapsible),
+ * right panel 300 (its own bounds — the spec pins only the default). A width
+ * persisted by an older build, inside the old 180–460 bounds, is clamped into
+ * its side's bounds on read.
+ */
+export const MIN_LEFT_WIDTH = 200;
+export const MAX_LEFT_WIDTH = 360;
+export const INITIAL_LEFT_WIDTH = 248;
+export const MIN_RIGHT_WIDTH = 240;
+export const MAX_RIGHT_WIDTH = 420;
+export const INITIAL_RIGHT_WIDTH = 300;
 
-export function clampPanelWidth(width: number): number {
-  return Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, width));
+const WIDTHS_STORAGE_KEY = "devboule.workspacePanelWidths";
+
+export interface StoredPanelWidths {
+  left: number;
+  right: number;
+}
+
+export interface StorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export function clampPanelWidth(width: number, side: ResizeSide): number {
+  const min = side === "left" ? MIN_LEFT_WIDTH : MIN_RIGHT_WIDTH;
+  const max = side === "left" ? MAX_LEFT_WIDTH : MAX_RIGHT_WIDTH;
+  return Math.max(min, Math.min(max, width));
+}
+
+function isSideWidth(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+/** Best-effort read; a width outside its bounds (an older build's) is clamped in. */
+export function readStoredPanelWidths(storage: StorageLike | null): StoredPanelWidths {
+  const defaults: StoredPanelWidths = { left: INITIAL_LEFT_WIDTH, right: INITIAL_RIGHT_WIDTH };
+  try {
+    const raw = storage?.getItem(WIDTHS_STORAGE_KEY) ?? null;
+    if (raw === null) return defaults;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return defaults;
+    const row = parsed as Record<string, unknown>;
+    return {
+      left: isSideWidth(row.left) ? clampPanelWidth(row.left, "left") : defaults.left,
+      right: isSideWidth(row.right) ? clampPanelWidth(row.right, "right") : defaults.right,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+export function writeStoredPanelWidths(
+  storage: StorageLike | null,
+  widths: StoredPanelWidths,
+): void {
+  try {
+    storage?.setItem(WIDTHS_STORAGE_KEY, JSON.stringify(widths));
+  } catch {
+    // Storage can be full or blocked; a lost width must not break the shell.
+  }
+}
+
+/** The one guarded read of the global: a throwing storage getter must not break the shell. */
+function defaultStorage(): StorageLike | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
 }
 
 export function useWorkspacePanelResize() {
-  const [leftWidth, setLeftWidth] = useState(INITIAL_LEFT_WIDTH);
-  const [rightWidth, setRightWidth] = useState(INITIAL_RIGHT_WIDTH);
+  const [widths, setWidths] = useState<StoredPanelWidths>(() =>
+    readStoredPanelWidths(defaultStorage()),
+  );
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
 
   const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
+
+  useEffect(() => {
+    writeStoredPanelWidths(defaultStorage(), widths);
+  }, [widths]);
 
   useEffect(() => {
     const handleMove = (event: globalThis.MouseEvent) => {
@@ -27,13 +96,9 @@ export function useWorkspacePanelResize() {
 
       const distance = event.clientX - resize.startX;
       const signedDistance = resize.side === "left" ? distance : -distance;
-      const width = clampPanelWidth(resize.startWidth + signedDistance);
+      const width = clampPanelWidth(resize.startWidth + signedDistance, resize.side);
 
-      if (resize.side === "left") {
-        setLeftWidth(width);
-      } else {
-        setRightWidth(width);
-      }
+      setWidths((current) => ({ ...current, [resize.side]: width }));
     };
 
     const handleUp = () => {
@@ -56,11 +121,11 @@ export function useWorkspacePanelResize() {
       resizeRef.current = {
         side,
         startX: event.clientX,
-        startWidth: side === "left" ? leftWidth : rightWidth,
+        startWidth: side === "left" ? widths.left : widths.right,
       };
       document.body.classList.add("workspace-is-resizing");
     },
-    [leftWidth, rightWidth],
+    [widths.left, widths.right],
   );
 
   const handleResizeKey = useCallback(
@@ -72,10 +137,10 @@ export function useWorkspacePanelResize() {
         return;
       }
 
-      const currentWidth = side === "left" ? leftWidth : rightWidth;
+      const currentWidth = side === "left" ? widths.left : widths.right;
       let nextWidth: number | null = null;
-      if (event.key === "Home") nextWidth = MIN_PANEL_WIDTH;
-      if (event.key === "End") nextWidth = MAX_PANEL_WIDTH;
+      if (event.key === "Home") nextWidth = side === "left" ? MIN_LEFT_WIDTH : MIN_RIGHT_WIDTH;
+      if (event.key === "End") nextWidth = side === "left" ? MAX_LEFT_WIDTH : MAX_RIGHT_WIDTH;
       if (side === "left" && event.key === "ArrowLeft") nextWidth = currentWidth - 16;
       if (side === "left" && event.key === "ArrowRight") nextWidth = currentWidth + 16;
       if (side === "right" && event.key === "ArrowLeft") nextWidth = currentWidth + 16;
@@ -83,17 +148,16 @@ export function useWorkspacePanelResize() {
 
       if (nextWidth !== null) {
         event.preventDefault();
-        const width = clampPanelWidth(nextWidth);
-        if (side === "left") setLeftWidth(width);
-        else setRightWidth(width);
+        const width = clampPanelWidth(nextWidth, side);
+        setWidths((current) => ({ ...current, [side]: width }));
       }
     },
-    [leftWidth, rightWidth],
+    [widths.left, widths.right],
   );
 
   return {
-    leftWidth,
-    rightWidth,
+    leftWidth: widths.left,
+    rightWidth: widths.right,
     leftCollapsed,
     rightCollapsed,
     setLeftCollapsed,

@@ -256,7 +256,12 @@ export const TerminalSurface = memo(function TerminalSurface({
           Close
         </button>
       </div>
-      <div ref={hostRef} className="workspace-terminal-host" aria-label="Interactive terminal" />
+      {/* The ground wrapper owns the terminal's surface colour: the host's
+          margins sit on it, so the terminal reads as one surface in both
+          themes and the fit measures a padding-free box. */}
+      <div className="workspace-terminal-ground">
+        <div ref={hostRef} className="workspace-terminal-host" aria-label="Interactive terminal" />
+      </div>
       {message !== null ? (
         <div className="workspace-terminal-banner" role="status">
           {message}

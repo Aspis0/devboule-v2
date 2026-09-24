@@ -22,36 +22,9 @@
   font-display: swap;
 }
 
-:root {
-  --sand: #e7e0d2;
-  --ink: #1c1a17;
-  --terracotta: #c8532b;
-  --terracotta-deep: #8a3a1b; /* worst-case 4.81 */
-  --selection: #e8c4b4;
-  --green: #3f7a56;
-  --green-deep: #315e43; /* worst-case 4.62 */
-  --purple: #6b5b95;
-  --purple-deep: #5b4d7f; /* worst-case 4.62 */
-  --ochre: #b8862e;
-  --ochre-deep: #6d4f1b; /* worst-case 4.66 */
-  --silence: #686256;
-  --terminal-silence: #a9a294;
-  --border: #ded6c4;
-  --surface: #fbf8f1;
-  --surface-muted: #f5f1e8;
-  --ink-soft: #4a463e;
-  --border-strong: #c9bea8;
-  --danger: #b23b2e;
-  --danger-deep: #983227; /* worst-case 4.60 */
-  --design-canvas: #efe8d9;
-  --design-grid: #c9bea8;
-  --line-subtle: #ede7da;
-  --terracotta-pressed: #a8421f;
-  --white: #ffffff;
-  --terracotta-rgb: 200, 83, 43;
-  --surface-muted-rgb: 245, 241, 232;
-  --ink-rgb: 28, 26, 23;
-}
+/* Design tokens live in tokens.css (both themes); this sheet is base layout
+   and shared chrome. Old token names still resolve through tokens.css's alias
+   block until the last region migrates. */
 
 *,
 *::before,
@@ -70,8 +43,10 @@ body {
   min-width: 1280px;
   overflow: hidden;
   color: var(--ink);
-  background: var(--sand);
-  font-family: "Inter", system-ui, sans-serif;
+  background: var(--ground-app);
+  font-family: var(--font-ui);
+  font-size: var(--type-interface);
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -104,7 +79,7 @@ button:focus-visible {
   height: 100vh;
   min-width: 1280px;
   overflow: hidden;
-  background: var(--sand);
+  background: var(--ground-app);
 }
 
 .app-shell-design {
@@ -119,7 +94,7 @@ button:focus-visible {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 7px;
+  padding: var(--app-pad);
   transition:
     transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1),
     opacity 0.3s ease;
@@ -332,7 +307,9 @@ button:focus-visible {
   left: 0;
   height: 3px;
   content: "";
-  background: var(--border-strong);
+  /* The line is the crescent's whole closed-state affordance: --muted reads
+     on the sand and on the near-black, where --line-strong vanished. */
+  background: var(--muted);
   border-radius: 999px;
   opacity: 0.8;
 }
@@ -389,7 +366,7 @@ button:focus-visible {
 }
 
 .crescent-arc .crescent-arc-border {
-  stroke: var(--border-strong);
+  stroke: var(--muted);
   stroke-width: 1.25;
 }
 
@@ -595,7 +572,7 @@ button:focus-visible {
 
 .crescent-hint path {
   fill: none;
-  stroke: var(--border-strong);
+  stroke: var(--muted);
   stroke-width: 1.25;
 }
 

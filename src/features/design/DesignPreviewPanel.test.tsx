@@ -609,9 +609,11 @@ describe("DesignPreviewPanel", () => {
       );
     });
 
-    // The bound that keeps a broken chain to one wrong frame. 154 is the narrowest preview the
-    // sidebar can hand this panel (MIN_PANEL_WIDTH 180, less the sidebar's 24px of gutters and
-    // the card's 2px of border) and 3000 is taller than any window, so 3000 / 0.1203125 =
+    // The bound that keeps a broken chain to one wrong frame. The narrowest preview the
+    // sidebar can hand this panel is MIN_RIGHT_WIDTH (240) less the sidebar's 24px of gutters
+    // and the card's 2px of border = 214; the stub below is deliberately narrower — an input no
+    // legitimate layout produces must stay bounded all the same — and 3000 is taller than any
+    // window, so 3000 / 0.1203125 =
     // 24935px of document is a page no legitimate layout asks for: the bound is what the page
     // box gets, and the value stays one delivery away from itself instead of compounding.
     it("bounds the page height it asks a document for", async () => {

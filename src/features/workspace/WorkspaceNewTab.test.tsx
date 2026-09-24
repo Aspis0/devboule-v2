@@ -9,6 +9,8 @@
 // "+", and a successful create never takes it. Strip scroll: the selected
 // tab is brought into view — geometry stubbed, happy-dom computes no layout.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -148,7 +150,7 @@ import type {
   Workspace as IpcWorkspace,
   WorkspaceGitStatus,
 } from "../../types/ipc";
-import { Workspace } from "./Workspace";
+import { paneSessionOf, Workspace } from "./Workspace";
 
 const terminal = (
   id: string,
@@ -1410,5 +1412,61 @@ describe("the + new-tab menu", () => {
 
     expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp");
+  });
+
+  it("the empty pane carries the spec's empty state and runs + → Agent's flow from it", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([]);
+    ({ container, unmount } = await renderWorkspace());
+
+    const empty = container.querySelector(".workspace-empty-state");
+    expect(empty, "the empty state did not render").not.toBeNull();
+    expect(container.querySelector(".workspace-empty-title")?.textContent).toBe("No tabs yet");
+    const action = container.querySelector<HTMLButtonElement>(".workspace-empty-action");
+    expect(action?.textContent).toBe("Open an agent");
+
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, claudeProvider],
+      unreadableDirs: 0,
+    });
+    await act(async () => action!.click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    // The same provider picker "+ → Agent" opens, anchored by the same flow.
+    expect(document.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
+  });
+});
+
+describe("the empty pane's outline action (static CSS contract)", () => {
+  const css = readFileSync(resolve(import.meta.dirname, "Workspace.css"), "utf8");
+  const block = /\.workspace-empty-action\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+  it("is an outline action in both themes: no fill, a line border, ink text", () => {
+    expect(block, "the .workspace-empty-action rule is missing").not.toBe("");
+    // No declared fill means the browser's own button grey paints the pill —
+    // a light block with light text in the dark theme (fix pass 2, dark-01).
+    expect(block).toContain("background: transparent");
+    expect(block).toContain("border: 1px solid var(--line-strong)");
+    expect(block).toContain("color: var(--ink)");
+  });
+});
+
+describe("the centre's pane decision", () => {
+  const strip = [{ id: "recovered-1" }, { id: "live-2" }];
+
+  it("keeps a pane only for a tab the strip still renders", () => {
+    expect(paneSessionOf("live-2", strip)).toEqual({ id: "live-2" });
+  });
+
+  it("an id the strip hides means the empty state, never the stale pane", () => {
+    // The strip's rows are hidden while a close is in flight or the roster
+    // carried the session away; the selected id pointing at one must not
+    // keep its pane (the measured defect: a closed pane with errors stayed).
+    expect(paneSessionOf("recovered-1", [])).toBeNull();
+    expect(paneSessionOf("recovered-1", [{ id: "live-2" }])).toBeNull();
+  });
+
+  it("another workspace's session is never a pane here", () => {
+    expect(paneSessionOf(null, strip)).toBeNull();
   });
 });

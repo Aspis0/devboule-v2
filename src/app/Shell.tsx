@@ -89,6 +89,15 @@ export function Shell({ activeSurface, children }: ShellProps) {
   function closeNav() {
     setNavOpen(false);
     setSurfaceOffset(0);
+    // A hidden control must not keep keyboard focus: pointer leave can close
+    // the nav under a focused point, and closed points are unfocusable
+    // (tabIndex -1 below). The blur must not route through the trigger's
+    // focus, so no reopen suppression is armed here.
+    const navigation = navigationRef.current;
+    const active = document.activeElement;
+    if (navigation !== null && active instanceof HTMLElement && navigation.contains(active)) {
+      active.blur();
+    }
   }
 
   function pageBy(delta: -1 | 1) {
@@ -202,6 +211,9 @@ export function Shell({ activeSurface, children }: ShellProps) {
           aria-expanded={navOpen}
           aria-controls="devboule-crescent-navigation"
           onPointerEnter={() => setNavOpen(true)}
+          // A click on the line opens the nav or keeps whatever the hover just
+          // opened open — it never toggles shut (the owner's measured defect).
+          onClick={() => setNavOpen(true)}
           onFocus={() => {
             if (suppressTriggerFocusRef.current) {
               suppressTriggerFocusRef.current = false;
@@ -300,10 +312,14 @@ export function Shell({ activeSurface, children }: ShellProps) {
                   }
                   selectSurface(surface.key);
                   closeNav();
+                  // The trigger takes focus back, but the choice just closed
+                  // the nav — the handback must not reopen it (the Escape
+                  // path suppresses the trigger's focus the same way).
+                  suppressTriggerFocusRef.current = true;
                   triggerRef.current?.focus();
                 }}
                 onFocus={() => setNavOpen(true)}
-                tabIndex={0}
+                tabIndex={navOpen ? 0 : -1}
                 aria-current={isActive ? "page" : undefined}
               >
                 <span className="nav-point-circle">

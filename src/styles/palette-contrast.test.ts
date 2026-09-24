@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
+// Contrast claims for the redesigned palette. SPEC-tokens.md promises ≥4.5:1
+// for the text pairs this file walks, in both themes; this suite holds the
+// stylesheet to that promise by reading tokens.css — never a copy of it.
+
 // ── sRGB → linear → WCAG 2.1 relative luminance ──────────────────────
 
 function linearize(channel: number): number {
@@ -24,121 +28,113 @@ function contrastRatio(hexA: string, hexB: string): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-// ── Parse :root custom properties from global.css ────────────────────
+// ── Parse the light and dark blocks of tokens.css ────────────────────
 
-interface CssVar {
-  name: string;
-  value: string;
-  comment: string | null;
-}
-
-function parseRootVars(css: string): CssVar[] {
-  const vars: CssVar[] = [];
-  const rootMatch = css.match(/:root\s*\{([^}]+)\}/);
-  if (!rootMatch) return vars;
-
-  const block = rootMatch[1]!;
-  // Match each custom property: --name: value; /* optional comment */
-  const lineRegex = /--([^:]+):\s*([^;]+);\s*(?:\/\*\s*(.*?)\s*\*\/)?/g;
+function parseRootVars(css: string): Map<string, string> {
+  const vars = new Map<string, string>();
+  const lineRegex = /--([^:\s]+)\s*:\s*([^;]+);/g;
   let match: RegExpExecArray | null;
-  while ((match = lineRegex.exec(block)) !== null) {
-    vars.push({
-      name: `--${match[1]!.trim()}`,
-      value: match[2]!.trim(),
-      comment: match[3]?.trim() ?? null,
-    });
+  while ((match = lineRegex.exec(css)) !== null) {
+    vars.set(`--${match[1]!.trim()}`, match[2]!.trim());
   }
   return vars;
 }
 
-/** Extract the claimed ratio from a `/* worst-case N.NN *&#47; comment. */
-function parseClaimed(comment: string | null): number | null {
-  if (comment === null) return null;
-  const match = comment.match(/^worst-case\s+(\d+\.\d+)$/);
-  return match !== null ? Number.parseFloat(match[1]!) : null;
+const CSS_PATH = resolve(import.meta.dirname, "tokens.css");
+const css = readFileSync(CSS_PATH, "utf8");
+
+const lightMatch = /:root\s*\{([^}]+)\}/.exec(css);
+const darkMatch = /\[data-theme="dark"\]\s*\{([^}]+)\}/.exec(css);
+
+// Each theme's map is the document in cascade order — light: the token root
+// then the alias root; dark: both of those plus the dark blocks, which win —
+// so a legacy alias resolves through `var()` to its own theme's hex.
+const rootBlocks = [...css.matchAll(/:root\s*\{([^}]+)\}/g)].map((m) => m[1]!);
+const darkBlocks = [...css.matchAll(/\[data-theme="dark"\]\s*\{([^}]+)\}/g)].map((m) => m[1]!);
+const lightVars = parseRootVars(rootBlocks.join("\n"));
+const darkVars = parseRootVars([...rootBlocks, ...darkBlocks].join("\n"));
+
+/** Text-bearing pairs SPEC-tokens.md promises at ≥4.5:1, in both themes. */
+const CLAIMED_PAIRS: ReadonlyArray<{ text: string; ground: string; why: string }> = [
+  { text: "--accent-contrast", ground: "--accent", why: "text on accent fills" },
+  { text: "--danger-contrast", ground: "--danger", why: "text on filled danger" },
+  { text: "--diff-add", ground: "--code-bg", why: "added diff lines on code" },
+  { text: "--diff-del", ground: "--code-bg", why: "removed diff lines on code" },
+  { text: "--code-text", ground: "--code-bg", why: "code and terminal text" },
+  { text: "--ink", ground: "--ground-center", why: "primary text on the transcript" },
+  { text: "--ink", ground: "--panel-side", why: "primary text on the panels" },
+  { text: "--ink", ground: "--panel-card", why: "primary text on cards" },
+  { text: "--ink-soft", ground: "--ground-center", why: "secondary text on the transcript" },
+  { text: "--muted", ground: "--panel-card", why: "metadata text on cards" },
+  { text: "--tone-attention-text", ground: "--panel-card", why: "attention text on cards" },
+  {
+    text: "--tone-attention-text",
+    ground: "--ground-center",
+    why: "attention text on the transcript",
+  },
+  { text: "--tone-unattended-text", ground: "--panel-card", why: "unattended text on cards" },
+  {
+    text: "--tone-unattended-text",
+    ground: "--ground-center",
+    why: "unattended text on the transcript",
+  },
+];
+
+/**
+ * The legacy `*-deep` names stay in service as text tones through the alias
+ * block; each must hold ≥4.5:1 on the grounds its consumers paint, in both
+ * themes. One alias hop is resolved (`--ochre-deep` →
+ * `--tone-attention-text` → hex) — the stylesheet's own chain, never a copy.
+ */
+const LEGACY_TEXT_TONES = ["--green-deep", "--purple-deep", "--ochre-deep", "--danger-deep"];
+const LEGACY_GROUNDS = ["--panel-card", "--ground-center"];
+
+function resolveToken(name: string, vars: Map<string, string>): string {
+  const value = vars.get(name);
+  if (value === undefined) throw new Error(`${name} is not defined`);
+  const ref = /^var\((--[a-z-]+)\)$/.exec(value);
+  return ref === null ? value : resolveToken(ref[1]!, vars);
 }
 
-// Palette surfaces where text is painted. --selection is the darkest, so for
-// dark text it always yields the minimum ratio — the "worst case".
-//
-// Which tokens count as a text background is a role judgement the stylesheet
-// does not encode, so the names are listed here. Their colours deliberately are
-// not: a hardcoded background would keep passing after somebody edited the
-// palette, which is exactly the rot this file exists to catch.
-const TEXT_SURFACE_NAMES = [
-  "--white",
-  "--surface",
-  "--surface-muted",
-  "--sand",
-  "--selection",
-] as const;
-
-// ── Tests ────────────────────────────────────────────────────────────
-
-const CSS_PATH = resolve(import.meta.dirname, "global.css");
-
-describe("palette contrast", () => {
-  const css = readFileSync(CSS_PATH, "utf8");
-  const vars = parseRootVars(css);
-  const varMap = new Map<string, CssVar>();
-  for (const v of vars) varMap.set(v.name, v);
-
-  it("parsed the :root block successfully", () => {
-    // Parsing must find a plausible number of tokens (not zero) and
-    // must find every token this suite depends on.
-    expect(vars.length).toBeGreaterThan(20);
-    for (const name of [
-      "--green-deep",
-      "--purple-deep",
-      "--ochre-deep",
-      "--danger-deep",
-      "--terracotta-deep",
-    ]) {
-      expect(varMap.has(name), `${name} not found in :root`).toBe(true);
-    }
-    for (const name of TEXT_SURFACE_NAMES) {
-      expect(varMap.has(name), `${name} not found in :root`).toBe(true);
-    }
+describe("palette contrast (both themes, from tokens.css)", () => {
+  it("parsed both theme blocks with their colour tokens present", () => {
+    expect(lightMatch, ":root block not found").not.toBeNull();
+    expect(darkMatch, "[data-theme=dark] block not found").not.toBeNull();
+    expect(lightVars.size).toBeGreaterThan(40);
+    expect(darkVars.size).toBeGreaterThan(40);
   });
 
-  /** The surface's colour as the stylesheet currently defines it, never a copy. */
-  function surfaceHex(name: string): string {
-    const value = varMap.get(name)?.value;
-    if (value === undefined || !/^#[0-9a-fA-F]{6}$/.test(value)) {
-      throw new Error(`${name} is not a six-digit hex colour in :root`);
+  for (const [theme, vars] of [
+    ["light", lightVars],
+    ["dark", darkVars],
+  ] as const) {
+    for (const pair of CLAIMED_PAIRS) {
+      it(`${theme}: ${pair.text} on ${pair.ground} ≥ 4.5 (${pair.why})`, () => {
+        const text = vars.get(pair.text);
+        const ground = vars.get(pair.ground);
+        expect(text, `${pair.text} missing from the ${theme} block`).toMatch(/^#[0-9a-fA-F]{6}$/);
+        expect(ground, `${pair.ground} missing from the ${theme} block`).toMatch(
+          /^#[0-9a-fA-F]{6}$/,
+        );
+        const ratio = contrastRatio(text!, ground!);
+        expect(ratio, `${pair.text} ${text} on ${pair.ground} ${ground}`).toBeGreaterThanOrEqual(
+          4.5,
+        );
+      });
     }
-    return value;
-  }
 
-  // ── Every *-deep token carries a verified worst-case claim ──────
-
-  const deepTokens = vars.filter(
-    (v) => v.name.endsWith("-deep") && /^#[0-9a-fA-F]{6}$/.test(v.value),
-  );
-  const missingClaim = deepTokens.filter((v) => parseClaimed(v.comment) === null);
-
-  for (const token of deepTokens) {
-    const claimed = parseClaimed(token.comment);
-    if (claimed === null) continue; // handled by the structural check below
-
-    it(`${token.name} (${token.value}) worst-case ratio matches claim ${claimed}`, () => {
-      // Compute ratio against every text-bearing surface; the minimum
-      // is the worst case (darkest background gives smallest ratio for
-      // dark text).
-      const ratios = TEXT_SURFACE_NAMES.map((name) => contrastRatio(token.value, surfaceHex(name)));
-      const worst = Math.min(...ratios);
-      const rounded = Math.round(worst * 100) / 100;
-      expect(rounded).toBe(claimed);
-    });
-  }
-
-  it("every *-deep token carries a /* worst-case N.NN */ comment", () => {
-    if (missingClaim.length > 0) {
-      const names = missingClaim.map((v) => v.name).join(", ");
-      expect.fail(
-        `${missingClaim.length} *-deep token(s) without a worst-case comment: ${names}. ` +
-          "Every contrast-safe variant should carry a verified claim.",
-      );
+    for (const tone of LEGACY_TEXT_TONES) {
+      for (const ground of LEGACY_GROUNDS) {
+        it(`${theme}: legacy ${tone} resolves to text ≥ 4.5 on ${ground}`, () => {
+          const text = resolveToken(tone, vars);
+          const groundHex = resolveToken(ground, vars);
+          expect(text, `${tone} does not resolve to a hex colour`).toMatch(/^#[0-9a-fA-F]{6}$/);
+          const ratio = contrastRatio(text, groundHex);
+          expect(ratio, `${tone} (${text}) on ${ground} (${groundHex})`).toBeGreaterThanOrEqual(
+            4.5,
+          );
+        });
+      }
     }
-  });
+  }
 });
