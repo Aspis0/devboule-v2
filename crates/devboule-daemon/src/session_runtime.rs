@@ -2028,6 +2028,16 @@ impl SessionRuntime {
         }
     }
 
+    /// Drop the cascade without firing it: teardown's move after a failed job
+    /// termination, where its own Arc drops right after this one — and
+    /// unless the closure's Arc goes first, that drop is not the last handle
+    /// and KILL_ON_JOB_CLOSE never ends the tree.
+    pub(crate) fn release_on_os_death(&self) {
+        if let Ok(mut slot) = self.on_os_death.lock() {
+            *slot = None;
+        }
+    }
+
     pub(crate) fn fire_os_death(&self) {
         if self.os_death_started.swap(true, Ordering::AcqRel) {
             return;

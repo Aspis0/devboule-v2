@@ -966,16 +966,17 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     // join budget keeps the job — and any grandchild still holding the
     // pipes — alive past this function. TerminateJobObject is asynchronous,
     // so the bounded wait is what makes "the tree is dead before the
-    // joins" true: the wait budget is the same one the joins get, and a
-    // wait that expires falls back to the drop's KILL_ON_JOB_CLOSE. A
-    // terminate refusal is logged with the session id — the fallback then
-    // relies on that same job close plus the OS-death callback, not on
-    // this Arc becoming last.
+    // joins" true: the wait budget is the same one the joins get. If the
+    // wait fails, that other Arc is what would keep the fallback below
+    // from ever running, so the callback is released here — dropping it is
+    // what lets the close be the job's last handle and KILL_ON_JOB_CLOSE
+    // end whatever tree is left in it.
     if let Err(error) = process_job.terminate_and_wait(READER_JOIN_BUDGET) {
         eprintln!(
             "session {} could not terminate its job before teardown joins: {error}",
             runtime.session_id
         );
+        runtime.release_on_os_death();
     }
     drop(process_job);
     // 3) Reap after the PTY endpoints are closed; this prevents a zombie

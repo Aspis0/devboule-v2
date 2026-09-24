@@ -288,6 +288,10 @@ fn main() -> io::Result<()> {
                     writeln!(handle, "{}: {}", std::process::id(), method)
                 });
         }
+        // Debug builds only: the full bodies carry prompts, and a release
+        // stub must never append them anywhere — like the grandchild knob,
+        // the capture is compiled out rather than switched off.
+        #[cfg(debug_assertions)]
         if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_REQUESTS_FILE") {
             // The full request bodies, one JSON line each, for a test that
             // asserts on a frame's contents (for example the session/new cwd).

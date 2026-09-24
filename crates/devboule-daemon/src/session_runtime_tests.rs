@@ -324,3 +324,24 @@ fn a_session_owes_its_first_prompt_once_and_a_replay_owes_none() {
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Teardown's failed-termination fallback rests on this one fact: the
+/// OS-death closure owns an Arc of the job, and releasing the slot drops
+/// the closure with everything it held — otherwise the handle never closes
+/// and KILL_ON_JOB_CLOSE cannot end the tree.
+#[test]
+fn releasing_the_os_death_cascade_drops_what_its_closure_held() {
+    let runtime = SessionRuntime::new();
+    let held = Arc::new(());
+    runtime.set_on_os_death(Arc::new({
+        let held = Arc::clone(&held);
+        move || drop(Arc::clone(&held))
+    }));
+    assert_eq!(Arc::strong_count(&held), 2, "the cascade holds one Arc");
+    runtime.release_on_os_death();
+    assert_eq!(
+        Arc::strong_count(&held),
+        1,
+        "the released cascade is gone with everything it held"
+    );
+}
