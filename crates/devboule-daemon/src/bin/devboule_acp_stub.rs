@@ -165,7 +165,10 @@ fn main() -> io::Result<()> {
     // Test-support scenario for the close path: a grandchild that inherits
     // this process's stdout — the pipe the daemon reads — and outlives it,
     // so the daemon's reader cannot reach EOF until the grandchild is dead.
-    // Its pid goes to the named file for the test to wait on.
+    // Its pid goes to the named file for the test to wait on. Compiled out
+    // of every release build, test-support or not: no shipped stub may
+    // start an unbounded ping child.
+    #[cfg(debug_assertions)]
     if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_GRANDCHILD_PID_FILE") {
         // Rust children inherit the parent's stdio by default, so cmd holds
         // this process's stdout handle — the daemon side of the pipe — for
@@ -283,6 +286,18 @@ fn main() -> io::Result<()> {
                 .and_then(|mut handle| {
                     use std::io::Write;
                     writeln!(handle, "{}: {}", std::process::id(), method)
+                });
+        }
+        if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_REQUESTS_FILE") {
+            // The full request bodies, one JSON line each, for a test that
+            // asserts on a frame's contents (for example the session/new cwd).
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+                .and_then(|mut handle| {
+                    use std::io::Write;
+                    writeln!(handle, "{request}")
                 });
         }
         let method = request

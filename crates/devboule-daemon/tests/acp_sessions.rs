@@ -511,6 +511,17 @@ fn acp_session_new_carries_a_plain_cwd() {
     let _ = std::fs::remove_file(&stdin_file);
 }
 
+/// Closing an agent whose grandchild inherited the stub's stdout — the pipe
+/// the daemon's reader blocks on — must end the grandchild.
+///
+/// This test CANNOT fail on a base without the close-order fix
+/// (terminate the job before the bounded joins): on such a base the wait
+/// thread's OS-death callback still terminates the job on the usual
+/// schedule, and the measured run (`red-first-green-at-base.log`) passes.
+/// What it does prove is that the outcome keeps holding — a pipe-holding
+/// grandchild is dead after the close, within the five-second bound — and,
+/// after the close-order fix, that the kill happens synchronously in
+/// teardown instead of through a detached callback that close may outlive.
 #[test]
 fn acp_close_kills_a_grandchild_that_holds_the_output_pipe() {
     let _test_lock = lock_tests();

@@ -964,13 +964,19 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     // than by handle close: an agent's on_os_death callback owns another
     // Arc to this job inside the runtime, so a reader that outlives its
     // join budget keeps the job — and any grandchild still holding the
-    // pipes — alive past this function. TerminateJobObject ends the tree
-    // here, the way session_stop does, and closes the descendants' pipe
-    // handles so a stuck reader reaches EOF and its join succeeds. The
-    // drop below then only releases the handle; the daemon's own death
-    // still reaps every tree the same way. A terminate refusal leaves the
-    // tree to the drop's KILL_ON_JOB_CLOSE, so the result is ignored.
-    let _ = process_job.terminate();
+    // pipes — alive past this function. TerminateJobObject is asynchronous,
+    // so the bounded wait is what makes "the tree is dead before the
+    // joins" true: the wait budget is the same one the joins get, and a
+    // wait that expires falls back to the drop's KILL_ON_JOB_CLOSE. A
+    // terminate refusal is logged with the session id — the fallback then
+    // relies on that same job close plus the OS-death callback, not on
+    // this Arc becoming last.
+    if let Err(error) = process_job.terminate_and_wait(READER_JOIN_BUDGET) {
+        eprintln!(
+            "session {} could not terminate its job before teardown joins: {error}",
+            runtime.session_id
+        );
+    }
     drop(process_job);
     // 3) Reap after the PTY endpoints are closed; this prevents a zombie
     //    and avoids the Windows ConPTY wait deadlock. The waiter thread

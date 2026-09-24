@@ -146,11 +146,11 @@ fn has_verbatim_only_component(path: &str) -> bool {
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
-    let last = path
+    let Some(component) = path
         .split(['\\', '/'])
-        .filter(|component| !component.is_empty())
-        .last();
-    let Some(component) = last else {
+        .rev()
+        .find(|component| !component.is_empty())
+    else {
         return true;
     };
     let name = component
