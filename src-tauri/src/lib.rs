@@ -32,6 +32,7 @@ pub fn run() {
         .manage(plugins::PluginRegistry::default())
         .manage(plugins::rpc::PluginRuntime::default())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // The asset scope in tauri.conf.json concedes the DEFAULT
             // runtime dir's previews folder; the daemon stages where

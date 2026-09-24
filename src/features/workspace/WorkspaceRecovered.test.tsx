@@ -4,6 +4,7 @@
 // @vitest-environment happy-dom
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonStatus, Session } from "../../types/ipc";
 
@@ -131,6 +132,7 @@ function recoveredAgent(id: string, title: string, resumable: boolean | undefine
 }
 
 beforeEach(() => {
+  resetSharedSessionControllerForTests();
   container = document.createElement("div");
   document.body.appendChild(container);
   vi.mocked(projectsList).mockResolvedValue([project]);

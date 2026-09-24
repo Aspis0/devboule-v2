@@ -40,6 +40,10 @@ devboule-plugin-rpc = { path = "../crates/devboule-plugin-rpc" }
 # Oracle is the local index/query runtime used by the Tauri command boundary.
 oracle-core = { path = "../crates/oracle-core" }
 tauri-plugin-dialog = "2.7.2"
+# OS notifications from the frontend (`attentionNotice.ts` is the one
+# caller). Same v2 release line as the dialog plugin; the npm package
+# version is pinned separately in package.json.
+tauri-plugin-notification = "2.4"
 serde_json = "=1.0.151"
 tempfile = "3"
 # Plugin manifests carry a digest per file.

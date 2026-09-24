@@ -7,7 +7,7 @@ import {
   sessionsWatch,
 } from "../../lib/tauri";
 import type {
-  AttentionReason,
+  Attention,
   DelegationState,
   PeerRow,
   ProviderInfo,
@@ -19,6 +19,7 @@ import type {
 import { isAgentKind } from "../../types/ipc";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
+import { attentionRaised, fireAttentionToast } from "./attentionNotice";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
@@ -151,16 +152,6 @@ export function sessionDotTone(state: unknown): "green" | "terracotta" | "border
   if (label.startsWith("silent")) return "border";
   if (label.startsWith("recovered") || label.startsWith("ended ·")) return "border";
   return "terracotta";
-}
-
-/**
- * Human words for why a session wants attention. Rendered inside the tab
- * button so the reason is part of the tab's accessible name, not only its
- * colour.
- */
-export function sessionAttentionLabel(reason: AttentionReason): string {
-  if (reason === "permission") return "needs approval";
-  return reason;
 }
 
 /**
@@ -561,8 +552,16 @@ function carrySession(listed: Session, previous: Session | undefined): Session {
   };
 }
 
+/**
+ * Called once per NEW attention raise (never for re-publications) with the
+ * row that raised it. The controller stays neutral about toasts; the
+ * observer decides what a raise means.
+ */
+export type AttentionObserver = (session: Session, attention: Attention) => void;
+
 export function createWorkspaceSessionController(
   source: WorkspaceSessionSource = DEFAULT_SOURCE,
+  onAttention?: AttentionObserver,
 ): WorkspaceSessionController {
   let state: WorkspaceSessionState = {
     sessions: [],
@@ -645,6 +644,10 @@ export function createWorkspaceSessionController(
     // slow initial request cannot put the tab strip back behind the daemon.
     ++refreshGeneration;
     const known = new Map(state.sessions.map((session) => [session.id, session]));
+    const transitions: Array<{ session: Session; attention: Attention }> = [];
+    // A local const: the observer is captured once, so the checks below
+    // narrow for TypeScript the way they read for people.
+    const notifyAttention = onAttention;
     const sessions = snapshots.map((snapshot): Session => {
       const previous = known.get(snapshot.id);
       // A child the app can already identify — the push names its creator, or
@@ -689,7 +692,7 @@ export function createWorkspaceSessionController(
         // birth fact does not un-happen.
         unattended: ratchetUnattended(previous?.unattended, snapshot.unattended),
       };
-      return previous
+      const session = previous
         ? { ...previous, ...carried }
         : {
             id: snapshot.id,
@@ -697,6 +700,16 @@ export function createWorkspaceSessionController(
             kind: snapshot.kind,
             ...carried,
           };
+      // A raise is the timestamp the daemon wrote, so re-publications of
+      // the same event are recognized and never re-announced.
+      if (
+        notifyAttention !== undefined &&
+        snapshot.attention !== undefined &&
+        attentionRaised(previous?.attention, snapshot.attention)
+      ) {
+        transitions.push({ session, attention: snapshot.attention });
+      }
+      return session;
     });
     const visible = stripSessions(sessions);
     // The roster is authoritative for opened ids too: a session the daemon no
@@ -710,6 +723,11 @@ export function createWorkspaceSessionController(
       loading: false,
       error: null,
     });
+    // Fired after the state lands, so an observer reading the roster sees
+    // the world the toast is about.
+    if (notifyAttention !== undefined) {
+      for (const { session, attention } of transitions) notifyAttention(session, attention);
+    }
   };
 
   const create = async (
@@ -868,6 +886,28 @@ export function sessionCreateFromProvider(provider: ProviderInfo | undefined): {
   return { kind: "acp", provider: null };
 }
 
+let sharedController: WorkspaceSessionController | null = null;
+
+/**
+ * The app-lifetime roster. Created with the production attention observer so
+ * raises become OS toasts no matter which surface is on screen. One
+ * instance, because the daemon keeps a single roster watch per connection:
+ * a second controller's watch would silently replace this one's.
+ */
+export function sharedSessionController(): WorkspaceSessionController {
+    if (sharedController === null) {
+    sharedController = createWorkspaceSessionController(DEFAULT_SOURCE, (session, attention) =>
+      fireAttentionToast(session, attention),
+    );
+  }
+  return sharedController;
+}
+
+/** Test seam: tests build their own controllers and must not inherit state. */
+export function resetSharedSessionControllerForTests(): void {
+  sharedController = null;
+}
+
 export function useWorkspaceSessions(workspaceId: string | null = null): WorkspaceSessionState & {
   refresh: () => Promise<void>;
   reconnect: () => Promise<void>;
@@ -880,9 +920,7 @@ export function useWorkspaceSessions(workspaceId: string | null = null): Workspa
   open: (session: Session) => void;
   dismissError: () => void;
 } {
-  const [controller] = useState<WorkspaceSessionController>(() =>
-    createWorkspaceSessionController(),
-  );
+  const [controller] = useState<WorkspaceSessionController>(() => sharedSessionController());
   const [state, setState] = useState(controller.getState);
 
   useEffect(() => {

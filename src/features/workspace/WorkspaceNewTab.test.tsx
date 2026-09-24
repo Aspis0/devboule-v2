@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonStatus, Session } from "../../types/ipc";
 
@@ -344,6 +345,7 @@ describe("the + new-tab menu", () => {
   let unmount: () => Promise<void>;
 
   beforeEach(() => {
+  resetSharedSessionControllerForTests();
     vi.mocked(projectsList).mockResolvedValue([project]);
     vi.mocked(workspacesList).mockResolvedValue([workspace]);
     vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one")]);

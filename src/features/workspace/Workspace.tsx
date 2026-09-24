@@ -41,7 +41,6 @@ import {
   chatCapableProviders,
   peerDeviceNames,
   requiresConsent,
-  sessionAttentionLabel,
   sessionCreateFromProvider,
   sessionCreatorBadge,
   sessionDelegationBadges,
@@ -55,6 +54,7 @@ import {
   isRecoveredSession,
   useWorkspaceSessions,
 } from "./workspaceSessions";
+import { sessionAttentionLabel } from "./attentionNotice";
 import { RecoveredSessionBar } from "./recoveredSessionBar";
 import { DaemonRestartNotice } from "./daemonRestartNotice";
 import type {

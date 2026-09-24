@@ -285,6 +285,7 @@ import type {
   WorkspaceGitStatus,
 } from "../../types/ipc";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
+import { resetSharedSessionControllerForTests } from "./workspaceSessions";
 import { createDelegationController } from "../../lib/delegation";
 import type { SessionStateSnapshot } from "../../types/ipc";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
@@ -490,6 +491,9 @@ describe("Workspace sessions", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    // The shared controller is app-lifetime in production; a test must not
+    // inherit the roster a previous test left in it.
+    resetSharedSessionControllerForTests();
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);

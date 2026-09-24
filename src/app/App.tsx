@@ -4,6 +4,7 @@ import { Shell } from "./Shell";
 import { SurfacePlaceholder } from "./SurfacePlaceholder";
 import { useAppStore, type DesignSessionState } from "../store/appStore";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
+import { sharedSessionController } from "../features/workspace/workspaceSessions";
 import type { DesignHost, DesignSurfaceProps } from "../features/design/DesignSurface";
 import { createAgentHost, disposeAgentHost } from "../features/design/agentHost";
 
@@ -119,6 +120,13 @@ export function App() {
   const activeSurface = useAppStore((state) => state.activeSurface);
   const surface = SURFACES.find((item) => item.key === activeSurface) ?? SURFACES[0];
   const SurfaceComponent = SURFACE_COMPONENTS[surface.key];
+
+  useEffect(() => {
+    // One roster watch for the whole app run, deliberately never released:
+    // it is what keeps attention — and the OS toasts that come from it —
+    // alive while a surface other than Workspace is on screen.
+    sharedSessionController().watch();
+  }, []);
 
   return (
     <Shell activeSurface={surface.key}>
