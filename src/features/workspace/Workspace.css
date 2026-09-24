@@ -201,21 +201,27 @@
   background: var(--ochre);
 }
 
-/* The daemon/browser dots shrink to 5px; the sidebar keeps its own size. */
-.workspace-daemon-status .workspace-status-dot,
+/* The browser panel's dots shrink to 5px; the sidebar's daemon foot dot is
+   sized in sidebar.css. */
 .workspace-browser-status .workspace-status-dot {
   width: 5px;
   height: 5px;
 }
 
-/* The strip is a flex row, so bare text in it is an anonymous item no ellipsis
-   can reach; the label clips inside its own box, and min-width: 0 lets that box
-   shrink. */
-/* A restart that did not complete: an additional fact beside the daemon's own
-   unresponsive sentence, held together in the same strip. */
-/* The yielding fragment: capped under half the strip so a short label and the
-   note share it without contest, and clipped in its own box so a contested
-   strip announces both cuts instead of silently clipping at the edge.*/
+/* Restore: the keyboard focus ring's offset neighbour - icon buttons change
+   background on hover, a lost affordance from the R2a cleanup. */
+.workspace-icon-button:hover,
+.workspace-icon-button:focus-visible {
+  color: var(--terracotta-deep);
+  background: var(--selection);
+}
+
+/* Restore: primary actions (close confirm, New Project, composer send) gain
+   a background on hover, a lost affordance from the R2a cleanup. */
+.workspace-primary-action:hover,
+.workspace-primary-action:focus-visible {
+  background: var(--ink-soft);
+}
 
 .workspace-resize-handle {
   width: 6px;

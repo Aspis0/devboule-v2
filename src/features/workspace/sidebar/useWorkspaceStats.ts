@@ -91,14 +91,13 @@ export function useWorkspaceStats(
           dirty.add(id);
           continue;
         }
-        const run = readWorkspace(id).finally(() => {
-          inFlight.delete(id);
-          if (mountedInstances > 0 && dirty.has(id)) {
-            dirty.delete(id);
-            refresh([id]);
-          }
-        });
-        inFlight.set(id, run);
+        // The sweep effect re-reads a dirty row once this read settles; no
+        // recursive refresh here (a follow-up issued by a dead instance
+        // would be dropped).
+        inFlight.set(
+          id,
+          readWorkspace(id).finally(() => inFlight.delete(id)),
+        );
       }
     },
     [connected, readWorkspace],
@@ -117,12 +116,28 @@ export function useWorkspaceStats(
   const idsStable = workspaceIds.join("\u0000");
 
   useEffect(() => {
+    idsRef.current = workspaceIds;
+  });
+
+  useEffect(() => {
+    if (idsStable === "") return;
     void refresh(idsRef.current);
   }, [refresh, idsStable]);
 
   useEffect(() => {
     if (selectedWorkspace !== null) void refresh([selectedWorkspace]);
   }, [refresh, selectedWorkspace]);
+
+  // Follow-up sweep: a trigger that arrived during an in-flight read marked
+  // its row dirty; once that read settles, this sweep (running after every
+  // render, from whichever instance is mounted) re-reads it.
+  useEffect(() => {
+    if (!connected) return;
+    const due = [...dirty].filter((id) => !inFlight.has(id));
+    if (due.length === 0) return;
+    due.forEach((id) => dirty.delete(id));
+    void refresh(due);
+  });
 
   useEffect(() => {
     const onFocus = () => void refresh(idsRef.current);

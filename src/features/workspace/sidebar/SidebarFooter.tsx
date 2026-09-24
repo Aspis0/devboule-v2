@@ -49,12 +49,7 @@ export function SidebarFooter({ historyOpen, onToggleHistory, daemon, note }: Si
       >
         History
       </button>
-      <div
-        className="workspace-daemon-status sidebar-foot"
-        title={tooltip}
-        tabIndex={0}
-        aria-label={`Daemon. ${tooltip}`}
-      >
+      <div className="workspace-daemon-status sidebar-foot" title={tooltip} tabIndex={0}>
         <span className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`} />
         <span className="workspace-daemon-status-label">Daemon</span>
         {/* The detail is keyboard- and screen-reader-reachable, not only a

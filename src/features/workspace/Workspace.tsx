@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { ErrorText } from "../../components/ErrorText";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
@@ -342,11 +352,13 @@ export function Workspace({
       skipped: ReadonlyArray<{ id: string; title: string; generation: number }>,
       onFailed?: (sessionId: string) => void,
     ) => {
-      // A successful stop refreshes the closed sessions' workspace stats
-      // once (the daemon sends no stop transition, so `+N −M` would otherwise
-      // lag until the 30-second cadence). The stats refresh is deliberately
-      // NOT a roster refresh: the roster still reports the rows live, and a
-      // refresh would unmark the closes and resurrect them.
+      // Fired when the close is REQUESTED, before the acts dispatch, and it
+      // runs for closes that later fail too — a failed close simply re-reads
+      // the same numbers. The daemon sends no stop transition, so without
+      // this read `+N −M` would lag until the 30-second cadence. The stats
+      // refresh is deliberately NOT a roster refresh: the roster still
+      // reports the rows live, and refreshing would unmark the closes and
+      // resurrect them.
       const closedWorkspaceIds = new Set(
         matched
           .map((session) => sessions.find((roster) => roster.id === session.id)?.workspaceId)
@@ -459,6 +471,12 @@ export function Workspace({
     }
     if (wasConnectedRef.current) return;
     wasConnectedRef.current = true;
+    // A reconnect may carry a restored selection from the journal: the view
+    // must honour it again, so the user's earlier row click no longer stands
+    // down automatic navigation. If the user's workspace was removed in the
+    // same transition, the validity effect has already moved the selection;
+    // a stuck flag would keep showing that stale view.
+    userNavigatedRef.current = false;
     void retryProjects();
     void reconnectSessions();
     void refreshPeerNames();
@@ -642,6 +660,30 @@ export function Workspace({
       );
     },
     [chooseProvider, createWorkspaceAndAgent],
+  );
+  const handleResizeStart = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>) => startDrag("left", event),
+    [startDrag],
+  );
+  const handleResizeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => handleResizeKey("left", event),
+    [handleResizeKey],
+  );
+  const handleToggleHistory = useCallback(() => setHistoryOpen((open) => !open), []);
+  const handleHistorySearchChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setHistorySearch(event.target.value),
+    [],
+  );
+  const handleRetryProjects = useCallback(() => void retryProjects(), [retryProjects]);
+  const selectWorkspace = useCallback(
+    (workspaceId: string) => {
+      userNavigatedRef.current = true;
+      setSelectedWorkspace(workspaceId);
+      // The session selection moves with the navigation: the workspace's
+      // first tab, or none (its empty state).
+      selectSession(sessions.find((session) => session.workspaceId === workspaceId)?.id ?? null);
+    },
+    [selectSession, sessions, setSelectedWorkspace],
   );
   const handleNewSession = useCallback(
     (trigger: HTMLButtonElement | null) => {
@@ -901,8 +943,9 @@ export function Workspace({
       ? "Loading sessions…"
       : // The count reads the strip, not the roster: a session the strip has
         // dropped (its close succeeded) is not a session on screen. The
-        // daemon still owes a roster push after session_stop — a recorded
-        // daemon item — and a successful stop refreshes the roster once.
+        // daemon still owes a roster push after session_stop (a recorded
+        // daemon item); runClose refreshes the closed sessions' stats, not
+        // the roster — a roster refresh would resurrect the closed rows.
         `${visibleSessions.length} session${visibleSessions.length === 1 ? "" : "s"}`;
 
   // One instance of the provider choice UI, anchored where the flow was
@@ -1018,15 +1061,15 @@ export function Workspace({
         width={leftWidth}
         collapsed={leftCollapsed}
         onCollapsedChange={setLeftCollapsed}
-        onResizeStart={(event) => startDrag("left", event)}
-        onResizeKeyDown={(event) => handleResizeKey("left", event)}
+        onResizeStart={handleResizeStart}
+        onResizeKeyDown={handleResizeKeyDown}
         resizeMin={MIN_LEFT_WIDTH}
         resizeMax={MAX_LEFT_WIDTH}
         historyOpen={historyOpen}
-        onToggleHistory={() => setHistoryOpen((open) => !open)}
+        onToggleHistory={handleToggleHistory}
         history={{
           searchValue: historySearch,
-          onSearchChange: (event) => setHistorySearch(event.target.value),
+          onSearchChange: handleHistorySearchChange,
           onReopen: handleReopenSession,
         }}
         searchValue={search}
@@ -1041,21 +1084,12 @@ export function Workspace({
           error: projectsError,
           providerError,
           selectedWorkspace,
-          onRetryProjects: () => void retryProjects(),
-          onSelectWorkspace: (workspaceId) => {
-            userNavigatedRef.current = true;
-            setSelectedWorkspace(workspaceId);
-            // The session selection moves with the navigation: the
-            // workspace's first tab, or none (its empty state).
-            selectSession(
-              sessions.find((session) => session.workspaceId === workspaceId)?.id ?? null,
-            );
-          },
+          onRetryProjects: handleRetryProjects,
+          onSelectWorkspace: selectWorkspace,
           onNewWorkspace: handleNewWorkspace,
-          providerMenuFor: (projectId) =>
-            providerAnchor?.kind === "project" && providerAnchor.projectId === projectId
-              ? providerMenu
-              : null,
+          providerMenuAnchorProjectId:
+            providerAnchor?.kind === "project" ? providerAnchor.projectId : null,
+          providerMenu: providerAnchor?.kind === "project" ? providerMenu : null,
           stats: workspaceStats,
         }}
       />

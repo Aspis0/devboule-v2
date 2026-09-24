@@ -78,6 +78,11 @@
   --tone-attention-text: #7a5b25;
   --tone-unattended-text: #4b4163;
 
+  /* Avatar letters mix their tone into ink at this percentage: the raw tone
+     misses 4.5:1 against its own tinted background (worst on the selected
+     row); 35% clears it in both themes. */
+  --avatar-letter-mix: 35%;
+
   /* the terminal's one surface: the host, its frame and the xterm background
      are all this token, so the terminal wears no light frame in either theme */
   --terminal-ground: #262019;

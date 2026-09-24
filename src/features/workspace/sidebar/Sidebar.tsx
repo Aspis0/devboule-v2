@@ -1,4 +1,4 @@
-import { memo, type ChangeEvent, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
+import type { ChangeEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
 import { HistoryPanel } from "../../history/HistoryPanel";
 import type { DaemonStatus, Session } from "../../../types/ipc";
 import { SidebarFooter } from "./SidebarFooter";
@@ -36,7 +36,7 @@ export interface SidebarProps {
  * foot. The resize handle is this region's other half — a sibling of the
  * aside in the screen's flex row.
  */
-function SidebarImpl({
+export function Sidebar({
   width,
   collapsed,
   onCollapsedChange,
@@ -173,5 +173,3 @@ function SidebarImpl({
     </>
   );
 }
-
-export const Sidebar = memo(SidebarImpl);

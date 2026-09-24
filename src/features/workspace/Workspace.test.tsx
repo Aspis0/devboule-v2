@@ -549,6 +549,64 @@ describe("Workspace sessions", () => {
     expect(row?.title).toBe("C:\\devboule");
   });
 
+  it("after a reconnect, a restored selection in another workspace is honoured again", async () => {
+    // The user clicks a row (automatic navigation stands down), then a
+    // daemon restart restores a session that lives in the OTHER workspace:
+    // the reconnect must re-arm selection-to-workspace navigation so the
+    // restored session is not discarded (review: userNavigatedRef never
+    // reset).
+    vi.useFakeTimers();
+    try {
+      let answer!: (status: DaemonStatus) => void;
+      vi.mocked(daemonStatus).mockImplementation(
+        () =>
+          new Promise<DaemonStatus>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      vi.mocked(workspacesList).mockResolvedValue([workspace, secondWorkspace]);
+      vi.mocked(sessionsList).mockResolvedValue([
+        terminal("session-1", "shell one", "workspace-1"),
+        terminal("session-w2", "other shell", "workspace-2"),
+      ]);
+      root = createRoot(container);
+      await act(async () => root.render(<Workspace />));
+      await act(async () => answer(daemonConnected));
+      await act(async () => vi.advanceTimersByTimeAsync(2_100));
+      await act(async () => undefined);
+
+      // The user navigates to workspace-2 by row click...
+      const otherRow = [...container.querySelectorAll<HTMLButtonElement>(".workspace-row")].find(
+        (row) => row.textContent?.includes("other-main") === true,
+      );
+      if (otherRow === undefined) throw new Error("second workspace row did not render");
+      await act(async () => otherRow.click());
+      expect(container.querySelector("#workspace-session-tab-session-w2")).not.toBeNull();
+
+      // ...and the daemon restarts. The reloaded roster no longer carries
+      // session-w2; its restored replacement lives in workspace-1. The
+      // reconnect reset the user-navigation flag, so the restored selection
+      // is honoured: the view moves to workspace-1 and its tab renders.
+      vi.mocked(sessionsList).mockResolvedValue([
+        terminal("session-1", "shell one", "workspace-1"),
+      ]);
+      await act(async () => {
+        answer({ ...daemonConnected, state: "disconnected" });
+        await vi.advanceTimersByTimeAsync(2_100);
+      });
+      await act(async () => {
+        answer(daemonConnected);
+        await vi.advanceTimersByTimeAsync(2_100);
+      });
+      await act(async () => undefined);
+
+      expect(container.querySelector("#workspace-session-tab-session-w2")).toBeNull();
+      expect(container.querySelector("#workspace-session-tab-session-1")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a workspace removed on reload is dropped, and the selection moves to a survivor", async () => {
     // The daemon hook polls every 2 s; the disconnect/reconnect ticks are
     // driven with fake timers like the reconnect test above.
@@ -748,11 +806,13 @@ describe("Workspace sessions", () => {
 
       // Two readers now: the sidebar's row stat and the open panel's badge —
       // each reads for itself, and neither shows anything known yet.
-      // The sidebar's row stat and the open panel's badge each read for
-      // themselves here (the sidebar's cadence is pinned in
-      // useWorkspaceStats.test.tsx, where the triggers are controllable);
-      // what this row pins is that nothing is KNOWN yet.
-      expect(vi.mocked(workspaceGitStatus).mock.calls.length).toBeGreaterThan(0);
+      // Two independent readers read the fresh id: the sidebar's row stat
+      // and the open panel's badge (the sidebar's cadence is pinned in
+      // useWorkspaceStats.test.tsx, where the triggers are controllable).
+      const freshReads = vi
+        .mocked(workspaceGitStatus)
+        .mock.calls.filter((call) => call[0] === "workspace-badge-unread").length;
+      expect(freshReads).toBeGreaterThanOrEqual(2);
       expect(badge()).toBe("—");
 
       await act(async () => {
@@ -1496,6 +1556,37 @@ describe("Workspace sessions", () => {
       "button[aria-pressed='true'].workspace-row",
     );
     expect(selectedRow?.textContent).toContain(createdWorkspace.title);
+  });
+
+  it("two quick clicks on a project add with no local workspace mint only one", async () => {
+    // The review's mint defect: with the provider list pending, a second
+    // click must not start a second create once the first flow resolves.
+    vi.mocked(workspacesList).mockResolvedValue([]);
+    vi.mocked(workspaceCreate).mockResolvedValue(createdWorkspace);
+    const pendingProviders = deferred<{
+      providers: (typeof grokProvider)[];
+      unreadableDirs: number;
+    }>();
+    vi.mocked(providersList).mockImplementation(() => pendingProviders.promise);
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const projectAdd = container.querySelector<HTMLButtonElement>(".workspace-project-add");
+    if (projectAdd === null) throw new Error("project add control did not render");
+    await act(async () => projectAdd.click());
+    await act(async () => projectAdd.click());
+    await act(async () => {
+      pendingProviders.resolve({
+        providers: [{ ...grokProvider, protocol: "acp" }],
+        unreadableDirs: 0,
+      });
+    });
+    await act(async () => undefined);
+    await act(async () => undefined);
+
+    expect(workspaceCreate).toHaveBeenCalledTimes(1);
+    expect(sessionCreate).toHaveBeenCalledTimes(1);
   });
 
   it("dismisses the provider popover on outside mousedown without creating", async () => {
@@ -2255,7 +2346,6 @@ describe("Workspace sessions", () => {
     if (codexOption === undefined) throw new Error("codex-acp option did not render");
     await act(async () => codexOption.click());
     await act(async () => undefined);
-
     expect(document.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
     expect(document.body.textContent).toContain("@agentclientprotocol/codex-acp@1.10.0");
     expect(document.body.textContent).toContain(

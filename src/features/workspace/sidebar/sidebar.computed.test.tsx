@@ -200,4 +200,21 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     const body = rulesFor(".workspace-diff-removed");
     expect(body).toContain("color:");
   });
+
+  it("the R2a cleanup's deleted hover and focus rules are restored", () => {
+    // The keyboard ring's neighbours: icon buttons and primary actions must
+    // keep their :focus-visible rules (they were deleted by the R2a cleanup
+    // and the merge would have dropped the ring from Send, New Project and
+    // the close confirmation).
+    for (const target of [
+      ".workspace-icon-button:hover",
+      ".workspace-icon-button:focus-visible",
+      ".workspace-primary-action:hover",
+      ".workspace-primary-action:focus-visible",
+    ]) {
+      const body = rulesFor(target);
+      expect(body, `a rule for ${target} is missing`).not.toBe("");
+      expect(body).toContain("background:");
+    }
+  });
 });

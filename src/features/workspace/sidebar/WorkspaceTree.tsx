@@ -1,4 +1,4 @@
-import { memo, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { ErrorText } from "../../../components/ErrorText";
 import { firstGrapheme } from "../../../lib/graphemeBound";
 import type { ErrorSentence } from "../../../lib/errorSentence";
@@ -15,8 +15,10 @@ export interface WorkspaceTreeProps {
   onRetryProjects: () => void;
   onSelectWorkspace: (workspaceId: string) => void;
   onNewWorkspace: (trigger: HTMLButtonElement, projectId: string) => void;
-  /** The provider choice UI, rendered inside the project that opened it. */
-  providerMenuFor: (projectId: string) => ReactNode;
+  /** The project whose new-row wrap hosts the provider choice UI. */
+  providerMenuAnchorProjectId: string | null;
+  /** The provider choice UI itself (popover or consent card). */
+  providerMenu: ReactNode;
   stats: ReadonlyMap<string, WorkspaceStat>;
 }
 
@@ -31,7 +33,7 @@ const DOT_LABELS: Record<string, string> = {
   unattended: "running unattended",
 };
 
-function WorkspaceTreeImpl({
+export function WorkspaceTree({
   projects,
   loading,
   error,
@@ -40,7 +42,8 @@ function WorkspaceTreeImpl({
   onRetryProjects,
   onSelectWorkspace,
   onNewWorkspace,
-  providerMenuFor,
+  providerMenuAnchorProjectId,
+  providerMenu,
   stats,
 }: WorkspaceTreeProps) {
   return (
@@ -160,7 +163,7 @@ function WorkspaceTreeImpl({
               >
                 <span aria-hidden="true">+</span>New workspace
               </button>
-              {providerMenuFor(project.id)}
+              {providerMenuAnchorProjectId === project.id ? providerMenu : null}
             </div>
           </div>
         </div>
@@ -171,5 +174,3 @@ function WorkspaceTreeImpl({
     </>
   );
 }
-
-export const WorkspaceTree = memo(WorkspaceTreeImpl);

@@ -21,7 +21,7 @@ interface ProjectRecord extends Project {
   workspaceError?: ErrorSentence;
 }
 
-function reconcileProjectRecords(
+export function reconcileProjectRecords(
   loaded: ProjectRecord[],
   current: ProjectRecord[],
 ): ProjectRecord[] {
@@ -29,10 +29,19 @@ function reconcileProjectRecords(
   const loadedIds = new Set(loaded.map((project) => project.id));
   const reconciled = loaded.map((project) => {
     const currentProject = currentById.get(project.id);
-    // The reply is authoritative per project: a workspace the daemon no
-    // longer lists is dropped (removed elsewhere), and a workspace created
-    // through this UI is in the reply, because the daemon minted it before
-    // the create returned.
+    // A failed per-project read (workspaceError set) must not be treated as
+    // "no workspaces": keep what was already held and let the error line ask
+    // for a Retry. A successful reply is authoritative per project: a
+    // workspace the daemon no longer lists is dropped (removed elsewhere),
+    // and a workspace created through this UI is in the reply, because the
+    // daemon minted it before the create returned.
+    if (
+      currentProject !== undefined &&
+      project.workspaceError !== undefined &&
+      project.workspaces.length === 0
+    ) {
+      return { ...project, workspaces: currentProject.workspaces };
+    }
     return currentProject === undefined ? project : { ...project, workspaces: project.workspaces };
   });
   return [...reconciled, ...current.filter((project) => !loadedIds.has(project.id))];
@@ -42,10 +51,10 @@ export function workspaceView(
   workspace: Workspace,
   sessions: readonly Session[] = [],
 ): WorkspaceView {
-  return workspaceViewFromIndex(workspace, sessionsOf(sessions).get(workspace.id) ?? []);
+  return workspaceViewFromIndex(workspace, buildSessionIndex(sessions).get(workspace.id) ?? []);
 }
 
-function sessionsOf(sessions: readonly Session[]): Map<string, Session[]> {
+export function buildSessionIndex(sessions: readonly Session[]): Map<string, Session[]> {
   // One pass over the roster, not one filter per workspace: pushes arrive
   // often and the sidebar derives every row from the same array.
   const index = new Map<string, Session[]>();
@@ -78,8 +87,10 @@ function workspaceViewFromIndex(
   };
 }
 
-function projectView(project: ProjectRecord, sessions: readonly Session[]): WorkspaceProject {
-  const byWorkspace = sessionsOf(sessions);
+function projectView(
+  project: ProjectRecord,
+  byWorkspace: Map<string, Session[]>,
+): WorkspaceProject {
   return {
     ...project,
     workspaces: project.workspaces.map((workspace) =>
@@ -133,9 +144,11 @@ export function useWorkspaceProjects() {
   // latches a bogus error. Workspace loads projects exactly once per
   // connected transition (first connect and every reconnect) via
   // retryProjects; manual retries go through the same path.
+  // The session index is built once per roster, not once per project.
+  const sessionIndex = useMemo(() => buildSessionIndex(sessionFacts), [sessionFacts]);
   const projectViews = useMemo(
-    () => projectRecords.map((project) => projectView(project, sessionFacts)),
-    [projectRecords, sessionFacts],
+    () => projectRecords.map((project) => projectView(project, sessionIndex)),
+    [projectRecords, sessionIndex],
   );
 
   useEffect(() => {
