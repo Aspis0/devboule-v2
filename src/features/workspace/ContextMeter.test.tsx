@@ -223,7 +223,11 @@ describe("the context popover", () => {
     expect(popover.textContent).not.toContain("Credits");
   });
 
-  it("says the provider reports no plan usage when no frame ever arrived", async () => {
+  it("shows no plan section at all when the session has no plan reading", async () => {
+    // `null` is "no reading" — a session that predates A3 or has had no
+    // frame yet — not "the provider cannot": Codex reports plan usage, this
+    // session simply has none. Paseo's tooltip-section.tsx renders nothing
+    // for a missing reading (`if (!usage) return null;`), divider included.
     const host = await render(
       meter({
         usage: usage({ usedTokens: 76_000, maxTokens: 200_000 }),
@@ -231,7 +235,10 @@ describe("the context popover", () => {
       }),
     );
     const popover = await openPopover(host);
-    expect(popover.textContent).toContain("This provider does not report plan usage.");
+    expect(popover.querySelector(".workspace-context-popover-plan")).toBeNull();
+    expect(popover.textContent).not.toContain("does not report plan usage");
+    // The reading itself stays whole.
+    expect(popover.querySelector(".workspace-context-percent")?.textContent).toBe("38% used");
   });
 
   it("keeps the countdown moving while the popover sits open", async () => {

@@ -150,10 +150,7 @@ function readingBody(numbers: ContextMeterNumbers, live: boolean): ReactNode {
   );
 }
 
-function planBody(plan: PlanUsage | null, nowMs: number): ReactNode {
-  if (plan === null) {
-    return <div className="workspace-context-note">This provider does not report plan usage.</div>;
-  }
+function planBody(plan: PlanUsage, nowMs: number): ReactNode {
   return (
     <>
       {plan.planLabel !== undefined ? (
@@ -193,8 +190,11 @@ function planBody(plan: PlanUsage | null, nowMs: number): ReactNode {
 
 /**
  * The context popover: 300 px of plain facts above the ring — the reading the
- * meter draws, then the provider's own plan windows, or one sentence saying
- * the provider sends none. Every number here is one the provider sent.
+ * meter draws, then the provider's own plan windows when the session has a
+ * plan reading. A `null` plan means "no reading" (a session that predates the
+ * frame, or no frame arrived), never "the provider cannot", so it renders no
+ * plan section and no divider — Paseo's tooltip-section.tsx does the same
+ * (`if (!usage) return null;`). Every number here is one the provider sent.
  *
  * It renders through a portal on `document.body` with fixed positioning: the
  * meter's pane (`.workspace-center-panel`) clips its own children, which is
@@ -296,7 +296,9 @@ export function ContextPopover({ anchorRef, onClose, numbers, live, plan }: Cont
       style={style}
     >
       <div className="workspace-context-popover-head">{readingBody(numbers, live)}</div>
-      <div className="workspace-context-popover-plan">{planBody(plan, nowMs)}</div>
+      {plan !== null ? (
+        <div className="workspace-context-popover-plan">{planBody(plan, nowMs)}</div>
+      ) : null}
     </div>,
     document.body,
   );

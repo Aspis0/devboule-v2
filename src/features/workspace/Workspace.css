@@ -1780,8 +1780,6 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line-strong);
 }
 
 .workspace-context-reading {
@@ -1803,11 +1801,15 @@
   color: var(--muted);
 }
 
+/* The rule between the reading and the plan belongs to the plan section, so
+   a session with no plan reading renders neither the section nor the rule. */
 .workspace-context-popover-plan {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  margin-top: 10px;
   padding-top: 10px;
+  border-top: 1px solid var(--line-strong);
 }
 
 .workspace-context-plan-chip {
