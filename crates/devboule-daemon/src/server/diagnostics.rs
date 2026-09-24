@@ -106,6 +106,10 @@ pub(super) fn diagnostics_report(
             None => format!("journal file size: {error}"),
         });
     }
+    #[cfg(windows)]
+    let path_registry = crate::windows_path_env::path_registry_outcomes();
+    #[cfg(not(windows))]
+    let path_registry = Vec::new();
 
     Ok(DiagnosticsReport::new(DiagnosticsInput {
         instance_id: state.instance_id.clone(),
@@ -133,5 +137,6 @@ pub(super) fn diagnostics_report(
         runtime_dir: state.sessions.runtime_dir().to_string_lossy().into_owned(),
         pipe_name: state.sessions.pipe_name().to_string(),
         login_shell_capture: login_shell_capture_outcome(),
+        path_registry,
     }))
 }

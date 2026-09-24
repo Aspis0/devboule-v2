@@ -1299,6 +1299,7 @@ impl ProviderRegistry {
                     npm_package: None,
                     tools: crate::provider_catalog::mcp_tools_for(id),
                     spawn_path_env: None,
+                    launch_directory: None,
                 }
             })
             .collect()

@@ -1967,6 +1967,7 @@ fn update_test_agent(
         npm_package: package,
         tools: crate::provider_catalog::mcp_tools_for(id),
         spawn_path_env: None,
+        launch_directory: None,
     }
 }
 

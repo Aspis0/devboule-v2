@@ -433,6 +433,7 @@ pub struct DiagnosticsInput {
     pub runtime_dir: String,
     pub pipe_name: String,
     pub login_shell_capture: LoginShellCaptureOutcome,
+    pub path_registry: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -511,6 +512,9 @@ pub struct EnvironmentDiagnostics {
     pub runtime_dir: SafeText,
     pub pipe_name: SafeText,
     pub login_shell_capture: LoginShellCaptureOutcome,
+    /// One line per registry PATH source, "read, N entries" or
+    /// "not read: <error>". Counts and error codes only — never the values.
+    pub path_registry: Vec<String>,
 }
 
 impl DiagnosticsReport {
@@ -600,6 +604,7 @@ impl DiagnosticsReport {
                 runtime_dir: SafeText::new(input.runtime_dir),
                 pipe_name: SafeText::new(input.pipe_name),
                 login_shell_capture: input.login_shell_capture,
+                path_registry: input.path_registry,
             },
         }
     }
@@ -692,6 +697,7 @@ mod tests {
                 applied_variables: 0,
                 preserved_variables: 0,
             },
+            path_registry: Vec::new(),
         }
     }
 
@@ -764,6 +770,7 @@ mod tests {
                     applied_variables: 12,
                     preserved_variables: 2,
                 },
+                path_registry: Vec::new(),
             },
         }
     }
@@ -893,6 +900,24 @@ mod tests {
         let environment = encoded["environment"].as_object().expect("environment");
         assert!(!environment.contains_key("PATH"));
         assert!(!environment.contains_key("captured"));
+    }
+
+    #[test]
+    fn report_carries_the_path_registry_lines_into_the_environment_section() {
+        let mut input = input();
+        input.path_registry = vec![
+            "machine PATH: read, 2 entries".to_string(),
+            "user PATH: not read: error 2".to_string(),
+        ];
+        let report = DiagnosticsReport::new(input);
+
+        assert_eq!(
+            report.environment.path_registry,
+            vec![
+                "machine PATH: read, 2 entries".to_string(),
+                "user PATH: not read: error 2".to_string(),
+            ]
+        );
     }
 
     #[test]

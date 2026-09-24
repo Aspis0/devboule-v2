@@ -153,6 +153,7 @@ fn windows_npm_cmd_shim_resolves_to_node_and_package_script() {
             )
             .to_string_lossy()
             .into_owned()],
+            source_directory: canonical(&dir),
         })
     );
 
@@ -188,6 +189,7 @@ fn windows_npm_cmd_shim_prefers_sibling_node_exe() {
                     .to_string_lossy()
                     .into_owned()
             ],
+            source_directory: canonical(&dir),
         })
     );
 
@@ -415,6 +417,7 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             )
             .to_string_lossy()
             .into_owned()],
+            source_directory: canonical(&dir),
         })
     );
 
@@ -1732,19 +1735,31 @@ fn the_create_agent_schema_cannot_express_a_provider_or_a_preset() {
 /// `HKCU`.
 #[cfg(windows)]
 mod registry_path {
-    use super::{canonical, temporary_directory};
-    use crate::provider_catalog::discover_with_path_source;
-    use crate::windows_path_env::WindowsPathSource;
+    use super::{canonical, npm_cmd_shim_contents, temporary_directory};
+    use crate::provider_catalog::{
+        discover_catalog_in_paths, discover_with_path_source, find_available_with_path_source,
+    };
+    use crate::windows_path_env::{attach_spawn_path_env, PathSnapshot, WindowsPathSource};
+    use crate::windows_registry_path::{RegistryPathError, RegistryPathRead};
     use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+
+    fn absent() -> RegistryPathRead {
+        RegistryPathRead::Failed(RegistryPathError::Win32(2))
+    }
+
+    fn present(value: &str) -> RegistryPathRead {
+        RegistryPathRead::Read(value.to_string())
+    }
 
     /// A daemon environment whose inherited PATH predates the registry: the
     /// owner's machine, with a native provider's folder only on the user PATH.
     struct StalePathSource {
         process: OsString,
-        machine: Option<String>,
+        machine: RegistryPathRead,
         user: Mutex<Option<String>>,
     }
 
@@ -1753,12 +1768,44 @@ mod registry_path {
             Some(self.process.clone())
         }
 
-        fn machine_path(&self) -> Option<String> {
+        fn machine_path(&self) -> RegistryPathRead {
             self.machine.clone()
         }
 
-        fn user_path(&self) -> Option<String> {
-            self.user.lock().expect("user path lock").clone()
+        fn user_path(&self) -> RegistryPathRead {
+            match &*self.user.lock().expect("user path lock") {
+                Some(value) => present(value),
+                None => absent(),
+            }
+        }
+    }
+
+    /// The same environment, counting how often each registry value is read:
+    /// one read per source per request is the budget, not one per agent.
+    struct CountingSource {
+        process: OsString,
+        machine: RegistryPathRead,
+        user: Mutex<Option<String>>,
+        machine_reads: AtomicUsize,
+        user_reads: AtomicUsize,
+    }
+
+    impl WindowsPathSource for CountingSource {
+        fn process_path(&self) -> Option<OsString> {
+            Some(self.process.clone())
+        }
+
+        fn machine_path(&self) -> RegistryPathRead {
+            self.machine_reads.fetch_add(1, Ordering::SeqCst);
+            self.machine.clone()
+        }
+
+        fn user_path(&self) -> RegistryPathRead {
+            self.user_reads.fetch_add(1, Ordering::SeqCst);
+            match &*self.user.lock().expect("user path lock") {
+                Some(value) => present(value),
+                None => absent(),
+            }
         }
     }
 
@@ -1776,7 +1823,7 @@ mod registry_path {
         fs::create_dir_all(&inherited).expect("inherited directory");
         let source = StalePathSource {
             process: OsString::from(inherited.as_os_str()),
-            machine: None,
+            machine: absent(),
             user: Mutex::new(Some(installed.to_string_lossy().into_owned())),
         };
 
@@ -1797,7 +1844,7 @@ mod registry_path {
     fn discovery_rerun_sees_a_provider_installed_after_the_first_run() {
         let source = StalePathSource {
             process: OsString::from("devboule-no-such-inherited-path"),
-            machine: None,
+            machine: absent(),
             user: Mutex::new(None),
         };
 
@@ -1829,7 +1876,7 @@ mod registry_path {
         fs::create_dir_all(&inherited).expect("inherited directory");
         let source = StalePathSource {
             process: OsString::from(inherited.as_os_str()),
-            machine: None,
+            machine: absent(),
             user: Mutex::new(Some(installed.to_string_lossy().into_owned())),
         };
 
@@ -1861,7 +1908,7 @@ mod registry_path {
         let inherited = grok_install_directory("registry-path-covered");
         let source = StalePathSource {
             process: OsString::from(inherited.as_os_str()),
-            machine: None,
+            machine: absent(),
             user: Mutex::new(None),
         };
 
@@ -1876,4 +1923,203 @@ mod registry_path {
 
         fs::remove_dir_all(inherited).expect("temporary directory cleanup");
     }
+
+    #[test]
+    fn discovery_captures_the_registry_path_once_per_run() {
+        let installed = grok_install_directory("registry-path-count");
+        let source = CountingSource {
+            process: OsString::from("devboule-no-such-inherited-path"),
+            machine: absent(),
+            user: Mutex::new(Some(installed.to_string_lossy().into_owned())),
+            machine_reads: AtomicUsize::new(0),
+            user_reads: AtomicUsize::new(0),
+        };
+
+        let discovery = discover_with_path_source(&source);
+
+        assert!(
+            discovery.agents.iter().any(|agent| agent.id == "grok"),
+            "grok is discovered so the run includes a spawn-path decision"
+        );
+        assert_eq!(
+            source.machine_reads.load(Ordering::SeqCst),
+            1,
+            "the machine PATH is read once per discovery run, not once per agent"
+        );
+        assert_eq!(
+            source.user_reads.load(Ordering::SeqCst),
+            1,
+            "the user PATH is read once per discovery run, not once per agent"
+        );
+
+        fs::remove_dir_all(installed).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn spawn_resolution_captures_the_registry_path_once_per_resolution() {
+        let installed = grok_install_directory("registry-path-count-named");
+        let source = CountingSource {
+            process: OsString::from("devboule-no-such-inherited-path"),
+            machine: absent(),
+            user: Mutex::new(Some(installed.to_string_lossy().into_owned())),
+            machine_reads: AtomicUsize::new(0),
+            user_reads: AtomicUsize::new(0),
+        };
+
+        let grok = find_available_with_path_source("grok", &source)
+            .expect("grok resolved through the registry PATH");
+
+        assert_eq!(grok.id, "grok");
+        assert_eq!(
+            source.machine_reads.load(Ordering::SeqCst),
+            1,
+            "the machine PATH is read once per spawn resolution"
+        );
+        assert_eq!(
+            source.user_reads.load(Ordering::SeqCst),
+            1,
+            "the user PATH is read once per spawn resolution"
+        );
+
+        fs::remove_dir_all(installed).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn a_shim_unwrapped_to_node_spawns_with_the_shims_directory_on_its_path() {
+        let shim_dir = temporary_directory("registry-path-shim");
+        fs::create_dir_all(
+            shim_dir
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin"),
+        )
+        .expect("shim package layout");
+        fs::write(
+            shim_dir.join("codex.cmd"),
+            npm_cmd_shim_contents(r"node_modules\@openai\codex\bin\codex.js"),
+        )
+        .expect("codex shim");
+        fs::write(
+            shim_dir
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin")
+                .join("codex.js"),
+            b"stub",
+        )
+        .expect("codex package script");
+        let node_dir = temporary_directory("registry-path-shim-node");
+        fs::create_dir_all(&node_dir).expect("node directory");
+        fs::write(node_dir.join("node.exe"), b"stub").expect("node stub");
+
+        let source = StalePathSource {
+            process: OsString::from(node_dir.as_os_str()),
+            machine: absent(),
+            user: Mutex::new(Some(shim_dir.to_string_lossy().into_owned())),
+        };
+
+        let discovery = discover_with_path_source(&source);
+
+        let codex = discovery
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex")
+            .expect("the codex shim is discovered through the registry PATH");
+        assert_eq!(
+            codex.executable,
+            canonical(&node_dir.join("node.exe")),
+            "the shim unwraps to node"
+        );
+        assert_eq!(
+            codex.spawn_path_env,
+            Some((
+                "PATH".to_string(),
+                format!(
+                    "{};{}",
+                    node_dir.to_string_lossy(),
+                    shim_dir.to_string_lossy()
+                )
+            )),
+            "the child PATH carries the shim's directory, not only node's"
+        );
+
+        fs::remove_dir_all(shim_dir).expect("temporary directory cleanup");
+        fs::remove_dir_all(node_dir).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn an_npx_acp_row_spawns_with_the_npx_directory_on_its_path() {
+        let npx_dir = temporary_directory("registry-path-npx");
+        fs::create_dir_all(npx_dir.join("node_modules").join("npm").join("bin"))
+            .expect("npm layout");
+        fs::write(npx_dir.join("npx.cmd"), NPX_LAUNCHER_SHIM).expect("npx launcher shim");
+        fs::write(
+            npx_dir
+                .join("node_modules")
+                .join("npm")
+                .join("bin")
+                .join("npx-cli.js"),
+            b"stub",
+        )
+        .expect("npx-cli script");
+        let node_dir = temporary_directory("registry-path-npx-node");
+        fs::create_dir_all(&node_dir).expect("node directory");
+        fs::write(node_dir.join("node.exe"), b"stub").expect("node stub");
+
+        struct OneRowFetch;
+        impl crate::registry::RegistryFetch for OneRowFetch {
+            fn fetch_body(&self) -> Result<String, String> {
+                Ok(
+                    r#"{"version":"1.0.0","agents":[{"id":"claude-acp","distribution":{"npx":{"package":"@acme/claude-acp@1.0.0"}}}]}"#
+                        .to_string(),
+                )
+            }
+        }
+
+        let source = StalePathSource {
+            process: OsString::from(node_dir.as_os_str()),
+            machine: absent(),
+            user: Mutex::new(Some(npx_dir.to_string_lossy().into_owned())),
+        };
+        let cache_dir = temporary_directory("registry-path-npx-cache");
+        let snapshot = PathSnapshot::capture(&source);
+        let mut discovery =
+            discover_catalog_in_paths(&OneRowFetch, &cache_dir, &snapshot.directories());
+        attach_spawn_path_env(&mut discovery.agents, &snapshot);
+
+        let row = discovery
+            .agents
+            .iter()
+            .find(|agent| agent.id == "claude-acp")
+            .expect("the registry npx row is built");
+        assert!(
+            row.acp_command.is_some(),
+            "npx resolves through the launcher shim"
+        );
+        assert_eq!(
+            row.spawn_path_env,
+            Some((
+                "PATH".to_string(),
+                format!(
+                    "{};{}",
+                    node_dir.to_string_lossy(),
+                    npx_dir.to_string_lossy()
+                )
+            )),
+            "the launched ACP process carries the npx directory"
+        );
+
+        fs::remove_dir_all(npx_dir).expect("temporary directory cleanup");
+        fs::remove_dir_all(node_dir).expect("temporary directory cleanup");
+        fs::remove_dir_all(cache_dir).expect("temporary directory cleanup");
+    }
+
+    /// Verbatim tail of the real npx.cmd on this machine (npm 10.x), the
+    /// launcher shape `unwrap_windows_npm_cmd_shim` recognizes.
+    const NPX_LAUNCHER_SHIM: &str = "SET \"NODE_EXE=%~dp0\\node.exe\"\n\
+IF NOT EXIST \"%NODE_EXE%\" ( SET \"NODE_EXE=node\" )\n\
+SET \"NPX_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npx-cli.js\"\n\
+\"%NODE_EXE%\" \"%NPX_CLI_JS%\" %*\n";
 }

@@ -530,6 +530,28 @@ fn refuse_native_override_id(id: Option<&str>) -> Result<(), WireError> {
     }
 }
 
+/// The PtyCommand for a catalog ACP agent the picker picked by default: its
+/// argv, its id, and the same spawn PATH override the named route applies, so
+/// an agent found through a registry folder launches with its folder visible
+/// whichever route picked it.
+fn catalog_acp_command(
+    agent: crate::provider_catalog::InstalledAgent,
+    cwd: std::path::PathBuf,
+) -> PtyCommand {
+    let id = agent.id.to_string();
+    let mut argv = agent
+        .acp_command
+        .expect("an ACP-capable catalog entry has an ACP command");
+    let program = argv.remove(0);
+    PtyCommand::new(
+        program,
+        argv,
+        cwd,
+        agent.spawn_path_env.into_iter().collect(),
+    )
+    .with_provider_id(id)
+}
+
 /// Resolve a direct executable plus argument vector. The JSON-array override
 /// is intentional: it has no shell grammar and therefore remains correct for
 /// executable paths containing spaces.
@@ -555,20 +577,16 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
             (provider_id, argv)
         }
         Err(_) => {
-            let Some(agent) = crate::provider_catalog::first_acp_available() else {
-                return Err(WireError::new(
+            let agent = crate::provider_catalog::first_acp_available().ok_or_else(|| {
+                WireError::new(
                     ErrorCode::Io,
                     format!(
                         "No ACP-capable agent was found on PATH. Set {COMMAND_ENV} to a non-empty JSON string array to choose an ACP command explicitly."
                     ),
-                ));
-            };
-            (
-                Some(agent.id.to_string()),
-                agent
-                    .acp_command
-                    .expect("an ACP-capable catalog entry has an ACP command"),
-            )
+                )
+            })?;
+            let command = catalog_acp_command(agent, cwd.clone());
+            return Ok(command);
         }
     };
     if argv.is_empty() || argv[0].trim().is_empty() {

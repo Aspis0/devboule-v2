@@ -106,6 +106,8 @@ mod transport;
 mod user_providers;
 #[cfg(windows)]
 mod windows_path_env;
+#[cfg(windows)]
+mod windows_registry_path;
 #[cfg(feature = "server")]
 mod wire_json;
 #[cfg(feature = "server")]

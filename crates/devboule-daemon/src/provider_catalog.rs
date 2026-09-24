@@ -1306,13 +1306,32 @@ impl InstallChannel {
 struct ResolvedLaunch {
     program: PathBuf,
     prefix_args: Vec<String>,
+    /// The PATH directory the launch was resolved from: the shim's directory
+    /// when a cmd-shim was unwrapped to `node`, the search directory
+    /// otherwise. The spawned program's own parent is not enough — after an
+    /// unwrap the parent is node's, and the provider's folder is the one the
+    /// child still needs on its PATH.
+    source_directory: PathBuf,
 }
 
 impl ResolvedLaunch {
+    /// Test-only constructor: a bare direct program, resolved from its own
+    /// parent directory.
+    #[cfg(test)]
     fn program(program: PathBuf) -> Self {
+        let source_directory = program.parent().unwrap_or(Path::new("")).to_path_buf();
         Self {
             program,
             prefix_args: Vec::new(),
+            source_directory,
+        }
+    }
+
+    fn launched(program: PathBuf, prefix_args: Vec<String>, source_directory: PathBuf) -> Self {
+        Self {
+            program,
+            prefix_args,
+            source_directory,
         }
     }
 }
@@ -1364,6 +1383,11 @@ pub struct InstalledAgent {
     /// (Windows; `None` otherwise, including every row of the injected
     /// `*_in_paths` seam, which stay pure). Never serialized to the wire.
     pub(crate) spawn_path_env: Option<(String, String)>,
+    /// The PATH directory the launch was resolved from: the shim's directory
+    /// for an unwrapped cmd-shim, npx's directory for a registry wrapper row.
+    /// `None` for synthetic rows; the deciding spawn policy reads it, not the
+    /// wire.
+    pub(crate) launch_directory: Option<PathBuf>,
 }
 
 /// PATH scan result. `unreadable_dirs` is the number of unique PATH entries
@@ -1391,12 +1415,12 @@ pub fn discover() -> ProviderDiscovery {
 /// launcher's login-time environment), so discovery merges those entries in
 /// behind the process PATH; on unix the login-shell capture already refreshed
 /// the process PATH and nothing is added.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub(crate) fn discovery_directories() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
-        crate::windows_path_env::merged_path_directories(
-            &crate::windows_path_env::RegistryPathSource,
-        )
+        crate::windows_path_env::PathSnapshot::capture(&crate::windows_path_env::RegistryPathSource)
+            .directories()
     }
     #[cfg(not(windows))]
     {
@@ -1415,22 +1439,30 @@ pub(crate) fn discovery_directories() -> Vec<PathBuf> {
 pub(crate) fn discover_with_path_source(
     source: &dyn crate::windows_path_env::WindowsPathSource,
 ) -> ProviderDiscovery {
-    let mut discovery =
-        discover_in_paths(&crate::windows_path_env::merged_path_directories(source));
-    crate::windows_path_env::attach_spawn_path_env(&mut discovery.agents, source);
+    let snapshot = snapshot_of(source);
+    let mut discovery = discover_in_paths(&snapshot.directories());
+    crate::windows_path_env::attach_spawn_path_env(&mut discovery.agents, &snapshot);
     discovery
 }
 
 /// Bind the real registry source for callers that discover with
 /// [`path_directories`] directly (the refresh path) and still need rows to
-/// carry their spawn PATH override.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// carry their spawn PATH override. One registry capture for the whole call.
+#[cfg_attr(any(not(windows), not(feature = "server")), allow(dead_code))]
 pub(crate) fn attach_spawn_path_env(discovery: &mut ProviderDiscovery) {
     #[cfg(windows)]
-    crate::windows_path_env::attach_spawn_path_env(
-        &mut discovery.agents,
-        &crate::windows_path_env::RegistryPathSource,
-    );
+    {
+        let snapshot = snapshot_of(&crate::windows_path_env::RegistryPathSource);
+        crate::windows_path_env::attach_spawn_path_env(&mut discovery.agents, &snapshot);
+    }
+}
+
+/// The one environment capture a discovery or resolution pass works from.
+#[cfg(windows)]
+fn snapshot_of(
+    source: &dyn crate::windows_path_env::WindowsPathSource,
+) -> crate::windows_path_env::PathSnapshot {
+    crate::windows_path_env::PathSnapshot::capture(source)
 }
 
 pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
@@ -1487,6 +1519,8 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
                 npm_package: spec.npm_package,
                 tools: mcp_tools_for(spec.id),
                 spawn_path_env: None,
+                launch_directory: Some(launch.source_directory)
+                    .filter(|directory| !directory.as_os_str().is_empty()),
             })
         })
         .collect();
@@ -1610,11 +1644,9 @@ pub(crate) fn find_available_with_path_source(
     id: &str,
     source: &dyn crate::windows_path_env::WindowsPathSource,
 ) -> Option<InstalledAgent> {
-    let mut agent = find_available_in_paths(
-        id,
-        &crate::windows_path_env::merged_path_directories(source),
-    )?;
-    crate::windows_path_env::attach_spawn_path_env(std::slice::from_mut(&mut agent), source);
+    let snapshot = snapshot_of(source);
+    let mut agent = find_available_in_paths(id, &snapshot.directories())?;
+    crate::windows_path_env::attach_spawn_path_env(std::slice::from_mut(&mut agent), &snapshot);
     Some(agent)
 }
 
@@ -1636,13 +1668,19 @@ pub fn discover_catalog(
     fetch: &dyn crate::registry::RegistryFetch,
     cache_dir: &Path,
 ) -> ProviderDiscovery {
-    let mut discovery = discover_catalog_in_paths(fetch, cache_dir, &discovery_directories());
     #[cfg(windows)]
-    crate::windows_path_env::attach_spawn_path_env(
-        &mut discovery.agents,
-        &crate::windows_path_env::RegistryPathSource,
-    );
-    discovery
+    {
+        let snapshot = snapshot_of(&crate::windows_path_env::RegistryPathSource);
+        let mut discovery = discover_catalog_in_paths(fetch, cache_dir, &snapshot.directories());
+        crate::windows_path_env::attach_spawn_path_env(&mut discovery.agents, &snapshot);
+        discovery
+    }
+    #[cfg(not(windows))]
+    {
+        let mut discovery = discover_catalog_in_paths(fetch, cache_dir, &discovery_directories());
+        attach_spawn_path_env(&mut discovery);
+        discovery
+    }
 }
 
 #[cfg(feature = "server")]
@@ -1702,6 +1740,7 @@ fn add_missing_npm_rows(
             npm_package: Some(package),
             tools: mcp_tools_for(spec.id),
             spawn_path_env: None,
+            launch_directory: None,
         });
     }
     local
@@ -1715,7 +1754,10 @@ fn registry_agent(
 ) -> InstalledAgent {
     let crate::registry::RegistryNpxEntry { id, package, args } = entry;
     let pickable = registry_picker_policy(&id, native);
-    let acp_command = npx_acp_command(directories, &package, &args);
+    let (acp_command, npx_directory) = npx_acp_command(directories, &package, &args)
+        .map_or((None, PathBuf::new()), |(argv, directory)| {
+            (Some(argv), directory)
+        });
     // Resolved before the literal moves `id` into the row.
     let tools = mcp_tools_for(&id);
     InstalledAgent {
@@ -1739,6 +1781,7 @@ fn registry_agent(
         npm_package: None,
         tools,
         spawn_path_env: None,
+        launch_directory: Some(npx_directory).filter(|directory| !directory.as_os_str().is_empty()),
     }
 }
 
@@ -1768,7 +1811,11 @@ fn launch_program_is_cmd_or_bat(program: &Path) -> bool {
 }
 
 #[cfg(feature = "server")]
-fn npx_acp_command(directories: &[PathBuf], package: &str, args: &[String]) -> Option<Vec<String>> {
+fn npx_acp_command(
+    directories: &[PathBuf],
+    package: &str,
+    args: &[String],
+) -> Option<(Vec<String>, PathBuf)> {
     let launch = resolve_launch_command_in_paths(directories, "npx")?;
     if launch_program_is_cmd_or_bat(&launch.program) {
         return None;
@@ -1778,10 +1825,9 @@ fn npx_acp_command(directories: &[PathBuf], package: &str, args: &[String]) -> O
     extra.push(package.to_string());
     extra.extend(args.iter().cloned());
     let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
-    Some(protocol_argv(
-        &launch.program,
-        &launch.prefix_args,
-        &extra_refs,
+    Some((
+        protocol_argv(&launch.program, &launch.prefix_args, &extra_refs),
+        launch.source_directory,
     ))
 }
 
@@ -1839,13 +1885,9 @@ pub(crate) fn find_in_catalog_with_path_source(
     cache_dir: &Path,
     source: &dyn crate::windows_path_env::WindowsPathSource,
 ) -> Option<InstalledAgent> {
-    let mut agent = find_in_catalog_in_paths(
-        id,
-        fetch,
-        cache_dir,
-        &crate::windows_path_env::merged_path_directories(source),
-    )?;
-    crate::windows_path_env::attach_spawn_path_env(std::slice::from_mut(&mut agent), source);
+    let snapshot = snapshot_of(source);
+    let mut agent = find_in_catalog_in_paths(id, fetch, cache_dir, &snapshot.directories())?;
+    crate::windows_path_env::attach_spawn_path_env(std::slice::from_mut(&mut agent), &snapshot);
     Some(agent)
 }
 
@@ -1946,22 +1988,29 @@ fn is_direct_launch_extension(extension: &str) -> bool {
         .any(|known| known.eq_ignore_ascii_case(extension))
 }
 
-fn resolve_direct_program(paths: &[PathBuf], command: &str) -> Option<PathBuf> {
+fn resolve_direct_program(paths: &[PathBuf], command: &str) -> Option<(PathBuf, PathBuf)> {
     paths.iter().find_map(|dir| {
         launch_path_candidates(dir, command)
             .into_iter()
-            .find_map(|path| executable_file_exists(&path).then(|| absolute_path(&path)))
+            .find_map(|path| {
+                executable_file_exists(&path)
+                    .then(|| absolute_path(&path).map(|program| (program, dir.clone())))
+            })
             .flatten()
     })
 }
 
 fn resolve_launch_command_in_paths(paths: &[PathBuf], command: &str) -> Option<ResolvedLaunch> {
-    let program = resolve_direct_program(paths, command)?;
+    let (program, source_directory) = resolve_direct_program(paths, command)?;
     #[cfg(windows)]
     if let Some(unwrapped) = unwrap_windows_npm_cmd_shim(&program, paths) {
         return Some(unwrapped);
     }
-    Some(ResolvedLaunch::program(program))
+    Some(ResolvedLaunch::launched(
+        program,
+        Vec::new(),
+        source_directory,
+    ))
 }
 
 /// Resolve npm through the same direct PATH/shim path used for provider
@@ -2160,14 +2209,15 @@ fn resolve_shim_script(
         if executable_file_exists(&local_node) {
             absolute_path(&local_node)
         } else {
-            resolve_direct_program(search_paths, "node")
+            resolve_direct_program(search_paths, "node").map(|(program, _)| program)
         }
     }?;
     let script = absolute_path(&script)?;
-    Some(ResolvedLaunch {
-        program: node,
-        prefix_args: vec![script.to_string_lossy().into_owned()],
-    })
+    Some(ResolvedLaunch::launched(
+        node,
+        vec![script.to_string_lossy().into_owned()],
+        shim_dir.to_path_buf(),
+    ))
 }
 
 fn absolute_path(path: &Path) -> Option<PathBuf> {

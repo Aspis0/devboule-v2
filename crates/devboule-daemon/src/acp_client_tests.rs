@@ -1445,3 +1445,77 @@ fn a_startup_death_banner_is_bounded() {
         error.message.len()
     );
 }
+
+/// The default ACP launch route (no `DEVBOULE_ACP_COMMAND`, no named id)
+/// launches the agent the picker chose with the same spawn PATH the named
+/// route applies: a provider found through a registry folder must not launch
+/// with an environment that predates its folder (review #2).
+#[cfg(windows)]
+#[test]
+fn the_default_acp_route_carries_the_spawn_path_of_the_picked_agent() {
+    use crate::provider_catalog::discover_with_path_source;
+    use crate::windows_path_env::WindowsPathSource;
+    use crate::windows_registry_path::{RegistryPathError, RegistryPathRead};
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    struct StalePathSource {
+        process: OsString,
+        user: Mutex<Option<String>>,
+    }
+
+    impl WindowsPathSource for StalePathSource {
+        fn process_path(&self) -> Option<OsString> {
+            Some(self.process.clone())
+        }
+
+        fn machine_path(&self) -> RegistryPathRead {
+            RegistryPathRead::Failed(RegistryPathError::Win32(2))
+        }
+
+        fn user_path(&self) -> RegistryPathRead {
+            match &*self.user.lock().expect("user path lock") {
+                Some(value) => RegistryPathRead::Read(value.clone()),
+                None => RegistryPathRead::Failed(RegistryPathError::Win32(2)),
+            }
+        }
+    }
+
+    fn grok_install_directory() -> PathBuf {
+        let dir = crate::test_dirs::test_temp_dir("acp-default-route-grok");
+        fs::create_dir_all(&dir).expect("grok install directory");
+        fs::write(dir.join("grok.exe"), b"stub").expect("grok stub executable");
+        dir
+    }
+
+    let installed = grok_install_directory();
+    let source = StalePathSource {
+        process: OsString::from("devboule-no-such-inherited-path"),
+        user: Mutex::new(Some(installed.to_string_lossy().into_owned())),
+    };
+
+    let agent = discover_with_path_source(&source)
+        .agents
+        .into_iter()
+        .find(|agent| agent.id == "grok")
+        .expect("grok discovered through the registry PATH");
+
+    let command = super::catalog_acp_command(agent, PathBuf::from(r"C:\workdir"));
+
+    assert_eq!(command.provider_id.as_deref(), Some("grok"));
+    assert_eq!(
+        command.env,
+        vec![(
+            "PATH".to_string(),
+            format!(
+                "devboule-no-such-inherited-path;{}",
+                installed.to_string_lossy()
+            )
+        )],
+        "the default ACP launch carries the registry folders on the child PATH"
+    );
+
+    fs::remove_dir_all(installed).expect("temporary directory cleanup");
+}
