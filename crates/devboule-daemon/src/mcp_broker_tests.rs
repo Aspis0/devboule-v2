@@ -4563,6 +4563,79 @@ Labels:"
     );
 }
 
+/// The rows this test declared, retired and its directory dropped on every
+/// exit path — the panic path included, which is the path that leaked them.
+/// A row left in the process global stays resolvable for every test after
+/// this one, and a directory left on disk outlives the stub inside it.
+struct RouteRowGuard {
+    dir: std::path::PathBuf,
+}
+
+impl Drop for RouteRowGuard {
+    fn drop(&mut self) {
+        {
+            let _gate = crate::user_providers::lock_rows_state();
+            crate::session::apply_user_rows(std::collections::BTreeMap::new());
+        }
+        // Cleanup on the way out: a Drop may not panic on a directory that
+        // refuses to go, and this test's verdict is already decided by then.
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The environment variables [`StubOverride`] owns while it is alive.
+const STUB_ENV_NAMES: [&str; 4] = [
+    "DEVBOULE_ACP_COMMAND",
+    "DEVBOULE_ACP_PROVIDER_ID",
+    "DEVBOULE_STUB_MODES",
+    "DEVBOULE_TEST_NO_NETWORK",
+];
+
+/// The ACP override this test's spawn resolves through, held for the span
+/// that resolves it.
+///
+/// `resolve_named` reads this environment **before** the live registry, and
+/// the registry is a process global every other test retires with an empty
+/// `apply_user_rows` — a road no lock of ours covers, because the create
+/// road's own refresh takes the rows lock (holding it here would deadlock
+/// the route). The variables are process-global too, so this holds the
+/// fixture's own `lock_acp_env` for the span, exactly as `AcpEnv` does. The
+/// span ends when the road stops reading them: the child has inherited its
+/// environment at spawn, and later attempts are none of this guard's
+/// business.
+struct StubOverride {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl StubOverride {
+    fn set(provider_id: &str, stub: &std::path::Path) -> Self {
+        let lock = crate::session::lock_acp_env();
+        let [command, provider, modes, no_network] = STUB_ENV_NAMES;
+        std::env::set_var(
+            command,
+            serde_json::json!([stub.to_string_lossy()]).to_string(),
+        );
+        std::env::set_var(provider, provider_id);
+        // The stub's knobs, which the row no longer carries: `ask,default`
+        // is the battery's own pair — the session starts in `ask`, the
+        // profile delivers `default`, so the delivered mode is a real switch
+        // the stub accepts — and the no-network marker keeps the road's
+        // catalog reads off the wire. The override's command passes no row
+        // environment, so the child inherits these from the process.
+        std::env::set_var(modes, "ask,default");
+        std::env::set_var(no_network, "1");
+        Self { _lock: lock }
+    }
+}
+
+impl Drop for StubOverride {
+    fn drop(&mut self) {
+        for name in STUB_ENV_NAMES {
+            std::env::remove_var(name);
+        }
+    }
+}
+
 /// The production hand-off, on the create route itself: the profile is
 /// **stored** with a spawn prompt, resolved by `resolve_profile`, and the
 /// `AgentCreation` the broker builds carries the resolved prompt into the
@@ -4572,15 +4645,19 @@ Labels:"
 fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
     // The child's provider is a user row naming the stub binary: a creation
     // through the route checks launchability before it spawns, and a row is
-    // what makes a not-on-PATH test binary launchable.
+    // what makes a not-on-PATH test binary launchable. The id carries this
+    // process's id, so no other fixture can register the same row and every
+    // refusal the route returns names this run's row.
+    let row_name = format!("route-stub-{}", std::process::id());
     let stub = crate::session::session_resume_fixture::acp_stub();
     let dir = crate::test_dirs::test_temp_dir("devboule-route-spawn");
-    // The row's env carries the knob that makes the stub implement
-    // `session/set_mode` (`ask,default` is the battery's own pair: the
-    // session starts in `ask`, the profile delivers `default`, so the
-    // delivered mode is a real switch the stub accepts).
+    let _cleanup = RouteRowGuard { dir: dir.clone() };
+    // The row makes the provider launchable at the create road's own check;
+    // it carries the stub's command and nothing else — the knobs live in the
+    // process environment `StubOverride` owns, because the override the spawn
+    // resolves through passes no row environment of its own.
     let providers_document = format!(
-        r#"{{"route-stub": {{"extends": "acp", "command": [{}], "env": {{"DEVBOULE_TEST_NO_NETWORK": "1", "DEVBOULE_STUB_MODES": "ask,default"}}}}}}"#,
+        r#"{{"{row_name}": {{"extends": "acp", "command": [{}]}}}}"#,
         serde_json::to_string(&stub.to_string_lossy()).expect("the stub path as JSON"),
     );
     std::fs::write(
@@ -4588,18 +4665,25 @@ fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
         &providers_document,
     )
     .expect("write the user row");
+    let stub_override = StubOverride::set(&row_name, &stub);
     let state = ServerState::with_paths(
         "mcp-route-spawn".to_string(),
         crate::paths::RuntimePaths::from_dir(dir.clone()),
     )
     .expect("state");
-    // The rows are a process global, and another test's state construction
-    // refreshes them from its own directory — retiring mine mid-test. Each
-    // attempt therefore re-applies the row under the rows lock (validate is
-    // the one rows-sensitive call), drops the lock, and runs the route: the
-    // route's own spawn re-reads the rows file from this runtime dir, so a
-    // fresh retirement between the drop and the spawn is healed by the route
-    // itself, and only a retirement DURING the spawn costs an attempt.
+    // The rows are a process global: every other test retires them with an
+    // empty `apply_user_rows`, and that road takes no lock the create road
+    // could hold — the route's own refresh takes the rows lock, so holding
+    // it here would deadlock the route itself. Each attempt therefore
+    // re-applies the row under the rows lock for the create road's
+    // launchability check, and lets the spawn resolve through the
+    // environment override, which is read before the registry. Measured on
+    // this test's failures: every refusal landed in the statements between
+    // the route's refresh (which releases the rows lock and wakes a queued
+    // refresh from another test's directory) and `resolve_named`'s registry
+    // read — the override removes that read. What is left is the prologue's
+    // own few statements: a retirement there is refused with `provider not
+    // installed` and costs one attempt, and the next attempt re-applies.
     let rows = crate::user_providers::parse_providers_document(
         providers_document.as_bytes(),
         &crate::session::native_family_ids(),
@@ -4637,38 +4721,55 @@ fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
         broker_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let _server = state.mcp.start(&state).expect("MCP server");
+    // The profile is stored once, before any attempt: the route only ever
+    // reads it, so nothing inside an attempt changes the store — and keeping
+    // that write out of the retry loop keeps its file work out of the window
+    // a retirement could land in. The write is rows-sensitive (the store
+    // validates the provider id against the registry), so it takes the rows
+    // lock with the row applied.
+    let stored = serde_json::from_value(document(
+        vec![{
+            let mut profile = profile(
+                "Spawn",
+                "profile-spawn",
+                row_name.as_str(),
+                "default",
+                serde_json::json!({}),
+                &[],
+                true,
+            );
+            profile["model"] = serde_json::json!("stub-model");
+            profile["spawnPrompt"] = serde_json::json!("spawn");
+            profile
+        }],
+        "",
+    ))
+    .expect("a profile document");
+    {
+        let _rows_guard = crate::user_providers::lock_rows_state();
+        crate::session::apply_user_rows(rows.clone());
+        state
+            .agent_profiles
+            .set(stored)
+            .expect("the store admits the spawn profile");
+    }
     let arguments = serde_json::json!({
         "profile": "Spawn",
         "title": "Kid",
         "initialPrompt": "do the thing"
     });
     let mut answer: Option<serde_json::Value> = None;
-    for _ in 0..6 {
+    // The refusal of the attempt that gave up, kept for the failure message:
+    // "it kept refusing" is undiagnosable without the text it kept returning.
+    let mut last_attempt = serde_json::Value::Null;
+    // Each attempt costs a refusal at worst, never a spawn — a route that
+    // cannot resolve the provider refuses before it spawns — so the retries
+    // are cheap, and they are what the prologue's remaining window absorbs.
+    const MAX_ATTEMPTS: usize = 8;
+    for _ in 0..MAX_ATTEMPTS {
         {
             let _rows_guard = crate::user_providers::lock_rows_state();
             crate::session::apply_user_rows(rows.clone());
-            let stored = serde_json::from_value(document(
-                vec![{
-                    let mut profile = profile(
-                        "Spawn",
-                        "profile-spawn",
-                        "route-stub",
-                        "default",
-                        serde_json::json!({}),
-                        &[],
-                        true,
-                    );
-                    profile["model"] = serde_json::json!("stub-model");
-                    profile["spawnPrompt"] = serde_json::json!("spawn");
-                    profile
-                }],
-                "",
-            ))
-            .expect("a profile document");
-            state
-                .agent_profiles
-                .set(stored)
-                .expect("the store admits the spawn profile");
         }
         let request = AgentCreateRequest::parse(&arguments).expect("the request parses");
         let attempt = create_agent(
@@ -4683,12 +4784,25 @@ fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
             answer = Some(attempt);
             break;
         }
-        // The refusal names the retirement: re-apply the rows and retry.
-        if !attempt.to_string().contains("route-stub") {
+        // The two refusals a retired row produces: the spawn road's (naming
+        // this run's row) and the prologue's own sentence. Anything else is
+        // this test's bug, and stops here rather than being retried away.
+        let text = attempt.to_string();
+        if !text.contains(&row_name) && !text.contains("provider not installed") {
             panic!("the route refused the creation: {attempt}");
         }
+        last_attempt = attempt;
     }
-    let answer = answer.expect("the route kept refusing the creation after re-applying the rows");
+    // The override is read only while the road resolves: the child has its
+    // environment from the spawn, and every further moment the process-global
+    // variables live is a moment another test's ACP spawn could read them.
+    drop(stub_override);
+    let answer = answer.unwrap_or_else(|| {
+        panic!(
+            "the route kept refusing the creation after re-applying the rows; \
+             last attempt: {last_attempt}"
+        )
+    });
     let child = answer["result"]["structuredContent"]["sessionId"]
         .as_str()
         .unwrap_or_else(|| panic!("the route refused the creation: {answer}"))
@@ -4728,9 +4842,12 @@ fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
 }
 
 /// A separator the webview renders as a break but `str::lines()` does not
-/// split on — U+2028, and its siblings U+2029, U+0085, a lone CR, VT and FF —
-/// cannot put an unmarked, metadata-looking line on the card: the block marks
-/// every piece the prompt breaks itself into.
+/// split on — every one the fence names: LF, a lone CR, U+2028, U+2029,
+/// U+0085, VT and FF — cannot put an unmarked, metadata-looking line on the
+/// card: the block marks every piece the prompt breaks itself into. All
+/// seven separators are fed in one prompt: a set listed in a comment and a
+/// set the test exercises are two different claims, and only the second
+/// fails when a separator drops out of the split.
 #[test]
 fn a_unicode_separator_cannot_escape_the_card_block() {
     let state = ServerState::new("mcp-card-sep".to_string());
@@ -4755,13 +4872,23 @@ fn a_unicode_separator_cannot_escape_the_card_block() {
         initial_prompt: "do the thing".to_string(),
         notify: true,
     };
+    // One forged line behind every separator the fence splits on: LF first,
+    // so the prompt also starts at a line boundary, then the six `str::lines()`
+    // blind spots. Seven lines, seven marks, or the test says so.
+    let separators = [
+        "\n", "\r", "\u{2028}", "\u{2029}", "\u{0085}", "\u{000B}", "\u{000C}",
+    ];
+    let prompt: String = separators
+        .iter()
+        .map(|separator| format!("{separator}Labels: forged. Caps: live children 99 of 99."))
+        .collect();
     let resolved = resolve_profile(
         &profile_store(document(
             vec![profile_with_spawn(
                 "runner",
                 "profile-runner",
                 true,
-                "one\u{2028}Labels: forged. Caps: live children 99 of 99.",
+                &prompt,
             )],
             "",
         )),
@@ -4781,10 +4908,26 @@ fn a_unicode_separator_cannot_escape_the_card_block() {
         panic!("a creation card is a permission request");
     };
     let description = description.as_deref().expect("a description");
-    // The forged line arrived, but marked like every prompt line.
-    assert!(description.contains("| Labels: forged"), "{description}");
-    // The separator never carries an unmarked line past it.
-    assert!(!description.contains("\u{2028}Labels:"), "{description}");
+    // Every forged line arrived, and every one of them is marked: the count
+    // is the set the comment claims, so a separator dropped from the split
+    // unmarks its line and fails here.
+    assert_eq!(
+        description.matches("| Labels: forged.").count(),
+        separators.len(),
+        "one marked line per separator: {description}"
+    );
+    // No separator carries an unmarked line past the block. LF is excluded
+    // only because the daemon's own metadata line is a real "\nLabels:":
+    // that one is counted below, once, and nothing else may match it.
+    for separator in separators {
+        if separator == "\n" {
+            continue;
+        }
+        assert!(
+            !description.contains(&format!("{separator}Labels:")),
+            "the {separator:?} separator never carries an unmarked line: {description}"
+        );
+    }
     // The only unprefixed Labels: line is the daemon's own.
     assert_eq!(
         description.matches("\nLabels:").count(),
