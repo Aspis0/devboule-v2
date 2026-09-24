@@ -6,7 +6,7 @@ import { lookedAtSessionId } from "./presence";
  * reason, the decision of when an OS toast may fire, what the toast says,
  * and the one place that sends it.
  *
- * The gate is Paseo's per-agent rule (`session-context.tsx:271-277`): a
+ * The gate is Paseo's per-agent rule (`session-context.tsx:279-284`): a
  * raise is announced unless the user is looking at THIS session — the window
  * actively seen AND this session the one this window shows. Which rows the
  * tab strip draws is not the question the gate asks, so nothing here is
@@ -235,7 +235,7 @@ export function setAttentionHeldContentProvider(
 
 /**
  * The last raise a toast fired (or was gate-blocked) for, per session.
- * Paseo's own dedupe (`attentionNotifiedRef`, `session-context.tsx:281-287`):
+ * Paseo's own dedupe (`attentionNotifiedRef`, `session-context.tsx:285-291`):
  * identity is the raise's timestamp, so a re-publication of the event the
  * daemon already told us about never toasts twice.
  */
