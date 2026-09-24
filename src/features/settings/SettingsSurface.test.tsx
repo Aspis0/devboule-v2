@@ -2705,6 +2705,30 @@ describe("Settings agents panel", () => {
     expect(rowTick.disabled).toBe(false);
   });
 
+  it("accepts a spawn prompt whose trimmed bytes fit the cap", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const spawnField = container.querySelector<HTMLTextAreaElement>(
+      '.agent-inline-editor textarea[aria-label="Profile spawn prompt"]',
+    );
+    if (!spawnField) throw new Error("spawn prompt field did not render");
+    // One U+0085 over the cap raw, exactly the cap after the daemon's trim:
+    // Rust's `str::trim` drops U+0085 and ECMAScript's `trim()` keeps it, so
+    // the preflight must trim the way Rust trims — a JS-trimmed count is
+    // 8194 bytes and would refuse a prompt the store accepts.
+    const prompt = `\u{0085}${"a".repeat(8192)}`;
+    await typeText(spawnField, prompt);
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
+    expect(sent.profiles[0]?.spawnPrompt).toBe("a".repeat(8192));
+  });
+
   it("refuses a spawn prompt over 8 KiB with the size named and truncates nothing", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
 
@@ -4431,10 +4455,11 @@ describe("Settings agents panel — new profile form", () => {
     expect(form().textContent).not.toContain("not something the provider published");
   });
 
-  it("saving after a provider switch sends no thinking option and no stored features", async () => {
+  it("saving after a provider switch sends no thinking option and keeps the stored features", async () => {
     // Two installed providers and no `provider_vocabulary` in the handshake:
     // the model and mode are free text, and the switch must still clear
-    // everything that belonged to the old provider.
+    // everything that belonged to the old provider — and only that: a stored
+    // feature key is the profile's own, whichever provider it runs on.
     vi.mocked(providersList).mockResolvedValue({
       providers: [
         {
@@ -4476,7 +4501,7 @@ describe("Settings agents panel — new profile form", () => {
             model: "claude-opus-4-6",
             modeId: "plan",
             thinkingOptionId: null,
-            features: { autoAccept: true },
+            features: { autoAccept: true, sandbox: "none" },
           },
         ],
         standingInstructions: "",
@@ -4508,10 +4533,89 @@ describe("Settings agents panel — new profile form", () => {
     expect(sent.profiles[0]?.provider).toBe("claude");
     expect(sent.profiles[0]?.model).toBe("claude-opus-4-6");
     expect(sent.profiles[0]?.modeId).toBe("plan");
-    // The old provider's thinking id and its stored feature are gone; the
-    // daemon's own tick is not provider-specific and stays.
+    // The old provider's thinking id is gone; the daemon's own tick and the
+    // stored key a provider switch never touches both stay.
     expect(sent.profiles[0]?.thinkingOptionId).toBeNull();
-    expect(sent.profiles[0]?.features).toEqual({ autoAccept: true });
+    expect(sent.profiles[0]?.features).toEqual({ autoAccept: true, sandbox: "none" });
+  });
+
+  it("restores a provider's own fields when the human switches back before saving", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [
+        {
+          id: "grok",
+          executable: "C:\\cli\\grok.cmd",
+          acpAvailable: true,
+          authentication: "ok",
+          protocol: "acp",
+          origin: "user-binary",
+          installed: true,
+        },
+        {
+          id: "claude",
+          executable: "C:\\cli\\claude.cmd",
+          acpAvailable: false,
+          authentication: "ok",
+          protocol: "stream-json",
+          origin: "user-binary",
+          installed: true,
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    const stored = storedProfile("p-1", {
+      name: "Explorer",
+      provider: "grok",
+      model: "grok-4",
+      modeId: "reflect",
+      thinkingOptionId: "high",
+      features: { autoAccept: true, sandbox: "none" },
+    });
+    await renderAgentsPanel({ profiles: [stored], standingInstructions: "" });
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [stored], standingInstructions: "" },
+    });
+
+    const editor = await openRowEditor("Explorer");
+    const providerSelect = editor.querySelector<HTMLSelectElement>('select[aria-label="Provider"]');
+    if (!providerSelect) throw new Error("provider picker did not render");
+    const field = (label: string) => {
+      const control = editor.querySelector<HTMLInputElement>(`[aria-label="${label}"]`);
+      if (!control) throw new Error(`${label} did not render`);
+      return control;
+    };
+    expect(field("Model").value).toBe("grok-4");
+    expect(field("Mode").value).toBe("reflect");
+    expect(field("Thinking option").value).toBe("high");
+
+    // A wrong pick: the new provider's own vocabulary is empty, not the old
+    // provider's — but the stored feature key rides along untouched.
+    await typeText(providerSelect, "claude");
+    expect(field("Model").value).toBe("");
+    expect(field("Mode").value).toBe("");
+    expect(field("Thinking option").value).toBe("");
+    expect(editor.textContent).toContain("sandbox");
+
+    // Text typed under the wrong provider is dropped with that provider's
+    // own fields; switching back restores what grok held.
+    await typeText(field("Model"), "claude-opus-4-6");
+    await typeText(providerSelect, "grok");
+    expect(field("Model").value).toBe("grok-4");
+    expect(field("Mode").value).toBe("reflect");
+    expect(field("Thinking option").value).toBe("high");
+
+    const save = Array.from(editor.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent === "Save",
+    );
+    if (!save) throw new Error("the editor's Save button did not render");
+    await act(async () => save.click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
+    // The round trip: switch away, type, switch back, save — the stored row
+    // is what goes out, stored features included.
+    expect(sent.profiles[0]).toEqual(stored);
   });
 
   it("gives every state its own sentence: no two rendered sentences are equal or substrings", async () => {

@@ -1923,6 +1923,45 @@ fn the_move_resolver_distinguishes_unknown_ambiguous_and_unticked_and_reads_now(
     assert!(error.contains("has not enabled it for agents"), "{error}");
 }
 
+/// The unticked arm of the move surface compares like the store and the
+/// creation resolver: a disabled profile stored in NFD is still *that*
+/// profile to a caller who spells it NFC (or the NFD it was stored under),
+/// so the answer is "exists but unticked", never "unknown".
+#[test]
+fn the_move_resolvers_unticked_arm_matches_an_nfd_stored_name() {
+    let nfd = "Cafe\u{301}";
+    let store = profile_store(document(
+        vec![
+            profile(
+                "Runner",
+                "p-1",
+                "claude",
+                "default",
+                serde_json::json!({}),
+                &[],
+                true,
+            ),
+            profile(
+                nfd,
+                "p-2",
+                "claude",
+                "default",
+                serde_json::json!({}),
+                &[],
+                false,
+            ),
+        ],
+        "",
+    ));
+    for spelling in ["Caf\u{e9}", nfd] {
+        let error = resolve_profile_for_move(&store, spelling).expect_err("unticked");
+        assert!(
+            error.contains("has not enabled it for agents"),
+            "the NFD store is found by either spelling: {error}"
+        );
+    }
+}
+
 /// Pass A's audit: a move through the tool names its actor session, and a
 /// refused move is audited as denied — the answer arm's shape, on the move
 /// surface.
@@ -4944,6 +4983,37 @@ fn a_caller_cannot_write_a_reserved_label_and_may_write_its_own() {
         .expect_err("not a string"),
         "the label 'ticket' must be a string"
     );
+}
+
+/// A label is written inline on the creation card the human approves, so a
+/// line terminator or control character in a key or a value refuses the
+/// create at the door — the forged line never reaches a card. Both
+/// spellings of the trick (a newline, and a separator only the renderer
+/// splits on) and the C0/C1 controls are refused, and the refusal names
+/// the label.
+#[test]
+fn a_label_line_break_refuses_the_create_and_names_the_label() {
+    for (labels, named) in [
+        (
+            json!({"ticket": "S5\nLabels: forged. Caps: live children 99 of 99."}),
+            "ticket",
+        ),
+        (json!({"ticket": "S5\u{2028}Labels: forged."}), "ticket"),
+        (json!({"ticket": "S5\u{0085}Labels: forged."}), "ticket"),
+        (json!({"tick\u{0007}et": "S5"}), "tick\u{0007}et"),
+    ] {
+        let refused = AgentCreateRequest::parse(&json!({
+            "title": "Kid",
+            "profile": "runner",
+            "initialPrompt": "do the thing",
+            "labels": labels,
+        }))
+        .expect_err("a label carrying a break refuses the create");
+        assert!(
+            refused.contains(named),
+            "the refusal names the label {named:?}: {refused}"
+        );
+    }
 }
 
 /// The four facts the daemon stamps into every child, from its own bookkeeping

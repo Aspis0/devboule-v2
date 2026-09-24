@@ -2042,6 +2042,19 @@ impl AgentCreateRequest {
     }
 }
 
+/// True when a label's text would break out of the line it is written on.
+///
+/// Label keys and values are interpolated inline in the creation card the
+/// human approves (`Labels: key=value, …`), with no fence of their own, so
+/// every line terminator the spawn-prompt fence splits on — LF, CR, U+2028,
+/// U+2029, U+0085, VT, FF — and every other C0/C1 control character would
+/// put a line of the caller's own writing among the daemon's metadata. The
+/// prompt gets a marked block; a label gets refused instead.
+fn label_carries_a_break(text: &str) -> bool {
+    text.chars()
+        .any(|character| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}'))
+}
+
 /// The caller's labels, checked (`create-from-profile`).
 ///
 /// A free map of string to string, with one reserved prefix: the daemon stamps
@@ -2073,6 +2086,11 @@ fn parse_labels(
         if key.trim().is_empty() {
             return Err("a label has an empty key".to_string());
         }
+        if label_carries_a_break(key) {
+            return Err(format!(
+                "the label key '{key}' carries a line terminator or control character"
+            ));
+        }
         if key.len() > MAX_LABEL_KEY_BYTES {
             return Err(format!(
                 "the label key '{key}' is {} bytes; the limit is {MAX_LABEL_KEY_BYTES}.",
@@ -2086,6 +2104,11 @@ fn parse_labels(
             return Err(format!(
                 "the label '{key}' is {} bytes; the limit is {MAX_LABEL_VALUE_BYTES}.",
                 value.len()
+            ));
+        }
+        if label_carries_a_break(value) {
+            return Err(format!(
+                "the label '{key}' carries a line terminator or control character"
             ));
         }
         labels.insert(key.clone(), value.clone());
@@ -2300,11 +2323,9 @@ fn resolve_profile_for_move(
         }),
         Err(message) => {
             let wanted = profile_name_key(requested);
-            let unticked = store
-                .document()
-                .profiles
-                .iter()
-                .any(|profile| profile.name == wanted && !profile.enabled_for_agents);
+            let unticked = store.document().profiles.iter().any(|profile| {
+                profile_name_key(&profile.name) == wanted && !profile.enabled_for_agents
+            });
             if unticked {
                 Err(format!(
                     "the profile '{wanted}' exists but the human has not enabled it for agents; only a ticked profile can be moved onto"

@@ -3,7 +3,9 @@
  * stored one. The fields' rules live in `AgentProfileDraft.ts` (the draft,
  * the caps, the daemon's own trim and name comparison) and the tool-overlay
  * editor in `AgentProfileOverlay.tsx`; this component owns the fields, the
- * provider-vocabulary lifecycle and what a provider switch clears.
+ * provider-vocabulary lifecycle and what a provider switch clears — which is
+ * the provider's own vocabulary and nothing else: stored features travel as
+ * saved, whatever provider the profile runs on.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { providerVocabularyGet } from "../../lib/tauri";
@@ -30,18 +32,16 @@ const MAX_PROFILE_NOTE_BYTES = 2 * 1024;
 /**
  * The provider-specific slice of the draft: cleared when the provider
  * changes, restored from the per-provider cache when the human switches
- * back, so a wrong pick is not a loss.
+ * back, so a wrong pick is not a loss. Stored features are deliberately
+ * absent — they are the profile's saved keys, not the provider's
+ * vocabulary, so they travel as saved whatever the picker says.
  */
-type ProviderSpecificFields = Pick<
-  ProfileFormSeed,
-  "model" | "modeId" | "thinkingOptionId" | "storedFeatures"
->;
+type ProviderSpecificFields = Pick<ProfileFormSeed, "model" | "modeId" | "thinkingOptionId">;
 
 const CLEARED_PROVIDER_FIELDS: ProviderSpecificFields = {
   model: "",
   modeId: "",
   thinkingOptionId: "",
-  storedFeatures: [],
 };
 
 /**
@@ -267,15 +267,15 @@ export function AgentProfileForm({
     // provider's own are restored if the human has been here before:
     // switching must not let one provider's vocabulary survive into
     // another, but a wrong pick followed by switching back must not be a
-    // loss either. `autoAccept` and the overlay stay — they are not the
-    // provider's vocabulary.
-    providerDraftsRef.current.set(providerId, { model, modeId, thinkingOptionId, storedFeatures });
+    // loss either. `autoAccept`, the stored features and the overlay stay:
+    // they belong to the profile, not to the provider's vocabulary, and a
+    // stored key nothing delivers may only go the way of Remove.
+    providerDraftsRef.current.set(providerId, { model, modeId, thinkingOptionId });
     const restored = providerDraftsRef.current.get(next) ?? CLEARED_PROVIDER_FIELDS;
     setProviderId(next);
     setModel(restored.model);
     setModeId(restored.modeId);
     setThinkingOptionId(restored.thinkingOptionId);
-    setStoredFeatures(restored.storedFeatures);
     onSeedChange?.({ ...currentSeed(), provider: next, ...restored });
   }
 
