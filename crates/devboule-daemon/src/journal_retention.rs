@@ -174,6 +174,10 @@ pub(super) fn set_journal_retention(
     journal_retention(conn, defaults)
 }
 
+/// Run the sweep the caller asked for and return the ids it deleted — the
+/// roster half of the report is `!ids.is_empty()`, and the ids are what the
+/// queue map is pruned by, on the sweep's own report rather than a later
+/// roster read (P2-6).
 pub(super) fn retain(
     conn: &rusqlite::Transaction<'_>,
     pins: &HashSet<String>,
@@ -181,12 +185,12 @@ pub(super) fn retain(
     limits: JournalLimits,
     session_id: &str,
     run_global_sweep: bool,
-) -> Result<bool, JournalError> {
+) -> Result<Vec<String>, JournalError> {
     trim_session(conn, session_id, limits)?;
     if run_global_sweep {
         return retain_global(conn, pins, now_ms, limits);
     }
-    Ok(false)
+    Ok(Vec::new())
 }
 
 fn trim_session(
@@ -295,8 +299,8 @@ fn retain_global(
     pins: &HashSet<String>,
     now_ms: u64,
     limits: JournalLimits,
-) -> Result<bool, JournalError> {
-    let mut deleted = false;
+) -> Result<Vec<String>, JournalError> {
+    let mut deleted: Vec<String> = Vec::new();
     let ids: Vec<(String, String, String, i64, i64)> = {
         let mut stmt =
             conn.prepare("SELECT id, status, kind, updated_at_ms, payload_bytes FROM sessions")?;
@@ -323,7 +327,7 @@ fn retain_global(
             .collect();
         for id in aged {
             delete_session(conn, &id, DeleteReason::LimitAge)?;
-            deleted = true;
+            deleted.push(id);
         }
     }
 
@@ -344,7 +348,7 @@ fn retain_global(
                     DeleteReason::LimitSessions
                 };
                 delete_session(conn, &id, reason)?;
-                deleted = true;
+                deleted.push(id);
             }
             None => break,
         }
@@ -436,7 +440,7 @@ fn delete_session(
     // drain into, and a restart must not resurrect it (Q1).
     conn.execute("DELETE FROM session_queue WHERE session_id = ?1", [id])?;
     conn.execute(
-        "DELETE FROM session_queue_counter WHERE session_id = ?1",
+        "DELETE FROM session_queue_state WHERE session_id = ?1",
         [id],
     )?;
     conn.execute("DELETE FROM sessions WHERE id = ?1", [id])?;

@@ -219,6 +219,10 @@ mod session_queue_lifecycle_tests;
 /// The four queue frame edits, one method per frame.
 #[path = "session_queue_ops.rs"]
 mod session_queue_ops;
+/// The pause that outlives the daemon (fix pass 3, P1-6).
+#[cfg(test)]
+#[path = "session_queue_pause_tests.rs"]
+mod session_queue_pause_tests;
 #[cfg(test)]
 #[path = "session_queue_persist_tests.rs"]
 mod session_queue_persist_tests;
@@ -743,6 +747,19 @@ impl SessionRegistry {
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
         };
+        // Retention deletes rows on the journal's own thread; this hook is
+        // how its deletions reach the queue map at once (P2-6), instead of
+        // waiting for a roster read that no watcher may ever ask for. The
+        // weak handle keeps the journal from holding the registry's queue
+        // map alive after the registry is gone.
+        if let Some(journal) = registry.journal.as_ref() {
+            let queues = Arc::downgrade(&registry.queues);
+            journal.set_retention_pruner(Arc::new(move |session_ids: &[String]| {
+                if let Some(queues) = queues.upgrade() {
+                    queues.drop_states(session_ids);
+                }
+            }));
+        }
         spawn_os_liveness_sweeper(&registry);
         registry.reconcile_worktree_journal();
         registry

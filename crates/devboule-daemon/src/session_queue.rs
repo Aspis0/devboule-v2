@@ -119,6 +119,17 @@ impl SessionQueues {
     pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, QueueState>> {
         self.map.lock().unwrap_or_else(|error| error.into_inner())
     }
+
+    /// Drop the states of exactly these sessions — the queue-map half of a
+    /// retention sweep, reported by the journal the moment it commits one
+    /// (P2-6). The rows are gone when this runs, so a state still resident
+    /// is by definition claiming a state the disk does not hold.
+    pub(crate) fn drop_states(&self, session_ids: &[String]) {
+        let mut map = self.lock();
+        for session_id in session_ids {
+            map.remove(session_id);
+        }
+    }
 }
 
 pub(super) fn no_such_item(item_id: &str) -> WireError {
@@ -243,10 +254,13 @@ impl SessionRegistry {
     /// than a guess. An unreadable queue refuses the op: a journal this
     /// daemon cannot read must not read as an emptied queue.
     ///
-    /// A row still marked in flight (the daemon died between claim and
-    /// settle) comes back at the front with the queue paused under it: it
-    /// may not have been sent, and nothing resends it automatically — the
-    /// snapshot's `unconfirmed` flag is what asks the user (P1-4).
+    /// Two fences come back with the rows: a row still marked in flight (the
+    /// daemon died between claim and settle) comes back at the front with the
+    /// queue paused under it — it may not have been sent, and nothing resends
+    /// it automatically, the snapshot's `unconfirmed` flag is what asks the
+    /// user (P1-4); and the durable pause (P1-6) comes back as it was left,
+    /// because a pause that only lived in memory would send, after a
+    /// restart, exactly the queue a failure had stopped.
     pub(super) fn ensure_queue_loaded(
         &self,
         session_id: &str,
@@ -255,16 +269,17 @@ impl SessionRegistry {
         if queues.contains_key(session_id) {
             return Ok(());
         }
-        let (items, counter) = match &self.journal {
-            None => (Vec::new(), None),
+        let (items, counter, durable_pause) = match &self.journal {
+            None => (Vec::new(), None, false),
             Some(journal) => {
-                let (rows, counter) = journal.queue_load(session_id).map_err(|error| {
-                    eprintln!("message queue unreadable for {session_id}: {error}");
-                    WireError::new(
-                        ErrorCode::Journal,
-                        "This session's message queue could not be read.",
-                    )
-                })?;
+                let (rows, counter, durable_pause) =
+                    journal.queue_load(session_id).map_err(|error| {
+                        eprintln!("message queue unreadable for {session_id}: {error}");
+                        WireError::new(
+                            ErrorCode::Journal,
+                            "This session's message queue could not be read.",
+                        )
+                    })?;
                 let items = rows
                     .into_iter()
                     .map(|row| QueuedMessage {
@@ -275,7 +290,7 @@ impl SessionRegistry {
                         unconfirmed: row.unconfirmed,
                     })
                     .collect();
-                (items, counter)
+                (items, counter, durable_pause)
             }
         };
         let mut state = QueueState::new(items, counter);
@@ -288,7 +303,7 @@ impl SessionRegistry {
             let item = state.items.remove(position);
             state.items.insert(0, item);
         }
-        if state.items.first().is_some_and(|item| item.unconfirmed) {
+        if durable_pause || state.items.first().is_some_and(|item| item.unconfirmed) {
             state.paused = true;
         }
         queues.insert(session_id.to_string(), state);
@@ -296,15 +311,16 @@ impl SessionRegistry {
     }
 
     /// Persist one session's queue exactly as it stands — the same snapshot
-    /// the event carries, written to the rows a restart reads back — and
-    /// return the store's failure instead of hiding it: the caller commits
-    /// nothing on `Err`, so memory and disk stay equal (P1-3). The log line
-    /// names the session and the error, never the messages.
+    /// the event carries, written to the rows a restart reads back, the pause
+    /// with them — and return the store's failure instead of hiding it: the
+    /// caller commits nothing on `Err`, so memory and disk stay equal (P1-3).
+    /// The log line names the session and the error, never the messages.
     pub(super) fn persist_queue(
         &self,
         session_id: &str,
         items: &[QueuedMessage],
         next_id: u64,
+        paused: bool,
     ) -> Result<(), WireError> {
         let Some(journal) = &self.journal else {
             return Ok(());
@@ -320,7 +336,7 @@ impl SessionRegistry {
             })
             .collect();
         journal
-            .queue_store(session_id, &rows, next_id)
+            .queue_store(session_id, &rows, next_id, paused)
             .map_err(|error| {
                 eprintln!("message queue could not be persisted for {session_id}: {error}");
                 WireError::from(error)
@@ -345,6 +361,16 @@ impl SessionRegistry {
                     if let Some(state) = queues.get_mut(session_id) {
                         state.paused = true;
                     }
+                }
+                // The pause is the fence a restart reads (P1-6), so it goes
+                // to the state row the failed clear does not touch — the
+                // trigger that refused the rows' deletion has no business
+                // with it. Best effort: a store too broken for even this
+                // write leaves the close's error as the only record.
+                if let Err(pause_error) = journal.queue_set_paused(session_id, true) {
+                    eprintln!(
+                        "message queue pause could not be persisted for {session_id}: {pause_error}"
+                    );
                 }
                 return Err(WireError::new(
                     ErrorCode::Journal,
@@ -446,7 +472,7 @@ impl SessionRegistry {
         if snapshot_frame_bytes(session_id, &trial.items) > frame_budget {
             return Err(WireError::new(ErrorCode::InvalidRequest, refusal));
         }
-        self.persist_queue(session_id, &trial.items, trial.next_id)?;
+        self.persist_queue(session_id, &trial.items, trial.next_id, trial.paused)?;
         let items = trial.snapshot();
         queues.insert(session_id.to_string(), trial);
         deliver_queue_snapshot(session_id, runtime, items);

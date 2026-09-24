@@ -28,13 +28,27 @@ impl SessionRegistry {
     ///
     /// One fence stays down: while the front item is `unconfirmed` the
     /// pause is not cleared, because a frame about *another* message is not
-    /// permission to resend one whose outcome is unknown.
+    /// permission to resend one whose outcome is unknown. The cleared pause
+    /// is stored too (P1-6): the durable mark must not outlive the memory's,
+    /// or a restart would re-park a queue the user has already acted on —
+    /// conservative, but a lie about the queue's state.
     pub(super) fn wake_queue_drain(&self, session_id: &str) {
+        let mut unpaused = false;
         {
             let mut queues = self.queues.lock();
             if let Some(state) = queues.get_mut(session_id) {
                 if !state.items.first().is_some_and(|item| item.unconfirmed) {
+                    unpaused = state.paused;
                     state.paused = false;
+                }
+            }
+        }
+        if unpaused {
+            if let Some(journal) = &self.journal {
+                if let Err(error) = journal.queue_set_paused(session_id, false) {
+                    eprintln!(
+                        "message queue unpause could not be persisted for {session_id}: {error}"
+                    );
                 }
             }
         }
@@ -135,7 +149,7 @@ impl SessionRegistry {
                 state.items[0].unconfirmed = true;
                 let items = state.snapshot();
                 if self
-                    .persist_queue(session_id, &items, state.next_id)
+                    .persist_queue(session_id, &items, state.next_id, state.paused)
                     .is_err()
                 {
                     state.draining = false;
@@ -220,7 +234,7 @@ impl SessionRegistry {
                     }
                 }
                 if self
-                    .persist_queue(session_id, &trial.items, trial.next_id)
+                    .persist_queue(session_id, &trial.items, trial.next_id, trial.paused)
                     .is_err()
                 {
                     // Nothing committed: memory stays on the durable side of

@@ -220,3 +220,80 @@ fn retention_deleting_a_session_drops_its_queue_state_too() {
     );
     let _ = dir;
 }
+
+/// Fix pass 3, P2-6: the prune must not depend on someone asking for a
+/// roster. With no state watcher attached, `broadcast_session_state`
+/// returns before any roster read, so only the retention path itself
+/// reaches the queue map — the sweep reports its deletions and the states
+/// leave memory on that report alone.
+#[test]
+fn retention_prunes_the_queue_without_a_roster_read() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("queue.user", "queue.client");
+    let mut record = ended_record(SESSION, &owner.user);
+    record.updated_at_ms = 1_000_000_000;
+    journal
+        .create_session(record)
+        .expect("the row retention will delete");
+    let writer = format!("{SESSION}.writer");
+    journal
+        .create_session(ended_record(&writer, &owner.user))
+        .expect("the row the append needs");
+    let runtime =
+        insert_live_agent_with_writer(&registry, SESSION, owner.clone(), Box::new(std::io::sink()));
+    runtime.begin_turn();
+    let conn = ConnHandle::new(1);
+    registry
+        .queue_add(SESSION, "queued before death", &[], &[], &owner, &conn)
+        .expect("add");
+    assert!(
+        !registry.queue_items_for_test(SESSION).is_empty(),
+        "the state is loaded before retention runs"
+    );
+    insert_transcript(&registry, SESSION, owner.clone());
+    {
+        let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+        raw.execute(
+            "UPDATE sessions SET updated_at_ms = 1000000000 WHERE id = ?1",
+            [SESSION],
+        )
+        .expect("age the row");
+    }
+
+    registry
+        .journal_retention_set(RetentionPatch {
+            max_age_ms: Some(60_000),
+            max_bytes: None,
+            max_sessions: None,
+            session_max_bytes: None,
+        })
+        .expect("age retention is set");
+    assert!(
+        journal.try_append(crate::journal::EventRecord {
+            session_id: format!("{SESSION}.writer"),
+            generation: 1,
+            seq: 1,
+            kind: crate::journal::EventKind::Output,
+            ts_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_millis() as u64,
+            payload: vec![0x20; 1024 * 1024 + 1],
+        }),
+        "the sweep-driving append is accepted"
+    );
+
+    // No state_snapshots, no roster read, no watcher: the drop is awaited
+    // from the retention path's own report and nothing else. The reads here
+    // are the queue map only, never the journal roster.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline && !registry.queue_items_for_test(SESSION).is_empty()
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        registry.queue_items_for_test(SESSION).is_empty(),
+        "retention prunes the queue without waiting for a roster read"
+    );
+    let _ = dir;
+}

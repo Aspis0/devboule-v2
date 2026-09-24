@@ -308,10 +308,13 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
             // were things that happened. The separate `queue_snapshot` event
             // rows (agent-report kind) are what replay delivers instead.
             // One migration, final shape: the queue table carries the
-            // in-flight mark (`unconfirmed`, P1-4) from birth, and the id
-            // counter (P2-6) rides beside it — the intermediate shapes this
-            // branch built during the fix passes never reached a journal
-            // outside its own test runs, so there is no step from them.
+            // in-flight mark (`unconfirmed`, P1-4) from birth, and the state
+            // row beside it holds the id counter (P2-6) and the durable
+            // pause (P1-6) — the pause is what keeps a failed send, or a
+            // close that could not discard its queue, from sending after a
+            // restart. The intermediate shapes this branch built during the
+            // fix passes never reached a journal outside its own test runs,
+            // so there is no step from them.
             tx.execute_batch(
                 "CREATE TABLE IF NOT EXISTS session_queue (
                     session_id TEXT NOT NULL,
@@ -323,14 +326,15 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                     unconfirmed INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (session_id, position)
                  );
-                 CREATE TABLE IF NOT EXISTS session_queue_counter (
+                 CREATE TABLE IF NOT EXISTS session_queue_state (
                     session_id TEXT NOT NULL PRIMARY KEY,
-                    next_id INTEGER NOT NULL
+                    next_id INTEGER NOT NULL,
+                    paused INTEGER NOT NULL
                  );",
             )?;
             // The pre-stamp guard, same ordering as v12 to v15.
             validate_queue_table(&tx)?;
-            validate_queue_counter(&tx)?;
+            validate_queue_state(&tx)?;
         }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
@@ -348,9 +352,9 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     validate_v14_columns(&conn)?;
     // The v15 column, the same way (see [`is_our_cwd_shape`]).
     validate_v15_columns(&conn)?;
-    // The v16 queue table and its id counter, the same way.
+    // The v16 queue table and its state row, the same way.
     validate_queue_table(&conn)?;
-    validate_queue_counter(&conn)?;
+    validate_queue_state(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -520,11 +524,12 @@ fn is_our_cwd_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
 /// `session_queue.unconfirmed` — INTEGER, NOT NULL, DEFAULT 0 (the rank-less
 /// boolean a claim writes; the table check above pins presence and
 /// nullability, this pins the default a row written without the column
-/// reads) — and the id-counter table. Checked before the stamp inside the
+/// reads) — and the queue's state row: the id counter and the durable pause
+/// (P1-6) in one row per session. Checked before the stamp inside the
 /// migration and after the commit on every open, the same rule the rest of
 /// the schema follows: a file this daemon cannot read is refused, never
 /// guessed at.
-fn validate_queue_counter(conn: &Connection) -> Result<(), JournalError> {
+fn validate_queue_state(conn: &Connection) -> Result<(), JournalError> {
     let mut probe = conn.prepare(
         "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('session_queue')
          WHERE name = 'unconfirmed'",
@@ -542,8 +547,12 @@ fn validate_queue_counter(conn: &Connection) -> Result<(), JournalError> {
             "journal schema has an unexpected session_queue.unconfirmed column".to_string(),
         ));
     }
-    let expected: [(&str, &str, i32); 2] = [("session_id", "TEXT", 1), ("next_id", "INTEGER", 1)];
-    let mut stmt = conn.prepare("PRAGMA table_info('session_queue_counter')")?;
+    let expected: [(&str, &str, i32); 3] = [
+        ("session_id", "TEXT", 1),
+        ("next_id", "INTEGER", 1),
+        ("paused", "INTEGER", 1),
+    ];
+    let mut stmt = conn.prepare("PRAGMA table_info('session_queue_state')")?;
     let mut rows = stmt.query([])?;
     let mut index = 0usize;
     while let Some(row) = rows.next()? {
@@ -552,7 +561,7 @@ fn validate_queue_counter(conn: &Connection) -> Result<(), JournalError> {
         let notnull: i32 = row.get(3)?;
         let Some((expected_name, expected_kind, expected_notnull)) = expected.get(index) else {
             return Err(JournalError::Corrupt(
-                "journal schema has an unexpected session_queue_counter table".to_string(),
+                "journal schema has an unexpected session_queue_state table".to_string(),
             ));
         };
         if name != *expected_name
@@ -560,14 +569,14 @@ fn validate_queue_counter(conn: &Connection) -> Result<(), JournalError> {
             || notnull != *expected_notnull
         {
             return Err(JournalError::Corrupt(format!(
-                "journal schema has an unexpected session_queue_counter.{name} column"
+                "journal schema has an unexpected session_queue_state.{name} column"
             )));
         }
         index += 1;
     }
     if index != expected.len() {
         return Err(JournalError::Corrupt(
-            "journal schema has an unexpected session_queue_counter table".to_string(),
+            "journal schema has an unexpected session_queue_state table".to_string(),
         ));
     }
     Ok(())

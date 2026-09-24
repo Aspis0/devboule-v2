@@ -714,10 +714,12 @@ pub struct QueueRecord {
     pub unconfirmed: bool,
 }
 
-/// What `queue_load` answers: the rows in order, and the counter the next id
-/// climbs from when the store has one. Named because it rides the journal
-/// command channel, whose reply types clippy refuses to spell inline.
-pub type LoadedQueue = (Vec<QueueRecord>, Option<u64>);
+/// What `queue_load` answers: the rows in order, the counter the next id
+/// climbs from when the store has one, and the durable pause (P1-6) — the
+/// fence a failed send or a failed close-discard left, which must survive a
+/// restart. Named because it rides the journal command channel, whose reply
+/// types clippy refuses to spell inline.
+pub type LoadedQueue = (Vec<QueueRecord>, Option<u64>, bool);
 
 enum JournalCmd {
     Upsert(SessionRecord),
@@ -849,10 +851,21 @@ enum JournalCmd {
         /// issued before a restart can never come back as a different
         /// message (P2-6).
         next_id: u64,
+        /// The queue's durable pause, written with the rows so a restart
+        /// restores it (P1-6).
+        paused: bool,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
     QueueClear {
         session_id: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    /// Store the pause on its own — the close whose discard failed marks it
+    /// after the rows it could not clear, and a client's frame clears it
+    /// without touching the rows (P1-6).
+    QueuePause {
+        session_id: String,
+        paused: bool,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
     Usage {
@@ -917,8 +930,20 @@ pub struct Journal {
     degraded_sessions: Arc<Mutex<HashMap<String, DropCounters>>>,
     stats: Arc<JournalStats>,
     session_set_revision: Arc<AtomicU64>,
+    /// What the sweep's deletions are reported to. Shared with the loop
+    /// through an arc rather than taken out at spawn, because the pruner is
+    /// installed by the registry a moment after the journal exists — and an
+    /// append that sweeps in that window must still report.
+    retention_pruner: Arc<Mutex<Option<RetentionPruner>>>,
     path: PathBuf,
 }
+
+/// The queue-map half of a retention deletion: the ids whose rows the sweep
+/// removed, handed to whoever can drop what the rows backed. Run on its own
+/// thread by the loop, never inline — a queue write holds the queue map's
+/// lock across its journal round trip, and the loop must never wait on that
+/// lock while a command is pending.
+pub type RetentionPruner = Arc<dyn Fn(&[String]) + Send + Sync>;
 
 struct JournalLoopState {
     degraded_sessions: Arc<Mutex<HashMap<String, DropCounters>>>,
@@ -947,6 +972,8 @@ impl Journal {
         let stats_thread = Arc::clone(&stats);
         let session_set_revision = Arc::new(AtomicU64::new(0));
         let session_set_revision_thread = Arc::clone(&session_set_revision);
+        let retention_pruner = Arc::new(Mutex::new(None));
+        let retention_pruner_thread = Arc::clone(&retention_pruner);
         let path_buf = path.to_path_buf();
         let thread_path = path_buf.clone();
         let join = std::thread::Builder::new()
@@ -962,6 +989,7 @@ impl Journal {
                         session_set_revision: session_set_revision_thread,
                     },
                     limits,
+                    retention_pruner_thread,
                     thread_path,
                 )
             })
@@ -973,6 +1001,7 @@ impl Journal {
             degraded_sessions,
             stats,
             session_set_revision,
+            retention_pruner,
             path: path_buf,
         })
     }
@@ -1011,6 +1040,18 @@ impl Journal {
     /// without querying SQLite on every live-session transition.
     pub(crate) fn session_set_revision(&self) -> u64 {
         self.session_set_revision.load(Ordering::Acquire)
+    }
+
+    /// Install what the sweep's deletions are reported to. Called once, by
+    /// the registry, right after both exist: retention deletes rows on this
+    /// thread, and the queue map those rows backed is pruned from that
+    /// report (P2-6) instead of waiting for a roster read no watcher may
+    /// ever ask for.
+    pub fn set_retention_pruner(&self, pruner: RetentionPruner) {
+        *self
+            .retention_pruner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(pruner);
     }
 
     /// Returns false if the queue was full or the writer is dead. The PTY
@@ -1417,11 +1458,11 @@ impl Journal {
         })
     }
 
-    /// One session's persisted queue, in position order. A session nobody
-    /// ever queued for answers the empty list — the same answer as no journal
-    /// at all, which is what makes the two interchangeable at restore.
-    /// One session's persisted queue in order, plus the counter the next id
-    /// climbs from when the store has one.
+    /// One session's persisted queue: the rows in position order, the counter
+    /// the next id climbs from when the store has one, and the durable pause.
+    /// A session nobody ever queued for answers the empty list and no pause —
+    /// the same answer as no journal at all, which is what makes the two
+    /// interchangeable at restore.
     pub fn queue_load(&self, session_id: &str) -> Result<LoadedQueue, JournalError> {
         self.rpc(|reply| JournalCmd::QueueLoad {
             session_id: session_id.to_string(),
@@ -1429,28 +1470,41 @@ impl Journal {
         })
     }
 
-    /// Replace one session's persisted queue with exactly `rows`.
-    /// Replace one session's queue with exactly `rows`, and the id counter
-    /// beside them — one transaction, so rows and counter never disagree.
+    /// Replace one session's queue with exactly `rows`, the id counter beside
+    /// them and the pause with them — one transaction, so rows, counter and
+    /// pause never disagree.
     pub fn queue_store(
         &self,
         session_id: &str,
         rows: &[QueueRecord],
         next_id: u64,
+        paused: bool,
     ) -> Result<(), JournalError> {
         self.rpc(|reply| JournalCmd::QueueStore {
             session_id: session_id.to_string(),
             rows: rows.to_vec(),
             next_id,
+            paused,
             reply,
         })
     }
 
-    /// Delete one session's queue rows and its id counter — the clear that
+    /// Delete one session's queue rows and its state row — the clear that
     /// close and delete call (P2-5, P2-7).
     pub fn queue_clear(&self, session_id: &str) -> Result<(), JournalError> {
         self.rpc(|reply| JournalCmd::QueueClear {
             session_id: session_id.to_string(),
+            reply,
+        })
+    }
+
+    /// Store the pause on its own, without touching the rows: the mark a
+    /// failed close-discard leaves after the rows it could not clear, and
+    /// the mark a client's frame clears when the pause is over (P1-6).
+    pub fn queue_set_paused(&self, session_id: &str, paused: bool) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::QueuePause {
+            session_id: session_id.to_string(),
+            paused,
             reply,
         })
     }
@@ -1763,7 +1817,7 @@ impl Drop for Journal {
 fn queue_load(
     conn: &Connection,
     session_id: &str,
-) -> Result<(Vec<QueueRecord>, Option<u64>), JournalError> {
+) -> Result<(Vec<QueueRecord>, Option<u64>, bool), JournalError> {
     let mut stmt = conn.prepare(
         "SELECT item_id, text, attachment_references, error, unconfirmed FROM session_queue
          WHERE session_id = ?1 ORDER BY position",
@@ -1783,25 +1837,34 @@ fn queue_load(
             unconfirmed: row.get(4)?,
         });
     }
-    let next_id = conn
+    let state = conn
         .query_row(
-            "SELECT next_id FROM session_queue_counter WHERE session_id = ?1",
+            "SELECT next_id, paused FROM session_queue_state WHERE session_id = ?1",
             [session_id],
-            |row| row.get::<_, i64>(0),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
-        .optional()?
-        .map(|value| u64::try_from(value).unwrap_or(0))
-        .filter(|value| *value > 0);
-    Ok((loaded, next_id))
+        .optional()?;
+    let (next_id, paused) = match state {
+        // The same reading the counter always had: a non-positive stored
+        // counter is no counter.
+        Some((next_id, paused)) => {
+            let next_id = u64::try_from(next_id).unwrap_or(0);
+            (next_id.gt(&0).then_some(next_id), paused != 0)
+        }
+        None => (None, false),
+    };
+    Ok((loaded, next_id, paused))
 }
 
 /// Replace one session's queue rows in a single transaction: delete what is
-/// there, insert what the caller says is there now.
+/// there, insert what the caller says is there now, and write the state row
+/// — counter and pause — with them.
 fn queue_store(
     conn: &Connection,
     session_id: &str,
     rows: &[QueueRecord],
     next_id: u64,
+    paused: bool,
 ) -> Result<(), JournalError> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
@@ -1835,15 +1898,29 @@ fn queue_store(
     let next_id = i64::try_from(next_id)
         .map_err(|_| JournalError::InvalidRequest("queue id counter overflow".to_string()))?;
     tx.execute(
-        "INSERT INTO session_queue_counter (session_id, next_id) VALUES (?1, ?2)
-         ON CONFLICT(session_id) DO UPDATE SET next_id = excluded.next_id",
-        rusqlite::params![session_id, next_id],
+        "INSERT INTO session_queue_state (session_id, next_id, paused)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(session_id) DO UPDATE
+         SET next_id = excluded.next_id, paused = excluded.paused",
+        rusqlite::params![session_id, next_id, paused],
     )?;
     tx.commit()?;
     Ok(())
 }
 
-/// Drop one session's rows and its id counter in one transaction — the clear
+/// Store the pause on its own, keeping whatever counter the session has —
+/// the pause must not have to wait for a write that carries a counter.
+fn queue_pause(conn: &Connection, session_id: &str, paused: bool) -> Result<(), JournalError> {
+    conn.execute(
+        "INSERT INTO session_queue_state (session_id, next_id, paused)
+         VALUES (?1, 1, ?2)
+         ON CONFLICT(session_id) DO UPDATE SET paused = excluded.paused",
+        rusqlite::params![session_id, paused],
+    )?;
+    Ok(())
+}
+
+/// Drop one session's rows and its state row in one transaction — the clear
 /// behind close, delete, and every write-through that empties a queue.
 fn queue_clear(conn: &Connection, session_id: &str) -> Result<(), JournalError> {
     let tx = conn.unchecked_transaction()?;
@@ -1852,11 +1929,40 @@ fn queue_clear(conn: &Connection, session_id: &str) -> Result<(), JournalError> 
         [session_id],
     )?;
     tx.execute(
-        "DELETE FROM session_queue_counter WHERE session_id = ?1",
+        "DELETE FROM session_queue_state WHERE session_id = ?1",
         [session_id],
     )?;
     tx.commit()?;
     Ok(())
+}
+
+/// Hand a sweep's deletions to the queue pruner on a thread of its own. The
+/// spawn is the deadlock guard: a queue write holds the queue map's lock
+/// across its journal round trip, so the loop — which that write is waiting
+/// on — must never take the lock itself. A thread that cannot start is a
+/// machine shutting down; the roster-read prune remains the fallback.
+fn report_retention_deletions(
+    pruner: &Arc<Mutex<Option<RetentionPruner>>>,
+    deleted_ids: &[String],
+) {
+    if deleted_ids.is_empty() {
+        return;
+    }
+    let pruner = pruner
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map(Arc::clone);
+    let Some(pruner) = pruner else {
+        return;
+    };
+    let ids: Vec<String> = deleted_ids.to_vec();
+    if let Err(error) = std::thread::Builder::new()
+        .name("retention-queue-prune".to_string())
+        .spawn(move || pruner(&ids))
+    {
+        eprintln!("retention queue prune could not start: {error}");
+    }
 }
 
 fn journal_loop(
@@ -1865,6 +1971,7 @@ fn journal_loop(
     queued: Arc<AtomicU64>,
     loop_state: JournalLoopState,
     limits: JournalLimits,
+    retention_pruner: Arc<Mutex<Option<RetentionPruner>>>,
     path: PathBuf,
 ) {
     let JournalLoopState {
@@ -1930,10 +2037,11 @@ fn journal_loop(
                 let is_output = matches!(record.kind, EventKind::Output | EventKind::AcpEnvelope);
                 let payload_len = record.payload.len() as u64;
                 match append_event(&conn, &record, &pins, limits, &mut retention_state) {
-                    Ok(roster_changed) => {
+                    Ok((roster_changed, deleted_ids)) => {
                         if roster_changed {
                             session_set_revision.fetch_add(1, Ordering::AcqRel);
                         }
+                        report_retention_deletions(&retention_pruner, &deleted_ids);
                         if is_output {
                             stats.committed_frames.fetch_add(1, Ordering::Relaxed);
                             stats
@@ -2198,9 +2306,10 @@ fn journal_loop(
                 session_id,
                 rows,
                 next_id,
+                paused,
                 reply,
             } => {
-                let result = queue_store(&conn, &session_id, &rows, next_id);
+                let result = queue_store(&conn, &session_id, &rows, next_id, paused);
                 if let Err(error) = &result {
                     on_write_error(error);
                 }
@@ -2208,6 +2317,17 @@ fn journal_loop(
             }
             JournalCmd::QueueClear { session_id, reply } => {
                 let result = queue_clear(&conn, &session_id);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::QueuePause {
+                session_id,
+                paused,
+                reply,
+            } => {
+                let result = queue_pause(&conn, &session_id, paused);
                 if let Err(error) = &result {
                     on_write_error(error);
                 }
@@ -2961,7 +3081,7 @@ fn append_event(
     pins: &HashSet<String>,
     limits: JournalLimits,
     retention_state: &mut RetentionState,
-) -> Result<bool, JournalError> {
+) -> Result<(bool, Vec<String>), JournalError> {
     let checksum = crc32(&record.payload) as i64;
     let tx = conn.unchecked_transaction()?;
     let limits = effective_limits(&tx, limits)?;
@@ -3009,7 +3129,7 @@ fn append_event(
     }
     maybe_snapshot(&tx, &record.session_id, record.generation, limits)?;
     let global_sweep = retention_state.global_sweep_due(add as u64);
-    let roster_changed = retain(
+    let deleted_ids = retain(
         &tx,
         pins,
         now_ms(),
@@ -3019,7 +3139,8 @@ fn append_event(
     )?;
     tx.commit()?;
     retention_state.append_committed(add as u64, global_sweep);
-    Ok(roster_changed)
+    let roster_changed = !deleted_ids.is_empty();
+    Ok((roster_changed, deleted_ids))
 }
 
 fn maybe_snapshot(

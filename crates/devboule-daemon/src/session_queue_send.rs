@@ -52,7 +52,7 @@ impl SessionRegistry {
             // The claim is written before it is taken: an unwritable store
             // refuses the claim outright rather than sending a message the
             // journal could not restore (P1-3, P1-4).
-            self.persist_queue(session_id, &trial.items, trial.next_id)?;
+            self.persist_queue(session_id, &trial.items, trial.next_id, trial.paused)?;
             let taken = trial.items[position].clone();
             let items = trial.snapshot();
             *state = trial;

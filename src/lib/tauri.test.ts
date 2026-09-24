@@ -1033,10 +1033,6 @@ describe("queue wrappers (Q1)", () => {
       subscriptionId: 41,
       itemId: "queue-1",
     });
-    expect(COMMAND_ARG_KEYS.session_queue_send_now).toEqual([
-      "id",
-      "subscriptionId",
-      "itemId",
-    ]);
+    expect(COMMAND_ARG_KEYS.session_queue_send_now).toEqual(["id", "subscriptionId", "itemId"]);
   });
 });
