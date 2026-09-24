@@ -22,16 +22,15 @@ import {
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
 import { AppearanceSection } from "./AppearanceSection";
-import { overlayDenialsDescription, toolOverlayForPeerRestriction } from "./profileOverlay";
+import { overlayDenialsDescription } from "./profileOverlay";
 import {
   AgentProfileForm,
   EMPTY_PROFILE_FORM_SEED,
-  MAX_PROFILE_FIELD_BYTES,
-  MAX_PROFILE_SPAWN_PROMPT_BYTES,
-  type NewProfileDraft,
   type ProfileFormSeed,
-  profileTextsError,
+  profileDraftRefusal,
+  profileFeaturesFromDraft,
   seedFromProfile,
+  toolOverlayFromDraft,
   utf8Bytes,
 } from "./AgentProfileForm";
 import type {
@@ -1089,42 +1088,20 @@ function AgentProfilesPanel() {
   function saveProfileFields(id: string, draft: ProfileFormSeed) {
     const current = documentRef.current;
     if (current === null) return;
-    const trimmed = draft.name.trim();
-    // The caps are shared with the new-profile form: the name counts Unicode
-    // scalar values — the daemon's `chars().count()` — not UTF-16 code units;
-    // the note and the spawn prompt count UTF-8 bytes. Refuse and name the
-    // size; never clip.
-    const refusal = profileTextsError(trimmed, draft.note, draft.spawnPrompt);
+    // One validator for every cap and required field, shared with the create
+    // road: the daemon applies these shapes in `agent_profiles.rs`, and the
+    // refusal names the size or the missing field before the write is sent.
+    const refusal = profileDraftRefusal(draft);
     if (refusal !== null) {
       setError({ sentence: refusal, detail: null });
-      return;
-    }
-    const model = draft.model.trim();
-    const modeId = draft.modeId.trim();
-    // `model` and `modeId` are required, non-optional strings on the daemon
-    // side; the form refuses with its own sentence rather than shipping a
-    // write the store will bounce.
-    if (model === "") {
-      setError({ sentence: "Choose or type a model for the profile.", detail: null });
-      return;
-    }
-    if (modeId === "") {
-      setError({ sentence: "Choose or type a mode for the profile.", detail: null });
-      return;
-    }
-    const thinking = draft.thinkingOptionId.trim();
-    const thinkingBytes = utf8Bytes(thinking);
-    if (thinkingBytes > MAX_PROFILE_FIELD_BYTES) {
-      setError({
-        sentence: `The thinking option id is ${thinkingBytes} bytes, over the ${MAX_PROFILE_FIELD_BYTES}-byte cap. Nothing was saved and nothing was truncated.`,
-        detail: null,
-      });
       return;
     }
     const updated = cloneDocument(current);
     const row = updated.profiles.find((profile) => profile.id === id);
     if (row === undefined) return;
-    row.name = trimmed;
+    row.name = draft.name.trim();
+    // An empty icon is none, and none is null on the wire — never "".
+    row.icon = draft.icon.trim() === "" ? null : draft.icon.trim();
     row.note = draft.note;
     // The spawn prompt is trimmed here to what the daemon would store, and an
     // empty one deletes the field — absent is its none shape on the wire, so
@@ -1136,22 +1113,15 @@ function AgentProfilesPanel() {
       row.spawnPrompt = spawn;
     }
     row.provider = draft.provider;
-    row.model = model;
-    row.modeId = modeId;
+    row.model = draft.model.trim();
+    row.modeId = draft.modeId.trim();
+    const thinking = draft.thinkingOptionId.trim();
     row.thinkingOptionId = thinking === "" ? null : thinking;
-    // The one feature this form interprets, written the way the daemon reads
-    // it; every other stored key travels verbatim — they are words this form
-    // cannot interpret, never noise it may drop.
-    const features = { ...row.features };
-    if (draft.autoAccept) {
-      features.autoAccept = true;
-    } else {
-      delete features.autoAccept;
-    }
-    row.features = features;
-    // Untouched, on purpose: `id` is the identity, `icon` and the overlay are
-    // the human's saved deny list, `enabledForAgents` is the row's own tick,
-    // and the position is the order the agents read.
+    row.features = profileFeaturesFromDraft(draft);
+    row.enabledForAgents = draft.enabledForAgents;
+    row.toolOverlay = toolOverlayFromDraft(draft);
+    // Untouched, on purpose: `id` is the identity, and the position is the
+    // order the agents read.
     // Close on CONFIRMATION, never on submission — the new-profile form's
     // rule, and there is one rule: a refusal must leave the editor on screen
     // with the human's draft in its fields, under the error, ready to retry.
@@ -1168,7 +1138,7 @@ function AgentProfilesPanel() {
    * path — the same optimistic write, sequence guard, revert and error
    * surface as a rename or a tick. There is no second write path.
    */
-  function createProfile(draft: NewProfileDraft) {
+  function createProfile(draft: ProfileFormSeed) {
     const current = documentRef.current;
     if (current === null) return;
     // The store's cap, mirrored (MAX_PROFILES above): the daemon refuses a
@@ -1183,68 +1153,35 @@ function AgentProfilesPanel() {
       });
       return;
     }
-    const trimmedName = draft.name.trim();
-    const refusal = profileTextsError(trimmedName, draft.note, draft.spawnPrompt);
+    const refusal = profileDraftRefusal(draft);
     if (refusal !== null) {
       setError({ sentence: refusal, detail: null });
       return;
     }
-    const model = draft.model.trim();
-    const modeId = draft.modeId.trim();
-    // `model` and `modeId` are required, non-optional strings on the daemon
-    // side; the form refuses with its own sentence rather than shipping a
-    // write the store will bounce.
-    if (model === "") {
-      setError({ sentence: "Choose or type a model for the profile.", detail: null });
-      return;
-    }
-    if (modeId === "") {
-      setError({ sentence: "Choose or type a mode for the profile.", detail: null });
-      return;
-    }
-    const thinking = draft.thinkingOptionId.trim();
-    const thinkingBytes = utf8Bytes(thinking);
-    if (thinkingBytes > MAX_PROFILE_FIELD_BYTES) {
-      setError({
-        sentence: `The thinking option id is ${thinkingBytes} bytes, over the ${MAX_PROFILE_FIELD_BYTES}-byte cap. Nothing was saved and nothing was truncated.`,
-        detail: null,
-      });
-      return;
-    }
-    const spawn = draft.spawnPrompt.trim();
-    if (utf8Bytes(spawn) > MAX_PROFILE_SPAWN_PROMPT_BYTES) {
-      // Unreachable through the form (the shared refusal fires first), but a
-      // guard on its own terms: the counter and the save agree on the cap.
-      setError({
-        sentence: `This spawn prompt is ${utf8Bytes(spawn)} bytes, over the ${MAX_PROFILE_SPAWN_PROMPT_BYTES}-byte cap. Nothing was saved and nothing was truncated.`,
-        detail: null,
-      });
-      return;
-    }
+    const icon = draft.icon.trim();
     const profile: AgentProfile = {
       // The daemon mints the id: an empty id means "new" (see the type's doc
-      // comment). Names may repeat; identity is the id.
+      // comment). Identity is the id.
       id: "",
-      name: trimmedName,
-      icon: null,
+      name: draft.name.trim(),
+      icon: icon === "" ? null : icon,
       note: draft.note,
       provider: draft.provider,
-      model,
-      modeId,
-      // The vocabulary reply carries no thinking axis, so the field is free
-      // text; empty saves none.
-      thinkingOptionId: thinking === "" ? null : thinking,
-      features: draft.autoAccept ? { autoAccept: true } : {},
+      model: draft.model.trim(),
+      modeId: draft.modeId.trim(),
+      thinkingOptionId: draft.thinkingOptionId.trim() === "" ? null : draft.thinkingOptionId.trim(),
+      features: profileFeaturesFromDraft(draft),
       // The human's tick, not an agent's argument: a profile that denies
       // peer contact makes children that cannot message peers or create
       // further agents. Unticked saves nothing, exactly as before.
-      toolOverlay: toolOverlayForPeerRestriction(draft.restrictPeers),
+      toolOverlay: toolOverlayFromDraft(draft),
       // Default off, always: a profile that becomes agent-reachable the
       // moment it is saved is a profile nobody deliberately ticked.
       enabledForAgents: draft.enabledForAgents,
     };
     // Absent is the spawn prompt's none shape on the wire, so a profile born
     // without one carries no key at all.
+    const spawn = draft.spawnPrompt.trim();
     if (spawn !== "") {
       profile.spawnPrompt = spawn;
     }

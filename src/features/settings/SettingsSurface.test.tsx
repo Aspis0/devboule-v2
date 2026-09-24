@@ -2529,6 +2529,125 @@ describe("Settings agents panel", () => {
     });
   });
 
+  it("saves an icon and clears it to none", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [{ ...makeProfile(), icon: "eye" }],
+        standingInstructions: "",
+      },
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const iconField = container.querySelector<HTMLInputElement>('[aria-label="Profile icon"]');
+    if (!iconField) throw new Error("icon field did not render");
+    await typeText(iconField, "eye");
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
+      profiles: [{ ...makeProfile(), icon: "eye" }],
+      standingInstructions: "",
+    });
+
+    // Clearing the field is none on the wire: null, never an empty string.
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const iconAgain = container.querySelector<HTMLInputElement>('[aria-label="Profile icon"]');
+    if (!iconAgain) throw new Error("icon field did not render on the second open");
+    await typeText(iconAgain, "");
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[1]?.[0] as AgentProfilesDocument;
+    expect(sent.profiles[0]?.icon).toBeNull();
+  });
+
+  it("edits the agents tick and the peer restriction from the editor", async () => {
+    const restricted = makeProfile({
+      enabledForAgents: false,
+      toolOverlay: ["devboule_send_message", "devboule_create_agent"],
+    });
+    await renderAgentsPanel({ profiles: [restricted], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const agentsTick = container.querySelector<HTMLInputElement>(
+      '.agent-inline-editor input[aria-label="Available to agents"]',
+    );
+    const peersTick = container.querySelector<HTMLInputElement>(
+      '.agent-inline-editor input[aria-label="Children cannot message peers or create further agents"]',
+    );
+    if (!agentsTick || !peersTick) throw new Error("the editor's ticks did not render");
+    expect(agentsTick.checked).toBe(false);
+    expect(peersTick.checked).toBe(true);
+    await act(async () => agentsTick.click());
+    await act(async () => peersTick.click());
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
+      profiles: [{ ...restricted, enabledForAgents: true, toolOverlay: [] }],
+      standingInstructions: "",
+    });
+  });
+
+  it("edits, adds and removes stored features without dropping the rest", async () => {
+    const featured = makeProfile({ features: { autoAccept: true, sandbox: "none" } });
+    await renderAgentsPanel({ profiles: [featured], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const sandboxValue = container.querySelector<HTMLInputElement>(
+      '[aria-label="Feature value 1"]',
+    );
+    if (!sandboxValue) throw new Error("the stored feature row did not render");
+    // A stored string travels as its JSON text, so what is edited is what the
+    // daemon stored.
+    expect(sandboxValue.value).toBe('"none"');
+    await typeText(sandboxValue.value === '"none"' ? sandboxValue : sandboxValue, '"strict"');
+    const remove = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Remove feature sandbox"]',
+    );
+    if (!remove) throw new Error("the feature's remove button did not render");
+    await act(async () => remove.click());
+    const keyField = container.querySelector<HTMLInputElement>('[aria-label="New feature key"]');
+    const valueField = container.querySelector<HTMLInputElement>('[aria-label="New feature value"]');
+    if (!keyField || !valueField) throw new Error("the add-feature fields did not render");
+    await typeText(keyField, "ctx");
+    await typeText(valueField, '"8k"');
+    await act(async () => sectionButton("Add feature").click());
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
+      profiles: [{ ...featured, features: { autoAccept: true, ctx: "8k" } }],
+      standingInstructions: "",
+    });
+  });
+
+  it("accepts a spawn prompt whose trimmed bytes fit the cap", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    const spawnField = container.querySelector<HTMLTextAreaElement>(
+      '.agent-inline-editor textarea[aria-label="Profile spawn prompt"]',
+    );
+    if (!spawnField) throw new Error("spawn prompt field did not render");
+    // One leading space over the cap raw, exactly the cap trimmed: the
+    // daemon trims first, so the form must not refuse what would be stored.
+    const prompt = ` ${"a".repeat(8192)}`;
+    await typeText(spawnField, prompt);
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
+    expect(sent.profiles[0]?.spawnPrompt).toBe("a".repeat(8192));
+  });
+
   it("refuses a spawn prompt over 8 KiB with the size named and truncates nothing", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
 
@@ -4255,6 +4374,89 @@ describe("Settings agents panel — new profile form", () => {
     expect(form().textContent).not.toContain("not something the provider published");
   });
 
+  it("saving after a provider switch sends no thinking option and no stored features", async () => {
+    // Two installed providers and no `provider_vocabulary` in the handshake:
+    // the model and mode are free text, and the switch must still clear
+    // everything that belonged to the old provider.
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [
+        {
+          id: "grok",
+          executable: "C:\\cli\\grok.cmd",
+          acpAvailable: true,
+          authentication: "ok",
+          protocol: "acp",
+          origin: "user-binary",
+          installed: true,
+        },
+        {
+          id: "claude",
+          executable: "C:\\cli\\claude.cmd",
+          acpAvailable: false,
+          authentication: "ok",
+          protocol: "stream-json",
+          origin: "user-binary",
+          installed: true,
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    const stored = storedProfile("p-1", {
+      name: "Explorer",
+      provider: "grok",
+      model: "grok-4",
+      modeId: "reflect",
+      thinkingOptionId: "high",
+      features: { autoAccept: true, sandbox: "none" },
+    });
+    await renderAgentsPanel({ profiles: [stored], standingInstructions: "" });
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [
+          {
+            ...stored,
+            provider: "claude",
+            model: "claude-opus-4-6",
+            modeId: "plan",
+            thinkingOptionId: null,
+            features: { autoAccept: true },
+          },
+        ],
+        standingInstructions: "",
+      },
+    });
+
+    const editor = await openRowEditor("Explorer");
+    const providerSelect = editor.querySelector<HTMLSelectElement>('select[aria-label="Provider"]');
+    if (!providerSelect) throw new Error("provider picker did not render");
+    await typeText(providerSelect, "claude");
+    await act(async () => undefined);
+
+    const model = editor.querySelector<HTMLInputElement>('[aria-label="Model"]');
+    const mode = editor.querySelector<HTMLInputElement>('[aria-label="Mode"]');
+    const thinking = editor.querySelector<HTMLInputElement>('[aria-label="Thinking option"]');
+    if (!model || !mode || !thinking) throw new Error("the cleared fields did not render");
+    expect(thinking.value).toBe("");
+    await typeText(model, "claude-opus-4-6");
+    await typeText(mode, "plan");
+    const save = Array.from(editor.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent === "Save",
+    );
+    if (!save) throw new Error("the editor's Save button did not render");
+    await act(async () => save.click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
+    expect(sent.profiles[0]?.provider).toBe("claude");
+    expect(sent.profiles[0]?.model).toBe("claude-opus-4-6");
+    expect(sent.profiles[0]?.modeId).toBe("plan");
+    // The old provider's thinking id and its stored feature are gone; the
+    // daemon's own tick is not provider-specific and stays.
+    expect(sent.profiles[0]?.thinkingOptionId).toBeNull();
+    expect(sent.profiles[0]?.features).toEqual({ autoAccept: true });
+  });
+
   it("gives every state its own sentence: no two rendered sentences are equal or substrings", async () => {
     // The property the sentences exist for, held over the render itself:
     // every sentence-bearing state the Agents panel can reach is rendered
@@ -4623,7 +4825,7 @@ describe("Settings agents panel — new profile form", () => {
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Forty-one: the delegation section's one sentence on this panel (an
+    // Forty-two: the delegation section's one sentence on this panel (an
     // older daemon's named absence — the switch itself is gated harder and
     // only renders when the handshake advertises permission_delegation), the
     // fifteen vocabulary sentences, the ACP suggestion
@@ -4631,14 +4833,15 @@ describe("Settings agents panel — new profile form", () => {
     // off-switch pair and the no-note sentence, the delete-confirm copy,
     // the editor's two hints (when the spawn prompt is sent, and that running
     // agents keep what they started with), the thinking option's own hint,
-    // the three cap refusals, the model/mode refusals, the
-    // two profile-cap sentences, the two catalog sentences, the heading
+    // the empty-features sentence, the three cap refusals, the model/mode
+    // refusals, the two profile-cap sentences, the two catalog sentences, the
+    // heading
     // description, the intro copy, the three tick notes, and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry). A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(41);
+    expect(sentences).toHaveLength(42);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

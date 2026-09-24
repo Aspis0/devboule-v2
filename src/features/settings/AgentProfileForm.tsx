@@ -6,10 +6,11 @@
  * the document, its persistence and the rows; everything that is only about
  * authoring one profile lives here.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { providerVocabularyGet } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
+import { PEER_TOOLS } from "./profileOverlay";
 import type { AgentProfile, ProviderInfo, ProviderVocabulary } from "../../types/ipc";
 import {
   ACP_MODE_SUGGESTION,
@@ -22,64 +23,132 @@ import {
 /** The profile store's caps, the daemon's own constants mirrored. */
 const MAX_PROFILE_NAME_CHARS = 60;
 const MAX_PROFILE_NOTE_BYTES = 2 * 1024;
+const MAX_PROFILE_ICON_BYTES = 64;
 /** `MAX_PROFILE_SPAWN_PROMPT_BYTES` in `agent_profiles.rs`. */
-export const MAX_PROFILE_SPAWN_PROMPT_BYTES = 8 * 1024;
+const MAX_PROFILE_SPAWN_PROMPT_BYTES = 8 * 1024;
 /** `MAX_PROFILE_FIELD_BYTES` in `agent_profiles.rs`: ids like the thinking option. */
-export const MAX_PROFILE_FIELD_BYTES = 128;
+const MAX_PROFILE_FIELD_BYTES = 128;
+const MAX_FEATURE_KEY_BYTES = 64;
+const MAX_FEATURE_VALUE_BYTES = 1024;
+const MAX_TOOL_OVERLAY_NAME_BYTES = 128;
+/** `AUTO_ACCEPT_FEATURE` in `provider_catalog.rs`: the one feature the daemon interprets. */
+const AUTO_ACCEPT_FEATURE = "autoAccept";
 
 /**
- * The text caps every profile write enforces — renaming an existing row and
- * creating a new one alike. Returns the refusal sentence sized in the
- * daemon's own units, or null when every text fits. The name counts Unicode
- * scalar values (the daemon's `chars().count()`), the note and the spawn
- * prompt UTF-8 bytes (`String::len`); refusals name the size and nothing is
- * ever truncated.
+ * Every cap a profile write must fit, checked on the draft before the panel
+ * sends anything: the daemon applies exactly these shapes in
+ * `agent_profiles.rs`, and the spawn prompt is capped **after** trimming
+ * there (`check_profile`), so the same trimmed bytes are counted here — a
+ * leading space must not refuse a prompt the daemon would store. Refusals
+ * are sized in the daemon's own units and nothing is ever truncated.
  */
-export function profileTextsError(
-  trimmedName: string,
-  note: string,
-  spawnPrompt: string,
-): string | null {
-  const trimmedChars = charCount(trimmedName);
+export function profileDraftRefusal(draft: ProfileFormSeed): string | null {
+  const trimmedChars = charCount(draft.name.trim());
   if (trimmedChars === 0) {
     return `A profile name is 1 to ${MAX_PROFILE_NAME_CHARS} characters.`;
   }
   if (trimmedChars > MAX_PROFILE_NAME_CHARS) {
     return `This name is ${trimmedChars} characters, over the ${MAX_PROFILE_NAME_CHARS}-character cap. Nothing was saved and nothing was truncated.`;
   }
-  const noteBytes = utf8Bytes(note);
+  const noteBytes = utf8Bytes(draft.note);
   if (noteBytes > MAX_PROFILE_NOTE_BYTES) {
     return `This note is ${noteBytes} bytes, over the ${MAX_PROFILE_NOTE_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
   }
-  const spawnBytes = utf8Bytes(spawnPrompt);
+  const spawnBytes = utf8Bytes(draft.spawnPrompt.trim());
   if (spawnBytes > MAX_PROFILE_SPAWN_PROMPT_BYTES) {
     return `This spawn prompt is ${spawnBytes} bytes, over the ${MAX_PROFILE_SPAWN_PROMPT_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
+  }
+  const model = draft.model.trim();
+  if (model === "") {
+    return "Choose or type a model for the profile.";
+  }
+  const modeId = draft.modeId.trim();
+  if (modeId === "") {
+    return "Choose or type a mode for the profile.";
+  }
+  const thinkingBytes = utf8Bytes(draft.thinkingOptionId.trim());
+  if (thinkingBytes > MAX_PROFILE_FIELD_BYTES) {
+    return `The thinking option id is ${thinkingBytes} bytes, over the ${MAX_PROFILE_FIELD_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
+  }
+  const iconBytes = utf8Bytes(draft.icon.trim());
+  if (iconBytes > MAX_PROFILE_ICON_BYTES) {
+    return `The icon is ${iconBytes} bytes, over the ${MAX_PROFILE_ICON_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
+  }
+  for (const tool of draft.overlayExtras) {
+    const toolBytes = utf8Bytes(tool.trim());
+    if (toolBytes > MAX_TOOL_OVERLAY_NAME_BYTES) {
+      return `A denied tool name is ${toolBytes} bytes, over the ${MAX_TOOL_OVERLAY_NAME_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
+    }
+  }
+  for (const feature of draft.extraFeatures) {
+    const keyBytes = utf8Bytes(feature.key.trim());
+    if (keyBytes === 0) {
+      return "A feature needs a key: type the name the provider uses, or remove the row.";
+    }
+    if (keyBytes > MAX_FEATURE_KEY_BYTES) {
+      return `A feature key is ${keyBytes} bytes, over the ${MAX_FEATURE_KEY_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
+    }
+    const parsed = parseFeatureValue(feature.valueText);
+    if (parsed.error !== null) {
+      return `The value of feature '${feature.key.trim()}' is not valid JSON; wrap plain text in double quotes, or type a number, true or false.`;
+    }
+    const valueBytes = utf8Bytes(JSON.stringify(parsed.value));
+    if (valueBytes > MAX_FEATURE_VALUE_BYTES) {
+      return `The value of feature '${feature.key.trim()}' serializes to ${valueBytes} bytes, over the ${MAX_FEATURE_VALUE_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
+    }
   }
   return null;
 }
 
-/** What the new-profile form hands the panel on save. The panel validates and persists. */
-export interface NewProfileDraft {
-  name: string;
-  note: string;
-  spawnPrompt: string;
-  provider: string;
-  model: string;
-  modeId: string;
-  /** "" saves none; the daemon stores null. */
-  thinkingOptionId: string;
-  autoAccept: boolean;
-  enabledForAgents: boolean;
-  restrictPeers: boolean;
+/** The feature value a value text carries: typed JSON, or a plain string. */
+function parseFeatureValue(valueText: string): { value: unknown; error: string | null } {
+  try {
+    return { value: JSON.parse(valueText), error: null };
+  } catch {
+    return { value: undefined, error: "invalid JSON" };
+  }
 }
 
 /**
- * What the profile form's fields hold. It is the seed the form starts from
- * and the draft an edit reports up, so an editor's typed text survives the
- * row it renders in being removed and restored by an in-flight write.
+ * The stored `features` map the draft saves: the tick the daemon interprets,
+ * plus every other row as it parsed — unknown keys are words this form
+ * carries for the provider, not noise it may drop or reshape.
+ */
+export function profileFeaturesFromDraft(draft: ProfileFormSeed): Record<string, unknown> {
+  const features: Record<string, unknown> = {};
+  if (draft.autoAccept) {
+    features[AUTO_ACCEPT_FEATURE] = true;
+  }
+  for (const feature of draft.extraFeatures) {
+    features[feature.key.trim()] = parseFeatureValue(feature.valueText).value;
+  }
+  return features;
+}
+
+/**
+ * The stored `toolOverlay` the draft saves: the peer-restriction pair in the
+ * broker's own order, then the kept stored names beyond it.
+ */
+export function toolOverlayFromDraft(draft: ProfileFormSeed): string[] {
+  const pair = draft.restrictPeers ? [...PEER_TOOLS] : [];
+  const extras = draft.overlayExtras
+    .map((tool) => tool.trim())
+    .filter((tool) => tool !== "" && !pair.includes(tool));
+  return [...pair, ...extras];
+}
+
+/**
+ * What the profile form's fields hold — in both modes. It is the seed the
+ * form starts from, the draft an edit reports up, and what a save applies:
+ * create and edit name the same whole profile, the way Paseo's one form
+ * does. The feature rows beyond the daemon's own tick and the stored tool
+ * denials beyond the peer pair travel as their saved values, editable and
+ * removable — never silently dropped.
  */
 export interface ProfileFormSeed {
   name: string;
+  /** "" saves none; the daemon stores null. */
+  icon: string;
   note: string;
   spawnPrompt: string;
   provider: string;
@@ -89,11 +158,19 @@ export interface ProfileFormSeed {
   thinkingOptionId: string;
   /** The one feature the daemon interprets, read the way the daemon reads it. */
   autoAccept: boolean;
+  /** Every stored feature beyond the tick, as editable JSON text. */
+  extraFeatures: { key: string; valueText: string }[];
+  enabledForAgents: boolean;
+  /** The peer-restriction pair, ticked when the saved overlay is exactly it. */
+  restrictPeers: boolean;
+  /** Stored tool denials beyond the peer pair. */
+  overlayExtras: string[];
 }
 
 /** The seed a new profile starts from: empty fields, no provider chosen yet. */
 export const EMPTY_PROFILE_FORM_SEED: ProfileFormSeed = {
   name: "",
+  icon: "",
   note: "",
   spawnPrompt: "",
   provider: "",
@@ -101,18 +178,27 @@ export const EMPTY_PROFILE_FORM_SEED: ProfileFormSeed = {
   modeId: "",
   thinkingOptionId: "",
   autoAccept: false,
+  extraFeatures: [],
+  enabledForAgents: false,
+  restrictPeers: false,
+  overlayExtras: [],
 };
 
 /**
  * The stored row a form edits, as the fields hold it. `autoAccept` is the
  * JSON boolean `true` and nothing else — the daemon's own reading
- * (`profile_delivery.rs`) — and the feature keys this form cannot interpret
- * are not read at all here: they travel verbatim on save, never silently
- * dropped.
+ * (`profile_delivery.rs`) — and the tick on the peer pair matches only the
+ * exact pair: any other stored overlay keeps its names as removable rows.
+ * Feature values travel as their JSON text, so what the human edits is what
+ * the daemon stored.
  */
 export function seedFromProfile(profile: AgentProfile): ProfileFormSeed {
+  const overlay = profile.toolOverlay ?? [];
+  const isPeerPair =
+    overlay.length === PEER_TOOLS.length && PEER_TOOLS.every((tool) => overlay.includes(tool));
   return {
     name: profile.name,
+    icon: profile.icon ?? "",
     note: profile.note,
     spawnPrompt: profile.spawnPrompt ?? "",
     provider: profile.provider,
@@ -120,6 +206,12 @@ export function seedFromProfile(profile: AgentProfile): ProfileFormSeed {
     modeId: profile.modeId,
     thinkingOptionId: profile.thinkingOptionId ?? "",
     autoAccept: profile.features.autoAccept === true,
+    extraFeatures: Object.entries(profile.features)
+      .filter(([key]) => key !== AUTO_ACCEPT_FEATURE)
+      .map(([key, value]) => ({ key, valueText: JSON.stringify(value) })),
+    enabledForAgents: profile.enabledForAgents,
+    restrictPeers: isPeerPair,
+    overlayExtras: overlay.filter((tool) => !PEER_TOOLS.includes(tool)),
   };
 }
 
@@ -156,14 +248,15 @@ function charCount(text: string): number {
  * a reply for the previously selected provider never lands in a form that
  * now shows another one.
  *
- * What the two modes may touch differs, on purpose: creating a profile names
- * its ticks too (agents-may-create, the peer tools overlay); editing one
- * does not — the row carries the agents tick, and the overlay is the human's
- * saved deny list, shown on the row and travelling verbatim on every save.
- * The thinking option is a free-text field in both modes: the vocabulary
- * reply carries no thinking axis, and the daemon publishes no list, so typed
- * text is checked against the daemon's caps here and by the provider itself
- * when a session starts.
+ * Both modes edit the same whole profile — ticks, icon, overlay and the
+ * feature map included — because the way to different values should not
+ * depend on whether the row exists yet. Provider-specific fields (the model,
+ * the mode, the thinking option, the stored features beyond the daemon's own
+ * tick) reset when the provider changes; `autoAccept` and the peer tools
+ * overlay stay, because they are not the provider's vocabulary. The thinking
+ * option is a free-text field: the vocabulary reply carries no thinking
+ * axis, and the daemon publishes no list, so typed text is checked against
+ * the daemon's caps here and by the provider itself when a session starts.
  */
 export function AgentProfileForm({
   mode,
@@ -191,7 +284,7 @@ export function AgentProfileForm({
   /** True while a panel write is in flight: Save must not start another. */
   busy: boolean;
   /** Create mode's save. The panel validates and persists. */
-  onCreate: (draft: NewProfileDraft) => void;
+  onCreate: (draft: ProfileFormSeed) => void;
   /** Edit mode's save: the seed fields, applied to the one row. */
   onSaveSeed?: (seed: ProfileFormSeed) => void;
   /** Edit mode's every keystroke, reported up so the draft survives the row. */
@@ -199,6 +292,7 @@ export function AgentProfileForm({
   onCancel: () => void;
 }) {
   const [name, setName] = useState(seed.name);
+  const [icon, setIcon] = useState(seed.icon);
   const [note, setNote] = useState(seed.note);
   const [spawnPrompt, setSpawnPrompt] = useState(seed.spawnPrompt);
   const [providerId, setProviderId] = useState(seed.provider);
@@ -206,15 +300,29 @@ export function AgentProfileForm({
   const [modeId, setModeId] = useState(seed.modeId);
   const [thinkingOptionId, setThinkingOptionId] = useState(seed.thinkingOptionId);
   const [autoAccept, setAutoAccept] = useState(seed.autoAccept);
-  const [enabledForAgents, setEnabledForAgents] = useState(false);
-  const [restrictPeers, setRestrictPeers] = useState(false);
+  const [extraFeatures, setExtraFeatures] = useState(seed.extraFeatures);
+  const [featureKey, setFeatureKey] = useState("");
+  const [featureValue, setFeatureValue] = useState("");
+  const [overlayTool, setOverlayTool] = useState("");
+  const [enabledForAgents, setEnabledForAgents] = useState(seed.enabledForAgents);
+  const [restrictPeers, setRestrictPeers] = useState(seed.restrictPeers);
+  const [overlayExtras, setOverlayExtras] = useState(seed.overlayExtras);
   const [vocabulary, setVocabulary] = useState<ProviderVocabulary | null>(null);
   const [vocabularyError, setVocabularyError] = useState<ErrorSentence | null>(null);
+  // Field-associated text for assistive technology: the ids the described-by
+  // wiring points at. One useId per mount, so a create form and an edit form
+  // open side by side cannot collide.
+  const describedById = useId();
+  const spawnHintId = `${describedById}-spawn-hint`;
+  const spawnCounterId = `${describedById}-spawn-count`;
+  const noteCounterId = `${describedById}-note-count`;
+  const thinkingHintId = `${describedById}-thinking-hint`;
   // The fields as they stand this render: the base every change reports up
   // from, so the panel's draft always holds the whole form, never a patch.
   function currentSeed(): ProfileFormSeed {
     return {
       name,
+      icon,
       note,
       spawnPrompt,
       provider: providerId,
@@ -222,6 +330,10 @@ export function AgentProfileForm({
       modeId,
       thinkingOptionId,
       autoAccept,
+      extraFeatures,
+      enabledForAgents,
+      restrictPeers,
+      overlayExtras,
     };
   }
   // Monotonic fetch sequence for the vocabulary query: a reply may apply
@@ -334,33 +446,29 @@ export function AgentProfileForm({
       : [];
 
   function changeProvider(next: string) {
-    // Reset the fields that depend on the answer before the fetch starts:
-    // the old provider's selection must not survive into the new one.
+    // Reset everything that belongs to the old provider before the fetch
+    // starts: its selection must not survive into the new one — model, mode,
+    // thinking option and the stored features beyond the daemon's own tick.
+    // `autoAccept` and the peer tools overlay stay: they are not the
+    // provider's vocabulary.
     setProviderId(next);
     setModel("");
     setModeId("");
+    setThinkingOptionId("");
+    setExtraFeatures([]);
     onSeedChange?.({
       ...currentSeed(),
       provider: next,
       model: "",
       modeId: "",
+      thinkingOptionId: "",
+      extraFeatures: [],
     });
   }
 
   function submit() {
     if (mode === "create") {
-      onCreate({
-        name,
-        note,
-        spawnPrompt,
-        provider: providerId,
-        model,
-        modeId,
-        thinkingOptionId,
-        autoAccept,
-        enabledForAgents,
-        restrictPeers,
-      });
+      onCreate(currentSeed());
     } else {
       onSaveSeed?.(currentSeed());
     }
@@ -388,6 +496,18 @@ export function AgentProfileForm({
         />
       </label>
       <label className="device-field">
+        Icon
+        <input
+          aria-label="Profile icon"
+          value={icon}
+          disabled={busy}
+          onChange={(event) => {
+            setIcon(event.target.value);
+            onSeedChange?.({ ...currentSeed(), icon: event.target.value });
+          }}
+        />
+      </label>
+      <label className="device-field">
         Note — what a creating agent reads to choose this profile. Write it for the agent.
         <textarea
           aria-label="Profile note"
@@ -399,7 +519,7 @@ export function AgentProfileForm({
             onSeedChange?.({ ...currentSeed(), note: event.target.value });
           }}
         />
-        <span className="agent-byte-counter">
+        <span className="agent-byte-counter" id={noteCounterId} aria-live="polite">
           {noteBytes} / {MAX_PROFILE_NOTE_BYTES} bytes
         </span>
       </label>
@@ -407,6 +527,7 @@ export function AgentProfileForm({
         Spawn prompt — the profile's own instructions for its children
         <textarea
           aria-label="Profile spawn prompt"
+          aria-describedby={`${spawnHintId} ${spawnCounterId}`}
           value={spawnPrompt}
           disabled={busy}
           rows={3}
@@ -415,10 +536,10 @@ export function AgentProfileForm({
             onSeedChange?.({ ...currentSeed(), spawnPrompt: event.target.value });
           }}
         />
-        <span className="agent-byte-counter">
+        <span className="agent-byte-counter" id={spawnCounterId} aria-live="polite">
           {spawnBytes} / {MAX_PROFILE_SPAWN_PROMPT_BYTES} bytes
         </span>
-        <span className="device-field-hint">
+        <span className="device-field-hint" id={spawnHintId}>
           Sent at the start of every agent created from this profile, before the creator's prompt.
         </span>
       </label>
@@ -513,6 +634,7 @@ export function AgentProfileForm({
             Thinking option
             <input
               aria-label="Thinking option"
+              aria-describedby={thinkingHintId}
               value={thinkingOptionId}
               disabled={busy}
               onChange={(event) => {
@@ -520,7 +642,7 @@ export function AgentProfileForm({
                 onSeedChange?.({ ...currentSeed(), thinkingOptionId: event.target.value });
               }}
             />
-            <span className="device-field-hint">
+            <span className="device-field-hint" id={thinkingHintId}>
               The daemon keeps no list of thinking options: type the id the provider uses, or leave
               this empty for none.
             </span>
@@ -547,47 +669,187 @@ export function AgentProfileForm({
           </span>
         </span>
       </label>
-      {mode === "create" ? (
-        <>
-          <label className="agent-profile-tick">
+      <div className="device-field">
+        <span className="settings-subheading">Other stored features</span>
+        {extraFeatures.length === 0 ? (
+          <p className="device-field-hint">
+            No other features are stored on this profile. The daemon passes feature keys it does not
+            know to the provider unchanged.
+          </p>
+        ) : (
+          extraFeatures.map((feature, index) => (
+            <div className="device-inline-confirm" key={feature.key}>
+              <label className="device-field">
+                Feature key
+                <input
+                  aria-label={`Feature key ${index + 1}`}
+                  value={feature.key}
+                  disabled={busy}
+                  onChange={(event) => {
+                    const key = event.target.value;
+                    setExtraFeatures((rows) =>
+                      rows.map((row, at) => (at === index ? { ...row, key } : row)),
+                    );
+                  }}
+                />
+              </label>
+              <label className="device-field">
+                Feature value (JSON)
+                <input
+                  aria-label={`Feature value ${index + 1}`}
+                  value={feature.valueText}
+                  disabled={busy}
+                  onChange={(event) => {
+                    const valueText = event.target.value;
+                    setExtraFeatures((rows) =>
+                      rows.map((row, at) => (at === index ? { ...row, valueText } : row)),
+                    );
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                className="settings-device-action"
+                disabled={busy}
+                aria-label={`Remove feature ${feature.key}`}
+                onClick={() => {
+                  setExtraFeatures((rows) => rows.filter((_, at) => at !== index));
+                }}
+              >
+                Remove feature
+              </button>
+            </div>
+          ))
+        )}
+        <div className="agent-profile-create-row">
+          <label className="device-field">
+            Add a feature — key
             <input
-              type="checkbox"
-              aria-label="Available to agents"
-              checked={enabledForAgents}
+              aria-label="New feature key"
+              value={featureKey}
               disabled={busy}
-              onChange={(event) => setEnabledForAgents(event.target.checked)}
+              onChange={(event) => setFeatureKey(event.target.value)}
             />
-            <span>
-              <span>Agents may create this</span>
-              <span className="agent-profile-tick-note">
-                Lets an agent start this kind of agent. If this profile answers its own permission
-                cards, its children run unattended.
-              </span>
-            </span>
           </label>
-          <label className="agent-profile-tick">
+          <label className="device-field">
+            Add a feature — value (JSON)
             <input
-              type="checkbox"
-              aria-label="Children cannot message peers or create further agents"
-              checked={restrictPeers}
+              aria-label="New feature value"
+              value={featureValue}
               disabled={busy}
-              onChange={(event) => setRestrictPeers(event.target.checked)}
+              onChange={(event) => setFeatureValue(event.target.value)}
             />
-            <span>
-              <span>No peer contact and no further agents for children</span>
-              <span className="agent-profile-tick-note">
-                Children created from this profile cannot message other agents or create further
-                agents. They keep the agent roster, their read-only view.
-              </span>
-            </span>
           </label>
-        </>
-      ) : (
+          <button
+            type="button"
+            className="settings-device-action"
+            disabled={busy || featureKey.trim() === ""}
+            onClick={() => {
+              const key = featureKey.trim();
+              if (key === "" || extraFeatures.some((row) => row.key === key)) return;
+              setExtraFeatures((rows) => [...rows, { key, valueText: featureValue }]);
+              setFeatureKey("");
+              setFeatureValue("");
+            }}
+          >
+            Add feature
+          </button>
+        </div>
+      </div>
+      <label className="agent-profile-tick">
+        <input
+          type="checkbox"
+          aria-label="Available to agents"
+          checked={enabledForAgents}
+          disabled={busy}
+          onChange={(event) => {
+            setEnabledForAgents(event.target.checked);
+            onSeedChange?.({ ...currentSeed(), enabledForAgents: event.target.checked });
+          }}
+        />
+        <span>
+          <span>Agents may create this</span>
+          <span className="agent-profile-tick-note">
+            Lets an agent start this kind of agent. If this profile answers its own permission
+            cards, its children run unattended.
+          </span>
+        </span>
+      </label>
+      <label className="agent-profile-tick">
+        <input
+          type="checkbox"
+          aria-label="Children cannot message peers or create further agents"
+          checked={restrictPeers}
+          disabled={busy}
+          onChange={(event) => {
+            setRestrictPeers(event.target.checked);
+            onSeedChange?.({ ...currentSeed(), restrictPeers: event.target.checked });
+          }}
+        />
+        <span>
+          <span>No peer contact and no further agents for children</span>
+          <span className="agent-profile-tick-note">
+            Children created from this profile cannot message other agents or create further agents.
+            They keep the agent roster, their read-only view.
+          </span>
+        </span>
+      </label>
+      {overlayExtras.length > 0 ? (
+        <div className="device-field">
+          <span className="settings-subheading">Other stored tool denials</span>
+          {overlayExtras.map((tool) => (
+            <div className="agent-profile-create-row" key={tool}>
+              <span className="device-copy">{tool}</span>
+              <button
+                type="button"
+                className="settings-device-action"
+                disabled={busy}
+                aria-label={`Remove denied tool ${tool}`}
+                onClick={() => {
+                  setOverlayExtras((rows) => rows.filter((kept) => kept !== tool));
+                  onSeedChange?.({
+                    ...currentSeed(),
+                    overlayExtras: overlayExtras.filter((kept) => kept !== tool),
+                  });
+                }}
+              >
+                Remove denial
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="agent-profile-create-row">
+        <label className="device-field">
+          Deny a tool by name
+          <input
+            aria-label="New denied tool name"
+            value={overlayTool}
+            disabled={busy}
+            onChange={(event) => setOverlayTool(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          className="settings-device-action"
+          disabled={busy || overlayTool.trim() === ""}
+          onClick={() => {
+            const tool = overlayTool.trim();
+            if (tool === "" || PEER_TOOLS.includes(tool) || overlayExtras.includes(tool)) return;
+            setOverlayExtras((rows) => [...rows, tool]);
+            onSeedChange?.({ ...currentSeed(), overlayExtras: [...overlayExtras, tool] });
+            setOverlayTool("");
+          }}
+        >
+          Add denial
+        </button>
+      </div>
+      {mode === "edit" ? (
         <p className="device-field-hint">
           Changes apply to agents created from now on. Agents already running keep what they started
-          with. The tick on the row and the saved tool overlay stay as they are.
+          with.
         </p>
-      )}
+      ) : null}
       <div className="device-actions">
         <button
           type="button"
