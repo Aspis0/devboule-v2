@@ -350,7 +350,7 @@ impl ProjectRecord {
         Project {
             id: self.id.clone(),
             name: self.name.clone(),
-            path: crate::workspace::display_path(&self.path),
+            path: crate::workspace::plain_path(&self.path),
         }
     }
 }
@@ -375,7 +375,7 @@ impl WorkspaceRecord {
             project_id: self.project_id.clone(),
             title: self.title.clone(),
             isolation: self.isolation,
-            path: crate::workspace::display_path(&self.path),
+            path: crate::workspace::plain_path(&self.path),
         }
     }
 }
@@ -516,7 +516,7 @@ impl SessionRecord {
             // a session with no workspace has no other record of where it
             // worked, and a workspace whose folder moved would send the next
             // process somewhere the dead one never was.
-            cwd: self.cwd.as_deref().map(crate::workspace::display_path),
+            cwd: self.cwd.as_deref().map(crate::workspace::plain_path),
             kind: self.kind.clone(),
             title: self.title.clone(),
             provider: self.provider.clone(),

@@ -760,9 +760,8 @@ impl std::fmt::Display for FsAccess {
 }
 
 fn canonicalize_existing_or_lexical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path)
-        .map(strip_verbatim)
-        .unwrap_or_else(|_| strip_verbatim(lexical_normalize(path)))
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| lexical_normalize(path));
+    crate::workspace::plain_path(&canonical.to_string_lossy()).into()
 }
 
 fn lexical_normalize(path: &Path) -> PathBuf {
@@ -778,26 +777,6 @@ fn lexical_normalize(path: &Path) -> PathBuf {
         }
     }
     out
-}
-
-fn strip_verbatim(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        const VERBATIM: &str = r"\\?\";
-        const VERBATIM_UNC: &str = r"\\?\UNC\";
-        let text = path.to_string_lossy();
-        if let Some(rest) = text.strip_prefix(VERBATIM_UNC) {
-            return PathBuf::from(format!(r"\\{rest}"));
-        }
-        if let Some(rest) = text.strip_prefix(VERBATIM) {
-            return PathBuf::from(rest);
-        }
-        path
-    }
-    #[cfg(not(windows))]
-    {
-        path
-    }
 }
 
 fn resolve_path(path: &Path) -> Result<PathBuf, RpcError> {
@@ -820,7 +799,8 @@ fn resolve_path(path: &Path) -> Result<PathBuf, RpcError> {
         if current.exists() {
             let canonical =
                 std::fs::canonicalize(&current).map_err(|error| fs_error(&current, error))?;
-            let mut resolved = strip_verbatim(canonical);
+            let mut resolved: PathBuf =
+                crate::workspace::plain_path(&canonical.to_string_lossy()).into();
             for part in missing.iter().rev() {
                 resolved.push(part);
             }
@@ -842,8 +822,8 @@ fn resolve_path(path: &Path) -> Result<PathBuf, RpcError> {
 }
 
 fn path_is_within(path: &Path, root: &Path) -> bool {
-    let path = strip_verbatim(path.to_path_buf());
-    let root = strip_verbatim(root.to_path_buf());
+    let path: PathBuf = crate::workspace::plain_path(&path.to_string_lossy()).into();
+    let root: PathBuf = crate::workspace::plain_path(&root.to_string_lossy()).into();
     let path_parts: Vec<Component<'_>> = path.components().collect();
     let root_parts: Vec<Component<'_>> = root.components().collect();
     if path_parts.len() < root_parts.len() {

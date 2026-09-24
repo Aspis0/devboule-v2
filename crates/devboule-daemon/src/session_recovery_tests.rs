@@ -402,7 +402,7 @@ fn a_recovered_session_journals_why_it_replaced_the_session_that_was_clicked() {
     assert!(
         notice.contains(&format!(
             "the folder this session worked in no longer exists: {}",
-            crate::workspace::display_path(&gone.to_string_lossy())
+            crate::workspace::plain_path(&gone.to_string_lossy())
         )),
         "the sentence is the pre-flight's own, path included: {notice}"
     );

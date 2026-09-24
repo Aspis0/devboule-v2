@@ -351,11 +351,11 @@ impl RecoveredDir<'_> {
         match self {
             Self::Kept(path) => format!(
                 " It starts in the directory the old session was launched in: {}.",
-                crate::workspace::display_path(&path.to_string_lossy())
+                crate::workspace::plain_path(&path.to_string_lossy())
             ),
             Self::Gone(Some(path)) => format!(
                 " It has no folder of its own to work in: {} is gone.",
-                crate::workspace::display_path(&path.to_string_lossy())
+                crate::workspace::plain_path(&path.to_string_lossy())
             ),
             Self::Gone(None) => " It has no folder of its own to work in: the one the old \
                  session used is gone, and this row does not record its path."

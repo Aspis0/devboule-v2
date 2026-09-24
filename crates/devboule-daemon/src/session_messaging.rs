@@ -1225,7 +1225,9 @@ impl super::SessionRegistry {
         if !canonical.starts_with(&canonical_root) || !canonical.is_dir() {
             return Err(refused());
         }
-        Ok(Some(canonical))
+        // The confinement comparison ran on canonical spellings; the answer
+        // goes to a child process, so it leaves in the plain spelling.
+        Ok(Some(super::session_workspaces::plain_cwd(&canonical)))
     }
 
     /// What a creation needs to know about the session that asked for it.

@@ -491,7 +491,7 @@ fn a_resume_for_a_gone_directory_and_an_empty_transcript_refuses_without_spawnin
         error.message,
         format!(
             "the folder this session worked in no longer exists: {}",
-            crate::workspace::display_path(&gone.to_string_lossy())
+            crate::workspace::plain_path(&gone.to_string_lossy())
         ),
         "the sentence names the path it looked for: {error:?}"
     );

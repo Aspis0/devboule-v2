@@ -26,7 +26,7 @@ use devboule_daemon::{
 use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, CursorShape, ErrorCode, OwnerId, Persistence,
     PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionState, SessionStateSnapshot,
-    TranscriptIntegrity,
+    TranscriptIntegrity, WorkspaceIsolation,
 };
 use portable_pty::{CommandBuilder, PtySize};
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
@@ -3320,6 +3320,68 @@ fn control_traffic_is_answered_within_bound_during_flood() {
         max.as_secs_f64() * 1_000.0,
         CONTROL_BOUND.as_millis(),
     );
+}
+
+/// A terminal whose workspace row was born verbatim (project_add
+/// canonicalizes) must still start its shell in the plain spelling: cmd's
+/// `cd` prints the process's real working directory, and it must be the
+/// project folder with no `\?\` prefix — a verbatim cwd would send this
+/// very command to C:\Windows.
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn a_terminal_in_a_workspace_starts_in_a_plain_path() {
+    let harness = Harness::spawn();
+    let client = harness.client("plain-cwd");
+    let dir = std::env::temp_dir().join(format!("devboule plain cwd {}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("project dir");
+    let project = client
+        .project_add(&dir.to_string_lossy())
+        .expect("project add");
+    let workspace = client
+        .workspace_create(&project.id, WorkspaceIsolation::Local, None)
+        .expect("workspace create");
+    queue_command(
+        &harness.paths,
+        PtyCommand::new(
+            "cmd.exe",
+            vec!["/c".to_string(), "cd".to_string()],
+            dir.clone(),
+            Vec::new(),
+        ),
+    );
+    let session = client
+        .session_create(Some(workspace.id.clone()), SessionKind::Terminal, None)
+        .expect("create terminal in workspace");
+    let plain = dir.to_string_lossy().to_string();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach");
+    assert!(
+        wait_for_marker(&received, &plain, Duration::from_secs(10)),
+        "the child's cwd output must arrive: {plain}"
+    );
+    let printed: String = received
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::Output { data, .. } | SessionEvent::Snapshot { data, .. } => {
+                Some(data.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !printed.contains(r"\?\"),
+        "the terminal ran in a verbatim path: {printed}"
+    );
+    assert!(
+        printed.contains(&plain),
+        "the terminal must run in the project folder {plain}: {printed}"
+    );
+    client.session_close(&session.id).expect("close");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The ConPTY hosts (`--headless … --server`) the daemon at `pid` owns, one

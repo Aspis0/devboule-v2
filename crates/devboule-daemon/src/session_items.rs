@@ -397,9 +397,7 @@ pub(super) fn session_metadata_for_resume(
     Session {
         id: session_id.to_string(),
         workspace_id: record.workspace_id.clone(),
-        cwd: Some(crate::workspace::display_path(
-            &command.cwd.to_string_lossy(),
-        )),
+        cwd: Some(crate::workspace::plain_path(&command.cwd.to_string_lossy())),
         // The record's own kind, which is the session's kind: it was decided
         // at create and journalled, and a resume does not re-decide it.
         //

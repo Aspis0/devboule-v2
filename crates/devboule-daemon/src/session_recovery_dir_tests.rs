@@ -75,7 +75,7 @@ fn a_recovered_session_starts_in_the_directory_the_old_one_recorded() {
         .resume(&id, &fixture.conn())
         .expect("the conversation is recovered into a new session");
     assert_ne!(session.id, id, "the row is gone, the session is new");
-    let shown = crate::workspace::display_path(&work.to_string_lossy());
+    let shown = crate::workspace::plain_path(&work.to_string_lossy());
     assert_eq!(
         session.cwd.as_deref(),
         Some(shown.as_str()),
@@ -136,7 +136,7 @@ fn a_recovered_session_whose_folder_is_gone_says_which_path_died() {
     let session = fixture
         .resume(&id, &fixture.conn())
         .expect("the conversation is recovered into a new session");
-    let shown = crate::workspace::display_path(&gone.to_string_lossy());
+    let shown = crate::workspace::plain_path(&gone.to_string_lossy());
     assert!(
         session.workspace_id.is_none(),
         "the workspace is gone; the replacement carries none: {:?}",

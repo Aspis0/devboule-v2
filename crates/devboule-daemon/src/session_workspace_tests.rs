@@ -12,7 +12,7 @@ use super::*;
 
 #[test]
 #[cfg(windows)]
-fn workspace_spawn_directory_error_names_workspace_and_display_path() {
+fn workspace_spawn_directory_error_names_workspace_in_plain_spelling() {
     let parent = crate::test_dirs::test_temp_dir("devboule-missing-cwd");
     let path = parent.join("Project With Spaces");
     let error = std::process::Command::new("cmd.exe")
@@ -45,10 +45,18 @@ fn a_real_local_workspace_supplies_the_session_command_cwd() {
     registry
         .apply_workspace_cwd(Some(&workspace.id), &mut command)
         .expect("workspace cwd");
+    // The cwd a child receives is the plain spelling of the same folder;
+    // storage keeps the verbatim form.
     assert_eq!(
         command.cwd,
-        project_path.canonicalize().expect("canonical cwd")
+        crate::workspace::plain_path(
+            &project_path
+                .canonicalize()
+                .expect("canonical cwd")
+                .to_string_lossy()
+        )
     );
+    assert!(!command.cwd.to_string_lossy().contains("\\\\?\\"));
 
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
@@ -96,7 +104,12 @@ fn workspace_cwd_cache_avoids_a_journal_rpc_after_first_lookup() {
         .expect("cached workspace lookup");
     assert_eq!(
         cached.cwd,
-        project_path.canonicalize().expect("canonical path")
+        crate::workspace::plain_path(
+            &project_path
+                .canonicalize()
+                .expect("canonical path")
+                .to_string_lossy()
+        )
     );
     // This second call succeeds with the journal already shut down, so
     // it proves the hit did not enqueue another workspace RPC.
@@ -124,10 +137,8 @@ fn a_session_against_a_real_local_workspace_echoes_cwd_in_display_form() {
     // The spawn sites echo this exact value onto Session.cwd. A real
     // process is not required to observe the echo: command.cwd is final
     // once apply_workspace_cwd has run.
-    let cwd = Some(crate::workspace::display_path(
-        &command.cwd.to_string_lossy(),
-    ));
-    let expected = crate::workspace::display_path(
+    let cwd = Some(crate::workspace::plain_path(&command.cwd.to_string_lossy()));
+    let expected = crate::workspace::plain_path(
         project_path
             .canonicalize()
             .expect("canonical cwd")

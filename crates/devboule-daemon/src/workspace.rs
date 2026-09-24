@@ -84,11 +84,23 @@ pub(crate) fn canonical_directory(path: &str) -> Result<PathBuf, WireError> {
     Ok(canonical)
 }
 
-/// Keep the canonical verbatim path for filesystem work, but remove only its
-/// Windows display prefix at the wire boundary. The prefix is what preserves
-/// long-path cwd support; exposing it to a person would make the UI show an
-/// implementation detail instead of the selected folder.
-pub(crate) fn display_path(path: &str) -> String {
+/// The one place a stored path is turned back into its plain spelling: for
+/// the wire, for a person, and for every child process cwd. Stored paths
+/// are canonical (`\\?\C:\…`), and the prefix is a real feature — it is the
+/// only spelling that can address a path longer than MAX_PATH — so it is
+/// removed only when the plain form names the same path a plain caller
+/// would reach:
+/// - a plain form over `MAX_PATH` keeps the prefix (it is what makes the
+///   path usable at all);
+/// - a component that is a reserved device name, or that ends with a dot
+///   or a space, resolves differently without the prefix (Win32 strips
+///   trailing dots and spaces and claims reserved names only in the plain
+///   namespace), so stripping would change the meaning;
+/// - a `\\?\UNC\` path keeps its spelling: its plain form is still UNC, so
+///   stripping removes none of the UNC-cwd hazard and only gives up the
+///   long-path guarantee.
+pub(crate) fn plain_path(path: &str) -> String {
+    const MAX_PATH: usize = 260;
     const VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
     const VERBATIM_PREFIX: &str = r"\\?\";
     if path
@@ -98,7 +110,7 @@ pub(crate) fn display_path(path: &str) -> String {
             .get(VERBATIM_UNC_PREFIX.len()..)
             .is_some_and(is_verbatim_unc_suffix)
     {
-        return format!(r"\\{}", &path[VERBATIM_UNC_PREFIX.len()..]);
+        return path.to_string();
     }
     if path
         .get(..VERBATIM_PREFIX.len())
@@ -107,7 +119,10 @@ pub(crate) fn display_path(path: &str) -> String {
             .get(VERBATIM_PREFIX.len()..)
             .is_some_and(is_verbatim_drive_path)
     {
-        return path[VERBATIM_PREFIX.len()..].to_string();
+        let plain = &path[VERBATIM_PREFIX.len()..];
+        if plain.len() < MAX_PATH && !has_verbatim_only_component(plain) {
+            return plain.to_string();
+        }
     }
     path.to_string()
 }
@@ -121,6 +136,31 @@ fn is_verbatim_unc_suffix(path: &str) -> bool {
     let mut components = path.split('\\');
     components.next().is_some_and(|server| !server.is_empty())
         && components.next().is_some_and(|share| !share.is_empty())
+}
+
+/// A plain path that would resolve differently from its verbatim spelling:
+/// any component that Win32 treats as a device, or trims, in the plain
+/// namespace but takes literally under `\\?\`.
+fn has_verbatim_only_component(path: &str) -> bool {
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let last = path
+        .split(['\\', '/'])
+        .filter(|component| !component.is_empty())
+        .last();
+    let Some(component) = last else {
+        return true;
+    };
+    let name = component
+        .split_once('.')
+        .map_or(component, |(name, _)| name);
+    RESERVED
+        .iter()
+        .any(|device| name.eq_ignore_ascii_case(device))
+        || component.ends_with('.')
+        || component.ends_with(' ')
 }
 
 fn project_name(path: &Path) -> String {
@@ -151,7 +191,7 @@ fn now_ms() -> u64 {
 mod tests {
     use devboule_protocol::ErrorCode;
 
-    use super::{canonical_directory, display_path};
+    use super::{canonical_directory, plain_path};
 
     #[test]
     fn relative_project_path_is_rejected_before_canonicalization() {
@@ -161,21 +201,44 @@ mod tests {
     }
 
     #[test]
-    fn display_path_only_strips_recognized_verbatim_drive_and_unc_paths() {
+    fn plain_path_strips_only_a_short_drive_path_with_plain_safe_components() {
         assert_eq!(
-            display_path(r"\\?\C:\Users\alice\Project"),
+            plain_path(r"\\?\C:\Users\alice\Project"),
             r"C:\Users\alice\Project"
         );
+        assert_eq!(plain_path(r"\\?\C:\Project"), r"C:\Project");
+        // A plain form over MAX_PATH keeps the prefix: it is the only
+        // spelling that addresses the path at all.
+        let deep = r"\\?\C:\";
+        let long_tail = "word\\";
+        let long = format!("{deep}{}", long_tail.repeat(60));
+        assert!(plain_path(&long).starts_with(r"\\?\"));
+        assert_eq!(plain_path(&long), long);
+        // A reserved device name, or a trailing dot or space, resolves
+        // differently without the prefix.
+        assert_eq!(plain_path(r"\\?\C:\proj\CON"), r"\\?\C:\proj\CON");
+        assert_eq!(plain_path(r"\\?\C:\proj\CON.txt"), r"\\?\C:\proj\CON.txt");
+        assert_eq!(plain_path(r"\\?\C:\proj\lpt9"), r"\\?\C:\proj\lpt9");
+        assert_eq!(plain_path(r"\\?\C:\proj\name."), r"\\?\C:\proj\name.");
+        assert_eq!(plain_path(r"\\?\C:\proj\name "), r"\\?\C:\proj\name ");
+        // A UNC path keeps its spelling: its plain form is still UNC.
         assert_eq!(
-            display_path(r"\\?\UNC\server\share\Project"),
-            r"\\server\share\Project"
+            plain_path(r"\\?\UNC\server\share\Project"),
+            r"\\?\UNC\server\share\Project"
         );
-        assert_eq!(display_path(r"\\?\"), r"\\?\");
-        assert_eq!(display_path(r"\\?\UNC\"), r"\\?\UNC\");
-        assert_eq!(display_path(r"\\?\UNC\server"), r"\\?\UNC\server");
+        assert_eq!(plain_path(r"\\?\UNC\"), r"\\?\UNC\");
+        assert_eq!(plain_path(r"\\?\UNC\server"), r"\\?\UNC\server");
+        // Shapes the prefix rules do not recognize stay untouched, as do
+        // paths that are already plain.
+        assert_eq!(plain_path(r"\\?\"), r"\\?\");
         assert_eq!(
-            display_path(r"\\?\Volume{abcd}\folder"),
+            plain_path(r"\\?\Volume{abcd}\folder"),
             r"\\?\Volume{abcd}\folder"
         );
+        assert_eq!(
+            plain_path(r"C:\Users\alice\Project"),
+            r"C:\Users\alice\Project"
+        );
+        assert_eq!(plain_path(r"relative\path"), r"relative\path");
     }
 }

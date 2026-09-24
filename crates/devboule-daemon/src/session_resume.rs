@@ -18,7 +18,7 @@ pub(super) fn session_folder_gone(path: &str) -> WireError {
         ErrorCode::WorkspaceUnavailable,
         format!(
             "the folder this session worked in no longer exists: {}",
-            crate::workspace::display_path(path)
+            crate::workspace::plain_path(path)
         ),
     )
 }

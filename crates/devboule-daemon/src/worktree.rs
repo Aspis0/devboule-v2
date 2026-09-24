@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::git::{run_git_args, GitOutput, GitRunError};
-use crate::workspace::display_path;
+use crate::workspace::plain_path;
 
 const DEFAULT_WORKTREE_PREFIX: &str = "worktree";
 
@@ -169,7 +169,7 @@ pub(crate) fn identify_worktree_at_path(
 }
 
 fn git_path_arg(path: &Path) -> String {
-    display_path(&path.to_string_lossy())
+    plain_path(&path.to_string_lossy())
 }
 
 pub(crate) fn build_worktree_remove_command(

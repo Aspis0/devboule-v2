@@ -8,6 +8,12 @@
 
 use super::*;
 
+/// The stored path in the spelling a child process receives: see
+/// `plain_path` for what stays verbatim.
+pub(super) fn plain_cwd(path: &Path) -> PathBuf {
+    crate::workspace::plain_path(&path.to_string_lossy()).into()
+}
+
 impl super::SessionRegistry {
     pub fn projects_list(&self) -> Result<Vec<Project>, WireError> {
         self.journal
@@ -109,7 +115,7 @@ impl super::SessionRegistry {
                 ErrorCode::Io,
                 format!(
                     "Worktree directory '{}' is not writable: {error}",
-                    crate::workspace::display_path(&root.to_string_lossy())
+                    crate::workspace::plain_path(&root.to_string_lossy())
                 ),
             )
         })?;
@@ -123,7 +129,7 @@ impl super::SessionRegistry {
                     Ok(()) => format!("Could not add git worktree for '{project_id}': {error}"),
                     Err(cleanup_error) => format!(
                         "Could not add git worktree for '{project_id}': {error}; leftover checkout at '{}' ({cleanup_error})",
-                        crate::workspace::display_path(&checkout.to_string_lossy())
+                        crate::workspace::plain_path(&checkout.to_string_lossy())
                     ),
                 },
             ));
@@ -138,7 +144,7 @@ impl super::SessionRegistry {
                         ErrorCode::Journal,
                         format!(
                             "{error}; leftover checkout at '{}' ({cleanup_error})",
-                            crate::workspace::display_path(&checkout.to_string_lossy())
+                            crate::workspace::plain_path(&checkout.to_string_lossy())
                         ),
                     ));
                 }
@@ -215,8 +221,8 @@ impl super::SessionRegistry {
             ));
         };
         if !crate::worktree::path_is_within(&checkout, &root) {
-            let path = crate::workspace::display_path(&checkout.to_string_lossy());
-            let root = crate::workspace::display_path(&root.to_string_lossy());
+            let path = crate::workspace::plain_path(&checkout.to_string_lossy());
+            let root = crate::workspace::plain_path(&root.to_string_lossy());
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 format!("Checkout '{path}' is not inside worktree root '{root}'."),
@@ -232,7 +238,7 @@ impl super::SessionRegistry {
                     expected_branch,
                 ) {
                     crate::worktree::WorktreeIdentity::Locked => {
-                        let path = crate::workspace::display_path(&checkout.to_string_lossy());
+                        let path = crate::workspace::plain_path(&checkout.to_string_lossy());
                         return Err(WireError::new(
                             ErrorCode::InvalidRequest,
                             format!(
@@ -242,7 +248,7 @@ impl super::SessionRegistry {
                         .with_details(ErrorDetails::WorktreeLocked { path }));
                     }
                     crate::worktree::WorktreeIdentity::BranchMismatch { observed } => {
-                        let path = crate::workspace::display_path(&checkout.to_string_lossy());
+                        let path = crate::workspace::plain_path(&checkout.to_string_lossy());
                         return Err(WireError::new(
                             ErrorCode::InvalidRequest,
                             format!(
@@ -275,7 +281,7 @@ impl super::SessionRegistry {
                     crate::worktree::worktree_dirty_remove_message(&checkout),
                 )
                 .with_details(ErrorDetails::WorktreeDirty {
-                    path: crate::workspace::display_path(&checkout.to_string_lossy()),
+                    path: crate::workspace::plain_path(&checkout.to_string_lossy()),
                     force_required: true,
                 }));
             }
@@ -290,7 +296,7 @@ impl super::SessionRegistry {
                     crate::worktree::worktree_dirty_remove_message(&checkout),
                 )
                 .with_details(ErrorDetails::WorktreeDirty {
-                    path: crate::workspace::display_path(&checkout.to_string_lossy()),
+                    path: crate::workspace::plain_path(&checkout.to_string_lossy()),
                     force_required: true,
                 }));
             }
@@ -315,7 +321,7 @@ impl super::SessionRegistry {
     ) -> Result<(), WireError> {
         let leftover = checkout
             .exists()
-            .then(|| crate::workspace::display_path(&checkout.to_string_lossy()));
+            .then(|| crate::workspace::plain_path(&checkout.to_string_lossy()));
         journal
             .workspace_delete(workspace_id)
             .map_err(WireError::from)?;
@@ -328,10 +334,16 @@ impl super::SessionRegistry {
 
     /// `pub(crate)` because the workspace git-status read resolves its root
     /// from an id the same way a session does, and never from a request field.
+    ///
+    /// The answer is the plain spelling (`plain_path`), because this is the
+    /// value every child process receives as its cwd and every agent reads
+    /// as its workspace: a verbatim cwd sends cmd-side commands to
+    /// `C:\Windows` and prints an alien PowerShell prompt. The cache and the
+    /// journal keep the stored verbatim form.
     pub(crate) fn workspace_cwd(&self, workspace_id: &str) -> Result<PathBuf, WireError> {
         if let Some(path) = self.cached_workspace_path(workspace_id) {
             if path.is_dir() {
-                return Ok(path);
+                return Ok(plain_cwd(&path));
             }
             // The path can disappear after it was cached. Drop it before a
             // bounded journal refresh so a later mutation can repair it.
@@ -355,7 +367,7 @@ impl super::SessionRegistry {
             ));
         }
         self.remember_workspace_path(workspace_id, path.clone());
-        Ok(path)
+        Ok(plain_cwd(&path))
     }
 
     pub(super) fn apply_workspace_cwd(
@@ -454,12 +466,12 @@ fn workspace_directory_error(
     }
     // The path is intentionally included only in the user-facing error. Do
     // not put this personal location in daemon logs or diagnostics.
-    let display_path = crate::workspace::display_path(path.to_string_lossy().as_ref());
+    let plain_path = crate::workspace::plain_path(path.to_string_lossy().as_ref());
     eprintln!("workspace working directory became unavailable during spawn (OS error {code})");
     Some(WireError::new(
         ErrorCode::WorkspaceUnavailable,
         format!(
-            "Workspace '{workspace_id}' at '{display_path}' became unavailable while starting the session (OS error {code}: {}).",
+            "Workspace '{workspace_id}' at '{plain_path}' became unavailable while starting the session (OS error {code}: {}).",
             os_error_description(code)
         ),
     ))

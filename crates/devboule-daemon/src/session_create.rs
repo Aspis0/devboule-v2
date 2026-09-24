@@ -240,7 +240,7 @@ pub(super) fn build_birth_record(
     let metadata = Session {
         id: id.to_string(),
         workspace_id,
-        cwd: Some(crate::workspace::display_path(
+        cwd: Some(crate::workspace::plain_path(
             &resolved.command.cwd.to_string_lossy(),
         )),
         kind: kind.clone(),

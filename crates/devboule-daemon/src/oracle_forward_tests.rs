@@ -297,9 +297,9 @@ fn the_call_carries_the_sessions_own_root_and_no_argument_can_name_one() {
     let request = rx.recv_timeout(Duration::from_secs(5)).expect("request");
     let sent: Value = serde_json::from_str(request.split_once("\r\n\r\n").expect("HTTP body").1)
         .expect("forward body");
-    // The row's own root — in whatever spelling the journal stores it (the
-    // verbatim `\\?\` prefix travels too; the app builds its paths from it
-    // with `from_root_without_env`, like the graph tools open their store).
+    // The root in the spelling the daemon hands its children (plain — the
+    // stored journal form stays verbatim); the app builds its paths from it
+    // with `from_root_without_env`, like the graph tools open their store.
     let expected_root = state
         .sessions
         .session_workspace_root(SESSION, &owner())

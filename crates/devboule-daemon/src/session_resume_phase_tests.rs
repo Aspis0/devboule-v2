@@ -406,7 +406,7 @@ fn resume_stage_command_uses_the_recorded_directory_and_refuses_a_missing_one() 
         error.message,
         format!(
             "the folder this session worked in no longer exists: {}",
-            crate::workspace::display_path(&gone.to_string_lossy())
+            crate::workspace::plain_path(&gone.to_string_lossy())
         ),
         "the sentence names the path it looked for: {error:?}"
     );

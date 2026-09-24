@@ -26,7 +26,7 @@ use devboule_daemon::{
 use devboule_protocol::{
     AgentTaskState, AttentionReason, ClientHello, Cursor, ErrorCode, FinishArtifact, OwnerId,
     PermissionOutcome, Persistence, PersistenceKind, ResumeResult, SessionEvent, SessionKind,
-    SessionStateSnapshot,
+    SessionStateSnapshot, WorkspaceIsolation,
 };
 use rusqlite::Connection;
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -437,6 +437,78 @@ fn acp_create_after_the_last_close_still_contains_the_child() {
         .session_close(&second.id)
         .expect("close the second ACP session");
     wait_until_gone(second_pid);
+}
+
+/// The `session/new` frame is protocol state the agent keeps: it must name
+/// the workspace in the plain spelling the daemon hands its children, not
+/// the stored verbatim spelling.
+#[test]
+fn acp_session_new_carries_a_plain_cwd() {
+    let _test_lock = lock_tests();
+    let stdin_file = std::env::temp_dir().join(format!(
+        "devboule acp stdin {}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_millis()
+    ));
+    std::env::set_var("DEVBOULE_ACP_STUB_REQUESTS_FILE", &stdin_file);
+    let mut test = AcpTest::new(&[]);
+    test._env.names.push("DEVBOULE_ACP_STUB_REQUESTS_FILE");
+
+    let dir = std::env::temp_dir().join(format!(
+        "devboule acp cwd {}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_millis()
+    ));
+    std::fs::create_dir_all(&dir).expect("project dir");
+    let project = test
+        .client
+        .project_add(&dir.to_string_lossy())
+        .expect("project add");
+    let workspace = test
+        .client
+        .workspace_create(&project.id, WorkspaceIsolation::Local, None)
+        .expect("workspace create");
+    let session = test
+        .client
+        .session_create(Some(workspace.id.clone()), SessionKind::Acp, None)
+        .expect("create ACP session in workspace");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let new_request = loop {
+        let recorded = std::fs::read_to_string(&stdin_file).unwrap_or_default();
+        let line = recorded
+            .lines()
+            .find(|line| line.contains(r#""session/new""#));
+        if let Some(line) = line {
+            break serde_json::from_str::<serde_json::Value>(line)
+                .expect("session/new must be one JSON line");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the stub never recorded a session/new request"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let cwd = new_request["params"]["cwd"]
+        .as_str()
+        .expect("session/new carries a cwd")
+        .to_string();
+    assert_eq!(
+        cwd,
+        dir.to_string_lossy(),
+        "session/new must carry the plain cwd"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&stdin_file);
 }
 
 #[test]
