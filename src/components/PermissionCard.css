@@ -149,6 +149,18 @@
 
 .permission-card-actions {
   padding: 8px 11px 9px;
+  /* A chooser's option buttons take their own rows rather than pushing the
+     label's state words out of a narrow card. */
+  flex-wrap: wrap;
+}
+
+/* The option the answer picked, under the daemon's own name: the label says
+   whether it was allowed or denied — this says which choice that was. */
+.permission-card-choice {
+  padding: 0 11px 6px 25px;
+  color: var(--ink);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
 }
 
 .permission-card-label {

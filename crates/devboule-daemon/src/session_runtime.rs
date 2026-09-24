@@ -1543,7 +1543,8 @@ impl SessionRuntime {
         // Overwrite, not fill-if-empty: an absent origin is not expressible, so
         // the placeholder would otherwise survive as a lie.
         let event = if matches!(&event, SessionEvent::PermissionRequest { .. }) {
-            super::permission_broker::stamp_origin(event, self.origin())
+            let event = super::permission_broker::stamp_origin(event, self.origin());
+            super::permission_broker::stamp_chooser(event)
         } else {
             event
         };

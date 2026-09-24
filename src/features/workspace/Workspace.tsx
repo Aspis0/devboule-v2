@@ -159,6 +159,8 @@ export function paneSessionOf<S extends { id: string }>(
 interface QueueResolution {
   outcome: "allowed" | "denied" | null;
   answeredBy: string | null;
+  /** The daemon's own word for the option that was chosen, when it said one. */
+  selectedOptionName: string | null;
 }
 
 export function Workspace({
@@ -910,8 +912,9 @@ export function Workspace({
         if (index === -1) return queue;
         const answeredBy = resolution.answeredBy?.trim() || null;
         const outcome = resolutionOutcome(resolution.selectedOptionKind);
+        const selectedOptionName = resolution.selectedOptionName?.trim() || null;
         const next = [...queue];
-        next[index] = { ...next[index], resolution: { outcome, answeredBy } };
+        next[index] = { ...next[index], resolution: { outcome, answeredBy, selectedOptionName } };
         return next;
       });
     },

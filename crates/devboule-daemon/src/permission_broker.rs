@@ -1002,6 +1002,7 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
             options,
             origin: _,
             create_agent,
+            is_chooser,
         } => SessionEvent::PermissionRequest {
             tool_call_id,
             title,
@@ -1011,11 +1012,33 @@ pub(super) fn stamp_origin(request: SessionEvent, origin: SessionOrigin) -> Sess
             cwd,
             env,
             options,
+            is_chooser,
             origin,
             create_agent,
         },
         other => other,
     }
+}
+
+/// The same event with the daemon's chooser verdict written into it, when it
+/// is a permission request: `Some(true)` exactly when the option set trips the
+/// rule [`is_allow_chooser`] names, absent otherwise.
+///
+/// Called from `SessionRuntime::publish_agent_event_with_seq` — the one place
+/// a request leaves for a subscriber — so every copy the app can see carries
+/// the verdict, and the card renders one control per option without ever
+/// re-deriving the rule from the option list. Like the origin stamp this
+/// **overwrites**: a value a provider client wrote cannot survive to the wire.
+pub(super) fn stamp_chooser(mut request: SessionEvent) -> SessionEvent {
+    if let SessionEvent::PermissionRequest {
+        options,
+        is_chooser,
+        ..
+    } = &mut request
+    {
+        *is_chooser = is_allow_chooser(options).then_some(true);
+    }
+    request
 }
 
 /// The device id of a request's origin, when it came from a paired device.
@@ -1246,6 +1269,9 @@ pub(super) fn permission_with_kinds(tool_call_id: &str, kinds: &[(&str, &str)]) 
         // for a subscriber.
         origin: SessionOrigin::local(),
         create_agent: None,
+        // The publish path stamps the chooser verdict on the way out, the
+        // same way it stamps the origin.
+        is_chooser: None,
     }
 }
 

@@ -808,6 +808,7 @@ fn a_preset_spelled_creation_card_hydrates_on_replay() {
             name: "Allow".to_string(),
             kind: "allow_once".to_string(),
         }],
+        is_chooser: None,
         origin: devboule_protocol::SessionOrigin::local(),
         create_agent: Some(devboule_protocol::CreateAgentCard {
             creator_session_id: "s.p.card".to_string(),

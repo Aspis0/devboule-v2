@@ -453,7 +453,7 @@ interface AssistantProps extends DesignSkillViewProps {
   onProviderSelect: (provider: ProviderInfo) => void;
   onModelSelect: (modelId: string) => void;
   onEffortSelect: (effort: string) => void;
-  onPermissionRespond: (outcome: "allow_once" | "deny") => Promise<void>;
+  onPermissionRespond: (outcome: "allow_once" | "deny", optionId?: string) => Promise<void>;
   onEndSession: () => void;
   skillResultNotice: string | null;
   onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
@@ -4456,8 +4456,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     [agentSession],
   );
   const respondPermission = useCallback(
-    (outcome: "allow_once" | "deny"): Promise<void> =>
-      host.respondPermission?.(outcome) ?? Promise.resolve(),
+    (outcome: "allow_once" | "deny", optionId?: string): Promise<void> =>
+      (optionId === undefined
+        ? host.respondPermission?.(outcome)
+        : host.respondPermission?.(outcome, optionId)) ?? Promise.resolve(),
     [host],
   );
   const endSession = useCallback(() => {

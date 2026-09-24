@@ -188,6 +188,11 @@ fn session_event_samples() -> Vec<SessionEvent> {
             cwd: None,
             env: Some(Vec::new()),
             options: Vec::new(),
+            // The sample carries the marked form rather than `None`, the
+            // same reason it carries `create_agent`: the committed snapshot
+            // is what pins the wire name, and a sample that omitted the
+            // field would leave `isChooser` unexercised by it.
+            is_chooser: Some(true),
             origin: crate::SessionOrigin::unknown(),
             // The sample carries the creation payload rather than `None`: the
             // ordinary card is the same variant with the field absent, and a

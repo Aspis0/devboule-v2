@@ -179,6 +179,7 @@
       "tools": "hosted"
     },
     "env": [],
+    "isChooser": true,
     "options": [],
     "origin": {
       "kind": "unknown"

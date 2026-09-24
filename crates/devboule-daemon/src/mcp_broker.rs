@@ -2990,6 +2990,7 @@ fn creation_card(
                 kind: "reject_once".to_string(),
             },
         ],
+        is_chooser: None,
         // A placeholder: the permission broker stamps the creator's own origin
         // on the way in, exactly as it does for a provider's own card.
         origin: SessionOrigin::unknown(),

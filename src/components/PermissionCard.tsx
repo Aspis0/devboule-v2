@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { boundByGraphemes } from "../lib/graphemeBound";
+import { optionOutcome } from "../lib/optionOutcome";
 import { sessionPermissionRespond } from "../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
 import { ErrorText } from "./ErrorText";
@@ -332,8 +333,14 @@ export interface PermissionCardProps {
    * unknown `selectedOptionKind`) — the card claims no decision. `answeredBy`
    * is null when the daemon did not say who — the card claims no answerer,
    * and "a person answered" is never read into the silence.
+   * `selectedOptionName` is the daemon's own word for the option that was
+   * chosen, kept so the card can say which choice the answer was.
    */
-  resolution?: { outcome: "allowed" | "denied" | null; answeredBy: string | null } | null;
+  resolution?: {
+    outcome: "allowed" | "denied" | null;
+    answeredBy: string | null;
+    selectedOptionName?: string | null;
+  } | null;
   /**
    * The session id that created THIS session, as the roster carries it — the
    * only fact "answered by its creator" can be checked against. Absent or
@@ -341,7 +348,7 @@ export interface PermissionCardProps {
    * never earn the creator label, only the named-session one.
    */
   creatorId?: string | null;
-  onRespond?: (outcome: "allow_once" | "deny") => Promise<void>;
+  onRespond?: (outcome: "allow_once" | "deny", optionId?: string) => Promise<void>;
   onResolved?: (sessionId: string, toolCallId: string) => void;
 }
 
@@ -362,6 +369,10 @@ export function PermissionCard({
 }: PermissionCardProps) {
   const [permission, setPermission] = useState<PermissionState>("waiting");
   const [error, setError] = useState<ErrorSentence | null>(null);
+  // The option a chooser answer picked, under the agent's own option name:
+  // set when THIS card answers with an option id, so its resolved state says
+  // which choice it was. An outside answer's name arrives on `resolution`.
+  const [localChoice, setLocalChoice] = useState<string | null>(null);
   const submittingRef = useRef(false);
   // Set false on unmount so a late answer never stamps state (or fires
   // onResolved) after the host closed the run and removed the card.
@@ -382,6 +393,7 @@ export function PermissionCard({
     submittingRef.current = false;
     setPermission("waiting");
     setError(null);
+    setLocalChoice(null);
   }, [sessionId, request.toolCallId, subscriptionId]);
 
   if (!capabilities.includes("typed_permissions") && daemonState === "connected") return null;
@@ -392,6 +404,15 @@ export function PermissionCard({
   const daemonReachable = daemonState === "connected";
   const allowSupported = request.options.some((option) => option.kind === "allow_once");
   const denySupported = request.options.some((option) => option.kind === "reject_once");
+  // The daemon's chooser verdict, read and never re-derived here: a marked
+  // request renders one control per option, an unmarked one the ordinary pair.
+  const isChooser = request.isChooser === true;
+  // The agent refused by offering a reject option of its own; only when it
+  // did not does the card keep its plain Deny.
+  const hasRejectOption = request.options.some((option) => option.kind.startsWith("reject"));
+  // Which option the answer was, from whichever side said it: the daemon's
+  // name on an outside resolution, or the option this card clicked.
+  const chosenName = resolution?.selectedOptionName || localChoice;
   // The creator answered elsewhere: the card resolves with the attribution
   // on it, an answerer the label can name, and a way to clear it once read.
   // The dot keeps the outcome's colour so the state is readable at the same
@@ -414,17 +435,33 @@ export function PermissionCard({
     : PERMISSION_LABELS[permission];
   const cardTone = resolvedByCreator ? (resolution.outcome ?? "unclaimed") : permission;
 
-  const respond = async (outcome: "allow_once" | "deny") => {
+  const respond = async (outcome: "allow_once" | "deny", optionId?: string) => {
     if (resolvedByCreator || submittingRef.current || permission !== "waiting") return;
     const generation = generationRef.current;
     submittingRef.current = true;
     setPermission("submitting");
     setError(null);
     try {
-      await (onRespond?.(outcome) ??
-        sessionPermissionRespond(sessionId, subscriptionId, request.toolCallId, outcome));
+      // The ordinary pair posts no option id: its options are unambiguous,
+      // so the daemon's own pick is the right one. A chooser answer names the
+      // option it is answering with.
+      await (onRespond?.(outcome, optionId) ??
+        (optionId === undefined
+          ? sessionPermissionRespond(sessionId, subscriptionId, request.toolCallId, outcome)
+          : sessionPermissionRespond(
+              sessionId,
+              subscriptionId,
+              request.toolCallId,
+              outcome,
+              optionId,
+            )));
       if (!mountedRef.current || generationRef.current !== generation) return;
       setPermission(outcome === "allow_once" ? "allowed" : "denied");
+      if (optionId !== undefined) {
+        setLocalChoice(
+          request.options.find((option) => option.optionId === optionId)?.name ?? null,
+        );
+      }
       onResolved?.(sessionId, request.toolCallId);
     } catch (cause) {
       if (!mountedRef.current || generationRef.current !== generation) return;
@@ -464,13 +501,14 @@ export function PermissionCard({
           The daemon is not reachable. Reconnect to answer this request.
         </div>
       ) : null}
-      {!allowSupported || !denySupported ? (
+      {!isChooser && (!allowSupported || !denySupported) ? (
         <div className="permission-card-unavailable" role="status">
           {!allowSupported ? "Allow once is not offered for this request." : null}
           {!allowSupported && !denySupported ? " " : null}
           {!denySupported ? "Deny is not offered for this request." : null}
         </div>
       ) : null}
+      {chosenName ? <div className="permission-card-choice">Chosen: {chosenName}</div> : null}
       <div className="permission-card-actions">
         <span
           className="permission-card-label"
@@ -491,6 +529,40 @@ export function PermissionCard({
           >
             Clear
           </button>
+        ) : isChooser ? (
+          <>
+            {!hasRejectOption ? (
+              <button
+                type="button"
+                className="permission-card-secondary-action permission-card-deny-action"
+                // The agent offered no way to refuse, so the card keeps its
+                // own Deny: a question the person will not answer can still
+                // be refused.
+                onClick={() => void respond("deny")}
+                disabled={permission !== "waiting" || !daemonReachable}
+              >
+                Deny
+              </button>
+            ) : null}
+            {request.options.map((option) => {
+              const outcome = optionOutcome(option.kind);
+              return (
+                <button
+                  key={option.optionId}
+                  type="button"
+                  className={
+                    outcome === "deny"
+                      ? "permission-card-secondary-action permission-card-deny-action"
+                      : "permission-card-primary-action"
+                  }
+                  onClick={() => void respond(outcome, option.optionId)}
+                  disabled={permission !== "waiting" || !daemonReachable}
+                >
+                  {option.name}
+                </button>
+              );
+            })}
+          </>
         ) : (
           <>
             <button

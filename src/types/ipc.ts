@@ -409,6 +409,16 @@ export interface PermissionRequest {
   env?: PermissionEnvVar[];
   options: PermissionOption[];
   /**
+   * The daemon's chooser verdict: present and `true` exactly when the
+   * option set trips Paseo's rule (the same allow kind offered twice means
+   * the agent is asking which one to use). The card renders one control per
+   * option when it is set; absent — an ordinary permission, or a frame from
+   * a daemon older than this field — renders the ordinary Allow once and
+   * Deny pair. The app reads this mark and never re-derives the rule from
+   * the option list.
+   */
+  isChooser?: boolean;
+  /**
    * The origin of the session this request belongs to, when the daemon sends
    * it. The card renders a `peer` origin as its own provenance line, in its own
    * element: the request's own text must never be able to imitate it. A `local`

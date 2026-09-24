@@ -976,6 +976,7 @@ export function createAgentHost(): DesignHost {
   const respondToPermissionEntry = (
     entry: PendingPermissionEntry,
     outcome: "allow_once" | "deny",
+    optionId?: string,
   ): Promise<void> => {
     if (entry.answered || entry.responsePromise !== null) return Promise.resolve();
     entry.answered = true;
@@ -991,12 +992,23 @@ export function createAgentHost(): DesignHost {
 
     let response: Promise<void>;
     try {
-      response = sessionPermissionRespond(
-        entry.sessionId,
-        liveSubscriptionId,
-        entry.request.toolCallId,
-        outcome,
-      );
+      // A chooser answer carries its option's id; the ordinary pair keeps the
+      // plain four-argument call.
+      response =
+        optionId === undefined
+          ? sessionPermissionRespond(
+              entry.sessionId,
+              liveSubscriptionId,
+              entry.request.toolCallId,
+              outcome,
+            )
+          : sessionPermissionRespond(
+              entry.sessionId,
+              liveSubscriptionId,
+              entry.request.toolCallId,
+              outcome,
+              optionId,
+            );
     } catch (cause) {
       entry.answered = false;
       activeRunSettlementCheck?.();
@@ -1034,13 +1046,14 @@ export function createAgentHost(): DesignHost {
 
   const respondToPendingPermission = (
     outcome: "allow_once" | "deny",
+    optionId?: string,
     sessionId?: string,
   ): Promise<void> => {
     const pending = pendingPermissions[0];
     if (pending === undefined || (sessionId !== undefined && pending.sessionId !== sessionId)) {
       return Promise.resolve();
     }
-    return respondToPermissionEntry(pending, outcome);
+    return respondToPermissionEntry(pending, outcome, optionId);
   };
 
   const denyUnansweredPermissions = (sessionId?: string): Promise<void> => {
@@ -1723,7 +1736,7 @@ export function createAgentHost(): DesignHost {
     getRunTranscriptStart: () => lastRunTranscriptStart,
     getPendingPermission: pendingPermissionSnapshot,
     getPermissionNotice: () => permissionNotice,
-    respondPermission: (outcome) => respondToPendingPermission(outcome),
+    respondPermission: (outcome, optionId) => respondToPendingPermission(outcome, optionId),
     getAgentSessionRecord: () => sessionHandle?.session ?? null,
     subscribeAgentSession: (listener) => {
       sessionListeners.add(listener);

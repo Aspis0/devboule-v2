@@ -3421,6 +3421,41 @@ describe("delegation on the roster", () => {
     );
   });
 
+  it("names the choice on the resolved card", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([]);
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...acpSession("session-created", "agent two"),
+      createdBy: "s.creator.1",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
+    await act(async () => undefined);
+
+    const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    if (emit === null) throw new Error("permission emitter did not render");
+    await act(async () => emit.click());
+
+    // The daemon's own word for what was selected rides on the resolution
+    // event; the card must say it, by name, not only "allowed" or "denied".
+    const creatorResolved = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved-creator-allowed]",
+    );
+    if (creatorResolved === null) throw new Error("creator resolution emitter did not render");
+    await act(async () => creatorResolved.click());
+
+    const card = container.querySelector(".permission-card");
+    expect(card).not.toBeNull();
+    expect(card?.querySelector(".permission-card-choice")?.textContent).toBe("Chosen: Allow once");
+  });
+
   it("renders allow_always as ALLOWED by its creator — never as a denial", async () => {
     // The daemon's auto-accept path prefers allow_once and falls back to
     // allow_always, so a delegated answer is exactly where allow_always

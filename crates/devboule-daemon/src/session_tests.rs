@@ -1083,6 +1083,7 @@ pub(super) fn permission_attention_event() -> SessionEvent {
         cwd: None,
         env: None,
         options: Vec::new(),
+        is_chooser: None,
         // A provider client writes `local` here; the daemon overwrites it
         // with the session's stored origin on the way out.
         origin: SessionOrigin::local(),
@@ -2921,6 +2922,7 @@ fn permission_card(tool_call_id: &str) -> SessionEvent {
             name: "Allow once".to_string(),
             kind: "allow_once".to_string(),
         }],
+        is_chooser: None,
         origin: SessionOrigin::local(),
         create_agent: None,
     }
@@ -3458,6 +3460,68 @@ fn a_steer_the_provider_cannot_take_is_refused_for_a_paired_device() {
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The wire carries the daemon's chooser verdict: a request whose option
+/// set trips Paseo's rule (the same allow kind offered twice) is marked so
+/// the app renders one control per option, and an ordinary
+/// allow-once/reject-once pair is left unmarked. The app must never
+/// re-derive the rule from the option list — the daemon says it.
+#[test]
+fn the_daemon_marks_a_chooser_on_the_wire_and_does_not_mark_a_standard_pair() {
+    let (broker, _sent) = permission_broker::test_broker();
+    let runtime = Arc::new(SessionRuntime::for_acp(
+        "s.permission.chooser".to_string(),
+        None,
+        broker,
+    ));
+    let conn = ConnHandle::new(93);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach");
+    conn.track_with_agent_replay(
+        "s.permission.chooser",
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+
+    runtime.publish_agent_event(
+        permission_broker::permission_with_kinds(
+            "chooser-1",
+            &[("a", "allow_once"), ("b", "allow_once")],
+        ),
+        None,
+    );
+    runtime.publish_agent_event(permission_broker::permission("standard-1"), None);
+
+    let events = conn.pull_events();
+    let wire_json = |tool_call_id: &str| {
+        events
+            .iter()
+            .find_map(|event| match &event.envelope.event {
+                SessionEvent::PermissionRequest {
+                    tool_call_id: found,
+                    ..
+                } if found == tool_call_id => Some(
+                    serde_json::to_value(&event.envelope.event)
+                        .expect("a permission request serialises"),
+                ),
+                _ => None,
+            })
+            .expect("the attached observer received the request")
+    };
+    assert_eq!(
+        wire_json("chooser-1").get("isChooser"),
+        Some(&serde_json::Value::Bool(true)),
+        "a chooser carries its mark on the wire: {events:?}"
+    );
+    assert!(
+        wire_json("standard-1").get("isChooser").is_none(),
+        "an ordinary allow-once/reject-once pair is not marked: {events:?}"
+    );
 }
 
 /// S4-06: cards are cancelled only once the provider has taken the text.

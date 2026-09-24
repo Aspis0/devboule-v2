@@ -534,6 +534,7 @@ fn permission_request_round_trips_with_tool_call_correlation() {
             name: "Allow once".to_string(),
             kind: "allow_once".to_string(),
         }],
+        is_chooser: None,
         origin: SessionOrigin::peer("device-phone", PeerRole::Client),
         create_agent: None,
     };
@@ -583,6 +584,7 @@ fn a_permission_request_origin_round_trips_and_absence_is_a_wire_error() {
         cwd: None,
         env: None,
         options: Vec::new(),
+        is_chooser: None,
         origin: SessionOrigin::local(),
         create_agent: None,
     };
