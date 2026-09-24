@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  isCommandError,
   oracleAsk,
   oracleDoctor,
   oracleFiles,
@@ -29,7 +28,9 @@ import { OracleAdmin, type WatchNotice } from "./OracleAdmin";
 import { OracleSearch } from "./OracleSearch";
 import { OracleSetup } from "./OracleSetup";
 import { useTrackedRequest, type TrackedRequestState } from "../../lib/trackedRequest";
-import { commandErrorMessage, formatCount } from "../../lib/format";
+import { formatCount } from "../../lib/format";
+import { errorSentence } from "../../lib/errorSentence";
+import { isCommandError } from "../../lib/commandError";
 import { getOracleStage, isIndexEmpty, type OracleStage } from "./oracleUtils";
 import "./oracle.css";
 
@@ -152,7 +153,7 @@ export function OraclePanel() {
     void oracleModelDownloadStart()
       .then(() => refreshStatus())
       .catch((error: unknown) => {
-        if (mountedRef.current) setWorkspaceActionError(commandErrorMessage(error));
+        if (mountedRef.current) setWorkspaceActionError(errorSentence(error).sentence);
       })
       .finally(() => {
         modelDownloadInFlightRef.current = false;
@@ -192,7 +193,7 @@ export function OraclePanel() {
       refreshDoctor();
       refreshStats();
     } catch (error: unknown) {
-      if (mountedRef.current) setWorkspaceActionError(commandErrorMessage(error));
+      if (mountedRef.current) setWorkspaceActionError(errorSentence(error).sentence);
     } finally {
       if (mountedRef.current) setWorkspaceBusy(false);
     }
@@ -209,7 +210,7 @@ export function OraclePanel() {
         if (adminOpen) refreshFiles();
       })
       .catch((error: unknown) => {
-        if (mountedRef.current) setWorkspaceActionError(commandErrorMessage(error));
+        if (mountedRef.current) setWorkspaceActionError(errorSentence(error).sentence);
       })
       .finally(() => {
         if (mountedRef.current) setCancelBusy(false);
@@ -233,7 +234,7 @@ export function OraclePanel() {
       })
       .catch((error: unknown) => {
         if (!mountedRef.current) return;
-        setIndexActionError(commandErrorMessage(error));
+        setIndexActionError(errorSentence(error).sentence);
         refreshStatus();
         refreshStats();
       })
@@ -260,7 +261,7 @@ export function OraclePanel() {
               message: "File watching is not available yet.",
             });
           } else {
-            setWatchNotice({ kind: "error", message: commandErrorMessage(error) });
+            setWatchNotice({ kind: "error", message: errorSentence(error).sentence });
           }
         })
         .finally(() => {

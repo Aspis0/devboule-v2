@@ -8,11 +8,11 @@ import {
   providerVocabularyGet,
   providersList,
   providersRefresh,
-  reasonFromCause,
   toolPolicyGet,
   toolPolicySet,
   workspacesList,
 } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import {
   DELEGATION_CAPABILITY,
   delegationController,
@@ -373,7 +373,7 @@ function ProviderToolSettings({
           // edit: that is a terminal state — the daemon's sentence plus a
           // Retry — not a loading state to sit under forever.
           if (policiesRef.current === null) setLoadFailed(true);
-          setError(reasonFromCause(cause));
+          setError(errorSentence(cause).sentence);
         }
       });
     return () => {
@@ -456,7 +456,7 @@ function ProviderToolSettings({
       ];
       policiesRef.current = reverted;
       setPolicies(reverted);
-      setError(reasonFromCause(cause));
+      setError(errorSentence(cause).sentence);
     } finally {
       writesInFlightRef.current -= 1;
     }
@@ -935,7 +935,7 @@ function NewAgentProfileForm({
       })
       .catch((cause: unknown) => {
         if (vocabularySeqRef.current !== seq) return;
-        setVocabularyError(reasonFromCause(cause));
+        setVocabularyError(errorSentence(cause).sentence);
       });
   }, [providerId, vocabularySupported, providers]);
 
@@ -1552,7 +1552,7 @@ function AgentProfilesPanel() {
         // that is a terminal state — the daemon's sentence plus a Retry —
         // not a loading state to sit under forever.
         if (documentRef.current === null) setLoadFailed(true);
-        setError(reasonFromCause(cause));
+        setError(errorSentence(cause).sentence);
       });
     return () => {
       cancelled = true;
@@ -1570,7 +1570,7 @@ function AgentProfilesPanel() {
         if (!cancelled) setCatalog(listed);
       })
       .catch((cause: unknown) => {
-        if (!cancelled) setCatalogError(reasonFromCause(cause));
+        if (!cancelled) setCatalogError(errorSentence(cause).sentence);
       });
     return () => {
       cancelled = true;
@@ -1658,7 +1658,7 @@ function AgentProfilesPanel() {
         // The write itself is confirmed, so a failed read-back reverts
         // nothing; it is named — the panel would otherwise sit on ids the
         // daemon has already replaced — unless a newer write owns the UI.
-        if (seqRef.current === seq) setError(reasonFromCause(cause));
+        if (seqRef.current === seq) setError(errorSentence(cause).sentence);
       }
       // An older write settling here must not clear a busy flag the newest
       // write still needs.
@@ -1671,7 +1671,7 @@ function AgentProfilesPanel() {
       if (seq !== seqRef.current) return false;
       documentRef.current = previous;
       setDocument(previous);
-      setError(reasonFromCause(cause));
+      setError(errorSentence(cause).sentence);
       setBusy(false);
       return false;
     } finally {
@@ -2140,7 +2140,7 @@ function ProvidersPanel() {
       .catch((cause: unknown) => {
         if (!cancelled && seq === fetchSeqRef.current) {
           setCatalog({ providers: [], unreadableDirs: 0 });
-          setError(reasonFromCause(cause));
+          setError(errorSentence(cause).sentence);
         }
       });
     return () => {
@@ -2160,7 +2160,7 @@ function ProvidersPanel() {
       })
       .catch((cause: unknown) => {
         if (seq === fetchSeqRef.current) {
-          setError(reasonFromCause(cause));
+          setError(errorSentence(cause).sentence);
         }
       })
       .finally(() => {
@@ -2203,11 +2203,11 @@ function ProvidersPanel() {
             if (seq === fetchSeqRef.current) setCatalog(fresh);
           })
           .catch((cause: unknown) => {
-            if (seq === fetchSeqRef.current) setError(reasonFromCause(cause));
+            if (seq === fetchSeqRef.current) setError(errorSentence(cause).sentence);
           });
       })
       .catch((cause: unknown) => {
-        setNpmFailure({ providerId: provider.id, text: reasonFromCause(cause) });
+        setNpmFailure({ providerId: provider.id, text: errorSentence(cause).sentence });
       })
       // Unconditional: setState on an unmounted component is a safe no-op in
       // React 18+, and an unmount guard wedged the Refresh button once under
@@ -2419,7 +2419,7 @@ function ProjectsPanel() {
           try {
             return { id: project.id, workspaces: await workspacesList(project.id) };
           } catch (cause: unknown) {
-            return { id: project.id, error: reasonFromCause(cause) };
+            return { id: project.id, error: errorSentence(cause).sentence };
           }
         }),
       );
@@ -2436,7 +2436,7 @@ function ProjectsPanel() {
       setProjects([]);
       setWorkspacesByProject({});
       setWorkspaceErrors({});
-      setError(reasonFromCause(cause));
+      setError(errorSentence(cause).sentence);
     } finally {
       setLoading(false);
     }

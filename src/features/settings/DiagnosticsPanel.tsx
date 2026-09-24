@@ -1,5 +1,6 @@
 import { Component, type ReactNode, useEffect, useRef, useState } from "react";
-import { daemonDiagnostics, reasonFromCause } from "../../lib/tauri";
+import { daemonDiagnostics } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type { DaemonDiagnostics } from "../../types/ipc";
 import { SettingsHeading } from "./SettingsSurface";
 
@@ -229,7 +230,7 @@ export class DiagnosticsErrorBoundary extends Component<
           <SettingsHeading title="Diagnostics" description={SAFETY_NOTE} />
           <div className="settings-card diagnostics-error" role="alert">
             <h3 className="settings-card-title">Could not render the diagnostics</h3>
-            <p>{reasonFromCause(this.state.error)}</p>
+            <p>{errorSentence(this.state.error).sentence}</p>
             <p>
               The diagnostics response was not understood, but the rest of the app is still
               available.
@@ -285,7 +286,7 @@ function DiagnosticsPanelContent() {
       },
       (cause) => {
         activeLoadRef.current = null;
-        setError(reasonFromCause(cause));
+        setError(errorSentence(cause).sentence);
       },
     );
   }

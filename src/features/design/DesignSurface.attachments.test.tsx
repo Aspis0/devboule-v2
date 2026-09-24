@@ -68,7 +68,6 @@ vi.mock("../../lib/tauri", () => ({
   providersList: providerMocks.list,
   projectsList: providerMocks.projectsList,
   workspacesList: providerMocks.workspacesList,
-  reasonFromCause: (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)),
   createSessionStateChannel: vi.fn(),
   sessionCreate: vi.fn(),
   sessionsList: vi.fn(),

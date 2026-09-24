@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { boundByGraphemes } from "../lib/graphemeBound";
-import { reasonFromCause, sessionPermissionRespond } from "../lib/tauri";
+import { sessionPermissionRespond } from "../lib/tauri";
+import { errorSentence } from "../lib/errorSentence";
 import type { DaemonConnectionState, PermissionRequest, SessionOrigin } from "../types/ipc";
 import "./PermissionCard.css";
 
@@ -428,7 +429,7 @@ export function PermissionCard({
       if (!mountedRef.current || generationRef.current !== generation) return;
       submittingRef.current = false;
       setPermission("waiting");
-      setError(reasonFromCause(cause));
+      setError(errorSentence(cause).sentence);
     }
   };
 

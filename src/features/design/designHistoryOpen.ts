@@ -9,6 +9,7 @@ import {
   sessionDetach,
   type SessionChannel,
 } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import { extractArtifact } from "./agentHost";
 
 export const DESIGN_HISTORY_OPEN_TIMEOUT_MS = 5_000;
@@ -32,16 +33,6 @@ export interface DesignHistoryOpenDeps {
 
 export interface DesignHistoryOpenHandle {
   dispose: () => void;
-}
-
-function reasonFromCause(cause: unknown): string {
-  if (cause instanceof Error && cause.message) return cause.message;
-  if (typeof cause === "string" && cause.trim()) return cause;
-  if (typeof cause === "object" && cause !== null && "message" in cause) {
-    const message = cause.message;
-    if (typeof message === "string" && message.trim()) return message;
-  }
-  return "The transcript could not be opened.";
 }
 
 function lastErrorText(state: AgentSessionState): string {
@@ -202,7 +193,7 @@ export function openDesignHistoryEntry(
         finish({ status: "failed", message: "The transcript could not be opened." });
       }
     } catch (cause) {
-      finish({ status: "failed", message: reasonFromCause(cause) });
+      finish({ status: "failed", message: errorSentence(cause).sentence });
     }
   };
 
@@ -216,7 +207,7 @@ export function openDesignHistoryEntry(
     finish({ status: "timeout", message: timeoutMessage(timeoutMs) });
   }, timeoutMs);
   void controller.start().catch((cause: unknown) => {
-    finish({ status: "failed", message: reasonFromCause(cause) });
+    finish({ status: "failed", message: errorSentence(cause).sentence });
   });
 
   return { dispose };

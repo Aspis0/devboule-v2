@@ -66,9 +66,6 @@ vi.mock("../../lib/tauri", () => ({
   sessionsList: vi.fn(),
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),
-  reasonFromCause: vi.fn((cause: unknown) =>
-    cause instanceof Error && cause.message ? cause.message : "the app did not answer",
-  ),
   sessionCreate: vi.fn(),
   providersList: vi.fn(),
   sessionPresence: vi.fn(async () => undefined),
@@ -496,7 +493,10 @@ describe("Workspace sessions", () => {
       ...terminal("session-2", "agent two"),
       kind: "acp",
     });
-    vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
+    // One installed, non-npx provider: "+ → Agent" takes the single-provider
+    // fast path and creates. Tests that need an empty or multi-provider
+    // catalog override this.
+    vi.mocked(providersList).mockResolvedValue({ providers: [grokProvider], unreadableDirs: 0 });
     vi.mocked(devicesList).mockResolvedValue(devicesReply);
     vi.mocked(workspaceGitStatus).mockResolvedValue(cleanChanges);
     // The factory default already says "connected", but a nested describe's
@@ -938,7 +938,7 @@ describe("Workspace sessions", () => {
     await act(async () => {});
     await act(async () => {});
 
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp");
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "grok");
     expect(container.textContent).toContain("agent two");
     expect(container.querySelector("[data-testid=agent-chat-surface]")?.textContent).toBe(
       "session-2",
@@ -997,7 +997,7 @@ describe("Workspace sessions", () => {
     if (newWorkspace === null) throw new Error("new workspace control did not render");
     await act(async () => newWorkspace.click());
 
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp");
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp", "grok");
     expect(container.querySelector("[data-testid=agent-chat-surface]")).not.toBeNull();
   });
 
@@ -1147,7 +1147,7 @@ describe("Workspace sessions", () => {
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
-  it("creates an ACP session with no provider when no chat-capable CLI is installed", async () => {
+  it("gates the new-workspace road when no chat-capable CLI is installed", async () => {
     vi.mocked(providersList).mockResolvedValue({
       providers: [
         {
@@ -1171,8 +1171,11 @@ describe("Workspace sessions", () => {
     await act(async () => newWorkspace.click());
     await act(async () => undefined);
 
-    expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp");
+    // The gate: the empty picker opens, the doomed create never runs.
+    const picker = document.querySelector('[aria-label="Choose agent"]');
+    expect(picker).not.toBeNull();
+    expect(picker?.textContent).toContain("No agent CLI is installed on this machine.");
+    expect(sessionCreate).not.toHaveBeenCalled();
   });
 
   it("dismisses the provider popover on Escape without creating", async () => {

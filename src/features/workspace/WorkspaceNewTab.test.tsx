@@ -66,9 +66,6 @@ vi.mock("../../lib/tauri", () => ({
   sessionsList: vi.fn(),
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),
-  reasonFromCause: vi.fn((cause: unknown) =>
-    cause instanceof Error && cause.message ? cause.message : "the app did not answer",
-  ),
   sessionCreate: vi.fn(),
   providersList: vi.fn(),
   sessionPresence: vi.fn(async () => undefined),
@@ -1402,7 +1399,7 @@ describe("the + new-tab menu", () => {
     expect(document.activeElement).toBe(addButton(container));
   });
 
-  it("creates without a picker when Agent is used with no chat-capable provider installed", async () => {
+  it("gates before create: with no chat-capable provider the empty picker opens and no session_create runs", async () => {
     vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
     ({ container, unmount } = await renderWorkspace());
 
@@ -1410,8 +1407,55 @@ describe("the + new-tab menu", () => {
     await act(async () => menuItem(container, "Agent").click());
     await act(async () => undefined);
 
+    // The empty picker, not a doomed create.
+    const picker = document.querySelector('[aria-label="Choose agent"]');
+    expect(picker).not.toBeNull();
+    expect(picker?.textContent).toContain("No agent CLI is installed on this machine.");
+    expect(document.querySelector(".workspace-provider-empty button")?.textContent).toBe(
+      "Install instructions",
+    );
+    expect(sessionCreate).not.toHaveBeenCalled();
+
+    // The action hands over to Settings → Providers and ends the flow.
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>(".workspace-provider-empty button")!.click(),
+    );
+    await act(async () => undefined);
     expect(document.querySelector('[aria-label="Choose agent"]')).toBeNull();
-    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp");
+    expect(sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("renders one error line, not three, when a create is refused", async () => {
+    // The owner's sighting: a create refused because no agent CLI is on PATH.
+    // An empty roster puts the empty pane on screen, the strip's third reader.
+    vi.mocked(sessionsList).mockResolvedValue([]);
+    vi.mocked(sessionCreate).mockRejectedValueOnce({
+      code: "io",
+      message:
+        "No ACP-capable agent was found on PATH. Set DEVBOULE_ACP_COMMAND to a non-empty JSON string array to choose an ACP command explicitly.",
+    });
+    ({ container, unmount } = await renderWorkspace());
+
+    await openMenu(container);
+    await act(async () => menuItem(container, "Terminal").click());
+    await act(async () => undefined);
+
+    // Exactly one alert carries the failure.
+    const alerts = [...container.querySelectorAll('[role="alert"]')];
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]?.className).toContain("workspace-error-line");
+    // The sentence is mapped; the daemon's raw text rides only in the tooltip.
+    expect(alerts[0]?.textContent).toContain("No agent CLI is installed on this machine.");
+    expect(alerts[0]?.textContent).not.toContain("DEVBOULE_ACP_COMMAND");
+    expect(alerts[0]?.getAttribute("title")).toContain("No ACP-capable agent was found on PATH");
+    // The strip's status slot and the empty pane stay out of it.
+    expect(container.querySelector(".workspace-rate")?.textContent).not.toContain(
+      "No agent CLI is installed",
+    );
+    expect(container.querySelector(".workspace-empty-state")?.textContent).toContain("No tabs yet");
+    expect(container.querySelector(".workspace-empty-state")?.textContent).not.toContain(
+      "No agent CLI is installed",
+    );
   });
 
   it("the empty pane carries the spec's empty state and runs + → Agent's flow from it", async () => {

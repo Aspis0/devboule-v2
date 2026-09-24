@@ -13,9 +13,6 @@ vi.mock("../../lib/tauri", () => ({
   workspaceGitUnstage: vi.fn(),
   workspaceGitDiscard: vi.fn(),
   workspaceGitCommit: vi.fn(),
-  reasonFromCause: vi.fn((cause: unknown) =>
-    cause instanceof Error && cause.message ? cause.message : "the app did not answer",
-  ),
 }));
 
 // The confirmation belongs to the one act that loses data: the discard's

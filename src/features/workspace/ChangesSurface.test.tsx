@@ -9,9 +9,6 @@ import type { WorkspaceGitFileDiff, WorkspaceGitRow, WorkspaceGitStatus } from "
 vi.mock("../../lib/tauri", () => ({
   workspaceGitStatus: vi.fn(),
   workspaceGitDiff: vi.fn(),
-  reasonFromCause: vi.fn((cause: unknown) =>
-    cause instanceof Error && cause.message ? cause.message : "the app did not answer",
-  ),
 }));
 
 import { workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";

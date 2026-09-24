@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store/appStore";
-import { reasonFromCause } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 
 /**
  * Ask where the plugin is, then install it.
@@ -27,7 +27,7 @@ export async function chooseAndInstall(id: string, label: string): Promise<boole
       title: `Choose the folder ${label} was unpacked into`,
     });
   } catch (cause) {
-    useAppStore.setState({ installError: reasonFromCause(cause) });
+    useAppStore.setState({ installError: errorSentence(cause).sentence });
     return false;
   }
   if (typeof selected !== "string") return false;

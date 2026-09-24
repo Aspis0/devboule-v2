@@ -12,7 +12,6 @@ vi.mock("../lib/tauri", () => ({
   pluginInstall: mocks.pluginInstall,
   pluginsList: mocks.pluginsList,
   pluginsRescan: mocks.pluginsRescan,
-  reasonFromCause: (cause: unknown) => (cause instanceof Error ? cause.message : "failed"),
 }));
 
 import { useAppStore } from "./appStore";

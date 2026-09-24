@@ -1,4 +1,4 @@
-import { isCommandError } from "../../lib/tauri";
+import { isCommandError } from "../../lib/commandError";
 import { formatCount } from "../../lib/format";
 import type {
   OracleIndexStats,

@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { pluginInstall, pluginsList, pluginsRescan, reasonFromCause } from "../lib/tauri";
+import { pluginInstall, pluginsList, pluginsRescan } from "../lib/tauri";
+import { errorSentence } from "../lib/errorSentence";
 import type {
   DesignDocument,
   DesignHost,
@@ -233,7 +234,7 @@ export const useAppStore = create<AppState>((set) => ({
       // The command reports "I could not look" inside the inventory, so a
       // rejection means the app did not answer at all. Same shape either way:
       // one thing for the interface to render, and never silence.
-      set({ plugins: { root: "", plugins: [], problem: reasonFromCause(cause) } });
+      set({ plugins: { root: "", plugins: [], problem: errorSentence(cause).sentence } });
     }
   },
 
@@ -246,7 +247,7 @@ export const useAppStore = create<AppState>((set) => ({
       set({ plugins: await pluginInstall(id, source), installing: null });
       return true;
     } catch (cause) {
-      set({ installing: null, installError: reasonFromCause(cause) });
+      set({ installing: null, installError: errorSentence(cause).sentence });
       return false;
     }
   },

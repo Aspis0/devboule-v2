@@ -27,7 +27,6 @@ const mocks = vi.hoisted(() => ({
   oracleFolderStatus: vi.fn(),
   oracleFiles: vi.fn(),
   oracleStatus: vi.fn(),
-  reasonFromCause: vi.fn(),
   projectsList: vi.fn(),
   workspacesList: vi.fn(),
   sessionCreate: vi.fn(),
@@ -62,7 +61,6 @@ vi.mock("../../lib/tauri", () => ({
   oracleFolderStatus: mocks.oracleFolderStatus,
   oracleFiles: mocks.oracleFiles,
   oracleStatus: mocks.oracleStatus,
-  reasonFromCause: mocks.reasonFromCause,
   isCommandError: (error: unknown): boolean =>
     typeof error === "object" &&
     error !== null &&
@@ -310,7 +308,6 @@ beforeEach(() => {
   mocks.oracleFolderStatus.mockReset();
   mocks.oracleFiles.mockReset();
   mocks.oracleStatus.mockReset();
-  mocks.reasonFromCause.mockReset();
   mocks.projectsList.mockReset();
   mocks.workspacesList.mockReset();
   mocks.sessionCreate.mockReset();
@@ -376,9 +373,6 @@ beforeEach(() => {
     message: null,
   } satisfies OracleFolderIndexStatus);
   mocks.oracleFiles.mockResolvedValue([]);
-  mocks.reasonFromCause.mockImplementation((cause: unknown) =>
-    cause instanceof Error ? cause.message : String(cause),
-  );
   mocks.projectsList.mockResolvedValue([PROJECT]);
   mocks.workspacesList.mockResolvedValue([WORKSPACE]);
   mocks.sessionCreate.mockResolvedValue(SESSION);
@@ -648,11 +642,19 @@ describe("ACP design host", () => {
       .mockResolvedValueOnce(sessionRecord("session-retry"));
 
     host.selectProvider?.(provider);
-    await vi.waitFor(() => expect(mocks.reasonFromCause).toHaveBeenCalledWith(expect.any(Error)));
+    await vi.waitFor(() => expect(mocks.sessionCreate).toHaveBeenCalledTimes(1));
+    // The failed request must be seen to settle before the retry: the host
+    // ignores a selection while the previous one is still open.
+    await vi.waitFor(() => expect(host.getAgentSession?.()).toBeNull());
     expect(host.getAgentSession?.()).toBeNull();
     expect(host.getAgentSessionRecord?.()).toBeNull();
 
-    host.selectProvider?.({ ...provider });
+    await vi.waitFor(() => {
+      // A selection made before the failure cleared is swallowed, so the
+      // retry click repeats until the create it asks for actually runs.
+      host.selectProvider?.({ ...provider });
+      expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
+    });
     await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
 
     expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
@@ -1730,7 +1732,7 @@ describe("ACP design host", () => {
 
     await expect(
       host.generate?.("Update the design", new AbortController().signal),
-    ).rejects.toThrow("Could not attach the agent session: attach failed");
+    ).rejects.toThrow("Could not attach the agent session. attach failed");
     expect(mocks.sessionSend).not.toHaveBeenCalled();
 
     await disposeAgentHost(host);
@@ -1742,7 +1744,7 @@ describe("ACP design host", () => {
 
     await expect(
       host.generate?.("Update the design", new AbortController().signal),
-    ).rejects.toThrow("Could not send the message: send failed");
+    ).rejects.toThrow("Could not send the message. send failed");
 
     await disposeAgentHost(host);
   });

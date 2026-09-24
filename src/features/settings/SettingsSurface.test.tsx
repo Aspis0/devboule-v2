@@ -275,7 +275,9 @@ describe("Settings retention panel", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(journalRetentionSet).toHaveBeenCalledWith({ maxAgeMs: 123 });
-    expect(container.querySelector('[role="alert"]')?.textContent ?? "").toContain("rejected");
+    expect(container.querySelector('[role="alert"]')?.textContent ?? "").toContain(
+      "The agent daemon refused that request as invalid.",
+    );
     expect(input.getAttribute("value")).toBe("0");
     expect(input.value).toBe("0");
   });
@@ -707,7 +709,7 @@ describe("Settings provider version lines and refresh", () => {
     });
     vi.mocked(providersRefresh).mockRejectedValueOnce({
       code: "internal",
-      message: "npm ERR! ENOENT",
+      message: "Something went wrong inside the agent daemon.",
     });
     await renderProvidersTab();
 
@@ -717,7 +719,7 @@ describe("Settings provider version lines and refresh", () => {
     await act(async () => undefined);
 
     expect(container.querySelector('[role="alert"]')?.textContent ?? "").toContain(
-      "npm ERR! ENOENT",
+      "Something went wrong inside the agent daemon.",
     );
     expect(container.textContent).toContain("grok");
     const done = container.querySelector<HTMLButtonElement>(".provider-refresh");
@@ -727,12 +729,12 @@ describe("Settings provider version lines and refresh", () => {
   it("shows the bridge's plain-object rejection message when the initial list fails", async () => {
     vi.mocked(providersList).mockRejectedValueOnce({
       code: "internal",
-      message: "PATH scan died",
+      message: "Something went wrong inside the agent daemon.",
     });
     await renderProvidersTab();
 
     expect(container.querySelector('[role="alert"]')?.textContent ?? "").toContain(
-      "PATH scan died",
+      "Something went wrong inside the agent daemon.",
     );
   });
 
@@ -1154,7 +1156,7 @@ describe("Settings provider update and install", () => {
     });
     vi.mocked(providerUpdate).mockRejectedValueOnce({
       code: "invalid_request",
-      message: "only npm channels can be updated",
+      message: "The agent daemon refused that request as invalid.",
     });
     await renderProvidersTab();
     const confirm = await openConsent();
@@ -1163,7 +1165,7 @@ describe("Settings provider update and install", () => {
     await act(async () => undefined);
 
     expect(container.querySelector(".provider-update-error")?.textContent).toContain(
-      "only npm channels can be updated",
+      "The agent daemon refused that request as invalid.",
     );
   });
 
@@ -1715,7 +1717,7 @@ describe("Settings provider tool toggles", () => {
     // locked (nothing may be edited from a guess), but the human is not left
     // with a dead card and reloading the app as the only remedy.
     expect(container.querySelector('.provider-tools [role="alert"]')?.textContent).toContain(
-      "pipe is gone",
+      "A system or file operation failed on this machine.",
     );
     const retry = Array.from(
       container.querySelectorAll<HTMLButtonElement>(".provider-tools button"),
@@ -1913,7 +1915,7 @@ describe("Settings provider tool toggles", () => {
 
     expect(toolCheckbox("other_tool").checked).toBe(true);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "policy file unwritable",
+      "A system or file operation failed on this machine.",
     );
   });
 
@@ -1924,7 +1926,7 @@ describe("Settings provider tool toggles", () => {
     });
     vi.mocked(toolPolicyGet).mockRejectedValueOnce({
       code: "io",
-      message: "daemon did not answer",
+      message: "A system or file operation failed on this machine.",
     });
     root = createRoot(container);
     await act(async () => root!.render(<SettingsSurface />));
@@ -1935,7 +1937,7 @@ describe("Settings provider tool toggles", () => {
     await act(async () => undefined);
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "daemon did not answer",
+      "A system or file operation failed on this machine.",
     );
   });
 
@@ -2278,7 +2280,7 @@ describe("Settings agents panel", () => {
     });
     vi.mocked(agentProfilesSet).mockRejectedValueOnce({
       code: "io",
-      message: "profile file unwritable",
+      message: "A system or file operation failed on this machine.",
     });
 
     await act(async () => tickBox("Explorer").click());
@@ -2286,7 +2288,7 @@ describe("Settings agents panel", () => {
 
     expect(tickBox("Explorer").checked).toBe(false);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "profile file unwritable",
+      "A system or file operation failed on this machine.",
     );
   });
 
@@ -2422,7 +2424,7 @@ describe("Settings agents panel", () => {
     });
     vi.mocked(agentProfilesSet).mockRejectedValueOnce({
       code: "io",
-      message: "profile file unwritable",
+      message: "A system or file operation failed on this machine.",
     });
 
     await act(async () => rowButton("Explorer", "Edit").click());
@@ -2443,7 +2445,7 @@ describe("Settings agents panel", () => {
     // The refusal is named, the editor still stands, and the draft is in
     // its fields — the create form's rule, held here too.
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "profile file unwritable",
+      "A system or file operation failed on this machine.",
     );
     const editor = container.querySelector(".agent-inline-editor");
     expect(editor).not.toBeNull();
@@ -2510,7 +2512,7 @@ describe("Settings agents panel", () => {
     });
     await act(async () => undefined);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "profile file unwritable",
+      "A system or file operation failed on this machine.",
     );
     const editor = container.querySelector(".agent-inline-editor");
     expect(editor).not.toBeNull();
@@ -2759,7 +2761,9 @@ describe("Settings agents panel", () => {
 
     // Terminal state: the daemon's sentence and a Retry, no loading line.
     expect(container.textContent).not.toContain("Loading agent profiles…");
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("pipe is gone");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "A system or file operation failed on this machine.",
+    );
     const retry = sectionButton("Retry");
 
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({
@@ -2984,7 +2988,7 @@ describe("Settings agents panel", () => {
       await act(async () => undefined);
       expect(tickBox("Explorer").checked).toBe(false);
       expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-        "profile file unwritable",
+        "A system or file operation failed on this machine.",
       );
     } finally {
       vi.useRealTimers();
@@ -3666,7 +3670,7 @@ describe("Settings agents panel — new profile form", () => {
   it("falls back to free text naming the failure when the vocabulary query rejects", async () => {
     vi.mocked(providerVocabularyGet).mockRejectedValueOnce({
       code: "io",
-      message: "pipe is gone",
+      message: "A system or file operation failed on this machine.",
     });
     await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
     // The store's read-back after the confirmed create, at the end.
@@ -3679,7 +3683,9 @@ describe("Settings agents panel — new profile form", () => {
 
     // The failure names its own reason — not the provider's "did not
     // publish", not the older-daemon sentence.
-    expect(form().textContent).toContain("The vocabulary query failed (pipe is gone)");
+    expect(form().textContent).toContain(
+      "The vocabulary query failed (A system or file operation failed on this machine.)",
+    );
     expect(form().textContent).not.toContain("did not publish");
     expect(form().textContent).not.toContain("older than this app");
     expect(modelControl().tagName).toBe("INPUT");
@@ -3864,7 +3870,7 @@ describe("Settings agents panel — new profile form", () => {
     });
     vi.mocked(agentProfilesSet).mockRejectedValueOnce({
       code: "io",
-      message: "profile file unwritable",
+      message: "A system or file operation failed on this machine.",
     });
 
     await act(async () => tickCheckbox(rowTick("Explorer"), true));
@@ -3875,7 +3881,7 @@ describe("Settings agents panel — new profile form", () => {
     // the refusal is named.
     expect(rowTick("Explorer").checked).toBe(false);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "profile file unwritable",
+      "A system or file operation failed on this machine.",
     );
     // A refused write re-reads nothing: a refusal adopts no reply.
     expect(agentProfilesGet).toHaveBeenCalledTimes(1);
@@ -4096,7 +4102,7 @@ describe("Settings agents panel — new profile form", () => {
     // 2. The query itself fails.
     vi.mocked(providerVocabularyGet).mockRejectedValueOnce({
       code: "io",
-      message: "pipe is gone",
+      message: "A system or file operation failed on this machine.",
     });
     await renderAgentsPanel({ profiles: [], standingInstructions: "" }, VOCABULARY_DAEMON);
     await openForm();
@@ -4192,10 +4198,12 @@ describe("Settings agents panel — new profile form", () => {
     await openForm();
     await collectScenario("vocabulary in flight");
 
-    // 11. The panel load failed: the daemon's sentence and a Retry.
+    // 11. The panel load failed: the daemon's sentence and a Retry. The code
+    // is `internal` so this scenario's sentence stays distinct from the io
+    // ones in the uniqueness net below.
     vi.mocked(daemonStatus).mockResolvedValue(daemonStatusWith(OLDER_DAEMON));
     vi.mocked(agentProfilesGet).mockRejectedValueOnce({
-      code: "io",
+      code: "internal",
       message: "the store is unreachable",
     });
     root = createRoot(container);
@@ -4398,7 +4406,9 @@ describe("Settings agents panel — new profile form", () => {
     await openForm();
 
     // The failed read names itself; the empty-catalog claim is not made.
-    expect(form().textContent).toContain("could not be read: the scan failed");
+    expect(form().textContent).toContain(
+      "could not be read: A system or file operation failed on this machine.",
+    );
     expect(form().textContent).not.toContain("No agent CLI is installed");
     // The picker does not pretend the (unread) catalog was read either: its
     // one option names the failed read, not an empty result. (Placeholder
@@ -4427,7 +4437,7 @@ describe("Settings agents panel — new profile form", () => {
     // what the human typed into it.
     expect(agentProfilesSet).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "over the 64-profile cap",
+      "A system or file operation failed on this machine.",
     );
     expect(nameField().value).toBe("Gamma");
     expect(noteField().value).toBe("Checks the build output.");

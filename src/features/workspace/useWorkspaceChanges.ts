@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { reasonFromCause, workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";
+import { workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type { WorkspaceGitFileDiff, WorkspaceGitStatus } from "../../types/ipc";
 import { changesBadge, changesBadgeLabel } from "./changesBadge";
 
@@ -84,7 +85,7 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
       setStatusCell({ workspaceId, reply, failure: null });
     } catch (cause: unknown) {
       if (generation !== statusGeneration.current) return;
-      const message = reasonFromCause(cause);
+      const message = errorSentence(cause).sentence;
       // A refusal is not a reading, so the badge is deliberately NOT touched
       // here: it keeps the last value actually read, and the panel shows this
       // sentence beside it (DECISIONS §10).
@@ -109,7 +110,7 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
         setDiffCell({ workspaceId, path, reply, failure: null });
       } catch (cause: unknown) {
         if (generation !== diffGeneration.current) return;
-        const message = reasonFromCause(cause);
+        const message = errorSentence(cause).sentence;
         setDiffCell((current) => ({
           workspaceId,
           path,

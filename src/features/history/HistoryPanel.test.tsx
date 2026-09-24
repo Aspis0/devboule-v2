@@ -14,20 +14,9 @@ vi.mock("../../lib/tauri", () => ({
   sessionDelete: vi.fn(),
   sessionResume: vi.fn(),
   sessionsList: vi.fn(),
-  reasonFromCause: vi.fn((cause: unknown) => {
-    if (cause instanceof Error && cause.message) return cause.message;
-    if (typeof cause === "string" && cause) return cause;
-    return "the app did not answer";
-  }),
 }));
 
-import {
-  journalUsage,
-  reasonFromCause,
-  sessionDelete,
-  sessionResume,
-  sessionsList,
-} from "../../lib/tauri";
+import { journalUsage, sessionDelete, sessionResume, sessionsList } from "../../lib/tauri";
 import { HistoryPanel } from "./HistoryPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -120,11 +109,6 @@ describe("HistoryPanel", () => {
     vi.mocked(sessionResume).mockResolvedValue({
       type: "resumed",
       session: resumableSession("session-review"),
-    });
-    vi.mocked(reasonFromCause).mockImplementation((cause: unknown) => {
-      if (cause instanceof Error && cause.message) return cause.message;
-      if (typeof cause === "string" && cause) return cause;
-      return "the app did not answer";
     });
   });
 
@@ -259,9 +243,8 @@ describe("HistoryPanel", () => {
     );
   });
 
-  it("shows the daemon message when resuming fails", async () => {
+  it("shows the mapped sentence when resuming fails, never the raw daemon text", async () => {
     const cause = { code: "invalid_request", message: "provider session is unavailable" };
-    vi.mocked(reasonFromCause).mockReturnValueOnce("provider session is unavailable");
     vi.mocked(sessionResume).mockRejectedValueOnce(cause);
     const usage = baseUsage();
     usage.perSession = [usage.perSession[1]];
@@ -271,9 +254,11 @@ describe("HistoryPanel", () => {
     await act(async () => reopen.click());
     await act(async () => undefined);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "The agent daemon refused that request as invalid.",
+    );
+    expect(container.querySelector('[role="alert"]')?.textContent).not.toContain(
       "provider session is unavailable",
     );
-    expect(reasonFromCause).toHaveBeenCalledWith(cause);
   });
 
   it("re-reads the roster when a resume fails, so the offer cannot outlive the verdict", async () => {
@@ -382,7 +367,6 @@ describe("HistoryPanel", () => {
 
   it("shows a reason when deleting fails", async () => {
     const cause = { code: "invalid_request", message: "close the session first" };
-    vi.mocked(reasonFromCause).mockReturnValueOnce("close the session first");
     vi.mocked(sessionDelete).mockRejectedValueOnce(cause);
     const usage = baseUsage();
     usage.perSession = [usage.perSession[0]];
@@ -397,14 +381,12 @@ describe("HistoryPanel", () => {
     await act(async () => confirm.click());
     await act(async () => undefined);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "close the session first",
+      "The agent daemon refused that request as invalid.",
     );
-    expect(reasonFromCause).toHaveBeenCalledWith(cause);
   });
 
   it("resets delete confirmation after a failed delete", async () => {
     const cause = { code: "invalid_request", message: "close the session first" };
-    vi.mocked(reasonFromCause).mockReturnValueOnce("close the session first");
     vi.mocked(sessionDelete).mockRejectedValueOnce(cause);
     const usage = baseUsage();
     usage.perSession = [usage.perSession[0]];
@@ -419,7 +401,7 @@ describe("HistoryPanel", () => {
     await act(async () => confirm.click());
     await act(async () => undefined);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "close the session first",
+      "The agent daemon refused that request as invalid.",
     );
     expect(container.querySelector<HTMLButtonElement>(".history-delete-action")?.textContent).toBe(
       "Delete",
@@ -441,7 +423,6 @@ describe("HistoryPanel", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "sessions unavailable",
     );
-    expect(reasonFromCause).toHaveBeenCalledWith(cause);
   });
 
   it("shows a load error without crashing", async () => {

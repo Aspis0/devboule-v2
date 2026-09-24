@@ -123,10 +123,10 @@ import {
   projectAdd,
   projectsList,
   providersList,
-  reasonFromCause,
   workspaceCreate,
   workspacesList,
 } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
@@ -3970,7 +3970,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         }
       } catch (cause: unknown) {
         if (!isCurrent()) return;
-        setWorkspacesError(`Could not load workspaces: ${reasonFromCause(cause)}`);
+        setWorkspacesError(`Could not load workspaces: ${errorSentence(cause).sentence}`);
       }
       if (!isCurrent()) return;
       if (initialLoad) setWorkspacesLoading(false);
@@ -4367,7 +4367,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       selectWorkspace(checkout);
       return true;
     } catch (cause: unknown) {
-      setFolderAttachError(reasonFromCause(cause));
+      setFolderAttachError(errorSentence(cause).sentence);
       return false;
     } finally {
       setFolderAttachBusy(false);
@@ -4387,7 +4387,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         selectWorkspace(checkout);
         return true;
       } catch (cause: unknown) {
-        setFolderAttachError(reasonFromCause(cause));
+        setFolderAttachError(errorSentence(cause).sentence);
         return false;
       } finally {
         setFolderAttachBusy(false);

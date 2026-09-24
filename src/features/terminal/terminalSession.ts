@@ -1,4 +1,6 @@
-import { isCommandError, type SessionChannel } from "../../lib/tauri";
+import { type SessionChannel } from "../../lib/tauri";
+import { isCommandError } from "../../lib/commandError";
+import { errorSentence } from "../../lib/errorSentence";
 import { eventTypeName } from "../../lib/eventTypeName";
 import type {
   Session,
@@ -65,13 +67,6 @@ export interface TerminalSessionDeps {
 const RESIZE_DEBOUNCE_MS = 150;
 const CTRL_C_ARM_MS = 3000;
 const WRITE_FAIL_THRESHOLD = 2;
-
-function errorMessage(error: unknown): string {
-  if (isCommandError(error) && error.message.trim()) return error.message;
-  if (typeof error === "string" && error.trim()) return error;
-  if (error instanceof Error && error.message) return error.message;
-  return "Unknown terminal error.";
-}
 
 /** An output with seq <= asOfSeq is already represented by the snapshot and must never be applied again. */
 function isSnapshotCoveredOutput(seq: number, asOfSeq: number): boolean {
@@ -162,7 +157,7 @@ export class TerminalSession {
           kind: "terminal",
         });
       } catch (error: unknown) {
-        this.showError(`Could not create the terminal session: ${errorMessage(error)}`);
+        this.showError(`Could not create the terminal session. ${errorSentence(error).sentence}`);
         return;
       }
       sessionId = session.id;
@@ -187,7 +182,7 @@ export class TerminalSession {
         onFontFit: () => this.requestResize(),
       });
     } catch (error: unknown) {
-      this.showError(`Could not open the terminal view: ${errorMessage(error)}`);
+      this.showError(`Could not open the terminal view. ${errorSentence(error).sentence}`);
       this.teardownFailedStartup(createdHere);
       return;
     }
@@ -203,7 +198,7 @@ export class TerminalSession {
     try {
       channel = this.deps.createChannel((event) => this.handleEvent(event));
     } catch (error: unknown) {
-      this.showError(`Could not open the terminal stream: ${errorMessage(error)}`);
+      this.showError(`Could not open the terminal stream. ${errorSentence(error).sentence}`);
       this.disposeViewAndChannel();
       this.teardownFailedStartup(createdHere);
       return;
@@ -260,7 +255,7 @@ export class TerminalSession {
         await this.start();
         return;
       }
-      this.showError(`Could not attach to the terminal: ${errorMessage(attachError)}`);
+      this.showError(`Could not attach to the terminal. ${errorSentence(attachError).sentence}`);
       return;
     }
 
@@ -758,7 +753,9 @@ export class TerminalSession {
 
 function isMissingSessionError(error: unknown): boolean {
   if (isCommandError(error)) return error.code === "session_not_found";
-  return errorMessage(error).toLowerCase().includes("no session with that id");
+  // A classifier, not a render path: this only has to recognize the shape.
+  const text = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return text.toLowerCase().includes("no session with that id");
 }
 
 function pickRestorable(sessions: Session[], workspaceId: string | null): Session | null {

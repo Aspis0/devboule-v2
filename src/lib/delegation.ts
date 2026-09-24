@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
-import { delegationGet, delegationSet, reasonFromCause } from "./tauri";
+import { delegationGet, delegationSet } from "./tauri";
+import { errorSentence } from "./errorSentence";
 import type { DelegationReply } from "../types/ipc";
 
 /**
@@ -166,7 +167,7 @@ export function createDelegationController(
         // A later answer exists and nothing has shaken trust in it; the panel
         // already shows a value, so the failed refresh is reported, not
         // terminal.
-        publish({ ...state, error: reasonFromCause(cause) });
+        publish({ ...state, error: errorSentence(cause).sentence });
         return;
       }
       // No answer the panel may show as definite survives a failed read here:
@@ -175,7 +176,12 @@ export function createDelegationController(
       // switch renders it (never a definite off), and Retry re-asks.
       enabledRef = null;
       confirmedRef = null;
-      publish({ reply: null, enabled: null, loadFailed: true, error: reasonFromCause(cause) });
+      publish({
+        reply: null,
+        enabled: null,
+        loadFailed: true,
+        error: errorSentence(cause).sentence,
+      });
     }
   };
 
@@ -219,7 +225,7 @@ export function createDelegationController(
       // and the re-read below goes and finds out what the daemon actually
       // holds.
       enabledRef = confirmedRef;
-      publish({ ...state, enabled: confirmedRef, error: reasonFromCause(cause) });
+      publish({ ...state, enabled: confirmedRef, error: errorSentence(cause).sentence });
       refusedNewest = true;
       return false;
     } finally {

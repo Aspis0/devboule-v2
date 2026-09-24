@@ -11,9 +11,6 @@ vi.mock("../../lib/tauri", () => ({
   workspaceFileRead: vi.fn(),
   workspaceFileRename: vi.fn(),
   workspaceFileDuplicate: vi.fn(),
-  reasonFromCause: vi.fn((cause: unknown) =>
-    cause instanceof Error && cause.message ? cause.message : "the app did not answer",
-  ),
 }));
 
 import {

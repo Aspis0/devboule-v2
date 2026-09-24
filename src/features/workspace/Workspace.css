@@ -843,6 +843,30 @@
   white-space: nowrap;
 }
 
+/* The spec's inline error line (SPEC-regions "Empty and error"): one 12px
+   --danger line with a triangle icon, inline where it belongs. The raw daemon
+   text never renders here — it rides in the line's tooltip. */
+.workspace-error-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 12px 0;
+  color: var(--danger);
+  font-size: var(--type-meta);
+  line-height: 1.55;
+}
+
+.workspace-error-line-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+.workspace-error-line-text {
+  overflow-wrap: anywhere;
+}
+
 .workspace-session-cwd {
   min-width: 0;
   overflow: hidden;
@@ -1401,6 +1425,16 @@
   color: var(--danger-deep);
 }
 
+/* The demoted raw text under a transcript error item: present for the copy,
+   muted so only the sentence reads at a glance. */
+.workspace-chat-error-detail {
+  color: var(--silence);
+  font-size: var(--type-meta);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .workspace-session-error {
   display: flex;
   align-items: center;
@@ -1436,6 +1470,22 @@
 .workspace-session-error-dismiss:hover {
   background: var(--terracotta);
   color: var(--white);
+}
+
+/* The gate's empty picker: the one sentence plus the one action that hands
+   the user to Settings → Providers, where the install guidance lives. */
+.workspace-provider-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 6px 6px;
+}
+
+.workspace-provider-empty-text {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--type-meta);
+  line-height: 1.5;
 }
 
 .workspace-chat-typing {

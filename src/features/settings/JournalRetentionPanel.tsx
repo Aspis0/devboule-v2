@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { journalRetentionGet, journalRetentionSet, journalUsage } from "../../lib/tauri";
 import type { JournalRetention, JournalUsage, RetentionPatch } from "../../types/ipc";
 import { useTrackedRequest } from "../../lib/trackedRequest";
-import { commandErrorMessage, formatCount } from "../../lib/format";
+import { formatCount } from "../../lib/format";
+import { errorSentence } from "../../lib/errorSentence";
 
 const RETENTION_FIELDS = [
   "sessionMaxBytes",
@@ -75,7 +76,7 @@ export function JournalRetentionPanel() {
             const restored = persistedValues.current[field];
             setValues((current) => ({ ...current, [field]: restored }));
           }
-          setActionError(commandErrorMessage(error));
+          setActionError(errorSentence(error).sentence);
         },
       );
     },

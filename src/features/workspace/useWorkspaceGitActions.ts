@@ -1,12 +1,12 @@
 import { useCallback } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
-  reasonFromCause,
   workspaceGitCommit,
   workspaceGitDiscard,
   workspaceGitStage,
   workspaceGitUnstage,
 } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 
 /**
  * What the reader hands the writer: the refresh every act owes the panel
@@ -70,7 +70,7 @@ export function useWorkspaceGitActions(context: GitActionsContext): WorkspaceGit
         // Transport lost after the ask: the act may have happened — same
         // reason, same refresh.
         refresh();
-        return reasonFromCause(cause);
+        return errorSentence(cause).sentence;
       }
     },
     [refresh],

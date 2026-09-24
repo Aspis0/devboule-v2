@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { projectAdd, reasonFromCause } from "../lib/tauri";
+import { projectAdd } from "../lib/tauri";
+import { errorSentence } from "../lib/errorSentence";
 import type { Project } from "../types/ipc";
 import "../features/workspace/Workspace.css";
 
@@ -93,7 +94,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
         dialogRef.current?.querySelector<HTMLInputElement>("#workspace-project-input")?.focus();
       }
     } catch (cause: unknown) {
-      setError(reasonFromCause(cause));
+      setError(errorSentence(cause).sentence);
     } finally {
       setChoosing(false);
     }
@@ -117,7 +118,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
         await onCreate(project);
         onClose();
       } catch (cause: unknown) {
-        setError(reasonFromCause(cause));
+        setError(errorSentence(cause).sentence);
       } finally {
         setSubmitting(false);
         submittingRef.current = false;

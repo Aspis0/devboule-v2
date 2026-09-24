@@ -1,7 +1,8 @@
 // One-click reopen for a recovered transcript. Renders the daemon's
 // `resumable` verdict, never re-derives it, and never resumes by itself.
 import { useState } from "react";
-import { reasonFromCause, sessionResume } from "../../lib/tauri";
+import { sessionResume } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type { Session } from "../../types/ipc";
 
 export function RecoveredSessionBar({
@@ -39,7 +40,7 @@ export function RecoveredSessionBar({
           onResumeFailed?.();
         }
       } catch (cause) {
-        setError(reasonFromCause(cause));
+        setError(errorSentence(cause).sentence);
         onResumeFailed?.();
       } finally {
         setResuming(false);

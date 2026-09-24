@@ -1,11 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  journalUsage,
-  reasonFromCause,
-  sessionDelete,
-  sessionResume,
-  sessionsList,
-} from "../../lib/tauri";
+import { journalUsage, sessionDelete, sessionResume, sessionsList } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type { JournalSessionUsage, JournalUsage, Session } from "../../types/ipc";
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
@@ -35,14 +30,14 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
     try {
       return await journalUsage();
     } catch (cause) {
-      throw new Error(reasonFromCause(cause));
+      throw new Error(errorSentence(cause).sentence);
     }
   }, []);
   const loadSessions = useCallback(async (): Promise<Session[]> => {
     try {
       return await sessionsList();
     } catch (cause) {
-      throw new Error(reasonFromCause(cause));
+      throw new Error(errorSentence(cause).sentence);
     }
   }, []);
   const usageRequest = useTrackedRequest<JournalUsage>(loadUsage, { status: "loading" }, true);
@@ -121,7 +116,7 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
           if (!mountedRef.current) return;
           setDeletingId(null);
           setConfirmingId(null);
-          setActionError(reasonFromCause(cause));
+          setActionError(errorSentence(cause).sentence);
         }
       })();
     },
@@ -151,7 +146,7 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
           }
         } catch (cause) {
           if (mountedRef.current) {
-            setActionError(reasonFromCause(cause));
+            setActionError(errorSentence(cause).sentence);
             refreshSessions(false);
           }
         } finally {

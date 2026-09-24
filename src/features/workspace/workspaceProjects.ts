@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { projectsList, reasonFromCause, workspaceCreate, workspacesList } from "../../lib/tauri";
+import { projectsList, workspaceCreate, workspacesList } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type { Project, Session, Workspace } from "../../types/ipc";
 
 export interface WorkspaceProject extends Project {
@@ -85,7 +86,7 @@ export function useWorkspaceProjects() {
             return {
               ...project,
               workspaces: [],
-              workspaceError: reasonFromCause(cause),
+              workspaceError: errorSentence(cause).sentence,
             };
           }
         }),
@@ -97,7 +98,7 @@ export function useWorkspaceProjects() {
     } catch (cause: unknown) {
       if (generation !== loadGenerationRef.current) return;
       setLoading(false);
-      setError(reasonFromCause(cause));
+      setError(errorSentence(cause).sentence);
     }
   }, []);
 
@@ -139,7 +140,7 @@ export function useWorkspaceProjects() {
       setError(null);
       return workspace;
     } catch (cause: unknown) {
-      setError(reasonFromCause(cause));
+      setError(errorSentence(cause).sentence);
       return null;
     }
   }, []);
@@ -162,7 +163,7 @@ export function useWorkspaceProjects() {
       setSearch("");
       setError(null);
     } catch (cause: unknown) {
-      const message = reasonFromCause(cause);
+      const message = errorSentence(cause).sentence;
       setError(message);
       throw cause;
     }

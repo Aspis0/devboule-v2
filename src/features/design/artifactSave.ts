@@ -15,7 +15,8 @@
 
 import { save } from "@tauri-apps/plugin-dialog";
 import { buildStandaloneArtifactHtml } from "./artifactExport";
-import { reasonFromCause, writeArtifactFile } from "../../lib/tauri";
+import { writeArtifactFile } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 
 /**
  * The three distinct endings of a save attempt. `cancelled` is deliberately
@@ -99,7 +100,7 @@ export async function saveArtifactHtml(
   } catch (cause) {
     // The dialog itself failed (no answer was possible). That is a failure,
     // unlike a closed dialog, which resolves `null` instead of rejecting.
-    return { status: "failed", message: reasonFromCause(cause) };
+    return { status: "failed", message: errorSentence(cause).sentence };
   }
   // `null` is the user closing the dialog. Nothing was written and nothing is
   // wrong; the caller shows nothing.
@@ -108,6 +109,6 @@ export async function saveArtifactHtml(
     const written = await writeArtifactFile(path, contents);
     return { status: "saved", path: written };
   } catch (cause) {
-    return { status: "failed", message: reasonFromCause(cause) };
+    return { status: "failed", message: errorSentence(cause).sentence };
   }
 }

@@ -12,9 +12,6 @@ vi.mock("../../lib/tauri", () => ({
   workspaceFileRename: vi.fn(),
   workspaceFileDuplicate: vi.fn(),
   workspaceFileDelete: vi.fn(),
-  reasonFromCause: vi.fn((cause: unknown) =>
-    cause instanceof Error && cause.message ? cause.message : "the app did not answer",
-  ),
 }));
 
 // The confirmation belongs to the one act that loses data: the delete's gate

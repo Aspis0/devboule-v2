@@ -4,7 +4,6 @@ import type {
   AgentProfilesDocument,
   AgentProfilesReply,
   Cap,
-  CommandError,
   DaemonDiagnostics,
   DaemonStatus,
   DelegationReply,
@@ -49,6 +48,7 @@ import type {
   SessionStateSnapshot,
   RetentionPatch,
 } from "../types/ipc";
+import { errorSentence } from "./errorSentence";
 
 export type SubscriptionId = number;
 
@@ -513,31 +513,6 @@ export function invokeTyped<K extends CommandName>(
   return invoke<CommandResults[K]>(command, payload as never);
 }
 
-/**
- * Tauri v2 rejects `invoke` with the JSON value of a `Serialize` error type
- * directly — not wrapped in `Error`, not a string. `CommandError` arrives as
- * `{ code, message, details? }`.
- */
-/**
- * One sentence for why an `invoke` rejected.
- *
- * Tauri hands back the serialized error type, a thrown `Error`, or — when the
- * bridge itself failed — something else entirely. Callers want a line to show a
- * person, not three branches each.
- */
-export function reasonFromCause(cause: unknown): string {
-  if (isCommandError(cause)) return cause.message;
-  if (cause instanceof Error && cause.message) return cause.message;
-  if (typeof cause === "string" && cause) return cause;
-  return "the app did not answer";
-}
-
-export function isCommandError(error: unknown): error is CommandError {
-  if (typeof error !== "object" || error === null || Array.isArray(error)) return false;
-  if (!("code" in error) || !("message" in error)) return false;
-  return typeof error.code === "string" && typeof error.message === "string";
-}
-
 export const appIdentity = () => invokeTyped("app_identity");
 export const daemonStatus = () => invokeTyped("daemon_status");
 /**
@@ -938,7 +913,7 @@ export async function surfaceSettingsGet(surfaceId: string): Promise<SurfaceSett
     if (value === null) return { status: "absent" };
     return { status: "value", value };
   } catch (cause) {
-    return { status: "unreadable", message: reasonFromCause(cause) };
+    return { status: "unreadable", message: errorSentence(cause).sentence };
   }
 }
 /** Stores `value` verbatim as pretty JSON; rejects surface ids outside `^[a-z0-9-]{1,32}$` and values over the ~64 KB cap. */

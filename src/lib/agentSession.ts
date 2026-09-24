@@ -11,7 +11,8 @@ import type {
 import { recordChildFinishedHistory } from "../features/design/childFinishedHistory";
 import { scheduleDelegatedDesignMirror } from "../features/design/delegatedDesignMirror";
 import type { AttachmentReference, SessionChannel } from "./tauri";
-import { isCommandError } from "./tauri";
+import { isCommandError } from "./commandError";
+import { errorSentence } from "./errorSentence";
 import { eventTypeName } from "./eventTypeName";
 import { parseAgentPermissionRequest } from "./agentPermissionRequest";
 import { parseAgentDaemonNotice, type AgentDaemonNotice } from "./agentDaemonNotice";
@@ -57,7 +58,13 @@ export type AgentChatItem =
       spawnDepth?: number;
       subagentType?: string;
     }
-  | { id: string; role: "error"; text: string }
+  | {
+      id: string;
+      role: "error";
+      text: string;
+      /** The demoted raw text (env vars, OS errors, internal words), under the sentence. */
+      detail?: string;
+    }
   | { id: string; role: "system"; text: string; severity: "info" | "warning" }
   | {
       /** One `agent_permission_request` envelope, parsed (see `agentPermissionRequest.ts`). */
@@ -186,16 +193,6 @@ const SWITCH_CONFIRM_TIMEOUT_MS = 15_000;
 
 type MessageRole = "user" | "assistant" | "thought";
 
-function eventError(error: unknown): string {
-  if (typeof error === "string" && error.trim()) return error;
-  if (error instanceof Error && error.message) return error.message;
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = error.message;
-    if (typeof message === "string" && message.trim()) return message;
-  }
-  return "The agent session did not answer.";
-}
-
 /**
  * Send-refusal codes that mean *our view of the session is gone*: whatever
  * happened on the far side, no event about this session will reach us again,
@@ -318,7 +315,11 @@ export class AgentSession {
         this.deliverPendingPermissionRequests();
       }
     } catch (error) {
-      this.failSession(`Could not attach the agent session: ${eventError(error)}`);
+      const mapped = errorSentence(error);
+      this.failSession(
+        `Could not attach the agent session. ${mapped.sentence}`,
+        mapped.detail ?? undefined,
+      );
     }
 
     if (this.disposed && this.subscriptionId !== null) await this.detach();
@@ -393,10 +394,11 @@ export class AgentSession {
       // the session (see `FATAL_SEND_CODES`). A refused steer was joining a
       // turn the daemon is still running — record the sentence and leave the
       // turn alone; ending it would split the answer when the chunks resume.
-      const detail = `Could not send the message: ${eventError(error)}`;
-      if (sendFailureKillsSession(error)) this.failSession(detail);
-      else if (joinsRunningTurn) this.noteError(detail);
-      else this.failTurn(detail);
+      const mapped = errorSentence(error);
+      const detail = `Could not send the message. ${mapped.sentence}`;
+      if (sendFailureKillsSession(error)) this.failSession(detail, mapped.detail ?? undefined);
+      else if (joinsRunningTurn) this.noteError(detail, mapped.detail ?? undefined);
+      else this.failTurn(detail, mapped.detail ?? undefined);
       return false;
     }
   }
@@ -412,7 +414,7 @@ export class AgentSession {
    * A rejection is thrown rather than swallowed, unlike `interrupt`. The caller
    * is a sequence over a document's pages with a sentence to write about the
    * pages that did not make it, and only the caller has the page number. The
-   * error is not wrapped either: `reasonFromCause` words it for that sentence,
+   * error is not wrapped either: `errorSentence` words it for that sentence,
    * and a wrapper would replace the daemon's own reason with a paraphrase of it.
    */
   async depositAttachment(attachment: PromptAttachment): Promise<AttachmentReference> {
@@ -466,7 +468,8 @@ export class AgentSession {
       });
     } catch (error) {
       this.update({ pendingSwitch: null });
-      this.noteError(`Could not switch the model: ${eventError(error)}`);
+      const mapped = errorSentence(error);
+      this.noteError(`Could not switch the model. ${mapped.sentence}`, mapped.detail ?? undefined);
       return;
     }
     if (this.disposed || this.state.pendingSwitch === null) {
@@ -503,7 +506,8 @@ export class AgentSession {
     } catch (error) {
       if (requestId !== this.modeRequest) return;
       this.update({ pendingModeId: null });
-      this.noteError(`Could not switch the mode: ${eventError(error)}`);
+      const mapped = errorSentence(error);
+      this.noteError(`Could not switch the mode. ${mapped.sentence}`, mapped.detail ?? undefined);
       return;
     }
     if (this.disposed || this.state.pendingModeId === null || requestId !== this.modeRequest) {
@@ -1258,11 +1262,11 @@ export class AgentSession {
    * refused model and mode switches, which can land mid-turn; collapsing the
    * turn here would hide the Stop button while the agent keeps working.
    */
-  private noteError(message: string): void {
+  private noteError(message: string, detail?: string): void {
     this.update({
       items: [
         ...this.state.items,
-        { id: `error-${this.nextItemId++}`, role: "error", text: message },
+        { id: `error-${this.nextItemId++}`, role: "error", text: message, detail },
       ],
     });
   }
@@ -1272,14 +1276,14 @@ export class AgentSession {
    * status returns to `idle` — unless it is already terminal, which the
    * latch in `setStatus` holds — and the turn is closed.
    */
-  private failTurn(message: string): void {
+  private failTurn(message: string, detail?: string): void {
     this.turnOpen = false;
     this.closeActiveBlocks();
     this.setStatus("idle", {
       streaming: false,
       items: [
         ...this.state.items,
-        { id: `error-${this.nextItemId++}`, role: "error", text: message },
+        { id: `error-${this.nextItemId++}`, role: "error", text: message, detail },
       ],
     });
   }
@@ -1289,14 +1293,14 @@ export class AgentSession {
    * exited, or the session was recovered by another client. The status
    * latches at `error` and input stays disabled.
    */
-  private failSession(message: string): void {
+  private failSession(message: string, detail?: string): void {
     this.turnOpen = false;
     this.closeActiveBlocks();
     this.setStatus("error", {
       streaming: false,
       items: [
         ...this.state.items,
-        { id: `error-${this.nextItemId++}`, role: "error", text: message },
+        { id: `error-${this.nextItemId++}`, role: "error", text: message, detail },
       ],
     });
   }

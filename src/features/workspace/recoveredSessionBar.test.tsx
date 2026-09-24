@@ -8,12 +8,9 @@ import type { Session } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   sessionResume: vi.fn(),
-  reasonFromCause: vi.fn((cause: unknown) =>
-    cause instanceof Error && cause.message ? cause.message : "the app did not answer",
-  ),
 }));
 
-import { reasonFromCause, sessionResume } from "../../lib/tauri";
+import { sessionResume } from "../../lib/tauri";
 import { RecoveredSessionBar } from "./recoveredSessionBar";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -135,7 +132,6 @@ describe("RecoveredSessionBar", () => {
 
   it("reports a rejected resume with the daemon's own reason", async () => {
     vi.mocked(sessionResume).mockRejectedValueOnce(new Error("pipe broke"));
-    vi.mocked(reasonFromCause).mockReturnValueOnce("pipe broke");
     await renderBar(recoveredSession({ resumable: true }));
 
     const button = container.querySelector<HTMLButtonElement>(

@@ -898,7 +898,7 @@ describe("AgentChatSurface", () => {
 
     expect(chip.textContent).toContain("Ask before edits");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Could not switch the mode: mode refused",
+      "Could not switch the mode. mode refused",
     );
   });
 
@@ -1298,7 +1298,7 @@ describe("AgentChatSurface", () => {
     await pickFromChip("model", "grok-4.7");
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Could not switch the model: provider refused",
+      "Could not switch the model. provider refused",
     );
   });
   it("does not show a current effort the model did not declare", async () => {
@@ -1793,7 +1793,7 @@ describe("AgentChatSurface", () => {
     await act(async () => send.click());
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Could not send the message: This session does not accept attachments.",
+      "Could not send the message. The agent daemon refused that request as invalid.",
     );
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
@@ -1853,7 +1853,7 @@ describe("AgentChatSurface", () => {
     });
     await act(async () => undefined);
 
-    expect(container.textContent).toContain("Could not attach the agent session: no such session");
+    expect(container.textContent).toContain("Could not attach the agent session. no such session");
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -2034,7 +2034,7 @@ describe("AgentChatSurface", () => {
 
     await pickFromChip("model", "grok-4.7");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Could not switch the model: provider refused",
+      "Could not switch the model. provider refused",
     );
 
     expect(container.querySelector('button[aria-label="Stop the current turn"]')).not.toBeNull();

@@ -4,7 +4,6 @@ import {
   oracleAsk,
   oracleAskFolder,
   oracleFolderStatus,
-  reasonFromCause,
   sessionAttach,
   sessionClose,
   sessionCreate,
@@ -18,6 +17,7 @@ import {
   type AttachmentReference,
   type SessionChannel,
 } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type {
   OracleFolderIndexStatus,
   OracleResult,
@@ -635,7 +635,7 @@ export async function resolveFolderGrounding(
     status = await oracleFolderStatus(folderPath);
   } catch (cause) {
     if (signal?.aborted) throw abortError();
-    return { results: [], notice: reasonFromCause(cause) };
+    return { results: [], notice: errorSentence(cause).sentence };
   }
   if (signal?.aborted) throw abortError();
   if (status.state !== "ready") {
@@ -645,7 +645,7 @@ export async function resolveFolderGrounding(
     const response = await oracleAskFolder(folderPath, prompt);
     return { results: response.results, notice: null };
   } catch (cause) {
-    return { results: [], notice: reasonFromCause(cause) };
+    return { results: [], notice: errorSentence(cause).sentence };
   }
 }
 
@@ -763,7 +763,7 @@ function observeToolEvent(
 }
 
 function sessionError(prefix: string, cause: unknown): Error {
-  return new Error(`${prefix}: ${reasonFromCause(cause)}`);
+  return new Error(`${prefix}: ${errorSentence(cause).sentence}`);
 }
 
 function sameProvider(left: ProviderInfo | undefined, right: ProviderInfo | undefined): boolean {
@@ -1419,7 +1419,7 @@ export function createAgentHost(): DesignHost {
         promptGrounded = true;
       } catch (cause) {
         oracleResults = [];
-        groundingNotice = reasonFromCause(cause);
+        groundingNotice = errorSentence(cause).sentence;
         promptGrounded = false;
       }
     } else if (folderOption === null) {

@@ -323,11 +323,11 @@ describe("workspace session controller", () => {
     await controller.create();
 
     const error = controller.getState().error;
-    expect(error).toContain("test-reason");
-    expect(error).not.toContain("unreachable");
+    expect(error?.sentence).toContain("test-reason");
+    expect(error?.sentence).not.toContain("unreachable");
   });
 
-  it("reads the daemon's wire message when create rejects with a non-Error object", async () => {
+  it("maps a daemon wire rejection to the sentence and keeps the raw text as detail", async () => {
     const controller = createWorkspaceSessionController({
       list: vi.fn(async () => [liveSession("terminal-1")]),
       create: vi.fn(() =>
@@ -339,8 +339,9 @@ describe("workspace session controller", () => {
     await controller.create();
 
     const error = controller.getState().error;
-    expect(error).toContain("test-reason");
-    expect(error).not.toContain("[object Object]");
+    expect(error?.sentence).toBe("A system or file operation failed on this machine.");
+    expect(error?.detail).toContain("test-reason");
+    expect(error?.sentence).not.toContain("[object Object]");
   });
 
   it("falls back to a generic message when create rejects with an empty error", async () => {
@@ -354,7 +355,10 @@ describe("workspace session controller", () => {
 
     await controller.create();
 
-    expect(controller.getState().error).toBe("Could not create the agent session.");
+    expect(controller.getState().error).toEqual({
+      sentence: "Devboule could not complete that action.",
+      detail: null,
+    });
   });
 
   it("clears the create error when it is dismissed", async () => {
@@ -366,7 +370,7 @@ describe("workspace session controller", () => {
     });
     await controller.refresh();
     await controller.create();
-    expect(controller.getState().error).toContain("test-reason");
+    expect(controller.getState().error?.sentence).toContain("test-reason");
 
     controller.dismissError();
 
@@ -386,7 +390,7 @@ describe("workspace session controller", () => {
     expect(controller.getState()).toMatchObject({
       sessions: [],
       selectedSessionId: null,
-      error: "Could not load sessions. The daemon is unreachable.",
+      error: { sentence: "Could not load sessions. The daemon is unreachable." },
     });
   });
 

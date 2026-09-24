@@ -6,7 +6,8 @@
 // the click.
 
 import type { Session } from "../../types/ipc";
-import { isCommandError, reasonFromCause } from "../../lib/tauri";
+import { isCommandError } from "../../lib/commandError";
+import { errorSentence } from "../../lib/errorSentence";
 import type { CloseIntent } from "./closePolicy";
 
 /** The key an OLDER build persisted its undo-window intents under. The new
@@ -17,6 +18,8 @@ export const OLDER_BUILD_PENDING_KEY = "devboule.pendingSessionActions.v1";
 export interface CloseFailure {
   readonly id: string;
   readonly message: string;
+  /** The daemon's own words for the failure; a tooltip detail, never the line. */
+  readonly detail: string | null;
 }
 
 /** The row a close act was resolved against: the act names this instance. */
@@ -40,7 +43,10 @@ export class CloseActionStore {
   // id → the failed act's generation and sentence: one line per session,
   // replaceable only by an act of the SAME session, clearable only by an
   // act of the SAME generation.
-  private failures = new Map<string, { generation: number; message: string }>();
+  private failures = new Map<
+    string,
+    { generation: number; message: string; detail: string | null }
+  >();
   private failuresSnapshot: ReadonlyArray<CloseFailure> = [];
 
   constructor(private readonly acts: CloseActionsOptions) {}
@@ -78,10 +84,12 @@ export class CloseActionStore {
         }
         this.unmark(target.id);
         const verb = kind === "archive" ? "Archive" : "Delete";
+        const mapped = errorSentence(cause);
         this.recordFailure(
           target.id,
           target.generation,
-          `${verb} of “${target.title}” failed: ${reasonFromCause(cause)}`,
+          `${verb} of “${target.title}” failed. ${mapped.sentence}`,
+          mapped.detail,
         );
         onFailed?.();
       },
@@ -97,6 +105,7 @@ export class CloseActionStore {
       target.id,
       target.generation,
       `${verb} of “${target.title}” skipped — the session changed after it was confirmed.`,
+      null,
     );
   }
 
@@ -140,8 +149,13 @@ export class CloseActionStore {
     this.notify();
   }
 
-  private recordFailure(id: string, generation: number, message: string): void {
-    this.failures = new Map(this.failures).set(id, { generation, message });
+  private recordFailure(
+    id: string,
+    generation: number,
+    message: string,
+    detail: string | null,
+  ): void {
+    this.failures = new Map(this.failures).set(id, { generation, message, detail });
     this.publishFailures();
   }
 
@@ -157,6 +171,7 @@ export class CloseActionStore {
     this.failuresSnapshot = [...this.failures.entries()].map(([failureId, failure]) => ({
       id: failureId,
       message: failure.message,
+      detail: failure.detail,
     }));
     this.notify();
   }

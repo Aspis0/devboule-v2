@@ -1,4 +1,5 @@
-import { reasonFromCause, type AttachmentReference } from "../../lib/tauri";
+import { type AttachmentReference } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type { PromptAttachment } from "../../types/ipc";
 import type { DesignAttachment, DesignAttachmentFeedback } from "./designHost";
 import {
@@ -1617,7 +1618,7 @@ export async function transportDesignAttachments(
         // retention sweep reaches it. Do not go looking for a rollback here —
         // there is none to call. The pages that made it are still sent, and the
         // sentence below names the ones that did not.
-        failure = { group, page: entry.page, reason: reasonFromCause(cause) };
+        failure = { group, page: entry.page, reason: errorSentence(cause).sentence };
         break;
       }
       const pages = kept.get(group.id) ?? [];

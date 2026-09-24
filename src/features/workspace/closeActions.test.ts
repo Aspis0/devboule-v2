@@ -61,7 +61,7 @@ describe("CloseActionStore", () => {
 
     expect(store.getClosingSnapshot()).toEqual([]);
     expect(store.getFailuresSnapshot()).toEqual([
-      { id: "s.1", message: "Archive of “s.1” failed: daemon refused stop" },
+      { id: "s.1", message: "Archive of “s.1” failed. daemon refused stop", detail: null },
     ]);
     vi.useRealTimers();
   });
@@ -119,6 +119,7 @@ describe("CloseActionStore", () => {
       {
         id: "s.1",
         message: "Archive of “s.1” skipped — the session changed after it was confirmed.",
+        detail: null,
       },
     ]);
     vi.useRealTimers();
@@ -223,7 +224,7 @@ describe("CloseActionStore", () => {
     await settleStore(store);
     expect(store.getClosingSnapshot()).toEqual([]);
     expect(store.getFailuresSnapshot()).toEqual([
-      { id: "s.1", message: "Archive of “s.1” failed: daemon refused stop" },
+      { id: "s.1", message: "Archive of “s.1” failed. daemon refused stop", detail: null },
     ]);
     vi.useRealTimers();
   });
@@ -246,7 +247,7 @@ describe("CloseActionStore", () => {
     store.act("archive", target("s.1", 2));
     await settleStore(store);
     expect(store.getFailuresSnapshot()).toEqual([
-      { id: "s.1", message: "Archive of “s.1” failed: refused one" },
+      { id: "s.1", message: "Archive of “s.1” failed. refused one", detail: null },
     ]);
     vi.useRealTimers();
   });
@@ -287,7 +288,11 @@ describe("CloseActionStore", () => {
     await settleStore(store);
 
     expect(store.getFailuresSnapshot()).toEqual([
-      { id: "s.1", message: "Delete of “s.1” failed: Close the session before deleting it." },
+      {
+        id: "s.1",
+        message: "Delete of “s.1” failed. Close the session before deleting it.",
+        detail: null,
+      },
     ]);
     vi.useRealTimers();
   });

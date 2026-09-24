@@ -12,7 +12,6 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ save: mocks.save }));
 
 vi.mock("../../lib/tauri", () => ({
   writeArtifactFile: mocks.writeArtifactFile,
-  reasonFromCause: (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)),
 }));
 
 import { artifactFileName, saveArtifactHtml } from "./artifactSave";

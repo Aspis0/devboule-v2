@@ -46,9 +46,6 @@ vi.mock("../../lib/tauri", () => ({
   devicesList: vi.fn(async () => ({ selfInfo: undefined, peers: [], pending: [] })),
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),
-  reasonFromCause: vi.fn((cause: unknown) =>
-    cause instanceof Error && cause.message ? cause.message : "the app did not answer",
-  ),
   sessionPresence: vi.fn(async () => undefined),
   daemonRestart: vi.fn(async () => undefined),
   sessionPermissionRespond: vi.fn(async () => undefined),

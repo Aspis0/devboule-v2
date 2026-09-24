@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commandErrorMessage } from "./format";
+import { errorSentence } from "./errorSentence";
 
 export type RequestState<T> =
   | { status: "loading" }
@@ -42,7 +42,7 @@ export function useTrackedRequest<T>(
           if (mountedRef.current && requestIdRef.current === requestId) {
             setState({
               status: "error",
-              message: commandErrorMessage(error),
+              message: errorSentence(error).sentence,
             });
           }
         });

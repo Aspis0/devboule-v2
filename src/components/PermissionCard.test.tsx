@@ -7,12 +7,10 @@ import type { PermissionRequest, SessionOriginKind } from "../types/ipc";
 
 const mocks = vi.hoisted(() => ({
   sessionPermissionRespond: vi.fn(),
-  reasonFromCause: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
   sessionPermissionRespond: mocks.sessionPermissionRespond,
-  reasonFromCause: mocks.reasonFromCause,
 }));
 
 import {
@@ -191,10 +189,6 @@ describe("permissionOriginLabel", () => {
 describe("PermissionCard", () => {
   beforeEach(() => {
     mocks.sessionPermissionRespond.mockReset();
-    mocks.reasonFromCause.mockReset();
-    mocks.reasonFromCause.mockImplementation((cause: unknown) =>
-      cause instanceof Error ? cause.message : String(cause),
-    );
   });
 
   afterEach(() => {

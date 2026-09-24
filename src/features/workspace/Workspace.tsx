@@ -69,11 +69,12 @@ import {
   daemonRestart,
   devicesList,
   providersList,
-  reasonFromCause,
   sessionClose,
   sessionStop,
 } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import "./Workspace.css";
+import { useAppStore } from "../../store/appStore";
 
 type ActiveSidePanel = SidePanelEntry["id"];
 /**
@@ -221,6 +222,9 @@ export function Workspace({
   // not change while the connection lives.
   const [peerNames, setPeerNames] = useState<ReadonlyMap<string, string>>(() => new Map());
   const daemon = useWorkspaceDaemon();
+  // The empty provider picker's action hands the user to Settings → Providers
+  // (the surface opens on that tab), so the flow needs the app's one switcher.
+  const selectSurface = useAppStore((state) => state.selectSurface);
   const {
     sessions,
     selectedSessionId,
@@ -500,12 +504,19 @@ export function Workspace({
         capable = await loadChatProviders();
       } catch (cause: unknown) {
         endProviderChoice();
-        setProviderError(reasonFromCause(cause));
+        setProviderError(errorSentence(cause).sentence);
         return;
       }
       if (capable.length === 0) {
-        endProviderChoice();
-        afterChoice(undefined);
+        // Gate before create (the recon's Paseo reading, §5a): with no
+        // chat-capable provider the create would be born doomed, so the flow
+        // stops here — the anchored picker opens with its empty state and
+        // afterChoice is never called. The choice ends through the picker's
+        // own dismissal, or the button that opens the install guidance.
+        afterProviderChoiceRef.current = afterChoice;
+        providerAnchorElRef.current = trigger ?? addButtonRef.current;
+        setProviderAnchor(anchor);
+        setProviderPicker([]);
         return;
       }
       if (capable.length === 1 && !requiresConsent(capable[0])) {
@@ -560,7 +571,7 @@ export function Workspace({
     useStripFocus({
       addButtonRef,
       addDisabled,
-      sessionsError,
+      sessionsError: sessionsError?.sentence ?? null,
       providerError,
       pickerOpen: providerPicker !== null,
       selectedSessionId,
@@ -628,6 +639,13 @@ export function Workspace({
     if (consentProvider !== null) consentCancel();
     dismissProviderPicker();
   }, [consentCancel, consentProvider, dismissProviderPicker]);
+  // The empty picker's one action. Settings opens on its Providers tab, where
+  // the install guidance lives; dismissing first ends the choice so the
+  // navigate-away can never leave a flow running under the user left behind.
+  const openProvidersSettings = useCallback(() => {
+    dismissPickerFlow();
+    selectSurface("settings");
+  }, [dismissPickerFlow, selectSurface]);
   // A choice opened under one workspace must never create in another: a
   // pointer click on the row dismisses through the outside rule, but a
   // keyboard- or state-driven switch has no click to catch — the flow ends
@@ -780,13 +798,14 @@ export function Workspace({
     ) ??
     permissionQueue.find((item) => item.sessionId === selectedSessionId) ??
     null;
-  const sessionStatusText = sessionsError
-    ? sessionsError
-    : sessionCreating
-      ? "Starting session…"
-      : sessionsLoading && sessions.length === 0
-        ? "Loading sessions…"
-        : `${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
+  // The strip's status slot carries progress and the count, never an error
+  // text: a failure has its own one line (the spec's inline error line), so
+  // the slot never becomes its second, third and fourth surface.
+  const sessionStatusText = sessionCreating
+    ? "Starting session…"
+    : sessionsLoading && sessions.length === 0
+      ? "Loading sessions…"
+      : `${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
 
   // One instance of the provider choice UI, anchored where the flow was
   // opened. It renders only the choice and consent; what happens afterwards
@@ -841,37 +860,55 @@ export function Workspace({
         ) : (
           <>
             <div className="workspace-menu-label">Choose agent</div>
-            {[
-              {
-                label: "Installed",
-                providers: providerPicker!.filter((provider) => !requiresConsent(provider)),
-              },
-              {
-                label: "Available to install",
-                providers: providerPicker!.filter((provider) => requiresConsent(provider)),
-              },
-            ]
-              .filter((group) => group.providers.length > 0)
-              .map((group) => (
-                <div className="workspace-provider-group" key={group.label}>
-                  <div className="workspace-menu-label">{group.label}</div>
-                  <div className="workspace-surface-options">
-                    {group.providers.map((provider) => (
-                      <button
-                        type="button"
-                        role="option"
-                        className="workspace-surface-option"
-                        key={provider.id}
-                        onClick={(event) => {
-                          pickProvider(provider, event.currentTarget);
-                        }}
-                      >
-                        <span className="workspace-surface-name">{provider.id}</span>
-                      </button>
-                    ))}
+            {providerPicker!.length === 0 ? (
+              // The gate's empty state: no agent CLI is installed, so the flow
+              // stops here instead of creating a session that cannot start.
+              <div className="workspace-provider-empty">
+                <p className="workspace-provider-empty-text">
+                  No agent CLI is installed on this machine. Install one — for example grok, claude,
+                  or gemini — and restart Devboule.
+                </p>
+                <button
+                  type="button"
+                  className="workspace-secondary-action"
+                  onClick={openProvidersSettings}
+                >
+                  Install instructions
+                </button>
+              </div>
+            ) : (
+              [
+                {
+                  label: "Installed",
+                  providers: providerPicker!.filter((provider) => !requiresConsent(provider)),
+                },
+                {
+                  label: "Available to install",
+                  providers: providerPicker!.filter((provider) => requiresConsent(provider)),
+                },
+              ]
+                .filter((group) => group.providers.length > 0)
+                .map((group) => (
+                  <div className="workspace-provider-group" key={group.label}>
+                    <div className="workspace-menu-label">{group.label}</div>
+                    <div className="workspace-surface-options">
+                      {group.providers.map((provider) => (
+                        <button
+                          type="button"
+                          role="option"
+                          className="workspace-surface-option"
+                          key={provider.id}
+                          onClick={(event) => {
+                            pickProvider(provider, event.currentTarget);
+                          }}
+                        >
+                          <span className="workspace-surface-name">{provider.id}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+            )}
           </>
         )}
       </AnchoredPopover>
@@ -1305,9 +1342,13 @@ export function Workspace({
             <span className="workspace-session-error-text">
               These closes didn&apos;t go through:
             </span>
-            {closeFailures.map((error) => (
-              <span className="workspace-session-error-text" key={error.id}>
-                {error.message}
+            {closeFailures.map((failure) => (
+              <span
+                className="workspace-session-error-text"
+                key={failure.id}
+                title={failure.detail ?? undefined}
+              >
+                {failure.message}
               </span>
             ))}
             <button
@@ -1323,8 +1364,23 @@ export function Workspace({
         ) : null}
 
         {sessionsError !== null ? (
-          <div className="workspace-session-error" role="alert">
-            <span className="workspace-session-error-text">{sessionsError}</span>
+          // The one render of the create/list failure: the spec's inline error
+          // line (12, --danger, triangle). The daemon's own words ride in the
+          // tooltip and in Diagnostics — never painted beside the sentence.
+          <div
+            className="workspace-error-line"
+            role="alert"
+            title={sessionsError.detail ?? undefined}
+          >
+            <svg
+              className="workspace-error-line-icon"
+              viewBox="0 0 12 12"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="M6 1.6 11 10.4H1Z" />
+            </svg>
+            <span className="workspace-error-line-text">{sessionsError.sentence}</span>
             <button
               type="button"
               className="workspace-session-error-dismiss"
@@ -1413,11 +1469,10 @@ export function Workspace({
             role="tabpanel"
             aria-label="Terminal output"
           >
-            {sessionsError ? (
-              <div role="alert" className="workspace-empty-note">
-                {sessionsError}
-              </div>
-            ) : sessionsLoading ? (
+            {/* The empty state never carries the error: the failure has its
+                one line under the strip, and this pane stays what the spec
+                says it is (SPEC-regions "Empty and error"). */}
+            {sessionsLoading ? (
               <div role="status" className="workspace-empty-note">
                 Loading sessions…
               </div>

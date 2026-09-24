@@ -61,9 +61,6 @@ vi.mock("../../lib/tauri", () => ({
     (error: unknown) =>
       typeof error === "object" && error !== null && "code" in error && "message" in error,
   ),
-  reasonFromCause: vi.fn((cause: unknown) =>
-    cause instanceof Error && cause.message ? cause.message : "the app did not answer",
-  ),
   sessionCreate: vi.fn(),
   providersList: vi.fn(),
   sessionPresence: vi.fn(async () => undefined),

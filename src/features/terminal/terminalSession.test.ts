@@ -479,7 +479,7 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(harness.invoke).not.toHaveBeenCalledWith("session_detach", expect.anything());
     expect(harness.banners).toContainEqual({
       kind: "error",
-      message: "Could not attach to the terminal: No session with that id.",
+      message: "Could not attach to the terminal. No session with that id.",
     });
   });
 
@@ -499,7 +499,7 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.banners).toContainEqual({
       kind: "error",
-      message: "Could not attach to the terminal: attach failed",
+      message: "Could not attach to the terminal. attach failed",
     });
   });
 
@@ -515,7 +515,7 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
     expect(harness.banners).toContainEqual({
       kind: "error",
-      message: "Could not open the terminal view: view unavailable",
+      message: "Could not open the terminal view. view unavailable",
     });
   });
 
@@ -541,7 +541,7 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.banners).toContainEqual({
       kind: "error",
-      message: "Could not open the terminal stream: stream unavailable",
+      message: "Could not open the terminal stream. stream unavailable",
     });
   });
 
@@ -599,7 +599,7 @@ describe("TerminalSession lifecycle and errors", () => {
     });
     expect(harness.banners).toContainEqual({
       kind: "error",
-      message: "Could not attach to the terminal: attach failed",
+      message: "Could not attach to the terminal. attach failed",
     });
     expect(harness.banners).not.toContainEqual({ kind: "error", message: "close failed" });
   });
@@ -623,7 +623,7 @@ describe("TerminalSession lifecycle and errors", () => {
     });
     expect(harness.banners).toContainEqual({
       kind: "error",
-      message: "Could not attach to the terminal: attach failed",
+      message: "Could not attach to the terminal. attach failed",
     });
   });
 
@@ -650,7 +650,7 @@ describe("TerminalSession lifecycle and errors", () => {
     await harness.session.start();
     expect(harness.banners).toContainEqual({
       kind: "error",
-      message: "Could not attach to the terminal: No session with that id.",
+      message: "Could not attach to the terminal. This session no longer exists.",
     });
   });
 

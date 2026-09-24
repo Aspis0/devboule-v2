@@ -1,11 +1,7 @@
 import { useCallback } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import {
-  reasonFromCause,
-  workspaceFileDelete,
-  workspaceFileDuplicate,
-  workspaceFileRename,
-} from "../../lib/tauri";
+import { workspaceFileDelete, workspaceFileDuplicate, workspaceFileRename } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type { WorkspaceFileEntry } from "../../types/ipc";
 
 /**
@@ -118,7 +114,7 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
         // Transport lost after the ask: the act may have happened — same
         // reason, same refresh.
         refreshPath(parentOf(entry.path));
-        return reasonFromCause(cause);
+        return errorSentence(cause).sentence;
       }
     },
     [refreshPath, rekey, select, selection, workspaceId],
@@ -133,7 +129,7 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
         return reply.error;
       } catch (cause: unknown) {
         refreshPath(parentOf(entry.path));
-        return reasonFromCause(cause);
+        return errorSentence(cause).sentence;
       }
     },
     [refreshPath, workspaceId],
@@ -166,7 +162,7 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
         // Transport lost after the ask: the act may have happened — same
         // reason, same refresh.
         refreshPath(parentOf(entry.path));
-        return reasonFromCause(cause);
+        return errorSentence(cause).sentence;
       }
     },
     [deselect, refreshPath, selection, workspaceId],

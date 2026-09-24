@@ -7,8 +7,8 @@ import {
   pairingStart,
   peerRevoke,
   peerSetCaps,
-  reasonFromCause,
 } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type {
   Cap,
   DevicesReply,
@@ -454,7 +454,7 @@ export function DevicesPanel() {
           if (cancelled || epoch !== epochRef.current) return;
           // The last good reply stays on screen: a single missed poll is not
           // evidence that every device disappeared.
-          setListError(reasonFromCause(cause));
+          setListError(errorSentence(cause).sentence);
         })
         .finally(() => {
           if (cancelled) return;
@@ -562,7 +562,7 @@ export function DevicesPanel() {
       setNow(Date.now());
     } catch (cause) {
       if (!mountedRef.current) return;
-      setCodeError(reasonFromCause(cause));
+      setCodeError(errorSentence(cause).sentence);
     } finally {
       if (mountedRef.current) setStarting(false);
     }
@@ -602,7 +602,7 @@ export function DevicesPanel() {
       // The daemon's pairing errors are already sentences meant for a person
       // (a wrong code says so), so they are shown as they arrive.
       if (!mountedRef.current) return;
-      setEnterError(reasonFromCause(cause));
+      setEnterError(errorSentence(cause).sentence);
     } finally {
       if (mountedRef.current) setEnterBusy(false);
     }
@@ -625,7 +625,7 @@ export function DevicesPanel() {
       refresh();
     } catch (cause) {
       if (!mountedRef.current) return;
-      setConfirmError({ deviceId, message: reasonFromCause(cause) });
+      setConfirmError({ deviceId, message: errorSentence(cause).sentence });
     } finally {
       if (mountedRef.current) setConfirmBusy(null);
     }
@@ -679,7 +679,7 @@ export function DevicesPanel() {
     } catch (cause) {
       if (!mountedRef.current) return;
       clearCapOverride(row.deviceId);
-      setRowError({ deviceId: row.deviceId, message: reasonFromCause(cause) });
+      setRowError({ deviceId: row.deviceId, message: errorSentence(cause).sentence });
     } finally {
       if (mountedRef.current) setRowBusy(null);
     }
@@ -699,7 +699,7 @@ export function DevicesPanel() {
       refresh();
     } catch (cause) {
       if (!mountedRef.current) return;
-      setRowError({ deviceId: row.deviceId, message: reasonFromCause(cause) });
+      setRowError({ deviceId: row.deviceId, message: errorSentence(cause).sentence });
     } finally {
       if (mountedRef.current) setRowBusy(null);
     }

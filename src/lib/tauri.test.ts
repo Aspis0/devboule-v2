@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { isCommandError } from "./commandError";
 import { invoke } from "@tauri-apps/api/core";
 import type { Channel } from "@tauri-apps/api/core";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -9,7 +10,6 @@ import {
   agentProfilesSet,
   devicesList,
   invokeTyped,
-  isCommandError,
   journalRetentionGet,
   journalRetentionSet,
   journalUsage,
@@ -369,16 +369,18 @@ describe("surface settings wrappers", () => {
     });
   });
 
-  it("maps a rejected read to the unreadable case carrying the message", async () => {
+  it("maps a rejected read to the unreadable case with a mapped sentence", async () => {
     vi.mocked(invoke).mockClear();
     // A structured CommandError is what Tauri rejects a Serialize error with.
+    // Its raw text stays out of the sentence; a code the union lacks takes
+    // errorSentence's fallback.
     vi.mocked(invoke).mockRejectedValueOnce({
       code: "io_error",
       message: "settings file unreadable",
     });
     await expect(surfaceSettingsGet("design")).resolves.toEqual({
       status: "unreadable",
-      message: "settings file unreadable",
+      message: "Devboule could not complete that action.",
     });
 
     // A plain Error rejection lands in the same case, message preserved.

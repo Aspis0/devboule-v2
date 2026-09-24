@@ -18,6 +18,7 @@ import type {
 } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
 import { boundByGraphemes } from "../../lib/graphemeBound";
+import { errorSentence } from "../../lib/errorSentence";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
@@ -29,12 +30,22 @@ export interface WorkspaceSessionSource {
   watch?: (listener: (snapshots: SessionStateSnapshot[]) => void) => Promise<() => void>;
 }
 
+/**
+ * One failure of the strip's create/list, in the words a surface renders it:
+ * the plain sentence plus the daemon's own words for tooltips and
+ * Diagnostics. `errorSentence` is what fills it.
+ */
+export interface WorkspaceSessionError {
+  sentence: string;
+  detail: string | null;
+}
+
 export interface WorkspaceSessionState {
   sessions: Session[];
   selectedSessionId: string | null;
   loading: boolean;
   creating: boolean;
-  error: string | null;
+  error: WorkspaceSessionError | null;
 }
 
 export interface WorkspaceSessionController {
@@ -68,8 +79,10 @@ const DEFAULT_SOURCE: WorkspaceSessionSource = {
   },
 };
 
-const LIST_ERROR = "Could not load sessions. The daemon is unreachable.";
-const CREATE_FALLBACK_ERROR = "Could not create the agent session.";
+const LIST_ERROR: WorkspaceSessionError = {
+  sentence: "Could not load sessions. The daemon is unreachable.",
+  detail: null,
+};
 
 /**
  * What belongs in the tab strip: a running process (live/silent) plus a
@@ -92,15 +105,6 @@ export function isRecoveredSession(session: Pick<Session, "state">): boolean {
  * `{ code, message }` object, which `String(cause)` would render as
  * "[object Object]".
  */
-function rejectionMessage(cause: unknown): string {
-  if (cause instanceof Error) return cause.message;
-  if (typeof cause === "object" && cause !== null && "message" in cause) {
-    const message = (cause as { message: unknown }).message;
-    if (typeof message === "string") return message;
-  }
-  return String(cause);
-}
-
 export function workspaceSessions(sessions: readonly Session[]): Session[] {
   return [...sessions];
 }
@@ -726,13 +730,13 @@ export function createWorkspaceSessionController(
       });
       return session;
     } catch (cause) {
-      // The daemon answered and rejected the start; surface its reason instead
-      // of a generic claim about reachability.
-      const message = rejectionMessage(cause);
+      // The daemon answered and rejected the start; surface its mapped
+      // sentence — the raw text stays available as the sentence's detail.
+      const mapped = errorSentence(cause);
       publish({
         ...state,
         creating: false,
-        error: message.trim().length > 0 ? message : CREATE_FALLBACK_ERROR,
+        error: { sentence: mapped.sentence, detail: mapped.detail },
       });
       return null;
     }

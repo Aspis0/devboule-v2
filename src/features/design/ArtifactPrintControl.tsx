@@ -31,7 +31,7 @@ import {
 } from "./artifactPrint";
 import type { DesignOutputMode } from "./designHost";
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
-import { reasonFromCause } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 
 type PrintState = { kind: "idle" } | { kind: "closed" } | { kind: "failed"; message: string };
 
@@ -139,7 +139,7 @@ export function ArtifactPrintControl({
       // The document could not be assembled or the frame could not be mounted.
       // Nothing is printed and nothing is left behind.
       removeFrame();
-      setPrintState({ kind: "failed", message: reasonFromCause(cause) });
+      setPrintState({ kind: "failed", message: errorSentence(cause).sentence });
     }
   }
 

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  reasonFromCause,
   workspaceFilePreviewStage,
   workspaceFilePreviewUnstage,
   workspaceFileRead,
 } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type { WorkspaceFileContent, WorkspaceFileStaged } from "../../types/ipc";
 import { previewMediaKind } from "./previewMedia";
 
@@ -134,7 +134,7 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
         }
       } catch (cause: unknown) {
         if (generation.current !== own) return;
-        const failure = reasonFromCause(cause);
+        const failure = errorSentence(cause).sentence;
         setState((current) => ({
           workspaceId,
           path,
@@ -287,7 +287,7 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
         if (onScreen.workspaceId !== workspaceId || onScreen.path !== path) return onScreen;
         return {
           ...onScreen,
-          cell: { ...onScreen.cell, failure: reasonFromCause(cause) },
+          cell: { ...onScreen.cell, failure: errorSentence(cause).sentence },
         };
       });
     }

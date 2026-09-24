@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { reasonFromCause, workspaceFilesList } from "../../lib/tauri";
+import { workspaceFilesList } from "../../lib/tauri";
+import { errorSentence } from "../../lib/errorSentence";
 import type { WorkspaceDirectory } from "../../types/ipc";
 
 /** One folder's read: a reply, or the sentence the wire refused with. */
@@ -99,7 +100,7 @@ export function useWorkspaceFiles(workspaceId: string | null): WorkspaceFiles {
         setState((current) => reopen(current, path, { reply, failure: null }));
       } catch (cause: unknown) {
         if (generation.current.get(key) !== own) return;
-        const failure = reasonFromCause(cause);
+        const failure = errorSentence(cause).sentence;
         setState((current) => {
           // The reply already read stays on screen beside the failure — the
           // same rule as the Changes panel: a read that did not answer may

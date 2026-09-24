@@ -450,7 +450,7 @@ describe("devices panel", () => {
 
     const alert = container.querySelector('[role="alert"]');
     if (alert === null) throw new Error("pairing error did not render");
-    expect(alert.textContent).toBe("pairing is busy");
+    expect(alert.textContent).toBe("The agent daemon refused that request as invalid.");
   });
 
   it("keeps the two pairing actions mutually exclusive", async () => {
@@ -637,7 +637,7 @@ describe("devices panel", () => {
 
     const alert = container.querySelector('[role="alert"]');
     if (alert === null) throw new Error("confirmation error did not render");
-    expect(alert.textContent).toBe("no pairing is waiting for that device");
+    expect(alert.textContent).toBe("The agent daemon refused that request as invalid.");
   });
 
   it("sends the full capability array on a toggle and keeps the optimistic flip", async () => {
@@ -752,7 +752,7 @@ describe("devices panel", () => {
     expect(checkboxByLabel("send").checked).toBe(false);
     const alert = container.querySelector('[role="alert"]');
     if (alert === null) throw new Error("capability error did not render");
-    expect(alert.textContent).toBe("no such peer");
+    expect(alert.textContent).toBe("The agent daemon refused that request as invalid.");
   });
 
   it("draws the capability switches for a daemon peer and drops the false scope sentence", async () => {
@@ -874,7 +874,7 @@ describe("devices panel", () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
 
-    expect(container.textContent).toContain("daemon connection was lost");
+    expect(container.textContent).toContain("A system or file operation failed on this machine.");
     expect(container.textContent).toContain("Xiaomi 14");
   });
 
@@ -887,7 +887,7 @@ describe("devices panel", () => {
 
     const alert = container.querySelector('[role="alert"]');
     if (alert === null) throw new Error("load failure did not render");
-    expect(alert.textContent).toContain("daemon connection was lost");
+    expect(alert.textContent).toContain("A system or file operation failed on this machine.");
     expect(buttonByText("Retry")).toBeTruthy();
   });
 

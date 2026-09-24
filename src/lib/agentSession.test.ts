@@ -819,7 +819,7 @@ describe("ACP agent session", () => {
     const state = harness.session.getState();
     expect(state.items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not send the message: This session does not accept attachments.",
+      text: "Could not send the message. The agent daemon refused that request as invalid.",
     });
     expect(state.status).toBe("idle");
     await expect(harness.session.send("plain text then")).resolves.toBe(true);
@@ -843,7 +843,7 @@ describe("ACP agent session", () => {
     expect(harness.session.getState().status).toBe("error");
     expect(harness.session.getState().items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not send the message: no such session",
+      text: "Could not send the message. This session no longer exists.",
     });
   });
 
@@ -865,7 +865,7 @@ describe("ACP agent session", () => {
     expect(harness.session.getState().status).toBe("idle");
     expect(harness.session.getState().items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not send the message: timed out",
+      text: "Could not send the message. A system or file operation failed on this machine.",
     });
     await expect(harness.session.send("try again")).resolves.toBe(true);
   });
@@ -885,7 +885,7 @@ describe("ACP agent session", () => {
     expect(harness.session.getState().status).toBe("error");
     expect(harness.session.getState().items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not send the message: daemon connection was lost",
+      text: "Could not send the message. The connection to the agent daemon was lost. Devboule is reconnecting.",
     });
   });
 
@@ -946,7 +946,7 @@ describe("ACP agent session", () => {
     expect(state.status).toBe("error");
     expect(state.items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not switch the model: no such session",
+      text: "Could not switch the model. This session no longer exists.",
     });
   });
 
@@ -968,7 +968,7 @@ describe("ACP agent session", () => {
     const state = harness.session.getState();
     expect(state.items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not switch the model: provider refused",
+      text: "Could not switch the model. provider refused",
     });
     expect(state.status).toBe("running");
     expect(state.streaming).toBe(true);
@@ -1016,7 +1016,7 @@ describe("ACP agent session", () => {
     const state = harness.session.getState();
     expect(state.items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not send the message: steer refused",
+      text: "Could not send the message. This machine refused that action for this device.",
     });
     expect(state.streaming).toBe(true);
     expect(state.status).toBe("running");
@@ -1079,7 +1079,7 @@ describe("ACP agent session", () => {
     expect(session.getState().status).toBe("error");
     expect(session.getState().items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not attach the agent session: no such session",
+      text: "Could not attach the agent session. no such session",
     });
   });
 
@@ -1551,7 +1551,7 @@ describe("ACP agent session", () => {
 
     expect(harness.session.getState().items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not switch the model: model not found",
+      text: "Could not switch the model. model not found",
     });
     expect(harness.session.getState().pendingSwitch).toBeNull();
     // A refused switch is not a dead session: the composer must stay usable.
@@ -1612,7 +1612,7 @@ describe("ACP agent session", () => {
 
     expect(harness.session.getState().items.at(-1)).toMatchObject({
       role: "error",
-      text: "Could not switch the mode: mode refused",
+      text: "Could not switch the mode. mode refused",
     });
     expect(harness.session.getState().pendingModeId).toBeNull();
     // A refused switch is not a dead session: the composer must stay usable.

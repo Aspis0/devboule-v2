@@ -11,9 +11,6 @@ vi.mock("../../store/appStore", () => ({
     setState,
   },
 }));
-vi.mock("../../lib/tauri", () => ({
-  reasonFromCause: (cause: unknown) => (cause instanceof Error ? cause.message : "failed"),
-}));
 
 import { chooseAndInstall } from "./install";
 

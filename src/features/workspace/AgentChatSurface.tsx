@@ -689,6 +689,11 @@ function renderItem(item: AgentChatItem, a2aNames: A2aNameSource, transcriptEnde
     >
       <div className="workspace-chat-label">{itemLabel(item)}</div>
       <div className="workspace-chat-copy">{item.text}</div>
+      {item.role === "error" && item.detail ? (
+        // The demoted raw text: env vars, OS error numbers, internal words.
+        // Under the sentence, muted — read on request, not on the way past.
+        <div className="workspace-chat-error-detail">{item.detail}</div>
+      ) : null}
     </div>
   );
 }
