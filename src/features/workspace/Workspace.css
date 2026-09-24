@@ -519,6 +519,13 @@
   background: var(--selection);
 }
 
+/* The active tab is a fill; multi-selection is an outline, so a tab can be
+   both without lying about which is which. */
+.workspace-session-tab-multiselected {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
+
 .workspace-session-tab .workspace-status-dot {
   width: 6px;
   height: 6px;
@@ -768,6 +775,19 @@
    portal to document.body and take position: fixed from their anchor's
    rectangle (popoverPlace.tsx), so the scoped anchor rule above them is
    gone with the clipping it could not prevent. */
+
+/* The selection's size is announced politely; this only keeps the sentence
+   out of the picture. */
+.workspace-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 .workspace-session-add:hover,
 .workspace-session-add:focus-visible {
@@ -2723,150 +2743,89 @@
   border: 0;
 }
 
-/* Session tab swipe: the act is named underneath, revealed as the tab slides.
-   Archive sits right (right-to-left drag), delete sits left — and delete reads
-   heavier, because one keeps the messages and the other destroys them. */
-.session-swipe {
+/* One row per session tab: the tab button, the trailing close chip, and the
+   take-back. The row is what right-clicks and hover land on; flex:none keeps
+   the strip scrolling instead of squeezing a tab below its content. */
+.workspace-session-row {
   position: relative;
   display: flex;
   flex: none;
   align-items: center;
   border-radius: 9px;
-  overflow: hidden;
 }
 
-.session-swipe-underlay {
+/* Paseo's trailing close chip: an overlay about 48 px wide on the row's
+   right edge, scrimmed with the tab's own background, carrying one 18×18 "×"
+   whose glyph is 12 px. Hidden means unclickable (visibility plus
+   pointer-events), so it can never take a click meant for the label. */
+.workspace-session-chip {
   position: absolute;
   top: 0;
+  right: 0;
   bottom: 0;
   display: flex;
   align-items: center;
-  font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
-  pointer-events: none;
-}
-
-.session-swipe-underlay-archive {
-  right: 0;
-  left: 0;
   justify-content: flex-end;
-  padding-right: 10px;
+  width: 48px;
+  padding-right: 4px;
+  border-radius: 0 9px 9px 0;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease-out,
+    visibility 120ms;
+}
+
+.workspace-session-chip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
   background: var(--surface-muted);
-  color: var(--ink-soft);
 }
 
-.session-swipe-underlay-delete {
-  right: 0;
-  left: 0;
-  justify-content: flex-start;
-  padding-left: 10px;
-  background: var(--terracotta-deep);
-  color: #fff;
+.workspace-session-row:has(.workspace-session-tab-selected) .workspace-session-chip::before {
+  background: var(--selection);
 }
 
-.session-swipe-content {
+.workspace-session-row:hover .workspace-session-chip,
+.workspace-session-row:focus-within .workspace-session-chip {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.workspace-session-chip-close {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 3px;
-  touch-action: pan-y;
-  will-change: transform;
-}
-
-/* The keyboard and screen-reader path to the same two acts. Absolutely
-   positioned so the row reserves no layout for them: measured in WebView2,
-   the in-flow version held ~100 px of blank space per tab. Visible on hover
-   and whenever focus is inside the row, so a keyboard user tabs into a
-   visible control; hidden state is unreachable by pointer (visibility) and
-   announces nothing extra (the buttons' own labels say it all). */
-.session-swipe-actions {
-  position: absolute;
-  top: 50%;
-  right: 2px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 1px 2px;
-  border-radius: 999px;
-  background: var(--surface-muted);
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(-50%);
-  transition:
-    opacity 150ms ease-out,
-    visibility 150ms;
-}
-
-.session-swipe:hover .session-swipe-actions,
-.session-swipe:focus-within .session-swipe-actions {
-  opacity: 1;
-  visibility: visible;
-}
-
-.workspace-tab-archive,
-.workspace-tab-delete {
-  padding: 1px 7px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: transparent;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
   color: var(--ink-soft);
-  font-size: 10px;
-  font-weight: 600;
-  white-space: nowrap;
   cursor: pointer;
 }
 
-.workspace-tab-delete {
-  border-color: var(--terracotta);
+.workspace-session-chip-close:hover,
+.workspace-session-chip-close:focus-visible {
+  background: var(--border-strong);
+}
+
+/* The menu's Delete entry reads as what it is: the one entry that destroys. */
+.workspace-menu-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border-strong);
+}
+
+.workspace-menu-option-destructive {
   color: var(--terracotta-deep);
 }
 
-/* The undo window: future tense, because the daemon call has not fired yet. */
-.pending-undo-bar {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 12px;
-  background: var(--surface-muted);
-  font-size: 12px;
-}
-
-.pending-undo-bar-delete {
-  background: var(--terracotta-deep);
-  color: #fff;
-}
-
-.pending-undo-action {
-  flex: none;
-  padding: 1px 10px;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  background: transparent;
-  color: inherit;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-/* A non-error notice sharing the error banner's shape: duplicates and
-   other spoken-but-harmless states. Neutral border and ink — terracotta
-   would report a failure that did not happen. */
-.workspace-session-notice {
-  border-color: var(--border-strong);
-  color: var(--ink-soft);
-}
-
-.workspace-session-notice .workspace-session-error-dismiss {
-  color: var(--ink-soft);
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .session-swipe-content {
-    transition: none !important;
-  }
-  .session-swipe-actions {
+  .workspace-session-chip {
     transition: none;
   }
 }

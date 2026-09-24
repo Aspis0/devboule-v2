@@ -15,6 +15,7 @@ import {
   type RefObject,
 } from "react";
 import { AnchoredPopover } from "./popoverPlace";
+import { moveMenuFocus } from "./menuNav";
 
 interface WorkspaceNewTabMenuProps {
   /** The "+" button the menu hangs from: Escape hands focus back to it, and a press on it is not an outside click. */
@@ -135,40 +136,7 @@ export function WorkspaceNewTabMenu({
       closeMenu();
       return;
     }
-    if (
-      event.key !== "ArrowDown" &&
-      event.key !== "ArrowUp" &&
-      event.key !== "Home" &&
-      event.key !== "End"
-    ) {
-      return;
-    }
-    // Arrow navigation moves among the ENABLED entries and never into a
-    // disabled one; a lone enabled entry keeps focus.
-    const enabled = [
-      ...(rootRef.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']") ?? []),
-    ].filter((item) => !item.disabled);
-    if (enabled.length === 0) return;
-    event.preventDefault();
-    const current = enabled.indexOf(document.activeElement as HTMLButtonElement);
-    if (event.key === "Home") {
-      enabled[0].focus({ preventScroll: true });
-      return;
-    }
-    if (event.key === "End") {
-      enabled[enabled.length - 1].focus({ preventScroll: true });
-      return;
-    }
-    if (current === -1) {
-      enabled[event.key === "ArrowDown" ? 0 : enabled.length - 1].focus({
-        preventScroll: true,
-      });
-      return;
-    }
-    if (enabled.length === 1) return;
-    const next =
-      enabled[(current + (event.key === "ArrowDown" ? 1 : -1) + enabled.length) % enabled.length];
-    next.focus({ preventScroll: true });
+    moveMenuFocus(rootRef.current, event);
   };
 
   const entries: NewTabEntry[] = [

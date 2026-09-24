@@ -4,18 +4,13 @@ import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { HistoryPanel } from "../history/HistoryPanel";
-import { SessionTabSwipe } from "./SessionTabSwipe";
-import { PendingUndoBar } from "./PendingUndoBar";
+import { CloseConfirm } from "./CloseConfirm";
 import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
-import {
-  UNDO_WINDOW_MS,
-  pendingFate,
-  pruneDismissed,
-  verifyPendingRecord,
-  type PendingSessionAction,
-  type PendingSessionKind,
-} from "./pendingSessionActions";
-import { claimStartupRecovery, sharedPendingScheduler } from "./pendingSessionScheduler";
+import { SessionTabMenu } from "./SessionTabMenu";
+import { useTabSelection } from "./useTabSelection";
+import { sessionTabElementId, useTabCloseFlow } from "./useTabCloseFlow";
+import { discardPersistedPendingCloses, sharedCloseActions } from "./closeActions";
+import type { CloseIntent } from "./closePolicy";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { startPresenceReporting, type PresenceReporter } from "./presence";
 import { createDaemonRecovery } from "./daemonRecovery";
@@ -220,138 +215,91 @@ export function Workspace({
   useEffect(() => {
     setSessionFacts(sessions);
   }, [sessions, setSessionFacts]);
-  // Pending archive/delete intents: the swipe schedules, the daemon call
-  // fires only when UNDO_WINDOW_MS expires (see pendingSessionActions.ts).
-  // The scheduler is app-lifetime, not per-mount: its timers survive a
-  // surface switch, so leaving for Settings neither fires early nor loses
-  // the countdown. Only `beforeunload` flushes.
-  const rawFireAction = useCallback(
-    (action: PendingSessionAction) =>
-      action.kind === "archive" ? sessionStop(action.id) : sessionClose(action.id),
-    [],
+  // The strip's close acts: fire at once (the undo window is gone), hide the
+  // row until the roster confirms, and own each failure by the act that
+  // produced it. App-lifetime, like the acts themselves: a fire still in the
+  // air when the user switches to Settings lands its error here, and the
+  // list is still shown when the Workspace mounts again.
+  const [closeActions] = useState(() =>
+    sharedCloseActions({
+      archive: (id) => sessionStop(id),
+      destroy: (id) => sessionClose(id),
+    }),
   );
-  const [pendingScheduler] = useState(() =>
-    sharedPendingScheduler(
-      rawFireAction,
-      typeof localStorage !== "undefined" ? localStorage : null,
-    ),
+  const closingIds = useSyncExternalStore(closeActions.subscribe, closeActions.getClosingSnapshot);
+  const closeFailures = useSyncExternalStore(
+    closeActions.subscribe,
+    closeActions.getFailuresSnapshot,
   );
-  useEffect(() => {
-    pendingScheduler.setFire(rawFireAction);
-  }, [pendingScheduler, rawFireAction]);
-  const pendings = useSyncExternalStore(pendingScheduler.subscribe, pendingScheduler.getSnapshot);
-  const settled = useSyncExternalStore(
-    pendingScheduler.subscribe,
-    pendingScheduler.getSettledSnapshot,
-  );
-  const pendingError = useSyncExternalStore(
-    pendingScheduler.subscribe,
-    pendingScheduler.getErrorSnapshot,
-  );
-  // A gesture that does nothing must say so: the tab hides a beat after the
-  // click lands (state, then paint), so a fast second click can arrive while
-  // the first intent is still armed and the duplicate dies silently.
-  const [pendingNotice, setPendingNotice] = useState<string | null>(null);
-  const pendingIds = useMemo(() => new Set(pendings.map((action) => action.id)), [pendings]);
-  // A dismissal hides a row only while the row is still the same instance
-  // it was made against: same stamp AND same generation. A resume keeps
-  // the stamp and bumps the generation, so a reopened session comes back
-  // to the strip instead of staying buried by its own archive.
-  const visibleSessions = useMemo(
-    () =>
-      sessions.filter((session) => {
-        if (pendingIds.has(session.id)) return false;
-        const dismissal = settled.get(session.id);
-        return (
-          dismissal === undefined ||
-          dismissal.createdAtMs !== session.createdAtMs ||
-          dismissal.generation !== session.state.generation
-        );
-      }),
-    [sessions, pendingIds, settled],
-  );
+  const visibleSessions = useMemo(() => {
+    const hiding = new Set(closingIds);
+    return sessions.filter((session) => !hiding.has(session.id));
+  }, [sessions, closingIds]);
   // The strip scrolls its selected tab into full view. The arithmetic and the
   // effect live in stripScroll.ts, unit-tested there — happy-dom computes no
   // layout to prove them against here.
   const stripScrollportRef = useRef<HTMLDivElement>(null);
   useSelectedTabVisible(stripScrollportRef, selectedSessionId, visibleSessions);
-  const scheduleSessionAction = useCallback(
-    (session: Session, kind: PendingSessionKind) => {
-      const title = sessionTitle(session);
-      const action: PendingSessionAction = {
-        id: session.id,
-        title,
-        kind,
-        ...(session.createdAtMs === undefined ? {} : { createdAtMs: session.createdAtMs }),
-        generation: session.state.generation,
-        dueAt: Date.now() + UNDO_WINDOW_MS,
-      };
-      if (pendingScheduler.schedule(action) === "duplicate") {
-        setPendingNotice(
-          kind === "archive"
-            ? `“${title}” is already scheduled for archive. Use Undo to cancel it.`
-            : `“${title}” is already scheduled for delete. Use Undo to cancel it.`,
+  // One close, one act: the flow has already asked where the policy says so
+  // and resolved its targets; what lands here fires now, a target that went
+  // stale between the ask and the click is reported, never touched, and a
+  // refused act names itself back to the flow (its row came back).
+  const runClose = useCallback(
+    (
+      kind: CloseIntent,
+      matched: readonly Session[],
+      skipped: ReadonlyArray<{ id: string; title: string; generation: number }>,
+      onFailed?: (sessionId: string) => void,
+    ) => {
+      for (const session of matched) {
+        closeActions.act(
+          kind,
+          {
+            id: session.id,
+            title: sessionTitle(session),
+            generation: session.state.generation,
+          },
+          onFailed === undefined ? undefined : () => onFailed(session.id),
         );
-        return;
       }
-      setPendingNotice(null);
+      for (const target of skipped) closeActions.skipped(kind, target);
     },
-    [pendingScheduler],
+    [closeActions],
   );
-  const undoPendingAction = useCallback(
-    (id: string) => {
-      if (pendingScheduler.cancel(id) === null) return;
-      setPendingNotice(null);
-    },
-    [pendingScheduler],
-  );
-  // A roster change voids intents the row outgrew. Natural death voids
-  // silently (outcome achieved); a new generation — a resume — voids too,
-  // so the timer can never fire at the instance the human just started.
-  // Visibility follows the roster on its own: cancelling is the whole act.
+  // Multi-select (ours) and the tab close flow (Paseo's menu plus the
+  // confirmation) live in their own files; the strip only wires handlers.
+  // The "+" button's ref is the flow's last focus fallback (no active tab).
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  const {
+    selection,
+    announcement: selectionAnnouncement,
+    handleTabClick,
+    clearSelection,
+  } = useTabSelection({ sessions: visibleSessions, selectedSessionId, selectSession });
+  const tabClose = useTabCloseFlow({
+    sessions: visibleSessions,
+    selectedSessionId,
+    selection,
+    onClose: runClose,
+    selectSession,
+    clearSelection,
+    addButtonRef,
+  });
+  // The roster is the authority on what a close is still hiding: a row it
+  // shows as gone, ended, or resumed is confirmed (or moot), and the mark
+  // comes off so the strip never hides a session on its own say-so.
   useEffect(() => {
-    const rows = new Map(sessions.map((session) => [session.id, session]));
-    for (const action of pendingScheduler.pending()) {
-      if (pendingFate(action, rows.get(action.id) ?? null) !== "keep") {
-        pendingScheduler.cancel(action.id);
-      }
-    }
-    // Settled entries the strip no longer needs: a confirmed row is gone.
-    const pruned = pruneDismissed(pendingScheduler.getSettledSnapshot(), sessions, (id) =>
-      pendingScheduler.has(id),
+    closeActions.pruneConfirmed(sessions);
+  }, [closeActions, sessions]);
+  // Records an OLDER build persisted for its undo window must never act:
+  // dropped unread, and the key removed, on startup. The storage ACCESS is
+  // the helper's problem — inside its try, where a restricted WebView's
+  // getter belongs.
+  useEffect(() => {
+    discardPersistedPendingCloses(() =>
+      typeof localStorage !== "undefined" ? localStorage : null,
     );
-    if (pruned !== null) pendingScheduler.replaceSettled(pruned);
-  }, [sessions, pendingScheduler]);
-  // Intents left by a close that won the race against the timer. Re-armed
-  // with a fresh window — never fired blind — and only against a roster
-  // that loaded: `loading:false` with an error is not an empty world, so a
-  // failed load leaves the crash copy for the next successful one.
-  useEffect(() => {
-    if (sessionsLoading || sessionsError) return;
-    if (!claimStartupRecovery()) return;
-    const leftovers = pendingScheduler.loadPersisted();
-    if (leftovers.length === 0) return;
-    pendingScheduler.clearPersisted();
-    for (const record of leftovers) {
-      const row = verifyPendingRecord(record, sessions);
-      if (row === null) continue;
-      // Re-stamp the instance from the verified row: a leftover predates
-      // the generation field, and the row is the authority on both halves.
-      pendingScheduler.schedule({
-        ...record,
-        generation: row.state.generation,
-        dueAt: Date.now() + UNDO_WINDOW_MS,
-      });
-    }
-  }, [sessionsLoading, sessionsError, sessions, pendingScheduler]);
-  // A pending delete evaporating on close is worse than firing early:
-  // `beforeunload` flushes. A surface switch (unmount) deliberately does
-  // not — the timers belong to the app's lifetime and keep running.
-  useEffect(() => {
-    const flush = () => pendingScheduler.flushAll();
-    window.addEventListener("beforeunload", flush);
-    return () => window.removeEventListener("beforeunload", flush);
-  }, [pendingScheduler]);
+  }, []);
   // An unknown id means persisted state points to a removed panel, including a plugin that is no
   // longer loaded. Keep that id so the fallback is not shown as the user's selected option; use
   // the first available entry only because rendering safe panel content is better than a blank side panel.
@@ -442,7 +390,6 @@ export function Workspace({
   const [providerAnchor, setProviderAnchor] = useState<ProviderAnchor | null>(null);
   const [newTabMenuOpen, setNewTabMenuOpen] = useState(false);
   const [providerChoosing, setProviderChoosing] = useState(false);
-  const addButtonRef = useRef<HTMLButtonElement>(null);
   const providerChoiceInFlightRef = useRef(false);
   const afterProviderChoiceRef = useRef<((provider: ProviderInfo | undefined) => void) | null>(
     null,
@@ -1137,29 +1084,45 @@ export function Workspace({
               // The take-back lives on the row that can act, beside its pill:
               // qualifying rows only, while the one switch is on.
               const rowTakeBack = takeBackAvailable && sessionDelegationTakeBack(session);
-              // Two directions, two acts: right-to-left archives (the process
-              // stops, every message stays), left-to-right deletes (the session
-              // is destroyed). Both schedule — the daemon call fires only when
-              // the undo window expires — and both have the named buttons below
-              // as their keyboard and screen-reader path.
               const tabTitle = sessionTitle(session);
-              const archiveLabel = isAgentKind(session.kind)
-                ? `Archive ${tabTitle}. This will archive 1 agent. The process stops; every message stays in History.`
-                : `Archive ${tabTitle}. Any running process in this terminal will be stopped. Every message stays in History.`;
-              const deleteLabel = `Delete ${tabTitle}. Destroys the session and stops its running process immediately.`;
               return (
-                <SessionTabSwipe
+                // One row per session: the tab button, the trailing close
+                // chip (a sibling — a button cannot live inside a button),
+                // and the take-back. The right-click lives on the ROW, so a
+                // right-click anywhere on it — over the chip included —
+                // opens the tab menu.
+                <div
+                  className="workspace-session-row"
                   key={session.id}
-                  onCommit={(direction) => scheduleSessionAction(session, direction)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    tabClose.openMenu(session.id);
+                  }}
                 >
                   <button
                     type="button"
                     role="tab"
-                    id={`workspace-session-tab-${session.id}`}
+                    id={sessionTabElementId(session.id)}
                     aria-selected={selectedSessionId === session.id}
                     aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
-                    className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
-                    onClick={() => selectSession(session.id)}
+                    aria-haspopup="menu"
+                    aria-expanded={tabClose.menu?.sessionId === session.id}
+                    className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${selection.has(session.id) ? " workspace-session-tab-multiselected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
+                    onClick={(event) => handleTabClick(session, event)}
+                    onAuxClick={(event) => {
+                      // Paseo's middle click: button 1 closes the tab, by
+                      // the same policy as every other close.
+                      if (event.button === 1) {
+                        event.preventDefault();
+                        tabClose.closeSingle(session.id);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                        event.preventDefault();
+                        tabClose.openMenu(session.id);
+                      }
+                    }}
                   >
                     <span
                       className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
@@ -1206,24 +1169,29 @@ export function Workspace({
                       </span>
                     ) : null}
                   </button>
-                  <span className="session-swipe-actions">
+                  <span className="workspace-session-chip">
                     <button
                       type="button"
-                      className="workspace-tab-archive"
-                      aria-label={archiveLabel}
-                      title={archiveLabel}
-                      onClick={() => scheduleSessionAction(session, "archive")}
+                      className="workspace-session-chip-close"
+                      aria-label={`Close ${tabTitle}`}
+                      title={`Close ${tabTitle}`}
+                      onClick={() => tabClose.closeSingle(session.id)}
                     >
-                      Archive
-                    </button>
-                    <button
-                      type="button"
-                      className="workspace-tab-delete"
-                      aria-label={deleteLabel}
-                      title={deleteLabel}
-                      onClick={() => scheduleSessionAction(session, "delete")}
-                    >
-                      Delete
+                      <svg
+                        width={12}
+                        height={12}
+                        viewBox="0 0 12 12"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M2 2l8 8M10 2l-8 8"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          fill="none"
+                        />
+                      </svg>
                     </button>
                   </span>
                   {rowTakeBack ? (
@@ -1241,7 +1209,7 @@ export function Workspace({
                       Take back
                     </button>
                   ) : null}
-                </SessionTabSwipe>
+                </div>
               );
             })}
           </div>
@@ -1274,35 +1242,52 @@ export function Workspace({
           <span className="workspace-tabs-spacer" />
           <span className="workspace-rate">{sessionStatusText}</span>
         </div>
+        <div className="workspace-sr-only" role="status" aria-live="polite">
+          {selectionAnnouncement}
+        </div>
+        {tabClose.menu !== null ? (
+          <SessionTabMenu
+            anchorRef={tabClose.anchorRef}
+            entries={tabClose.menu.entries}
+            onEntry={tabClose.activateEntry}
+            onClose={tabClose.closeMenu}
+          />
+        ) : null}
+        {tabClose.confirm !== null ? (
+          <CloseConfirm
+            anchorRef={tabClose.anchorRef}
+            title={tabClose.confirm.title}
+            message={tabClose.confirm.message}
+            confirmLabel={tabClose.confirm.confirmLabel}
+            onConfirm={tabClose.confirmClose}
+            onCancel={tabClose.cancelClose}
+          />
+        ) : null}
         <DaemonRestartNotice
           instanceId={daemon.instanceId}
           hasRecovered={sessions.some(isRecoveredSession)}
         />
 
-        {pendings.map((pending) => (
-          <PendingUndoBar key={pending.id} pending={pending} onUndo={undoPendingAction} />
-        ))}
-        {pendingNotice !== null ? (
-          <div className="workspace-session-error workspace-session-notice" role="status">
-            <span className="workspace-session-error-text">{pendingNotice}</span>
-            <button
-              type="button"
-              className="workspace-session-error-dismiss"
-              onClick={() => setPendingNotice(null)}
-              aria-label="Dismiss notice"
-              title="Dismiss notice"
-            >
-              ×
-            </button>
-          </div>
-        ) : null}
-        {pendingError !== null ? (
+        {closeFailures.length > 0 ? (
+          // A close that did not go through — or a target that went stale
+          // between the ask and the click — is named here, one line per
+          // session. The store owns it: a later clean close or a
+          // session_not_found for the same session and generation clears its
+          // line. The heading stays neutral because the list can mix
+          // archives with deletes; each line names its own verb.
           <div className="workspace-session-error" role="alert">
-            <span className="workspace-session-error-text">{pendingError}</span>
+            <span className="workspace-session-error-text">
+              These closes didn&apos;t go through:
+            </span>
+            {closeFailures.map((error) => (
+              <span className="workspace-session-error-text" key={error.id}>
+                {error.message}
+              </span>
+            ))}
             <button
               type="button"
               className="workspace-session-error-dismiss"
-              onClick={() => pendingScheduler.reportError(null)}
+              onClick={() => closeActions.clearFailures()}
               aria-label="Dismiss error"
               title="Dismiss error"
             >

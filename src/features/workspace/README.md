@@ -121,21 +121,31 @@ separate click, and only for the families the daemon says are resumable
 (`Session.resumable`, never re-derived here). Ended sessions stay in History:
 there is nothing for them to come back to.
 
-Swiping a tab reveals the act underneath — archive to the right, delete to the
-left — and commits it past `SWIPE_COMMIT_PX`. Neither act calls the daemon.
-`pendingSessionActions.ts` records the intent, the tab disappears, and one undo
-window of `UNDO_WINDOW_MS` opens; the IPC fires only when it expires. Three
-rules in that file are load-bearing:
+Closing works as in Paseo, with **no undo window** (owner, 2026-09-23,
+evening): a terminal tab asks before it closes; **every agent with a process**
+asks before it is archived — `live` or `silent`, because the daemon flips a
+Running stream to Silent on an output-silence threshold alone
+(`session_runtime.rs mark_silent_if_due`) and no roster field says a turn has
+ended, so silence is not idleness; an agent WITHOUT a process (`ended`,
+`recovered`) archives at once; the bulk close keeps its counted confirmation;
+**Delete** (which destroys the session) always asks. Every close is an archive
+(`session_stop`): the process stops and every message stays in History, and
+the session can come back from History. The ask resolves its targets by id
+**and generation** against the roster at the moment of confirming, and a
+target that went stale is reported, never touched. `closeActions.ts` fires the
+act, hides the row until the roster confirms it (keyed by id and generation,
+so a late result for an older instance settles nothing), and owns each failure
+by the act that produced it; `closePolicy.ts` is the ask-or-act rule. The
+swipe, its hover pills, the 5-second window, its persistence, the crash
+recovery and the unload flush are gone — records an older build persisted are
+dropped unread on startup (`OLDER_BUILD_PENDING_KEY`).
 
-- Capture happens when the press becomes a **drag**, never on `pointerdown`.
-  Capturing on press retargets WebView2's compatibility mouse events and the
-  click never reaches the tab button inside.
-- The scheduler lives **above** the surface that unmounts. A flush in an
-  unmount cleanup would fire the destructive act every time the user navigates
-  to Settings; only `beforeunload` is the app closing.
-- An intent is keyed by the session's **generation**, not by its id. A row that
-  died and came back is not the row the swipe was taken against, so the intent
-  is voided rather than applied to a different instance.
+The tab row is a plain row: the tab button, Paseo's trailing close chip — an
+18×18 "×" in a ~48 px overlay scrimmed with the tab's own background, shown on
+hover and while focus is inside the row, hidden and unclickable otherwise —
+and, where it applies, the take-back. A middle click closes; a right-click
+anywhere on the row, the chip included, opens the tab menu, which carries
+Paseo's close entries and, after a separator, Delete in the destructive tone.
 
 ## Terminal lifecycle
 

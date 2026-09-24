@@ -46,7 +46,7 @@ export interface WorkspaceSessionController {
     provider?: string | null,
     workspaceId?: string | null,
   ) => Promise<Session | null>;
-  select: (sessionId: string) => void;
+  select: (sessionId: string | null) => void;
   open: (session: Session) => void;
   watch: () => () => void;
   reconnect: () => Promise<void>;
@@ -797,7 +797,13 @@ export function createWorkspaceSessionController(
     create,
     watch,
     reconnect,
-    select: (sessionId) => {
+    select: (sessionId: string | null) => {
+      // Null is the empty state: every tab closed, so nothing is active —
+      // never an id that only points at a pending archive.
+      if (sessionId === null) {
+        publish({ ...state, selectedSessionId: null });
+        return;
+      }
       if (state.sessions.some((session) => session.id === sessionId)) {
         publish({ ...state, selectedSessionId: sessionId });
       }
@@ -855,7 +861,7 @@ export function useWorkspaceSessions(workspaceId: string | null = null): Workspa
     provider?: string | null,
     workspaceId?: string | null,
   ) => Promise<Session | null>;
-  select: (sessionId: string) => void;
+  select: (sessionId: string | null) => void;
   open: (session: Session) => void;
   dismissError: () => void;
 } {
@@ -885,7 +891,10 @@ export function useWorkspaceSessions(workspaceId: string | null = null): Workspa
       ),
     [controller, workspaceId],
   );
-  const select = useCallback((sessionId: string) => controller.select(sessionId), [controller]);
+  const select = useCallback(
+    (sessionId: string | null) => controller.select(sessionId),
+    [controller],
+  );
   const open = useCallback((session: Session) => controller.open(session), [controller]);
   const dismissError = useCallback(() => controller.dismissError(), [controller]);
 

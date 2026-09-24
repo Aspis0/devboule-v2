@@ -1,9 +1,10 @@
 // Source test, not a layout test. It reads the declarations that make the
 // squeezed-tab defect impossible and fails when one of them is deleted; it cannot
 // see a clipped pixel. happy-dom computes no layout, and a programmatic `.click()`
-// bypasses hit-testing — which is how `WorkspaceArchive.test.tsx` stayed green
-// while Archive and Delete owned none of their own pixels (D8, night field test of
-// 18 September). Whether a tab is reachable by pointer stays a manual check.
+// bypasses hit-testing — which is how the old hover pills stayed green while
+// owning none of their own pixels (D8, night field test of 18 September), until
+// they covered a tab's label and an ordinary click archived it. Whether the
+// close chip covers what it should and nothing else stays a live check.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -29,13 +30,20 @@ describe("the session strip", () => {
   });
 
   it("forbids the row from shrinking a tab below its content", () => {
-    expect(ruleBody(".session-swipe")).toContain("flex: none;");
+    expect(ruleBody(".workspace-session-row")).toContain("flex: none;");
   });
 
-  it("keeps the clip the swipe reveal depends on", () => {
-    // Not to be bought back by deleting `overflow: hidden`: the archive and delete
-    // underlays are revealed by sliding the tab over them.
-    expect(ruleBody(".session-swipe")).toContain("overflow: hidden;");
+  it("keeps the close chip a narrow trailing overlay that hides unclickable", () => {
+    // Paseo's chip: ~48 px on the row's right edge — never a full-width hit
+    // area over the label — and hidden means a pointer cannot reach it.
+    const chip = ruleBody(".workspace-session-chip");
+    expect(chip).toContain("width: 48px;");
+    expect(chip).toContain("pointer-events: none;");
+    expect(chip).toContain("visibility: hidden;");
+    const shown = css.match(
+      /\.workspace-session-row:hover \.workspace-session-chip,\n\.workspace-session-row:focus-within \.workspace-session-chip \{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(shown).toContain("pointer-events: auto;");
   });
 
   it("stays a single row", () => {
@@ -47,16 +55,25 @@ describe("the session strip", () => {
     const scrollerAt = tsx.indexOf("workspace-session-tabs-scroll");
     expect(scrollerAt).toBeGreaterThan(-1);
     const openEnd = tsx.indexOf(">", scrollerAt) + 1;
-    const nextBoxAt = tsx.indexOf("<div", openEnd);
-    const inside = tsx.slice(openEnd, nextBoxAt);
-    expect(inside).toContain("{visibleSessions.map(");
-    // The scrollport closes before any other box opens — the tabs inside it open
-    // none — and the next box to open is the add button's own wrapper: the button
-    // is the scroller's sibling, not a passenger.
-    expect(inside).toContain("</div>");
-    expect(inside.match(/<div/g) ?? []).toHaveLength(0);
-    expect(tsx.slice(nextBoxAt, tsx.indexOf(">", nextBoxAt))).toContain(
-      "workspace-session-add-wrap",
-    );
+    // Where the add button's wrapper opens, every box opened before it —
+    // the scroller and each tab row inside it — is closed again: the
+    // wrapper is the scroller's sibling, not a passenger. (The one div
+    // still open at that point in the source is the wrapper's own.)
+    const addWrapAt = tsx.indexOf("workspace-session-add-wrap");
+    expect(addWrapAt).toBeGreaterThan(openEnd);
+    const between = tsx.slice(openEnd, addWrapAt);
+    const opened = (between.match(/<div/g) ?? []).length;
+    const closed = (between.match(/<\/div>/g) ?? []).length;
+    expect(closed).toBe(opened);
+  });
+
+  it("marks multi-selected tabs distinctly from the active tab", () => {
+    // The active tab is a filled background; multi-select must read as a
+    // separate thing, not as "this tab is the one playing".
+    const multi = ruleBody(".workspace-session-tab-multiselected");
+    const active = ruleBody(".workspace-session-tab-selected");
+    expect(multi).toContain("outline:");
+    expect(multi).not.toBe(active);
+    expect(active).toContain("background: var(--selection);");
   });
 });
