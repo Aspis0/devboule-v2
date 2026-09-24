@@ -2614,62 +2614,95 @@ describe("Settings agents panel", () => {
     });
   });
 
-  it("edits, adds and removes stored features without dropping the rest", async () => {
+  it("lists stored features as saved but unused, and Remove deletes one", async () => {
     const featured = makeProfile({ features: { autoAccept: true, sandbox: "none" } });
     await renderAgentsPanel({ profiles: [featured], standingInstructions: "" });
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
-    const sandboxValue = container.querySelector<HTMLInputElement>(
-      '[aria-label="Feature value 1"]',
-    );
-    if (!sandboxValue) throw new Error("the stored feature row did not render");
-    // A stored string travels as its JSON text, so what is edited is what the
-    // daemon stored.
-    expect(sandboxValue.value).toBe('"none"');
-    await typeText(sandboxValue.value === '"none"' ? sandboxValue : sandboxValue, '"strict"');
+
+    const editor = container.querySelector(".agent-inline-editor");
+    if (!editor) throw new Error("editor did not render");
+    // The stored key and its saved value are shown read-only, with the
+    // sentence saying Devboule does not deliver them.
+    expect(editor.textContent).toContain("sandbox");
+    expect(editor.textContent).toContain('"none"');
+    expect(editor.textContent).toContain("not used by Devboule");
+    expect(editor.querySelector('[aria-label="Feature value 1"]')).toBeNull();
+
     const remove = container.querySelector<HTMLButtonElement>(
       '[aria-label="Remove feature sandbox"]',
     );
     if (!remove) throw new Error("the feature's remove button did not render");
     await act(async () => remove.click());
-    const keyField = container.querySelector<HTMLInputElement>('[aria-label="New feature key"]');
-    const valueField = container.querySelector<HTMLInputElement>(
-      '[aria-label="New feature value"]',
-    );
-    if (!keyField || !valueField) throw new Error("the add-feature fields did not render");
-    await typeText(keyField, "ctx");
-    await typeText(valueField, '"8k"');
-    await act(async () => sectionButton("Add feature").click());
     await act(async () => sectionButton("Save").click());
     await act(async () => undefined);
 
     expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
-      profiles: [{ ...featured, features: { autoAccept: true, ctx: "8k" } }],
+      profiles: [{ ...featured, features: { autoAccept: true } }],
       standingInstructions: "",
     });
   });
 
-  it("accepts a spawn prompt whose trimmed bytes fit the cap", async () => {
-    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+  it("keeps a peer restriction that shares the overlay with another denial", async () => {
+    const guarded = makeProfile({
+      toolOverlay: ["devboule_send_message", "devboule_create_agent", "devboule_list_profiles"],
+    });
+    await renderAgentsPanel({ profiles: [guarded], standingInstructions: "" });
 
     await act(async () => rowButton("Explorer", "Edit").click());
     await act(async () => undefined);
-    const spawnField = container.querySelector<HTMLTextAreaElement>(
-      '.agent-inline-editor textarea[aria-label="Profile spawn prompt"]',
+    // The peer tick is on: the peer tools are in the overlay, whatever else
+    // is there with them.
+    const peersTick = container.querySelector<HTMLInputElement>(
+      '.agent-inline-editor input[aria-label="Children cannot message peers or create further agents"]',
     );
-    if (!spawnField) throw new Error("spawn prompt field did not render");
-    // One leading space over the cap raw, exactly the cap trimmed: the
-    // daemon trims first, so the form must not refuse what would be stored.
-    const prompt = ` ${"a".repeat(8192)}`;
-    await typeText(spawnField, prompt);
-
+    if (!peersTick) throw new Error("the peer tick did not render");
+    expect(peersTick.checked).toBe(true);
+    // Edit only the note and save: the overlay must survive untouched.
+    const noteField = container.querySelector<HTMLTextAreaElement>(
+      '.agent-inline-editor textarea[aria-label="Profile note"]',
+    );
+    if (!noteField) throw new Error("note field did not render");
+    await typeText(noteField, "Updated note for the agent.");
     await act(async () => sectionButton("Save").click());
     await act(async () => undefined);
 
-    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
-    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
-    expect(sent.profiles[0]?.spawnPrompt).toBe("a".repeat(8192));
+    expect(vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument).toEqual({
+      profiles: [
+        {
+          ...guarded,
+          note: "Updated note for the agent.",
+          toolOverlay: ["devboule_send_message", "devboule_create_agent", "devboule_list_profiles"],
+        },
+      ],
+      standingInstructions: "",
+    });
+  });
+
+  it("holds the row's agents tick while that profile's editor is open", async () => {
+    await renderAgentsPanel({
+      profiles: [makeProfile({ enabledForAgents: true })],
+      standingInstructions: "",
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+    let rowTick = container.querySelector<HTMLInputElement>(
+      '.agent-profile-row input[type="checkbox"]',
+    );
+    if (!rowTick) throw new Error("row tick did not render");
+    expect(rowTick.disabled).toBe(true);
+    // The reason is on the screen, not a silent lock.
+    expect(container.textContent).toContain("The open editor holds this setting");
+
+    await act(async () => rowButton("Explorer", "Close editor").click());
+    await act(async () => undefined);
+    rowTick = container.querySelector<HTMLInputElement>(
+      '.agent-profile-row input[type="checkbox"]',
+    );
+    if (!rowTick) throw new Error("row tick did not render after close");
+    expect(rowTick.disabled).toBe(false);
   });
 
   it("refuses a spawn prompt over 8 KiB with the size named and truncates nothing", async () => {
@@ -4857,15 +4890,17 @@ describe("Settings agents panel — new profile form", () => {
     // off-switch pair and the no-note sentence, the delete-confirm copy,
     // the editor's two hints (when the spawn prompt is sent, and that running
     // agents keep what they started with), the thinking option's own hint,
-    // the empty-features sentence, the three cap refusals, the model/mode
+    // the two stored-features sentences (none stored; and saved but not
+    // delivered, which is what the read-only rows say), the overlay add
+    // control's own sentence, the three cap refusals, the model/mode
     // refusals, the two profile-cap sentences, the two catalog sentences, the
-    // heading
-    // description, the intro copy, the three tick notes, and the standing
+    // heading description, the intro copy, the tick notes (including the
+    // open-editor clause on the row tick), and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry). A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(42);
+    expect(sentences).toHaveLength(44);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

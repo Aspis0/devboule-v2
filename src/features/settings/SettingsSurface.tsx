@@ -23,16 +23,17 @@ import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { DevicesPanel } from "./DevicesPanel";
 import { AppearanceSection } from "./AppearanceSection";
 import { overlayDenialsDescription } from "./profileOverlay";
+import { AgentProfileForm } from "./AgentProfileForm";
 import {
-  AgentProfileForm,
   EMPTY_PROFILE_FORM_SEED,
   type ProfileFormSeed,
+  enabledNameClash,
   profileDraftRefusal,
   profileFeaturesFromDraft,
+  rustTrim,
   seedFromProfile,
-  toolOverlayFromDraft,
   utf8Bytes,
-} from "./AgentProfileForm";
+} from "./AgentProfileDraft";
 import type {
   AgentProfile,
   AgentProfilesDocument,
@@ -1057,10 +1058,21 @@ function AgentProfilesPanel() {
   function toggleEnabled(id: string, next: boolean) {
     const current = documentRef.current;
     if (current === null) return;
-    const updated = cloneDocument(current);
-    const row = updated.profiles.find((profile) => profile.id === id);
+    const row = current.profiles.find((profile) => profile.id === id);
     if (row === undefined) return;
-    row.enabledForAgents = next;
+    // The same preflight a save applies: enabling must not put two enabled
+    // profiles on one name, because a creation resolves a profile by name.
+    if (next && enabledNameClash(current.profiles, id, row.name)) {
+      setError({
+        sentence: `The name '${row.name}' is already used by a profile enabled for agents; a creation resolves a profile by name, so they could not be told apart.`,
+        detail: null,
+      });
+      return;
+    }
+    const updated = cloneDocument(current);
+    const updatedRow = updated.profiles.find((profile) => profile.id === id);
+    if (updatedRow === undefined) return;
+    updatedRow.enabledForAgents = next;
     void persist(updated);
   }
 
@@ -1098,43 +1110,45 @@ function AgentProfilesPanel() {
     }
     // A creation resolves a profile **by name**, so two enabled profiles with
     // one name would be refused by the daemon; the form refuses first and
-    // says which name, before a write is sent at all.
-    const trimmedName = draft.name.trim();
-    if (draft.enabledForAgents) {
-      const clash = current.profiles.some(
-        (profile) => profile.id !== id && profile.enabledForAgents && profile.name === trimmedName,
-      );
-      if (clash) {
-        setError(
-          `The name '${trimmedName}' is already used by a profile enabled for agents; a creation resolves a profile by name, so they could not be told apart.`,
-        );
-        return;
-      }
+    // says which name, before a write is sent at all. The comparison is the
+    // draft module's: NFC-normalised and Rust-trimmed, exactly the store's.
+    const trimmedName = rustTrim(draft.name);
+    if (draft.enabledForAgents && enabledNameClash(current.profiles, id, trimmedName)) {
+      setError({
+        sentence: `The name '${trimmedName}' is already used by a profile enabled for agents; a creation resolves a profile by name, so they could not be told apart.`,
+        detail: null,
+      });
+      return;
     }
     const updated = cloneDocument(current);
     const row = updated.profiles.find((profile) => profile.id === id);
     if (row === undefined) return;
-    row.name = trimmedName;
+    // Trimmed with the daemon's own rule (`rustTrim`), so what the form
+    // stores is exactly what the store would canonicalise.
+    row.name = rustTrim(draft.name);
     // An empty icon is none, and none is null on the wire — never "".
-    row.icon = draft.icon.trim() === "" ? null : draft.icon.trim();
+    row.icon = rustTrim(draft.icon) === "" ? null : rustTrim(draft.icon);
     row.note = draft.note;
     // The spawn prompt is trimmed here to what the daemon would store, and an
     // empty one deletes the field — absent is its none shape on the wire, so
     // a cleared prompt is saved as cleared, never as "".
-    const spawn = draft.spawnPrompt.trim();
+    const spawn = rustTrim(draft.spawnPrompt);
     if (spawn === "") {
       delete row.spawnPrompt;
     } else {
       row.spawnPrompt = spawn;
     }
     row.provider = draft.provider;
-    row.model = draft.model.trim();
-    row.modeId = draft.modeId.trim();
-    const thinking = draft.thinkingOptionId.trim();
+    row.model = rustTrim(draft.model);
+    row.modeId = rustTrim(draft.modeId);
+    const thinking = rustTrim(draft.thinkingOptionId);
     row.thinkingOptionId = thinking === "" ? null : thinking;
     row.features = profileFeaturesFromDraft(draft);
     row.enabledForAgents = draft.enabledForAgents;
-    row.toolOverlay = toolOverlayFromDraft(draft);
+    // The overlay travels verbatim: whatever the draft holds is what the row
+    // saved before, minus what the human removed, plus the peer pair the
+    // tick added.
+    row.toolOverlay = [...draft.overlay];
     // Untouched, on purpose: `id` is the identity, and the position is the
     // order the agents read.
     // Close on CONFIRMATION, never on submission — the new-profile form's
@@ -1176,42 +1190,38 @@ function AgentProfilesPanel() {
     // The same name rule the edit road applies: a creation resolves a
     // profile **by name**, so the new profile must not duplicate an enabled
     // one, and the form says so before the write is sent.
-    const trimmedName = draft.name.trim();
-    if (draft.enabledForAgents) {
-      const clash = current.profiles.some(
-        (profile) => profile.enabledForAgents && profile.name === trimmedName,
-      );
-      if (clash) {
-        setError(
-          `The name '${trimmedName}' is already used by a profile enabled for agents; a creation resolves a profile by name, so they could not be told apart.`,
-        );
-        return;
-      }
+    const trimmedName = rustTrim(draft.name);
+    if (draft.enabledForAgents && enabledNameClash(current.profiles, null, trimmedName)) {
+      setError({
+        sentence: `The name '${trimmedName}' is already used by a profile enabled for agents; a creation resolves a profile by name, so they could not be told apart.`,
+        detail: null,
+      });
+      return;
     }
-    const icon = draft.icon.trim();
+    const icon = rustTrim(draft.icon);
     const profile: AgentProfile = {
       // The daemon mints the id: an empty id means "new" (see the type's doc
       // comment). Identity is the id.
       id: "",
-      name: draft.name.trim(),
+      name: rustTrim(draft.name),
       icon: icon === "" ? null : icon,
       note: draft.note,
       provider: draft.provider,
-      model: draft.model.trim(),
-      modeId: draft.modeId.trim(),
-      thinkingOptionId: draft.thinkingOptionId.trim() === "" ? null : draft.thinkingOptionId.trim(),
+      model: rustTrim(draft.model),
+      modeId: rustTrim(draft.modeId),
+      thinkingOptionId:
+        rustTrim(draft.thinkingOptionId) === "" ? null : rustTrim(draft.thinkingOptionId),
       features: profileFeaturesFromDraft(draft),
-      // The human's tick, not an agent's argument: a profile that denies
-      // peer contact makes children that cannot message peers or create
-      // further agents. Unticked saves nothing, exactly as before.
-      toolOverlay: toolOverlayFromDraft(draft),
+      // The overlay starts exactly as the form drafted it: empty, or the
+      // peer pair the tick added.
+      toolOverlay: [...draft.overlay],
       // Default off, always: a profile that becomes agent-reachable the
       // moment it is saved is a profile nobody deliberately ticked.
       enabledForAgents: draft.enabledForAgents,
     };
     // Absent is the spawn prompt's none shape on the wire, so a profile born
     // without one carries no key at all.
-    const spawn = draft.spawnPrompt.trim();
+    const spawn = rustTrim(draft.spawnPrompt);
     if (spawn !== "") {
       profile.spawnPrompt = spawn;
     }
@@ -1374,14 +1384,15 @@ function AgentProfilesPanel() {
                   <input
                     type="checkbox"
                     checked={profile.enabledForAgents}
-                    disabled={busy || loading}
+                    disabled={busy || loading || editing}
                     onChange={(event) => toggleEnabled(profile.id, event.target.checked)}
                   />
                   <span>
                     <span>Agents may create this</span>
                     <span className="agent-profile-tick-note">
-                      Lets an agent start this kind of agent. If this profile answers its own
-                      permission cards, its children run unattended.
+                      {editing
+                        ? "The open editor holds this setting; save or close it, then use this tick. If this profile answers its own permission cards, its children run unattended."
+                        : "Lets an agent start this kind of agent. If this profile answers its own permission cards, its children run unattended."}
                     </span>
                   </span>
                 </label>

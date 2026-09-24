@@ -126,9 +126,11 @@ pub(super) fn entry_present(registry: &SessionRegistry, id: &str) -> bool {
     registry.inner.lock().expect("registry").contains_key(id)
 }
 
-/// The ACP override the four pre-existing writers already serialise on: it is
+/// The ACP override the pre-existing writers already serialise on: it is
 /// process-global, so it is held for the whole test, and cleared on drop.
-pub(super) struct AcpEnv {
+/// `pub(crate)`: the broker's own tests drive a full creation through the
+/// route and need the same stub environment the session tests use.
+pub(crate) struct AcpEnv {
     _guard: std::sync::MutexGuard<'static, ()>,
     names: Vec<&'static str>,
 }
@@ -141,7 +143,7 @@ impl AcpEnv {
     }
 
     /// The real stub the crate's integration battery drives, with its knobs.
-    pub(super) fn stub(extra: &[(&'static str, String)]) -> Self {
+    pub(crate) fn stub(extra: &[(&'static str, String)]) -> Self {
         let program = acp_stub();
         Self::set(
             &program.to_string_lossy(),
@@ -194,7 +196,7 @@ impl Drop for AcpEnv {
 /// that fixes it, instead of rebuilding behind the caller's back: a `cargo`
 /// spawned from inside a running `cargo test` waits on the very package lock
 /// the parent holds.
-fn acp_stub() -> std::path::PathBuf {
+pub(crate) fn acp_stub() -> std::path::PathBuf {
     let candidate = std::env::current_exe()
         .expect("test binary path")
         .parent()

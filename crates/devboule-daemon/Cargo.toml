@@ -48,6 +48,9 @@ required-features = ["server", "test-support"]
 
 [dependencies]
 devboule-protocol = { path = "../devboule-protocol" }
+# NFC comparison for profile names: two enabled profiles whose names are
+# canonically equivalent are one name to a creation that resolves by name.
+unicode-normalization = "0.1.25"
 # The project's code-knowledge graph, for the broker's three `devboule_project_*`
 # tools. Optional behind `server` like the rest: the GUI process links this
 # crate with `default-features = false` and must not acquire a database reader.

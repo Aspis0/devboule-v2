@@ -2095,8 +2095,14 @@ fn parse_labels(
 
 /// The name a profile's labels and the creation record are keyed on: the
 /// catalog's own spelling of the name, trimmed exactly as the store trims it.
-fn profile_name_key(name: &str) -> &str {
-    name.trim()
+/// The comparison form of the name a creation asked for and of every stored
+/// name it is matched against: NFC, because canonically equivalent spellings
+/// are one name to a human reading the list, and trimmed, exactly as the
+/// store canonicalises. Names are stored as typed; only the match is
+/// normalised.
+fn profile_name_key(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    name.trim().nfc().collect::<String>()
 }
 
 /// One optional string parameter, with its type enforced (audit S5-09).
@@ -2245,7 +2251,7 @@ fn resolve_profile(
     let wanted = profile_name_key(requested);
     let matching: Vec<&devboule_protocol::AgentProfile> = enabled
         .into_iter()
-        .filter(|profile| profile.name == wanted)
+        .filter(|profile| profile_name_key(&profile.name) == wanted)
         .collect();
     let profile = match matching.as_slice() {
         [] => return Err("unknown profile; call devboule_list_profiles".to_string()),
@@ -2779,6 +2785,37 @@ fn self_answer_note(state: &ServerState, caller: &McpCaller) -> Option<String> {
 /// With the creation refusing every value the clients cannot deliver, this
 /// text is honest by construction rather than by wording: a card a human can
 /// approve into an existing child prints only what the child was delivered.
+/// Every line the prompt breaks itself into, split on **all** the
+/// terminators a renderer may honour: LF and CRLF, a lone CR, the Unicode
+/// separators U+2028/U+2029, NEL U+0085, VT and FF. `str::lines()` sees only
+/// LF and CRLF, so a separator from this set would ride inside one marked
+/// line and the card could show a visual break without the `| ` prefix that
+/// makes the line the profile's rather than the daemon's.
+fn marked_prompt_lines(prompt: &str) -> Vec<String> {
+    fn is_break(c: char) -> bool {
+        matches!(
+            c,
+            '\n' | '\r' | '\u{2028}' | '\u{2029}' | '\u{0085}' | '\u{000B}' | '\u{000C}'
+        )
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut chars = prompt.chars().peekable();
+    while let Some(c) = chars.next() {
+        let cr_lf = c == '\r' && chars.peek() == Some(&'\n');
+        if is_break(c) {
+            lines.push(std::mem::take(&mut current));
+            if cr_lf {
+                chars.next();
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    lines.push(current);
+    lines
+}
+
 fn creation_card(
     creator_session_id: &str,
     creator_name: &str,
@@ -2836,9 +2873,8 @@ fn creation_card(
     let spawn_block = if profile.spawn_prompt.is_empty() {
         String::new()
     } else {
-        let quoted = profile
-            .spawn_prompt
-            .lines()
+        let quoted = marked_prompt_lines(&profile.spawn_prompt)
+            .into_iter()
             .map(|line| format!("| {line}"))
             .collect::<Vec<_>>()
             .join(

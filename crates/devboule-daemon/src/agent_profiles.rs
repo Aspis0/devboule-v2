@@ -50,6 +50,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use unicode_normalization::UnicodeNormalization;
+
 use devboule_protocol::{AgentProfile, AgentProfilesDocument};
 
 /// The file inside the runtime directory. Named, not hashed, so a support
@@ -316,21 +318,28 @@ fn check_document(document: &mut AgentProfilesDocument) -> Result<(), String> {
     // candidates, so a disabled profile may still share a name with anyone.
     // The name is echoed because `check_profile` has already bounded it (at
     // most [`MAX_PROFILE_NAME_CHARS`] characters).
-    let mut enabled_names: std::collections::HashMap<&str, usize> =
+    // Two names are the same when their NFC forms are: canonically
+    // equivalent spellings (one composed, one decomposed) render identically
+    // in every list, and a creation that copies the displayed name must
+    // resolve whichever byte sequence it copied. Each stored name stays as
+    // its owner typed it; only the comparison is normalised.
+    let mut enabled_names: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     for profile in document
         .profiles
         .iter()
         .filter(|profile| profile.enabled_for_agents)
     {
-        *enabled_names.entry(profile.name.as_str()).or_insert(0) += 1;
+        *enabled_names
+            .entry(profile.name.trim().nfc().collect::<String>())
+            .or_insert(0) += 1;
     }
-    let mut duplicated: Vec<&str> = enabled_names
+    let mut duplicated: Vec<String> = enabled_names
         .into_iter()
         .filter(|(_, count)| *count > 1)
         .map(|(name, _)| name)
         .collect();
-    duplicated.sort_unstable();
+    duplicated.sort();
     if let Some(name) = duplicated.first() {
         return Err(format!(
             "the name '{name}' is used by more than one profile enabled for agents; a creation resolves a profile by name, so they could not be told apart"
@@ -886,6 +895,35 @@ mod tests {
             .set(document(vec![enabled, profile("p-2", "Reviewer")]))
             .expect("one enabled twin is not an ambiguity");
         assert_eq!(names(&store.document()), ["Reviewer", "Reviewer"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// Names compare on their **NFC** form: two enabled profiles spelled with
+    /// canonically equivalent Unicode (one composed, one decomposed) render
+    /// identically in every list, and a creation that copies the displayed
+    /// name must resolve whatever byte sequence it copied. The store refuses
+    /// the pair, and stores each name as its owner typed it.
+    #[test]
+    fn canonically_equivalent_enabled_names_are_one_name() {
+        let dir = temp_dir();
+        let store = AgentProfilesStore::load(&dir);
+        let mut composed = profile("p-1", "Caf\u{e9}");
+        let mut decomposed = profile("p-2", "Cafe\u{301}");
+        composed.enabled_for_agents = true;
+        decomposed.enabled_for_agents = true;
+        let error = store
+            .set(document(vec![composed.clone(), decomposed.clone()]))
+            .expect_err("NFC and NFD spellings are one name");
+        let message = error.to_string();
+        assert!(message.contains("enabled"), "{message}");
+        assert!(message.contains("Caf"), "{message}");
+        assert!(store.document().profiles.is_empty());
+
+        // Disabled rows are not candidates, so the pair is kept as typed.
+        let disabled = profile("p-2", "Cafe\u{301}");
+        store
+            .set(document(vec![composed, disabled]))
+            .expect("a disabled twin is not an ambiguity");
+        assert_eq!(names(&store.document()).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

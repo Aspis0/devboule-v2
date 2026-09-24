@@ -452,7 +452,7 @@ mod session_resume;
 /// fixture they share and the ACP override harness the spawn arms drive.
 #[cfg(test)]
 #[path = "session_resume_fixture.rs"]
-mod session_resume_fixture;
+pub(crate) mod session_resume_fixture;
 #[cfg(test)]
 #[path = "session_resume_phase_tests.rs"]
 mod session_resume_phase_tests;

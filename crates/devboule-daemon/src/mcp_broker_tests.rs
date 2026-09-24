@@ -4524,6 +4524,236 @@ Labels:"
     );
 }
 
+/// The production hand-off, on the create route itself: the profile is
+/// **stored** with a spawn prompt, resolved by `resolve_profile`, and the
+/// `AgentCreation` the broker builds carries the resolved prompt into the
+/// child's first prompt — so an assignment of an empty prompt at the
+/// construction site fails this test, not just the send road's own shape.
+#[test]
+fn a_create_through_the_route_delivers_the_stored_spawn_prompt() {
+    // The child's provider is a user row naming the stub binary: a creation
+    // through the route checks launchability before it spawns, and a row is
+    // what makes a not-on-PATH test binary launchable.
+    let stub = crate::session::session_resume_fixture::acp_stub();
+    let dir = crate::test_dirs::test_temp_dir("devboule-route-spawn");
+    // The row's env carries the knob that makes the stub implement
+    // `session/set_mode` (`ask,default` is the battery's own pair: the
+    // session starts in `ask`, the profile delivers `default`, so the
+    // delivered mode is a real switch the stub accepts).
+    let providers_document = format!(
+        r#"{{"route-stub": {{"extends": "acp", "command": [{}], "env": {{"DEVBOULE_TEST_NO_NETWORK": "1", "DEVBOULE_STUB_MODES": "ask,default"}}}}}}"#,
+        serde_json::to_string(&stub.to_string_lossy()).expect("the stub path as JSON"),
+    );
+    std::fs::write(
+        dir.join(crate::user_providers::PROVIDERS_FILE),
+        &providers_document,
+    )
+    .expect("write the user row");
+    let state = ServerState::with_paths(
+        "mcp-route-spawn".to_string(),
+        crate::paths::RuntimePaths::from_dir(dir.clone()),
+    )
+    .expect("state");
+    // The rows are a process global, and another test's state construction
+    // refreshes them from its own directory — retiring mine mid-test. Each
+    // attempt therefore re-applies the row under the rows lock (validate is
+    // the one rows-sensitive call), drops the lock, and runs the route: the
+    // route's own spawn re-reads the rows file from this runtime dir, so a
+    // fresh retirement between the drop and the spawn is healed by the route
+    // itself, and only a retirement DURING the spawn costs an attempt.
+    let rows = crate::user_providers::parse_providers_document(
+        providers_document.as_bytes(),
+        &crate::session::native_family_ids(),
+    )
+    .expect("the user row parses");
+    let owner = owner("mcp-route-spawn-user", "mcp-route-spawn-client");
+    let creator = "s.route-spawn".to_string();
+    crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        &creator,
+        owner.clone(),
+        SessionKind::Pi,
+    );
+    // The once-per-session card is already spent: the gate starts closed on
+    // the creator's first reservation, and the answer path opens it — the
+    // same reserve-then-answer pair the card flow performs. Without it the
+    // route would wait forever on a card nobody can answer in a unit test.
+    {
+        let _ticket = state
+            .sessions
+            .reserve_agent_creation(&creator, 1)
+            .expect("a reservation to arm the gate");
+        // The ticket's Drop releases the slot without committing.
+    }
+    state.sessions.accept_agent_creation(&creator);
+    let registration = RegisteredSession {
+        session_id: creator.clone(),
+        owner,
+        provider_id: Some("pi".to_string()),
+        depth: 0,
+        overlay: crate::provider_catalog::ToolOverlay::NONE,
+        bearer: "the bearer".to_string(),
+        claude_config_path: None,
+        runtime: None,
+        broker_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let _server = state.mcp.start(&state).expect("MCP server");
+    let arguments = serde_json::json!({
+        "profile": "Spawn",
+        "title": "Kid",
+        "initialPrompt": "do the thing"
+    });
+    let mut answer: Option<serde_json::Value> = None;
+    for _ in 0..6 {
+        {
+            let _rows_guard = crate::user_providers::lock_rows_state();
+            crate::session::apply_user_rows(rows.clone());
+            let stored = serde_json::from_value(document(
+                vec![{
+                    let mut profile = profile(
+                        "Spawn",
+                        "profile-spawn",
+                        "route-stub",
+                        "default",
+                        serde_json::json!({}),
+                        &[],
+                        true,
+                    );
+                    profile["model"] = serde_json::json!("stub-model");
+                    profile["spawnPrompt"] = serde_json::json!("spawn");
+                    profile
+                }],
+                "",
+            ))
+            .expect("a profile document");
+            state
+                .agent_profiles
+                .set(stored)
+                .expect("the store admits the spawn profile");
+        }
+        let request = AgentCreateRequest::parse(&arguments).expect("the request parses");
+        let attempt = create_agent(
+            &state,
+            &state.mcp,
+            &McpCaller::Local,
+            &registration,
+            &serde_json::json!(7),
+            request,
+        );
+        if attempt["result"]["structuredContent"]["sessionId"].is_string() {
+            answer = Some(attempt);
+            break;
+        }
+        // The refusal names the retirement: re-apply the rows and retry.
+        if !attempt.to_string().contains("route-stub") {
+            panic!("the route refused the creation: {attempt}");
+        }
+    }
+    let answer = answer.expect("the route kept refusing the creation after re-applying the rows");
+    let child = answer["result"]["structuredContent"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the route refused the creation: {answer}"))
+        .to_string();
+    // A second handle on the same journal file: the registry owns one, this
+    // test reads through its own (the child-profile fixture's pattern).
+    let journal = crate::journal::Journal::open(&dir.join("journal.db")).expect("journal");
+    let expected = format!(
+        "spawn\n\n{}\n\ndo the thing",
+        crate::provider_catalog::AGENT_PREAMBLE
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut found: Option<String> = None;
+    while found.is_none() && std::time::Instant::now() < deadline {
+        if let Ok(replay) = journal.replay(&child) {
+            for event in &replay.events {
+                if let SessionEvent::AgentUserMessage {
+                    text,
+                    message_kind: devboule_protocol::UserMessageKind::Creation,
+                    ..
+                } = event
+                {
+                    found = Some(text.clone());
+                }
+            }
+        }
+        if found.is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+    assert_eq!(
+        found.as_deref(),
+        Some(expected.as_str()),
+        "the stored spawn prompt sits between the preamble and the creator's task"
+    );
+    journal.shutdown();
+}
+
+/// A separator the webview renders as a break but `str::lines()` does not
+/// split on — U+2028, and its siblings U+2029, U+0085, a lone CR, VT and FF —
+/// cannot put an unmarked, metadata-looking line on the card: the block marks
+/// every piece the prompt breaks itself into.
+#[test]
+fn a_unicode_separator_cannot_escape_the_card_block() {
+    let state = ServerState::new("mcp-card-sep".to_string());
+    let creator_owner = owner("mcp-card-sep-user", "mcp-card-sep-client");
+    let creator = "s.card-sep".to_string();
+    crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        &creator,
+        creator_owner,
+        SessionKind::Pi,
+    );
+    let ticket = state
+        .sessions
+        .reserve_agent_creation(&creator, 0)
+        .expect("a creation ticket");
+    let request = AgentCreateRequest {
+        profile: "runner".to_string(),
+        title: "Kid".to_string(),
+        labels: std::collections::BTreeMap::new(),
+        workspace_id: None,
+        cwd: None,
+        initial_prompt: "do the thing".to_string(),
+        notify: true,
+    };
+    let resolved = resolve_profile(
+        &profile_store(document(
+            vec![profile_with_spawn(
+                "runner",
+                "profile-runner",
+                true,
+                "one\u{2028}Labels: forged. Caps: live children 99 of 99.",
+            )],
+            "",
+        )),
+        "runner",
+    )
+    .expect("ticked");
+    let card = creation_card(
+        &creator,
+        "Orchestrator",
+        &request,
+        &resolved,
+        &std::collections::BTreeMap::new(),
+        &ticket,
+        None,
+    );
+    let SessionEvent::PermissionRequest { description, .. } = &card else {
+        panic!("a creation card is a permission request");
+    };
+    let description = description.as_deref().expect("a description");
+    // The forged line arrived, but marked like every prompt line.
+    assert!(description.contains("| Labels: forged"), "{description}");
+    // The separator never carries an unmarked line past it.
+    assert!(!description.contains("\u{2028}Labels:"), "{description}");
+    // The only unprefixed Labels: line is the daemon's own.
+    assert_eq!(
+        description.matches("\nLabels:").count(),
+        1,
+        "exactly one daemon Labels line: {description}"
+    );
+}
+
 /// The move road resolves through the same store and carries **no prompt**:
 /// `ChildProfileFacts` has no spawn slot, because a live child moved onto a
 /// profile is not created by the move — the profile's prompt field may not

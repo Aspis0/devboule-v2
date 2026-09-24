@@ -2758,6 +2758,7 @@ dependencies = [
  "snow",
  "spake2",
  "toml 1.1.6+spec-1.1.0",
+ "unicode-normalization",
  "uuid",
  "windows-sys 0.61.2",
  "zeroize",

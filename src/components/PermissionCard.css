@@ -77,6 +77,11 @@
   padding: 0 11px 6px 25px;
   color: var(--ink-soft);
   line-height: 1.5;
+  /* Descriptions carry daemon-authored line structure (a creation card's
+     delimited spawn-prompt block, one '| '-prefixed line per prompt line):
+     collapsing the breaks would flatten the block into a paragraph and hide
+     the boundary. */
+  white-space: pre-wrap;
 }
 
 .permission-card-dot {
