@@ -294,7 +294,7 @@
   right: 0;
   z-index: 6;
   width: min(360px, calc(100vw - 28px));
-  max-height: min(60vh, 430px);
+  max-height: min(calc((100vh - var(--crescent-band)) * 0.6), 430px);
   overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -1649,7 +1649,7 @@
 
 .design-craft-title-list {
   display: grid;
-  max-height: min(374px, calc(100vh - 176px));
+  max-height: min(374px, calc(100vh - var(--crescent-band) - 176px));
   margin: 0;
   padding: 0;
   overflow-y: auto;
@@ -2124,7 +2124,7 @@
   left: 0;
   top: calc(100% + 8px);
   bottom: auto;
-  max-height: min(420px, calc(100vh - 24px));
+  max-height: min(420px, calc(100vh - var(--crescent-band) - 24px));
   min-width: min(260px, calc(100vw - 28px));
   max-width: min(320px, calc(100vw - 28px));
   overflow-y: auto;
@@ -2133,7 +2133,7 @@
 .design-skill-picker {
   min-width: min(320px, calc(100vw - 28px));
   max-width: min(320px, calc(100vw - 28px));
-  max-height: min(420px, calc(100vh - 24px));
+  max-height: min(420px, calc(100vh - var(--crescent-band) - 24px));
   overflow-y: auto;
 }
 
@@ -2387,7 +2387,10 @@
   font-size: 10px;
 }
 
-@media (max-height: 700px) {
+/* 700px is a surface height and the surface is 100vh minus the band, so the
+   window's own budget is 700 + --crescent-band (13px = 713px): a media query
+   cannot read a custom property, which is why the 13 is written out here. */
+@media (max-height: 713px) {
   .design-craft-overlay {
     top: 52px;
   }
