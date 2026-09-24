@@ -327,6 +327,13 @@ const secondWorkspace: IpcWorkspace = {
   isolation: "local",
   path: "C:\\other-project",
 };
+const otherWorkspace: IpcWorkspace = {
+  id: "workspace-other",
+  projectId: project.id,
+  title: "other-main",
+  isolation: "local",
+  path: "C:\\devboule\\other",
+};
 const createdWorkspace: IpcWorkspace = {
   id: "workspace-created",
   projectId: project.id,
@@ -1145,6 +1152,49 @@ describe("Workspace sessions", () => {
     );
     expect(workspaceCreate).not.toHaveBeenCalled();
     expect(sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("shows the create error only over the workspace it failed for", async () => {
+    // Two workspaces in one project; the create is refused under the
+    // selected one and the line must follow that workspace, not stay over
+    // whichever is selected afterwards.
+    vi.mocked(workspacesList).mockResolvedValue([workspace, otherWorkspace]);
+    vi.mocked(sessionCreate).mockRejectedValueOnce({
+      code: "io",
+      message: "No ACP-capable agent was found on PATH.",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => newTabMenuItem(container, "Agent").click());
+    await act(async () => {});
+    await act(async () => {});
+
+    // The strip's one error line carries the mapped sentence.
+    expect(container.querySelector(".workspace-error-line")?.textContent).toContain(
+      "No agent CLI is installed on this machine.",
+    );
+
+    // Switch to the project's other workspace: the failure is not theirs.
+    const rows = container.querySelectorAll<HTMLButtonElement>("button.workspace-row");
+    const other = [...rows].find((row) => row.textContent?.includes("other-main"));
+    if (other === undefined) throw new Error("the other workspace row did not render");
+    await act(async () => other.click());
+    await act(async () => undefined);
+    expect(container.querySelector(".workspace-error-line")).toBeNull();
+
+    // Back to the failed one: the line is there to dismiss.
+    const own = [...rows].find((row) => row.textContent?.includes("main"));
+    if (own === undefined) throw new Error("the failed workspace's row did not render");
+    await act(async () => own.click());
+    await act(async () => undefined);
+    expect(container.querySelector(".workspace-error-line")).not.toBeNull();
   });
 
   it("gates the new-workspace road when no chat-capable CLI is installed", async () => {

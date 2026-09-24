@@ -2489,3 +2489,74 @@ describe("parser order", () => {
     expect(items[0].cardId).toBe("card-9");
   });
 });
+
+describe("one entry per failed send", () => {
+  it("does not add the daemon's agent_error frame beside the mapped send failure", async () => {
+    // session_messaging.rs:1026-1043 publishes agent_error with the same
+    // message immediately before returning the rejection, so a verbatim
+    // item plus the mapped catch showed one failure twice.
+    const harness = makeHarness();
+    await harness.session.start();
+    let settleSend: ((value: unknown) => void) | undefined;
+    (harness.invoke as unknown as Mock).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          settleSend = reject as unknown as (value: unknown) => void;
+        }),
+    );
+    const sending = harness.session.send("hello");
+
+    harness.emit({
+      type: "agent_error",
+      message: "Could not send input to the terminal: broken pipe",
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    settleSend?.({ code: "io", message: "Could not send input to the terminal: broken pipe" });
+    await sending;
+
+    const errors = harness.session.getState().items.filter((item) => item.role === "error");
+    expect(errors).toHaveLength(1);
+    const item = errors[0];
+    expect(item.role === "error" && item.text).toBe(
+      "Could not send the message. A system or file operation failed on this machine.",
+    );
+    expect(item.role === "error" && item.detail).toContain("broken pipe");
+  });
+
+  it("still shows an agent_error held during a send that succeeds — the agent's own voice", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    let settleSend: ((value: undefined) => void) | undefined;
+    (harness.invoke as unknown as Mock).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          settleSend = resolve as unknown as (value: undefined) => void;
+        }),
+    );
+    const sending = harness.session.send("hello");
+
+    harness.emit({
+      type: "agent_error",
+      message: "Provider said: malformed output line",
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    settleSend?.(undefined);
+    await sending;
+
+    const errors = harness.session.getState().items.filter((item) => item.role === "error");
+    expect(errors).toHaveLength(1);
+    const item = errors[0];
+    expect(item.role === "error" && item.text).toBe("Provider said: malformed output line");
+  });
+
+  it("shows an agent_error outside any send verbatim, as before", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "agent_error",
+      message: "Provider said: malformed output line",
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    const errors = harness.session.getState().items.filter((item) => item.role === "error");
+    expect(errors).toHaveLength(1);
+    const item = errors[0];
+    expect(item.role === "error" && item.text).toBe("Provider said: malformed output line");
+  });
+});

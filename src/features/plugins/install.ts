@@ -27,7 +27,7 @@ export async function chooseAndInstall(id: string, label: string): Promise<boole
       title: `Choose the folder ${label} was unpacked into`,
     });
   } catch (cause) {
-    useAppStore.setState({ installError: errorSentence(cause).sentence });
+    useAppStore.setState({ installError: errorSentence(cause) });
     return false;
   }
   if (typeof selected !== "string") return false;

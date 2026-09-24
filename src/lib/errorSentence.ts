@@ -37,7 +37,7 @@ export const CODE_SENTENCES: Record<ErrorCode, string> = {
   session_generation_mismatch: "This view of the session is out of date. Reopen the session.",
   idempotency_conflict: "That action is already under way.",
   shutting_down: "The agent daemon is shutting down. Devboule will reconnect it.",
-  journal: "Saved history could not be read. Running sessions are unaffected.",
+  journal: "Saved history could not be read or written.",
   workspace_unavailable: "The folder this workspace works in is not available right now.",
   workspace_confinement_refused:
     "The system refused to run this action in isolation, so it was not run.",
@@ -54,10 +54,33 @@ const NO_AGENT_ON_PATH = /^No ACP-capable agent was found on PATH/;
 const NAMED_PROVIDER_LOST =
   /(was not found on PATH|has no command to spawn|is not an ACP agent|resolved to an empty command)/;
 
-const LOST_ATTACHMENT = /not attached|not registered/;
+/**
+ * Only the texts about THIS view's attachment: the subscription refusals,
+ * the bridge's bookkeeping loss, and the pre-flight that demands a fresh
+ * attach. "The calling session is not registered on this daemon"
+ * (session.rs:2456 and the child permission/profile paths) is a validity
+ * refusal about a DIFFERENT session and must not match — it takes the
+ * invalid_request row.
+ */
+const LOST_VIEW = /not attached|attachment is not registered/;
 
-const CONTAINMENT =
-  /^Could not contain |process job|^Could not determine [^.]*director|^Could not start the terminal/;
+/** A workspace birth that failed at the worktree or its cleanup (session_workspaces.rs:135-141). */
+const WORKSPACE_BIRTH_FAILED = /^Could not add git worktree for|leftover checkout/;
+
+/** The process could not be started or kept: containment and spawn failures. */
+const PROCESS_START_FAILED = /^Could not contain |process job|^Could not start the terminal/;
+
+/** The one OS verdict "another program may be blocking it" is true for. */
+const ACCESS_REFUSED = /access (is )?denied|os error 5/i;
+
+/**
+ * The git module's own sentences (workspace_git_support.rs:22-129): the
+ * daemon authors every refusal there as a pathless, human sentence — the
+ * house mapping this module generalises. Pass it through verbatim instead
+ * of burying it under the generic io row.
+ */
+const GIT_OWN_SENTENCE =
+  /^(?:this workspace folder|the workspace folder|git |another git process|there is nothing staged|the requested path)|: git (?:is not installed|timed out|could not be started)$|exited with code \d+$|was terminated before it could report a code$/;
 
 function providerName(message: string): string | null {
   const quoted = /'([^']+)'/.exec(message);
@@ -72,8 +95,13 @@ function providerName(message: string): string | null {
  * first; a message no arm claims falls through to the code table.
  */
 function shapeSentence(message: string): string | null {
+  if (GIT_OWN_SENTENCE.test(message)) {
+    // Git's sentence stands as the sentence; the raw and the readable are
+    // the same words here.
+    return message;
+  }
   if (NO_AGENT_ON_PATH.test(message)) {
-    return "No agent CLI is installed on this machine. Install one — for example grok, claude, or gemini — and restart Devboule.";
+    return "No agent CLI is installed on this machine. Install one — for example grok, claude, or gemini — then choose Refresh in Settings → Providers.";
   }
   if (NAMED_PROVIDER_LOST.test(message)) {
     const name = providerName(message);
@@ -81,13 +109,21 @@ function shapeSentence(message: string): string | null {
       ? `${name} is not available on this machine. Install it, or pick another agent.`
       : "The chosen agent is not available on this machine. Install it, or pick another agent.";
   }
-  if (LOST_ATTACHMENT.test(message)) {
+  if (LOST_VIEW.test(message)) {
     return "This view lost its live connection to the session. Reopen the tab to reconnect.";
   }
-  if (CONTAINMENT.test(message)) {
-    return message.includes("terminal")
-      ? "The system refused to start the terminal. Another program on this machine may be blocking it."
-      : "The system refused to start the agent. Another program on this machine may be blocking it.";
+  if (WORKSPACE_BIRTH_FAILED.test(message)) {
+    return "This workspace could not be created.";
+  }
+  if (PROCESS_START_FAILED.test(message)) {
+    const target = message.includes("terminal") ? "terminal" : "agent";
+    // "Another program may be blocking it" is a diagnosis; only an access
+    // refusal earns it. Every other OS error stays undescribed — the raw
+    // line rides in the detail.
+    if (ACCESS_REFUSED.test(message)) {
+      return `The system refused to start the ${target}. Another program on this machine may be blocking it.`;
+    }
+    return `The system could not start the ${target}.`;
   }
   return null;
 }

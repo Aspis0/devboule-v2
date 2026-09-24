@@ -1,5 +1,6 @@
 import type { WorkspaceFileContent } from "../../types/ipc";
 import type { PreviewCell } from "./useWorkspaceFilePreview";
+import { ErrorText } from "../../components/ErrorText";
 
 /** `logo.png` → `formatSize`, the date, or the reply's own words: what the
  * stat knew and which road answered. A refusal knew nothing (its `size` is
@@ -77,12 +78,16 @@ export function FilesPreview({
     <div className="workspace-diff-card">
       <div className="workspace-diff-header">
         <span title={path}>{path}</span>
-        <span>{metaOf(reply, staged, preview.failure)}</span>
+        <span>{metaOf(reply, staged, preview.failure?.sentence ?? null)}</span>
       </div>
       {reply === null && staged === null ? (
         preview.failure !== null ? (
           <div className="workspace-diff-note workspace-diff-note-error" role="alert">
-            {preview.failure}
+            <ErrorText
+              sentence={preview.failure.sentence}
+              detail={preview.failure.detail}
+              id="files-preview-error"
+            />
           </div>
         ) : (
           <div className="workspace-diff-note" role="status">

@@ -53,7 +53,7 @@ afterEach(() => {
 
 describe("appStore plugin state", () => {
   it("clears an install error when a refresh finds the plugin installed", async () => {
-    useAppStore.setState({ installError: "the previous copy failed" });
+    useAppStore.setState({ installError: { sentence: "the previous copy failed", detail: null } });
     mocks.pluginsRescan.mockResolvedValue(INSTALLED);
 
     await useAppStore.getState().refreshPlugins(true);
@@ -63,7 +63,7 @@ describe("appStore plugin state", () => {
   });
 
   it("lets the UI dismiss an install error without another install", () => {
-    useAppStore.setState({ installError: "the previous copy failed" });
+    useAppStore.setState({ installError: { sentence: "the previous copy failed", detail: null } });
 
     useAppStore.getState().dismissInstallError();
 
@@ -71,12 +71,15 @@ describe("appStore plugin state", () => {
   });
 
   it("keeps an install error when refresh still finds no plugin", async () => {
-    useAppStore.setState({ installError: "the previous copy failed" });
+    useAppStore.setState({ installError: { sentence: "the previous copy failed", detail: null } });
     mocks.pluginsList.mockResolvedValue({ root: "C:/data/plugins", plugins: [], problem: null });
 
     await useAppStore.getState().refreshPlugins();
 
-    expect(useAppStore.getState().installError).toBe("the previous copy failed");
+    expect(useAppStore.getState().installError).toEqual({
+      sentence: "the previous copy failed",
+      detail: null,
+    });
   });
 });
 

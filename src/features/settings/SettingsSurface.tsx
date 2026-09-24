@@ -12,7 +12,8 @@ import {
   toolPolicySet,
   workspacesList,
 } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { ErrorText } from "../../components/ErrorText";
 import {
   DELEGATION_CAPABILITY,
   delegationController,
@@ -315,7 +316,7 @@ function ProviderToolSettings({
 }) {
   const tools = provider.tools ?? [];
   const [policies, setPolicies] = useState<readonly ToolPolicyEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   // Synchronous mirror of `policies`. It — never the render closure — is
   // what a second rapid write reads and the base its revert applies to
   // (audit findings 1, 8).
@@ -373,7 +374,7 @@ function ProviderToolSettings({
           // edit: that is a terminal state — the daemon's sentence plus a
           // Retry — not a loading state to sit under forever.
           if (policiesRef.current === null) setLoadFailed(true);
-          setError(errorSentence(cause).sentence);
+          setError(errorSentence(cause));
         }
       });
     return () => {
@@ -456,7 +457,7 @@ function ProviderToolSettings({
       ];
       policiesRef.current = reverted;
       setPolicies(reverted);
-      setError(errorSentence(cause).sentence);
+      setError(errorSentence(cause));
     } finally {
       writesInFlightRef.current -= 1;
     }
@@ -528,7 +529,11 @@ function ProviderToolSettings({
         </div>
         {error === null ? null : (
           <p role="alert" className="device-error">
-            {error}
+            <ErrorText
+              sentence={error.sentence}
+              detail={error.detail}
+              id="settings-tool-policy-error"
+            />
           </p>
         )}
         {loadFailed ? (
@@ -866,7 +871,7 @@ function NewAgentProfileForm({
   /** Installed providers only, catalog order. */
   providers: readonly ProviderInfo[];
   catalogLoading: boolean;
-  catalogError: string | null;
+  catalogError: ErrorSentence | null;
   /** True only when the handshake advertised `provider_vocabulary`. */
   vocabularySupported: boolean;
   /** True while a panel write is in flight: Save must not start another. */
@@ -883,7 +888,7 @@ function NewAgentProfileForm({
   const [enabledForAgents, setEnabledForAgents] = useState(false);
   const [restrictPeers, setRestrictPeers] = useState(false);
   const [vocabulary, setVocabulary] = useState<ProviderVocabulary | null>(null);
-  const [vocabularyError, setVocabularyError] = useState<string | null>(null);
+  const [vocabularyError, setVocabularyError] = useState<ErrorSentence | null>(null);
   // Monotonic fetch sequence for the vocabulary query: a reply may apply
   // only while it is still the newest fetch. This — never the provider id
   // echoed back — is what keeps a slow answer for provider A out of a form
@@ -935,7 +940,7 @@ function NewAgentProfileForm({
       })
       .catch((cause: unknown) => {
         if (vocabularySeqRef.current !== seq) return;
-        setVocabularyError(errorSentence(cause).sentence);
+        setVocabularyError(errorSentence(cause));
       });
   }, [providerId, vocabularySupported, providers]);
 
@@ -1038,7 +1043,11 @@ function NewAgentProfileForm({
       </label>
       {catalogError !== null ? (
         <p className="device-field-hint" role="alert">
-          The provider catalog could not be read: {catalogError}
+          <ErrorText
+            sentence={`The provider catalog could not be read: ${catalogError.sentence}`}
+            detail={catalogError.detail}
+            id="settings-profile-catalog-error"
+          />
         </p>
       ) : null}
       {/* A completed read that found nothing is the only state allowed to
@@ -1058,8 +1067,11 @@ function NewAgentProfileForm({
       ) : null}
       {vocabularyError !== null ? (
         <p className="device-field-hint">
-          The vocabulary query failed ({vocabularyError}); type the model and mode below; what you
-          type is checked when the session starts.
+          <ErrorText
+            sentence={`The vocabulary query failed (${vocabularyError.sentence}); type the model and mode below; what you type is checked when the session starts.`}
+            detail={vocabularyError.detail}
+            id="settings-vocabulary-error"
+          />
         </p>
       ) : null}
       {(!vocabularySupported || vocabularyKnown) && providers.length > 0 ? (
@@ -1420,7 +1432,11 @@ export function DelegationSetting({
       ) : null}
       {error === null ? null : (
         <p role="alert" className="device-error">
-          {error}
+          <ErrorText
+            sentence={error.sentence}
+            detail={error.detail}
+            id="settings-delegation-error"
+          />
         </p>
       )}
       {loadFailed ? (
@@ -1463,7 +1479,7 @@ function AgentProfilesPanel() {
   const agentProfilesSupported = daemon.capabilities.includes(AGENT_PROFILES_CAPABILITY);
   const providerVocabularySupported = daemon.capabilities.includes(PROVIDER_VOCABULARY_CAPABILITY);
   const [document, setDocument] = useState<AgentProfilesDocument | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   const [busy, setBusy] = useState(false);
   // Synchronous mirror of `document` — what a second rapid write reads and
   // what a rejection reverts onto, never a render closure (audit findings 1, 8).
@@ -1495,7 +1511,7 @@ function AgentProfilesPanel() {
   const [creating, setCreating] = useState(false);
   // The provider catalog behind the form's picker, fetched once per mount.
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogError, setCatalogError] = useState<ErrorSentence | null>(null);
   // The standing-instructions draft. Null means the textarea shows the
   // document; the first keystroke sets it, so the optimistic document swap
   // of an in-flight write cannot eat what the human is typing mid-write. It
@@ -1552,7 +1568,7 @@ function AgentProfilesPanel() {
         // that is a terminal state — the daemon's sentence plus a Retry —
         // not a loading state to sit under forever.
         if (documentRef.current === null) setLoadFailed(true);
-        setError(errorSentence(cause).sentence);
+        setError(errorSentence(cause));
       });
     return () => {
       cancelled = true;
@@ -1570,7 +1586,7 @@ function AgentProfilesPanel() {
         if (!cancelled) setCatalog(listed);
       })
       .catch((cause: unknown) => {
-        if (!cancelled) setCatalogError(errorSentence(cause).sentence);
+        if (!cancelled) setCatalogError(errorSentence(cause));
       });
     return () => {
       cancelled = true;
@@ -1658,7 +1674,7 @@ function AgentProfilesPanel() {
         // The write itself is confirmed, so a failed read-back reverts
         // nothing; it is named — the panel would otherwise sit on ids the
         // daemon has already replaced — unless a newer write owns the UI.
-        if (seqRef.current === seq) setError(errorSentence(cause).sentence);
+        if (seqRef.current === seq) setError(errorSentence(cause));
       }
       // An older write settling here must not clear a busy flag the newest
       // write still needs.
@@ -1671,7 +1687,7 @@ function AgentProfilesPanel() {
       if (seq !== seqRef.current) return false;
       documentRef.current = previous;
       setDocument(previous);
-      setError(errorSentence(cause).sentence);
+      setError(errorSentence(cause));
       setBusy(false);
       return false;
     } finally {
@@ -1733,7 +1749,7 @@ function AgentProfilesPanel() {
     // the note counts UTF-8 bytes. Refuse and name the size; never clip.
     const refusal = profileTextsError(trimmed, note);
     if (refusal !== null) {
-      setError(refusal);
+      setError({ sentence: refusal, detail: null });
       return;
     }
     const updated = cloneDocument(current);
@@ -1766,15 +1782,16 @@ function AgentProfilesPanel() {
     // button is already disabled at the cap; this guard covers the document
     // having changed under an open form.
     if (current.profiles.length >= MAX_PROFILES) {
-      setError(
-        `The store already holds ${MAX_PROFILES} profiles, the maximum the daemon allows: delete one before creating another.`,
-      );
+      setError({
+        sentence: `The store already holds ${MAX_PROFILES} profiles, the maximum the daemon allows: delete one before creating another.`,
+        detail: null,
+      });
       return;
     }
     const trimmedName = draft.name.trim();
     const refusal = profileTextsError(trimmedName, draft.note);
     if (refusal !== null) {
-      setError(refusal);
+      setError({ sentence: refusal, detail: null });
       return;
     }
     const model = draft.model.trim();
@@ -1783,11 +1800,11 @@ function AgentProfilesPanel() {
     // side; the form refuses with its own sentence rather than shipping a
     // write the store will bounce.
     if (model === "") {
-      setError("Choose or type a model for the profile.");
+      setError({ sentence: "Choose or type a model for the profile.", detail: null });
       return;
     }
     if (modeId === "") {
-      setError("Choose or type a mode for the profile.");
+      setError({ sentence: "Choose or type a mode for the profile.", detail: null });
       return;
     }
     const profile: AgentProfile = {
@@ -1829,9 +1846,10 @@ function AgentProfilesPanel() {
     if (current === null) return;
     const bytes = utf8Bytes(standingValue);
     if (bytes > MAX_STANDING_INSTRUCTIONS_BYTES) {
-      setError(
-        `The standing instructions are ${bytes} bytes, over the ${MAX_STANDING_INSTRUCTIONS_BYTES}-byte cap. Nothing was saved and nothing was truncated.`,
-      );
+      setError({
+        sentence: `The standing instructions are ${bytes} bytes, over the ${MAX_STANDING_INSTRUCTIONS_BYTES}-byte cap. Nothing was saved and nothing was truncated.`,
+        detail: null,
+      });
       return;
     }
     const sent = standingValue;
@@ -1859,7 +1877,7 @@ function AgentProfilesPanel() {
       <div className="settings-stack settings-stack-spaced agent-profiles">
         {error === null ? null : (
           <p role="alert" className="device-error">
-            {error}
+            <ErrorText sentence={error.sentence} detail={error.detail} id="settings-agents-error" />
           </p>
         )}
         {loading && !loadFailed ? <div role="status">Loading agent profiles…</div> : null}
@@ -2085,7 +2103,7 @@ function AgentProfilesPanel() {
 
 function ProvidersPanel() {
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   // Bumped by every fetch (mount and refresh); a response only applies when its
   // sequence is still the latest, so a slow mount list cannot revert a refresh.
@@ -2095,7 +2113,11 @@ function ProvidersPanel() {
   // The one npm run the daemon is executing on this client's behalf.
   const [npmRun, setNpmRun] = useState<ProviderNpmRun | null>(null);
   // Per-card, dismissible failure from the last npm run.
-  const [npmFailure, setNpmFailure] = useState<{ providerId: string; text: string } | null>(null);
+  const [npmFailure, setNpmFailure] = useState<{
+    providerId: string;
+    text: string;
+    detail: string | null;
+  } | null>(null);
   const [consent, setConsent] = useState<ProviderConsent | null>(null);
   // Cleared in the consent effect (not at the end of confirm): a second
   // synchronous click still sees the stale non-null consent, so the ref must
@@ -2140,7 +2162,7 @@ function ProvidersPanel() {
       .catch((cause: unknown) => {
         if (!cancelled && seq === fetchSeqRef.current) {
           setCatalog({ providers: [], unreadableDirs: 0 });
-          setError(errorSentence(cause).sentence);
+          setError(errorSentence(cause));
         }
       });
     return () => {
@@ -2160,7 +2182,7 @@ function ProvidersPanel() {
       })
       .catch((cause: unknown) => {
         if (seq === fetchSeqRef.current) {
-          setError(errorSentence(cause).sentence);
+          setError(errorSentence(cause));
         }
       })
       .finally(() => {
@@ -2194,7 +2216,7 @@ function ProvidersPanel() {
     void providerUpdate(provider.id)
       .then((outcome) => {
         if (!outcome.ok) {
-          setNpmFailure({ providerId: provider.id, text: logTail(outcome.log) });
+          setNpmFailure({ providerId: provider.id, text: logTail(outcome.log), detail: null });
           return;
         }
         // The refetch is the proof: the fresh catalog carries the new version.
@@ -2203,11 +2225,12 @@ function ProvidersPanel() {
             if (seq === fetchSeqRef.current) setCatalog(fresh);
           })
           .catch((cause: unknown) => {
-            if (seq === fetchSeqRef.current) setError(errorSentence(cause).sentence);
+            if (seq === fetchSeqRef.current) setError(errorSentence(cause));
           });
       })
       .catch((cause: unknown) => {
-        setNpmFailure({ providerId: provider.id, text: errorSentence(cause).sentence });
+        const mapped = errorSentence(cause);
+        setNpmFailure({ providerId: provider.id, text: mapped.sentence, detail: mapped.detail });
       })
       // Unconditional: setState on an unmounted component is a safe no-op in
       // React 18+, and an unmount guard wedged the Refresh button once under
@@ -2228,7 +2251,15 @@ function ProvidersPanel() {
       <button className="provider-refresh" type="button" disabled={refreshing} onClick={refresh}>
         {refreshing ? "Refreshing…" : "Refresh"}
       </button>
-      {error ? <div role="alert">{error}</div> : null}
+      {error ? (
+        <div role="alert">
+          <ErrorText
+            sentence={error.sentence}
+            detail={error.detail}
+            id="settings-providers-error"
+          />
+        </div>
+      ) : null}
       {providers === null ? (
         <div role="status">Looking for agent CLIs on PATH…</div>
       ) : providers.length === 0 ? (
@@ -2370,7 +2401,19 @@ function ProvidersPanel() {
                   ) : null}
                   {failureHere ? (
                     <div className="provider-card-block provider-update-error">
-                      <pre>{npmFailure.text}</pre>
+                      <pre
+                        title={npmFailure.detail ?? undefined}
+                        aria-describedby={
+                          npmFailure.detail ? "settings-npm-failure-detail" : undefined
+                        }
+                      >
+                        {npmFailure.text}
+                        {npmFailure.detail ? (
+                          <span id="settings-npm-failure-detail" className="error-detail-sr-only">
+                            {npmFailure.detail}
+                          </span>
+                        ) : null}
+                      </pre>
                       <button
                         type="button"
                         className="provider-refresh provider-update-error-dismiss"
@@ -2403,9 +2446,9 @@ function ProvidersPanel() {
 function ProjectsPanel() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [workspacesByProject, setWorkspacesByProject] = useState<Record<string, Workspace[]>>({});
-  const [workspaceErrors, setWorkspaceErrors] = useState<Record<string, string>>({});
+  const [workspaceErrors, setWorkspaceErrors] = useState<Record<string, ErrorSentence>>({});
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const addProjectRef = useRef<HTMLButtonElement>(null);
 
@@ -2414,21 +2457,17 @@ function ProjectsPanel() {
     setError(null);
     try {
       const listed = await projectsList();
-      const results = await Promise.all(
+      const nextWorkspaces: Record<string, Workspace[]> = {};
+      const nextErrors: Record<string, ErrorSentence> = {};
+      await Promise.all(
         listed.map(async (project) => {
           try {
-            return { id: project.id, workspaces: await workspacesList(project.id) };
+            nextWorkspaces[project.id] = await workspacesList(project.id);
           } catch (cause: unknown) {
-            return { id: project.id, error: errorSentence(cause).sentence };
+            nextErrors[project.id] = errorSentence(cause);
           }
         }),
       );
-      const nextWorkspaces: Record<string, Workspace[]> = {};
-      const nextErrors: Record<string, string> = {};
-      for (const result of results) {
-        if (Array.isArray(result.workspaces)) nextWorkspaces[result.id] = result.workspaces;
-        else if (typeof result.error === "string") nextErrors[result.id] = result.error;
-      }
       setProjects(listed);
       setWorkspacesByProject(nextWorkspaces);
       setWorkspaceErrors(nextErrors);
@@ -2436,7 +2475,7 @@ function ProjectsPanel() {
       setProjects([]);
       setWorkspacesByProject({});
       setWorkspaceErrors({});
-      setError(errorSentence(cause).sentence);
+      setError(errorSentence(cause));
     } finally {
       setLoading(false);
     }
@@ -2472,7 +2511,11 @@ function ProjectsPanel() {
         {loading ? <div role="status">Loading projects…</div> : null}
         {error !== null ? (
           <div role="alert">
-            {error}
+            <ErrorText
+              sentence={error.sentence}
+              detail={error.detail}
+              id="settings-projects-error"
+            />
             <button type="button" onClick={() => void loadProjects()}>
               Retry
             </button>
@@ -2500,7 +2543,11 @@ function ProjectsPanel() {
                   </span>
                   {workspaceError !== undefined ? (
                     <span role="alert">
-                      Workspaces unavailable: {workspaceError}
+                      <ErrorText
+                        sentence={`Workspaces unavailable: ${workspaceError.sentence}`}
+                        detail={workspaceError.detail}
+                        id={`settings-workspaces-error-${project.id}`}
+                      />
                       <button type="button" onClick={() => void loadProjects()}>
                         Retry
                       </button>

@@ -140,13 +140,18 @@ describe("Oracle stage routing", () => {
         statusRequest: {
           status: "error",
           message: "Oracle workspace C:/code/project no longer exists",
+          detail: null,
         },
         status: null,
       }),
     ).toBe("choose-workspace");
     expect(
       getOracleErrorAction({
-        statusRequest: { status: "error", message: "reading Oracle index status failed" },
+        statusRequest: {
+          status: "error",
+          message: "reading Oracle index status failed",
+          detail: null,
+        },
         status: null,
       }),
     ).toBe("retry-status");

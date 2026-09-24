@@ -4,7 +4,7 @@ import {
   workspaceFilePreviewUnstage,
   workspaceFileRead,
 } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { WorkspaceFileContent, WorkspaceFileStaged } from "../../types/ipc";
 import { previewMediaKind } from "./previewMedia";
 
@@ -18,7 +18,7 @@ const READ_MORE_LINES = 5000;
 export interface PreviewCell {
   reply: WorkspaceFileContent | null;
   staged: WorkspaceFileStaged | null;
-  failure: string | null;
+  failure: ErrorSentence | null;
 }
 
 /**
@@ -134,7 +134,7 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
         }
       } catch (cause: unknown) {
         if (generation.current !== own) return;
-        const failure = errorSentence(cause).sentence;
+        const failure = errorSentence(cause);
         setState((current) => ({
           workspaceId,
           path,
@@ -287,7 +287,7 @@ export function useWorkspaceFilePreview(workspaceId: string | null): WorkspaceFi
         if (onScreen.workspaceId !== workspaceId || onScreen.path !== path) return onScreen;
         return {
           ...onScreen,
-          cell: { ...onScreen.cell, failure: errorSentence(cause).sentence },
+          cell: { ...onScreen.cell, failure: errorSentence(cause) },
         };
       });
     }

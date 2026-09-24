@@ -113,7 +113,7 @@ describe("Shell crescent", () => {
 
   it("shows and dismisses a crescent install error while the nav is open", async () => {
     useAppStore.setState({
-      installError: "the folder was refused",
+      installError: { sentence: "the folder was refused", detail: null },
     });
     const { container, root } = await renderShell();
 

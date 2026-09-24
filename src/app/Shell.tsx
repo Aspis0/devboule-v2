@@ -3,6 +3,7 @@ import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { chooseAndInstall } from "../features/plugins/install";
 import { pluginState } from "../lib/plugins";
 import { useAppStore } from "../store/appStore";
+import { ErrorText } from "../components/ErrorText";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
 import { CRESCENT_LABEL_MAX_WIDTH, CRESCENT_VISIBLE_COUNT, layoutCrescent } from "./crescentLayout";
 
@@ -253,7 +254,13 @@ export function Shell({ activeSurface, children }: ShellProps) {
 
           {navOpen && installError ? (
             <div className="crescent-install-error" role="alert">
-              <span>The last install did not happen — {installError}</span>
+              <span>
+                <ErrorText
+                  sentence={`The last install did not happen — ${installError.sentence}`}
+                  detail={installError.detail}
+                  id="crescent-install-error"
+                />
+              </span>
               <button type="button" onClick={dismissInstallError}>
                 Dismiss
               </button>

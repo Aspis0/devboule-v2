@@ -115,6 +115,15 @@ export const TerminalSurface = memo(function TerminalSurface({
   const [banner, setBanner] = useState<TerminalBanner>(null);
   const [ctrlCArmed, setCtrlCArmed] = useState(false);
 
+  // The recovered flag is read at (re)start only, through this ref, so it
+  // is not a dep of the session effect: the row's recovered flip arrives
+  // with a new generation, which rebuilds that effect anyway, while a
+  // live/silent flip must rebuild nothing. This sync effect is declared
+  // before the session effect, so a rebuild always reads the fresh value.
+  const sessionRecoveredRef = useRef(observedState?.type === "recovered");
+  useEffect(() => {
+    sessionRecoveredRef.current = observedState?.type === "recovered";
+  }, [observedState]);
   const autoFocusRef = useRef(autoFocus);
   const autoFocusGuardRef = useRef(autoFocusGuard);
   const onAutoFocusTakenRef = useRef(onAutoFocusTaken);
@@ -160,6 +169,7 @@ export const TerminalSurface = memo(function TerminalSurface({
     const session = new TerminalSession({
       workspaceId,
       sessionId,
+      sessionRecovered: sessionRecoveredRef.current,
       host,
       createView: async (viewHost, options) => {
         const { createTerminalView } = await import("./createTerminalView");
@@ -263,8 +273,20 @@ export const TerminalSurface = memo(function TerminalSurface({
         <div ref={hostRef} className="workspace-terminal-host" aria-label="Interactive terminal" />
       </div>
       {message !== null ? (
-        <div className="workspace-terminal-banner" role="status">
+        <div
+          className="workspace-terminal-banner"
+          role="status"
+          title={banner?.kind === "error" ? banner.detail : undefined}
+          aria-describedby={
+            banner?.kind === "error" && banner.detail ? "terminal-banner-detail" : undefined
+          }
+        >
           {message}
+          {banner?.kind === "error" && banner.detail ? (
+            <span id="terminal-banner-detail" className="error-detail-sr-only">
+              {banner.detail}
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>

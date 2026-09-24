@@ -31,7 +31,7 @@ export type TerminalBanner =
   | { kind: "recovered"; integrity: UnverifiableTranscriptIntegrity }
   | { kind: "journal_degraded"; lost: { frames: number; bytes: number } }
   | { kind: "closed" }
-  | { kind: "error"; message: string }
+  | { kind: "error"; message: string; detail?: string }
   | null;
 
 type PersistentTerminalBanner = Exclude<TerminalBanner, { kind: "silent" } | null>;
@@ -40,6 +40,12 @@ export interface TerminalSessionDeps {
   workspaceId: string | null;
   /** A Workspace tab may select a listed session instead of adopting by workspace. */
   sessionId?: string | null;
+  /**
+   * The selected row is one the daemon recovered from an earlier run: it has
+   * no live process, so an attach failure here is not a lost connection to
+   * fix by reopening — the session is gone.
+   */
+  sessionRecovered?: boolean;
   host: HTMLElement;
   createView: (
     host: HTMLElement,
@@ -157,7 +163,11 @@ export class TerminalSession {
           kind: "terminal",
         });
       } catch (error: unknown) {
-        this.showError(`Could not create the terminal session. ${errorSentence(error).sentence}`);
+        const mapped = errorSentence(error);
+        this.showError(
+          `Could not create the terminal session. ${mapped.sentence}`,
+          mapped.detail ?? undefined,
+        );
         return;
       }
       sessionId = session.id;
@@ -182,7 +192,11 @@ export class TerminalSession {
         onFontFit: () => this.requestResize(),
       });
     } catch (error: unknown) {
-      this.showError(`Could not open the terminal view. ${errorSentence(error).sentence}`);
+      const mapped = errorSentence(error);
+      this.showError(
+        `Could not open the terminal view. ${mapped.sentence}`,
+        mapped.detail ?? undefined,
+      );
       this.teardownFailedStartup(createdHere);
       return;
     }
@@ -198,7 +212,11 @@ export class TerminalSession {
     try {
       channel = this.deps.createChannel((event) => this.handleEvent(event));
     } catch (error: unknown) {
-      this.showError(`Could not open the terminal stream. ${errorSentence(error).sentence}`);
+      const mapped = errorSentence(error);
+      this.showError(
+        `Could not open the terminal stream. ${mapped.sentence}`,
+        mapped.detail ?? undefined,
+      );
       this.disposeViewAndChannel();
       this.teardownFailedStartup(createdHere);
       return;
@@ -255,7 +273,22 @@ export class TerminalSession {
         await this.start();
         return;
       }
-      this.showError(`Could not attach to the terminal. ${errorSentence(attachError).sentence}`);
+      if (this.deps.sessionRecovered === true) {
+        // A recovered row has no live process to attach to, so "reopen the
+        // tab" (the lost-view advice) would be false, and the attach frame
+        // would stack a second sentence onto it. One true sentence instead.
+        const mapped = errorSentence(attachError);
+        this.showError(
+          "This terminal ended with the previous daemon and cannot be reopened — close the tab or open a new one.",
+          mapped.detail ?? undefined,
+        );
+        return;
+      }
+      const mapped = errorSentence(attachError);
+      this.showError(
+        `Could not attach to the terminal. ${mapped.sentence}`,
+        mapped.detail ?? undefined,
+      );
       return;
     }
 
@@ -683,10 +716,10 @@ export class TerminalSession {
     }
   }
 
-  private showError(message: string): void {
+  private showError(message: string, detail?: string): void {
     if (!this.disposed) {
       this.silenceBannerVisible = false;
-      this.persistentBanner = { kind: "error", message };
+      this.persistentBanner = { kind: "error", message, detail };
       this.deps.onBanner(this.persistentBanner);
     }
   }

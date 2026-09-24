@@ -1479,6 +1479,9 @@
   flex-direction: column;
   gap: 8px;
   padding: 4px 6px 6px;
+  /* Capped so the sentence wraps: the popover sizes to its content, and an
+     uncapped one-liner painted ~850px wide across the sidebar (live E1). */
+  max-width: 340px;
 }
 
 .workspace-provider-empty-text {

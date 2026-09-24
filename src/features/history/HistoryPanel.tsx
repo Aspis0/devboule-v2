@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { journalUsage, sessionDelete, sessionResume, sessionsList } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { ErrorText } from "../../components/ErrorText";
 import type { JournalSessionUsage, JournalUsage, Session } from "../../types/ipc";
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
@@ -45,7 +46,7 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorSentence | null>(null);
   const mountedRef = useRef(false);
   const resumeInFlightRef = useRef<string | null>(null);
 
@@ -116,7 +117,7 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
           if (!mountedRef.current) return;
           setDeletingId(null);
           setConfirmingId(null);
-          setActionError(errorSentence(cause).sentence);
+          setActionError(errorSentence(cause));
         }
       })();
     },
@@ -137,7 +138,9 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
             onReopen?.(result.session);
           } else {
             setActionError(
-              result.type === "failed" ? result.message : "This session does not support resume.",
+              result.type === "failed"
+                ? { sentence: result.message, detail: null }
+                : { sentence: "This session does not support resume.", detail: null },
             );
             // The verdict this row's button rendered may have just been
             // retracted on the daemon side; re-read the roster so the offer
@@ -146,7 +149,7 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
           }
         } catch (cause) {
           if (mountedRef.current) {
-            setActionError(errorSentence(cause).sentence);
+            setActionError(errorSentence(cause));
             refreshSessions(false);
           }
         } finally {
@@ -158,9 +161,14 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
     [onReopen, refreshSessions],
   );
 
-  const usageError = usageRequest.state.status === "error" ? usageRequest.state.message : null;
-  const sessionsError =
-    sessionsRequest.state.status === "error" ? sessionsRequest.state.message : null;
+  const usageError: ErrorSentence | null =
+    usageRequest.state.status === "error"
+      ? { sentence: usageRequest.state.message, detail: usageRequest.state.detail }
+      : null;
+  const sessionsError: ErrorSentence | null =
+    sessionsRequest.state.status === "error"
+      ? { sentence: sessionsRequest.state.message, detail: sessionsRequest.state.detail }
+      : null;
 
   return (
     <div className="history-panel" id="workspace-history-panel" aria-label="History">
@@ -169,17 +177,29 @@ export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPane
       </div>
       {usageError ? (
         <div className="history-alert" role="alert">
-          {usageError}
+          <ErrorText
+            sentence={usageError.sentence}
+            detail={usageError.detail}
+            id="history-usage-error"
+          />
         </div>
       ) : null}
       {usage && sessionsError ? (
         <div className="history-alert" role="alert">
-          {sessionsError}
+          <ErrorText
+            sentence={sessionsError.sentence}
+            detail={sessionsError.detail}
+            id="history-sessions-error"
+          />
         </div>
       ) : null}
       {actionError ? (
         <div className="history-alert" role="alert">
-          {actionError}
+          <ErrorText
+            sentence={actionError.sentence}
+            detail={actionError.detail}
+            id="history-action-error"
+          />
         </div>
       ) : null}
       {usage ? (

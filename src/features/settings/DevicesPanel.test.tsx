@@ -450,7 +450,8 @@ describe("devices panel", () => {
 
     const alert = container.querySelector('[role="alert"]');
     if (alert === null) throw new Error("pairing error did not render");
-    expect(alert.textContent).toBe("The agent daemon refused that request as invalid.");
+    expect(alert.textContent).toContain("The agent daemon refused that request as invalid.");
+    expect(alert.querySelector(".error-detail-sr-only")).not.toBeNull();
   });
 
   it("keeps the two pairing actions mutually exclusive", async () => {
@@ -637,7 +638,8 @@ describe("devices panel", () => {
 
     const alert = container.querySelector('[role="alert"]');
     if (alert === null) throw new Error("confirmation error did not render");
-    expect(alert.textContent).toBe("The agent daemon refused that request as invalid.");
+    expect(alert.textContent).toContain("The agent daemon refused that request as invalid.");
+    expect(alert.querySelector(".error-detail-sr-only")).not.toBeNull();
   });
 
   it("sends the full capability array on a toggle and keeps the optimistic flip", async () => {
@@ -752,7 +754,8 @@ describe("devices panel", () => {
     expect(checkboxByLabel("send").checked).toBe(false);
     const alert = container.querySelector('[role="alert"]');
     if (alert === null) throw new Error("capability error did not render");
-    expect(alert.textContent).toBe("The agent daemon refused that request as invalid.");
+    expect(alert.textContent).toContain("The agent daemon refused that request as invalid.");
+    expect(alert.querySelector(".error-detail-sr-only")).not.toBeNull();
   });
 
   it("draws the capability switches for a daemon peer and drops the false scope sentence", async () => {

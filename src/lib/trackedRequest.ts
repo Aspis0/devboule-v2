@@ -4,7 +4,7 @@ import { errorSentence } from "./errorSentence";
 export type RequestState<T> =
   | { status: "loading" }
   | { status: "ready"; value: T }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; detail: string | null };
 
 export type TrackedRequestState<T> = { status: "idle" } | RequestState<T>;
 
@@ -40,9 +40,11 @@ export function useTrackedRequest<T>(
         })
         .catch((error: unknown) => {
           if (mountedRef.current && requestIdRef.current === requestId) {
+            const mapped = errorSentence(error);
             setState({
               status: "error",
-              message: errorSentence(error).sentence,
+              message: mapped.sentence,
+              detail: mapped.detail,
             });
           }
         });

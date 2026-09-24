@@ -57,7 +57,7 @@ export interface DelegationState {
    */
   loadFailed: boolean;
   /** The daemon's own sentence for the last refused write, verbatim. */
-  error: string | null;
+  error: { sentence: string; detail: string | null } | null;
 }
 
 export interface DelegationController {
@@ -167,7 +167,7 @@ export function createDelegationController(
         // A later answer exists and nothing has shaken trust in it; the panel
         // already shows a value, so the failed refresh is reported, not
         // terminal.
-        publish({ ...state, error: errorSentence(cause).sentence });
+        publish({ ...state, error: errorSentence(cause) });
         return;
       }
       // No answer the panel may show as definite survives a failed read here:
@@ -180,7 +180,7 @@ export function createDelegationController(
         reply: null,
         enabled: null,
         loadFailed: true,
-        error: errorSentence(cause).sentence,
+        error: errorSentence(cause),
       });
     }
   };
@@ -225,7 +225,7 @@ export function createDelegationController(
       // and the re-read below goes and finds out what the daemon actually
       // holds.
       enabledRef = confirmedRef;
-      publish({ ...state, enabled: confirmedRef, error: errorSentence(cause).sentence });
+      publish({ ...state, enabled: confirmedRef, error: errorSentence(cause) });
       refusedNewest = true;
       return false;
     } finally {

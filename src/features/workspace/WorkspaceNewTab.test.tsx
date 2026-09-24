@@ -1446,8 +1446,15 @@ describe("the + new-tab menu", () => {
     expect(alerts[0]?.className).toContain("workspace-error-line");
     // The sentence is mapped; the daemon's raw text rides only in the tooltip.
     expect(alerts[0]?.textContent).toContain("No agent CLI is installed on this machine.");
-    expect(alerts[0]?.textContent).not.toContain("DEVBOULE_ACP_COMMAND");
+    // The visible sentence is clean; the raw text is the demoted detail,
+    // present for the tooltip and the described-by node.
+    expect(alerts[0]?.querySelector(".workspace-error-line-text")?.textContent).not.toContain(
+      "DEVBOULE_ACP_COMMAND",
+    );
     expect(alerts[0]?.getAttribute("title")).toContain("No ACP-capable agent was found on PATH");
+    expect(alerts[0]?.querySelector(".error-detail-sr-only")?.textContent).toContain(
+      "DEVBOULE_ACP_COMMAND",
+    );
     // The strip's status slot and the empty pane stay out of it.
     expect(container.querySelector(".workspace-rate")?.textContent).not.toContain(
       "No agent CLI is installed",

@@ -278,6 +278,9 @@ export class AgentSession {
   private detachPromise: Promise<void> | null = null;
   private turnOpen = false;
   private disposed = false;
+  /** How many `session_send` calls are awaiting the daemon (see `holdAgentError`). */
+  private sendDepth = 0;
+  private readonly heldAgentErrors: string[] = [];
   private switchTimer: ReturnType<typeof setTimeout> | null = null;
   private modeTimer: ReturnType<typeof setTimeout> | null = null;
   private modeRequest = 0;
@@ -368,6 +371,7 @@ export class AgentSession {
     const joinsRunningTurn = activeTurnBehavior === "steer" && this.turnOpen;
     if (!joinsRunningTurn) this.beginTurn();
     this.setStatus("running", { streaming: true });
+    this.sendDepth += 1;
     try {
       await this.deps.invoke("session_send", {
         id: this.deps.sessionId,
@@ -387,8 +391,15 @@ export class AgentSession {
         // empty list.
         ...(attachmentReferences.length === 0 ? {} : { attachmentReferences }),
       });
+      this.sendDepth -= 1;
+      this.flushHeldAgentErrors();
       return true;
     } catch (error) {
+      this.sendDepth -= 1;
+      // The held frames were published for THIS failure (the daemon publishes
+      // agent_error immediately before returning the rejection); the mapped
+      // entry below is the one record of it.
+      this.heldAgentErrors.length = 0;
       // The daemon names its failures: a capability or validity refusal is
       // raised inside a live send path and only codes naming a gone view end
       // the session (see `FATAL_SEND_CODES`). A refused steer was joining a
@@ -401,6 +412,23 @@ export class AgentSession {
       else this.failTurn(detail, mapped.detail ?? undefined);
       return false;
     }
+  }
+
+  /**
+   * An `agent_error` that arrives while a send is in flight may be the
+   * daemon's own report of that send's failure rather than the agent's
+   * voice — the same failure the rejection below will name. Hold it until
+   * the send settles: a rejection drops the frame (one entry, already
+   * recorded mapped), a success flushes it verbatim (it was the agent's
+   * own prose after all).
+   */
+  private holdAgentError(message: string): void {
+    this.heldAgentErrors.push(message);
+  }
+
+  private flushHeldAgentErrors(): void {
+    const held = this.heldAgentErrors.splice(0);
+    for (const text of held) this.noteError(text);
   }
 
   /**
@@ -721,7 +749,14 @@ export class AgentSession {
         // malformed output line and returns to its read loop, and the turn
         // outcome is recorded from agent_finished/exit instead. So the
         // sentence lands in the transcript and the turn stays open — ending
-        // it here rejected paid-for runs and lost preflight replies.
+        // it here rejected paid-for runs. During an in-flight send the frame
+        // may instead be the daemon's own report of that send's failure (it
+        // publishes, then rejects); hold it for the send's verdict so one
+        // failure is one entry.
+        if (this.sendDepth > 0) {
+          this.holdAgentError(event.message || "The agent reported an unknown error.");
+          return;
+        }
         this.noteError(event.message || "The agent reported an unknown error.");
         return;
       case "available_commands":

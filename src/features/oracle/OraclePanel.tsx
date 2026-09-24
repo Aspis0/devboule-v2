@@ -29,7 +29,7 @@ import { OracleSearch } from "./OracleSearch";
 import { OracleSetup } from "./OracleSetup";
 import { useTrackedRequest, type TrackedRequestState } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { isCommandError } from "../../lib/commandError";
 import { getOracleStage, isIndexEmpty, type OracleStage } from "./oracleUtils";
 import "./oracle.css";
@@ -40,13 +40,13 @@ export function OraclePanel() {
   const [searchQuery, setSearchQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState<string | null>(null);
   const [indexStarting, setIndexStarting] = useState(false);
-  const [indexActionError, setIndexActionError] = useState<string | null>(null);
+  const [indexActionError, setIndexActionError] = useState<ErrorSentence | null>(null);
   const [watching, setWatching] = useState(false);
   const [watchBusy, setWatchBusy] = useState(false);
   const [watchNotice, setWatchNotice] = useState<WatchNotice | null>(null);
   const [fileTab, setFileTab] = useState<FileTab>("indexed");
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
-  const [workspaceActionError, setWorkspaceActionError] = useState<string | null>(null);
+  const [workspaceActionError, setWorkspaceActionError] = useState<ErrorSentence | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
 
@@ -153,7 +153,7 @@ export function OraclePanel() {
     void oracleModelDownloadStart()
       .then(() => refreshStatus())
       .catch((error: unknown) => {
-        if (mountedRef.current) setWorkspaceActionError(errorSentence(error).sentence);
+        if (mountedRef.current) setWorkspaceActionError(errorSentence(error));
       })
       .finally(() => {
         modelDownloadInFlightRef.current = false;
@@ -193,7 +193,7 @@ export function OraclePanel() {
       refreshDoctor();
       refreshStats();
     } catch (error: unknown) {
-      if (mountedRef.current) setWorkspaceActionError(errorSentence(error).sentence);
+      if (mountedRef.current) setWorkspaceActionError(errorSentence(error));
     } finally {
       if (mountedRef.current) setWorkspaceBusy(false);
     }
@@ -210,7 +210,7 @@ export function OraclePanel() {
         if (adminOpen) refreshFiles();
       })
       .catch((error: unknown) => {
-        if (mountedRef.current) setWorkspaceActionError(errorSentence(error).sentence);
+        if (mountedRef.current) setWorkspaceActionError(errorSentence(error));
       })
       .finally(() => {
         if (mountedRef.current) setCancelBusy(false);
@@ -234,7 +234,7 @@ export function OraclePanel() {
       })
       .catch((error: unknown) => {
         if (!mountedRef.current) return;
-        setIndexActionError(errorSentence(error).sentence);
+        setIndexActionError(errorSentence(error));
         refreshStatus();
         refreshStats();
       })
@@ -261,7 +261,8 @@ export function OraclePanel() {
               message: "File watching is not available yet.",
             });
           } else {
-            setWatchNotice({ kind: "error", message: errorSentence(error).sentence });
+            const mapped = errorSentence(error);
+            setWatchNotice({ kind: "error", message: mapped.sentence, detail: mapped.detail });
           }
         })
         .finally(() => {

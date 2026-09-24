@@ -2,7 +2,8 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { projectAdd } from "../lib/tauri";
-import { errorSentence } from "../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
+import { ErrorText } from "./ErrorText";
 import type { Project } from "../types/ipc";
 import "../features/workspace/Workspace.css";
 
@@ -28,7 +29,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
   onCreate,
 }: NewProjectDialogProps) {
   const [value, setValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   const [choosing, setChoosing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
@@ -94,7 +95,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
         dialogRef.current?.querySelector<HTMLInputElement>("#workspace-project-input")?.focus();
       }
     } catch (cause: unknown) {
-      setError(errorSentence(cause).sentence);
+      setError(errorSentence(cause));
     } finally {
       setChoosing(false);
     }
@@ -105,7 +106,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
       event.preventDefault();
       const path = value.trim();
       if (!path) {
-        setError("Choose or enter an absolute folder path.");
+        setError({ sentence: "Choose or enter an absolute folder path.", detail: null });
         return;
       }
       if (submitting) return;
@@ -118,7 +119,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
         await onCreate(project);
         onClose();
       } catch (cause: unknown) {
-        setError(errorSentence(cause).sentence);
+        setError(errorSentence(cause));
       } finally {
         setSubmitting(false);
         submittingRef.current = false;
@@ -193,7 +194,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
           />
           {error !== null ? (
             <div id="workspace-project-error" className="workspace-project-error" role="alert">
-              {error}
+              <ErrorText sentence={error.sentence} detail={error.detail} id="new-project-error" />
             </div>
           ) : null}
           <div className="workspace-project-dialog-actions">

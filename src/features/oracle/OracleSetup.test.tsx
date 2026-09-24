@@ -19,6 +19,7 @@ describe("Oracle error recovery", () => {
         statusRequest={{
           status: "error",
           message: "Oracle workspace C:/code/project no longer exists",
+          detail: null,
         }}
         workspaceBusy={false}
         indexStarting={false}

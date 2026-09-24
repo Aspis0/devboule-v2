@@ -33,11 +33,15 @@ export interface WorkspaceSessionSource {
 /**
  * One failure of the strip's create/list, in the words a surface renders it:
  * the plain sentence plus the daemon's own words for tooltips and
- * Diagnostics. `errorSentence` is what fills it.
+ * Diagnostics. `errorSentence` is what fills it. A create failure names the
+ * workspace it was asked for — the line belongs over that workspace, not
+ * over whichever one is selected when it renders; a list failure is the
+ * roster's and carries `null`.
  */
 export interface WorkspaceSessionError {
   sentence: string;
   detail: string | null;
+  workspaceId: string | null;
 }
 
 export interface WorkspaceSessionState {
@@ -82,6 +86,7 @@ const DEFAULT_SOURCE: WorkspaceSessionSource = {
 const LIST_ERROR: WorkspaceSessionError = {
   sentence: "Could not load sessions. The daemon is unreachable.",
   detail: null,
+  workspaceId: null,
 };
 
 /**
@@ -731,12 +736,18 @@ export function createWorkspaceSessionController(
       return session;
     } catch (cause) {
       // The daemon answered and rejected the start; surface its mapped
-      // sentence — the raw text stays available as the sentence's detail.
+      // sentence — the raw text stays available as the sentence's detail,
+      // and the workspace id keeps the line over the workspace it failed
+      // for, never over whichever one is selected later.
       const mapped = errorSentence(cause);
       publish({
         ...state,
         creating: false,
-        error: { sentence: mapped.sentence, detail: mapped.detail },
+        error: {
+          sentence: mapped.sentence,
+          detail: mapped.detail,
+          workspaceId: workspaceId ?? null,
+        },
       });
       return null;
     }

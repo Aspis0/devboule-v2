@@ -2,6 +2,8 @@ import { useMemo } from "react";
 import type { ReactNode } from "react";
 import type { OracleIndexStatus, OracleModelStatus, OracleWorkspace } from "../../types/ipc";
 import type { TrackedRequestState } from "../../lib/trackedRequest";
+import { ErrorText } from "../../components/ErrorText";
+import type { ErrorSentence } from "../../lib/errorSentence";
 import { formatCount } from "../../lib/format";
 import {
   modelProgressPercentage,
@@ -20,8 +22,8 @@ interface OracleSetupProps {
   indexStarting: boolean;
   cancelBusy: boolean;
   modelDownloadBusy: boolean;
-  workspaceActionError: string | null;
-  indexActionError: string | null;
+  workspaceActionError: ErrorSentence | null;
+  indexActionError: ErrorSentence | null;
   onChooseWorkspace: () => void;
   onStartIndex: () => void;
   onCancel: () => void;
@@ -58,7 +60,11 @@ export function OracleSetup({
         <ChooseWorkspace
           workspace={workspace}
           busy={workspaceBusy}
-          requestError={workspaceRequest.status === "error" ? workspaceRequest.message : null}
+          requestError={
+            workspaceRequest.status === "error"
+              ? { sentence: workspaceRequest.message, detail: workspaceRequest.detail }
+              : null
+          }
           actionError={workspaceActionError}
           onChooseWorkspace={onChooseWorkspace}
         />
@@ -161,8 +167,8 @@ function ChooseWorkspace({
 }: {
   workspace: OracleWorkspace | null;
   busy: boolean;
-  requestError: string | null;
-  actionError: string | null;
+  requestError: ErrorSentence | null;
+  actionError: ErrorSentence | null;
   onChooseWorkspace: () => void;
 }) {
   const inaccessible = Boolean(workspace?.path && !workspace.exists);
@@ -190,11 +196,18 @@ function ChooseWorkspace({
       >
         {busy ? "Choosing…" : inaccessible ? "Choose another folder" : "Choose folder"}
       </button>
-      {(requestError || actionError) && (
-        <div className="oracle-error-message" role="alert">
-          {requestError ?? actionError}
-        </div>
-      )}
+      {(() => {
+        const stageError = requestError ?? actionError;
+        return stageError !== null ? (
+          <div className="oracle-error-message" role="alert">
+            <ErrorText
+              sentence={stageError.sentence}
+              detail={stageError.detail}
+              id="oracle-folder-error"
+            />
+          </div>
+        ) : null;
+      })()}
       <FailureGuide kind="folder" />
     </StageContent>
   );
@@ -223,7 +236,7 @@ function ModelSetup({
   retryDisabled,
 }: {
   status: OracleIndexStatus | null;
-  actionError: string | null;
+  actionError: ErrorSentence | null;
   onCancel: () => void;
   cancelBusy: boolean;
   onRetry: () => void;
@@ -261,7 +274,11 @@ function ModelSetup({
       </div>
       {actionError && (
         <div className="oracle-error-message" role="alert">
-          {actionError}
+          <ErrorText
+            sentence={actionError.sentence}
+            detail={actionError.detail}
+            id="oracle-models-error"
+          />
         </div>
       )}
       <div className="oracle-help-note">
@@ -373,7 +390,7 @@ function IndexSetup({
 }: {
   workspace: OracleWorkspace | null;
   status: OracleIndexStatus | null;
-  actionError: string | null;
+  actionError: ErrorSentence | null;
   starting: boolean;
   onStart: () => void;
   onRetryReranker: () => void;
@@ -412,7 +429,11 @@ function IndexSetup({
       </button>
       {actionError && (
         <div className="oracle-error-message" role="alert">
-          {actionError}
+          <ErrorText
+            sentence={actionError.sentence}
+            detail={actionError.detail}
+            id="oracle-action-error"
+          />
         </div>
       )}
       <div className="oracle-help-note">
@@ -518,13 +539,16 @@ function OracleErrorSetup({
   workspace: OracleWorkspace | null;
   status: OracleIndexStatus | null;
   statusRequest: TrackedRequestState<OracleIndexStatus>;
-  actionError: string | null;
+  actionError: ErrorSentence | null;
   onChooseWorkspace: () => void;
   onRetryStatus: () => void;
   onRetryIndex: () => void;
   workspaceBusy: boolean;
 }) {
-  const requestError = statusRequest.status === "error" ? statusRequest.message : null;
+  const requestError: ErrorSentence | null =
+    statusRequest.status === "error"
+      ? { sentence: statusRequest.message, detail: statusRequest.detail }
+      : null;
   const primaryAction = getOracleErrorAction({ statusRequest, status });
   const chooseWorkspacePrimary = primaryAction === "choose-workspace";
   return (
@@ -535,7 +559,13 @@ function OracleErrorSetup({
     >
       {(requestError || actionError || status?.state === "error") && (
         <div className="oracle-error-message" role="alert">
-          {requestError ?? actionError ?? "The index operation reported an error."}
+          <ErrorText
+            sentence={
+              (requestError ?? actionError)?.sentence ?? "The index operation reported an error."
+            }
+            detail={(requestError ?? actionError)?.detail ?? null}
+            id="oracle-index-error"
+          />
         </div>
       )}
       <div className="oracle-error-actions">

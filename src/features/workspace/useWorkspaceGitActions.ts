@@ -6,7 +6,7 @@ import {
   workspaceGitStage,
   workspaceGitUnstage,
 } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 
 /**
  * What the reader hands the writer: the refresh every act owes the panel
@@ -27,18 +27,18 @@ export interface WorkspaceGitActions {
    * as **both** of its paths (the row's `renamedFrom`), because acting on
    * the new path alone leaves the old side staged — a half operation that
    * would answer success. */
-  stage: (paths: string[]) => Promise<string | null>;
+  stage: (paths: string[]) => Promise<ErrorSentence | null>;
   /** Unstage a row's paths — the worktree keeps its bytes. */
-  unstage: (paths: string[]) => Promise<string | null>;
+  unstage: (paths: string[]) => Promise<ErrorSentence | null>;
   /**
    * Discard a row's paths — the one act of the four that loses data, and
    * the one this hook gates: the native `confirm()` stands between the
    * click and the wire, and a declined confirmation resolves `null` with
    * **zero** calls made and nothing refreshed, because nothing happened.
    */
-  discard: (paths: string[]) => Promise<string | null>;
+  discard: (paths: string[]) => Promise<ErrorSentence | null>;
   /** Commit what is staged, with this hand-written message. */
-  commit: (message: string) => Promise<string | null>;
+  commit: (message: string) => Promise<ErrorSentence | null>;
 }
 
 /**
@@ -60,8 +60,18 @@ export interface WorkspaceGitActions {
 export function useWorkspaceGitActions(context: GitActionsContext): WorkspaceGitActions {
   const { workspaceId, refresh } = context;
 
+  // The git wire answers with the daemon's own sentence (or null on
+  // success) — already human words; give them the sentence's shape.
+  const asSentence = useCallback(
+    async (wire: Promise<string | null>): Promise<ErrorSentence | null> => {
+      const sentence = await wire;
+      return sentence === null ? null : { sentence, detail: null };
+    },
+    [],
+  );
+
   const run = useCallback(
-    async (act: () => Promise<string | null>): Promise<string | null> => {
+    async (act: () => Promise<ErrorSentence | null>): Promise<ErrorSentence | null> => {
       try {
         const error = await act();
         refresh();
@@ -70,31 +80,31 @@ export function useWorkspaceGitActions(context: GitActionsContext): WorkspaceGit
         // Transport lost after the ask: the act may have happened — same
         // reason, same refresh.
         refresh();
-        return errorSentence(cause).sentence;
+        return errorSentence(cause);
       }
     },
     [refresh],
   );
 
   const stage = useCallback(
-    async (paths: string[]): Promise<string | null> => {
-      if (workspaceId === null) return "no workspace is selected";
-      return run(async () => workspaceGitStage(workspaceId, paths));
+    async (paths: string[]): Promise<ErrorSentence | null> => {
+      if (workspaceId === null) return { sentence: "No workspace is selected.", detail: null };
+      return run(() => asSentence(workspaceGitStage(workspaceId, paths)));
     },
-    [run, workspaceId],
+    [asSentence, run, workspaceId],
   );
 
   const unstage = useCallback(
-    async (paths: string[]): Promise<string | null> => {
-      if (workspaceId === null) return "no workspace is selected";
-      return run(async () => workspaceGitUnstage(workspaceId, paths));
+    async (paths: string[]): Promise<ErrorSentence | null> => {
+      if (workspaceId === null) return { sentence: "No workspace is selected.", detail: null };
+      return run(() => asSentence(workspaceGitUnstage(workspaceId, paths)));
     },
-    [run, workspaceId],
+    [asSentence, run, workspaceId],
   );
 
   const discard = useCallback(
-    async (paths: string[]): Promise<string | null> => {
-      if (workspaceId === null) return "no workspace is selected";
+    async (paths: string[]): Promise<ErrorSentence | null> => {
+      if (workspaceId === null) return { sentence: "No workspace is selected.", detail: null };
       // The gate: nothing below runs unless the user answers yes — a No
       // reaches no command and refreshes nothing, because nothing changed.
       // Every path the act will touch is named in the question — for a
@@ -110,17 +120,17 @@ export function useWorkspaceGitActions(context: GitActionsContext): WorkspaceGit
         },
       );
       if (!confirmed) return null;
-      return run(async () => workspaceGitDiscard(workspaceId, paths));
+      return run(() => asSentence(workspaceGitDiscard(workspaceId, paths)));
     },
-    [run, workspaceId],
+    [asSentence, run, workspaceId],
   );
 
   const commit = useCallback(
-    async (message: string): Promise<string | null> => {
-      if (workspaceId === null) return "no workspace is selected";
-      return run(async () => workspaceGitCommit(workspaceId, message));
+    async (message: string): Promise<ErrorSentence | null> => {
+      if (workspaceId === null) return { sentence: "No workspace is selected.", detail: null };
+      return run(() => asSentence(workspaceGitCommit(workspaceId, message)));
     },
-    [run, workspaceId],
+    [asSentence, run, workspaceId],
   );
 
   return { stage, unstage, discard, commit };

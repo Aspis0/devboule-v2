@@ -4,6 +4,8 @@ import { FilesPreview, formatSize } from "./FilesPreview";
 import { useWorkspaceFileActions } from "./useWorkspaceFileActions";
 import { useWorkspaceFilePreview } from "./useWorkspaceFilePreview";
 import { useWorkspaceFiles, type DirectoryCell } from "./useWorkspaceFiles";
+import { ErrorText } from "../../components/ErrorText";
+import type { ErrorSentence } from "../../lib/errorSentence";
 
 interface FilesSurfaceProps {
   /**
@@ -28,7 +30,7 @@ function skippedLabel(skipped: number): string {
 type Row =
   | { kind: "entry"; entry: WorkspaceFileEntry; depth: number }
   | { kind: "loading"; path: string; depth: number }
-  | { kind: "error"; path: string; depth: number; message: string }
+  | { kind: "error"; path: string; depth: number; message: ErrorSentence }
   | { kind: "note"; id: "capped" | "skipped"; path: string; depth: number; text: string };
 
 /**
@@ -132,7 +134,7 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
   });
   const [menuPath, setMenuPath] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Renaming | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorSentence | null>(null);
   // One act at a time: the menu and the rename input stay answering while
   // the wire decides, so a double click cannot fire two renames.
   const [acting, setActing] = useState(false);
@@ -293,14 +295,22 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
       ) : null}
       {rootFailure !== null ? (
         <div className="workspace-files-error" role="alert">
-          {rootFailure}
+          <ErrorText
+            sentence={rootFailure.sentence}
+            detail={rootFailure.detail}
+            id="files-root-error"
+          />
         </div>
       ) : null}
       {/* A write's own refusal: one place for one failure, beside the
           reads' alert above and never in place of the tree below. */}
       {actionError !== null ? (
         <div className="workspace-files-error" role="alert">
-          {actionError}
+          <ErrorText
+            sentence={actionError.sentence}
+            detail={actionError.detail}
+            id="files-action-error"
+          />
         </div>
       ) : null}
       {/* A first read that refused: the alert above is the whole answer, so
@@ -336,7 +346,11 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
                 role="alert"
                 style={indent(row.depth)}
               >
-                {row.message}
+                <ErrorText
+                  sentence={row.message.sentence}
+                  detail={row.message.detail}
+                  id={`files-error-${row.path}`}
+                />
               </div>
             ) : (
               <div

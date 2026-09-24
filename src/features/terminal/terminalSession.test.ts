@@ -45,6 +45,7 @@ function makeHarness(options?: {
   explicitSessionId?: string;
   missingFirstAttach?: boolean;
   missingFirstAttachError?: unknown;
+  recoveredSession?: boolean;
   rejectDetach?: boolean;
   failCreateView?: boolean;
   failCreateChannel?: boolean;
@@ -190,6 +191,7 @@ function makeHarness(options?: {
   const deps: TerminalSessionDeps = {
     workspaceId: "rust-core",
     sessionId: options?.explicitSessionId,
+    sessionRecovered: options?.recoveredSession === true,
     host: {} as HTMLElement,
     createView: async (_viewHost, viewOptions) => {
       if (failCreateView) throw new Error("view unavailable");
@@ -483,6 +485,36 @@ describe("TerminalSession lifecycle and errors", () => {
     });
   });
 
+  it("tells a recovered terminal the truth: it cannot be reopened", async () => {
+    // Live E1: a selected recovered tab attached to nothing — the session
+    // ended with the previous daemon, so "reopen the tab" was false.
+    const harness = makeHarness({
+      explicitSessionId: "recovered-1",
+      recoveredSession: true,
+    });
+    harness.invoke.mockImplementation(async (command: string) => {
+      if (command === "session_attach") {
+        throw { code: "internal", message: "session attachment is not registered" };
+      }
+      return undefined;
+    });
+
+    await harness.session.start();
+
+    const errorBanners = harness.banners.filter(
+      (banner): banner is Extract<TerminalBanner, { kind: "error" }> =>
+        banner !== null && banner.kind === "error",
+    );
+    expect(errorBanners).toHaveLength(1);
+    const banner = errorBanners[0];
+    if (banner === undefined || banner === null)
+      throw new Error("the recovered banner did not render");
+    expect(banner.message).toBe(
+      "This terminal ended with the previous daemon and cannot be reopened — close the tab or open a new one.",
+    );
+    expect(banner.detail).toContain("session attachment is not registered");
+  });
+
   it("leaves an adopted session alone when attach fails", async () => {
     const harness = makeHarness({ existingSessionId: "existing-session" });
     harness.invoke.mockImplementation(async (command: string) => {
@@ -651,6 +683,7 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(harness.banners).toContainEqual({
       kind: "error",
       message: "Could not attach to the terminal. This session no longer exists.",
+      detail: "No session with that id.",
     });
   });
 

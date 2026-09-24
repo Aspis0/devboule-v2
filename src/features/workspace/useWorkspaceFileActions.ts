@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { workspaceFileDelete, workspaceFileDuplicate, workspaceFileRename } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { WorkspaceFileEntry } from "../../types/ipc";
 
 /**
@@ -30,9 +30,9 @@ export interface WorkspaceFileActions {
    * the time this resolves — or the sentence that refused it (the wire's
    * own, never composed here).
    */
-  renameEntry: (entry: WorkspaceFileEntry, name: string) => Promise<string | null>;
+  renameEntry: (entry: WorkspaceFileEntry, name: string) => Promise<ErrorSentence | null>;
   /** Duplicate one entry; resolves `null` on success, the refusal otherwise. */
-  duplicateEntry: (entry: WorkspaceFileEntry) => Promise<string | null>;
+  duplicateEntry: (entry: WorkspaceFileEntry) => Promise<ErrorSentence | null>;
   /**
    * Delete one entry — the one act that loses data, and the one this hook
    * gates: the native `confirm()` stands between the click and the wire,
@@ -40,7 +40,7 @@ export interface WorkspaceFileActions {
    * On success the entry is gone and the selection is too, if it pointed
    * at (or under) what was deleted.
    */
-  deleteEntry: (entry: WorkspaceFileEntry) => Promise<string | null>;
+  deleteEntry: (entry: WorkspaceFileEntry) => Promise<ErrorSentence | null>;
 }
 
 /** The entry's parent folder, spelled the way the tree spells its keys. */
@@ -86,20 +86,20 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
   const { workspaceId, refreshPath, rekey, selection, select, deselect } = context;
 
   const renameEntry = useCallback(
-    async (entry: WorkspaceFileEntry, name: string): Promise<string | null> => {
-      if (workspaceId === null) return "no workspace is selected";
+    async (entry: WorkspaceFileEntry, name: string): Promise<ErrorSentence | null> => {
+      if (workspaceId === null) return { sentence: "No workspace is selected.", detail: null };
       try {
         const reply = await workspaceFileRename(workspaceId, entry.path, name);
         // Whatever the answer, the parent is re-read: see the refresh rule
         // on this hook's doc — a refusal can follow a half-finished act.
         refreshPath(parentOf(entry.path));
-        if (reply.error !== null) return reply.error;
+        if (reply.error !== null) return { sentence: reply.error, detail: null };
         const newPath = reply.newPath;
         if (newPath === null) {
           // The pair discipline makes this unreachable (a success carries
           // the path); the guard keeps an unreachable state from moving keys
           // to `undefined` instead of saying so.
-          return "the rename did not name a new path";
+          return { sentence: "The rename did not name a new path.", detail: null };
         }
         rekey(entry.path, newPath);
         if (entry.kind === "dir") refreshPath(newPath);
@@ -114,30 +114,30 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
         // Transport lost after the ask: the act may have happened — same
         // reason, same refresh.
         refreshPath(parentOf(entry.path));
-        return errorSentence(cause).sentence;
+        return errorSentence(cause);
       }
     },
     [refreshPath, rekey, select, selection, workspaceId],
   );
 
   const duplicateEntry = useCallback(
-    async (entry: WorkspaceFileEntry): Promise<string | null> => {
-      if (workspaceId === null) return "no workspace is selected";
+    async (entry: WorkspaceFileEntry): Promise<ErrorSentence | null> => {
+      if (workspaceId === null) return { sentence: "No workspace is selected.", detail: null };
       try {
         const reply = await workspaceFileDuplicate(workspaceId, entry.path);
         refreshPath(parentOf(entry.path));
-        return reply.error;
+        return reply.error === null ? null : { sentence: reply.error, detail: null };
       } catch (cause: unknown) {
         refreshPath(parentOf(entry.path));
-        return errorSentence(cause).sentence;
+        return errorSentence(cause);
       }
     },
     [refreshPath, workspaceId],
   );
 
   const deleteEntry = useCallback(
-    async (entry: WorkspaceFileEntry): Promise<string | null> => {
-      if (workspaceId === null) return "no workspace is selected";
+    async (entry: WorkspaceFileEntry): Promise<ErrorSentence | null> => {
+      if (workspaceId === null) return { sentence: "No workspace is selected.", detail: null };
       // The gate: nothing below runs unless the user answers yes — a No
       // reaches no command, and refreshes nothing, because nothing changed.
       const confirmed = await confirm(confirmationMessage(entry), {
@@ -150,7 +150,7 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
       try {
         const reply = await workspaceFileDelete(workspaceId, entry.path);
         refreshPath(parentOf(entry.path));
-        if (reply.error !== null) return reply.error;
+        if (reply.error !== null) return { sentence: reply.error, detail: null };
         if (
           selection !== null &&
           (selection === entry.path || selection.startsWith(`${entry.path}/`))
@@ -162,7 +162,7 @@ export function useWorkspaceFileActions(context: ActionsContext): WorkspaceFileA
         // Transport lost after the ask: the act may have happened — same
         // reason, same refresh.
         refreshPath(parentOf(entry.path));
-        return errorSentence(cause).sentence;
+        return errorSentence(cause);
       }
     },
     [deselect, refreshPath, selection, workspaceId],

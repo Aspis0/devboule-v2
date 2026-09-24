@@ -63,8 +63,9 @@ describe("the walked code table", () => {
 });
 
 describe("the message-shape arms", () => {
-  it("maps 'no agent on PATH' without the env var or the acronym", () => {
-    // acp_client.rs:584 — the owner's sighting.
+  it("maps 'no agent on PATH' to the refresh instruction, not a restart", () => {
+    // acp_client.rs:584 — the owner's sighting. A1's providers_refresh
+    // (server/providers.rs:59-64) rescans PATH without a restart.
     const { sentence } = errorSentence(
       rejection(
         "io",
@@ -72,7 +73,7 @@ describe("the message-shape arms", () => {
       ),
     );
     expect(sentence).toBe(
-      "No agent CLI is installed on this machine. Install one — for example grok, claude, or gemini — and restart Devboule.",
+      "No agent CLI is installed on this machine. Install one — for example grok, claude, or gemini — then choose Refresh in Settings → Providers.",
     );
   });
 
@@ -109,7 +110,40 @@ describe("the message-shape arms", () => {
     expect(sentence).not.toContain("PATH");
   });
 
-  it("maps process containment, keeping the OS error only as detail", () => {
+  it("keeps the reopen sentence for the bridge's lost bookkeeping", () => {
+    // src-tauri/src/client/mod.rs:698.
+    const { sentence } = errorSentence(
+      rejection("internal", "session attachment is not registered"),
+    );
+    expect(sentence).toBe(
+      "This view lost its live connection to the session. Reopen the tab to reconnect.",
+    );
+    expect(sentence).not.toContain("registered");
+    expect(sentence).not.toContain("attachment");
+  });
+
+  it("keeps the reopen sentence for a view that must re-attach before sending", () => {
+    // client.rs:1668 — the bridge-side pre-flight.
+    const { sentence } = errorSentence(
+      rejection("internal", "Session is not attached; attach before sending session commands."),
+    );
+    expect(sentence).toBe(
+      "This view lost its live connection to the session. Reopen the tab to reconnect.",
+    );
+  });
+
+  it("gives the calling-session refusal its own true reading, not the reopen sentence", () => {
+    // session.rs:2456 (also session_child_permission.rs:69,
+    // session_child_profile.rs:59): the CALLING session is not a registered
+    // creator — a validity refusal, not this view's connection.
+    const { sentence } = errorSentence(
+      rejection("invalid_request", "the calling session is not registered on this daemon"),
+    );
+    expect(sentence).toBe(CODE_SENTENCES.invalid_request);
+    expect(sentence).not.toContain("Reopen");
+  });
+
+  it("claims a blocking program only for an access refusal, and keeps the OS error as detail", () => {
     // provider.rs ~1098 — the owner's "os error 5" sighting.
     const { sentence, detail } = errorSentence(
       rejection("io", "Could not contain the terminal process: Access is denied. (os error 5)"),
@@ -121,7 +155,7 @@ describe("the message-shape arms", () => {
     expect(sentence).not.toContain("os error");
   });
 
-  it("maps agent-process containment to the agent sentence", () => {
+  it("names the agent, not the terminal, for agent-process containment", () => {
     // acp_client.rs:757.
     const { sentence } = errorSentence(
       rejection("io", "Could not contain the ACP agent process: Access is denied. (os error 5)"),
@@ -130,28 +164,60 @@ describe("the message-shape arms", () => {
     expect(sentence).not.toContain("the terminal");
   });
 
-  it("maps a lost subscription without the internal words", () => {
-    // session_runtime.rs:2610.
+  it("does not claim a blocking program when the OS reports something else", () => {
+    // session_terminal_transcript_tests.rs:815-818 (workspace_spawn_error,
+    // session_workspaces.rs:427-435): resource exhaustion is not a block.
     const { sentence } = errorSentence(
-      rejection("invalid_request", "Session is not attached to this subscription."),
+      rejection("io", "Could not start the terminal shell. (OS error 1450: no system resources)"),
     );
-    expect(sentence).toBe(
-      "This view lost its live connection to the session. Reopen the tab to reconnect.",
-    );
-    expect(sentence).not.toContain("subscription");
-    expect(sentence).not.toContain("attached");
+    expect(sentence).toBe("The system could not start the terminal.");
+    expect(sentence).not.toContain("blocking");
   });
 
-  it("maps the bridge's lost bookkeeping without the internal words", () => {
-    // src-tauri/src/client/mod.rs:698.
+  it("states a containment failure without an OS verdict as what happened, no diagnosis", () => {
+    // acp_client.rs:757 family, non-access io text.
     const { sentence } = errorSentence(
-      rejection("internal", "session attachment is not registered"),
+      rejection("io", "Could not contain the ACP agent process: The handle is invalid."),
     );
-    expect(sentence).toBe(
-      "This view lost its live connection to the session. Reopen the tab to reconnect.",
+    expect(sentence).toBe("The system could not start the agent.");
+    expect(sentence).not.toContain("blocking");
+  });
+
+  it("lets a working-directory failure fall to the io row, not a start refusal", () => {
+    // claude_client.rs:98: nothing was refused — the directory could not be
+    // established, an ordinary system failure.
+    const { sentence } = errorSentence(
+      rejection(
+        "io",
+        "Could not determine agent working directory: Access is denied. (os error 5)",
+      ),
     );
-    expect(sentence).not.toContain("registered");
-    expect(sentence).not.toContain("attachment");
+    expect(sentence).toBe(CODE_SENTENCES.io);
+  });
+
+  it("maps a failed workspace birth to its own sentence, not a journal claim", () => {
+    // session_workspaces.rs:135-141: workspace_create failed and the cleanup
+    // failed too; nothing about saved history is true here.
+    const { sentence } = errorSentence(
+      rejection(
+        "journal",
+        "Could not add git worktree for 'p-1': fatal: 'x' already exists; leftover checkout at 'C:\\repo\\x' (remove failed)",
+      ),
+    );
+    expect(sentence).toBe("This workspace could not be created.");
+    expect(sentence).not.toContain("history");
+  });
+
+  it("keeps the journal row for the store's own failures", () => {
+    // journal.rs:177 (JournalError::Corrupt et al via the From impl) and
+    // session.rs:3298 ("The conversation journal is unavailable.").
+    for (const message of [
+      "journal is corrupt: unexpected tail",
+      "The conversation journal is unavailable.",
+    ]) {
+      const { sentence } = errorSentence(rejection("journal", message));
+      expect(sentence).toBe(CODE_SENTENCES.journal);
+    }
   });
 });
 
@@ -178,5 +244,36 @@ describe("causes that are not daemon rejections", () => {
 
   it("never returns an empty sentence for an empty daemon message", () => {
     expect(errorSentence(rejection("internal", "   ")).sentence.trim().length).toBeGreaterThan(0);
+  });
+});
+
+describe("the git pass-through arm", () => {
+  it("keeps the daemon's own git sentences verbatim — they are already the house mapping", () => {
+    // workspace_git_support.rs:22-129: every git refusal is a pathless
+    // sentence the daemon authored; the frontend renders it, it does not
+    // re-map it.
+    const sentences = [
+      rejection("io", "git could not be run"),
+      rejection("io", "status: git is not installed"),
+      rejection("io", "diff: git timed out"),
+      rejection("io", "stage: git could not be started"),
+      rejection("io", "commit exited with code 128"),
+      rejection("io", "another git process is using this repository; try again in a moment"),
+      rejection("invalid_request", "there is nothing staged to commit"),
+      rejection("invalid_request", "this workspace folder is not a git repository"),
+      rejection("invalid_request", "the requested path is outside the workspace folder"),
+      rejection("io", "git did not answer within the probe timeout"),
+    ];
+    for (const cause of sentences) {
+      const { sentence, detail } = errorSentence(cause);
+      const raw = (cause as { message: string }).message;
+      expect(sentence, raw).toBe(raw);
+      expect(detail).toBe(raw);
+    }
+  });
+
+  it("does not pass through look-alike texts that git does not own", () => {
+    const { sentence } = errorSentence(rejection("io", "npm err! git could not be run somewhere"));
+    expect(sentence).toBe(CODE_SENTENCES.io);
   });
 });

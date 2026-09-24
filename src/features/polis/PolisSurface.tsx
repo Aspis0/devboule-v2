@@ -10,6 +10,7 @@ import {
 import { useAppStore } from "../../store/appStore";
 import type { SurfaceDefinition } from "../../types/surface";
 import { chooseAndInstall } from "../plugins/install";
+import { ErrorText } from "../../components/ErrorText";
 import { PluginSurface } from "../plugins/PluginSurface";
 import "./polis.css";
 
@@ -105,7 +106,11 @@ export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
           {installError ? (
             <div className="polis-readiness-error" role="alert">
               <p className="polis-readiness-note polis-readiness-error">
-                The last install did not happen — {installError}
+                <ErrorText
+                  sentence={`The last install did not happen — ${installError.sentence}`}
+                  detail={installError.detail}
+                  id="polis-install-error"
+                />
               </p>
               <button
                 className="polis-readiness-button"

@@ -3,7 +3,8 @@ import { journalRetentionGet, journalRetentionSet, journalUsage } from "../../li
 import type { JournalRetention, JournalUsage, RetentionPatch } from "../../types/ipc";
 import { useTrackedRequest } from "../../lib/trackedRequest";
 import { formatCount } from "../../lib/format";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { ErrorText } from "../../components/ErrorText";
 
 const RETENTION_FIELDS = [
   "sessionMaxBytes",
@@ -30,7 +31,7 @@ export function JournalRetentionPanel() {
   );
   const [values, setValues] = useState<Record<RetentionField, string>>(() => emptyValues());
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorSentence | null>(null);
   const focusedField = useRef<RetentionField | null>(null);
   const editVersions = useRef<Record<RetentionField, number>>(emptyVersions());
   const submittedVersions = useRef<Record<RetentionField, number>>(emptyVersions());
@@ -76,7 +77,7 @@ export function JournalRetentionPanel() {
             const restored = persistedValues.current[field];
             setValues((current) => ({ ...current, [field]: restored }));
           }
-          setActionError(errorSentence(error).sentence);
+          setActionError(errorSentence(error));
         },
       );
     },
@@ -96,11 +97,14 @@ export function JournalRetentionPanel() {
   const blockedReasons = usage ? retentionBlockers(usage) : [];
   const readError =
     usageRequest.state.status === "error"
-      ? usageRequest.state.message
+      ? { sentence: usageRequest.state.message, detail: usageRequest.state.detail }
       : retentionRequest.state.status === "error"
-        ? retentionRequest.state.message
+        ? { sentence: retentionRequest.state.message, detail: retentionRequest.state.detail }
         : null;
-  const error = validationError ?? actionError ?? readError;
+  const error: ErrorSentence | null =
+    validationError !== null
+      ? { sentence: validationError, detail: null }
+      : (actionError ?? readError);
 
   return (
     <div className="retention-panel">
@@ -110,7 +114,7 @@ export function JournalRetentionPanel() {
       </div>
       {error && (
         <div className="settings-retention-alert" role="alert">
-          {error}
+          <ErrorText sentence={error.sentence} detail={error.detail} id="journal-retention-error" />
         </div>
       )}
       {usage && (

@@ -8,7 +8,8 @@ import {
   peerRevoke,
   peerSetCaps,
 } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { ErrorText } from "../../components/ErrorText";
 import type {
   Cap,
   DevicesReply,
@@ -229,7 +230,7 @@ interface PeerCardProps {
   now: number;
   /** True while this row's own request is in flight. */
   busy: boolean;
-  error: string | undefined;
+  error: ErrorSentence | undefined;
   onToggleCap: (cap: Cap, next: boolean) => void;
   onRevoke: () => void;
 }
@@ -296,7 +297,11 @@ function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCa
       )}
       {error === undefined ? null : (
         <p role="alert" className="device-error">
-          {error}
+          <ErrorText
+            sentence={error.sentence}
+            detail={error.detail}
+            id={`devices-row-error-${row.deviceId}`}
+          />
         </p>
       )}
       <div className="device-actions">
@@ -335,7 +340,7 @@ function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCa
 
 export function DevicesPanel() {
   const [reply, setReply] = useState<DevicesReply | null>(null);
-  const [listError, setListError] = useState<string | null>(null);
+  const [listError, setListError] = useState<ErrorSentence | null>(null);
   // One clock for every countdown and relative time on screen. It only runs
   // while something is counting down; each poll moves it forward as well, so
   // the relative times in the list stay honest without a permanent timer.
@@ -346,7 +351,7 @@ export function DevicesPanel() {
 
   const [showRole, setShowRole] = useState<PeerRole>("client");
   const [code, setCode] = useState<PairingCode | null>(null);
-  const [codeError, setCodeError] = useState<string | null>(null);
+  const [codeError, setCodeError] = useState<ErrorSentence | null>(null);
   const [starting, setStarting] = useState(false);
 
   const [enterOpen, setEnterOpen] = useState(false);
@@ -354,18 +359,21 @@ export function DevicesPanel() {
   const [enterCode, setEnterCode] = useState("");
   const [enterRole, setEnterRole] = useState<PeerRole>("client");
   const [enterBusy, setEnterBusy] = useState(false);
-  const [enterError, setEnterError] = useState<string | null>(null);
+  const [enterError, setEnterError] = useState<ErrorSentence | null>(null);
   const [waiting, setWaiting] = useState<PendingPairing | null>(null);
   const [pairedNotice, setPairedNotice] = useState<PeerRow | null>(null);
 
   const [confirmBusy, setConfirmBusy] = useState<string | null>(null);
-  const [confirmError, setConfirmError] = useState<{ deviceId: string; message: string } | null>(
-    null,
-  );
+  const [confirmError, setConfirmError] = useState<{
+    deviceId: string;
+    message: ErrorSentence;
+  } | null>(null);
 
   const [capOverrides, setCapOverrides] = useState<Record<string, Cap[]>>({});
   const [rowBusy, setRowBusy] = useState<string | null>(null);
-  const [rowError, setRowError] = useState<{ deviceId: string; message: string } | null>(null);
+  const [rowError, setRowError] = useState<{ deviceId: string; message: ErrorSentence } | null>(
+    null,
+  );
 
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -454,7 +462,7 @@ export function DevicesPanel() {
           if (cancelled || epoch !== epochRef.current) return;
           // The last good reply stays on screen: a single missed poll is not
           // evidence that every device disappeared.
-          setListError(errorSentence(cause).sentence);
+          setListError(errorSentence(cause));
         })
         .finally(() => {
           if (cancelled) return;
@@ -562,7 +570,7 @@ export function DevicesPanel() {
       setNow(Date.now());
     } catch (cause) {
       if (!mountedRef.current) return;
-      setCodeError(errorSentence(cause).sentence);
+      setCodeError(errorSentence(cause));
     } finally {
       if (mountedRef.current) setStarting(false);
     }
@@ -580,7 +588,7 @@ export function DevicesPanel() {
     // sentence about the field they are looking at instead of a round trip that
     // comes back with the same complaint.
     if (parsePeerAddress(enterAddress) === null) {
-      setEnterError(ADDRESS_ERROR);
+      setEnterError({ sentence: ADDRESS_ERROR, detail: null });
       return;
     }
     setEnterBusy(true);
@@ -602,7 +610,7 @@ export function DevicesPanel() {
       // The daemon's pairing errors are already sentences meant for a person
       // (a wrong code says so), so they are shown as they arrive.
       if (!mountedRef.current) return;
-      setEnterError(errorSentence(cause).sentence);
+      setEnterError(errorSentence(cause));
     } finally {
       if (mountedRef.current) setEnterBusy(false);
     }
@@ -625,7 +633,7 @@ export function DevicesPanel() {
       refresh();
     } catch (cause) {
       if (!mountedRef.current) return;
-      setConfirmError({ deviceId, message: errorSentence(cause).sentence });
+      setConfirmError({ deviceId, message: errorSentence(cause) });
     } finally {
       if (mountedRef.current) setConfirmBusy(null);
     }
@@ -679,7 +687,7 @@ export function DevicesPanel() {
     } catch (cause) {
       if (!mountedRef.current) return;
       clearCapOverride(row.deviceId);
-      setRowError({ deviceId: row.deviceId, message: errorSentence(cause).sentence });
+      setRowError({ deviceId: row.deviceId, message: errorSentence(cause) });
     } finally {
       if (mountedRef.current) setRowBusy(null);
     }
@@ -699,7 +707,7 @@ export function DevicesPanel() {
       refresh();
     } catch (cause) {
       if (!mountedRef.current) return;
-      setRowError({ deviceId: row.deviceId, message: errorSentence(cause).sentence });
+      setRowError({ deviceId: row.deviceId, message: errorSentence(cause) });
     } finally {
       if (mountedRef.current) setRowBusy(null);
     }
@@ -713,7 +721,11 @@ export function DevicesPanel() {
           <div role="status">Loading devices…</div>
         ) : (
           <div className="device-actions" role="alert">
-            <span>{listError}</span>
+            <ErrorText
+              sentence={listError.sentence}
+              detail={listError.detail}
+              id="devices-list-error"
+            />
             <button type="button" className="settings-device-action" onClick={refresh}>
               Retry
             </button>
@@ -738,7 +750,11 @@ export function DevicesPanel() {
       <div className="settings-stack settings-stack-tight settings-devices-list">
         {listError === null ? null : (
           <div className="device-actions" role="alert">
-            <span>{listError}</span>
+            <ErrorText
+              sentence={listError.sentence}
+              detail={listError.detail}
+              id="devices-list-error"
+            />
             <button type="button" className="settings-device-action" onClick={refresh}>
               Retry
             </button>
@@ -817,7 +833,11 @@ export function DevicesPanel() {
           )}
           {codeError === null ? null : (
             <p role="alert" className="device-error">
-              {codeError}
+              <ErrorText
+                sentence={codeError.sentence}
+                detail={codeError.detail}
+                id="devices-code-error"
+              />
             </p>
           )}
 
@@ -917,7 +937,11 @@ export function DevicesPanel() {
 
           {enterError === null ? null : (
             <p role="alert" className="device-error">
-              {enterError}
+              <ErrorText
+                sentence={enterError.sentence}
+                detail={enterError.detail}
+                id="devices-enter-error"
+              />
             </p>
           )}
         </section>
@@ -967,7 +991,11 @@ export function DevicesPanel() {
                 </div>
                 {confirmError !== null && confirmError.deviceId === pending.deviceId ? (
                   <p role="alert" className="device-error">
-                    {confirmError.message}
+                    <ErrorText
+                      sentence={confirmError.message.sentence}
+                      detail={confirmError.message.detail}
+                      id={`devices-confirm-error-${pending.deviceId}`}
+                    />
                   </p>
                 ) : null}
               </div>

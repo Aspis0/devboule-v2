@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { pluginInstall, pluginsList, pluginsRescan } from "../lib/tauri";
-import { errorSentence } from "../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
 import type {
   DesignDocument,
   DesignHost,
@@ -134,7 +134,7 @@ interface AppState {
   /** The id of the plugin whose install is in flight, if any. */
   installing: string | null;
   /** Why the last install did not happen. Cleared by success, refresh, or dismissal. */
-  installError: string | null;
+  installError: ErrorSentence | null;
   dismissInstallError: () => void;
 
   refreshPlugins: (again?: boolean) => Promise<void>;
@@ -247,7 +247,7 @@ export const useAppStore = create<AppState>((set) => ({
       set({ plugins: await pluginInstall(id, source), installing: null });
       return true;
     } catch (cause) {
-      set({ installing: null, installError: errorSentence(cause).sentence });
+      set({ installing: null, installError: errorSentence(cause) });
       return false;
     }
   },

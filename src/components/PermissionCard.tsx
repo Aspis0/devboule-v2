@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { boundByGraphemes } from "../lib/graphemeBound";
 import { sessionPermissionRespond } from "../lib/tauri";
-import { errorSentence } from "../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../lib/errorSentence";
+import { ErrorText } from "./ErrorText";
 import type { DaemonConnectionState, PermissionRequest, SessionOrigin } from "../types/ipc";
 import "./PermissionCard.css";
 
@@ -360,7 +361,7 @@ export function PermissionCard({
   onResolved,
 }: PermissionCardProps) {
   const [permission, setPermission] = useState<PermissionState>("waiting");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   const submittingRef = useRef(false);
   // Set false on unmount so a late answer never stamps state (or fires
   // onResolved) after the host closed the run and removed the card.
@@ -429,7 +430,7 @@ export function PermissionCard({
       if (!mountedRef.current || generationRef.current !== generation) return;
       submittingRef.current = false;
       setPermission("waiting");
-      setError(errorSentence(cause).sentence);
+      setError(errorSentence(cause));
     }
   };
 
@@ -511,7 +512,11 @@ export function PermissionCard({
           </>
         )}
       </div>
-      {error ? <div role="alert">{error}</div> : null}
+      {error ? (
+        <div role="alert">
+          <ErrorText sentence={error.sentence} detail={error.detail} id="permission-error" />
+        </div>
+      ) : null}
     </div>
   );
 }

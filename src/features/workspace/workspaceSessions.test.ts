@@ -358,6 +358,26 @@ describe("workspace session controller", () => {
     expect(controller.getState().error).toEqual({
       sentence: "Devboule could not complete that action.",
       detail: null,
+      workspaceId: null,
+    });
+  });
+
+  it("names the workspace a create failure belongs to", async () => {
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => []),
+      create: vi.fn(async () => {
+        throw { code: "io", message: "No ACP-capable agent was found on PATH." };
+      }),
+    });
+    await controller.refresh();
+
+    await controller.create("acp", null, "workspace-42");
+
+    expect(controller.getState().error).toMatchObject({
+      sentence:
+        "No agent CLI is installed on this machine. Install one — for example grok, claude, or gemini — then choose Refresh in Settings → Providers.",
+      detail: "No ACP-capable agent was found on PATH.",
+      workspaceId: "workspace-42",
     });
   });
 

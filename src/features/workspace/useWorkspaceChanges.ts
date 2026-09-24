@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { workspaceGitDiff, workspaceGitStatus } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { WorkspaceGitFileDiff, WorkspaceGitStatus } from "../../types/ipc";
 import { changesBadge, changesBadgeLabel } from "./changesBadge";
 
@@ -14,7 +14,7 @@ export const CHANGES_POLL_MS = 5_000;
 /** One read's outcome: a reply, or the sentence the wire refused with. */
 export interface ChangesReply<T> {
   reply: T | null;
-  failure: string | null;
+  failure: ErrorSentence | null;
 }
 
 /**
@@ -85,7 +85,7 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
       setStatusCell({ workspaceId, reply, failure: null });
     } catch (cause: unknown) {
       if (generation !== statusGeneration.current) return;
-      const message = errorSentence(cause).sentence;
+      const message = errorSentence(cause);
       // A refusal is not a reading, so the badge is deliberately NOT touched
       // here: it keeps the last value actually read, and the panel shows this
       // sentence beside it (DECISIONS §10).
@@ -110,7 +110,7 @@ export function useWorkspaceChanges(workspaceId: string | null): WorkspaceChange
         setDiffCell({ workspaceId, path, reply, failure: null });
       } catch (cause: unknown) {
         if (generation !== diffGeneration.current) return;
-        const message = errorSentence(cause).sentence;
+        const message = errorSentence(cause);
         setDiffCell((current) => ({
           workspaceId,
           path,

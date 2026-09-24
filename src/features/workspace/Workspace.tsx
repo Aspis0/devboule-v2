@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ErrorText } from "../../components/ErrorText";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { TerminalSurface } from "../terminal/TerminalSurface";
@@ -72,7 +73,7 @@ import {
   sessionClose,
   sessionStop,
 } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import "./Workspace.css";
 import { useAppStore } from "../../store/appStore";
 
@@ -431,7 +432,7 @@ export function Workspace({
   const choiceWorkspaceRef = useRef<string | null>(selectedWorkspace);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
-  const [providerError, setProviderError] = useState<string | null>(null);
+  const [providerError, setProviderError] = useState<ErrorSentence | null>(null);
   // A provider choice is a create in waiting: between the click and the
   // chosen provider's create, the strip must not start another session —
   // the shared controller would drop it silently.
@@ -504,7 +505,7 @@ export function Workspace({
         capable = await loadChatProviders();
       } catch (cause: unknown) {
         endProviderChoice();
-        setProviderError(errorSentence(cause).sentence);
+        setProviderError(errorSentence(cause));
         return;
       }
       if (capable.length === 0) {
@@ -572,7 +573,7 @@ export function Workspace({
       addButtonRef,
       addDisabled,
       sessionsError: sessionsError?.sentence ?? null,
-      providerError,
+      providerError: providerError?.sentence ?? null,
       pickerOpen: providerPicker !== null,
       selectedSessionId,
       workspaceId: selectedWorkspace,
@@ -866,11 +867,11 @@ export function Workspace({
               <div className="workspace-provider-empty">
                 <p className="workspace-provider-empty-text">
                   No agent CLI is installed on this machine. Install one — for example grok, claude,
-                  or gemini — and restart Devboule.
+                  or gemini — then choose Refresh in Settings → Providers.
                 </p>
                 <button
                   type="button"
-                  className="workspace-secondary-action"
+                  className="workspace-empty-action"
                   onClick={openProvidersSettings}
                 >
                   Install instructions
@@ -984,7 +985,11 @@ export function Workspace({
                   ) : null}
                   {projectsError !== null ? (
                     <div className="workspace-project-error" role="alert">
-                      {projectsError}
+                      <ErrorText
+                        sentence={projectsError.sentence}
+                        detail={projectsError.detail}
+                        id="workspace-projects-error"
+                      />
                       <button
                         type="button"
                         className="workspace-secondary-action"
@@ -996,7 +1001,11 @@ export function Workspace({
                   ) : null}
                   {providerError !== null ? (
                     <div className="workspace-project-error" role="alert">
-                      {providerError}
+                      <ErrorText
+                        sentence={providerError.sentence}
+                        detail={providerError.detail}
+                        id="workspace-provider-error"
+                      />
                     </div>
                   ) : null}
                   {visibleProjects.map((project) => (
@@ -1017,7 +1026,11 @@ export function Workspace({
                       </div>
                       {project.workspaceError !== undefined ? (
                         <div className="workspace-project-error" role="alert">
-                          Could not load this project&apos;s workspaces: {project.workspaceError}
+                          <ErrorText
+                            sentence={`Could not load this project's workspaces: ${project.workspaceError.sentence}`}
+                            detail={project.workspaceError.detail}
+                            id={`workspace-project-workspaces-error-${project.id}`}
+                          />
                           <button
                             type="button"
                             className="workspace-secondary-action"
@@ -1347,8 +1360,16 @@ export function Workspace({
                 className="workspace-session-error-text"
                 key={failure.id}
                 title={failure.detail ?? undefined}
+                aria-describedby={
+                  failure.detail !== null ? `close-failure-${failure.id}-detail` : undefined
+                }
               >
                 {failure.message}
+                {failure.detail !== null ? (
+                  <span id={`close-failure-${failure.id}-detail`} className="error-detail-sr-only">
+                    {failure.detail}
+                  </span>
+                ) : null}
               </span>
             ))}
             <button
@@ -1363,14 +1384,19 @@ export function Workspace({
           </div>
         ) : null}
 
-        {sessionsError !== null ? (
+        {sessionsError !== null &&
+        (sessionsError.workspaceId === null || sessionsError.workspaceId === selectedWorkspace) ? (
           // The one render of the create/list failure: the spec's inline error
-          // line (12, --danger, triangle). The daemon's own words ride in the
-          // tooltip and in Diagnostics — never painted beside the sentence.
+          // line (12, --danger, triangle), shown over the workspace the
+          // failure belongs to. The daemon's own words ride in the tooltip
+          // and the described-by node — never painted beside the sentence.
           <div
             className="workspace-error-line"
             role="alert"
             title={sessionsError.detail ?? undefined}
+            aria-describedby={
+              sessionsError.detail !== null ? "workspace-session-error-detail" : undefined
+            }
           >
             <svg
               className="workspace-error-line-icon"
@@ -1381,6 +1407,11 @@ export function Workspace({
               <path d="M6 1.6 11 10.4H1Z" />
             </svg>
             <span className="workspace-error-line-text">{sessionsError.sentence}</span>
+            {sessionsError.detail !== null ? (
+              <span id="workspace-session-error-detail" className="error-detail-sr-only">
+                {sessionsError.detail}
+              </span>
+            ) : null}
             <button
               type="button"
               className="workspace-session-error-dismiss"
@@ -1401,7 +1432,13 @@ export function Workspace({
           // sentence is the store's standing answer, and the next successful
           // read or write clears it.
           <div className="workspace-session-error" role="alert">
-            <span className="workspace-session-error-text">{delegationState.error}</span>
+            <span className="workspace-session-error-text">
+              <ErrorText
+                sentence={delegationState.error.sentence}
+                detail={delegationState.error.detail}
+                id="workspace-delegation-error"
+              />
+            </span>
           </div>
         ) : null}
 

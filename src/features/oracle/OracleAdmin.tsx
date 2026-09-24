@@ -8,6 +8,7 @@ import type {
   OracleWorkspace,
 } from "../../types/ipc";
 import type { TrackedRequestState } from "../../lib/trackedRequest";
+import { ErrorText } from "../../components/ErrorText";
 import { formatCount } from "../../lib/format";
 import { fileCount, modelStateLabel } from "./oracleUtils";
 import { RerankerStatus } from "./OracleSearch";
@@ -46,7 +47,7 @@ interface OracleAdminProps {
 
 export type WatchNotice =
   | { kind: "unimplemented"; message: string }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; detail: string | null };
 
 export function OracleAdmin({
   open,
@@ -206,7 +207,11 @@ function AdminHealth({
       {doctorRequest.status === "loading" && <p>Running local health checks…</p>}
       {doctorRequest.status === "error" && (
         <div className="oracle-error-message" role="alert">
-          {doctorRequest.message}
+          <ErrorText
+            sentence={doctorRequest.message}
+            detail={doctorRequest.detail}
+            id="oracle-doctor-error"
+          />
         </div>
       )}
     </section>
@@ -334,7 +339,15 @@ function OracleAdminActions({
           }
           role={watchNotice.kind === "unimplemented" ? "status" : "alert"}
         >
-          {watchNotice.message}
+          {watchNotice.kind === "unimplemented" ? (
+            watchNotice.message
+          ) : (
+            <ErrorText
+              sentence={watchNotice.message}
+              detail={watchNotice.detail}
+              id="oracle-watch-error"
+            />
+          )}
         </div>
       )}
     </div>
@@ -392,7 +405,7 @@ function OracleFiles({
         )}
         {files.status === "error" && (
           <div className="oracle-error-message" role="alert">
-            {files.message}
+            <ErrorText sentence={files.message} detail={files.detail} id="oracle-files-error" />
           </div>
         )}
         {files.status === "ready" && files.value.length === 0 && (

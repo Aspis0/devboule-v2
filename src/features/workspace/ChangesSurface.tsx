@@ -6,7 +6,9 @@ import type {
   WorkspaceGitStatus,
 } from "../../types/ipc";
 import { useWorkspaceChanges, type ChangesReply } from "./useWorkspaceChanges";
+import type { ErrorSentence } from "../../lib/errorSentence";
 import { useWorkspaceGitActions } from "./useWorkspaceGitActions";
+import { ErrorText } from "../../components/ErrorText";
 
 interface ChangesSurfaceProps {
   /**
@@ -180,7 +182,11 @@ function DiffCard({ path, diff }: { path: string; diff: ChangesReply<WorkspaceGi
       {reply === null ? (
         diff.failure !== null ? (
           <div className="workspace-diff-note workspace-diff-note-error" role="alert">
-            {diff.failure}
+            <ErrorText
+              sentence={diff.failure.sentence}
+              detail={diff.failure.detail}
+              id="changes-diff-error"
+            />
           </div>
         ) : (
           <div className="workspace-diff-note" role="status">
@@ -237,7 +243,7 @@ export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: Chan
   const { status, diff, selection, select, refresh } = useWorkspaceChanges(workspaceId);
   const { stage, unstage, discard, commit } = useWorkspaceGitActions({ workspaceId, refresh });
   const [menuPath, setMenuPath] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorSentence | null>(null);
   // One act at a time: the rows and the toolbar stay answering while the
   // wire decides, so a double click cannot fire two writes into the index.
   const [acting, setActing] = useState(false);
@@ -252,7 +258,7 @@ export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: Chan
    * toolbar — the wire's own sentence, pathless by the daemon's rule.
    * Returns what the act answered, so Commit can clear its field on
    * success only. */
-  const runAct = async (act: Promise<string | null>): Promise<string | null> => {
+  const runAct = async (act: Promise<ErrorSentence | null>): Promise<ErrorSentence | null> => {
     setActionError(null);
     setActing(true);
     const error = await act;
@@ -316,14 +322,26 @@ export const ChangesSurface = memo(function ChangesSurface({ workspaceId }: Chan
       ) : null}
       {notice !== null ? (
         <div className="workspace-changes-error" role="alert">
-          {notice}
+          {typeof notice === "string" ? (
+            notice
+          ) : (
+            <ErrorText
+              sentence={notice.sentence}
+              detail={notice.detail}
+              id="changes-status-error"
+            />
+          )}
         </div>
       ) : null}
       {/* A write's own refusal: one place for one failure, beside the
           reads' alert above and never in place of the rows below. */}
       {actionError !== null ? (
         <div className="workspace-changes-error" role="alert">
-          {actionError}
+          <ErrorText
+            sentence={actionError.sentence}
+            detail={actionError.detail}
+            id="changes-action-error"
+          />
         </div>
       ) : null}
       {/* A first read that refused: the alert above is the whole answer, so

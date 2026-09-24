@@ -28,7 +28,7 @@ describe("delegation controller", () => {
     await controller.load();
     expect(controller.getState().loadFailed).toBe(true);
     expect(controller.getState().enabled).toBeNull();
-    expect(controller.getState().error).toBe("the daemon refused");
+    expect(controller.getState().error).toEqual({ sentence: "the daemon refused", detail: null });
     // A later successful load recovers the panel.
     get.mockResolvedValue({ enabled: false, source: "default" });
     await controller.load();
@@ -63,7 +63,10 @@ describe("delegation controller", () => {
     const confirmed = await controller.setEnabled(true);
     expect(confirmed).toBe(false);
     expect(controller.getState().enabled).toBe(false);
-    expect(controller.getState().error).toBe("the store would not take it");
+    expect(controller.getState().error).toEqual({
+      sentence: "the store would not take it",
+      detail: null,
+    });
   });
 
   it("an older rejection owns nothing once a newer write superseded it", async () => {
@@ -203,7 +206,7 @@ describe("delegation controller", () => {
     // The daemon accepted ON and refused OFF: ON is what the switch shows.
     expect(controller.getState().enabled).toBe(true);
     expect(controller.getState().reply).toEqual({ enabled: true, source: "file" });
-    expect(controller.getState().error).toBe("store B refused");
+    expect(controller.getState().error).toEqual({ sentence: "store B refused", detail: null });
   });
 
   it("an accepted write surfaces even when the newer refusal settled before it", async () => {
@@ -252,7 +255,7 @@ describe("delegation controller", () => {
     expect(controller.getState().enabled).toBe(true);
     expect(controller.getState().reply).toEqual({ enabled: true, source: "file" });
     // B's refusal is still the newest refused write, so its sentence stands.
-    expect(controller.getState().error).toBe("store B refused");
+    expect(controller.getState().error).toEqual({ sentence: "store B refused", detail: null });
   });
 
   it("two rapid writes both accepted settle on the newer value when responses land in order", async () => {
@@ -367,7 +370,7 @@ describe("delegation controller", () => {
     expect(controller.getState().reply).toBeNull();
     expect(controller.getState().enabled).toBeNull();
     expect(controller.getState().loadFailed).toBe(true);
-    expect(controller.getState().error).toContain("incomplete");
+    expect(controller.getState().error?.sentence).toContain("incomplete");
     // And the write path stays locked: no write ever starts from that silence.
     const confirmed = await controller.setEnabled(true);
     expect(confirmed).toBe(false);
@@ -443,7 +446,7 @@ describe("delegation controller", () => {
     // The daemon confirmed OFF at load and nothing since: OFF is what shows.
     expect(controller.getState().enabled).toBe(false);
     // B's refusal is the newest, so its sentence is the one reported.
-    expect(controller.getState().error).toBe("store B refused");
+    expect(controller.getState().error).toEqual({ sentence: "store B refused", detail: null });
   });
 
   it("a refused write after a CONFIRMED write reverts onto the confirmation", async () => {
@@ -466,7 +469,10 @@ describe("delegation controller", () => {
     expect(await controller.setEnabled(true)).toBe(true);
     expect(await controller.setEnabled(false)).toBe(false);
     expect(controller.getState().enabled).toBe(true);
-    expect(controller.getState().error).toBe("the store refused the second");
+    expect(controller.getState().error).toEqual({
+      sentence: "the store refused the second",
+      detail: null,
+    });
   });
 
   it("a rejected write re-reads, and the daemon's answer replaces the fallback", async () => {
@@ -492,7 +498,10 @@ describe("delegation controller", () => {
     expect(await controller.setEnabled(true)).toBe(false);
     // The fallback stands only until the re-read answers.
     expect(controller.getState().enabled).toBe(false);
-    expect(controller.getState().error).toBe("the app did not answer");
+    expect(controller.getState().error).toEqual({
+      sentence: "the app did not answer",
+      detail: null,
+    });
     releaseReread();
     await flush();
     // The daemon HAD applied the lost write: the panel now says so.
@@ -523,7 +532,7 @@ describe("delegation controller", () => {
     await flush();
     expect(controller.getState().enabled).toBeNull();
     expect(controller.getState().loadFailed).toBe(true);
-    expect(controller.getState().error).toBe("the daemon is gone");
+    expect(controller.getState().error).toEqual({ sentence: "the daemon is gone", detail: null });
   });
 
   it("the control that stops delegation works from the unknown state; granting still needs an answer", async () => {

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { projectsList, workspaceCreate, workspacesList } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { Project, Session, Workspace } from "../../types/ipc";
 
 export interface WorkspaceProject extends Project {
   workspaces: WorkspaceView[];
-  workspaceError?: string;
+  workspaceError?: ErrorSentence;
 }
 
 export interface WorkspaceView extends Workspace {
@@ -16,7 +16,7 @@ export interface WorkspaceView extends Workspace {
 
 interface ProjectRecord extends Project {
   workspaces: Workspace[];
-  workspaceError?: string;
+  workspaceError?: ErrorSentence;
 }
 
 function reconcileProjectRecords(
@@ -66,7 +66,7 @@ export function useWorkspaceProjects() {
   const [projectRecords, setProjectRecords] = useState<ProjectRecord[]>([]);
   const [sessionFacts, setSessionFactsState] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
@@ -86,7 +86,7 @@ export function useWorkspaceProjects() {
             return {
               ...project,
               workspaces: [],
-              workspaceError: errorSentence(cause).sentence,
+              workspaceError: errorSentence(cause),
             };
           }
         }),
@@ -98,7 +98,7 @@ export function useWorkspaceProjects() {
     } catch (cause: unknown) {
       if (generation !== loadGenerationRef.current) return;
       setLoading(false);
-      setError(errorSentence(cause).sentence);
+      setError(errorSentence(cause));
     }
   }, []);
 
@@ -140,7 +140,7 @@ export function useWorkspaceProjects() {
       setError(null);
       return workspace;
     } catch (cause: unknown) {
-      setError(errorSentence(cause).sentence);
+      setError(errorSentence(cause));
       return null;
     }
   }, []);
@@ -163,8 +163,7 @@ export function useWorkspaceProjects() {
       setSearch("");
       setError(null);
     } catch (cause: unknown) {
-      const message = errorSentence(cause).sentence;
-      setError(message);
+      setError(errorSentence(cause));
       throw cause;
     }
   }, []);

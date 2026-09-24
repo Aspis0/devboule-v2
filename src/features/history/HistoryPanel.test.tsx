@@ -253,10 +253,10 @@ describe("HistoryPanel", () => {
     if (!reopen) throw new Error("reopen control did not render");
     await act(async () => reopen.click());
     await act(async () => undefined);
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "The agent daemon refused that request as invalid.",
-    );
-    expect(container.querySelector('[role="alert"]')?.textContent).not.toContain(
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("The agent daemon refused that request as invalid.");
+    // The raw daemon text is kept, demoted into the visually hidden detail.
+    expect(alert?.querySelector(".error-detail-sr-only")?.textContent).toBe(
       "provider session is unavailable",
     );
   });

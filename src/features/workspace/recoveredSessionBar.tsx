@@ -2,7 +2,8 @@
 // `resumable` verdict, never re-derives it, and never resumes by itself.
 import { useState } from "react";
 import { sessionResume } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { ErrorText } from "../../components/ErrorText";
 import type { Session } from "../../types/ipc";
 
 export function RecoveredSessionBar({
@@ -17,7 +18,7 @@ export function RecoveredSessionBar({
   onResumeFailed?: () => void;
 }) {
   const [resuming, setResuming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   if (session === null) return null;
   const recovered = session.state.type === "recovered";
   const resumable = session.resumable === true;
@@ -33,14 +34,14 @@ export function RecoveredSessionBar({
         if (result.type === "resumed") {
           onReopened(result.session);
         } else if (result.type === "failed") {
-          setError(result.message);
+          setError({ sentence: result.message, detail: null });
           onResumeFailed?.();
         } else {
-          setError("This session does not support resume.");
+          setError({ sentence: "This session does not support resume.", detail: null });
           onResumeFailed?.();
         }
       } catch (cause) {
-        setError(errorSentence(cause).sentence);
+        setError(errorSentence(cause));
         onResumeFailed?.();
       } finally {
         setResuming(false);
@@ -82,7 +83,7 @@ export function RecoveredSessionBar({
       </button>
       {error !== null ? (
         <span className="workspace-session-error-text" role="alert">
-          {error}
+          <ErrorText sentence={error.sentence} detail={error.detail} id="recovered-bar-error" />
         </span>
       ) : null}
     </div>
