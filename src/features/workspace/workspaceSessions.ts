@@ -19,7 +19,7 @@ import type {
 import { isAgentKind } from "../../types/ipc";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
-import { attentionRaised, fireAttentionToast } from "./attentionNotice";
+import { attentionRaised, fireAttentionToast, forgetAttentionFor } from "./attentionNotice";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
@@ -582,6 +582,10 @@ export function createWorkspaceSessionController(
   let watchLeases = 0;
   let watchPromise: Promise<() => void> | null = null;
   let watchStop: (() => void) | null = null;
+  // The first roster after this controller comes up is the baseline: raises
+  // already standing when the app starts (or the watch returns) are old
+  // news, never new events.
+  let firstSnapshot = true;
 
   const publish = (next: WorkspaceSessionState): void => {
     state = next;
@@ -648,6 +652,8 @@ export function createWorkspaceSessionController(
     // A local const: the observer is captured once, so the checks below
     // narrow for TypeScript the way they read for people.
     const notifyAttention = onAttention;
+    const baseline = firstSnapshot;
+    firstSnapshot = false;
     const sessions = snapshots.map((snapshot): Session => {
       const previous = known.get(snapshot.id);
       // A child the app can already identify — the push names its creator, or
@@ -704,6 +710,7 @@ export function createWorkspaceSessionController(
       // the same event are recognized and never re-announced.
       if (
         notifyAttention !== undefined &&
+        !baseline &&
         snapshot.attention !== undefined &&
         attentionRaised(previous?.attention, snapshot.attention)
       ) {
@@ -728,6 +735,9 @@ export function createWorkspaceSessionController(
     if (notifyAttention !== undefined) {
       for (const { session, attention } of transitions) notifyAttention(session, attention);
     }
+    // Rows that left the roster take their dedupe slot with them, so a
+    // session that returns re-announces like the first arrival it is.
+    forgetAttentionFor(new Set(sessions.map((session) => session.id)));
   };
 
   const create = async (
@@ -895,9 +905,9 @@ let sharedController: WorkspaceSessionController | null = null;
  * a second controller's watch would silently replace this one's.
  */
 export function sharedSessionController(): WorkspaceSessionController {
-    if (sharedController === null) {
+  if (sharedController === null) {
     sharedController = createWorkspaceSessionController(DEFAULT_SOURCE, (session, attention) =>
-      fireAttentionToast(session, attention),
+      fireAttentionToast(session.id, sessionTitle(session), attention),
     );
   }
   return sharedController;

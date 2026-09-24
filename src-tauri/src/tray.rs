@@ -13,11 +13,13 @@ use tauri::{
     Manager,
 };
 
+use devboule_protocol::DaemonStatusBody;
+
 use crate::client::DaemonBridge;
-use crate::close_prompt;
+use crate::close_flow;
 
 const STATUS_POLL_PERIOD: Duration = Duration::from_secs(5);
-const DAEMON_DOWN: &str = "Daemon not running";
+const STATUS_UNAVAILABLE: &str = "Daemon status unavailable";
 
 pub(crate) fn build(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Devboule", true, None::<&str>)?;
@@ -32,7 +34,7 @@ pub(crate) fn build(app: &tauri::App) -> tauri::Result<()> {
             "open" => show_main_window(app),
             // The same confirmation as closing the window: the tray is not a
             // way around it.
-            "quit" => close_prompt::confirm_quit(app.clone()),
+            "quit" => close_flow::confirm_quit(app.clone()),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -79,12 +81,12 @@ fn spawn_status_poll(app: tauri::AppHandle, status: MenuItem<tauri::Wry>) {
             let text = match app.try_state::<DaemonBridge>() {
                 Some(bridge) => match bridge.client() {
                     Ok(client) => match client.status() {
-                        Ok(body) => status_line(body.sessions),
-                        Err(_) => DAEMON_DOWN.to_string(),
+                        Ok(body) => status_line(&body),
+                        Err(_) => STATUS_UNAVAILABLE.to_string(),
                     },
-                    Err(_) => DAEMON_DOWN.to_string(),
+                    Err(_) => STATUS_UNAVAILABLE.to_string(),
                 },
-                None => DAEMON_DOWN.to_string(),
+                None => STATUS_UNAVAILABLE.to_string(),
             };
             let _ = status.set_text(text);
         });
@@ -93,10 +95,38 @@ fn spawn_status_poll(app: tauri::AppHandle, status: MenuItem<tauri::Wry>) {
     let _ = spawned;
 }
 
-fn status_line(agents_running: u32) -> String {
-    match agents_running {
-        0 => "No agents running".to_string(),
-        1 => "1 agent running".to_string(),
-        agents => format!("{agents} agents running"),
+/// The disabled menu line, true to what the daemon said: agents and
+/// terminals named separately when the daemon tells them apart, sessions
+/// un-named when it does not, and a failed read never reported as a
+/// stopped daemon.
+fn status_line(body: &DaemonStatusBody) -> String {
+    match body.agents {
+        Some(agents) => {
+            let terminals = body.sessions.saturating_sub(agents);
+            match (agents, terminals) {
+                (0, 0) => "No agents or terminals running".to_string(),
+                (agents, 0) => format!("{} running", plural_sessions(agents, "agent")),
+                (0, terminals) => {
+                    format!("{} running", plural_sessions(terminals, "terminal"))
+                }
+                (agents, terminals) => format!(
+                    "{}, {} running",
+                    plural_sessions(agents, "agent"),
+                    plural_sessions(terminals, "terminal")
+                ),
+            }
+        }
+        None => match body.sessions {
+            0 => "No sessions running".to_string(),
+            1 => "1 session running".to_string(),
+            sessions => format!("{sessions} sessions running"),
+        },
+    }
+}
+
+fn plural_sessions(count: u32, noun: &str) -> String {
+    match count {
+        1 => format!("1 {noun}"),
+        n => format!("{n} {noun}s"),
     }
 }

@@ -28,18 +28,26 @@ export function CloseBehaviorSetting() {
 
   useEffect(() => {
     let alive = true;
-    void surfaceSettingsGet(CLOSE_BEHAVIOR_SURFACE_ID).then((read: SurfaceSettingsRead) => {
-      if (!alive) return;
-      if (read.status === "value") {
-        const stored = closeChoiceFromStored(read.value);
-        setChoice(stored);
-        setPersisted(stored);
-      }
-      // `absent` keeps the default; `unreadable` keeps the default too and
-      // refuses to write below, so a corrupt file is never overwritten by a
-      // display default (the data-loss rule at `surfaceSettingsGet`).
-      if (read.status === "unreadable") setError(read.message);
-    });
+    void surfaceSettingsGet(CLOSE_BEHAVIOR_SURFACE_ID).then(
+      (read: SurfaceSettingsRead) => {
+        if (!alive) return;
+        if (read.status === "value") {
+          const stored = closeChoiceFromStored(read.value);
+          setChoice(stored);
+          setPersisted(stored);
+        }
+        // `absent` keeps the default; `unreadable` keeps the default too and
+        // refuses to write below, so a corrupt file is never overwritten by a
+        // display default (the data-loss rule at `surfaceSettingsGet`).
+        if (read.status === "unreadable") setError(read.message);
+      },
+      (cause: unknown) => {
+        // A rejected invoke (runtime failure, not a file answer) must still
+        // say so and leave the row usable.
+        if (!alive) return;
+        setError(cause instanceof Error ? cause.message : "The stored choice could not be read.");
+      },
+    );
     return () => {
       alive = false;
     };

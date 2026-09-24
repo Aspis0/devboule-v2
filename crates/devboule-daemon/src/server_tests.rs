@@ -5261,3 +5261,128 @@ fn a_refused_resume_releases_its_lifecycle_slot() {
     drop(state);
     let _ = std::fs::remove_dir_all(path);
 }
+
+/// Two simultaneous quits are both refused while both windows are counted —
+/// and both windows then leave. The daemon must not outlive its UI: with a
+/// live session and no idle exit possible, the remembered quits stop it the
+/// moment the last local app is gone.
+#[test]
+fn two_refused_quits_stop_the_daemon_when_both_windows_leave() {
+    let state = state();
+    let _first = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("first local client is admitted");
+    let _second = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("second local client is admitted");
+    assert!(state.session_started(), "a live agent pins the idle exit");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let conn = ConnHandle::new(31);
+    for id in [41, 42] {
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::Shutdown { id },
+            &conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("shutdown always answers");
+        let DaemonMessage::Shutdown {
+            accepted: false,
+            reason: Some(_),
+            ..
+        } = reply
+        else {
+            panic!("both quits are refused while both windows count, got {reply:?}");
+        };
+    }
+    // Both windows exit (the refusal never keeps a window alive).
+    state.client_disconnected(true);
+    assert!(
+        !state.is_shutting_down(),
+        "one window left; the other still holds the daemon"
+    );
+    state.client_disconnected(true);
+    assert!(
+        state.is_shutting_down(),
+        "every local app asked to quit and left: the daemon stops, live session included"
+    );
+}
+
+/// A refused quit never keeps the daemon from serving the window that
+/// stays: the leaver is gone, the remaining window quits and is accepted.
+#[test]
+fn a_refused_quit_leaves_the_daemon_running_for_the_window_that_stays() {
+    let state = state();
+    let _first = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("first local client is admitted");
+    let _second = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("second local client is admitted");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let conn = ConnHandle::new(32);
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::Shutdown { id: 43 },
+        &conn,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("shutdown always answers");
+    let DaemonMessage::Shutdown {
+        accepted: false, ..
+    } = reply
+    else {
+        panic!("the quit is refused while both windows count, got {reply:?}");
+    };
+    // The refused window leaves anyway.
+    state.client_disconnected(true);
+    assert!(
+        !state.is_shutting_down(),
+        "the window that stayed keeps the daemon running"
+    );
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::Shutdown { id: 44 },
+        &conn,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("shutdown always answers");
+    let DaemonMessage::Shutdown { accepted: true, .. } = reply else {
+        panic!("the last window out is accepted, got {reply:?}");
+    };
+}
+
+/// The count check and entering shutdown are one atomic step: once the
+/// handshake accepts, a new local client is refused at the door — there is
+/// no window between the decision and the shutdown state for an admission
+/// to slip through.
+#[test]
+fn an_accepted_quit_refuses_late_admission() {
+    let state = state();
+    let _app = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("the app is admitted");
+    state
+        .request_local_shutdown()
+        .expect("the only local app out may stop the daemon");
+    assert!(
+        state.is_shutting_down(),
+        "accepting the quit IS entering shutdown, in the same step"
+    );
+    assert!(
+        state.admit_client(ClientKind::LocalApp).is_none(),
+        "a client arriving after the decision finds shutdown already begun"
+    );
+}

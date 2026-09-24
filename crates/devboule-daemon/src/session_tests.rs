@@ -5017,3 +5017,17 @@ fn the_global_sweep_runs_once_per_window() {
         "and once the window has moved on it sweeps again"
     );
 }
+
+#[test]
+fn live_session_families_count_agents_and_terminals_separately() {
+    let kinds = [
+        SessionKind::Terminal,
+        SessionKind::Acp,
+        SessionKind::Claude,
+        SessionKind::Terminal,
+        SessionKind::Pi,
+    ];
+    let (agents, terminals) = super::count_session_families(kinds.into_iter());
+    assert_eq!(agents, 3, "every provider-driven kind is an agent");
+    assert_eq!(terminals, 2, "terminals are counted, never renamed agents");
+}

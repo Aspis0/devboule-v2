@@ -54,7 +54,11 @@ import {
   isRecoveredSession,
   useWorkspaceSessions,
 } from "./workspaceSessions";
-import { sessionAttentionLabel } from "./attentionNotice";
+import {
+  heldContentForSession,
+  setAttentionHeldContentProvider,
+  sessionAttentionLabel,
+} from "./attentionNotice";
 import { RecoveredSessionBar } from "./recoveredSessionBar";
 import { DaemonRestartNotice } from "./daemonRestartNotice";
 import type {
@@ -222,6 +226,25 @@ export function Workspace({
   // device. One read per daemon connection: the names come from pairing and do
   // not change while the connection lives.
   const [peerNames, setPeerNames] = useState<ReadonlyMap<string, string>>(() => new Map());
+  // What a toast may quote for a session: the pending permission card's
+  // text, and only for a session this window can see — a row in its own
+  // roster. Registered app-wide so a toast is worded the same whichever
+  // surface is on screen.
+  const rosterIdsRef = useRef<ReadonlySet<string>>(new Set());
+  const permissionQueueRef = useRef(permissionQueue);
+  useEffect(() => {
+    permissionQueueRef.current = permissionQueue;
+  }, [permissionQueue]);
+  useEffect(() => {
+    setAttentionHeldContentProvider((sessionId) => {
+      const pending = permissionQueueRef.current.find(
+        (item) => item.sessionId === sessionId && item.resolution === undefined,
+      );
+      const inThisWindow = rosterIdsRef.current.has(sessionId);
+      return heldContentForSession(inThisWindow, pending?.request);
+    });
+    return () => setAttentionHeldContentProvider(null);
+  }, []);
   const daemon = useWorkspaceDaemon();
   // The empty provider picker's action hands the user to Settings → Providers
   // (the surface opens on that tab), so the flow needs the app's one switcher.
@@ -241,6 +264,7 @@ export function Workspace({
   } = useWorkspaceSessions(selectedWorkspace);
   useEffect(() => {
     setSessionFacts(sessions);
+    rosterIdsRef.current = new Set(sessions.map((session) => session.id));
   }, [sessions, setSessionFacts]);
   // The strip's close acts: fire at once (the undo window is gone), hide the
   // row until the roster confirms, and own each failure by the act that

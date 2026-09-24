@@ -1,5 +1,4 @@
 import type { Attention, AttentionReason } from "../../types/ipc";
-import { surfaceSettingsGet } from "../../lib/tauri";
 
 /**
  * How a session's attention presents to the local user: the words for a
@@ -92,10 +91,10 @@ export interface ToastContent {
 }
 
 /**
- * The toast's words. The title names the session and the reason; the body
- * carries the held permission request for `permission`, or a short preview
- * of the last assistant message for `finished` — and the bare reason when
- * the app holds nothing, never a guess.
+ * The toast's words. The title names the session the way the workspace
+ * shows it; the body carries the held permission request for `permission`,
+ * or a short preview of the last assistant message for `finished` — and
+ * the bare reason when the app holds nothing, never a guess.
  */
 export function toastContent(
   sessionTitle: string,
@@ -105,7 +104,10 @@ export function toastContent(
   const title = `${sessionTitle} — ${sessionAttentionLabel(reason)}`;
   if (reason === "permission") {
     const permissionText = held?.permissionText?.trim();
-    return { title, body: permissionText || sessionAttentionLabel(reason) };
+    return {
+      title,
+      body: permissionText ? previewFrom(permissionText) : sessionAttentionLabel(reason),
+    };
   }
   if (reason === "finished" && held?.lastAssistantText) {
     return { title, body: previewFrom(held.lastAssistantText) };
@@ -114,42 +116,29 @@ export function toastContent(
 }
 
 /**
- * The stored "Play sound" choice, the one notification setting there is.
- * Same surface-settings contract as the close behavior: absent means the
- * default (on), unreadable never overwrites anything.
+ * What the window that holds the cards hands the toast: content ONLY for a
+ * session this window can see — a row in this window's roster — and only
+ * while a permission card for it is actually pending. A session the window
+ * cannot see gets no provider content, so its toast carries the title and
+ * the reason only. (A `Daemon`-role peer's own sessions never appear in any
+ * local roster, so they never reach the toast path at all.)
  */
-export type NotificationSoundSettings = { playSound: boolean };
-
-export function playSoundFromStored(value: unknown): boolean {
-  if (typeof value === "object" && value !== null && "playSound" in value) {
-    const playSound = (value as { playSound: unknown }).playSound;
-    if (typeof playSound === "boolean") return playSound;
-  }
-  return true;
+export function heldContentForSession(
+  inThisWindow: boolean,
+  pending: { title: string; description?: string } | undefined,
+): HeldContent | undefined {
+  if (!inThisWindow) return undefined;
+  const text = [pending?.title, pending?.description]
+    .filter((part) => typeof part === "string" && part.trim().length > 0)
+    .join(" — ");
+  return text.length > 0 ? { permissionText: text } : undefined;
 }
 
-export const NOTIFICATIONS_SURFACE_ID = "notifications";
-
-/** Reads the stored sound choice; anything unreadable means the default (on). */
-export function loadPlaySoundSetting(): Promise<boolean> {
-  return surfaceSettingsGet(NOTIFICATIONS_SURFACE_ID).then(
-    (read) => (read.status === "value" ? playSoundFromStored(read.value) : true),
-    () => true,
-  );
-}
-
-/** Everything the OS side of a toast needs, injected for tests. */
-export interface ToastDeps {
-  send: (content: ToastContent & { silent: boolean }) => void;
-  visible: () => boolean;
-  focused: () => boolean;
-  playSound: () => Promise<boolean>;
-}
-
-/** The last raise a toast actually fired for, per session. */
-const lastFired = new Map<string, Attention>();
-
-/** Message content the app holds per session, registered by the surface that holds it. */
+/**
+ * Message content the app holds per session, registered by the surface that
+ * holds it (the Workspace: its roster is what "this window can see" means,
+ * and its permission queue is what "holds" means).
+ */
 let heldContentProvider: ((sessionId: string) => HeldContent | undefined) | null = null;
 
 export function setAttentionHeldContentProvider(
@@ -158,48 +147,93 @@ export function setAttentionHeldContentProvider(
   heldContentProvider = provider;
 }
 
+/** The last raise a toast fired (or was gate-blocked) for, per session. */
+const lastFired = new Map<string, Attention>();
+
+/** Forget raises of sessions that left the roster, so the map cannot grow forever. */
+export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
+  for (const id of [...lastFired.keys()]) {
+    if (!sessionIds.has(id)) lastFired.delete(id);
+  }
+}
+
+/** The plugin surface `sendWithPermission` needs, narrowed to what is used. */
+export interface NotificationPlugin {
+  isPermissionGranted(): Promise<boolean>;
+  requestPermission(): Promise<NotificationPermission>;
+  sendNotification(options: { title: string; body: string }): Promise<void>;
+}
+
+/**
+ * The plugin's own gate: if permission was never granted, ONE
+ * `requestPermission` ask is made — never one per raise — and an ungranted
+ * raise is an error, not a silent nothing, so the caller can treat it as
+ * undelivered.
+ */
+export async function sendWithPermission(
+  content: ToastContent,
+  plugin: NotificationPlugin,
+): Promise<void> {
+  let granted = await plugin.isPermissionGranted();
+  if (!granted) {
+    granted = (await plugin.requestPermission()) === "granted";
+  }
+  if (!granted) {
+    throw new Error("notification permission was not granted");
+  }
+  await plugin.sendNotification({ title: content.title, body: content.body });
+}
+
+let permissionAsked = false;
+
+/** The production sender: the plugin's permission flow, then the toast. */
+async function defaultSend(content: ToastContent): Promise<void> {
+  const plugin = await import("@tauri-apps/plugin-notification");
+  let granted = await plugin.isPermissionGranted();
+  if (!granted && !permissionAsked) {
+    permissionAsked = true;
+    granted = (await plugin.requestPermission()) === "granted";
+  }
+  if (!granted) return;
+  await plugin.sendNotification({ title: content.title, body: content.body });
+}
+
+/** Everything the OS side of a toast needs, injected for tests. */
+export interface ToastDeps {
+  send: (content: ToastContent) => Promise<void>;
+  visible: () => boolean;
+  focused: () => boolean;
+}
+
 /**
  * The production toast path, called by the roster controller on every
- * attention transition. Dedupe lives here (per session, by the raise's
- * timestamp) so a push storm can never double-fire; the window gate is
- * this module's own toastGate, never the daemon's suppression rule
- * restated.
+ * attention transition. The window gate marks a raise as seen (the user
+ * was looking at the app); a send marks the raise delivered, and a failed
+ * or refused send leaves it unmarked so the next push of the same raise
+ * retries.
  */
 export function fireAttentionToast(
-  session: { id: string; title: string },
+  sessionId: string,
+  title: string,
   attention: Attention,
   deps?: Partial<ToastDeps>,
 ): void {
-  if (!attentionRaised(lastFired.get(session.id), attention)) return;
+  if (!attentionRaised(lastFired.get(sessionId), attention)) return;
   const visible =
     deps?.visible ??
     (typeof document === "undefined" ? () => false : () => document.visibilityState === "visible");
   const focused =
     deps?.focused ?? (typeof document === "undefined" ? () => false : () => document.hasFocus());
+  lastFired.set(sessionId, attention);
   if (!toastGate(visible(), focused())) {
-    // Seen but not raised: remember the raise so a later push of the same
-    // event cannot toast after the user has already looked past it.
-    lastFired.set(session.id, attention);
+    // Seen but not raised: the user was looking at the app.
     return;
   }
-  lastFired.set(session.id, attention);
-  const playSound = deps?.playSound ?? loadPlaySoundSetting;
-  const held = heldContentProvider?.(session.id);
-  const content = toastContent(session.title, attention.reason, held);
-  void playSound().then((sound) => {
-    (deps?.send ?? defaultSend)({ ...content, silent: !sound });
+  const held = heldContentProvider?.(sessionId);
+  const content = toastContent(title, attention.reason, held);
+  void (deps?.send ?? defaultSend)(content).catch(() => {
+    // Undelivered: forget the raise so the next push of it retries —
+    // unless a newer raise has since taken the slot.
+    if (lastFired.get(sessionId) === attention) lastFired.delete(sessionId);
   });
-}
-
-function defaultSend(toast: ToastContent & { silent: boolean }): void {
-  void import("@tauri-apps/plugin-notification").then(({ sendNotification }) => {
-    void sendNotification({ title: toast.title, body: toast.body, silent: toast.silent });
-  });
-}
-
-/** Forget fired raises the roster no longer carries (closed sessions). */
-export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
-  for (const id of [...lastFired.keys()]) {
-    if (!sessionIds.has(id)) lastFired.delete(id);
-  }
 }

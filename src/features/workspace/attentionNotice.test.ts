@@ -1,9 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Attention } from "../../types/ipc";
+import type { ToastContent } from "./attentionNotice";
 import {
+  setAttentionHeldContentProvider,
   PREVIEW_LIMIT,
   attentionRaised,
+  fireAttentionToast,
+  forgetAttentionFor,
+  heldContentForSession,
   previewFrom,
+  sendWithPermission,
   stripMarkdown,
   toastContent,
   toastGate,
@@ -109,5 +115,120 @@ describe("toastContent", () => {
     const content = toastContent("fix login", "finished", undefined);
     expect(content.body).toBe("finished");
     expect(content.body.length).toBeLessThan(20);
+  });
+});
+
+describe("heldContentForSession", () => {
+  it("hands over the pending card's text for a session this window sees", () => {
+    const held = heldContentForSession(true, { title: "Run npm install" });
+    expect(held?.permissionText).toContain("Run npm install");
+  });
+
+  it("keeps the description beside the title", () => {
+    const held = heldContentForSession(true, {
+      title: "Run npm install",
+      description: "the agent wants to install a package",
+    });
+    expect(held?.permissionText).toContain("Run npm install");
+    expect(held?.permissionText).toContain("the agent wants to install a package");
+  });
+
+  it("gives nothing for a session this window cannot see", () => {
+    expect(heldContentForSession(false, { title: "secret work" })).toBeUndefined();
+  });
+
+  it("gives nothing when no card is pending", () => {
+    expect(heldContentForSession(true, undefined)).toBeUndefined();
+  });
+});
+
+describe("sendWithPermission", () => {
+  it("sends when permission is already granted without asking", async () => {
+    const plugin = {
+      isPermissionGranted: vi.fn(async () => true),
+      requestPermission: vi.fn(async () => "granted" as NotificationPermission),
+      sendNotification: vi.fn(async () => undefined),
+    };
+    await sendWithPermission({ title: "t", body: "b" }, plugin);
+    expect(plugin.requestPermission).not.toHaveBeenCalled();
+    expect(plugin.sendNotification).toHaveBeenCalledWith({ title: "t", body: "b" });
+  });
+
+  it("asks exactly once when permission was never granted, then sends", async () => {
+    let granted = false;
+    const plugin = {
+      isPermissionGranted: vi.fn(async () => granted),
+      requestPermission: vi.fn(async () => {
+        granted = true;
+        return "granted" as NotificationPermission;
+      }),
+      sendNotification: vi.fn(async () => undefined),
+    };
+    await sendWithPermission({ title: "t", body: "b" }, plugin);
+    await sendWithPermission({ title: "t2", body: "b2" }, plugin);
+    expect(plugin.requestPermission).toHaveBeenCalledTimes(1);
+    expect(plugin.sendNotification).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses to send when the ask is denied", async () => {
+    const plugin = {
+      isPermissionGranted: vi.fn(async () => false),
+      requestPermission: vi.fn(async () => "denied" as NotificationPermission),
+      sendNotification: vi.fn(async () => undefined),
+    };
+    await expect(sendWithPermission({ title: "t", body: "b" }, plugin)).rejects.toThrow();
+    expect(plugin.sendNotification).not.toHaveBeenCalled();
+  });
+});
+
+describe("fireAttentionToast delivery", () => {
+  const hidden = { visible: () => false, focused: () => false };
+
+  it("marks a raise delivered only after the send succeeded", async () => {
+    forgetAttentionFor(new Set());
+    let fail = true;
+    const send = vi.fn(async () => {
+      if (fail) throw new Error("the toast did not land");
+    });
+    fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    // The same raise arrives again on the next roster push while the send
+    // is still failing: it must retry, not be swallowed by the dedupe.
+    fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(2);
+    fail = false;
+  });
+
+  it("does not retry a raise that was delivered", async () => {
+    forgetAttentionFor(new Set());
+    const send = vi.fn(async () => undefined);
+    fireAttentionToast("s2", "agent two", attention("finished", 1000), { send, ...hidden });
+    await Promise.resolve();
+    await Promise.resolve();
+    fireAttentionToast("s2", "agent two", attention("finished", 1000), { send, ...hidden });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the provider's held content to the sender", async () => {
+    forgetAttentionFor(new Set());
+    setAttentionHeldContentProvider((sessionId) =>
+      sessionId === "s3" ? { permissionText: "Run npm install" } : undefined,
+    );
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    fireAttentionToast("s3", "agent three", attention("permission", 1000), {
+      send,
+      ...hidden,
+    });
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    const sent = send.mock.calls[0]?.[0];
+    expect(sent?.body).toBe("Run npm install");
+    setAttentionHeldContentProvider(null);
   });
 });

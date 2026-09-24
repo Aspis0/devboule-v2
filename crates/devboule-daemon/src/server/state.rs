@@ -31,6 +31,11 @@ pub(super) struct Lifecycle {
     /// Only these may stop the daemon, so only their count decides a
     /// `Shutdown` refusal; peers are invisible to it.
     pub(super) local_clients: u32,
+    /// A local app asked to quit and was refused because another local app
+    /// was still connected. Remembered so the daemon stops the moment the
+    /// last local app leaves — two simultaneous quits must not orphan live
+    /// work with no window and no tray.
+    pub(super) quit_requested: bool,
     pub(super) sessions: u32,
     pub(super) shutting_down: bool,
     pub(super) idle_generation: u64,
@@ -597,6 +602,22 @@ impl ServerState {
             if was_local {
                 lifecycle.local_clients = lifecycle.local_clients.saturating_sub(1);
             }
+            // A remembered refused quit changes what the last local app
+            // leaving means: the daemon stops now, its live sessions
+            // included — they belonged to the apps that asked to quit.
+            // Peers do not hold it open; they do not count.
+            if was_local
+                && lifecycle.local_clients == 0
+                && lifecycle.quit_requested
+                && !lifecycle.shutting_down
+            {
+                lifecycle.shutting_down = true;
+                lifecycle.exit_reason = Some(ExitReason::Requested);
+                lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
+                drop(lifecycle);
+                self.signal_shutdown();
+                return;
+            }
             if lifecycle.clients == 0 && lifecycle.sessions == 0 && !lifecycle.shutting_down {
                 lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
                 Some(lifecycle.idle_generation)
@@ -609,9 +630,30 @@ impl ServerState {
         }
     }
 
+    /// The quit handshake, one atomic step: the count check and entering
+    /// shutdown happen under the same lifecycle lock, so no local client can
+    /// be admitted between the decision and the shutdown state —
+    /// `client_connected` refuses once `shutting_down` is set. A refusal is
+    /// remembered (`quit_requested`): when the last local app client later
+    /// leaves, the daemon stops instead of outliving every window.
+    pub(super) fn request_local_shutdown(&self) -> Result<(), u32> {
+        let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
+        if !shutdown_accepted(lifecycle.local_clients) {
+            lifecycle.quit_requested = true;
+            return Err(lifecycle.local_clients);
+        }
+        lifecycle.shutting_down = true;
+        lifecycle.exit_reason = Some(ExitReason::Requested);
+        lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
+        drop(lifecycle);
+        self.signal_shutdown();
+        Ok(())
+    }
+
     /// How many local app clients are connected right now, the caller
     /// included when it is one. The `Shutdown` arm reads this at the moment
     /// of the request; nothing else decides from it.
+    #[cfg(test)]
     pub(super) fn local_client_count(&self) -> u32 {
         self.lifecycle
             .lock()
@@ -935,6 +977,9 @@ impl ServerState {
     pub(super) fn status_body(&self, request_id: u64) -> DaemonMessage {
         self.sessions.refresh_journal_degradation();
         let output_metrics = self.sessions.output_metrics();
+        // Read before the lifecycle lock below: the registry's own locks
+        // must never nest inside it.
+        let (live_agents, _live_terminals) = self.sessions.live_session_families();
         let lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         let journal_error = self
             .journal_error
@@ -957,6 +1002,7 @@ impl ServerState {
                 clients: lifecycle.clients,
                 local_clients: lifecycle.local_clients,
                 sessions: lifecycle.sessions,
+                agents: Some(live_agents),
                 capabilities: m3a_daemon_capabilities(),
                 // Wire names predate M3.5 (they described a 256 KiB byte
                 // ring). The ring is gone: these now report the bounded

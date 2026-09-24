@@ -571,6 +571,20 @@ use session_types::{
 };
 pub use shell_command::write_test_pty_command;
 
+/// Agents and terminals over one iterator of kinds — the testable half of
+/// [`SessionRegistry::live_session_families`].
+fn count_session_families(kinds: impl Iterator<Item = SessionKind>) -> (u32, u32) {
+    let mut agents = 0u32;
+    let mut terminals = 0u32;
+    for kind in kinds {
+        match kind {
+            SessionKind::Terminal => terminals = terminals.saturating_add(1),
+            _ => agents = agents.saturating_add(1),
+        }
+    }
+    (agents, terminals)
+}
+
 #[derive(Clone)]
 pub struct SessionRegistry {
     inner: Arc<Mutex<HashMap<String, RegistryEntry>>>,
@@ -1011,6 +1025,19 @@ impl SessionRegistry {
         if let Ok(mut cache) = self.state_roster_cache.lock() {
             cache.clear();
         }
+    }
+
+    /// Live sessions by family, for the status body: agents
+    /// (provider-driven) and terminals, so the app can name each truthfully
+    /// instead of calling every session an agent. Counts exactly what a
+    /// roster shows — `Live` entries only: a `Configuring` child is
+    /// invisible to every roster read, and a `Transcript` row runs nothing.
+    pub(crate) fn live_session_families(&self) -> (u32, u32) {
+        let map = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        count_session_families(map.values().filter_map(|entry| match entry {
+            RegistryEntry::Live(_) => Some(entry.metadata().kind.clone()),
+            _ => None,
+        }))
     }
 
     pub(crate) fn state_snapshots(&self, owner: &OwnerId) -> Vec<SessionStateSnapshot> {

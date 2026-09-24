@@ -1,19 +1,18 @@
-//! The close flow: what happens when the main window is asked to close, or
-//! the user picks Quit in the tray.
+//! The close/quit decision: pure choices and pure words, no Tauri.
 //!
-//! One responsibility: deciding — from the stored choice and one daemon
-//! status read — whether a close means hide-to-tray, quit, or a question,
-//! and asking that question with the native three-button dialog.
+//! One responsibility: from the stored choice and the daemon's facts,
+//! decide what a window close or an explicit quit becomes, and exactly
+//! what the confirmation says. The Tauri half that acts on the decision
+//! lives in `close_flow`.
+
+use std::sync::Mutex;
 
 use serde_json::Value;
-use tauri::Manager;
-use tauri_plugin_dialog::DialogExt;
-
-use crate::surface_settings;
 
 /// The stored "When I close the window" choice. Mirrored by
 /// `src/features/settings/closeBehaviorChoice.ts`; both sides read the same
-/// document and both fall back the same way.
+/// document and both fall back the same way. The choice applies to closing
+/// the WINDOW only — the tray's Quit and the app-level exit always ask.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum CloseChoice {
     #[default]
@@ -26,78 +25,130 @@ pub enum CloseChoice {
 /// the backend's `^[a-z0-9-]{1,32}$` filename rule.
 pub(crate) const CLOSE_SURFACE_ID: &str = "close-behavior";
 
-/// What a close (or a tray Quit) turns into, decided once so the caller —
-/// window close, tray menu, macOS Cmd+Q — all act the same way.
+/// What the daemon reported the last time it was asked. Unknown is not
+/// "nothing": a failed read must never be phrased as an empty daemon.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum DaemonFacts {
+    Read {
+        agents: u32,
+        terminals: u32,
+        other_local_windows: u32,
+    },
+    #[default]
+    Unknown,
+}
+
+/// What the confirmation offers. A window close suggests the tray; an
+/// explicit quit never does — it is a quit question, not a close question.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AskFlavor {
+    WindowClose,
+    QuitOnly,
+}
+
+/// What a close (or a tray Quit) turns into, decided once so the window,
+/// the tray menu, and the macOS app-menu exit all act the same way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClosePlan {
     /// Show the confirmation dialog.
-    Ask,
+    Ask(AskFlavor),
     /// Hide the window; the tray keeps the app and its daemon alive.
     Hide,
     /// Quit for real: the window goes and the `RunEvent::Exit` cleanup runs.
     Quit,
 }
 
-/// The close decision as pure logic. The stored choice alone decides the
-/// act; the daemon facts (running agents, other local clients) only shape
-/// what the confirmation says when the choice is Ask.
-pub fn decide_close(
-    choice: CloseChoice,
-    _agents_running: u32,
-    _other_local_clients: u32,
-) -> ClosePlan {
+/// The window-close decision as pure logic: the stored choice alone
+/// decides; the daemon facts only shape what the confirmation says.
+pub fn decide_close(choice: CloseChoice) -> ClosePlan {
     match choice {
-        CloseChoice::Ask => ClosePlan::Ask,
+        CloseChoice::Ask => ClosePlan::Ask(AskFlavor::WindowClose),
         // The suggested act: the tray keeps the app and its daemon alive.
         CloseChoice::Tray => ClosePlan::Hide,
         CloseChoice::Quit => ClosePlan::Quit,
     }
 }
 
-/// What the confirmation says. The owner's requirement: it names what
-/// stops — the running agents and the daemon — and that paired devices lose
-/// access. When another local window is connected, the daemon's own
-/// refusal will keep it alive, and the message says so instead of
-/// promising a stop that will not happen.
-pub fn close_confirmation_message(agents_running: u32, other_local_clients: u32) -> String {
-    let agents = match agents_running {
-        0 => "No agents are running.".to_string(),
-        1 => "1 agent is running and will stop.".to_string(),
-        n => format!("{n} agents are running and will stop."),
-    };
-    if other_local_clients > 0 {
-        // The daemon refuses this quit while another local window is
-        // connected, so the honest promise is the survival one.
-        let window_word = if other_local_clients == 1 {
-            "window"
-        } else {
-            "windows"
-        };
-        return format!(
-            "{agents} The daemon keeps running for the {other_local_clients} other open Devboule \
-             {window_word} and its paired devices."
-        );
+/// The explicit-quit decision (tray "Quit", Cmd+Q): always the quit
+/// question, whatever the stored close choice says — a Quit command never
+/// resolves to hiding.
+pub fn decide_quit() -> ClosePlan {
+    ClosePlan::Ask(AskFlavor::QuitOnly)
+}
+
+/// What the confirmation says. The owner's requirement: it says only what
+/// is true. When another local window is connected, nothing stops — the
+/// daemon refuses this quit and keeps running for that window. Otherwise
+/// the running agents and terminals are named separately, and the daemon
+/// and device-access consequences are spelled out.
+pub fn quit_confirmation_message(facts: &DaemonFacts) -> String {
+    match facts {
+        DaemonFacts::Read {
+            agents,
+            terminals,
+            other_local_windows,
+        } if *other_local_windows > 0 => {
+            let windows = match *other_local_windows {
+                1 => "1 other open Devboule window".to_string(),
+                n => format!("{n} other open Devboule windows"),
+            };
+            format!(
+                "Nothing stops: the daemon keeps running for the {windows} and its agents and \
+                 terminals."
+            )
+        }
+        DaemonFacts::Read {
+            agents: 0,
+            terminals: 0,
+            ..
+        } => "No agents or terminals are running. Quitting stops the daemon, and paired devices \
+              lose access until Devboule starts again."
+            .to_string(),
+        DaemonFacts::Read {
+            agents, terminals, ..
+        } => format!(
+            "{} Quitting stops the daemon, and paired devices lose access until Devboule \
+             starts again.",
+            running_list(*agents, *terminals)
+        ),
+        DaemonFacts::Unknown => {
+            "The daemon's status could not be read, so Devboule cannot say what is running. \
+             Quitting asks the daemon to stop; it refuses while another Devboule window is \
+             still connected."
+                .to_string()
+        }
     }
-    format!(
-        "{agents} Quitting stops the Devboule daemon, and paired devices lose access until \
-         Devboule starts again."
-    )
+}
+
+/// The running sessions, each named for what it is: a terminal is never
+/// called an agent, and an empty daemon is never dressed up as a count.
+fn running_list(agents: u32, terminals: u32) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if agents > 0 {
+        parts.push(plural(agents, "agent"));
+    }
+    if terminals > 0 {
+        parts.push(plural(terminals, "terminal"));
+    }
+    match parts.as_slice() {
+        [] => "Nothing is running".to_string(),
+        [only] => format!("{only} will stop"),
+        [first, second] => format!("{first} and {second} will stop"),
+        _ => unreachable!("two families, never more"),
+    }
+}
+
+fn plural(count: u32, noun: &str) -> String {
+    match count {
+        1 => format!("1 {noun}"),
+        n => format!("{n} {noun}s"),
+    }
 }
 
 /// The stored choice, or Ask for anything unreadable — a missing file, a
 /// corrupt one, or an unknown value. Asking is the only direction that
 /// cannot stop a daemon silently.
-fn stored_close_choice(app: &tauri::AppHandle) -> CloseChoice {
-    let Ok(config_dir) = app.path().app_config_dir() else {
-        return CloseChoice::Ask;
-    };
-    match surface_settings::surface_settings_get_inner(&config_dir, CLOSE_SURFACE_ID) {
-        Ok(value) => close_choice_from_stored(value.as_ref()),
-        Err(_) => CloseChoice::Ask,
-    }
-}
-
-fn close_choice_from_stored(value: Option<&Value>) -> CloseChoice {
+pub(crate) fn stored_close_choice_text(value: Option<&Value>) -> CloseChoice {
     let Some(value) = value else {
         return CloseChoice::Ask;
     };
@@ -108,109 +159,75 @@ fn close_choice_from_stored(value: Option<&Value>) -> CloseChoice {
     }
 }
 
-/// `CloseRequested` entry point. The window never closes here: a close
-/// either turns into a decided act or into the confirmation — never into a
-/// silent quit.
-pub fn on_close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) {
-    api.prevent_close();
-    let app = window.app_handle().clone();
-    // The decision and the dialog never run on the main thread: the daemon
-    // status read can wait on the daemon, and a blocked main thread would
-    // freeze the very window the question is about.
-    let flow_app = app.clone();
-    let spawned = std::thread::Builder::new()
-        .name("close-confirmation".into())
-        .spawn(move || run_close_flow(flow_app));
-    if spawned.is_err() {
-        // With no thread to decide in, nothing may stop the daemon silently:
-        // hiding keeps the app and its daemon alive.
-        hide_main_window(&app);
+/// One close/quit confirmation at a time: a second request while one is
+/// open is ignored, never turned into a competing dialog whose answers
+/// could fight.
+#[derive(Default)]
+pub(crate) struct ConfirmGate(Mutex<bool>);
+
+impl ConfirmGate {
+    pub(crate) const fn new() -> Self {
+        Self(Mutex::new(false))
     }
-}
 
-/// The tray's Quit entry point, and the macOS app-menu exit: the same
-/// decision as closing the window, so the menu is no way around it.
-pub fn confirm_quit(app: tauri::AppHandle) {
-    // If no thread can be spawned the request dies here: undecidable means
-    // keep running, never a silent quit.
-    let _ = std::thread::Builder::new()
-        .name("close-confirmation".into())
-        .spawn(move || run_close_flow(app));
-}
-
-fn run_close_flow(app: tauri::AppHandle) {
-    let choice = stored_close_choice(&app);
-    let (agents_running, other_local_clients) = daemon_facts(&app);
-    match decide_close(choice, agents_running, other_local_clients) {
-        ClosePlan::Hide => hide_main_window(&app),
-        ClosePlan::Quit => app.exit(0),
-        ClosePlan::Ask => ask(app, agents_running, other_local_clients),
+    /// Whether the caller may open the confirmation now.
+    pub(crate) fn try_begin(&self) -> bool {
+        let mut open = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if *open {
+            return false;
+        }
+        *open = true;
+        true
     }
-}
 
-/// Running agents and other local app clients, read once from the daemon.
-/// An unreachable daemon has no agents to name and no other window to
-/// protect — the zeros are the honest reading, and the daemon's own refusal
-/// remains the backstop.
-fn daemon_facts(app: &tauri::AppHandle) -> (u32, u32) {
-    let Some(bridge) = app.try_state::<crate::client::DaemonBridge>() else {
-        return (0, 0);
-    };
-    let Ok(client) = bridge.client() else {
-        return (0, 0);
-    };
-    match client.status() {
-        Ok(body) => (body.sessions, body.local_clients.saturating_sub(1)),
-        Err(_) => (0, 0),
-    }
-}
-
-fn ask(app: tauri::AppHandle, agents_running: u32, other_local_clients: u32) {
-    app.dialog()
-        .message(close_confirmation_message(
-            agents_running,
-            other_local_clients,
-        ))
-        .title("Quit Devboule?")
-        .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
-        .buttons(
-            tauri_plugin_dialog::MessageDialogButtons::YesNoCancelCustom(
-                "Keep running in the tray".into(),
-                "Quit".into(),
-                "Cancel".into(),
-            ),
-        )
-        .show_with_result(move |result| match result {
-            tauri_plugin_dialog::MessageDialogResult::Yes => hide_main_window(&app),
-            tauri_plugin_dialog::MessageDialogResult::No => app.exit(0),
-            // Cancel: exactly as things were.
-            _ => {}
-        });
-}
-
-fn hide_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
+    /// The dialog answered (any answer): the next request may ask again.
+    pub(crate) fn end(&self) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = false;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn the_stored_choice_decides_the_plan() {
-        assert_eq!(decide_close(CloseChoice::Ask, 0, 0), ClosePlan::Ask);
+    fn the_stored_choice_decides_the_window_close_plan() {
+        assert_eq!(
+            decide_close(CloseChoice::Ask),
+            ClosePlan::Ask(AskFlavor::WindowClose)
+        );
         // The tray is the suggested act: the app and its daemon stay up.
-        assert_eq!(decide_close(CloseChoice::Tray, 2, 0), ClosePlan::Hide);
-        assert_eq!(decide_close(CloseChoice::Quit, 2, 0), ClosePlan::Quit);
+        assert_eq!(decide_close(CloseChoice::Tray), ClosePlan::Hide);
+        assert_eq!(decide_close(CloseChoice::Quit), ClosePlan::Quit);
+    }
+
+    #[test]
+    fn an_explicit_quit_is_always_the_quit_question_and_never_hides() {
+        // The stored close choice must not reach the quit path: a Quit
+        // command asks, it never resolves to hiding.
+        assert_eq!(decide_quit(), ClosePlan::Ask(AskFlavor::QuitOnly));
     }
 
     #[test]
     fn the_confirmation_names_what_stops() {
-        let message = close_confirmation_message(2, 0);
-        assert!(message.contains("2"), "it names the agent count: {message}");
-        assert!(message.contains("daemon"), "it names the daemon: {message}");
+        let message = quit_confirmation_message(&DaemonFacts::Read {
+            agents: 2,
+            terminals: 1,
+            other_local_windows: 0,
+        });
+        assert!(
+            message.contains("2 agents"),
+            "it names the agents: {message}"
+        );
+        assert!(
+            message.contains("1 terminal"),
+            "it names the terminals: {message}"
+        );
+        assert!(
+            message.contains("will stop"),
+            "it says they stop: {message}"
+        );
         assert!(
             message.contains("paired devices lose access"),
             "it says device access ends: {message}"
@@ -218,37 +235,87 @@ mod tests {
     }
 
     #[test]
-    fn the_confirmation_says_the_daemon_survives_for_another_window() {
-        let alone = close_confirmation_message(0, 0);
-        let shared = close_confirmation_message(0, 1);
+    fn the_confirmation_says_nothing_stops_when_another_window_is_connected() {
+        let message = quit_confirmation_message(&DaemonFacts::Read {
+            agents: 2,
+            terminals: 1,
+            other_local_windows: 1,
+        });
         assert!(
-            !alone.contains("keeps running"),
-            "with no other window the daemon stops: {alone}"
+            message.contains("Nothing stops"),
+            "with another window the daemon refuses this quit: {message}"
         );
         assert!(
-            shared.contains("keeps running"),
-            "with another window connected, the daemon outlives this quit: {shared}"
+            message.contains("keeps running for the 1 other open Devboule window"),
+            "it says who the daemon keeps running for: {message}"
         );
         assert!(
-            shared.contains("1 other"),
-            "it says how many other windows remain: {shared}"
+            !message.contains("will stop"),
+            "it must not promise a stop that will not happen: {message}"
+        );
+    }
+
+    #[test]
+    fn the_confirmation_counts_empty_and_single_kinds_correctly() {
+        let only_terminals = quit_confirmation_message(&DaemonFacts::Read {
+            agents: 0,
+            terminals: 1,
+            other_local_windows: 0,
+        });
+        assert!(
+            only_terminals.contains("1 terminal will stop"),
+            "a terminal is never called an agent: {only_terminals}"
+        );
+        let empty = quit_confirmation_message(&DaemonFacts::Read {
+            agents: 0,
+            terminals: 0,
+            other_local_windows: 0,
+        });
+        assert!(
+            empty.contains("No agents or terminals are running"),
+            "an empty daemon says so plainly: {empty}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_daemon_is_not_reported_as_empty() {
+        let message = quit_confirmation_message(&DaemonFacts::Unknown);
+        assert!(
+            message.contains("could not be read"),
+            "unknown is unknown: {message}"
+        );
+        assert!(
+            !message.contains("No agents"),
+            "it must not claim an empty daemon: {message}"
         );
     }
 
     #[test]
     fn an_unknown_stored_value_means_ask() {
-        assert_eq!(close_choice_from_stored(None), CloseChoice::Ask);
+        assert_eq!(stored_close_choice_text(None), CloseChoice::Ask);
         assert_eq!(
-            close_choice_from_stored(Some(&serde_json::json!({ "choice": "tray" }))),
+            stored_close_choice_text(Some(&json!({ "choice": "tray" }))),
             CloseChoice::Tray
         );
         assert_eq!(
-            close_choice_from_stored(Some(&serde_json::json!({ "choice": "minimize" }))),
+            stored_close_choice_text(Some(&json!({ "choice": "minimize" }))),
             CloseChoice::Ask
         );
         assert_eq!(
-            close_choice_from_stored(Some(&serde_json::json!(null))),
+            stored_close_choice_text(Some(&json!(null))),
             CloseChoice::Ask
         );
+    }
+
+    #[test]
+    fn only_one_confirmation_may_open_at_a_time() {
+        let gate = ConfirmGate::new();
+        assert!(gate.try_begin(), "the first request opens the dialog");
+        assert!(
+            !gate.try_begin(),
+            "a second request while one is open is refused"
+        );
+        gate.end();
+        assert!(gate.try_begin(), "an answered dialog opens the gate again");
     }
 }

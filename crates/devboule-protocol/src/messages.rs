@@ -2569,6 +2569,11 @@ pub struct DaemonStatusBody {
     #[serde(default)]
     pub local_clients: u32,
     pub sessions: u32,
+    /// How many of `sessions` are agents (provider-driven), as opposed to
+    /// terminals — present from the daemon that distinguishes them, so an
+    /// older status reads as "unknown", never as "zero agents".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<u32>,
     pub capabilities: Vec<Capability>,
     /// Highest live-session scrollback occupancy observed by the daemon.
     #[serde(default)]

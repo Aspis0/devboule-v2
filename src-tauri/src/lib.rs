@@ -1,6 +1,7 @@
 mod artifact_export;
 mod backend;
 mod client;
+mod close_flow;
 mod close_prompt;
 mod oracle;
 mod plugins;
@@ -164,7 +165,7 @@ pub fn run() {
             // Every close of the main window becomes a decision (hide, quit,
             // or ask) — never the plain quit it used to be.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                close_prompt::on_close_requested(window, api);
+                close_flow::on_close_requested(window, api);
             }
         })
         .build(tauri::generate_context!())
@@ -188,7 +189,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::ExitRequested { code: None, api } => {
                 api.prevent_exit();
-                close_prompt::confirm_quit(app_handle.clone());
+                close_flow::confirm_quit(app_handle.clone());
             }
             _ => {}
         })

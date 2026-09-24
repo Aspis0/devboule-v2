@@ -56,6 +56,21 @@ describe("CloseBehaviorSetting", () => {
     expect(setMock).toHaveBeenCalledWith("close-behavior", { choice: "quit" });
   });
 
+  it("reports a rejected read and keeps the row usable", async () => {
+    getMock.mockRejectedValue(new Error("the bridge is gone"));
+    setMock.mockResolvedValue(undefined);
+    root = createRoot(container);
+    await act(async () => root.render(<CloseBehaviorSetting />));
+    expect(container.querySelector("[role=alert]")?.textContent).toContain("the bridge is gone");
+    const select = container.querySelector<HTMLSelectElement>("select");
+    if (!select) throw new Error("the choice select did not render");
+    await act(async () => {
+      select.value = "tray";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(setMock).toHaveBeenCalledWith("close-behavior", { choice: "tray" });
+  });
+
   it("restores the stored choice when the save fails", async () => {
     getMock.mockResolvedValue({ status: "value", value: { choice: "ask" } });
     setMock.mockRejectedValue({ message: "the disk said no" });

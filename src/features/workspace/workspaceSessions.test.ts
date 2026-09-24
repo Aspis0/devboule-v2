@@ -1565,3 +1565,74 @@ describe("recovered rows in the strip", () => {
     release();
   });
 });
+
+describe("attention raises from the roster", () => {
+  const watched = () => {
+    const box: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null } = {
+      listener: null,
+    };
+    return box;
+  };
+
+  const snapshot = (id: string, atMs: number | null): SessionStateSnapshot => ({
+    id,
+    workspaceId: null,
+    kind: "acp",
+    title: id,
+    state: { type: "live", generation: 1 },
+    elapsedMs: 0,
+    ...(atMs === null ? {} : { attention: { reason: "finished" as const, atMs } }),
+  });
+
+  const controllerWithWatcher = (
+    box: ReturnType<typeof watched>,
+    onAttention: (session: Session) => void,
+  ) =>
+    createWorkspaceSessionController(
+      {
+        list: vi.fn(async () => []),
+        create: vi.fn(async () => liveSession("created")),
+        watch: vi.fn(async (listener) => {
+          box.listener = listener;
+          return () => {
+            box.listener = null;
+          };
+        }),
+      },
+      onAttention,
+    );
+
+  it("treats attention already active in the first roster as the baseline", () => {
+    const box = watched();
+    const raises: string[] = [];
+    const controller = controllerWithWatcher(box, (session) => raises.push(session.id));
+    controller.watch();
+    // The app just started (or the watch just came up): a raise already
+    // standing is old news, not a new event.
+    box.listener?.([snapshot("s1", 1000)]);
+    expect(raises).toEqual([]);
+    // The same raise re-published: still nothing.
+    box.listener?.([snapshot("s1", 1000)]);
+    expect(raises).toEqual([]);
+    // A genuinely newer raise: exactly one notification.
+    box.listener?.([snapshot("s1", 2000)]);
+    expect(raises).toEqual(["s1"]);
+  });
+
+  it("re-announces a raise whose session left the roster and came back", () => {
+    const box = watched();
+    const raises: string[] = [];
+    const controller = controllerWithWatcher(box, (session) => raises.push(session.id));
+    controller.watch();
+    box.listener?.([snapshot("s1", 1000)]);
+    box.listener?.([snapshot("s1", 2000), snapshot("s2", 3000)]);
+    // s2 is a new arrival carrying a raise: announceable.
+    expect(raises).toEqual(["s1", "s2"]);
+    // s1 leaves the roster entirely…
+    box.listener?.([snapshot("s2", 3000)]);
+    // …and its SAME raise is re-published when it returns: the dedupe slot
+    // went with the row, so this is announceable again.
+    box.listener?.([snapshot("s2", 3000), snapshot("s1", 2000)]);
+    expect(raises).toEqual(["s1", "s2", "s1"]);
+  });
+});
