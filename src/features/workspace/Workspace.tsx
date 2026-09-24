@@ -22,7 +22,7 @@ import { sessionTabElementId, useTabCloseFlow } from "./useTabCloseFlow";
 import { discardPersistedPendingCloses, sharedCloseActions } from "./closeActions";
 import type { CloseIntent } from "./closePolicy";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
-import { startPresenceReporting, type PresenceReporter } from "./presence";
+import { reportSelection } from "./presence";
 import { createDaemonRecovery } from "./daemonRecovery";
 import {
   MAX_LEFT_WIDTH,
@@ -66,10 +66,7 @@ import {
   useWorkspaceSessions,
 } from "./workspaceSessions";
 import {
-  flushParkedAttentionRaises,
   heldAssistantTextFor,
-  productionOnWindowFocusChange,
-  productionWindowState,
   sessionAttentionLabel,
   setAttentionHeldContentProvider,
   workspaceHeldContentProvider,
@@ -501,28 +498,10 @@ export function Workspace({
     void reconnectSessions();
     void refreshPeerNames();
   }, [daemon.state, reconnectSessions, refreshPeerNames, retryProjects]);
-  // Presence reporter lives outside React state: it holds no render output.
-  // Selection changes arrive through the second effect below.
-  const presenceReporterRef = useRef<PresenceReporter | null>(null);
+  // The presence reporter itself is App's (one per app run, flushing parked
+  // raises on every surface); this surface only owns the selected session.
   useEffect(() => {
-    // Presence reads the same OS truth the toast gate does: the document
-    // inside a hidden WebView2 keeps claiming visible and focused. The
-    // seen→unseen transition is also when parked attention raises (the
-    // window was focused but the strip did not render the row) get
-    // announced — the reporter detects the flip, the flush does the rest.
-    const reporter = startPresenceReporting({
-      windowState: productionWindowState,
-      onWindowFocusChange: productionOnWindowFocusChange,
-      onWindowBecameUnseen: flushParkedAttentionRaises,
-    });
-    presenceReporterRef.current = reporter;
-    return () => {
-      presenceReporterRef.current = null;
-      reporter.dispose();
-    };
-  }, []);
-  useEffect(() => {
-    presenceReporterRef.current?.onSelectionChanged(selectedSessionId);
+    reportSelection(selectedSessionId);
   }, [selectedSessionId]);
   const handleReopenSession = useCallback(
     (session: Session) => {

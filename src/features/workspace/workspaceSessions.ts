@@ -19,7 +19,12 @@ import type {
 import { isAgentKind } from "../../types/ipc";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
-import { attentionRaised, fireAttentionToast, forgetAttentionFor } from "./attentionNotice";
+import {
+  attentionRaised,
+  fireAttentionToast,
+  forgetAttentionFor,
+  noteRosterAttention,
+} from "./attentionNotice";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
@@ -631,6 +636,9 @@ export function createWorkspaceSessionController(
       // that returns re-announces, and the map cannot grow for the process
       // lifetime while the watch is down.
       forgetAttentionFor(new Set(listed.map((session) => session.id)));
+      noteRosterAttention(
+        listed.map((session) => ({ id: session.id, attention: session.attention })),
+      );
     } catch {
       if (generation !== refreshGeneration) return;
       publish({ ...state, loading: false, error: LIST_ERROR });
@@ -743,6 +751,12 @@ export function createWorkspaceSessionController(
     // Rows that left the roster take their dedupe slot with them, so a
     // session that returns re-announces like the first arrival it is.
     forgetAttentionFor(new Set(sessions.map((session) => session.id)));
+    // The roster's attention state is the parked-raise oracle: noted on
+    // every application, so a withdrawn or moved-on raise is never
+    // announced from the park.
+    noteRosterAttention(
+      sessions.map((session) => ({ id: session.id, attention: session.attention })),
+    );
   };
 
   const create = async (

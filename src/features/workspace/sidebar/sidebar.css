@@ -28,7 +28,9 @@
 
 .sidebar-search {
   display: flex;
-  min-width: 0;
+  /* The placeholder must survive the row's squeeze: below this the pill
+     clips "Search" to "Searc" (seen live at a 44px pill). */
+  min-width: 56px;
   max-width: 130px;
   flex: 1;
   align-items: center;
@@ -48,7 +50,9 @@
   width: 100%;
   min-width: 0;
   border: 0;
-  padding: 0 var(--space-2);
+  /* The pill already pads; the input's own padding double-counted and
+     cost the placeholder its last letters. */
+  padding: 0;
   color: var(--ink);
   background: transparent;
   font-size: var(--type-meta);
@@ -354,7 +358,9 @@
 .sidebar-foot {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  /* The spec's foot gap (mockup skeleton: 8px) — the dot must not touch
+     its label. */
+  gap: var(--space-8);
   height: 28px;
   padding: 0 var(--space-8);
   overflow: hidden;

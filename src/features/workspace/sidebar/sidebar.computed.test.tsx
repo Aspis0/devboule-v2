@@ -176,6 +176,26 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(foot).paddingLeft).toBe("8px");
   });
 
+  it("the search pill keeps the placeholder readable and the foot dot keeps the spec gap", async () => {
+    // Live check found the input at 39px inside a 44.5px pill ("Searc") and
+    // the daemon dot touching its label. Widths and gaps come from the
+    // shared spacing scale (:root), so the assertions are theme-invariant.
+    inject([".sidebar-search", ".sidebar-search input", ".sidebar-foot"]);
+    await renderWorkspace();
+
+    const pill = document.querySelector<HTMLElement>(".sidebar-search");
+    if (pill === null) throw new Error("search pill did not render");
+    expect(getComputedStyle(pill).minWidth).toBe("56px");
+    const input = pill.querySelector("input");
+    if (input === null) throw new Error("search input did not render");
+    expect(getComputedStyle(input).paddingLeft).toBe("0px");
+    expect(getComputedStyle(input).paddingRight).toBe("0px");
+
+    const foot = document.querySelector<HTMLElement>(".sidebar-foot");
+    if (foot === null) throw new Error("daemon foot did not render");
+    expect(getComputedStyle(foot).gap).toBe("8px");
+  });
+
   it("the foot's rows sit on the body rows' 16px column", async () => {
     // The composed left edge is what the eye sees: container padding plus
     // the row's own padding must add up to the same 16px column the body

@@ -5,6 +5,12 @@ import { SurfacePlaceholder } from "./SurfacePlaceholder";
 import { useAppStore, type DesignSessionState } from "../store/appStore";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
 import { sharedSessionController } from "../features/workspace/workspaceSessions";
+import {
+  flushParkedAttentionRaises,
+  productionOnWindowFocusChange,
+  productionWindowState,
+} from "../features/workspace/attentionNotice";
+import { startPresenceReporting } from "../features/workspace/presence";
 import type { DesignHost, DesignSurfaceProps } from "../features/design/DesignSurface";
 import { createAgentHost, disposeAgentHost } from "../features/design/agentHost";
 
@@ -126,6 +132,19 @@ export function App() {
     // it is what keeps attention — and the OS toasts that come from it —
     // alive while a surface other than Workspace is on screen.
     sharedSessionController().watch();
+  }, []);
+
+  useEffect(() => {
+    // Presence and the parked-raise announcer are app-scope, like the
+    // roster watch: raises keep arriving on every surface, so the window's
+    // unseen flip must flush them on every surface too — not only while
+    // Workspace happens to be mounted.
+    const reporter = startPresenceReporting({
+      windowState: productionWindowState,
+      onWindowFocusChange: productionOnWindowFocusChange,
+      onWindowBecameUnseen: flushParkedAttentionRaises,
+    });
+    return () => reporter.dispose();
   }, []);
 
   return (

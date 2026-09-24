@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   workspacesList: vi.fn(),
   surfaceSettingsGet: vi.fn(),
   surfaceSettingsSet: vi.fn(),
+  startPresenceReporting: vi.fn(),
+  flushParkedAttentionRaises: vi.fn(),
 }));
 
 vi.mock("../../lib/tauri", () => ({
@@ -33,6 +35,17 @@ vi.mock("../../lib/tauri", () => ({
   sessionsWatch: vi.fn(),
   surfaceSettingsGet: mocks.surfaceSettingsGet,
   surfaceSettingsSet: mocks.surfaceSettingsSet,
+}));
+
+// The real reporter polls and invokes the window API; these tests assert the
+// WIRING only — that App starts presence and hands it the parked-raise flush.
+vi.mock("../features/workspace/presence", () => ({
+  startPresenceReporting: (...args: unknown[]) => mocks.startPresenceReporting(...args),
+  reportSelection: vi.fn(),
+}));
+vi.mock("../features/workspace/attentionNotice", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  flushParkedAttentionRaises: (...args: unknown[]) => mocks.flushParkedAttentionRaises(...args),
 }));
 
 import { App } from "./App";
@@ -95,6 +108,12 @@ beforeEach(() => {
   mocks.workspacesList.mockReset();
   mocks.surfaceSettingsGet.mockReset();
   mocks.surfaceSettingsSet.mockReset();
+  mocks.startPresenceReporting.mockReset();
+  mocks.flushParkedAttentionRaises.mockReset();
+  mocks.startPresenceReporting.mockReturnValue({
+    onSelectionChanged: vi.fn(),
+    dispose: vi.fn(),
+  });
 
   mocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
   mocks.surfaceSettingsSet.mockResolvedValue(undefined);
@@ -140,6 +159,28 @@ describe("App Design host selection", () => {
     );
     expect(container.textContent).not.toContain("Index header");
     expect(mocks.oracleStatus).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+});
+
+describe("App presence wiring", () => {
+  it("starts presence once and hands it the parked-raise flush", async () => {
+    // The announcer is app-scope, not Workspace-scope: deleting the
+    // onWindowBecameUnseen wiring (or the reporter start) must fail here.
+    // The placeholder surface keeps the mount synchronous and light.
+    useAppStore.setState({ activeSurface: "marketplace" });
+    mocks.startPresenceReporting.mockClear();
+    mocks.flushParkedAttentionRaises.mockClear();
+    const { root } = createRootContainer();
+    await act(async () => root.render(<App />));
+
+    expect(mocks.startPresenceReporting).toHaveBeenCalledTimes(1);
+    const deps = mocks.startPresenceReporting.mock.calls[0]?.[0] as
+      | { onWindowBecameUnseen?: () => void }
+      | undefined;
+    expect(typeof deps?.onWindowBecameUnseen).toBe("function");
+    deps?.onWindowBecameUnseen?.();
+    expect(mocks.flushParkedAttentionRaises).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
   });
 });

@@ -5,6 +5,8 @@ import type { ToastContent, ToastDeps, WindowState } from "./attentionNotice";
 import {
   setAttentionHeldContentProvider,
   flushParkedAttentionRaises,
+  noteRosterAttention,
+  noteWindowUnseen,
   PREVIEW_LIMIT,
   TOAST_RETRY_DELAY_MS,
   attentionRaised,
@@ -47,6 +49,24 @@ const minimized = windowStateOf({ visible: true, focused: true, minimized: true 
 
 function attention(reason: Attention["reason"], atMs: number): Attention {
   return { reason, atMs };
+}
+
+/**
+ * Deferred window-state reads, resolved per fire: the only way to test
+ * raises that pause inside their own window-state read.
+ */
+function deferredWindowState(): {
+  windowState: () => Promise<WindowState>;
+  resolveNext: (state: WindowState) => void;
+} {
+  const resolvers: Array<(state: WindowState) => void> = [];
+  return {
+    windowState: () =>
+      new Promise<WindowState>((resolve) => {
+        resolvers.push(resolve);
+      }),
+    resolveNext: (state) => resolvers.shift()?.(state),
+  };
 }
 
 describe("attentionRaised", () => {
@@ -371,7 +391,6 @@ describe("fireAttentionToast delivery", () => {
       heldContent: (sessionId) =>
         sessionId === "s3" ? { permissionText: "Run npm install" } : undefined,
       rendered: () => true,
-      pending: () => undefined,
     });
     const send = vi.fn(async (_content: ToastContent) => undefined);
     fireAttentionToast("s3", "agent three", attention("permission", 1000), {
@@ -388,22 +407,6 @@ describe("fireAttentionToast delivery", () => {
 });
 
 describe("fireAttentionToast ordering and rejection", () => {
-  // Deferred window-state reads, resolved per fire: the only way to test
-  // the order two raises land their toasts in.
-  const deferredWindowState = (): {
-    windowState: () => Promise<WindowState>;
-    resolveNext: (state: WindowState) => void;
-  } => {
-    const resolvers: Array<(state: WindowState) => void> = [];
-    return {
-      windowState: () =>
-        new Promise<WindowState>((resolve) => {
-          resolvers.push(resolve);
-        }),
-      resolveNext: (state) => resolvers.shift()?.(state),
-    };
-  };
-
   it("does not send a stale raise after a newer one", async () => {
     vi.useFakeTimers();
     forgetAttentionFor(new Set());
@@ -565,6 +568,9 @@ describe("fireAttentionToast seen gate needs the row rendered", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     forgetAttentionFor(new Set());
+    noteRosterAttention([]);
+    // The window's last applied truth persists across tests, like the maps.
+    noteWindowUnseen(false);
   });
 
   afterEach(() => {
@@ -574,18 +580,23 @@ describe("fireAttentionToast seen gate needs the row rendered", () => {
     vi.useRealTimers();
   });
 
-  it("an off-strip raise seen while focused announces once when presence reports unseen", async () => {
+  it("an off-strip permission raise seen while focused announces once when presence reports unseen", async () => {
+    // Production truth for an off-strip session: the app never attached to
+    // it, so no permission card exists locally and the rendered predicate
+    // says no. The roster — not the queue — is what keeps the raise due.
     const send = vi.fn(async (_content: ToastContent) => undefined);
     startReporter(send);
     await vi.advanceTimersByTimeAsync(0);
     setAttentionHeldContentProvider(
       workspaceHeldContentProvider({
         rendered: () => false,
-        pending: () => ({ title: "Run npm install" }),
         heldAssistantText: () => undefined,
+        pending: () => undefined,
       }),
     );
-    fireAttentionToast("v1", "agent one", attention("permission", 1000), {
+    const raise = attention("permission", 1000);
+    noteRosterAttention([{ id: "v1", attention: raise }]);
+    fireAttentionToast("v1", "agent one", raise, {
       send,
       windowState: async () => windowAnswer,
     });
@@ -614,11 +625,13 @@ describe("fireAttentionToast seen gate needs the row rendered", () => {
     setAttentionHeldContentProvider(
       workspaceHeldContentProvider({
         rendered: () => rendered,
-        pending: () => ({ title: "Run npm install" }),
         heldAssistantText: () => undefined,
+        pending: () => undefined,
       }),
     );
-    fireAttentionToast("v2", "agent two", attention("permission", 1000), {
+    const raise = attention("permission", 1000);
+    noteRosterAttention([{ id: "v2", attention: raise }]);
+    fireAttentionToast("v2", "agent two", raise, {
       send,
       windowState: async () => windowAnswer,
     });
@@ -633,28 +646,29 @@ describe("fireAttentionToast seen gate needs the row rendered", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("a parked permission raise answered before hiding does not announce", async () => {
-    let answered = false;
+  it("a parked raise whose attention the daemon cleared before the hide does not announce", async () => {
     const send = vi.fn(async (_content: ToastContent) => undefined);
     startReporter(send);
     await vi.advanceTimersByTimeAsync(0);
     setAttentionHeldContentProvider(
       workspaceHeldContentProvider({
         rendered: () => false,
-        pending: () => (answered ? undefined : { title: "Run npm install" }),
         heldAssistantText: () => undefined,
+        pending: () => undefined,
       }),
     );
-    fireAttentionToast("v3", "agent three", attention("permission", 1000), {
+    const raise = attention("permission", 1000);
+    noteRosterAttention([{ id: "v3", attention: raise }]);
+    fireAttentionToast("v3", "agent three", raise, {
       send,
       windowState: async () => windowAnswer,
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
 
-    // The card is answered elsewhere while the raise sits parked, then the
-    // window hides: nothing to announce.
-    answered = true;
+    // The daemon withdraws the raise (the next roster carries no attention
+    // for the session), then the window hides: nothing is due any more.
+    noteRosterAttention([{ id: "v3", attention: undefined }]);
     windowAnswer = { visible: false, focused: false, minimized: false };
     watchedFocus.handler?.({ payload: false });
     await vi.advanceTimersByTimeAsync(0);
@@ -668,8 +682,8 @@ describe("fireAttentionToast seen gate needs the row rendered", () => {
     setAttentionHeldContentProvider(
       workspaceHeldContentProvider({
         rendered: () => true,
-        pending: () => undefined,
         heldAssistantText: () => undefined,
+        pending: () => undefined,
       }),
     );
     fireAttentionToast("v4", "agent four", attention("permission", 1000), {
@@ -685,5 +699,64 @@ describe("fireAttentionToast seen gate needs the row rendered", () => {
     watchedFocus.handler?.({ payload: false });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("a parked raise is never announced once a newer raise for the session has landed", async () => {
+    // No provider registered — the surfaces-without-a-strip case, which
+    // must park (an unknown rendered answer never claims seen) and must
+    // still announce at flush. The newer raise toasts immediately; whether
+    // through the dedupe (lastFired holds the newer raise) or the roster
+    // check, the stale park must stay silent afterwards.
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const first = attention("finished", 1000);
+    noteRosterAttention([{ id: "w1", attention: first }]);
+    fireAttentionToast("w1", "agent one", first, { send, windowState: onScreenFocused });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+
+    // The window hides and a newer raise lands for the same session: the
+    // newer one toasts at once, and the park must not still hold the stale
+    // raise behind it.
+    const newer = attention("finished", 2000);
+    fireAttentionToast("w1", "agent one", newer, { send, windowState: hiddenInTray });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    flushParkedAttentionRaises({ send, windowState: hiddenInTray });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("a raise parked by a stale seen read announces at once when the flip already fired", async () => {
+    // The raise's window-state read pauses in flight; the window hides and
+    // the reporter spends the only flip. When the stale read resolves
+    // "seen", parking would wait for a flip that never comes again — the
+    // newer window truth says announce now.
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    startReporter(send);
+    await vi.advanceTimersByTimeAsync(0);
+    setAttentionHeldContentProvider(
+      workspaceHeldContentProvider({
+        rendered: () => false,
+        heldAssistantText: () => undefined,
+        pending: () => undefined,
+      }),
+    );
+    const { windowState, resolveNext } = deferredWindowState();
+    fireAttentionToast("v5", "agent five", attention("finished", 1000), { send, windowState });
+    windowAnswer = { visible: false, focused: false, minimized: false };
+    watchedFocus.handler?.({ payload: false });
+    await vi.advanceTimersByTimeAsync(0);
+    // The flip fired on an empty park: nothing announced yet.
+    expect(send).not.toHaveBeenCalled();
+
+    resolveNext({ visible: true, focused: true, minimized: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    // Announced, not parked: another flush adds nothing.
+    flushParkedAttentionRaises({ send, windowState: async () => windowAnswer });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

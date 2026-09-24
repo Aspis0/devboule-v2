@@ -1,5 +1,5 @@
 import { sessionPresence, type CommandArgs } from "../../lib/tauri";
-import type { WindowState } from "./attentionNotice";
+import { noteWindowUnseen, type WindowState } from "./attentionNotice";
 
 /** How often production re-asks the window state: hiding the window fires
  *  no DOM event inside WebView2, so a poll is the safety net behind the
@@ -78,6 +78,17 @@ interface Presence {
 }
 
 /**
+ * The reporter the app started (App, once per app run). Selection changes
+ * are reported from wherever the selected session lives — the Workspace
+ * surface, which never sees this module's wiring — through reportSelection.
+ */
+let activeReporter: PresenceReporter | null = null;
+
+export function reportSelection(focusedSessionId: string | null): void {
+  activeReporter?.onSelectionChanged(focusedSessionId);
+}
+
+/**
  * Starts presence reporting and sends one initial report so the daemon is
  * not guessing before the first selection or event.
  *
@@ -135,6 +146,10 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     const appVisible = deps?.windowState
       ? !readFailed && asked !== null && asked.visible && asked.focused && !asked.minimized
       : doc.visibilityState === "visible" && doc.hasFocus();
+    // The applied answer is the window's newest truth; the attention side
+    // needs it to decide park-now against announce-now (a raise's own
+    // window-state read can be older than this flip).
+    noteWindowUnseen(!appVisible);
     if (lastAppliedVisible === true && appVisible === false) {
       deps?.onWindowBecameUnseen?.();
     }
@@ -229,13 +244,14 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
       : undefined;
   emitForgotten();
 
-  return {
+  const reporter: PresenceReporter = {
     onSelectionChanged(nextFocusedSessionId: string | null): void {
       focusedSessionId = nextFocusedSessionId;
       emitForgotten();
     },
     dispose(): void {
       disposed = true;
+      if (activeReporter === reporter) activeReporter = null;
       if (pollTimer !== undefined) clearInterval(pollTimer);
       unsubscribeFocusChange?.();
       win.removeEventListener("focus", onFocusChange);
@@ -243,4 +259,6 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
       doc.removeEventListener("visibilitychange", onVisibilityChange);
     },
   };
+  activeReporter = reporter;
+  return reporter;
 }
