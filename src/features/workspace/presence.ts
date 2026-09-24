@@ -1,4 +1,9 @@
 import { sessionPresence, type CommandArgs } from "../../lib/tauri";
+import type { WindowState } from "./attentionNotice";
+
+/** How often production re-asks the window state: hiding the window fires
+ *  no DOM event inside WebView2, so a poll is the only thing that notices. */
+const DEFAULT_WINDOW_POLL_INTERVAL_MS = 5_000;
 
 /**
  * Presence reporting for the daemon's per-session attention state.
@@ -30,6 +35,15 @@ export interface PresenceDeps {
   invoke: (command: "session_presence", args: CommandArgs["session_presence"]) => Promise<unknown>;
   window: PresenceEventTargetLike;
   document: PresenceDocumentLike;
+  /**
+   * The OS truth about the window. Inside a hidden WebView2 the document
+   * keeps claiming `visibilityState: "visible"` and `hasFocus: true`, so
+   * production asks the window itself; when absent (tests, plain web) the
+   * document answers.
+   */
+  windowState?: () => Promise<WindowState>;
+  /** How often the window state is re-asked. Only used with `windowState`. */
+  pollIntervalMs?: number;
 }
 
 export interface PresenceReporter {
@@ -47,14 +61,11 @@ interface Presence {
  * Starts presence reporting and sends one initial report so the daemon is
  * not guessing before the first selection or event.
  *
- * "Visible" honestly means: `document.visibilityState === "visible"` and
- * `document.hasFocus()`. The visibility flag flips for a minimised or hidden
- * window; focus narrows it to the window the user is actually on. WebView
- * runtimes do not report occlusion (another window in front) or another
- * virtual desktop, so a visible-but-behind window still reads as visible —
- * the report then leans on `hasFocus()` for the truth. When the app is not
- * visibly focused there is no session the user is looking at, so
- * `focusedSessionId` is reported as null rather than the selected one.
+ * "Visible" honestly means the window's own state: hidden via the tray or
+ * minimized flips it, and neither fires a DOM event inside WebView2 — the
+ * document goes on claiming visible and focused forever. So production asks
+ * the window itself and re-asks on a poll; a caller without a window source
+ * (plain web) falls back to the document, where the old assumption holds.
  */
 export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceReporter {
   const win = deps?.window ?? (typeof window === "undefined" ? null : window);
@@ -67,9 +78,12 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   let lastSent: Presence | null = null;
   let disposed = false;
 
-  const emit = (): void => {
+  const emit = async (): Promise<void> => {
     if (disposed) return;
-    const appVisible = doc.visibilityState === "visible" && doc.hasFocus();
+    const asked = deps?.windowState ? await deps.windowState().catch(() => null) : null;
+    const appVisible = asked
+      ? asked.visible && asked.focused && !asked.minimized
+      : doc.visibilityState === "visible" && doc.hasFocus();
     const presence: Presence = {
       focusedSessionId: appVisible ? focusedSessionId : null,
       appVisible,
@@ -92,21 +106,30 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     void Promise.resolve(report).catch(() => undefined);
   };
 
-  const onFocusChange = (): void => emit();
-  const onVisibilityChange = (): void => emit();
+  const emitForgotten = (): void => {
+    void emit();
+  };
+
+  const onFocusChange = (): void => emitForgotten();
+  const onVisibilityChange = (): void => emitForgotten();
 
   win.addEventListener("focus", onFocusChange);
   win.addEventListener("blur", onFocusChange);
   doc.addEventListener("visibilitychange", onVisibilityChange);
-  emit();
+  const pollTimer =
+    deps?.windowState !== undefined
+      ? setInterval(emitForgotten, deps?.pollIntervalMs ?? DEFAULT_WINDOW_POLL_INTERVAL_MS)
+      : undefined;
+  emitForgotten();
 
   return {
     onSelectionChanged(nextFocusedSessionId: string | null): void {
       focusedSessionId = nextFocusedSessionId;
-      emit();
+      emitForgotten();
     },
     dispose(): void {
       disposed = true;
+      if (pollTimer !== undefined) clearInterval(pollTimer);
       win.removeEventListener("focus", onFocusChange);
       win.removeEventListener("blur", onFocusChange);
       doc.removeEventListener("visibilitychange", onVisibilityChange);

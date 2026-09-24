@@ -56,6 +56,7 @@ import {
 } from "./workspaceSessions";
 import {
   heldAssistantTextFor,
+  productionWindowState,
   sessionAttentionLabel,
   setAttentionHeldContentProvider,
   workspaceHeldContentProvider,
@@ -426,7 +427,9 @@ export function Workspace({
   // Selection changes arrive through the second effect below.
   const presenceReporterRef = useRef<PresenceReporter | null>(null);
   useEffect(() => {
-    const reporter = startPresenceReporting();
+    // Presence reads the same OS truth the toast gate does: the document
+    // inside a hidden WebView2 keeps claiming visible and focused.
+    const reporter = startPresenceReporting({ windowState: productionWindowState });
     presenceReporterRef.current = reporter;
     return () => {
       presenceReporterRef.current = null;

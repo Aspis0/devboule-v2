@@ -27,6 +27,9 @@ pub(crate) fn build(app: &tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &status, &quit])?;
     let builder = TrayIconBuilder::with_id("devboule")
+        // Windows lists the icon by its tooltip; without it the icon is an
+        // unnamed button to hover and to screen readers.
+        .tooltip("Devboule")
         .menu(&menu)
         // Left click restores the window; only right click opens the menu.
         .show_menu_on_left_click(false)

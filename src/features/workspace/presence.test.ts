@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { startPresenceReporting, type PresenceDeps } from "./presence";
+import type { WindowState } from "./attentionNotice";
+
+/** Lets an async emit settle before the assertions read the sends. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 6; i += 1) await Promise.resolve();
+}
 
 type Listener = () => void;
 
@@ -140,6 +146,52 @@ describe("presence reporting", () => {
     env.state.hasFocus = false;
     env.fire("blur");
     expect(env.invoke).toHaveBeenCalledTimes(callsAfterSettling + 1);
+  });
+
+  it("asks the window state, so a hidden window is reported hidden even while the page lies", async () => {
+    // The live check measured this: hidden in the tray, the document still
+    // claims visible and focused. The window state is the truth.
+    const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
+    const windowState = async (): Promise<WindowState> => ({
+      visible: false,
+      focused: false,
+      minimized: false,
+    });
+    const reporter = startPresenceReporting({
+      invoke: env.invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      windowState,
+    });
+
+    await flush();
+    expect(env.invoke).toHaveBeenCalledWith("session_presence", {
+      focusedSessionId: null,
+      appVisible: false,
+    });
+    reporter.dispose();
+  });
+
+  it("reports the window state as visible and focused when it really is", async () => {
+    const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
+    const windowState = async (): Promise<WindowState> => ({
+      visible: true,
+      focused: true,
+      minimized: false,
+    });
+    const reporter = startPresenceReporting({
+      invoke: env.invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      windowState,
+    });
+
+    await flush();
+    expect(env.invoke).toHaveBeenCalledWith("session_presence", {
+      focusedSessionId: null,
+      appVisible: true,
+    });
+    reporter.dispose();
   });
 
   it("stops listening and sending after dispose", () => {

@@ -571,8 +571,11 @@ describe("workspace session controller", () => {
       (session, attention) =>
         fireAttentionToast(session.id, sessionTitle(session), attention, {
           send,
-          visible: () => false,
-          focused: () => false,
+          windowState: async () => ({
+            visible: false,
+            focused: false,
+            minimized: false,
+          }),
         }),
     );
     const release = controller.watch();
@@ -590,6 +593,8 @@ describe("workspace session controller", () => {
     // The first push is the baseline; the second raises and toasts once.
     watched.listener?.(raise(1000));
     watched.listener?.(raise(2000));
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
     expect(send).toHaveBeenCalledTimes(1);
     // The watch is down, and a list refresh is the only update that removes

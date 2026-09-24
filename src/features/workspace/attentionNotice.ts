@@ -34,12 +34,23 @@ export function attentionRaised(
 }
 
 /**
- * Whether an OS toast may fire: only when the window is NOT both visible
- * and focused — hidden in the tray, minimized, or behind another window.
- * A user looking at Devboule (any surface) gets no toasts.
+ * The window's real state, from the OS. Inside a hidden WebView2 the
+ * document still reports `visibilityState: "visible"` and `hasFocus: true`,
+ * so the document can never answer this question.
  */
-export function toastGate(appVisible: boolean, appFocused: boolean): boolean {
-  return !(appVisible && appFocused);
+export interface WindowState {
+  visible: boolean;
+  focused: boolean;
+  minimized: boolean;
+}
+
+/**
+ * Whether an OS toast may fire: only when the user is not looking at the
+ * window — hidden in the tray, minimized, or behind another window. A user
+ * looking at Devboule (any surface) gets no toasts.
+ */
+export function toastGate(state: WindowState): boolean {
+  return !state.visible || state.minimized || !state.focused;
 }
 
 /** ~220 characters of preview, Paseo's NOTIFICATION_PREVIEW_LIMIT. */
@@ -205,20 +216,22 @@ export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
 
 /** The plugin surface `sendWithPermission` needs, narrowed to what is used.
  *  `sendNotification` is `void` on the desktop plugin and async in tests, so
- *  the caller awaits either. */
+ *  the caller awaits either. The permission answer is the plugin's RUST
+ *  side: the plugin's own JS check reads `window.Notification.permission`,
+ *  which WebView2 reports as "denied" even while the Rust side says granted
+ *  — the web value never stands for the OS permission here. */
 export interface NotificationPlugin {
-  isPermissionGranted(): Promise<boolean>;
-  requestPermission(): Promise<NotificationPermission>;
+  rustPermissionGranted(): Promise<boolean>;
   sendNotification(options: { title: string; body: string }): void | Promise<void>;
 }
 
 /**
- * The plugin's own gate, with the one ask per app run. A denial sends
- * nothing and is FINAL for that plugin: the user said no once, and asking
- * again for every agent that finishes would be nagging, not consent. The
- * memory is keyed by the plugin object, so the production import (one
- * module instance per app run) asks once while a test's own plugin starts
- * clean.
+ * A denial is FINAL for that plugin: on the desktop the OS itself decides
+ * at toast time (notifications settings, Focus Assist), so there is no ask
+ * to repeat, and one measured "no" is remembered rather than re-litigated
+ * for every agent that finishes. The memory is keyed by the plugin object,
+ * so the production import (one module instance per app run) remembers
+ * once while a test's own plugin starts clean.
  */
 const deniedPlugins = new WeakSet<NotificationPlugin>();
 
@@ -227,10 +240,7 @@ export async function sendWithPermission(
   plugin: NotificationPlugin,
 ): Promise<void> {
   if (deniedPlugins.has(plugin)) return;
-  let granted = await plugin.isPermissionGranted();
-  if (!granted) {
-    granted = (await plugin.requestPermission()) === "granted";
-  }
+  const granted = await plugin.rustPermissionGranted();
   if (!granted) {
     deniedPlugins.add(plugin);
     return;
@@ -238,17 +248,24 @@ export async function sendWithPermission(
   await plugin.sendNotification({ title: content.title, body: content.body });
 }
 
-/** The production sender: the plugin's permission flow, then the toast. */
+/** The production sender: the Rust side's permission answer, then the
+ *  toast. The invoke goes straight to the plugin command; the JS wrapper
+ *  would prefer the web permission, which is the one value that lies. */
 async function defaultSend(content: ToastContent): Promise<void> {
-  const plugin = await import("@tauri-apps/plugin-notification");
-  await sendWithPermission(content, plugin);
+  const [{ invoke }, plugin] = await Promise.all([
+    import("@tauri-apps/api/core"),
+    import("@tauri-apps/plugin-notification"),
+  ]);
+  await sendWithPermission(content, {
+    rustPermissionGranted: () => invoke("plugin:notification|is_permission_granted"),
+    sendNotification: (options) => plugin.sendNotification(options),
+  });
 }
 
 /** Everything the OS side of a toast needs, injected for tests. */
 export interface ToastDeps {
   send: (content: ToastContent) => Promise<void>;
-  visible: () => boolean;
-  focused: () => boolean;
+  windowState: () => Promise<WindowState>;
 }
 
 /** How long a failed toast waits before its one retry. */
@@ -261,6 +278,20 @@ export const TOAST_RETRY_DELAY_MS = 1500;
  * for `TOAST_RETRY_DELAY_MS` and tries again; a second failure is dropped —
  * the raise was announced as far as this app can push it.
  */
+/** The OS truth about this window, asked at the moment it is needed. The
+ *  document inside a hidden WebView2 keeps claiming visible and focused
+ *  forever, so the answer can only come from the window itself. Both the
+ *  toast gate and presence report read this one source. */
+export async function productionWindowState(): Promise<WindowState> {
+  const window = (await import("@tauri-apps/api/window")).getCurrentWindow();
+  const [visible, focused, minimized] = await Promise.all([
+    window.isVisible(),
+    window.isFocused(),
+    window.isMinimized(),
+  ]);
+  return { visible, focused, minimized };
+}
+
 export function fireAttentionToast(
   sessionId: string,
   title: string,
@@ -268,26 +299,26 @@ export function fireAttentionToast(
   deps?: Partial<ToastDeps>,
 ): void {
   if (!attentionRaised(lastFired.get(sessionId), attention)) return;
-  const visible =
-    deps?.visible ??
-    (typeof document === "undefined" ? () => false : () => document.visibilityState === "visible");
-  const focused =
-    deps?.focused ?? (typeof document === "undefined" ? () => false : () => document.hasFocus());
   lastFired.set(sessionId, attention);
-  if (!toastGate(visible(), focused())) {
-    // Seen but not raised: the user was looking at the app.
-    return;
-  }
-  const held = heldContentProvider?.(sessionId);
-  const content = toastContent(title, attention.reason, held);
+  const state = deps?.windowState ?? productionWindowState;
   const send = deps?.send ?? defaultSend;
-  void send(content).catch(() => {
-    // A newer raise may have taken the slot while this send was in flight:
-    // a stale retry must not land after the newer toast.
-    if (lastFired.get(sessionId) !== attention) return;
-    setTimeout(() => {
+  void (async () => {
+    if (!toastGate(await state())) {
+      // Seen but not raised: the user was looking at the window.
+      return;
+    }
+    const held = heldContentProvider?.(sessionId);
+    const content = toastContent(title, attention.reason, held);
+    try {
+      await send(content);
+    } catch {
+      // A newer raise may have taken the slot while this send was in
+      // flight: a stale retry must not land after the newer toast.
       if (lastFired.get(sessionId) !== attention) return;
-      void send(content).catch(() => {});
-    }, TOAST_RETRY_DELAY_MS);
-  });
+      setTimeout(() => {
+        if (lastFired.get(sessionId) !== attention) return;
+        void send(content).catch(() => {});
+      }, TOAST_RETRY_DELAY_MS);
+    }
+  })();
 }

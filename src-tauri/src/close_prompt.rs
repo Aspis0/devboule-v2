@@ -125,10 +125,11 @@ pub(crate) fn act_on_quit_answer(shown: &DaemonFacts, fresh: &DaemonFacts) -> Qu
 }
 
 /// What the confirmation says. The owner's requirement: it says only what
-/// is true. When another local window is connected, nothing stops — the
-/// daemon refuses this quit and keeps running for that window. Otherwise
-/// the running agents and terminals are named separately, and the daemon
-/// and device-access consequences are spelled out.
+/// is true. When another local app is connected, nothing stops — the daemon
+/// refuses this quit and keeps running for it, and it is named as a running
+/// Devboule, not a window: the other side may itself be hidden in its tray.
+/// Otherwise the running agents and terminals are named separately, and the
+/// daemon and device-access consequences are spelled out.
 pub fn quit_confirmation_message(facts: &DaemonFacts) -> String {
     match facts {
         DaemonFacts::Read {
@@ -136,12 +137,12 @@ pub fn quit_confirmation_message(facts: &DaemonFacts) -> String {
             terminals,
             other_local_windows,
         } if *other_local_windows > 0 => {
-            let windows = match *other_local_windows {
-                1 => "1 other open Devboule window".to_string(),
-                n => format!("{n} other open Devboule windows"),
+            let others = match *other_local_windows {
+                1 => "another running Devboule".to_string(),
+                n => format!("the {n} other running Devboule instances"),
             };
             format!(
-                "Nothing stops: the daemon keeps running for the {windows} and its agents and \
+                "Nothing stops: the daemon keeps running for {others} and its agents and \
                  terminals."
             )
         }
@@ -155,13 +156,13 @@ pub fn quit_confirmation_message(facts: &DaemonFacts) -> String {
         DaemonFacts::Read {
             agents, terminals, ..
         } => format!(
-            "{} Quitting stops the daemon, and paired devices lose access until Devboule \
+            "{}. Quitting stops the daemon, and paired devices lose access until Devboule \
              starts again.",
             running_list(*agents, *terminals)
         ),
         DaemonFacts::Unknown => {
             "The daemon's status could not be read, so Devboule cannot say what is running. \
-             Quitting asks the daemon to stop; it refuses while another Devboule window is \
+             Quitting asks the daemon to stop; it refuses while another running Devboule is \
              still connected."
                 .to_string()
         }
@@ -258,48 +259,47 @@ mod tests {
     }
 
     #[test]
-    fn the_confirmation_names_what_stops() {
-        let message = quit_confirmation_message(&DaemonFacts::Read {
-            agents: 2,
-            terminals: 1,
-            other_local_windows: 0,
-        });
-        assert!(
-            message.contains("2 agents"),
-            "it names the agents: {message}"
+    fn the_confirmation_says_what_stops_in_full_sentences() {
+        let read = |agents: u32, terminals: u32, other: u32| {
+            quit_confirmation_message(&DaemonFacts::Read {
+                agents,
+                terminals,
+                other_local_windows: other,
+            })
+        };
+        // Every variant pinned exactly: the sentences stand alone, with the
+        // stop between them, and a terminal is never called an agent.
+        let tail = ". Quitting stops the daemon, and paired devices lose access until Devboule starts again.";
+        assert_eq!(read(1, 0, 0), format!("1 agent will stop{tail}"));
+        assert_eq!(read(0, 1, 0), format!("1 terminal will stop{tail}"));
+        assert_eq!(
+            read(2, 1, 0),
+            format!("2 agents and 1 terminal will stop{tail}")
         );
-        assert!(
-            message.contains("1 terminal"),
-            "it names the terminals: {message}"
-        );
-        assert!(
-            message.contains("will stop"),
-            "it says they stop: {message}"
-        );
-        assert!(
-            message.contains("paired devices lose access"),
-            "it says device access ends: {message}"
+        assert_eq!(
+            read(0, 0, 0),
+            "No agents or terminals are running. Quitting stops the daemon, and paired devices lose access until Devboule starts again."
         );
     }
 
     #[test]
-    fn the_confirmation_says_nothing_stops_when_another_window_is_connected() {
-        let message = quit_confirmation_message(&DaemonFacts::Read {
-            agents: 2,
-            terminals: 1,
-            other_local_windows: 1,
-        });
-        assert!(
-            message.contains("Nothing stops"),
-            "with another window the daemon refuses this quit: {message}"
+    fn the_confirmation_names_another_running_devboule_not_a_window() {
+        let read = |other: u32| {
+            quit_confirmation_message(&DaemonFacts::Read {
+                agents: 0,
+                terminals: 0,
+                other_local_windows: other,
+            })
+        };
+        // The other side may be hidden in its tray: it is not a window on
+        // screen, it is a running Devboule.
+        assert_eq!(
+            read(1),
+            "Nothing stops: the daemon keeps running for another running Devboule and its agents and terminals."
         );
-        assert!(
-            message.contains("keeps running for the 1 other open Devboule window"),
-            "it says who the daemon keeps running for: {message}"
-        );
-        assert!(
-            !message.contains("will stop"),
-            "it must not promise a stop that will not happen: {message}"
+        assert_eq!(
+            read(2),
+            "Nothing stops: the daemon keeps running for the 2 other running Devboule instances and its agents and terminals."
         );
     }
 

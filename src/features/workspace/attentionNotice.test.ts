@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment happy-dom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Attention, SessionStateSnapshot } from "../../types/ipc";
-import type { ToastContent, ToastDeps } from "./attentionNotice";
+import type { ToastContent, ToastDeps, WindowState } from "./attentionNotice";
 import {
   setAttentionHeldContentProvider,
   PREVIEW_LIMIT,
@@ -17,6 +18,30 @@ import {
   workspaceHeldContentProvider,
 } from "./attentionNotice";
 import { createWorkspaceSessionController, sessionTitle } from "./workspaceSessions";
+
+// The live check measured this lie: with the window hidden in the tray the
+// document inside WebView2 still claims visible and focused. Every gate
+// test below mocks the document into this lying state on purpose.
+function documentClaimsVisibleAndFocused(): void {
+  Object.defineProperty(document, "visibilityState", {
+    value: "visible",
+    configurable: true,
+  });
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+}
+
+const windowStateOf =
+  (state: Partial<WindowState>): (() => Promise<WindowState>) =>
+  async () => ({
+    visible: false,
+    focused: false,
+    minimized: false,
+    ...state,
+  });
+
+const hiddenInTray = windowStateOf({ visible: false, focused: false, minimized: false });
+const onScreenFocused = windowStateOf({ visible: true, focused: true, minimized: false });
+const minimized = windowStateOf({ visible: true, focused: true, minimized: true });
 
 function attention(reason: Attention["reason"], atMs: number): Attention {
   return { reason, atMs };
@@ -46,14 +71,14 @@ describe("attentionRaised", () => {
 });
 
 describe("toastGate", () => {
-  it("stays silent while the window is focused and visible", () => {
-    expect(toastGate(true, true)).toBe(false);
+  it("stays silent while the window is focused, visible and not minimized", () => {
+    expect(toastGate({ visible: true, focused: true, minimized: false })).toBe(false);
   });
 
   it("fires when the window is hidden, minimized, or unfocused", () => {
-    expect(toastGate(false, false)).toBe(true); // in the tray
-    expect(toastGate(false, true)).toBe(true); // minimized
-    expect(toastGate(true, false)).toBe(true); // visible but behind
+    expect(toastGate({ visible: false, focused: false, minimized: false })).toBe(true); // in the tray
+    expect(toastGate({ visible: true, focused: true, minimized: true })).toBe(true); // minimized
+    expect(toastGate({ visible: true, focused: false, minimized: false })).toBe(true); // behind
   });
 });
 
@@ -176,48 +201,35 @@ describe("workspaceHeldContentProvider", () => {
 });
 
 describe("sendWithPermission", () => {
-  it("sends when permission is already granted without asking", async () => {
+  // The answer under test is the plugin's RUST side. The shape has no web
+  // permission at all, because WebView2's web value always says "denied" —
+  // the live check measured the Rust side answering granted at the same
+  // moment.
+  it("sends when the Rust side says granted", async () => {
     const plugin = {
-      isPermissionGranted: vi.fn(async () => true),
-      requestPermission: vi.fn(async () => "granted" as NotificationPermission),
+      rustPermissionGranted: vi.fn(async () => true),
       sendNotification: vi.fn(async () => undefined),
     };
     await sendWithPermission({ title: "t", body: "b" }, plugin);
-    expect(plugin.requestPermission).not.toHaveBeenCalled();
     expect(plugin.sendNotification).toHaveBeenCalledWith({ title: "t", body: "b" });
   });
 
-  it("asks exactly once when permission was never granted, then sends", async () => {
-    let granted = false;
+  it("sends nothing after a Rust-side denial, and never consults it again", async () => {
     const plugin = {
-      isPermissionGranted: vi.fn(async () => granted),
-      requestPermission: vi.fn(async () => {
-        granted = true;
-        return "granted" as NotificationPermission;
-      }),
+      rustPermissionGranted: vi.fn(async () => false),
       sendNotification: vi.fn(async () => undefined),
     };
     await sendWithPermission({ title: "t", body: "b" }, plugin);
     await sendWithPermission({ title: "t2", body: "b2" }, plugin);
-    expect(plugin.requestPermission).toHaveBeenCalledTimes(1);
-    expect(plugin.sendNotification).toHaveBeenCalledTimes(2);
-  });
-
-  it("sends nothing after a denial, and never asks a second time", async () => {
-    const plugin = {
-      isPermissionGranted: vi.fn(async () => false),
-      requestPermission: vi.fn(async () => "denied" as NotificationPermission),
-      sendNotification: vi.fn(async () => undefined),
-    };
-    await sendWithPermission({ title: "t", body: "b" }, plugin);
-    await sendWithPermission({ title: "t2", body: "b2" }, plugin);
-    expect(plugin.requestPermission).toHaveBeenCalledTimes(1);
+    expect(plugin.rustPermissionGranted).toHaveBeenCalledTimes(1);
     expect(plugin.sendNotification).not.toHaveBeenCalled();
   });
 });
 
 describe("fireAttentionToast delivery", () => {
-  const hidden = { visible: () => false, focused: () => false };
+  const hidden = {
+    windowState: async () => ({ visible: false, focused: false, minimized: false }),
+  };
 
   it("retries a failed raise once after the delay, then drops it", async () => {
     vi.useFakeTimers();
@@ -226,6 +238,7 @@ describe("fireAttentionToast delivery", () => {
       throw new Error("the toast did not land");
     });
     fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
+    await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(TOAST_RETRY_DELAY_MS);
@@ -277,8 +290,9 @@ describe("fireAttentionToast delivery", () => {
     watched.listener?.(snapshot(1000));
     watched.listener?.(snapshot(1000));
     expect(send).not.toHaveBeenCalled();
-    // A newer raise fires once.
+    // A newer raise fires once, after the window state answers.
     watched.listener?.(snapshot(2000));
+    await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     // The same raise re-published while the send is failing is filtered by
     // the controller — the retry must come from the timer, not this push.
@@ -291,18 +305,19 @@ describe("fireAttentionToast delivery", () => {
   });
 
   it("does not retry a raise that was delivered", async () => {
+    vi.useFakeTimers();
     forgetAttentionFor(new Set());
     const send = vi.fn(async () => undefined);
     fireAttentionToast("s2", "agent two", attention("finished", 1000), { send, ...hidden });
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     fireAttentionToast("s2", "agent two", attention("finished", 1000), { send, ...hidden });
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 
   it("hands the provider's held content to the sender", async () => {
+    vi.useFakeTimers();
     forgetAttentionFor(new Set());
     setAttentionHeldContentProvider((sessionId) =>
       sessionId === "s3" ? { permissionText: "Run npm install" } : undefined,
@@ -312,10 +327,57 @@ describe("fireAttentionToast delivery", () => {
       send,
       ...hidden,
     });
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     const sent = send.mock.calls[0]?.[0];
     expect(sent?.body).toBe("Run npm install");
     setAttentionHeldContentProvider(null);
+    vi.useRealTimers();
+  });
+});
+
+describe("fireAttentionToast window gate", () => {
+  // The document is mocked into the lying state the live check measured:
+  // hidden window, but the page still claims visible and focused. The gate
+  // must ask the window, not the page.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    documentClaimsVisibleAndFocused();
+    forgetAttentionFor(new Set());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("toasts a hidden-but-document-visible window", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    fireAttentionToast("g1", "agent one", attention("finished", 1000), {
+      send,
+      windowState: hiddenInTray,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays silent for a window that is visible and focused", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    fireAttentionToast("g2", "agent two", attention("finished", 1000), {
+      send,
+      windowState: onScreenFocused,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("toasts a minimized window", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    fireAttentionToast("g3", "agent three", attention("permission", 1000), {
+      send,
+      windowState: minimized,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
