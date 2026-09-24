@@ -51,6 +51,7 @@ import {
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { WorkspaceComposer } from "./WorkspaceComposer";
+import { ContextMeter } from "./ContextMeter";
 import { journalLossCopy } from "./journalLoss";
 import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
@@ -727,6 +728,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     subagents: [],
     subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
     lastFinished: null,
+    contextUsage: null,
     manifest: null,
     pendingSwitch: null,
     pendingModeId: null,
@@ -916,6 +918,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           void sessionRef.current?.send(text, [], state.streaming ? "steer" : undefined)
         }
         onStop={() => void sessionRef.current?.interrupt()}
+        contextMeter={
+          <ContextMeter
+            usage={state.contextUsage}
+            manifest={manifest}
+            running={state.streaming && !osGone}
+          />
+        }
         controls={
           <>
             {modes !== undefined ? (

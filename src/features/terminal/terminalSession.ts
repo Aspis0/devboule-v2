@@ -476,6 +476,10 @@ export class TerminalSession {
       case "agent_user_message":
       case "agent_thought":
       case "available_commands":
+      // Usage frames belong to the agent session's meter, which the terminal
+      // view does not render; a leak of either is ignored, not unknown.
+      case "context_usage":
+      case "plan_usage":
         // ACP sessions use these same daemon channels; the terminal view has
         // no agent transcript renderer yet, so it safely ignores them.
         //

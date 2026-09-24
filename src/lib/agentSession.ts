@@ -1,5 +1,6 @@
 import type {
   ActiveTurnBehavior,
+  ContextUsage,
   ErrorCode,
   PermissionRequest,
   PermissionResolved,
@@ -17,6 +18,7 @@ import { eventTypeName } from "./eventTypeName";
 import { parseAgentPermissionRequest } from "./agentPermissionRequest";
 import { parseAgentDaemonNotice, type AgentDaemonNotice } from "./agentDaemonNotice";
 import { parseAgentPeerMessage, type AgentPeerOrigin } from "./agentPeerMessage";
+import { recordPlanUsage } from "./planUsageStore";
 
 export type AgentChannel = SessionChannel;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -143,6 +145,12 @@ export interface AgentSessionState {
   subagents: AgentSubagent[];
   subagentStatusCounts: AgentSubagentStatusCounts;
   lastFinished: AgentFinished | null;
+  /**
+   * The latest context reading this session's stream delivered. Kept across
+   * turns — `live: false` labels it "as of the last turn" instead of hiding
+   * it — and cleared only with the session itself.
+   */
+  contextUsage: ContextUsage | null;
   manifest: SessionManifest | null;
   /** A model/effort switch sent to the daemon that no manifest confirmed yet. */
   pendingSwitch: { modelId?: string; effort?: string; at: number } | null;
@@ -196,6 +204,7 @@ const INITIAL_STATE: AgentSessionState = {
   subagents: [],
   subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
   lastFinished: null,
+  contextUsage: null,
   manifest: null,
   pendingSwitch: null,
   pendingModeId: null,
@@ -812,6 +821,16 @@ export class AgentSession {
             ...(event.usage === undefined ? {} : { usage: event.usage }),
           },
         });
+        return;
+      case "context_usage":
+        // The provider's own reading of this session's context window; the
+        // meter renders it, nothing else acts on it.
+        this.update({ contextUsage: event });
+        return;
+      case "plan_usage":
+        // Account-scoped, so it is recorded beside this session's stream but
+        // stored per provider for every session of that provider to read.
+        recordPlanUsage(event);
         return;
       case "agent_task_started":
         this.startSubagent(event);

@@ -19,6 +19,9 @@ interface WorkspaceComposerProps {
   onStop?: () => void;
   /** Pickers rendered on the left of the control bar, below the textarea. */
   controls?: ReactNode;
+  /** Context ring for the control bar, between the pickers and the actions —
+      where the composer redesign's attach button will sit beside it. */
+  contextMeter?: ReactNode;
 }
 
 function commandQuery(input: string): string | null {
@@ -37,6 +40,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   onSend,
   onStop,
   controls = null,
+  contextMeter = null,
 }: WorkspaceComposerProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -134,6 +138,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               <span className="workspace-composer-hint">{disabledReason}</span>
             ) : null}
           </div>
+          {contextMeter}
           {streaming && onStop ? (
             <button
               type="button"

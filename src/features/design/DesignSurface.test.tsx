@@ -400,6 +400,7 @@ function agentState(manifest: AgentSessionState["manifest"]): AgentSessionState 
     subagents: [],
     subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
     lastFinished: null,
+    contextUsage: null,
     manifest,
     pendingSwitch: null,
     pendingModeId: null,

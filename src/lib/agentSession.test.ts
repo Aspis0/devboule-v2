@@ -22,6 +22,7 @@ import {
   type AgentChatItem,
   type AgentSessionDeps,
 } from "./agentSession";
+import { planUsageFor } from "./planUsageStore";
 import { transcriptItems } from "../features/design/agentHost";
 
 interface Harness {
@@ -2777,5 +2778,60 @@ describe("one entry per failed send", () => {
     expect(texts.filter((text) => text.startsWith("Could not send the message."))).toHaveLength(2);
     expect(texts).toContain(VOICE);
     expect(texts).not.toContain(T);
+  });
+});
+
+describe("context and plan usage", () => {
+  it("keeps the latest context reading on the session and clears it only with the session", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    expect(harness.session.getState().contextUsage).toBeNull();
+
+    harness.emit({
+      type: "context_usage",
+      usedTokens: 76_000,
+      maxTokens: 200_000,
+      live: true,
+    });
+    expect(harness.session.getState().contextUsage).toMatchObject({
+      usedTokens: 76_000,
+      maxTokens: 200_000,
+      live: true,
+    });
+
+    // A later end-of-turn reading replaces it — the meter always shows the
+    // newest number the provider sent, labelled by its `live` flag.
+    harness.emit({
+      type: "context_usage",
+      modelId: "grok-4.6",
+      usedTokens: 90_000,
+      live: false,
+    });
+    expect(harness.session.getState().contextUsage).toMatchObject({
+      modelId: "grok-4.6",
+      usedTokens: 90_000,
+      live: false,
+    });
+  });
+
+  it("records plan usage against its provider, beside whichever session carried it", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "plan_usage",
+      providerId: "codex-plan-test",
+      planLabel: "plus",
+      windows: [{ durationMins: 300, usedPercent: 82, resetsAt: 1_789_057_213 }],
+      credits: { balance: "0", unlimited: false },
+    });
+
+    expect(planUsageFor("codex-plan-test")).toMatchObject({
+      planLabel: "plus",
+      windows: [{ durationMins: 300, usedPercent: 82 }],
+    });
+    // It is the provider's frame, not this session's state.
+    expect(planUsageFor("some-other-provider")).toBeNull();
+    expect(harness.session.getState().contextUsage).toBeNull();
   });
 });
