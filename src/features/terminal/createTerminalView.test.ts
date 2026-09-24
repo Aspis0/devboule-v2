@@ -218,7 +218,9 @@ describe("fitting", () => {
       onCtrlC: () => undefined,
       onFontFit,
     });
-    // Only the opening fit has happened; the fonts promise is still pending.
+    // The fonts promise is still pending. This geometry-less stub runs no
+    // opening fit at all (runFit skips any host without dimensions), so the
+    // callback firing is the only fit trigger in play.
     expect(onFontFit).not.toHaveBeenCalled();
     resolveFonts!();
     await new Promise((resolve) => setTimeout(resolve, 0));

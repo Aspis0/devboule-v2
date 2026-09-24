@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionRequest, SessionSnapshot } from "../../types/ipc";
-import type { TerminalViewHandle } from "./createTerminalView";
+import { createTerminalView, type TerminalViewHandle } from "./createTerminalView";
 import {
   TerminalSession,
   type TerminalBanner,
@@ -1067,4 +1067,205 @@ describe("TerminalSession protocol event coverage", () => {
       expect(unknownTypeBanners(harness.banners)).toEqual([]);
     },
   );
+});
+
+// The production wiring: a real createTerminalView (over mocked xterm) so a
+// font-settle refit is proven at the PTY boundary — one session_resize with
+// the post-font grid, and nothing sent when there is no grid to keep.
+const xtermMocks = vi.hoisted(() => {
+  const state = {
+    terminals: [] as Array<{ cols: number; rows: number; resize: (c: number, r: number) => void }>,
+    fitAddons: [] as Array<{ proposal: { cols: number; rows: number } | null }>,
+  };
+  class MockTerminal {
+    readonly options = {};
+    readonly parser = { registerCsiHandler: () => ({ dispose: () => undefined }) };
+    cols = 80;
+    rows = 24;
+    constructor() {
+      state.terminals.push(this);
+    }
+    attachCustomKeyEventHandler(): void {}
+    loadAddon(): void {}
+    onData(): { dispose: () => void } {
+      return { dispose: () => undefined };
+    }
+    open(): void {}
+    reset(): void {}
+    resize(cols: number, rows: number): void {
+      this.cols = cols;
+      this.rows = rows;
+    }
+    write(_data: string, callback?: () => void): void {
+      callback?.();
+    }
+    dispose(): void {}
+  }
+  class MockFitAddon {
+    proposal: { cols: number; rows: number } | null = null;
+    constructor() {
+      state.fitAddons.push(this);
+    }
+    fit(): void {
+      const terminal = state.terminals.at(-1);
+      if (this.proposal !== null && terminal !== undefined) {
+        terminal.resize(this.proposal.cols, this.proposal.rows);
+      }
+    }
+    proposeDimensions(): { cols: number; rows: number } | null {
+      return this.proposal;
+    }
+  }
+  return { state, MockFitAddon, MockTerminal };
+});
+
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: xtermMocks.MockFitAddon }));
+vi.mock("@xterm/xterm", () => ({ Terminal: xtermMocks.MockTerminal }));
+
+describe("the production view wiring at the PTY boundary", () => {
+  interface ResizeCall {
+    id: string;
+    subscriptionId: number;
+    cols: number;
+    rows: number;
+  }
+
+  const hostSpec: { clientWidth: number; clientHeight: number; querySelector: () => null } = {
+    clientWidth: 800,
+    clientHeight: 384,
+    querySelector: () => null,
+  };
+  const host = hostSpec as unknown as HTMLElement;
+
+  let resizeCalls: ResizeCall[] = [];
+  let fitAddon: { proposal: { cols: number; rows: number } | null };
+  let resolveFonts: () => void;
+  let session: TerminalSession;
+  let onEvent: (event: TerminalEvent) => void = () => undefined;
+
+  async function startSession(): Promise<void> {
+    let fontsResolve!: () => void;
+    const fonts = new Promise<void>((resolve) => {
+      fontsResolve = resolve;
+    });
+    resolveFonts = () => fontsResolve();
+    vi.stubGlobal("getComputedStyle", () => ({ getPropertyValue: () => "0px" }));
+    vi.stubGlobal("document", {
+      documentElement: {},
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      fonts: { ready: fonts },
+    });
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "session_create") {
+        return {
+          id: "session-1",
+          workspaceId: "rust-core",
+          kind: "terminal",
+          title: "Terminal",
+          state: { type: "live", generation: 1 },
+          elapsedMs: 0,
+        };
+      }
+      if (command === "session_attach") return 17;
+      if (command === "session_resize") {
+        resizeCalls.push(args as unknown as ResizeCall);
+        return undefined;
+      }
+      return undefined;
+    });
+    session = new TerminalSession({
+      workspaceId: "rust-core",
+      host,
+      createView: async (viewHost, viewOptions) => createTerminalView(viewHost, viewOptions),
+      invoke: invoke as unknown as TerminalSessionDeps["invoke"],
+      createChannel: (handler) => {
+        onEvent = handler;
+        return { onmessage: onEvent } as TerminalChannel;
+      },
+      registry: {
+        get: () => null,
+        register: () => undefined,
+        updateCursor: () => undefined,
+        remove: () => undefined,
+      },
+      onBanner: () => undefined,
+      onCtrlCArmed: () => undefined,
+      // The node environment has no window: the timer deps fall back to the
+      // (fake-timer-controlled) globals.
+      setTimeout: (callback, milliseconds) =>
+        setTimeout(callback, milliseconds) as unknown as number,
+      clearTimeout: (id) => clearTimeout(id),
+    });
+    await session.start();
+    // The daemon pushes the attach snapshot over the channel; applying it is
+    // what releases the controller's snapshot lock.
+    onEvent({
+      type: "snapshot",
+      asOfSeq: 0,
+      cols: 80,
+      rows: 24,
+      data: "",
+      cursor: { row: 0, col: 0, visible: true, shape: "block", blinking: false },
+      alternateScreen: false,
+      bracketedPaste: false,
+      lineWrap: true,
+    });
+    // The attach's own resize request has fired by now; the pre-font grid is
+    // on the wire and the rest of the test watches only what comes after.
+    await wait(300);
+    resizeCalls = [];
+    fitAddon = xtermMocks.state.fitAddons[0]!;
+  }
+
+  // Real timers: the refit chain is promise microtasks plus the 150 ms
+  // resize debounce, and the waits below sit comfortably above both.
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  beforeEach(() => {
+    xtermMocks.state.terminals.length = 0;
+    xtermMocks.state.fitAddons.length = 0;
+    resizeCalls = [];
+  });
+
+  afterEach(async () => {
+    session.dispose();
+    vi.unstubAllGlobals();
+  });
+
+  it("a font settle after creation sends one session_resize with the post-font grid", async () => {
+    await startSession();
+
+    // The font metric change: the addon proposes a different grid once the
+    // real face is loaded.
+    fitAddon.proposal = { cols: 93, rows: 28 };
+    resolveFonts();
+    // One wait covers both the fonts callback and the resize debounce it
+    // schedules.
+    await wait(400);
+
+    expect(resizeCalls).toEqual([{ id: "session-1", subscriptionId: 17, cols: 93, rows: 28 }]);
+  });
+
+  it("a collapsed host sends no session_resize", async () => {
+    await startSession();
+
+    hostSpec.clientWidth = 0;
+    hostSpec.clientHeight = 0;
+    fitAddon.proposal = { cols: 2, rows: 1 };
+    session.requestResize();
+    await wait(300);
+
+    expect(resizeCalls).toEqual([]);
+  });
+
+  it("a missing proposal sends no session_resize", async () => {
+    await startSession();
+
+    fitAddon.proposal = null;
+    session.requestResize();
+    await wait(300);
+
+    expect(resizeCalls).toEqual([]);
+  });
 });

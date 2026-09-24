@@ -299,6 +299,8 @@ describe("Shell crescent", () => {
 
     await act(async () => sliver.focus());
     expect(navigation.classList).toContain("crescent-nav-open");
+    // The expanded state must match what is shown in BOTH states.
+    expect(sliver.getAttribute("aria-expanded")).toBe("true");
     expect(navigation.hasAttribute("inert")).toBe(false);
     const point = container.querySelector<HTMLButtonElement>('[aria-label="Open Polis"]');
     if (point === null) throw new Error("Polis point did not render");
