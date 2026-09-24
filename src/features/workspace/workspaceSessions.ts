@@ -24,6 +24,7 @@ import {
   fireAttentionToast,
   forgetAttentionFor,
   noteRosterAttention,
+  pruneRosterAttention,
 } from "./attentionNotice";
 
 export interface WorkspaceSessionSource {
@@ -533,8 +534,8 @@ export function sessionDelegationTakeBack(session: Pick<Session, "delegation">):
 /**
  * Merges one listed row with what earlier pushes and lists already said about
  * the same session. The list is authoritative for what it carries (title,
- * state, elapsed, attention, an explicit ledger) and stands in for nothing it
- * omits — the same rules `applySnapshot` applies to a pushed roster, because
+ * state, elapsed, an explicit ledger) and stands in for nothing it omits —
+ * the same rules `applySnapshot` applies to a pushed roster, because
  * `refresh()` erases rows just as a push replaces them (re-audit F5: the
  * known-child mint existed only on the push path, so every session exit and
  * daemon reconnect re-rendered a child as a human-started row until the next
@@ -636,9 +637,10 @@ export function createWorkspaceSessionController(
       // that returns re-announces, and the map cannot grow for the process
       // lifetime while the watch is down.
       forgetAttentionFor(new Set(listed.map((session) => session.id)));
-      noteRosterAttention(
-        listed.map((session) => ({ id: session.id, attention: session.attention })),
-      );
+      // The list's `Session` rows carry no attention field at all — absent
+      // is not withdrawn — so the refresh only prunes the parked-raise
+      // oracle; stamping it here would discard every parked raise.
+      pruneRosterAttention(new Set(listed.map((session) => session.id)));
     } catch {
       if (generation !== refreshGeneration) return;
       publish({ ...state, loading: false, error: LIST_ERROR });

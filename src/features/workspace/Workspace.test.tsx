@@ -12,8 +12,9 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
-  // Presence reporting starts with the Workspace mount; keep its sends
-  // hermetic here (presence.test.ts covers the reporter itself).
+  // Presence reporting starts with the App mount now; this mock keeps the
+  // core invokes these tests can still reach hermetic (presence.test.ts
+  // covers the reporter itself).
   invoke: vi.fn(async () => undefined),
 }));
 

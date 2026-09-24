@@ -500,9 +500,13 @@ export function Workspace({
   }, [daemon.state, reconnectSessions, refreshPeerNames, retryProjects]);
   // The presence reporter itself is App's (one per app run, flushing parked
   // raises on every surface); this surface only owns the selected session.
+  // Leaving the surface (Settings, Design) must withdraw the selection, so
+  // the daemon never suppresses a session's raises for a window that is not
+  // looking at it — the second effect's cleanup owns exactly that.
   useEffect(() => {
     reportSelection(selectedSessionId);
   }, [selectedSessionId]);
+  useEffect(() => () => reportSelection(null), []);
   const handleReopenSession = useCallback(
     (session: Session) => {
       openSession(session);

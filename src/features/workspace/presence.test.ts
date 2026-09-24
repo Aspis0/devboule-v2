@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { startPresenceReporting, type PresenceDeps } from "./presence";
+import { reportSelection, startPresenceReporting, type PresenceDeps } from "./presence";
 import type { CommandArgs } from "../../lib/tauri";
 import type { WindowState } from "./attentionNotice";
 
@@ -75,6 +75,33 @@ describe("presence reporting", () => {
       focusedSessionId: null,
       appVisible: true,
     });
+  });
+
+  it("a reporter starting after a selection reports the stored selection, and null when it is withdrawn", async () => {
+    // React flushes a commit's effects child-first: the surface's
+    // reportSelection can land before any reporter exists. The write is
+    // stored, so the reporter picks it up at start instead of guessing null
+    // — and a withdrawal (the surface unmounted) is reported as null.
+    const env = createEnvironment();
+    reportSelection("session-a");
+    const reporter = startPresenceReporting({
+      invoke: env.invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+    });
+    await flush();
+    expect(env.invoke).toHaveBeenCalledWith("session_presence", {
+      focusedSessionId: "session-a",
+      appVisible: true,
+    });
+
+    reportSelection(null);
+    await flush();
+    expect(env.invoke).toHaveBeenLastCalledWith("session_presence", {
+      focusedSessionId: null,
+      appVisible: true,
+    });
+    reporter.dispose();
   });
 
   it("sends the focused session when the selection changes", async () => {

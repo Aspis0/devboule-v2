@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Attention, AttentionReason, SessionStateSnapshot } from "../../types/ipc";
+import type { Attention, AttentionReason, Session, SessionStateSnapshot } from "../../types/ipc";
 import type { ToastContent, ToastDeps, WindowState } from "./attentionNotice";
 import {
   setAttentionHeldContentProvider,
@@ -758,5 +758,127 @@ describe("fireAttentionToast seen gate needs the row rendered", () => {
     flushParkedAttentionRaises({ send, windowState: async () => windowAnswer });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("a parked raise in a surface without a strip announces at flush", async () => {
+    // No provider registered: an unknown rendered answer must count as NOT
+    // seen — the raise parks here and the flush announces it. If unknown
+    // meant "seen", this raise would never reach its user.
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const raise = attention("permission", 1000);
+    noteRosterAttention([{ id: "np1", attention: raise }]);
+    fireAttentionToast("np1", "agent one", raise, { send, windowState: onScreenFocused });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    flushParkedAttentionRaises({ send, windowState: hiddenInTray });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the controller's roster notes feed the parked-raise oracle", () => {
+  // The oracle has two production writers and this is their only direct
+  // test: the push (whose snapshots carry the attention field) is
+  // authoritative, while the list refresh's `Session` rows carry no
+  // attention field at all — absent is not withdrawn, so the refresh may
+  // only prune.
+  let watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null };
+
+  function makeController(send: (content: ToastContent) => Promise<void>) {
+    watched = { listener: null };
+    const listed: Session[] = [];
+    const controller = createWorkspaceSessionController(
+      {
+        list: vi.fn(async () => listed),
+        create: vi.fn(async () => {
+          throw new Error("not created here");
+        }),
+        watch: vi.fn(async (listener) => {
+          watched.listener = listener;
+          return () => {
+            watched.listener = null;
+          };
+        }),
+      },
+      (session, raised) =>
+        fireAttentionToast(session.id, sessionTitle(session), raised, {
+          send,
+          windowState: onScreenFocused,
+        }),
+    );
+    return { controller, listed };
+  }
+
+  const push = (atMs: number, withAttention = true): SessionStateSnapshot[] => [
+    {
+      id: "agent-1",
+      workspaceId: null,
+      kind: "acp",
+      title: "agent one",
+      state: { type: "live", generation: 1 },
+      elapsedMs: 0,
+      ...(withAttention ? { attention: { reason: "finished" as const, atMs } } : {}),
+    },
+  ];
+
+  const listRow = (): Session => ({
+    id: "agent-1",
+    workspaceId: null,
+    kind: "acp",
+    title: "agent one",
+    state: { type: "live", generation: 1 },
+    elapsedMs: 0,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    noteRosterAttention([]);
+    noteWindowUnseen(false);
+    setAttentionHeldContentProvider(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a routine list refresh does not withdraw a parked raise", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { controller, listed } = makeController(send);
+    const release = controller.watch();
+    // First roster is the baseline; the second is a real raise.
+    watched.listener?.(push(1000));
+    watched.listener?.(push(2000));
+    await vi.advanceTimersByTimeAsync(0);
+    // Seen window and no strip here: parked, unannounced.
+    expect(send).not.toHaveBeenCalled();
+
+    // The refresh resolves with the reply's real shape: no attention field.
+    listed.push(listRow());
+    await controller.refresh();
+
+    flushParkedAttentionRaises({ send, windowState: hiddenInTray });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    release();
+  });
+
+  it("a push that withdraws the attention takes the parked raise with it", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { controller } = makeController(send);
+    const release = controller.watch();
+    watched.listener?.(push(1000));
+    watched.listener?.(push(2000));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+
+    // The daemon withdraws: a push that carries no attention for the session.
+    watched.listener?.(push(3000, false));
+    await vi.advanceTimersByTimeAsync(0);
+
+    flushParkedAttentionRaises({ send, windowState: hiddenInTray });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).not.toHaveBeenCalled();
+    release();
   });
 });

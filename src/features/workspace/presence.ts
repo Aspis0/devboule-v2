@@ -59,9 +59,9 @@ export interface PresenceDeps {
   /**
    * Called when an applied window-state answer flips the window from seen
    * to unseen (hide, minimise, blur). This is the transition the parked
-   * attention raises wait for, so the Workspace hands the flush in here —
-   * the same place that reports presence is the same place that knows the
-   * user stopped looking.
+   * attention raises wait for, so App hands the flush in here — the same
+   * place that reports presence is the same place that knows the user
+   * stopped looking.
    */
   onWindowBecameUnseen?: () => void;
 }
@@ -78,13 +78,20 @@ interface Presence {
 }
 
 /**
- * The reporter the app started (App, once per app run). Selection changes
- * are reported from wherever the selected session lives — the Workspace
- * surface, which never sees this module's wiring — through reportSelection.
+ * The reporter the app started (App, once per app run), and the selection it
+ * should currently name. Selection changes are written from wherever the
+ * selected session lives — the Workspace surface, which never sees this
+ * module's wiring — through reportSelection. The reporter reads the stored
+ * value at start instead of relying on live calls: React flushes a commit's
+ * effects child-first, so a Workspace mounting in the same commit as App
+ * reports before any reporter exists, and the stored value is what survives
+ * that ordering.
  */
 let activeReporter: PresenceReporter | null = null;
+let reportedSelection: string | null = null;
 
 export function reportSelection(focusedSessionId: string | null): void {
+  reportedSelection = focusedSessionId;
   activeReporter?.onSelectionChanged(focusedSessionId);
 }
 
@@ -108,7 +115,9 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     return { onSelectionChanged: () => undefined, dispose: () => undefined };
   }
 
-  let focusedSessionId: string | null = null;
+  // The selection the bridge already holds: a reporter starting after its
+  // owner mounted (child effects run first) must not guess null.
+  let focusedSessionId: string | null = reportedSelection;
   let lastSent: Presence | null = null;
   let disposed = false;
   // Every window-state read takes its sequence number before its await; a

@@ -176,16 +176,24 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(foot).paddingLeft).toBe("8px");
   });
 
-  it("the search pill keeps the placeholder readable and the foot dot keeps the spec gap", async () => {
-    // Live check found the input at 39px inside a 44.5px pill ("Searc") and
-    // the daemon dot touching its label. Widths and gaps come from the
-    // shared spacing scale (:root), so the assertions are theme-invariant.
-    inject([".sidebar-search", ".sidebar-search input", ".sidebar-foot"]);
+  it("the search pill keeps the placeholder readable and the header fits at the 200px floor", async () => {
+    // Live check found the input at 39px inside a 44.5px pill ("Searc").
+    // happy-dom computes no layout, so this pins the BUDGET instead: at the
+    // sidebar's 200px minimum the row's content box is 168px (200 minus its
+    // own 32px padding), and the live-measured wordmark advance (~62px) +
+    // pill floor 44 + two 28px buttons + the 2px button margin = ~164px ≤
+    // 168. The pill floor of 44 keeps "Search" (~35px at --type-meta) inside
+    // the 44 - 4 - 2 = 38px of content the pill's padding and border leave.
+    inject([".sidebar-top", ".sidebar-search", ".sidebar-search input", ".sidebar-foot"]);
     await renderWorkspace();
+
+    const top = document.querySelector<HTMLElement>(".sidebar-top");
+    if (top === null) throw new Error("sidebar top did not render");
+    expect(getComputedStyle(top).gap).toBe("0");
 
     const pill = document.querySelector<HTMLElement>(".sidebar-search");
     if (pill === null) throw new Error("search pill did not render");
-    expect(getComputedStyle(pill).minWidth).toBe("56px");
+    expect(getComputedStyle(pill).minWidth).toBe("44px");
     const input = pill.querySelector("input");
     if (input === null) throw new Error("search input did not render");
     expect(getComputedStyle(input).paddingLeft).toBe("0px");

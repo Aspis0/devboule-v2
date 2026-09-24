@@ -9,9 +9,18 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: var(--space-2);
+  /* No flex gap: at the sidebar's 200px minimum the row's budget is
+     168px (200 minus its own 32px padding), and the measured wordmark
+     (~62px) + pill floor (44px) + two 28px buttons + the one button
+     margin below fill it to ~164px. Any gap here overflows the row and
+     clips the collapse button against the panel edge. */
+  gap: 0;
   height: var(--control-sidebar-top);
   padding: 0 var(--space-16);
+}
+
+.sidebar-top .sidebar-top-button + .sidebar-top-button {
+  margin-left: var(--space-2);
 }
 
 .sidebar-wordmark {
@@ -28,9 +37,10 @@
 
 .sidebar-search {
   display: flex;
-  /* The placeholder must survive the row's squeeze: below this the pill
-     clips "Search" to "Searc" (seen live at a 44px pill). */
-  min-width: 56px;
+  /* The floor the placeholder needs: "Search" at --type-meta is ~35px, plus
+     the pill's 4px padding and 2px border. Higher would overflow the 200px
+     header (see .sidebar-top), lower clips the word (the live "Searc"). */
+  min-width: 44px;
   max-width: 130px;
   flex: 1;
   align-items: center;

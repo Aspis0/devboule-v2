@@ -179,20 +179,16 @@ export function heldContentForSession(
 }
 
 /**
- * The content provider the Workspace registers. Every input is asked per
- * call — the strip's own rows (never a row an in-flight close has hidden),
- * the permission queue, and the held transcripts — so a toast is never
- * worded from a snapshot older than the raise it announces.
- */
-/**
  * What a window that renders sessions registers: the held-content function
- * the toast wording uses, and the rendered-row and pending-permission
- * predicates it was built from. One registration, one source — wording and
- * dedupe ask the same predicate, never a second copy of the strip's rows.
- * Deliberately NO permission-queue oracle: only the pane session is ever
- * attached, so the queue cannot tell "answered" from "never seen" for an
- * off-strip session — the roster's attention (`noteRosterAttention`) is the
- * one source for whether a parked raise is still due.
+ * the toast wording uses (built from the strip's rows, the permission queue
+ * and the held transcripts — every input asked per call), and the
+ * rendered-row predicate the same builder received. One registration, one
+ * source — wording and dedupe ask the same predicate, never a second copy
+ * of the strip's rows. Deliberately NO permission-queue oracle for the
+ * park: only the pane session is ever attached, so the queue cannot tell
+ * "answered" from "never seen" for an off-strip session — the roster's
+ * attention (`noteRosterAttention`) is the one source for whether a parked
+ * raise is still due.
  */
 export interface AttentionWindowProvider {
   heldContent: (sessionId: string) => HeldContent | undefined;
@@ -248,10 +244,16 @@ export function setAttentionHeldContentProvider(provider: AttentionWindowProvide
 
 /**
  * The daemon's current attention per listed session — the roster's own word
- * about what still needs someone, noted on every roster application by the
- * controller. This is the ONE oracle for whether a parked raise is still
- * due: cleared means withdrawn, a changed raise means the session moved on,
- * and a session missing here is a session the roster no longer lists.
+ * about what still needs someone. This is the ONE oracle for whether a
+ * parked raise is still due: cleared means withdrawn, a changed raise means
+ * the session moved on, and a session missing here is a session the roster
+ * no longer lists.
+ *
+ * Only the PUSH may call this (the pushed snapshot actually carries the
+ * attention field). The list refresh's `Session` rows have no attention
+ * field at all — absent is not withdrawn — so the refresh may only prune
+ * (`pruneRosterAttention`); stamping null there would discard every parked
+ * raise on the next poll.
  */
 const rosterAttention = new Map<string, Attention | null>();
 
@@ -261,10 +263,32 @@ export function noteRosterAttention(
   const listed = new Set<string>();
   for (const { id, attention } of entries) {
     listed.add(id);
-    rosterAttention.set(id, attention ?? null);
+    if (attention === undefined) {
+      rosterAttention.set(id, null);
+      continue;
+    }
+    // The notifier's own staleness rule: a re-publication the toast path
+    // would refuse must not regress the entry either (an older push
+    // arriving after a newer one keeps the newer raise due).
+    const recorded = rosterAttention.get(id);
+    if (recorded !== null && recorded !== undefined && !attentionRaised(recorded, attention)) {
+      continue;
+    }
+    rosterAttention.set(id, attention);
   }
   for (const id of [...rosterAttention.keys()]) {
     if (!listed.has(id)) rosterAttention.delete(id);
+  }
+}
+
+/**
+ * The refresh's contribution: rows that left the roster leave the oracle,
+ * and nothing else. The list's `Session` shape carries no attention field,
+ * so this must never write — absent is not withdrawn.
+ */
+export function pruneRosterAttention(listedIds: ReadonlySet<string>): void {
+  for (const id of [...rosterAttention.keys()]) {
+    if (!listedIds.has(id)) rosterAttention.delete(id);
   }
 }
 
