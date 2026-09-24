@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import type { Session, Workspace } from "../../types/ipc";
 import { reconcileProjectRecords, workspaceView } from "./workspaceProjects";
+
+// What the production path stores on a failed per-project read: the cause
+// through errorSentence, never a bare message (E1).
+const pipeBusy = errorSentence(new Error("the pipe was busy"));
 
 const workspace: Workspace = {
   id: "workspace-1",
@@ -80,12 +85,12 @@ describe("reconcileProjectRecords", () => {
     projectId: "project-1",
     title: id,
     isolation: "local",
-    path: `C:\${id}`,
+    path: `C:\\${id}`,
   });
-  const project = (workspaces: Workspace[], workspaceError?: string) => ({
+  const project = (workspaces: Workspace[], workspaceError?: ErrorSentence) => ({
     id: "project-1",
     name: "devboule",
-    path: "C:\devboule",
+    path: "C:\\devboule",
     workspaces,
     workspaceError,
   });
@@ -99,16 +104,16 @@ describe("reconcileProjectRecords", () => {
 
   it("a failed per-project read keeps the previous records and the error", () => {
     const held = project([mk("kept"), mk("kept-2")]);
-    const failed = project([], "the pipe was busy");
+    const failed = project([], pipeBusy);
     const next = reconcileProjectRecords([failed], [held]);
     expect(next[0]!.workspaces.map((w) => w.id)).toEqual(["kept", "kept-2"]);
-    expect(next[0]!.workspaceError).toBe("the pipe was busy");
+    expect(next[0]!.workspaceError).toEqual(pipeBusy);
   });
 
   it("a failed read with no previous data stays empty (nothing was held)", () => {
-    const failed = project([], "the pipe was busy");
+    const failed = project([], pipeBusy);
     const next = reconcileProjectRecords([failed], []);
     expect(next[0]!.workspaces).toEqual([]);
-    expect(next[0]!.workspaceError).toBe("the pipe was busy");
+    expect(next[0]!.workspaceError).toEqual(pipeBusy);
   });
 });

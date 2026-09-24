@@ -55,7 +55,11 @@ export function WorkspaceTree({
       ) : null}
       {error !== null ? (
         <div className="workspace-project-error" role="alert">
-          <ErrorText sentence={error.sentence} detail={error.detail} id="workspace-projects-error" />
+          <ErrorText
+            sentence={error.sentence}
+            detail={error.detail}
+            id="workspace-projects-error"
+          />
           <button type="button" className="workspace-secondary-action" onClick={onRetryProjects}>
             Retry
           </button>
