@@ -139,9 +139,10 @@ pub(super) fn dispatch_immediate(
         ClientMessage::DaemonDiagnostics { id } => diagnostics_reply(state, id, owner),
         ClientMessage::Shutdown { id } => {
             // The quit handshake (`request_local_shutdown`): accept and
-            // enter shutdown in one atomic step, or refuse and remember.
-            // Peers never count — a phone neither stops the daemon out from
-            // under an app nor blocks the last app out.
+            // enter shutdown in one atomic step, or refuse and let this
+            // connection remember its own intent. Peers never count — a
+            // phone neither stops the daemon out from under an app nor
+            // blocks the last app out.
             match state.request_local_shutdown() {
                 Ok(()) => {
                     // The reply is the app's last chance to know the journal
@@ -155,8 +156,14 @@ pub(super) fn dispatch_immediate(
                     }
                 }
                 Err(local_clients) => {
+                    // The intent to quit belongs to the connection that
+                    // asked, and only a local app connection can hold it: a
+                    // peer's refused shutdown memorizes nothing.
+                    if conn.conn_peer.is_none() {
+                        conn.mark_quit_refused();
+                    }
                     let reason = format!(
-                        "{local_clients} local app client(s) still connected; the daemon keeps                          running for them"
+                        "{local_clients} local app client(s) still connected; the daemon keeps running for them"
                     );
                     eprintln!("daemon refused Shutdown: {reason}");
                     DaemonMessage::Shutdown {

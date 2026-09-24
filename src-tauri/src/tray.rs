@@ -100,23 +100,18 @@ fn spawn_status_poll(app: tauri::AppHandle, status: MenuItem<tauri::Wry>) {
 /// un-named when it does not, and a failed read never reported as a
 /// stopped daemon.
 fn status_line(body: &DaemonStatusBody) -> String {
-    match body.agents {
-        Some(agents) => {
-            let terminals = body.sessions.saturating_sub(agents);
-            match (agents, terminals) {
-                (0, 0) => "No agents or terminals running".to_string(),
-                (agents, 0) => format!("{} running", plural_sessions(agents, "agent")),
-                (0, terminals) => {
-                    format!("{} running", plural_sessions(terminals, "terminal"))
-                }
-                (agents, terminals) => format!(
-                    "{}, {} running",
-                    plural_sessions(agents, "agent"),
-                    plural_sessions(terminals, "terminal")
-                ),
-            }
-        }
-        None => match body.sessions {
+    match (body.agents, body.terminals) {
+        (Some(agents), Some(terminals)) => match (agents, terminals) {
+            (0, 0) => "No agents or terminals running".to_string(),
+            (agents, 0) => format!("{} running", plural_sessions(agents, "agent")),
+            (0, terminals) => format!("{} running", plural_sessions(terminals, "terminal")),
+            (agents, terminals) => format!(
+                "{}, {} running",
+                plural_sessions(agents, "agent"),
+                plural_sessions(terminals, "terminal")
+            ),
+        },
+        _ => match body.sessions {
             0 => "No sessions running".to_string(),
             1 => "1 session running".to_string(),
             sessions => format!("{sessions} sessions running"),
@@ -128,5 +123,55 @@ fn plural_sessions(count: u32, noun: &str) -> String {
     match count {
         1 => format!("1 {noun}"),
         n => format!("{n} {noun}s"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(agents: Option<u32>, terminals: Option<u32>, sessions: u32) -> DaemonStatusBody {
+        DaemonStatusBody {
+            instance_id: "i".to_string(),
+            protocol_version: 4,
+            daemon_version: "0.0.0".to_string(),
+            pid: 1,
+            uptime_ms: 0,
+            clients: 1,
+            local_clients: 1,
+            sessions,
+            agents,
+            terminals,
+            capabilities: Vec::new(),
+            peak_ring_bytes: 0,
+            ring_evicted_bytes: 0,
+            ring_dropped_frames: 0,
+            journal_error: None,
+            journal_stats: None,
+            secret_store: None,
+            remote: None,
+        }
+    }
+
+    #[test]
+    fn the_line_names_both_families_from_their_own_counts() {
+        // An agent mid-startup: the lifecycle session counter already moved,
+        // the registry split has not. The line trusts the split, never
+        // sessions minus agents.
+        let line = status_line(&body(Some(0), Some(0), 1));
+        assert_eq!(
+            line, "No agents or terminals running",
+            "a starting agent is not a terminal: {line}"
+        );
+        let line = status_line(&body(Some(1), Some(2), 3));
+        assert_eq!(line, "1 agent, 2 terminals running");
+        let line = status_line(&body(Some(0), Some(1), 1));
+        assert_eq!(line, "1 terminal running");
+    }
+
+    #[test]
+    fn an_old_daemon_without_the_split_says_sessions() {
+        let line = status_line(&body(None, None, 2));
+        assert_eq!(line, "2 sessions running");
     }
 }

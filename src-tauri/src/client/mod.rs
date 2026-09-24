@@ -11,8 +11,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
-    connect_or_spawn, current_user_sid, daemon_file_name, DaemonClient, DaemonError, DaemonState,
-    EventHandler, ExitReason, RuntimePaths, SessionStateHandler,
+    connect, connect_or_spawn, current_user_sid, daemon_file_name, DaemonClient, DaemonError,
+    DaemonState, EventHandler, ExitReason, RuntimePaths, SessionStateHandler,
 };
 use devboule_protocol::{
     ClientHello, Cursor, DaemonStatusBody, ErrorCode, SessionEvent, SessionEventEnvelope,
@@ -900,6 +900,24 @@ impl DaemonBridge {
                 let _ = handle.join();
             }
         }
+    }
+
+    /// The quit path's last look at the daemon. The supervisor may be mid
+    /// reconnect and hold no client, and then `shutdown` would stop the
+    /// reconnect loop without ever reaching the daemon; this connects once
+    /// (never spawning one) and asks that daemon to stop. `Ok` means the
+    /// request reached a daemon — accepted, or refused because another
+    /// local window keeps it alive. `Err` means no live daemon could be
+    /// reached, which the caller must say out loud before exiting.
+    pub fn ask_daemon_to_stop(&self) -> Result<(), String> {
+        let client = match self.client() {
+            Ok(client) => client,
+            Err(_) => Arc::new(connect_live_only()?),
+        };
+        client
+            .request_shutdown()
+            .map(|_answer| ())
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -1832,18 +1850,30 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
     );
 }
 
+/// The hello every connection from this process presents: the owner names
+/// this app process, so the daemon can count two windows apart.
+fn client_hello() -> Result<ClientHello, String> {
+    let user = current_user_sid().map_err(|error| error.to_string())?;
+    let owner = devboule_protocol::OwnerId::new(user, format!("app-{}", std::process::id()))?;
+    Ok(ClientHello::m3a(owner, "devboule-app"))
+}
+
 fn connect_once() -> Result<DaemonClient, ConnectFailure> {
     let paths =
         RuntimePaths::from_env().map_err(|error| ConnectFailure::fault(error.to_string()))?;
-    let owner = {
-        let user = current_user_sid().map_err(|error| ConnectFailure::fault(error.to_string()))?;
-        let client = format!("app-{}", std::process::id());
-        devboule_protocol::OwnerId::new(user, client)?
-    };
-    let hello = ClientHello::m3a(owner, "devboule-app");
+    let hello = client_hello().map_err(ConnectFailure::fault)?;
     let binary = locate_daemon_binary()?;
     connect_or_spawn(&paths, hello, Some(&binary))
         .map_err(|error| ConnectFailure::after(&paths, error))
+}
+
+/// Connect to a daemon that is already listening, never spawning one: the
+/// quit path's bounded last look. Starting a daemon only to stop it would
+/// be a worse answer than saying the daemon could not be reached.
+fn connect_live_only() -> Result<DaemonClient, String> {
+    let paths = RuntimePaths::from_env().map_err(|error| error.to_string())?;
+    let hello = client_hello()?;
+    connect(&paths, hello).map_err(|error| error.to_string())
 }
 
 fn locate_daemon_binary() -> Result<PathBuf, String> {

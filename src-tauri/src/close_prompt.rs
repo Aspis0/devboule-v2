@@ -58,6 +58,36 @@ pub enum ClosePlan {
     Quit,
 }
 
+/// The three buttons our dialogs show, by their exact labels. The dialog
+/// plugin answers custom buttons with `Custom(label)`, so the labels are
+/// the contract between the builder in `close_flow` and this mapping.
+pub(crate) const TRAY_BUTTON_LABEL: &str = "Keep running in the tray";
+pub(crate) const QUIT_BUTTON_LABEL: &str = "Quit";
+pub(crate) const CANCEL_BUTTON_LABEL: &str = "Cancel";
+
+/// What the user's answer means. Cancel (and anything unrecognizable) is
+/// the safe nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DialogAnswer {
+    Hide,
+    Quit,
+    Cancel,
+}
+
+/// The dialog's answer, mapped to its action. The plugin answers custom
+/// buttons with `Custom(label)` on Windows and macOS; the plain `Yes`/`No`/
+/// `Ok`/`Cancel` variants are mapped too, in case a platform returns them.
+pub(crate) fn dialog_answer(result: &tauri_plugin_dialog::MessageDialogResult) -> DialogAnswer {
+    use tauri_plugin_dialog::MessageDialogResult;
+    match result {
+        MessageDialogResult::Custom(label) if label == TRAY_BUTTON_LABEL => DialogAnswer::Hide,
+        MessageDialogResult::Custom(label) if label == QUIT_BUTTON_LABEL => DialogAnswer::Quit,
+        MessageDialogResult::Custom(_) | MessageDialogResult::Cancel => DialogAnswer::Cancel,
+        MessageDialogResult::Yes => DialogAnswer::Hide,
+        MessageDialogResult::No | MessageDialogResult::Ok => DialogAnswer::Quit,
+    }
+}
+
 /// The window-close decision as pure logic: the stored choice alone
 /// decides; the daemon facts only shape what the confirmation says.
 pub fn decide_close(choice: CloseChoice) -> ClosePlan {
@@ -74,6 +104,24 @@ pub fn decide_close(choice: CloseChoice) -> ClosePlan {
 /// resolves to hiding.
 pub fn decide_quit() -> ClosePlan {
     ClosePlan::Ask(AskFlavor::QuitOnly)
+}
+
+/// What a Quit answer becomes once the daemon's facts are read again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum QuitAct {
+    /// The facts still match the sentence the dialog showed: act on it.
+    Quit,
+    /// The facts moved while the dialog was open, so its sentence is stale:
+    /// ask again with what is true now rather than act on an old promise.
+    AskAgain,
+}
+
+pub(crate) fn act_on_quit_answer(shown: &DaemonFacts, fresh: &DaemonFacts) -> QuitAct {
+    if shown == fresh {
+        QuitAct::Quit
+    } else {
+        QuitAct::AskAgain
+    }
 }
 
 /// What the confirmation says. The owner's requirement: it says only what
@@ -304,6 +352,77 @@ mod tests {
         assert_eq!(
             stored_close_choice_text(Some(&json!(null))),
             CloseChoice::Ask
+        );
+    }
+
+    #[test]
+    fn every_button_of_both_flavours_maps_to_its_action() {
+        use tauri_plugin_dialog::MessageDialogResult;
+        let custom = |label: &str| MessageDialogResult::Custom(label.to_string());
+        // WindowClose: the tray suggestion, the quit, the cancel.
+        assert_eq!(
+            dialog_answer(&custom(TRAY_BUTTON_LABEL)),
+            DialogAnswer::Hide
+        );
+        assert_eq!(
+            dialog_answer(&custom(QUIT_BUTTON_LABEL)),
+            DialogAnswer::Quit
+        );
+        assert_eq!(
+            dialog_answer(&custom(CANCEL_BUTTON_LABEL)),
+            DialogAnswer::Cancel
+        );
+        // QuitOnly shares the Quit and Cancel labels.
+        assert_eq!(
+            dialog_answer(&custom(QUIT_BUTTON_LABEL)),
+            DialogAnswer::Quit
+        );
+        // Plain variants, in case a platform returns them instead.
+        assert_eq!(dialog_answer(&MessageDialogResult::Yes), DialogAnswer::Hide);
+        assert_eq!(dialog_answer(&MessageDialogResult::No), DialogAnswer::Quit);
+        assert_eq!(dialog_answer(&MessageDialogResult::Ok), DialogAnswer::Quit);
+        assert_eq!(
+            dialog_answer(&MessageDialogResult::Cancel),
+            DialogAnswer::Cancel
+        );
+        // The dialog's own close box and any unrecognizable label: nothing.
+        assert_eq!(dialog_answer(&custom("")), DialogAnswer::Cancel);
+        assert_eq!(
+            dialog_answer(&custom("some other label")),
+            DialogAnswer::Cancel
+        );
+    }
+
+    #[test]
+    fn a_stale_promise_is_asked_again_not_acted_on() {
+        let shown = DaemonFacts::Read {
+            agents: 2,
+            terminals: 0,
+            other_local_windows: 0,
+        };
+        // The facts the dialog showed still stand: the answer acts.
+        assert_eq!(act_on_quit_answer(&shown, &shown), QuitAct::Quit);
+        // Another local window connected while the dialog was open: the
+        // sentence promised a stop that would now be refused.
+        assert_eq!(
+            act_on_quit_answer(
+                &shown,
+                &DaemonFacts::Read {
+                    agents: 2,
+                    terminals: 0,
+                    other_local_windows: 1,
+                },
+            ),
+            QuitAct::AskAgain
+        );
+        // The daemon became unreadable: the old sentence is stale too.
+        assert_eq!(
+            act_on_quit_answer(&shown, &DaemonFacts::Unknown),
+            QuitAct::AskAgain
+        );
+        assert_eq!(
+            act_on_quit_answer(&DaemonFacts::Unknown, &DaemonFacts::Unknown),
+            QuitAct::Quit
         );
     }
 

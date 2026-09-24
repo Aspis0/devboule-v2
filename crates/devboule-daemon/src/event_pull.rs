@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -118,10 +118,33 @@ fn snapshot_event(as_of_seq: u64, screen: ScreenSnapshot) -> SessionEvent {
     }
 }
 
+/// One connection's own quit intent: set when THAT connection's `Shutdown`
+/// was refused because other local clients were connected, and read when its
+/// slot is released. The daemon stops on the last local app out only when
+/// that app is the one that asked — a crash, a relaunch, or a client that
+/// never asked never stops it.
+/// `pub` only so `ConnHandle`'s public constructor can take it; the private
+/// `event_pull` module keeps the reach crate-local.
+#[derive(Clone, Default)]
+pub struct QuitIntent(Arc<AtomicBool>);
+
+impl QuitIntent {
+    pub(crate) fn refuse(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn refused(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 /// Per-connection handle: RPC outbound plus the sessions this client pulls.
 pub struct ConnHandle {
     pub id: u64,
     pub outbound: Arc<ConnOut>,
+    /// This connection's own quit slot, shared with its admission guard so
+    /// the release reads what the connection did while it lived.
+    quit_intent: QuitIntent,
     /// Kernel-derived identity, still read by `session.rs` for the local
     /// ownership checks. `Some` for a named-pipe client, `None` for a remote
     /// (Noise) peer, whose identity is [`ConnHandle::conn_peer`].
@@ -148,6 +171,12 @@ impl ConnHandle {
         Self::with_peer(id, None)
     }
 
+    /// This connection's own `Shutdown` was refused: its leaving may be
+    /// the one that stops the daemon.
+    pub(crate) fn mark_quit_refused(&self) {
+        self.quit_intent.refuse();
+    }
+
     pub fn with_peer(id: u64, peer: Option<PeerIdentity>) -> Arc<Self> {
         Self::with_conn_peer(id, peer, None)
     }
@@ -157,16 +186,18 @@ impl ConnHandle {
         peer: Option<PeerIdentity>,
         conn_peer: Option<ConnPeer>,
     ) -> Arc<Self> {
-        Self::with_peer_caps(id, peer, conn_peer, Vec::new())
+        Self::with_peer_caps(id, peer, conn_peer, Vec::new(), QuitIntent::default())
     }
 
     /// The connection constructor the serve loop uses: it has just read the
-    /// peer's capability set out of the `peers` row.
+    /// peer's capability set out of the `peers` row, and carries the quit
+    /// slot its admission guard will read on the way out.
     pub fn with_peer_caps(
         id: u64,
         peer: Option<PeerIdentity>,
         conn_peer: Option<ConnPeer>,
         peer_caps: Vec<String>,
+        quit_intent: QuitIntent,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
@@ -174,6 +205,7 @@ impl ConnHandle {
             peer,
             conn_peer,
             peer_caps,
+            quit_intent,
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),
             next_attachment_generation: AtomicU64::new(1),

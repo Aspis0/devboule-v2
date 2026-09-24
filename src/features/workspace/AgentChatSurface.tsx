@@ -21,7 +21,7 @@ import type {
   SessionModel,
   SessionState,
 } from "../../types/ipc";
-import { AgentSession } from "../../lib/agentSession";
+import { AgentSession, lastAssistantMessage } from "../../lib/agentSession";
 import type {
   AgentChatItem,
   AgentSessionState,
@@ -52,6 +52,7 @@ import { PickerChip, modeDotClass } from "../../components/PickerChip";
 import { DaemonNoticeCard } from "./DaemonNoticeCard";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
 import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
+import { setHeldAssistantText } from "./attentionNotice";
 
 // One classifier owns both whether input is disabled and the sentence explaining it.
 export function composerDisabledReason(
@@ -795,6 +796,16 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     if (conversation === null) return;
     conversation.scrollTop = conversation.scrollHeight;
   }, [state.items, state.streaming, auxiliary]);
+
+  // The toast is worded from what the app already holds, and this surface is
+  // the only place a transcript exists: publish the last assistant message
+  // while it is on screen, and take the entry back on unmount. A session
+  // whose chat is not mounted has no entry, so its toast says the reason
+  // alone.
+  useEffect(() => {
+    setHeldAssistantText(sessionId, lastAssistantMessage(state.items));
+    return () => setHeldAssistantText(sessionId, null);
+  }, [sessionId, state.items]);
 
   const finishCopy = usageCopy(state);
   const manifest = state.manifest;

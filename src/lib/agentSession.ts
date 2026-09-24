@@ -111,6 +111,19 @@ export type AgentChatItem =
       text: string;
     };
 
+/**
+ * The text of the last assistant message in a transcript, or null when the
+ * transcript holds none. Only assistant prose counts: a thought, a tool row
+ * or a relayed message is not what the agent said to the user.
+ */
+export function lastAssistantMessage(items: readonly AgentChatItem[]): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.role === "assistant") return item.text;
+  }
+  return null;
+}
+
 export interface AgentFinished {
   stopReason: string;
   modelId?: string;

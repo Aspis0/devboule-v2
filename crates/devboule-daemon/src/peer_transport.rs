@@ -1418,7 +1418,7 @@ fn serve_noise_peer(
     // after the handshake and the binding check — counting before the Noise
     // exchange would let a connect flood park the daemon. The slot is held for
     // the whole connection, panic included.
-    let Some(_slot) = state.admit_client(ClientKind::Peer) else {
+    let Some((_slot, quit_intent)) = state.admit_client(ClientKind::Peer) else {
         // Shutting down: `handle_client` would answer `ShuttingDown` and return,
         // so there is nothing to serve and no slot to hold.
         return Ok(());
@@ -1429,6 +1429,7 @@ fn serve_noise_peer(
         crate::framing::Framed::from_stream(reader, writer, closer),
         Arc::clone(state),
         Some(conn_peer),
+        quit_intent,
     )
     .map_err(|error| PeerError::Io(error.to_string()))
 }

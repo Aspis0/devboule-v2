@@ -117,21 +117,67 @@ export function toastContent(
 
 /**
  * What the window that holds the cards hands the toast: content ONLY for a
- * session this window can see — a row in this window's roster — and only
- * while a permission card for it is actually pending. A session the window
- * cannot see gets no provider content, so its toast carries the title and
- * the reason only. (A `Daemon`-role peer's own sessions never appear in any
- * local roster, so they never reach the toast path at all.)
+ * session this window can see — a row this window's tab strip renders — and
+ * only from what the app holds right now: a pending permission card, and
+ * the last assistant message of a transcript on screen. A session the
+ * window cannot see gets no content at all, so its toast carries the title
+ * and the reason only. (A `Daemon`-role peer's own sessions never appear in
+ * any local roster, so they never reach the toast path at all.)
  */
 export function heldContentForSession(
   inThisWindow: boolean,
   pending: { title: string; description?: string } | undefined,
+  lastAssistantText?: string,
 ): HeldContent | undefined {
   if (!inThisWindow) return undefined;
-  const text = [pending?.title, pending?.description]
+  const permissionText = [pending?.title, pending?.description]
     .filter((part) => typeof part === "string" && part.trim().length > 0)
     .join(" — ");
-  return text.length > 0 ? { permissionText: text } : undefined;
+  const assistantText = lastAssistantText?.trim();
+  const held: HeldContent = {};
+  if (permissionText.length > 0) held.permissionText = permissionText;
+  if (assistantText !== undefined && assistantText.length > 0) {
+    held.lastAssistantText = assistantText;
+  }
+  return held.permissionText === undefined && held.lastAssistantText === undefined
+    ? undefined
+    : held;
+}
+
+/**
+ * The content provider the Workspace registers. Every input is asked per
+ * call — the strip's own rows (never a row an in-flight close has hidden),
+ * the permission queue, and the held transcripts — so a toast is never
+ * worded from a snapshot older than the raise it announces.
+ */
+export function workspaceHeldContentProvider(inputs: {
+  rendered: (sessionId: string) => boolean;
+  pending: (sessionId: string) => { title: string; description?: string } | undefined;
+  heldAssistantText: (sessionId: string) => string | undefined;
+}): (sessionId: string) => HeldContent | undefined {
+  return (sessionId) =>
+    heldContentForSession(
+      inputs.rendered(sessionId),
+      inputs.pending(sessionId),
+      inputs.heldAssistantText(sessionId),
+    );
+}
+
+/**
+ * The last assistant message the app holds per session, published by the
+ * surface that renders it. It is a cache, not a source: a session whose
+ * transcript is not on screen has no entry, and its toast says the reason
+ * alone — never a guess.
+ */
+const heldAssistantText = new Map<string, string>();
+
+export function setHeldAssistantText(sessionId: string, text: string | null): void {
+  if (text === null) heldAssistantText.delete(sessionId);
+  else heldAssistantText.set(sessionId, text);
+}
+
+export function heldAssistantTextFor(sessionId: string): string | undefined {
+  return heldAssistantText.get(sessionId);
 }
 
 /**
@@ -157,45 +203,45 @@ export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
   }
 }
 
-/** The plugin surface `sendWithPermission` needs, narrowed to what is used. */
+/** The plugin surface `sendWithPermission` needs, narrowed to what is used.
+ *  `sendNotification` is `void` on the desktop plugin and async in tests, so
+ *  the caller awaits either. */
 export interface NotificationPlugin {
   isPermissionGranted(): Promise<boolean>;
   requestPermission(): Promise<NotificationPermission>;
-  sendNotification(options: { title: string; body: string }): Promise<void>;
+  sendNotification(options: { title: string; body: string }): void | Promise<void>;
 }
 
 /**
- * The plugin's own gate: if permission was never granted, ONE
- * `requestPermission` ask is made — never one per raise — and an ungranted
- * raise is an error, not a silent nothing, so the caller can treat it as
- * undelivered.
+ * The plugin's own gate, with the one ask per app run. A denial sends
+ * nothing and is FINAL for that plugin: the user said no once, and asking
+ * again for every agent that finishes would be nagging, not consent. The
+ * memory is keyed by the plugin object, so the production import (one
+ * module instance per app run) asks once while a test's own plugin starts
+ * clean.
  */
+const deniedPlugins = new WeakSet<NotificationPlugin>();
+
 export async function sendWithPermission(
   content: ToastContent,
   plugin: NotificationPlugin,
 ): Promise<void> {
+  if (deniedPlugins.has(plugin)) return;
   let granted = await plugin.isPermissionGranted();
   if (!granted) {
     granted = (await plugin.requestPermission()) === "granted";
   }
   if (!granted) {
-    throw new Error("notification permission was not granted");
+    deniedPlugins.add(plugin);
+    return;
   }
   await plugin.sendNotification({ title: content.title, body: content.body });
 }
 
-let permissionAsked = false;
-
 /** The production sender: the plugin's permission flow, then the toast. */
 async function defaultSend(content: ToastContent): Promise<void> {
   const plugin = await import("@tauri-apps/plugin-notification");
-  let granted = await plugin.isPermissionGranted();
-  if (!granted && !permissionAsked) {
-    permissionAsked = true;
-    granted = (await plugin.requestPermission()) === "granted";
-  }
-  if (!granted) return;
-  await plugin.sendNotification({ title: content.title, body: content.body });
+  await sendWithPermission(content, plugin);
 }
 
 /** Everything the OS side of a toast needs, injected for tests. */
@@ -205,12 +251,15 @@ export interface ToastDeps {
   focused: () => boolean;
 }
 
+/** How long a failed toast waits before its one retry. */
+export const TOAST_RETRY_DELAY_MS = 1500;
+
 /**
  * The production toast path, called by the roster controller on every
  * attention transition. The window gate marks a raise as seen (the user
- * was looking at the app); a send marks the raise delivered, and a failed
- * or refused send leaves it unmarked so the next push of the same raise
- * retries.
+ * was looking at the app) and stops there. A send that throws waits once
+ * for `TOAST_RETRY_DELAY_MS` and tries again; a second failure is dropped —
+ * the raise was announced as far as this app can push it.
  */
 export function fireAttentionToast(
   sessionId: string,
@@ -231,9 +280,14 @@ export function fireAttentionToast(
   }
   const held = heldContentProvider?.(sessionId);
   const content = toastContent(title, attention.reason, held);
-  void (deps?.send ?? defaultSend)(content).catch(() => {
-    // Undelivered: forget the raise so the next push of it retries —
-    // unless a newer raise has since taken the slot.
-    if (lastFired.get(sessionId) === attention) lastFired.delete(sessionId);
+  const send = deps?.send ?? defaultSend;
+  void send(content).catch(() => {
+    // A newer raise may have taken the slot while this send was in flight:
+    // a stale retry must not land after the newer toast.
+    if (lastFired.get(sessionId) !== attention) return;
+    setTimeout(() => {
+      if (lastFired.get(sessionId) !== attention) return;
+      void send(content).catch(() => {});
+    }, TOAST_RETRY_DELAY_MS);
   });
 }

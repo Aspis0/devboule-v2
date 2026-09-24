@@ -55,9 +55,10 @@ import {
   useWorkspaceSessions,
 } from "./workspaceSessions";
 import {
-  heldContentForSession,
-  setAttentionHeldContentProvider,
+  heldAssistantTextFor,
   sessionAttentionLabel,
+  setAttentionHeldContentProvider,
+  workspaceHeldContentProvider,
 } from "./attentionNotice";
 import { RecoveredSessionBar } from "./recoveredSessionBar";
 import { DaemonRestartNotice } from "./daemonRestartNotice";
@@ -226,25 +227,10 @@ export function Workspace({
   // device. One read per daemon connection: the names come from pairing and do
   // not change while the connection lives.
   const [peerNames, setPeerNames] = useState<ReadonlyMap<string, string>>(() => new Map());
-  // What a toast may quote for a session: the pending permission card's
-  // text, and only for a session this window can see — a row in its own
-  // roster. Registered app-wide so a toast is worded the same whichever
-  // surface is on screen.
-  const rosterIdsRef = useRef<ReadonlySet<string>>(new Set());
-  const permissionQueueRef = useRef(permissionQueue);
-  useEffect(() => {
-    permissionQueueRef.current = permissionQueue;
-  }, [permissionQueue]);
-  useEffect(() => {
-    setAttentionHeldContentProvider((sessionId) => {
-      const pending = permissionQueueRef.current.find(
-        (item) => item.sessionId === sessionId && item.resolution === undefined,
-      );
-      const inThisWindow = rosterIdsRef.current.has(sessionId);
-      return heldContentForSession(inThisWindow, pending?.request);
-    });
-    return () => setAttentionHeldContentProvider(null);
-  }, []);
+  // What a toast may quote for a session — the pending permission card's
+  // text and the last assistant message — is wired below, once the strip's
+  // own rows exist: the provider's inputs are what this render puts on
+  // screen, never a ref a later effect fills.
   const daemon = useWorkspaceDaemon();
   // The empty provider picker's action hands the user to Settings → Providers
   // (the surface opens on that tab), so the flow needs the app's one switcher.
@@ -264,7 +250,6 @@ export function Workspace({
   } = useWorkspaceSessions(selectedWorkspace);
   useEffect(() => {
     setSessionFacts(sessions);
-    rosterIdsRef.current = new Set(sessions.map((session) => session.id));
   }, [sessions, setSessionFacts]);
   // The strip's close acts: fire at once (the undo window is gone), hide the
   // row until the roster confirms, and own each failure by the act that
@@ -286,6 +271,31 @@ export function Workspace({
     const hiding = new Set(closingIds);
     return sessions.filter((session) => !hiding.has(session.id));
   }, [sessions, closingIds]);
+  // What a toast may quote for a session: the pending permission card's text
+  // and the last assistant message, and only for a row this window's tab
+  // strip actually renders. The provider is rebuilt from the rendered rows
+  // and the queue as they are now, and asks the close marks per call — a row
+  // hidden by an in-flight close is not "visible in this window" even before
+  // the daemon removes it from the roster.
+  const renderedSessionIds = useMemo(
+    () => new Set(visibleSessions.map((session) => session.id)),
+    [visibleSessions],
+  );
+  useEffect(() => {
+    setAttentionHeldContentProvider(
+      workspaceHeldContentProvider({
+        rendered: (sessionId) =>
+          renderedSessionIds.has(sessionId) &&
+          !closeActions.getClosingSnapshot().includes(sessionId),
+        pending: (sessionId) =>
+          permissionQueue.find(
+            (item) => item.sessionId === sessionId && item.resolution === undefined,
+          )?.request,
+        heldAssistantText: heldAssistantTextFor,
+      }),
+    );
+    return () => setAttentionHeldContentProvider(null);
+  }, [renderedSessionIds, permissionQueue, closeActions]);
   // The strip scrolls its selected tab into full view. The arithmetic and the
   // effect live in stripScroll.ts, unit-tested there — happy-dom computes no
   // layout to prove them against here.

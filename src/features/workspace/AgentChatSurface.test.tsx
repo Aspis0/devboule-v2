@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { PermissionRequest, Session, SessionEvent, SessionState } from "../../types/ipc";
 import type { AgentStatus } from "../../lib/agentSession";
+import { heldAssistantTextFor } from "./attentionNotice";
 
 const channelHarness = vi.hoisted(() => ({
   emit: null as ((event: SessionEvent) => void) | null,
@@ -257,6 +258,28 @@ describe("AgentChatSurface", () => {
     expect(row?.getAttribute("role")).toBeNull();
     expect(row?.style.opacity).toBe("");
     expect(row?.classList.contains("workspace-chat-system")).toBe(true);
+  });
+
+  it("publishes the last assistant message while the chat is on screen", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+    expect(heldAssistantTextFor("agent-1")).toBeUndefined();
+
+    await act(async () => {
+      channelHarness.emit?.({ type: "agent_message", messageId: "answer-1", text: "Deploy " });
+      channelHarness.emit?.({ type: "agent_message", messageId: "answer-1", text: "finished" });
+    });
+    expect(heldAssistantTextFor("agent-1")).toBe("Deploy finished");
+
+    // A different session takes the surface: the old entry goes with it, so
+    // a toast for a transcript no longer on screen cannot quote it.
+    await act(async () => {
+      root.render(<AgentChatSurface daemonState="connected" sessionId="agent-2" title="Agent" />);
+    });
+    expect(heldAssistantTextFor("agent-1")).toBeUndefined();
   });
 
   it("attaches, sends from the composer, renders streamed events, and detaches", async () => {

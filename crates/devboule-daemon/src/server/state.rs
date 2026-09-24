@@ -31,11 +31,6 @@ pub(super) struct Lifecycle {
     /// Only these may stop the daemon, so only their count decides a
     /// `Shutdown` refusal; peers are invisible to it.
     pub(super) local_clients: u32,
-    /// A local app asked to quit and was refused because another local app
-    /// was still connected. Remembered so the daemon stops the moment the
-    /// last local app leaves — two simultaneous quits must not orphan live
-    /// work with no window and no tray.
-    pub(super) quit_requested: bool,
     pub(super) sessions: u32,
     pub(super) shutting_down: bool,
     pub(super) idle_generation: u64,
@@ -570,14 +565,22 @@ impl ServerState {
     pub(crate) fn admit_client(
         self: &Arc<Self>,
         kind: ClientKind,
-    ) -> Option<ReleaseGuard<impl FnOnce(bool)>> {
+    ) -> Option<(ReleaseGuard<impl FnOnce(bool)>, QuitIntent)> {
         if !self.client_connected(kind) {
             return None;
         }
         let state = Arc::clone(self);
-        Some(ReleaseGuard::armed(move |_completed: bool| {
-            state.client_disconnected(kind == ClientKind::LocalApp)
-        }))
+        // One intent per admitted connection, shared with the caller that
+        // will build the `ConnHandle`: the guard reads on the way out what
+        // that same connection did while it lived.
+        let intent = QuitIntent::default();
+        let intent_for_guard = intent.clone();
+        Some((
+            ReleaseGuard::armed(move |_completed: bool| {
+                state.client_disconnected(kind, intent_for_guard.refused())
+            }),
+            intent,
+        ))
     }
 
     /// Admit a client unless shutdown has started. A reconnect that wins this
@@ -595,20 +598,19 @@ impl ServerState {
         true
     }
 
-    pub(super) fn client_disconnected(self: &Arc<Self>, was_local: bool) {
+    pub(super) fn client_disconnected(self: &Arc<Self>, kind: ClientKind, quit_refused: bool) {
         let generation = {
             let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
             lifecycle.clients = lifecycle.clients.saturating_sub(1);
-            if was_local {
+            if kind == ClientKind::LocalApp {
                 lifecycle.local_clients = lifecycle.local_clients.saturating_sub(1);
             }
-            // A remembered refused quit changes what the last local app
-            // leaving means: the daemon stops now, its live sessions
-            // included — they belonged to the apps that asked to quit.
-            // Peers do not hold it open; they do not count.
-            if was_local
+            // Only the DISCONNECTING client's own refused quit counts: a
+            // crash, a relaunch, or a window that never asked leaves the
+            // daemon running for the work still on it.
+            if kind == ClientKind::LocalApp
                 && lifecycle.local_clients == 0
-                && lifecycle.quit_requested
+                && quit_refused
                 && !lifecycle.shutting_down
             {
                 lifecycle.shutting_down = true;
@@ -633,13 +635,12 @@ impl ServerState {
     /// The quit handshake, one atomic step: the count check and entering
     /// shutdown happen under the same lifecycle lock, so no local client can
     /// be admitted between the decision and the shutdown state —
-    /// `client_connected` refuses once `shutting_down` is set. A refusal is
-    /// remembered (`quit_requested`): when the last local app client later
-    /// leaves, the daemon stops instead of outliving every window.
+    /// `client_connected` refuses once `shutting_down` is set. A refusal
+    /// changes no shared state: the caller's own connection records the
+    /// intent, and that connection's release decides.
     pub(super) fn request_local_shutdown(&self) -> Result<(), u32> {
         let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         if !shutdown_accepted(lifecycle.local_clients) {
-            lifecycle.quit_requested = true;
             return Err(lifecycle.local_clients);
         }
         lifecycle.shutting_down = true;
@@ -978,8 +979,9 @@ impl ServerState {
         self.sessions.refresh_journal_degradation();
         let output_metrics = self.sessions.output_metrics();
         // Read before the lifecycle lock below: the registry's own locks
-        // must never nest inside it.
-        let (live_agents, _live_terminals) = self.sessions.live_session_families();
+        // must never nest inside it. Both counts come from this one read,
+        // so the pair can never disagree about the moment it describes.
+        let (live_agents, live_terminals) = self.sessions.live_session_families();
         let lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         let journal_error = self
             .journal_error
@@ -1003,6 +1005,7 @@ impl ServerState {
                 local_clients: lifecycle.local_clients,
                 sessions: lifecycle.sessions,
                 agents: Some(live_agents),
+                terminals: Some(live_terminals),
                 capabilities: m3a_daemon_capabilities(),
                 // Wire names predate M3.5 (they described a 256 KiB byte
                 // ring). The ring is gone: these now report the bounded

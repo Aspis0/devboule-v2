@@ -28,6 +28,7 @@ import {
   sessionStateLabel,
   sessionTitle,
 } from "./workspaceSessions";
+import { fireAttentionToast, forgetAttentionFor } from "./attentionNotice";
 import { workspaceView } from "./workspaceProjects";
 
 const liveSession = (id: string, title = id): Session => ({
@@ -546,6 +547,59 @@ describe("workspace session controller", () => {
       id: "agent-1",
       attention: { reason: "permission", atMs: 42 },
     });
+    release();
+  });
+
+  it("a list refresh that removes a session prunes its raise memory too", async () => {
+    forgetAttentionFor(new Set());
+    const send = vi.fn(async () => undefined);
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const list = vi.fn(async () => [] as Session[]);
+    const controller = createWorkspaceSessionController(
+      {
+        list,
+        create: vi.fn(async () => liveSession("agent-2")),
+        watch: vi.fn(async (listener) => {
+          watched.listener = listener;
+          return () => {
+            watched.listener = null;
+          };
+        }),
+      },
+      (session, attention) =>
+        fireAttentionToast(session.id, sessionTitle(session), attention, {
+          send,
+          visible: () => false,
+          focused: () => false,
+        }),
+    );
+    const release = controller.watch();
+    const raise = (atMs: number): SessionStateSnapshot[] => [
+      {
+        id: "agent-1",
+        workspaceId: null,
+        kind: "acp",
+        title: "agent one",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        attention: { reason: "finished", atMs },
+      },
+    ];
+    // The first push is the baseline; the second raises and toasts once.
+    watched.listener?.(raise(1000));
+    watched.listener?.(raise(2000));
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    // The watch is down, and a list refresh is the only update that removes
+    // the row: its raise memory must go with it.
+    await controller.refresh();
+    expect(controller.getState().sessions).toEqual([]);
+    // The row returns with the SAME timestamp; it is a fresh arrival now.
+    watched.listener?.(raise(2000));
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(2);
     release();
   });
 

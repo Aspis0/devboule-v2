@@ -14,6 +14,7 @@ fn remote_conn(caps: &[&str]) -> Arc<ConnHandle> {
             binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
         }),
         caps.iter().map(|cap| (*cap).to_string()).collect(),
+        QuitIntent::default(),
     )
 }
 

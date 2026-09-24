@@ -156,6 +156,16 @@ pub struct DaemonClient {
     reader: Mutex<Option<JoinHandle<()>>>,
 }
 
+/// The daemon's answer to a quit request. `Refused` is an answer, not a
+/// broken call: the daemon chose to outlive this client (another local app
+/// window is still connected), and the caller decides what "just exit" looks
+/// like without treating the refusal as unreachable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShutdownAnswer {
+    Accepted,
+    Refused(String),
+}
+
 impl DaemonClient {
     pub fn hello(&self) -> &DaemonHello {
         &self.inner.hello
@@ -220,16 +230,26 @@ impl DaemonClient {
     }
 
     pub fn shutdown(&self) -> Result<(), DaemonError> {
-        let id = self.alloc_id();
-        match self.roundtrip(ClientMessage::Shutdown { id })? {
-            DaemonMessage::Shutdown { accepted: true, .. } => Ok(()),
+        match self.request_shutdown()? {
+            ShutdownAnswer::Accepted => Ok(()),
             // A refusal is an answer, not a broken call: the daemon is saying
             // it must outlive this client (another local app window is still
             // connected). The caller decides what "just exit" looks like.
+            ShutdownAnswer::Refused(reason) => Err(DaemonError::Protocol(reason)),
+        }
+    }
+
+    /// The daemon's answer to a quit request, kept apart from `shutdown`'s
+    /// error: a refusal arrived, an error did not.
+    pub fn request_shutdown(&self) -> Result<ShutdownAnswer, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::Shutdown { id })? {
+            DaemonMessage::Shutdown { accepted: true, .. } => Ok(ShutdownAnswer::Accepted),
             DaemonMessage::Shutdown {
-                reason: Some(reason),
+                accepted: false,
+                reason,
                 ..
-            } => Err(DaemonError::Protocol(reason)),
+            } => Ok(ShutdownAnswer::Refused(reason.unwrap_or_default())),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }

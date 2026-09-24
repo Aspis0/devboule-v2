@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Attention } from "../../types/ipc";
-import type { ToastContent } from "./attentionNotice";
+import type { Attention, SessionStateSnapshot } from "../../types/ipc";
+import type { ToastContent, ToastDeps } from "./attentionNotice";
 import {
   setAttentionHeldContentProvider,
   PREVIEW_LIMIT,
+  TOAST_RETRY_DELAY_MS,
   attentionRaised,
   fireAttentionToast,
   forgetAttentionFor,
@@ -13,7 +14,9 @@ import {
   stripMarkdown,
   toastContent,
   toastGate,
+  workspaceHeldContentProvider,
 } from "./attentionNotice";
+import { createWorkspaceSessionController, sessionTitle } from "./workspaceSessions";
 
 function attention(reason: Attention["reason"], atMs: number): Attention {
   return { reason, atMs };
@@ -133,12 +136,42 @@ describe("heldContentForSession", () => {
     expect(held?.permissionText).toContain("the agent wants to install a package");
   });
 
-  it("gives nothing for a session this window cannot see", () => {
-    expect(heldContentForSession(false, { title: "secret work" })).toBeUndefined();
+  it("carries the last assistant message the app holds", () => {
+    const held = heldContentForSession(true, undefined, "Deploy finished successfully");
+    expect(held?.lastAssistantText).toBe("Deploy finished successfully");
   });
 
-  it("gives nothing when no card is pending", () => {
+  it("gives nothing for a session this window cannot see, even with content held", () => {
+    expect(heldContentForSession(false, { title: "secret work" }, "secret answer")).toBeUndefined();
+  });
+
+  it("gives nothing when nothing is held", () => {
     expect(heldContentForSession(true, undefined)).toBeUndefined();
+    expect(heldContentForSession(true, undefined, "   ")).toBeUndefined();
+  });
+});
+
+describe("workspaceHeldContentProvider", () => {
+  it("quotes the strip's row, the pending card and the held transcript", () => {
+    const provider = workspaceHeldContentProvider({
+      rendered: () => true,
+      pending: () => ({ title: "Run npm install" }),
+      heldAssistantText: () => "Deploy finished successfully",
+    });
+    expect(provider("agent-1")?.permissionText).toContain("Run npm install");
+    expect(provider("agent-1")?.lastAssistantText).toContain("Deploy finished");
+  });
+
+  it("asks the inputs on every call, so a hidden row is not quoted", () => {
+    let rendered = true;
+    const provider = workspaceHeldContentProvider({
+      rendered: () => rendered,
+      pending: () => ({ title: "Run npm install" }),
+      heldAssistantText: () => "Deploy finished successfully",
+    });
+    expect(provider("agent-1")).toBeDefined();
+    rendered = false;
+    expect(provider("agent-1")).toBeUndefined();
   });
 });
 
@@ -170,13 +203,15 @@ describe("sendWithPermission", () => {
     expect(plugin.sendNotification).toHaveBeenCalledTimes(2);
   });
 
-  it("refuses to send when the ask is denied", async () => {
+  it("sends nothing after a denial, and never asks a second time", async () => {
     const plugin = {
       isPermissionGranted: vi.fn(async () => false),
       requestPermission: vi.fn(async () => "denied" as NotificationPermission),
       sendNotification: vi.fn(async () => undefined),
     };
-    await expect(sendWithPermission({ title: "t", body: "b" }, plugin)).rejects.toThrow();
+    await sendWithPermission({ title: "t", body: "b" }, plugin);
+    await sendWithPermission({ title: "t2", body: "b2" }, plugin);
+    expect(plugin.requestPermission).toHaveBeenCalledTimes(1);
     expect(plugin.sendNotification).not.toHaveBeenCalled();
   });
 });
@@ -184,23 +219,75 @@ describe("sendWithPermission", () => {
 describe("fireAttentionToast delivery", () => {
   const hidden = { visible: () => false, focused: () => false };
 
-  it("marks a raise delivered only after the send succeeded", async () => {
+  it("retries a failed raise once after the delay, then drops it", async () => {
+    vi.useFakeTimers();
     forgetAttentionFor(new Set());
-    let fail = true;
     const send = vi.fn(async () => {
-      if (fail) throw new Error("the toast did not land");
+      throw new Error("the toast did not land");
     });
     fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
-    await Promise.resolve();
-    await Promise.resolve();
     expect(send).toHaveBeenCalledTimes(1);
-    // The same raise arrives again on the next roster push while the send
-    // is still failing: it must retry, not be swallowed by the dedupe.
-    fireAttentionToast("s1", "agent one", attention("finished", 1000), { send, ...hidden });
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(TOAST_RETRY_DELAY_MS);
     expect(send).toHaveBeenCalledTimes(2);
-    fail = false;
+    await vi.advanceTimersByTimeAsync(TOAST_RETRY_DELAY_MS);
+    expect(send).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it("reaches a raising session through the roster observer, one retry from the timer", async () => {
+    vi.useFakeTimers();
+    forgetAttentionFor(new Set());
+    const send = vi.fn(async () => {
+      throw new Error("the toast did not land");
+    });
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const deps: Partial<ToastDeps> = { send, ...hidden };
+    const controller = createWorkspaceSessionController(
+      {
+        list: vi.fn(async () => []),
+        create: vi.fn(async () => {
+          throw new Error("not created here");
+        }),
+        watch: vi.fn(async (listener) => {
+          watched.listener = listener;
+          return () => {
+            watched.listener = null;
+          };
+        }),
+      },
+      (session, raised) => fireAttentionToast(session.id, sessionTitle(session), raised, deps),
+    );
+    const snapshot = (atMs: number): SessionStateSnapshot[] => [
+      {
+        id: "agent-1",
+        workspaceId: null,
+        kind: "acp",
+        title: "agent one",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
+        attention: { reason: "finished", atMs },
+      },
+    ];
+    const release = controller.watch();
+    // The first roster is the baseline, and the second carries the SAME
+    // timestamp: neither is a new raise, so nothing fires yet.
+    watched.listener?.(snapshot(1000));
+    watched.listener?.(snapshot(1000));
+    expect(send).not.toHaveBeenCalled();
+    // A newer raise fires once.
+    watched.listener?.(snapshot(2000));
+    expect(send).toHaveBeenCalledTimes(1);
+    // The same raise re-published while the send is failing is filtered by
+    // the controller — the retry must come from the timer, not this push.
+    watched.listener?.(snapshot(2000));
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(TOAST_RETRY_DELAY_MS);
+    expect(send).toHaveBeenCalledTimes(2);
+    release();
+    vi.useRealTimers();
   });
 
   it("does not retry a raise that was delivered", async () => {

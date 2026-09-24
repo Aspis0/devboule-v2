@@ -2574,6 +2574,11 @@ pub struct DaemonStatusBody {
     /// older status reads as "unknown", never as "zero agents".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents: Option<u32>,
+    /// How many of `sessions` are terminals, from the same registry read as
+    /// `agents` — the pair is one snapshot, so the UI never derives one
+    /// from the other across counters that move at different moments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminals: Option<u32>,
     pub capabilities: Vec<Capability>,
     /// Highest live-session scrollback occupancy observed by the daemon.
     #[serde(default)]

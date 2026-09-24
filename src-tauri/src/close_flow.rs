@@ -3,17 +3,16 @@
 //!
 //! One responsibility: reading the stored choice and the daemon's facts,
 //! showing the confirmation (at most one at a time), and performing what
-//! the user chose — hide, or quit with a fresh look at the daemon.
+//! the user chose — hide, or quit with a last look at the daemon.
 
 use tauri::Manager;
-use tauri_plugin_dialog::{
-    DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
-};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 use crate::client::DaemonBridge;
 use crate::close_prompt::{
-    decide_close, decide_quit, quit_confirmation_message, stored_close_choice_text, AskFlavor,
-    ClosePlan, ConfirmGate, DaemonFacts, CLOSE_SURFACE_ID,
+    act_on_quit_answer, decide_close, decide_quit, dialog_answer, quit_confirmation_message,
+    stored_close_choice_text, AskFlavor, ClosePlan, ConfirmGate, DaemonFacts, QuitAct,
+    CANCEL_BUTTON_LABEL, CLOSE_SURFACE_ID, QUIT_BUTTON_LABEL, TRAY_BUTTON_LABEL,
 };
 use crate::surface_settings;
 
@@ -60,7 +59,7 @@ fn run_window_close_flow(app: tauri::AppHandle) {
     let choice = stored_close_choice(&app);
     match decide_close(choice) {
         ClosePlan::Hide => hide_main_window(&app),
-        ClosePlan::Quit => perform_quit(&app),
+        ClosePlan::Quit => perform_quit(&app, &DaemonFacts::Unknown),
         ClosePlan::Ask(flavor) => ask(&app, flavor),
     }
 }
@@ -71,44 +70,64 @@ fn ask(app: &tauri::AppHandle, flavor: AskFlavor) {
         // fighting; the open dialog is still the one true question.
         return;
     }
-    let facts = daemon_facts(app);
+    let shown = daemon_facts(app);
     let builder = app
         .dialog()
-        .message(quit_confirmation_message(&facts))
+        .message(quit_confirmation_message(&shown))
         .title("Quit Devboule?")
         .kind(MessageDialogKind::Warning);
     let builder = match flavor {
         AskFlavor::WindowClose => builder.buttons(MessageDialogButtons::YesNoCancelCustom(
-            "Keep running in the tray".into(),
-            "Quit".into(),
-            "Cancel".into(),
+            TRAY_BUTTON_LABEL.into(),
+            QUIT_BUTTON_LABEL.into(),
+            CANCEL_BUTTON_LABEL.into(),
         )),
         // The quit question offers quit and cancel, never the tray.
         AskFlavor::QuitOnly => builder.buttons(MessageDialogButtons::OkCancelCustom(
-            "Quit".into(),
-            "Cancel".into(),
+            QUIT_BUTTON_LABEL.into(),
+            CANCEL_BUTTON_LABEL.into(),
         )),
     };
     let flow_app = app.clone();
     builder.show_with_result(move |result| {
         CONFIRM_GATE.end();
-        match result {
-            MessageDialogResult::Yes => hide_main_window(&flow_app),
-            // QuitOnly's accept answers Ok; WindowClose's Quit answers No.
-            MessageDialogResult::No | MessageDialogResult::Ok => perform_quit(&flow_app),
-            // Cancel: exactly as things were.
-            _ => {}
+        match dialog_answer(&result) {
+            crate::close_prompt::DialogAnswer::Hide => hide_main_window(&flow_app),
+            crate::close_prompt::DialogAnswer::Quit => {
+                // The dialog promised the world as `shown` had it. If the
+                // daemon's facts moved while the dialog was open, the old
+                // promise is not acted on: ask again with what is true now.
+                let fresh = daemon_facts(&flow_app);
+                match act_on_quit_answer(&shown, &fresh) {
+                    QuitAct::Quit => perform_quit(&flow_app, &fresh),
+                    QuitAct::AskAgain => ask(&flow_app, flavor),
+                }
+            }
+            crate::close_prompt::DialogAnswer::Cancel => {}
         }
     });
 }
 
-/// The quit act, with the daemon's facts read again right before acting:
-/// the dialog's sentence was written when the dialog opened, but the
-/// action uses the daemon as it is now — and the daemon's own refusal
-/// remains the backstop for anything that changed since.
-fn perform_quit(app: &tauri::AppHandle) {
-    let facts = daemon_facts(app);
+/// The quit act. Before exiting, the daemon gets one last request: the
+/// supervisor may be mid-reconnect with no client of its own, and quitting
+/// silently would leave a daemon running with work no window can show.
+/// A refusal is an answer (another local window keeps it alive), but a
+/// daemon that cannot be reached is said out loud before the exit.
+fn perform_quit(app: &tauri::AppHandle, facts: &DaemonFacts) {
     eprintln!("devboule: quitting; daemon facts at quit: {facts:?}");
+    if let Some(bridge) = app.try_state::<DaemonBridge>() {
+        if let Err(reason) = bridge.ask_daemon_to_stop() {
+            eprintln!("devboule: the daemon could not be asked to stop: {reason}");
+            app.dialog()
+                .message(
+                    "Devboule could not reach the daemon to ask it to stop. It may still be \
+                     running with its agents and terminals.",
+                )
+                .title("Devboule is quitting")
+                .kind(MessageDialogKind::Warning)
+                .blocking_show();
+        }
+    }
     app.exit(0);
 }
 
@@ -135,12 +154,12 @@ fn daemon_facts(app: &tauri::AppHandle) -> DaemonFacts {
     let Ok(body) = client.status() else {
         return DaemonFacts::Unknown;
     };
-    let Some(agents) = body.agents else {
+    let (Some(agents), Some(terminals)) = (body.agents, body.terminals) else {
         return DaemonFacts::Unknown;
     };
     DaemonFacts::Read {
         agents,
-        terminals: body.sessions.saturating_sub(agents),
+        terminals,
         other_local_windows: body.local_clients.saturating_sub(1),
     }
 }

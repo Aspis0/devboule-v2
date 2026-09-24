@@ -200,7 +200,7 @@ pub(super) fn accept_loop(mut listener: transport::BoundListener, state: Arc<Ser
         }
         match listener.accept() {
             Ok(stream) => {
-                let Some(slot) = state.admit_client(ClientKind::LocalApp) else {
+                let Some((slot, quit_intent)) = state.admit_client(ClientKind::LocalApp) else {
                     reject_shutting_down(stream);
                     break;
                 };
@@ -213,9 +213,12 @@ pub(super) fn accept_loop(mut listener: transport::BoundListener, state: Arc<Ser
                         // Held for the whole connection, and released by `Drop`
                         // even if `handle_client` unwinds.
                         let _slot = slot;
-                        if let Err(error) =
-                            handle_client(Framed::new(stream), conn_state.clone(), None)
-                        {
+                        if let Err(error) = handle_client(
+                            Framed::new(stream),
+                            conn_state.clone(),
+                            None,
+                            quit_intent,
+                        ) {
                             eprintln!("daemon client connection failed: {error}");
                         }
                     })

@@ -2,7 +2,7 @@ use super::*;
 use devboule_protocol::{ClientMessage, OwnerId, PermissionOutcome, RetentionPatch};
 
 use crate::journal::new_session_record;
-use crate::peer_policy::TransportBinding;
+use crate::peer_policy::{TransportBinding, CAP_ADMIN};
 
 fn state() -> Arc<ServerState> {
     ServerState::new("test-instance".to_string())
@@ -182,6 +182,7 @@ fn remote_conn_with_caps(
             ),
         }),
         caps.iter().map(|cap| cap.to_string()).collect(),
+        QuitIntent::default(),
     )
 }
 
@@ -493,7 +494,7 @@ fn wait_for_shutdown(state: &ServerState) {
 fn idle_daemon_exits_after_grace_period() {
     let state = state();
     assert!(state.client_connected(ClientKind::LocalApp));
-    state.client_disconnected(true);
+    state.client_disconnected(ClientKind::LocalApp, false);
     wait_for_shutdown(&state);
 }
 
@@ -503,7 +504,7 @@ fn connected_client_prevents_idle_shutdown() {
     assert!(state.client_connected(ClientKind::LocalApp));
     std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(100));
     assert!(!state.is_shutting_down());
-    state.client_disconnected(true);
+    state.client_disconnected(ClientKind::LocalApp, false);
     wait_for_shutdown(&state);
 }
 
@@ -545,12 +546,12 @@ fn live_session_prevents_shutdown_even_without_a_client() {
 fn reconnect_inside_grace_invalidates_idle_shutdown() {
     let state = state();
     assert!(state.client_connected(ClientKind::LocalApp));
-    state.client_disconnected(true);
+    state.client_disconnected(ClientKind::LocalApp, false);
     std::thread::sleep(IDLE_SHUTDOWN_GRACE / 2);
     assert!(state.client_connected(ClientKind::LocalApp));
     std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(100));
     assert!(!state.is_shutting_down());
-    state.client_disconnected(true);
+    state.client_disconnected(ClientKind::LocalApp, false);
     wait_for_shutdown(&state);
 }
 
@@ -5263,27 +5264,28 @@ fn a_refused_resume_releases_its_lifecycle_slot() {
 }
 
 /// Two simultaneous quits are both refused while both windows are counted —
-/// and both windows then leave. The daemon must not outlive its UI: with a
-/// live session and no idle exit possible, the remembered quits stop it the
-/// moment the last local app is gone.
+/// and both windows then leave. The daemon must not outlive its UI: each
+/// leaver carries its own refused intent, and the LAST one out is a window
+/// that asked, so the daemon stops with it (live session included).
 #[test]
 fn two_refused_quits_stop_the_daemon_when_both_windows_leave() {
     let state = state();
-    let _first = state
+    let (guard_a, intent_a) = state
         .admit_client(ClientKind::LocalApp)
-        .expect("first local client is admitted");
-    let _second = state
+        .expect("window A is admitted");
+    let conn_a = ConnHandle::with_peer_caps(31, None, None, Vec::new(), intent_a);
+    let (guard_b, intent_b) = state
         .admit_client(ClientKind::LocalApp)
-        .expect("second local client is admitted");
+        .expect("window B is admitted");
+    let conn_b = ConnHandle::with_peer_caps(32, None, None, Vec::new(), intent_b);
     assert!(state.session_started(), "a live agent pins the idle exit");
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let conn = ConnHandle::new(31);
-    for id in [41, 42] {
+    for conn in [&conn_a, &conn_b] {
         let reply = dispatch(
             &state,
             &owner,
-            ClientMessage::Shutdown { id },
-            &conn,
+            ClientMessage::Shutdown { id: 41 },
+            conn,
             true,
             true,
             true,
@@ -5292,23 +5294,29 @@ fn two_refused_quits_stop_the_daemon_when_both_windows_leave() {
         .expect("shutdown always answers");
         let DaemonMessage::Shutdown {
             accepted: false,
-            reason: Some(_),
+            reason: Some(reason),
             ..
         } = reply
         else {
             panic!("both quits are refused while both windows count, got {reply:?}");
         };
+        assert!(
+            !reason.contains("  "),
+            "the refusal is one sentence, without the old gap: {reason:?}"
+        );
     }
-    // Both windows exit (the refusal never keeps a window alive).
-    state.client_disconnected(true);
+    // Window A leaves: its own quit was refused, but B still holds the
+    // daemon. The guard's release IS the disconnect, its own intent read
+    // on the way out.
+    drop(guard_a);
     assert!(
         !state.is_shutting_down(),
         "one window left; the other still holds the daemon"
     );
-    state.client_disconnected(true);
+    drop(guard_b);
     assert!(
         state.is_shutting_down(),
-        "every local app asked to quit and left: the daemon stops, live session included"
+        "the last local app out asked to quit: the daemon stops, live session included"
     );
 }
 
@@ -5317,19 +5325,20 @@ fn two_refused_quits_stop_the_daemon_when_both_windows_leave() {
 #[test]
 fn a_refused_quit_leaves_the_daemon_running_for_the_window_that_stays() {
     let state = state();
-    let _first = state
+    let (guard_a, intent_a) = state
         .admit_client(ClientKind::LocalApp)
-        .expect("first local client is admitted");
-    let _second = state
+        .expect("window A is admitted");
+    let conn_a = ConnHandle::with_peer_caps(33, None, None, Vec::new(), intent_a);
+    let (guard_b, intent_b) = state
         .admit_client(ClientKind::LocalApp)
-        .expect("second local client is admitted");
+        .expect("window B is admitted");
+    let conn_b = ConnHandle::with_peer_caps(34, None, None, Vec::new(), intent_b);
     let owner = OwnerId::new("test-user", "test-client").expect("owner");
-    let conn = ConnHandle::new(32);
     let reply = dispatch(
         &state,
         &owner,
         ClientMessage::Shutdown { id: 43 },
-        &conn,
+        &conn_a,
         true,
         true,
         true,
@@ -5342,8 +5351,9 @@ fn a_refused_quit_leaves_the_daemon_running_for_the_window_that_stays() {
     else {
         panic!("the quit is refused while both windows count, got {reply:?}");
     };
-    // The refused window leaves anyway.
-    state.client_disconnected(true);
+    // The refused window leaves anyway; the window that stayed keeps the
+    // daemon, and its own later quit is the one that is accepted.
+    drop(guard_a);
     assert!(
         !state.is_shutting_down(),
         "the window that stayed keeps the daemon running"
@@ -5352,7 +5362,7 @@ fn a_refused_quit_leaves_the_daemon_running_for_the_window_that_stays() {
         &state,
         &owner,
         ClientMessage::Shutdown { id: 44 },
-        &conn,
+        &conn_b,
         true,
         true,
         true,
@@ -5362,6 +5372,7 @@ fn a_refused_quit_leaves_the_daemon_running_for_the_window_that_stays() {
     let DaemonMessage::Shutdown { accepted: true, .. } = reply else {
         panic!("the last window out is accepted, got {reply:?}");
     };
+    drop(guard_b);
 }
 
 /// The count check and entering shutdown are one atomic step: once the
@@ -5385,4 +5396,169 @@ fn an_accepted_quit_refuses_late_admission() {
         state.admit_client(ClientKind::LocalApp).is_none(),
         "a client arriving after the decision finds shutdown already begun"
     );
+}
+
+/// A refused quit belongs to the connection that asked. Window A's quit was
+/// refused and A left; window B never asked and crashes later. The daemon
+/// must still be there: B's crash is not A's quit.
+#[test]
+fn a_crash_of_the_last_window_after_a_refused_quit_never_stops_the_daemon() {
+    let state = state();
+    let (guard_a, intent_a) = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("A is admitted");
+    let conn_a = ConnHandle::with_peer_caps(51, None, None, Vec::new(), intent_a);
+    let (guard_b, intent_b) = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("B is admitted");
+    // B is connected but never speaks: its handle holds nothing the test
+    // reads — the guard's own copy of the intent is what a crash releases.
+    let _conn_b = ConnHandle::with_peer_caps(52, None, None, Vec::new(), intent_b);
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::Shutdown { id: 71 },
+        &conn_a,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("shutdown always answers");
+    let DaemonMessage::Shutdown {
+        accepted: false, ..
+    } = reply
+    else {
+        panic!("A's quit is refused while B counts, got {reply:?}");
+    };
+    // A leaves, its own quit refused; B still holds the daemon.
+    drop(guard_a);
+    assert!(!state.is_shutting_down(), "B still holds the daemon");
+    // B crashes later, never having asked to quit: its release carries no
+    // intent, so the daemon stays for the work on it.
+    drop(guard_b);
+    assert!(
+        !state.is_shutting_down(),
+        "a crash of a window that never asked must not stop the daemon"
+    );
+}
+
+/// A peer's refused `Shutdown` memorizes nothing: dispatch reads the caller
+/// kind, the peer has no local slot, and when the last local window leaves
+/// without asking, nothing stops.
+#[test]
+fn a_peers_refused_shutdown_is_never_memorized() {
+    let state = state();
+    let (guard_a, intent_a) = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("A is admitted");
+    let _conn_a = ConnHandle::with_peer_caps(53, None, None, Vec::new(), intent_a);
+    let (guard_b, intent_b) = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("B is admitted");
+    let _conn_b = ConnHandle::with_peer_caps(54, None, None, Vec::new(), intent_b);
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let conn_peer = remote_conn_with_caps(PeerRole::Daemon, None, &[CAP_ADMIN]);
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::Shutdown { id: 72 },
+        &conn_peer,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("shutdown always answers");
+    let DaemonMessage::Shutdown {
+        accepted: false, ..
+    } = reply
+    else {
+        panic!("the peer's shutdown is refused while two local apps count, got {reply:?}");
+    };
+    drop(conn_peer);
+    drop(guard_a);
+    drop(guard_b);
+    assert!(
+        !state.is_shutting_down(),
+        "no local window ever asked to quit: nothing stops"
+    );
+}
+
+/// A relaunch severs the old connection and its refusal: the new window's
+/// quit stands on its own, and the daemon outlives every window that did
+/// not ask.
+#[test]
+fn a_relaunched_windows_old_refusal_does_not_decide_for_others() {
+    let state = state();
+    let (guard_a, intent_a) = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("A is admitted");
+    let conn_a = ConnHandle::with_peer_caps(55, None, None, Vec::new(), intent_a);
+    let (guard_b, intent_b) = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("B is admitted");
+    let conn_b = ConnHandle::with_peer_caps(56, None, None, Vec::new(), intent_b);
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::Shutdown { id: 73 },
+        &conn_a,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("shutdown always answers");
+    let DaemonMessage::Shutdown {
+        accepted: false, ..
+    } = reply
+    else {
+        panic!("A's quit is refused while B counts, got {reply:?}");
+    };
+    drop(guard_a);
+    // A relaunches: a fresh connection, a fresh intent.
+    let (guard_a2, intent_a2) = state
+        .admit_client(ClientKind::LocalApp)
+        .expect("A is relaunched");
+    let conn_a2 = ConnHandle::with_peer_caps(57, None, None, Vec::new(), intent_a2);
+    // B quits: refused while two windows count; B leaves, its own quit
+    // refused — but A-relaunched never asked, so the daemon stays.
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::Shutdown { id: 74 },
+        &conn_b,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("shutdown always answers");
+    let DaemonMessage::Shutdown {
+        accepted: false, ..
+    } = reply
+    else {
+        panic!("B's quit is refused while two windows count, got {reply:?}");
+    };
+    drop(guard_b);
+    assert!(!state.is_shutting_down(), "A-relaunched never asked");
+    // A-relaunched quits as the only window out: accepted.
+    let reply = dispatch(
+        &state,
+        &owner,
+        ClientMessage::Shutdown { id: 75 },
+        &conn_a2,
+        true,
+        true,
+        true,
+        true,
+    )
+    .expect("shutdown always answers");
+    let DaemonMessage::Shutdown { accepted: true, .. } = reply else {
+        panic!("the last window out is accepted, got {reply:?}");
+    };
+    drop(guard_a2);
 }

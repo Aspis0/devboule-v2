@@ -15,6 +15,7 @@ fn remote_conn(paired_by_user: Option<String>) -> Arc<ConnHandle> {
             binding: TransportBinding::tailnet("nstable", "node", "user@example.com"),
         }),
         vec![CAP_VIEW.to_string()],
+        QuitIntent::default(),
     )
 }
 

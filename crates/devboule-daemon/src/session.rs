@@ -564,6 +564,7 @@ mod tests;
 use session_resume::{provider_refused_session, resume_end_generation_detached};
 
 pub use event_pull::ConnHandle;
+pub(crate) use event_pull::QuitIntent;
 pub(crate) use session_types::PendingEvent;
 pub use session_types::PtyCommand;
 use session_types::{

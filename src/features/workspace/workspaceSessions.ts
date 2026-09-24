@@ -626,6 +626,11 @@ export function createWorkspaceSessionController(
         loading: false,
         error: null,
       });
+      // A list refresh can be the only roster update that removes a row: it
+      // prunes the row's dedupe entry the same way a push does, so a session
+      // that returns re-announces, and the map cannot grow for the process
+      // lifetime while the watch is down.
+      forgetAttentionFor(new Set(listed.map((session) => session.id)));
     } catch {
       if (generation !== refreshGeneration) return;
       publish({ ...state, loading: false, error: LIST_ERROR });

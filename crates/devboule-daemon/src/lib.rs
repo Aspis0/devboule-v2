@@ -144,7 +144,7 @@ pub use agent_env::{
 pub use atomic::atomic_write;
 pub use client::{
     connect, connect_or_spawn, handshake, test_owner, DaemonClient, DelegationChangedHandler,
-    EventHandler, SessionStateHandler,
+    EventHandler, SessionStateHandler, ShutdownAnswer,
 };
 // Neither the daemon's record nor its reader is behind `server`: the GUI
 // process is the reader, and it links this crate with `default-features = false`.

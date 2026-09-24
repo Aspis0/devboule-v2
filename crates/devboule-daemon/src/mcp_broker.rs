@@ -1009,6 +1009,7 @@ fn caller_conn(state: &ServerState, caller: &McpCaller) -> Arc<crate::session::C
                     binding,
                 }),
                 caps.clone(),
+                crate::session::QuitIntent::default(),
             )
         }
         McpCaller::Local | McpCaller::Unknown | McpCaller::Absent => {

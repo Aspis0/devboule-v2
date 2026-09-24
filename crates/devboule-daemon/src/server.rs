@@ -31,7 +31,7 @@ use crate::peer_policy::{peer_allows, ConnPeer, PeerDecision, PeerRole};
 use crate::peer_transport::{accept_peers, TokenBucket};
 use crate::provider_update::{NpmInstallRunner, ProcessNpmInstallRunner};
 use crate::secret_store::SecretStore;
-use crate::session::{ConnHandle, PendingEvent, SessionRegistry};
+use crate::session::{ConnHandle, PendingEvent, QuitIntent, SessionRegistry};
 use crate::transport::{self, Listener};
 use crate::IDLE_SHUTDOWN_GRACE;
 

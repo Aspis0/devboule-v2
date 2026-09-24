@@ -22,6 +22,7 @@ pub(crate) fn handle_client(
     framed: Framed,
     state: Arc<ServerState>,
     conn_peer: Option<ConnPeer>,
+    quit_intent: QuitIntent,
 ) -> Result<(), DaemonError> {
     if state.is_shutting_down() {
         send_shutting_down(&framed, None)?;
@@ -149,7 +150,13 @@ pub(crate) fn handle_client(
         Some(ConnPeer::Remote { device_id, .. }) => state.peer_caps(device_id),
         _ => Vec::new(),
     };
-    let conn = ConnHandle::with_peer_caps(state.alloc_conn(), peer, conn_peer.clone(), peer_caps);
+    let conn = ConnHandle::with_peer_caps(
+        state.alloc_conn(),
+        peer,
+        conn_peer.clone(),
+        peer_caps,
+        quit_intent,
+    );
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();
