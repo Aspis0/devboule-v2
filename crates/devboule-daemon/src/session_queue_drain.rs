@@ -46,7 +46,10 @@ impl SessionRegistry {
         {
             let mut queues = self.queues.lock();
             if let Some(state) = queues.get_mut(session_id) {
-                if state.paused && !state.items.first().is_some_and(|item| item.unconfirmed) {
+                if state.paused
+                    && !state.closing
+                    && !state.items.first().is_some_and(|item| item.unconfirmed)
+                {
                     state.paused = false;
                     let items = state.snapshot();
                     #[cfg(test)]
@@ -58,23 +61,17 @@ impl SessionRegistry {
                     {
                         hook();
                     }
-                    // The store is made through the journal here, not
-                    // `persist_queue`, so the timeout kind survives: a timed
-                    // out store is not a refusal — the command was sent and
-                    // may still commit — so memory stays as the user asked
-                    // and only a definite error parks it again (fix pass 5).
-                    if let Some(journal) = &self.journal {
-                        let rows = super::session_queue::queue_records(&items);
-                        if let Err(error) =
-                            journal.queue_store(session_id, &rows, state.next_id, false)
-                        {
-                            let timeout = error.is_timeout();
-                            let error = WireError::from(error);
-                            if !timeout {
-                                state.paused = true;
-                            }
-                            return Err(error);
-                        }
+                    // The seam owns the timeout rule: a timed-out store is
+                    // not a refusal — the command was sent and may still
+                    // commit — so memory stays as the user asked, the store
+                    // answers stored, and this unpause reaches drain_step
+                    // exactly like a stored unpause does (fix pass 6). Only
+                    // a definite error parks memory again and is returned.
+                    if let Err(error) =
+                        self.store_queue_state(session_id, &items, state.next_id, false)
+                    {
+                        state.paused = true;
+                        return Err(error);
                     }
                 }
             }
@@ -135,7 +132,7 @@ impl SessionRegistry {
                 let Some(state) = queues.get_mut(session_id) else {
                     return;
                 };
-                if state.draining || state.paused || state.items.is_empty() {
+                if state.draining || state.paused || state.closing || state.items.is_empty() {
                     return;
                 }
                 if state.items[0].unconfirmed {
@@ -191,7 +188,7 @@ impl SessionRegistry {
                 state.items[0].unconfirmed = true;
                 let items = state.snapshot();
                 if self
-                    .persist_queue(session_id, &items, state.next_id, state.paused)
+                    .store_queue_state(session_id, &items, state.next_id, state.paused)
                     .is_err()
                 {
                     state.draining = false;
@@ -276,7 +273,7 @@ impl SessionRegistry {
                     }
                 }
                 if self
-                    .persist_queue(session_id, &trial.items, trial.next_id, trial.paused)
+                    .store_queue_state(session_id, &trial.items, trial.next_id, trial.paused)
                     .is_err()
                 {
                     // Nothing committed: memory stays on the durable side of

@@ -37,6 +37,12 @@ impl SessionRegistry {
             let state = queues
                 .get_mut(session_id)
                 .expect("ensure_queue_loaded inserts the state");
+            if state.closing {
+                return Err(WireError::new(
+                    ErrorCode::SessionNotFound,
+                    "This session is closing; its queue no longer accepts messages.",
+                ));
+            }
             if state.draining {
                 return Err(WireError::new(
                     ErrorCode::InvalidRequest,
@@ -52,7 +58,7 @@ impl SessionRegistry {
             // The claim is written before it is taken: an unwritable store
             // refuses the claim outright rather than sending a message the
             // journal could not restore (P1-3, P1-4).
-            self.persist_queue(session_id, &trial.items, trial.next_id, trial.paused)?;
+            self.store_queue_state(session_id, &trial.items, trial.next_id, trial.paused)?;
             let taken = trial.items[position].clone();
             let items = trial.snapshot();
             *state = trial;

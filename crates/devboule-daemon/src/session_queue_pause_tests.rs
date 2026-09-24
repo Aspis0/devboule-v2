@@ -6,12 +6,12 @@
 //! a real journal reopen; the race is built with the writer's gate.
 
 use super::tests::{
-    attach_live_agent_for_test, ended_record, insert_live_agent_with_writer,
+    attach_live_agent_for_test, drain, ended_record, insert_live_agent_with_writer,
     install_end_turn_killer, test_owner, tmp_delete_registry, FailingWriter, RecordingWriter,
 };
 use super::{
     Arc, Barrier, ConnHandle, ConnPeer, Duration, ErrorCode, Instant, Journal, Mutex, Ordering,
-    OwnerId, RuntimePaths, SessionRegistry,
+    OwnerId, RuntimePaths, SessionEvent, SessionRegistry,
 };
 use std::sync::atomic::AtomicBool;
 
@@ -35,6 +35,30 @@ fn seed_row(journal: &Journal, owner: &OwnerId) {
     journal
         .create_session(ended_record(SESSION, &owner.user))
         .expect("the session row");
+}
+
+/// A writer that refuses while `fail` is set and accepts otherwise — the
+/// timeout test parks the queue with it set and drains with it cleared.
+struct FailSwitchWriter {
+    fail: Arc<AtomicBool>,
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl std::io::Write for FailSwitchWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.fail.load(Ordering::Acquire) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "fail switch writer refused",
+            ));
+        }
+        self.bytes.lock().expect("writer").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// A daemon over `dir`'s journal: live agent, recording writer, no attach,
@@ -548,10 +572,20 @@ fn a_timed_out_unpause_store_keeps_memory_and_later_agrees_with_disk() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
     seed_row(&journal, &owner);
-    // The failing writer parks the queue for real: on an idle session the
-    // add's own wake drains, fails, and stores the durable pause.
-    let runtime =
-        insert_live_agent_with_writer(&registry, SESSION, owner.clone(), Box::new(FailingWriter));
+    // The writer refuses first — on an idle session the add's own wake
+    // drains, fails, and stores the durable pause — and flips to accepting
+    // when the test lets the parked item drain.
+    let fail = Arc::new(AtomicBool::new(true));
+    let bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let runtime = insert_live_agent_with_writer(
+        &registry,
+        SESSION,
+        owner.clone(),
+        Box::new(FailSwitchWriter {
+            fail: Arc::clone(&fail),
+            bytes: Arc::clone(&bytes),
+        }),
+    );
     let conn = ConnHandle::new(1);
     registry
         .queue_add(SESSION, "parked", &[], &[], &owner, &conn)
@@ -619,4 +653,117 @@ fn a_timed_out_unpause_store_keeps_memory_and_later_agrees_with_disk() {
         !registry.queue_paused_for_test(SESSION),
         "memory and disk agree after the late commit"
     );
+
+    // Fix pass 6, P2: the timed-out unpause still scheduled the drain — the
+    // frame's turn ends and the edited item is sent, not stranded behind a
+    // wait nobody retries.
+    fail.store(false, Ordering::Release);
+    runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "end_turn".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    wait_until("the edited item to drain after the timeout", || {
+        written(&bytes).contains("parked, edited")
+    });
+    assert!(
+        registry.queue_items_for_test(SESSION).is_empty(),
+        "the drained item left the queue"
+    );
+}
+
+/// Fix pass 6, P1: the timeout rule on every queue store. A `queue_add`
+/// whose store sits behind a slow journal write times out — the client is
+/// not told it failed, memory keeps the queued message, the snapshot says
+/// so, the late commit lands, and a simulated restart resumes exactly what
+/// the client saw.
+#[test]
+fn a_timed_out_add_commits_late_and_the_client_was_not_told_it_failed() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("queue.user", "queue.client");
+    seed_row(&journal, &owner);
+    let bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let runtime = insert_live_agent_with_writer(
+        &registry,
+        SESSION,
+        owner.clone(),
+        Box::new(RecordingWriter(Arc::clone(&bytes))),
+    );
+    let conn = attach_live_agent_for_test(&runtime, SESSION, 1);
+    runtime.begin_turn();
+
+    // A first add loads the queue state into memory, so the timed-out add
+    // below goes straight to its store instead of timing out on the load.
+    registry
+        .queue_add(SESSION, "first", &[], &[], &owner, &conn)
+        .expect("the pre-load add");
+
+    // The occupancy lever, applied to an add: the giant append grinds the
+    // loop for longer than the shrunken rpc wait, and the add's store queues
+    // behind it.
+    registry.set_rpc_wait_for_test(Duration::from_millis(100));
+    assert!(
+        journal.try_append(crate::journal::EventRecord {
+            session_id: SESSION.to_string(),
+            generation: 1,
+            seq: 100,
+            kind: crate::journal::EventKind::Output,
+            ts_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_millis() as u64,
+            payload: vec![0x20; 16 * 1024 * 1024],
+        }),
+        "the loop-occupying append is accepted"
+    );
+
+    registry
+        .queue_add(SESSION, "late commit", &[], &[], &owner, &conn)
+        .expect("the client is not told a timed-out add failed");
+    let items = registry.queue_items_for_test(SESSION);
+    assert_eq!(items.len(), 2, "memory keeps the queued message");
+    assert_eq!(items[1].text, "late commit");
+
+    // The snapshot was published with the message the client asked for.
+    let snapshot = drain(&conn)
+        .into_iter()
+        .rev()
+        .find_map(|event| match event {
+            SessionEvent::QueueSnapshot { items } => Some(items),
+            _ => None,
+        })
+        .expect("the add published its snapshot");
+    assert_eq!(snapshot.len(), 2);
+    assert_eq!(snapshot[1].text, "late commit");
+
+    // The late commit lands, and a simulated restart resumes exactly what
+    // the client saw: the same single message.
+    wait_until("the add's late commit to land", || {
+        let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+        let rows: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM session_queue WHERE session_id = ?1",
+                [SESSION],
+                |row| row.get(0),
+            )
+            .expect("count the rows");
+        rows == 2
+    });
+    drop(registry);
+    drop(journal);
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
+    insert_live_agent_with_writer(&registry, SESSION, owner.clone(), Box::new(FailingWriter));
+    registry.queue_restore_and_drain(SESSION);
+    let items = registry.queue_items_for_test(SESSION);
+    assert_eq!(
+        items.len(),
+        2,
+        "the resumed queue matches the client's view"
+    );
+    assert_eq!(items[0].text, "first");
+    assert_eq!(items[1].text, "late commit");
 }

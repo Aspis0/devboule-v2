@@ -2894,7 +2894,7 @@ impl SessionRegistry {
         if fence_authorized {
             self.queue_fence_for_close(session_id)?;
         }
-        let session = {
+        let closed = (|| -> Result<Option<RegistryEntry>, WireError> {
             let mut map = self
                 .inner
                 .lock()
@@ -2917,7 +2917,16 @@ impl SessionRegistry {
             // section that takes it out of the map (A2-06): a send that found it
             // here cannot reserve a slot for it afterwards (A2-05).
             forget_message_brake_target(&self.message_brakes, session_id);
-            map.remove(session_id)
+            Ok(map.remove(session_id))
+        })();
+        let session = match closed {
+            Ok(session) => session,
+            // The close was refused after the fence: the closing state
+            // clears, and the still-open session's queue works again.
+            Err(error) => {
+                self.queue_closing_clear(session_id);
+                return Err(error);
+            }
         };
         self.forget_agent_creator(session_id);
         match session {
@@ -2932,8 +2941,9 @@ impl SessionRegistry {
                 // A discard the journal refuses is reported in the close's
                 // reply once the teardown below has finished — the session is
                 // closed either way, but the surviving rows must not be a
-                // secret (P1-3).
-                let queue_discarded = self.queue_forget(session_id);
+                // secret (P1-3). The empty queue snapshot goes onto the
+                // record, so replay shows the queue cleared (fix pass 6).
+                let queue_discarded = self.queue_forget(session_id, Some(&session.runtime));
                 // The last chance to report this child to its creator (`S5` §3,
                 // audit S5-01): the row is out of the map, the runtime is still
                 // here, and the report is claimed exactly once, so a child whose
@@ -2962,10 +2972,12 @@ impl SessionRegistry {
                 self.notify_session_transition(owner, session_id);
                 queue_discarded.map(|()| true)
             }
-            Some(RegistryEntry::Transcript(_)) => {
+            Some(RegistryEntry::Transcript(transcript)) => {
                 // Its queue goes with it, like the live arm's (Q1), and a
-                // failed discard is reported the same way (P1-3).
-                let queue_discarded = self.queue_forget(session_id);
+                // failed discard is reported the same way (P1-3). The empty
+                // queue snapshot goes onto the record the same way (fix
+                // pass 6).
+                let queue_discarded = self.queue_forget(session_id, Some(&transcript.runtime));
                 // A transcript carries no runtime to report with, so it only
                 // gives a slot back. A child that ended by EOF was released by
                 // `finish_reader_session` already, and a recovered transcript
@@ -2996,7 +3008,21 @@ impl SessionRegistry {
                         // fence leaves the row open and the caller sees the
                         // journal error (fix pass 5).
                         self.queue_fence_for_close(session_id)?;
-                        let queue_discarded = self.queue_forget(session_id);
+                        let queue_discarded = self.queue_forget(session_id, None);
+                        // No runtime survives for a journal-only session, so
+                        // the cleared-queue marker goes onto the record
+                        // directly, one past the row's last sequence (fix
+                        // pass 6).
+                        if queue_discarded.is_ok() {
+                            if let Some(marker) = crate::journal::agent_report_record(
+                                session_id,
+                                record.generation,
+                                record.last_seq + 1,
+                                &SessionEvent::QueueSnapshot { items: Vec::new() },
+                            ) {
+                                journal.try_append(marker);
+                            }
+                        }
                         journal.try_mark_closed(session_id);
                         self.invalidate_journal_roster();
                         self.attachments.remove_session(session_id);

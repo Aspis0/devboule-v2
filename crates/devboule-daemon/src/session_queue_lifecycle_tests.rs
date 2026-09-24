@@ -7,10 +7,13 @@
 //! its own — and the same drop for retention's row deletions (P2-7).
 
 use super::tests::{
-    ended_record, insert_live_agent_with_writer, insert_transcript, test_owner,
-    tmp_delete_registry, RecordingWriter,
+    attach_live_agent_for_test, ended_record, insert_live_agent_with_writer, insert_transcript,
+    test_owner, tmp_delete_registry, RecordingWriter,
 };
-use super::{Arc, ConnHandle, Duration, ErrorCode, Journal, Mutex, OwnerId, RetentionPatch};
+use super::{
+    Arc, ConnHandle, ConnPeer, Duration, ErrorCode, Journal, Mutex, OwnerId, RetentionPatch,
+    RuntimePaths, SessionEvent, SessionRegistry,
+};
 
 const SESSION: &str = "s.q.life";
 
@@ -306,4 +309,183 @@ fn retention_prunes_the_queue_without_a_roster_read() {
         "retention prunes the queue without waiting for a roster read"
     );
     let _ = dir;
+}
+
+/// Fix pass 6, P1: once the close's fence has run, the queue is closing —
+/// under the same lock the fence holds — and every frame refuses, so the
+/// fence-to-removal window cannot reopen it, unpause it, or send it. A
+/// refused fence clears the closing state again: the session stays fully
+/// usable.
+#[test]
+fn a_frame_racing_the_close_finds_it_closing() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("queue.user", "queue.client");
+    seed_row(&journal, &owner);
+    let runtime =
+        insert_live_agent_with_writer(&registry, SESSION, owner.clone(), Box::new(std::io::sink()));
+    let conn = attach_live_agent_for_test(&runtime, SESSION, 1);
+    // The running turn parks the drain, so "kept" is still queued when the
+    // fence runs.
+    runtime.begin_turn();
+    registry
+        .queue_add(SESSION, "kept", &[], &[], &owner, &conn)
+        .expect("add");
+
+    // The close's fence: the pause lands and the queue closes for business.
+    registry
+        .queue_fence_for_close(SESSION)
+        .expect("the fence lands");
+
+    // Every frame refuses while the close is in flight.
+    let error = registry
+        .queue_add(SESSION, "racing", &[], &[], &owner, &conn)
+        .expect_err("a frame cannot reopen the closing queue");
+    assert_eq!(error.code, ErrorCode::SessionNotFound, "{}", error.message);
+    let error = registry
+        .queue_edit(SESSION, "queue-1", "edited", &owner, &conn)
+        .expect_err("a frame cannot unpause the closing queue either");
+    assert_eq!(error.code, ErrorCode::SessionNotFound, "{}", error.message);
+    let error = registry
+        .queue_send_now(SESSION, conn.id, "queue-1", &owner, &conn)
+        .expect_err("send-now cannot send from the closing queue");
+    assert_eq!(error.code, ErrorCode::SessionNotFound, "{}", error.message);
+
+    // The drain claims nothing from the closing queue.
+    registry.queue_restore_and_drain(SESSION);
+    assert_eq!(registry.queue_items_for_test(SESSION).len(), 1);
+
+    // A refused fence clears the closing state: with the store healed, the
+    // session is fully usable again.
+    {
+        let sabotage = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+        sabotage
+            .execute_batch(
+                "CREATE TRIGGER session_queue_fence_fails
+                 BEFORE UPDATE ON session_queue_state
+                 BEGIN SELECT RAISE(ABORT, 'simulated disk failure'); END;",
+            )
+            .expect("the failing fence");
+    }
+    registry
+        .queue_fence_for_close(SESSION)
+        .expect_err("the fence is refused");
+    {
+        let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+        raw.execute_batch("DROP TRIGGER session_queue_fence_fails;")
+            .expect("the sabotage dropped");
+    }
+    registry
+        .queue_add(SESSION, "usable again", &[], &[], &owner, &conn)
+        .expect("the refused close cleared the closing state");
+}
+
+/// Fix pass 6, P2: a close clears the queue on the record too — the replay
+/// of the transcript ends with an empty queue snapshot, not with the last
+/// draft list the user discarded.
+#[test]
+fn closing_the_session_clears_the_queue_in_replay() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("queue.user", "queue.client");
+    seed_row(&journal, &owner);
+    let runtime =
+        insert_live_agent_with_writer(&registry, SESSION, owner.clone(), Box::new(std::io::sink()));
+    runtime.begin_turn();
+    let conn = ConnHandle::new(1);
+    registry
+        .queue_add(SESSION, "private draft", &[], &[], &owner, &conn)
+        .expect("add");
+
+    let no_peer: Option<ConnPeer> = None;
+    registry
+        .close(SESSION, &owner, &no_peer)
+        .expect("the close lands");
+
+    // The replay vehicle for these rows is the agent_report decode: every
+    // queue snapshot is an agent_report payload read back as a
+    // SessionEvent, in (generation, seq) order. The last one on the record
+    // must be the cleared queue.
+    let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+    let mut statement = raw
+        .prepare(
+            "SELECT payload FROM events
+             WHERE session_id = ?1 AND kind = 'agent_report'
+             ORDER BY generation, seq",
+        )
+        .expect("the events query");
+    let snapshots: Vec<Vec<devboule_protocol::QueuedMessage>> = statement
+        .query_map([SESSION], |row| {
+            let payload: Vec<u8> = row.get(0)?;
+            Ok(match serde_json::from_slice::<SessionEvent>(&payload) {
+                Ok(SessionEvent::QueueSnapshot { items }) => items,
+                _ => Vec::new(),
+            })
+        })
+        .expect("the events read")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the events decode");
+    let last = snapshots
+        .last()
+        .expect("the replay carries queue snapshots");
+    assert!(
+        last.is_empty(),
+        "the replay ends with the queue cleared, not with the discarded draft"
+    );
+    let _ = dir;
+}
+
+/// Fix pass 6, P2: the same clearing for a session closed from the journal
+/// alone — no registry entry, no runtime to publish with — where the empty
+/// snapshot is appended onto the record directly.
+#[test]
+fn closing_from_the_journal_alone_still_clears_the_queue_in_replay() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("queue.user", "queue.client");
+    seed_row(&journal, &owner);
+    let runtime =
+        insert_live_agent_with_writer(&registry, SESSION, owner.clone(), Box::new(std::io::sink()));
+    runtime.begin_turn();
+    let conn = ConnHandle::new(1);
+    registry
+        .queue_add(SESSION, "private draft", &[], &[], &owner, &conn)
+        .expect("add");
+
+    // The daemon dies without a close; a fresh daemon finds no registry
+    // entry for the id — only the journal row.
+    drop(registry);
+    drop(journal);
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
+    let owner = test_owner("queue.user", "queue.client");
+
+    let no_peer: Option<ConnPeer> = None;
+    registry
+        .close(SESSION, &owner, &no_peer)
+        .expect("the journal-only close lands");
+
+    let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+    let mut statement = raw
+        .prepare(
+            "SELECT payload FROM events
+             WHERE session_id = ?1 AND kind = 'agent_report'
+             ORDER BY generation, seq",
+        )
+        .expect("the events query");
+    let snapshots: Vec<Vec<devboule_protocol::QueuedMessage>> = statement
+        .query_map([SESSION], |row| {
+            let payload: Vec<u8> = row.get(0)?;
+            Ok(match serde_json::from_slice::<SessionEvent>(&payload) {
+                Ok(SessionEvent::QueueSnapshot { items }) => items,
+                _ => Vec::new(),
+            })
+        })
+        .expect("the events read")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("the events decode");
+    let last = snapshots
+        .last()
+        .expect("the replay carries queue snapshots");
+    assert!(
+        last.is_empty(),
+        "the journal-only close clears the queue on the record too"
+    );
 }

@@ -64,6 +64,12 @@ pub(super) struct QueueState {
     /// on the item itself before it tries again (the Q1 brief's pause, and
     /// the fence under "never resent silently").
     pub(super) paused: bool,
+    /// The close has fenced this queue and is tearing the session down:
+    /// memory-only, set under the same lock as the fence, checked by every
+    /// frame, the drain and send-now, so the fence-to-removal window cannot
+    /// reopen the queue. Cleared when a close is refused, so the session
+    /// stays fully usable (fix pass 6).
+    pub(super) closing: bool,
 }
 
 impl QueueState {
@@ -83,6 +89,7 @@ impl QueueState {
             draining: false,
             hook_armed: false,
             paused: false,
+            closing: false,
         }
     }
 
@@ -325,12 +332,21 @@ impl SessionRegistry {
         Ok(())
     }
 
-    /// Persist one session's queue exactly as it stands — the same snapshot
-    /// the event carries, written to the rows a restart reads back, the pause
-    /// with them — and return the store's failure instead of hiding it: the
-    /// caller commits nothing on `Err`, so memory and disk stay equal (P1-3).
-    /// The log line names the session and the error, never the messages.
-    pub(super) fn persist_queue(
+    /// The one seam every queue store goes through: persist the queue
+    /// exactly as it stands — the same snapshot the event carries, written
+    /// to the rows a restart reads back, the pause with them. A timeout is
+    /// unfinished, not failed (fix pass 6): the command was sent and may
+    /// still commit, so the caller keeps the state the client asked for and
+    /// publishes the snapshot that says so, and this seam answers `Ok`. Only
+    /// a definite error comes back as `Err`, and the caller puts memory back
+    /// on the disk's side of it. If the timed-out command later fails
+    /// definitively, the journal keeps the previous state while memory holds
+    /// the newer one; the queue's next store always carries the whole state
+    /// and reconciles the two, and a crash before that reloads the previous
+    /// state — the acknowledged act is lost with the process, which is the
+    /// price of not failing an unfinished write. The log line names the
+    /// session and the error, never the messages.
+    pub(super) fn store_queue_state(
         &self,
         session_id: &str,
         items: &[QueuedMessage],
@@ -341,12 +357,19 @@ impl SessionRegistry {
             return Ok(());
         };
         let rows = queue_records(items);
-        journal
-            .queue_store(session_id, &rows, next_id, paused)
-            .map_err(|error| {
+        match journal.queue_store(session_id, &rows, next_id, paused) {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_timeout() => {
+                eprintln!(
+                    "message queue store timed out for {session_id}; the write may still commit"
+                );
+                Ok(())
+            }
+            Err(error) => {
                 eprintln!("message queue could not be persisted for {session_id}: {error}");
-                WireError::from(error)
-            })
+                Err(WireError::from(error))
+            }
+        }
     }
 
     /// The close's fence, hoisted before any teardown (fix pass 5): the
@@ -360,28 +383,53 @@ impl SessionRegistry {
         };
         let mut queues = self.queues.lock();
         self.ensure_queue_loaded(session_id, &mut queues)?;
-        let next_id = match queues.get(session_id) {
-            Some(state) if !state.items.is_empty() => state.next_id,
+        let next_id = match queues.get_mut(session_id) {
+            Some(state) if !state.items.is_empty() => {
+                // Closing goes up under the same lock as the fence: from
+                // this moment no frame can reopen, unpause or send the
+                // queue, however long the close takes to reach the removal.
+                state.closing = true;
+                eprintln!("DEBUG fence: closing set for {session_id}");
+                state.next_id
+            }
             _ => return Ok(()),
         };
-        journal
-            .queue_fence_paused(session_id, next_id)
-            .map_err(|error| {
-                eprintln!("message queue could not be fenced for {session_id}: {error}");
-                WireError::from(error)
-            })?;
+        if let Err(error) = journal.queue_fence_paused(session_id, next_id) {
+            // The close is refused: the closing state clears, and the
+            // session stays fully usable.
+            if let Some(state) = queues.get_mut(session_id) {
+                state.closing = false;
+            }
+            eprintln!("message queue could not be fenced for {session_id}: {error}");
+            return Err(WireError::from(error));
+        }
         if let Some(state) = queues.get_mut(session_id) {
             state.paused = true;
         }
         Ok(())
     }
 
+    /// A close that was refused after the fence clears the closing state, so
+    /// the still-open session's queue works again.
+    pub(super) fn queue_closing_clear(&self, session_id: &str) {
+        if let Some(state) = self.queues.lock().get_mut(session_id) {
+            state.closing = false;
+        }
+    }
+
     /// The discard behind an already-fenced close: the rows and their state
     /// row go in one transaction, and the memory half follows. A clear the
     /// journal refuses is reported — the fence went up before the close
     /// began, so the surviving rows are paused on disk regardless (P1-3,
-    /// fix pass 5).
-    pub(super) fn queue_forget(&self, session_id: &str) -> Result<(), WireError> {
+    /// fix pass 5). On success the empty queue snapshot goes onto the
+    /// record through `cleared_snapshot`, so a client replaying the
+    /// transcript sees the queue cleared and not the last draft list (fix
+    /// pass 6).
+    pub(super) fn queue_forget(
+        &self,
+        session_id: &str,
+        cleared_snapshot: Option<&SessionRuntime>,
+    ) -> Result<(), WireError> {
         if let Some(journal) = &self.journal {
             journal.queue_clear(session_id).map_err(|error| {
                 eprintln!("message queue rows could not be cleared for {session_id}: {error}");
@@ -394,6 +442,9 @@ impl SessionRegistry {
                     "This session's queued messages could not be discarded and                      remain in the journal; try closing it again.",
                 )
             })?;
+        }
+        if let Some(runtime) = cleared_snapshot {
+            runtime.publish_queue_snapshot(Vec::new());
         }
         self.queue_state_discard(session_id);
         Ok(())
@@ -480,6 +531,18 @@ impl SessionRegistry {
             return Err(not_found());
         }
         self.ensure_queue_loaded(session_id, &mut queues)?;
+        eprintln!(
+            "DEBUG mutate: closing={}",
+            queues.get(session_id).map(|s| s.closing).unwrap_or(false)
+        );
+        if queues.get(session_id).is_some_and(|state| state.closing) {
+            // The session is closing: the wire's session-gone answer, with
+            // the reason spelled out (fix pass 6).
+            return Err(WireError::new(
+                ErrorCode::SessionNotFound,
+                "This session is closing; its queue no longer accepts messages.",
+            ));
+        }
         let mut trial = queues
             .get(session_id)
             .cloned()
@@ -488,7 +551,7 @@ impl SessionRegistry {
         if snapshot_frame_bytes(session_id, &trial.items) > frame_budget {
             return Err(WireError::new(ErrorCode::InvalidRequest, refusal));
         }
-        self.persist_queue(session_id, &trial.items, trial.next_id, trial.paused)?;
+        self.store_queue_state(session_id, &trial.items, trial.next_id, trial.paused)?;
         let items = trial.snapshot();
         queues.insert(session_id.to_string(), trial);
         deliver_queue_snapshot(session_id, runtime, items);

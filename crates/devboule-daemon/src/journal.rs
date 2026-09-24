@@ -1079,8 +1079,8 @@ impl Journal {
             .name("retention-queue-prune".to_string())
             .spawn(move || prune_consumer(rx, pruner))
         {
-            // The reports stay buffered in the channel; the roster-read
-            // prune is the fallback for as long as no consumer runs.
+            // The receiver went with the failed spawn: reports are dropped
+            // from here on, and the roster-read prune is the only fallback.
             eprintln!("retention queue prune could not start: {error}");
         }
     }
