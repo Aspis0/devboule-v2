@@ -2612,7 +2612,9 @@ describe("Settings agents panel", () => {
     if (!remove) throw new Error("the feature's remove button did not render");
     await act(async () => remove.click());
     const keyField = container.querySelector<HTMLInputElement>('[aria-label="New feature key"]');
-    const valueField = container.querySelector<HTMLInputElement>('[aria-label="New feature value"]');
+    const valueField = container.querySelector<HTMLInputElement>(
+      '[aria-label="New feature value"]',
+    );
     if (!keyField || !valueField) throw new Error("the add-feature fields did not render");
     await typeText(keyField, "ctx");
     await typeText(valueField, '"8k"');
