@@ -204,6 +204,20 @@ const INITIAL_STATE: AgentSessionState = {
 
 const SWITCH_CONFIRM_TIMEOUT_MS = 15_000;
 
+/**
+ * Cap on remembered send-rejection texts awaiting their twin frame. See
+ * `noteSendRejection` for when an entry expires.
+ */
+const MAX_PENDING_SEND_REJECTIONS = 8;
+
+/**
+ * What the `recovered` event records (see `handleEvent`): this view's attach
+ * state, not a line of the transcript's history — a Reopen's fresh attach does
+ * not replay it. Exported so the chat surface can drop this entry while the
+ * workspace's reopen bar states the same fact once.
+ */
+export const RECOVERED_SESSION_UNAVAILABLE = "This agent session is no longer available.";
+
 type MessageRole = "user" | "assistant" | "thought";
 
 /**
@@ -294,8 +308,17 @@ export class AgentSession {
   /** How many `session_send` calls are awaiting the daemon (see `holdAgentError`). */
   private sendDepth = 0;
   private readonly heldAgentErrors: string[] = [];
-  /** The last send rejection's raw text, until its twin frame is dropped (see `resolveHeldAgentErrors`). */
-  private recentSendRejection: string | null = null;
+  /**
+   * Raw texts of send rejections whose `agent_error` twin may still be on the
+   * wire. The daemon writes each send's reply before that send's frame (the
+   * reply at the end of the send's own iteration, the published frame in a
+   * later one — server/connection.rs), so with two sends in flight the wire
+   * order `[A reply][A frame][B reply]` leaves A's twin pending after B has
+   * already settled; one slot cannot hold two same-text twins either
+   * (review-E1-fix2, P2-1 and P2-2). Entries are consumed one per frame by
+   * exact text match; a frame that matches nothing is shown verbatim.
+   */
+  private readonly pendingSendRejections: string[] = [];
   private switchTimer: ReturnType<typeof setTimeout> | null = null;
   private modeTimer: ReturnType<typeof setTimeout> | null = null;
   private modeRequest = 0;
@@ -407,7 +430,8 @@ export class AgentSession {
         ...(attachmentReferences.length === 0 ? {} : { attachmentReferences }),
       });
       this.sendDepth -= 1;
-      this.recentSendRejection = null;
+      // A settled send clears nothing: a rejection earlier on the wire may
+      // still be waiting for its twin frame (see `pendingSendRejections`).
       this.resolveHeldAgentErrors();
       return true;
     } catch (error) {
@@ -417,9 +441,9 @@ export class AgentSession {
       // (server/connection.rs:311) while the event waits in the attachment
       // queue — the rejection arrives FIRST. Remember the raw text so the
       // late frame is dropped once below; held frames are resolved against
-      // it, exact matches only.
+      // the pending list, exact matches only.
       const mapped = errorSentence(error);
-      this.recentSendRejection = mapped.detail ?? mapped.sentence;
+      this.noteSendRejection(mapped.detail ?? mapped.sentence);
       this.resolveHeldAgentErrors();
       // The daemon names its failures: a capability or validity refusal is
       // raised inside a live send path and only codes naming a gone view end
@@ -446,14 +470,42 @@ export class AgentSession {
     this.heldAgentErrors.push(message);
   }
 
-  /** Resolves held frames against the remembered rejection, exact matches
-   * only; everything else is recorded verbatim. The memory is one text,
-   * cleared on consumption or by the next successful send. */
+  /**
+   * Remembers one send rejection's raw text until its twin frame consumes it.
+   * An entry expires in exactly two ways: its matching frame consumes it, or a
+   * push past `MAX_PENDING_SEND_REJECTIONS` evicts the oldest — a refusal the
+   * bridge raises before the daemon publishes anything has no twin coming, so
+   * without the cap those entries would pile up for the session's life. An
+   * evicted twin then shows verbatim: at worst one failure is said twice,
+   * never a frame silently dropped — text that matches no entry is never
+   * dropped.
+   */
+  private noteSendRejection(text: string): void {
+    this.pendingSendRejections.push(text);
+    while (this.pendingSendRejections.length > MAX_PENDING_SEND_REJECTIONS) {
+      this.pendingSendRejections.shift();
+    }
+  }
+
+  /**
+   * Consumes the one pending entry `text` is the exact twin of, answering
+   * whether it was one. One entry per frame: two same-text failures hold two
+   * entries and each of their frames consumes its own.
+   */
+  private consumeSendRejection(text: string): boolean {
+    const index = this.pendingSendRejections.indexOf(text);
+    if (index === -1) return false;
+    this.pendingSendRejections.splice(index, 1);
+    return true;
+  }
+
+  /** Resolves every held frame against the pending rejection texts, exact
+   * matches only: a twin is consumed (its send already recorded the mapped
+   * entry), and anything else — the agent's own prose — is recorded verbatim. */
   private resolveHeldAgentErrors(): void {
     const held = this.heldAgentErrors.splice(0);
     for (const text of held) {
-      if (text === this.recentSendRejection) this.recentSendRejection = null;
-      else this.noteError(text);
+      if (!this.consumeSendRejection(text)) this.noteError(text);
     }
   }
 
@@ -784,12 +836,11 @@ export class AgentSession {
           this.holdAgentError(message);
           return;
         }
-        if (message === this.recentSendRejection) {
-          // The rejection that just settled published this very frame on its
-          // way out; the mapped entry above is its one record.
-          this.recentSendRejection = null;
-          return;
-        }
+        // A rejection that already settled published this very frame on its
+        // way out; the mapped entry it recorded is its one record, and this
+        // consumes that rejection's pending text. No match means the frame is
+        // the agent's own prose and it is always shown.
+        if (this.consumeSendRejection(message)) return;
         this.noteError(message);
         return;
       case "available_commands":
@@ -868,7 +919,7 @@ export class AgentSession {
         return;
       case "recovered":
         this.stopRunningSubagents();
-        this.failSession("This agent session is no longer available.");
+        this.failSession(RECOVERED_SESSION_UNAVAILABLE);
         return;
       // Our view was replaced, not the session: another client resumed it and
       // the daemon detached this attachment. The session is alive and a fresh

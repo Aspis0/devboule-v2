@@ -892,7 +892,7 @@ export const oracleAskFolder = (path: string, query: string) =>
 export type SurfaceSettingsRead =
   | { status: "absent" }
   | { status: "value"; value: unknown }
-  | { status: "unreadable"; message: string; detail: string | null };
+  | { status: "unreadable"; message: string };
 
 /**
  * Reads one surface's persisted settings document.
@@ -914,7 +914,7 @@ export async function surfaceSettingsGet(surfaceId: string): Promise<SurfaceSett
     return { status: "value", value };
   } catch (cause) {
     const mapped = errorSentence(cause);
-    return { status: "unreadable", message: mapped.sentence, detail: mapped.detail };
+    return { status: "unreadable", message: mapped.sentence };
   }
 }
 /** Stores `value` verbatim as pretty JSON; rejects surface ids outside `^[a-z0-9-]{1,32}$` and values over the ~64 KB cap. */

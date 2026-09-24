@@ -1,4 +1,4 @@
-import { memo, useState, type ReactNode } from "react";
+import { memo, useId, useState, type ReactNode } from "react";
 import type { WorkspaceFileEntry } from "../../types/ipc";
 import { FilesPreview, formatSize } from "./FilesPreview";
 import { useWorkspaceFileActions } from "./useWorkspaceFileActions";
@@ -282,6 +282,11 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
     );
   };
 
+  // The list's own id: every error row derives its id from it, so two
+  // mounted lists never share one aria-describedby target (ErrorText's
+  // contract) even before a row's index is considered.
+  const listId = useId();
+
   return (
     <div>
       {workspaceId !== null ? (
@@ -326,7 +331,7 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
           <div className="workspace-files-state">This folder is empty.</div>
         )
       ) : (
-        <div className="workspace-files-tree">
+        <div id={listId} className="workspace-files-tree">
           {rows.map((row, rowIndex) =>
             row.kind === "entry" ? (
               entryRow(row)
@@ -349,9 +354,10 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
                 <ErrorText
                   sentence={row.message.sentence}
                   detail={row.message.detail}
-                  // An index, never the path: a path may hold spaces, and
-                  // aria-describedby parses its value as an id list.
-                  id={`files-error-${rowIndex}`}
+                  // The list's id prefixes an index: a path may hold spaces
+                  // (aria-describedby parses its value as an id list), and a
+                  // bare index is unique only inside ONE list.
+                  id={`${listId}-files-error-${rowIndex}`}
                 />
               </div>
             ) : (

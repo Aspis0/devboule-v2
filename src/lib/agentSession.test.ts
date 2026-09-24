@@ -2657,4 +2657,125 @@ describe("one entry per failed send", () => {
     const item = errors[0];
     expect(item.role === "error" && item.text).toBe("Provider said: malformed output line");
   });
+
+  /** Two sends in flight, each settling on its own — the wire order's precondition. */
+  function twoSendsInFlight(harness: Harness): {
+    first: Promise<boolean>;
+    second: Promise<boolean>;
+    settles: Array<{
+      resolve: (value: undefined) => void;
+      reject: (error: unknown) => void;
+    }>;
+  } {
+    const settles: Array<{
+      resolve: (value: undefined) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    (harness.invoke as unknown as Mock).mockImplementation((command: string) => {
+      if (command === "session_send") {
+        return new Promise((resolve, reject) => {
+          settles.push({ resolve, reject });
+        });
+      }
+      return undefined;
+    });
+    return {
+      first: harness.session.send("a"),
+      second: harness.session.send("b"),
+      settles,
+    };
+  }
+
+  // The next three tests write the daemon's real wire order out step by step:
+  // each send's reply is written before that send's agent_error frame (the
+  // reply at the end of the send's own iteration, the frame pulled in a later
+  // one — server/connection.rs), so with two sends in flight the order is
+  // [A reply][A frame][B reply](…[B frame]). Each of the three fails on
+  // 6e75a85, where one memory slot cannot survive this order.
+
+  it("gives one entry when [A reply][A frame][B reply] has A failing and B succeeding", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    const { first, second, settles } = twoSendsInFlight(harness);
+
+    // A's reply lands first and records its mapped failure; B still flies.
+    settles[0]?.reject({ code: "io", message: RAW });
+    await first;
+    // A's twin frame, on the wire before B's reply.
+    harness.emit({
+      type: "agent_error",
+      message: RAW,
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    // B succeeds; its settle resolves the held twin against the pending list.
+    settles[1]?.resolve(undefined);
+    await second;
+
+    const errors = harness.session.getState().items.filter((item) => item.role === "error");
+    expect(errors).toHaveLength(1);
+    const item = errors[0];
+    expect(item.role === "error" && item.text).toBe(
+      "Could not send the message. A system or file operation failed on this machine.",
+    );
+    expect(errors.some((entry) => entry.role === "error" && entry.text === RAW)).toBe(false);
+  });
+
+  it("gives two same-text failures exactly two entries, in the wire order", async () => {
+    const T = "Session state is unavailable.";
+    const harness = makeHarness();
+    await harness.session.start();
+    const { first, second, settles } = twoSendsInFlight(harness);
+
+    settles[0]?.reject({ code: "internal", message: T });
+    await first;
+    harness.emit({
+      type: "agent_error",
+      message: T,
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    settles[1]?.reject({ code: "internal", message: T });
+    await second;
+    harness.emit({
+      type: "agent_error",
+      message: T,
+    } as unknown as Parameters<typeof harness.emit>[0]);
+
+    const errors = harness.session.getState().items.filter((item) => item.role === "error");
+    const texts = errors.map((item) => (item.role === "error" ? item.text : ""));
+    // One mapped entry per failure, and the raw frame never among them.
+    expect(texts.filter((text) => text.startsWith("Could not send the message."))).toHaveLength(2);
+    expect(texts).toHaveLength(2);
+    expect(texts).not.toContain(T);
+  });
+
+  it("shows a non-matching frame that sits between two same-text failures", async () => {
+    const T = "Session state is unavailable.";
+    const VOICE = "Could not auto-answer ACP permission request: tool-x";
+    const harness = makeHarness();
+    await harness.session.start();
+    const { first, second, settles } = twoSendsInFlight(harness);
+
+    settles[0]?.reject({ code: "internal", message: T });
+    await first;
+    harness.emit({
+      type: "agent_error",
+      message: T,
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    // Between the two failures: prose that no rejection matches.
+    harness.emit({
+      type: "agent_error",
+      message: VOICE,
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    settles[1]?.reject({ code: "internal", message: T });
+    await second;
+    harness.emit({
+      type: "agent_error",
+      message: T,
+    } as unknown as Parameters<typeof harness.emit>[0]);
+
+    const errors = harness.session.getState().items.filter((item) => item.role === "error");
+    const texts = errors.map((item) => (item.role === "error" ? item.text : ""));
+    expect(texts).toHaveLength(3);
+    expect(texts.filter((text) => text.startsWith("Could not send the message."))).toHaveLength(2);
+    expect(texts).toContain(VOICE);
+    expect(texts).not.toContain(T);
+  });
 });

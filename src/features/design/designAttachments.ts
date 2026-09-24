@@ -1605,8 +1605,10 @@ export async function transportDesignAttachments(
   const references: AttachmentReference[] = [];
   /** Pages stored, per document id, so a sentence can name the ones that were not. */
   const kept = new Map<string, number[]>();
-  /** Where the sequence stopped, and why. Null when every page was stored. */
-  let failure: { group: DepositGroup; page: number; reason: string } | null = null;
+  /** Where the sequence stopped, why, and the rejection's raw text beside the
+   * sentence. Null when every page was stored. */
+  let failure: { group: DepositGroup; page: number; reason: string; detail: string | null } | null =
+    null;
   for (const group of groups) {
     for (const entry of group.pages) {
       try {
@@ -1618,7 +1620,8 @@ export async function transportDesignAttachments(
         // retention sweep reaches it. Do not go looking for a rollback here —
         // there is none to call. The pages that made it are still sent, and the
         // sentence below names the ones that did not.
-        failure = { group, page: entry.page, reason: errorSentence(cause).sentence };
+        const mapped = errorSentence(cause);
+        failure = { group, page: entry.page, reason: mapped.sentence, detail: mapped.detail };
         break;
       }
       const pages = kept.get(group.id) ?? [];
@@ -1641,19 +1644,24 @@ export async function transportDesignAttachments(
     const stored = kept.get(group.id) ?? [];
     const lost = group.pages.map((entry) => entry.page).filter((page) => !stored.includes(page));
     if (lost.length === 0) continue;
-    notices.push(
-      pdfDepositNotice({
-        name: group.name,
-        pageCount: group.pageCount,
-        stored,
-        lost,
-        reason:
-          group.id === failure.group.id
-            ? failure.reason
-            : `the deposit stopped at ${failure.group.name} page ${failure.page.toString()}`,
-      }),
-    );
+    const failedHere = group.id === failure.group.id;
+    const text = pdfDepositNotice({
+      name: group.name,
+      pageCount: group.pageCount,
+      stored,
+      lost,
+      reason: failedHere
+        ? failure.reason
+        : `the deposit stopped at ${failure.group.name} page ${failure.page.toString()}`,
+    });
+    notices.push(text);
+    input.onFeedback?.({
+      kind: "error",
+      text,
+      // Only the failed document's line restates the daemon's rejection; the
+      // stop-here lines are this app's own words with no raw text behind them.
+      ...(failedHere && failure.detail !== null ? { detail: failure.detail } : {}),
+    });
   }
-  for (const notice of notices) input.onFeedback?.({ kind: "error", text: notice });
   return { inline, references, notices, refused: false };
 }

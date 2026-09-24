@@ -314,6 +314,7 @@ describe("design history reopen", () => {
       expect(harness.results.at(-1)).toEqual({
         status: "failed",
         message: ARTIFACT_TOO_LARGE_MESSAGE,
+        detail: null,
       });
     } finally {
       vi.useRealTimers();

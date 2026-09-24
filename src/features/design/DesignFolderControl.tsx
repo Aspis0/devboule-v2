@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { Project, Workspace } from "../../types/ipc";
+import { ErrorText } from "../../components/ErrorText";
+import type { ErrorSentence } from "../../lib/errorSentence";
 
 /** A registered folder and the checkouts inside it. */
 export interface DesignFolderRecord extends Project {
@@ -11,7 +13,8 @@ export interface DesignFolderControlProps {
   folders: readonly DesignFolderRecord[];
   loading: boolean;
   refreshing: boolean;
-  foldersError: string | null;
+  /** The folder list's own failure: sentence plus the raw text as detail. */
+  foldersError: ErrorSentence | null;
   selectionNotice: string | null;
   /** The checkout the canvas is attached to, or null when nothing is attached. */
   selectedWorkspaceId: string | null;
@@ -22,7 +25,8 @@ export interface DesignFolderControlProps {
   /** A generation is running, so the attachment cannot change right now. */
   disabled: boolean;
   attachBusy: boolean;
-  attachError: string | null;
+  /** An attach attempt's failure: sentence plus the raw text as detail. */
+  attachError: ErrorSentence | null;
   onOpen: () => void;
   onSelect: (workspace: Workspace | null) => void;
   /** Attach a folder the registry has never seen; resolves false when the user cancels. */
@@ -153,7 +157,13 @@ export const DesignFolderControl = memo(function DesignFolderControl({
                 <div className="design-agent-picker-status">Refreshing folders.</div>
               ) : null}
               {foldersError !== null ? (
-                <div className="design-agent-picker-status">{foldersError}</div>
+                <div className="design-agent-picker-status">
+                  <ErrorText
+                    sentence={foldersError.sentence}
+                    detail={foldersError.detail}
+                    id="design-folders-error"
+                  />
+                </div>
               ) : null}
               {selectionNotice !== null ? (
                 <div className="design-agent-picker-status">{selectionNotice}</div>
@@ -220,7 +230,11 @@ export const DesignFolderControl = memo(function DesignFolderControl({
           )}
           {attachError !== null ? (
             <div className="design-folder-error" role="alert">
-              {attachError}
+              <ErrorText
+                sentence={attachError.sentence}
+                detail={attachError.detail}
+                id="design-folder-attach-error"
+              />
             </div>
           ) : null}
           <div className="design-folder-actions">

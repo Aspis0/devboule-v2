@@ -381,7 +381,6 @@ describe("surface settings wrappers", () => {
     await expect(surfaceSettingsGet("design")).resolves.toEqual({
       status: "unreadable",
       message: "Devboule could not complete that action.",
-      detail: "settings file unreadable",
     });
 
     // A plain Error rejection lands in the same case, message preserved.
@@ -389,7 +388,6 @@ describe("surface settings wrappers", () => {
     await expect(surfaceSettingsGet("design")).resolves.toEqual({
       status: "unreadable",
       message: "bridge down",
-      detail: null,
     });
   });
 });

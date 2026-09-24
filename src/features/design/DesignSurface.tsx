@@ -62,6 +62,7 @@ import {
   fencedBlockNotice,
   stripFencedHtml,
   transcriptItems,
+  type SessionError,
 } from "./agentHost";
 import {
   MAX_AUTOMATIC_SKILL_SECTIONS,
@@ -127,7 +128,7 @@ import {
   workspaceCreate,
   workspacesList,
 } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
@@ -474,6 +475,27 @@ interface DesignCraftSheetProps extends DesignSkillViewProps {
 export interface AttachmentMessage {
   kind: "error" | "note";
   text: string;
+  /**
+   * The failing command's raw text behind an `error` line, when one exists.
+   * The render keeps it as the line's detail (title plus hidden node), so a
+   * mapped sentence never loses the daemon's own words. App-authored lines
+   * carry none.
+   */
+  detail?: string | null;
+}
+
+/**
+ * Whether an error the host threw is `agentHost`'s own shape — an `Error`
+ * whose `detail` is the rejection's raw text or null. The `in` check alone
+ * would prove membership, not the type, so the value is checked before it
+ * reaches the transcript's detail node.
+ */
+function isSessionError(error: unknown): error is SessionError {
+  return (
+    error instanceof Error &&
+    "detail" in error &&
+    (typeof error.detail === "string" || error.detail === null)
+  );
 }
 
 const DESIGN_SKILL_MODES: readonly DesignSkillSelection["mode"][] = ["all", "manual", "auto"];
@@ -3506,7 +3528,11 @@ const DesignAssistant = memo(function DesignAssistant({
                   key={`${message.kind}-${index.toString()}`}
                   className={message.kind === "error" ? "design-attachment-error" : undefined}
                 >
-                  {message.text}
+                  <ErrorText
+                    sentence={message.text}
+                    detail={message.detail ?? null}
+                    id={`design-attachment-feedback-${index.toString()}`}
+                  />
                 </p>
               ))}
             </div>
@@ -3725,7 +3751,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProject[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
   const [workspacesRefreshing, setWorkspacesRefreshing] = useState(false);
-  const [workspacesError, setWorkspacesError] = useState<string | null>(null);
+  const [workspacesError, setWorkspacesError] = useState<ErrorSentence | null>(null);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [workspaceSelectionNotice, setWorkspaceSelectionNotice] = useState<string | null>(null);
   const [workspaceSelectionUnresolved, setWorkspaceSelectionUnresolved] = useState(false);
@@ -3981,7 +4007,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         }
       } catch (cause: unknown) {
         if (!isCurrent()) return;
-        setWorkspacesError(`Could not load workspaces: ${errorSentence(cause).sentence}`);
+        const mapped = errorSentence(cause);
+        setWorkspacesError({
+          sentence: `Could not load workspaces: ${mapped.sentence}`,
+          detail: mapped.detail,
+        });
       }
       if (!isCurrent()) return;
       if (initialLoad) setWorkspacesLoading(false);
@@ -4348,7 +4378,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     void refreshWorkspaceProjects(false);
   }, [busy, refreshWorkspaceProjects]);
   const [folderAttachBusy, setFolderAttachBusy] = useState(false);
-  const [folderAttachError, setFolderAttachError] = useState<string | null>(null);
+  const [folderAttachError, setFolderAttachError] = useState<ErrorSentence | null>(null);
 
   /**
    * The local checkout a folder is worked in. A folder registered here but never
@@ -4378,7 +4408,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       selectWorkspace(checkout);
       return true;
     } catch (cause: unknown) {
-      setFolderAttachError(errorSentence(cause).sentence);
+      setFolderAttachError(errorSentence(cause));
       return false;
     } finally {
       setFolderAttachBusy(false);
@@ -4398,7 +4428,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         selectWorkspace(checkout);
         return true;
       } catch (cause: unknown) {
-        setFolderAttachError(errorSentence(cause).sentence);
+        setFolderAttachError(errorSentence(cause));
         return false;
       } finally {
         setFolderAttachBusy(false);
@@ -5028,13 +5058,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
    * kept, exactly as an import's own feedback is.
    */
   const handleAttachmentFeedback = useCallback((message: DesignAttachmentFeedback): void => {
-    const { kind, text } = message;
+    const { kind, text, detail } = message;
     if (kind === "progress") {
       setAttachmentProgress(text);
       return;
     }
     setAttachmentProgress(null);
-    setAttachmentMessages((current) => [...current, { kind, text }]);
+    setAttachmentMessages((current) => [
+      ...current,
+      { kind, text, ...(detail === undefined ? {} : { detail }) },
+    ]);
   }, []);
 
   const startGeneration = useCallback(
@@ -5254,10 +5287,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                     status: "error",
                     title: "Generation failed",
                     desc: error instanceof Error ? error.message : "The design generation failed.",
-                    errorDetail:
-                      error instanceof Error && "detail" in error
-                        ? ((error as { detail?: string | null }).detail ?? null)
-                        : null,
+                    errorDetail: isSessionError(error) ? error.detail : null,
                     transcript: streamingTranscriptRef.current,
                   }
                 : message,
@@ -5507,7 +5537,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         </div>
       ) : historyOpenResult?.status === "failed" ? (
         <div className="design-history-open-status" role="alert">
-          {historyOpenResult.message}
+          <ErrorText
+            sentence={historyOpenResult.message}
+            detail={historyOpenResult.detail}
+            id="design-history-open-failed"
+          />
         </div>
       ) : null}
 

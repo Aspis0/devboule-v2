@@ -20,7 +20,7 @@ export type DesignHistoryOpenResult =
   | { status: "loading" }
   | { status: "artifact"; html: string }
   | { status: "timeout"; message: string }
-  | { status: "failed"; message: string };
+  | { status: "failed"; message: string; detail: string | null };
 
 export interface DesignHistoryOpenDeps {
   onResult: (result: DesignHistoryOpenResult) => void;
@@ -35,12 +35,14 @@ export interface DesignHistoryOpenHandle {
   dispose: () => void;
 }
 
-function lastErrorText(state: AgentSessionState): string {
+/** The last recorded error, with its raw detail kept beside the sentence —
+ * the same contract every mapped sentence in the app has. */
+function lastError(state: AgentSessionState): { message: string; detail: string | null } {
   for (let index = state.items.length - 1; index >= 0; index -= 1) {
     const item = state.items[index];
-    if (item.role === "error") return item.text;
+    if (item.role === "error") return { message: item.text, detail: item.detail ?? null };
   }
-  return "The transcript could not be opened.";
+  return { message: "The transcript could not be opened.", detail: null };
 }
 
 function timeoutMessage(timeoutMs: number): string {
@@ -157,7 +159,7 @@ export function openDesignHistoryEntry(
       return true;
     }
     if (extraction.error !== undefined) {
-      finish({ status: "failed", message: extraction.error });
+      finish({ status: "failed", message: extraction.error, detail: null });
       return true;
     }
     return false;
@@ -169,7 +171,11 @@ export function openDesignHistoryEntry(
       quietTimer = null;
       if (disposed) return;
       if (!settleLatestArtifact() && artifactObserved) {
-        finish({ status: "failed", message: "The transcript could not be opened." });
+        finish({
+          status: "failed",
+          message: "The transcript could not be opened.",
+          detail: null,
+        });
       }
     }, DESIGN_HISTORY_OPEN_QUIET_MS);
   };
@@ -188,12 +194,18 @@ export function openDesignHistoryEntry(
       // Both terminal statuses mean the replay can never yield an artifact;
       // `closed` names a clean exit, which is still an unopenable transcript.
       if (state.status === "error") {
-        finish({ status: "failed", message: lastErrorText(state) });
+        const last = lastError(state);
+        finish({ status: "failed", message: last.message, detail: last.detail });
       } else if (state.status === "closed") {
-        finish({ status: "failed", message: "The transcript could not be opened." });
+        finish({
+          status: "failed",
+          message: "The transcript could not be opened.",
+          detail: null,
+        });
       }
     } catch (cause) {
-      finish({ status: "failed", message: errorSentence(cause).sentence });
+      const mapped = errorSentence(cause);
+      finish({ status: "failed", message: mapped.sentence, detail: mapped.detail });
     }
   };
 
@@ -201,13 +213,18 @@ export function openDesignHistoryEntry(
   unsubscribe = controller.subscribe(inspect);
   timer = setTimer(() => {
     if (artifactObserved && !settleLatestArtifact()) {
-      finish({ status: "failed", message: "The transcript could not be opened." });
+      finish({
+        status: "failed",
+        message: "The transcript could not be opened.",
+        detail: null,
+      });
       return;
     }
     finish({ status: "timeout", message: timeoutMessage(timeoutMs) });
   }, timeoutMs);
   void controller.start().catch((cause: unknown) => {
-    finish({ status: "failed", message: errorSentence(cause).sentence });
+    const mapped = errorSentence(cause);
+    finish({ status: "failed", message: mapped.sentence, detail: mapped.detail });
   });
 
   return { dispose };

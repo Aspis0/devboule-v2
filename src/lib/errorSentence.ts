@@ -65,15 +65,30 @@ const NAMED_PROVIDER_LOST =
 const LOST_VIEW = /not attached|attachment is (not|no longer) registered/;
 
 /**
- * A workspace birth that failed at the worktree (session_workspaces.rs:135-141).
- * Anchored to the create verb: the delete path's own "failed to remove
- * leftover checkout" text (worktree.rs:496-501) must keep its
- * workspace_unavailable row.
+ * A workspace birth that failed AFTER the checkout existed — both branches
+ * that say so with a leftover checkout:
+ * - the journal branch, session_workspaces.rs:139-151 (ErrorCode::Journal),
+ *   whose exact shape is `"{journal error}; leftover checkout at '{path}'
+ *   ({cleanup_error})"` — the journal error's own words come first, so the
+ *   anchored worktree verb alone could never claim it;
+ * - the worktree-add branch, session_workspaces.rs:122-134
+ *   (ErrorCode::WorkspaceUnavailable), `"Could not add git worktree for …"`.
+ * The delete path's text — `"{err}; failed to remove leftover checkout …"`
+ * (worktree.rs:496-501) — says "failed to remove", never "leftover checkout
+ * at", so it keeps its workspace_unavailable row.
  */
-const WORKSPACE_BIRTH_FAILED = /^Could not add git worktree for/;
+const WORKSPACE_BIRTH_FAILED = /leftover checkout at |^Could not add git worktree for/;
 
-/** The process could not be started or kept: containment and spawn failures. */
-const PROCESS_START_FAILED = /^Could not contain |process job|^Could not start the terminal/;
+/**
+ * The process could not be created or kept: containment failures
+ * (`Could not contain …`, `… process job`) and the shell's own spawn failure
+ * (`Could not start the terminal shell.`). Deliberately NOT the daemon's
+ * reader failures — `"Could not start the terminal reader."`
+ * (session_spawn.rs:381 and :439) happen after the shell spawned, when the
+ * daemon cannot spawn the thread reading it; that text falls to the code's
+ * own row, which claims only that the daemon went wrong inside.
+ */
+const PROCESS_START_FAILED = /^Could not contain |process job|^Could not start the terminal shell/;
 
 function providerName(message: string): string | null {
   const quoted = /'([^']+)'/.exec(message);
@@ -104,11 +119,12 @@ function shapeSentence(message: string): string | null {
     return "This workspace could not be created.";
   }
   if (PROCESS_START_FAILED.test(message)) {
-    // Containment failures happen after a successful spawn, when the daemon's
-    // own job handling refused or dropped the process (acp_client.rs:748-752
-    // measures the access denial as its own job hierarchy) — no outside
-    // verdict is true here, so state what happened and let the detail carry
-    // the OS line.
+    // These failures are the daemon's own verdicts on creating or keeping the
+    // process: containment is measured inside the daemon's job hierarchy
+    // (acp_client.rs:748-752 measures the access denial as its own job
+    // hierarchy), and the shell spawn failure is the process itself failing to
+    // start — no outside program's verdict is true of either, so state what
+    // happened and let the detail carry the OS line.
     const target = message.includes("terminal") ? "terminal" : "agent";
     return `The system could not start the ${target}.`;
   }

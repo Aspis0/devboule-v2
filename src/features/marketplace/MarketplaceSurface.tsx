@@ -145,7 +145,10 @@ export function MarketplaceSurface() {
                           <ErrorText
                             sentence={`Install status unavailable — ${installedPlugin.problem}`}
                             detail={pluginsProblem?.detail ?? null}
-                            id="marketplace-plugin-problem"
+                            // The entry's own id: this ErrorText sits inside a
+                            // map, so a fixed id would collide the moment a
+                            // second plugin row reports "unknown".
+                            id={`marketplace-plugin-problem-${entry.id}`}
                           />
                         ) : installedPlugin?.kind === "refused" ? (
                           "Installed but unavailable"

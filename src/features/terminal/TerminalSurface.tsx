@@ -4,6 +4,7 @@ import type { PermissionRequest, PermissionResolved, SessionState } from "../../
 import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
 import { terminalSessionRegistry } from "./terminalRegistry";
+import { sessionDotTone } from "../workspace/workspaceSessions";
 
 interface TerminalSurfaceProps {
   workspaceId: string | null;
@@ -31,6 +32,11 @@ interface TerminalSurfaceProps {
   autoFocusGuard?: () => boolean;
   /** Reports the request spent (focus taken, or declined), so the strip can forget it. */
   onAutoFocusTaken?: () => void;
+  /**
+   * Closes this pane's tab — the action the ended banner's sentence names.
+   * Present in Workspace; absent only in tests that never show that banner.
+   */
+  onCloseTab?: () => void;
 }
 
 function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -64,6 +70,7 @@ export function bannerText(banner: TerminalBanner): string | null {
       : `The terminal process is still running but has been silent for ${Math.floor(banner.elapsedMs / 1_000)} seconds.`;
   }
   if (banner.kind === "closed") return "The terminal session was closed.";
+  if (banner.kind === "ended") return banner.message;
   if (banner.kind === "recovered") {
     if (banner.integrity.trimmedBytes > 0) {
       return banner.integrity.droppedBytes > 0
@@ -109,6 +116,7 @@ export const TerminalSurface = memo(function TerminalSurface({
   autoFocus,
   autoFocusGuard,
   onAutoFocusTaken,
+  onCloseTab,
 }: TerminalSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<TerminalSession | null>(null);
@@ -234,25 +242,37 @@ export const TerminalSurface = memo(function TerminalSurface({
   }, [workspaceId, sessionId]);
 
   const message = bannerText(banner);
+  // The ended banner is this failure's ONE surface: its sentence (with the
+  // close-tab action below) lives in the pane's bottom banner only, never
+  // repeated in the header status — the header keeps the state dot instead.
+  const ended = banner?.kind === "ended";
+  const bannerDetail =
+    banner !== null && (banner.kind === "error" || banner.kind === "ended")
+      ? banner.detail
+      : undefined;
 
   return (
     <div id={id} className="workspace-terminal-shell" role="tabpanel" aria-label="Terminal output">
       <div className="workspace-terminal-toolbar">
-        <span className="workspace-status-dot workspace-dot-green" />
+        {/* The tab chip's own tone function: an ended or recovered session is
+            never green (E1.1, live finding 1). */}
+        <span className={`workspace-status-dot workspace-dot-${sessionDotTone(observedState)}`} />
         <span className="workspace-terminal-title">Terminal</span>
         <span className="workspace-terminal-status">
-          {message ?? "Connected to the local shell"}
+          {ended ? "" : (message ?? "Connected to the local shell")}
         </span>
         {cwd ? <span className="workspace-session-cwd">{cwd}</span> : null}
-        <button
-          type="button"
-          className="workspace-terminal-interrupt"
-          onClick={() => sessionRef.current?.requestCtrlC()}
-          disabled={banner?.kind === "exited" || banner?.kind === "recovered"}
-          aria-pressed={ctrlCArmed}
-        >
-          {ctrlCArmed ? "Press Ctrl+C again" : "Ctrl+C"}
-        </button>
+        {ended ? null : (
+          <button
+            type="button"
+            className="workspace-terminal-interrupt"
+            onClick={() => sessionRef.current?.requestCtrlC()}
+            disabled={banner?.kind === "exited" || banner?.kind === "recovered"}
+            aria-pressed={ctrlCArmed}
+          >
+            {ctrlCArmed ? "Press Ctrl+C again" : "Ctrl+C"}
+          </button>
+        )}
         <button
           type="button"
           className="workspace-terminal-close"
@@ -276,15 +296,22 @@ export const TerminalSurface = memo(function TerminalSurface({
         <div
           className="workspace-terminal-banner"
           role="status"
-          title={banner?.kind === "error" ? banner.detail : undefined}
-          aria-describedby={
-            banner?.kind === "error" && banner.detail ? "terminal-banner-detail" : undefined
-          }
+          title={bannerDetail}
+          aria-describedby={bannerDetail ? "terminal-banner-detail" : undefined}
         >
           {message}
-          {banner?.kind === "error" && banner.detail ? (
+          {ended ? (
+            <button
+              type="button"
+              className="workspace-secondary-action workspace-terminal-banner-action"
+              onClick={onCloseTab}
+            >
+              Close tab
+            </button>
+          ) : null}
+          {bannerDetail ? (
             <span id="terminal-banner-detail" className="error-detail-sr-only">
-              {banner.detail}
+              {bannerDetail}
             </span>
           ) : null}
         </div>

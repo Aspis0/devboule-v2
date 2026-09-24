@@ -32,6 +32,13 @@ export type TerminalBanner =
   | { kind: "journal_degraded"; lost: { frames: number; bytes: number } }
   | { kind: "closed" }
   | { kind: "error"; message: string; detail?: string }
+  /**
+   * A recovered row whose attach failed: the session ended with the previous
+   * daemon and has no live process. Its own kind so the pane can give it the
+   * ONE surface the rule allows — the sentence with its close-tab action —
+   * instead of repeating it in the header status as well.
+   */
+  | { kind: "ended"; message: string; detail?: string }
   | null;
 
 type PersistentTerminalBanner = Exclude<TerminalBanner, { kind: "silent" } | null>;
@@ -276,9 +283,10 @@ export class TerminalSession {
       if (this.deps.sessionRecovered === true) {
         // A recovered row has no live process to attach to, so "reopen the
         // tab" (the lost-view advice) would be false, and the attach frame
-        // would stack a second sentence onto it. One true sentence instead.
+        // would stack a second sentence onto it. One true sentence instead,
+        // on the ended banner the pane renders as this failure's only surface.
         const mapped = errorSentence(attachError);
-        this.showError(
+        this.showEnded(
           "This terminal ended with the previous daemon and cannot be reopened — close the tab or open a new one.",
           mapped.detail ?? undefined,
         );
@@ -720,6 +728,16 @@ export class TerminalSession {
     if (!this.disposed) {
       this.silenceBannerVisible = false;
       this.persistentBanner = { kind: "error", message, detail };
+      this.deps.onBanner(this.persistentBanner);
+    }
+  }
+
+  /** The ended-with-the-previous-daemon banner: persistent like `showError`,
+   * but its own kind — see `TerminalBanner`. */
+  private showEnded(message: string, detail?: string): void {
+    if (!this.disposed) {
+      this.silenceBannerVisible = false;
+      this.persistentBanner = { kind: "ended", message, detail };
       this.deps.onBanner(this.persistentBanner);
     }
   }

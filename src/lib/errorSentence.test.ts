@@ -219,17 +219,48 @@ describe("the message-shape arms", () => {
     expect(sentence).not.toContain("created");
   });
 
-  it("maps a failed workspace birth to its own sentence, not a journal claim", () => {
-    // session_workspaces.rs:135-141: workspace_create failed and the cleanup
-    // failed too; nothing about saved history is true here.
-    const { sentence } = errorSentence(
+  it("maps the create path's journal-leftover text to the workspace's own sentence", () => {
+    // session_workspaces.rs:139-151: journal.workspace_create failed AND the
+    // checkout cleanup failed too, ErrorCode::Journal — the branch's exact
+    // shape is "{journal error}; leftover checkout at '{path}' ({cleanup_error})".
+    // The journal row would be true of the write and silent about the
+    // workspace that was never created.
+    const { sentence, detail } = errorSentence(
       rejection(
         "journal",
-        "Could not add git worktree for 'p-1': fatal: 'x' already exists; leftover checkout at 'C:\\repo\\x' (remove failed)",
+        "journal is unavailable: disk on fire; leftover checkout at 'C:\\repo\\proj' (remove failed)",
       ),
     );
     expect(sentence).toBe("This workspace could not be created.");
     expect(sentence).not.toContain("history");
+    expect(detail).toContain("leftover checkout at");
+  });
+
+  it("maps the worktree-add branch of a failed birth to the same sentence", () => {
+    // session_workspaces.rs:122-134, ErrorCode::WorkspaceUnavailable: the
+    // checkout was never created (with or without a leftover), so the
+    // workspace_unavailable row's "folder not available" would misplace it.
+    for (const message of [
+      "Could not add git worktree for 'p-1': fatal: 'x' already exists",
+      "Could not add git worktree for 'p-1': fatal: 'x' already exists; leftover checkout at 'C:\\repo\\x' (remove failed)",
+    ]) {
+      const { sentence } = errorSentence(rejection("workspace_unavailable", message));
+      expect(sentence).toBe("This workspace could not be created.");
+    }
+  });
+
+  it("lets the daemon's reader failure fall to the internal row, not a start refusal", () => {
+    // session_spawn.rs:381 and :439: the SHELL spawned and the PTY exists;
+    // what failed is spawning the daemon's own reader thread, and the session
+    // is closed over it. "The system could not start the terminal" would
+    // claim the terminal never started — the internal row claims only what is
+    // true: the daemon went wrong inside.
+    const { sentence, detail } = errorSentence(
+      rejection("internal", "Could not start the terminal reader."),
+    );
+    expect(sentence).toBe(CODE_SENTENCES.internal);
+    expect(sentence).not.toContain("terminal");
+    expect(detail).toContain("terminal reader");
   });
 
   it("keeps the journal row for the store's own failures", () => {

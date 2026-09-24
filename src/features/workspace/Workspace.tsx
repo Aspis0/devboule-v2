@@ -1535,6 +1535,7 @@ export function Workspace({
                 onAutoFocusTaken={takeTerminalFocus}
                 onClosed={handleSessionClosed}
                 onExited={handleSessionClosed}
+                onCloseTab={() => tabClose.closeSingle(paneSession.id)}
                 onPermissionRequest={handlePermissionRequest}
                 onPermissionResolved={handlePermissionResolved}
               />

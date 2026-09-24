@@ -37,6 +37,7 @@ const INSTALLED: PluginInventory = {
 beforeEach(() => {
   useAppStore.setState({
     plugins: null,
+    pluginsProblem: null,
     installing: null,
     installError: null,
   });
@@ -46,6 +47,7 @@ beforeEach(() => {
 afterEach(() => {
   useAppStore.setState({
     plugins: null,
+    pluginsProblem: null,
     installing: null,
     installError: null,
   });
@@ -60,6 +62,32 @@ describe("appStore plugin state", () => {
 
     expect(useAppStore.getState().plugins).toEqual(INSTALLED);
     expect(useAppStore.getState().installError).toBeNull();
+  });
+
+  it("clears a stale pluginsProblem when an install replaces the inventory", async () => {
+    // A failed refresh left its mapped detail beside the old inventory. The
+    // fresh inventory from a successful install may carry its OWN problem
+    // sentence (the scan can say the list may be short), and the old failure's
+    // raw text must not ride along as its detail.
+    const staleProblem = {
+      sentence: "The plugins folder could not be read.",
+      detail: "EACCES: permission denied, scandir 'C:/data/plugins'",
+    };
+    useAppStore.setState({
+      plugins: { root: "", plugins: [], problem: staleProblem.sentence },
+      pluginsProblem: staleProblem,
+    });
+    const fresh: PluginInventory = {
+      root: "C:/data/plugins",
+      plugins: [],
+      problem: "the scan says the list may be short",
+    };
+    mocks.pluginInstall.mockResolvedValue(fresh);
+
+    await expect(useAppStore.getState().installPlugin("polis", "C:/incoming")).resolves.toBe(true);
+
+    expect(useAppStore.getState().plugins).toEqual(fresh);
+    expect(useAppStore.getState().pluginsProblem).toBeNull();
   });
 
   it("lets the UI dismiss an install error without another install", () => {

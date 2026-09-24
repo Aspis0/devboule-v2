@@ -21,7 +21,11 @@ import type {
   SessionModel,
   SessionState,
 } from "../../types/ipc";
-import { AgentSession, lastAssistantMessage } from "../../lib/agentSession";
+import {
+  AgentSession,
+  lastAssistantMessage,
+  RECOVERED_SESSION_UNAVAILABLE,
+} from "../../lib/agentSession";
 import type {
   AgentChatItem,
   AgentSessionState,
@@ -828,10 +832,27 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   // as a turn-level note.
   const daemonGone = daemonState === "disconnected" || daemonState === "connecting";
   const { copy: statusLabel, tone: statusDot } = toolbarStatus(observedState, elapsedMs, state);
+  // The workspace's reopen bar describes this recovered attach state once —
+  // while it is shown (a recovered row always shows it), the controller's own
+  // attach-state ERROR entry and the composer footer would be second and third
+  // tellings of the same fact. Both are about the attach state, not the
+  // transcript's history, and both are gone after Reopen's fresh attach; the
+  // composer stays disabled either way until then.
+  const recoveredAttach = observedType(observedState) === "recovered";
   // `AgentSession` replaces the items array on every update (copy-on-write),
   // so this memo recomputes whenever the transcript changes and can never
   // go stale; it only skips work on re-renders with identical items.
-  const entries = useMemo(() => groupToolCalls(state.items), [state.items]);
+  const entries = useMemo(
+    () =>
+      groupToolCalls(
+        recoveredAttach
+          ? state.items.filter(
+              (item) => item.role !== "error" || item.text !== RECOVERED_SESSION_UNAVAILABLE,
+            )
+          : state.items,
+      ),
+    [state.items, recoveredAttach],
+  );
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const composerDisabled = disabledReason !== null;
   return (
@@ -885,7 +906,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       <WorkspaceComposer
         streaming={state.streaming && !osGone}
         disabled={composerDisabled}
-        disabledReason={disabledReason}
+        disabledReason={recoveredAttach ? null : disabledReason}
         availableCommands={state.availableCommands}
         onSend={(text) =>
           // A send while the agent is mid-turn steers that turn; an idle send

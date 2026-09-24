@@ -501,12 +501,12 @@ describe("TerminalSession lifecycle and errors", () => {
 
     await harness.session.start();
 
-    const errorBanners = harness.banners.filter(
-      (banner): banner is Extract<TerminalBanner, { kind: "error" }> =>
-        banner !== null && banner.kind === "error",
+    const endedBanners = harness.banners.filter(
+      (banner): banner is Extract<TerminalBanner, { kind: "ended" }> =>
+        banner !== null && banner.kind === "ended",
     );
-    expect(errorBanners).toHaveLength(1);
-    const banner = errorBanners[0];
+    expect(endedBanners).toHaveLength(1);
+    const banner = endedBanners[0];
     if (banner === undefined || banner === null)
       throw new Error("the recovered banner did not render");
     expect(banner.message).toBe(

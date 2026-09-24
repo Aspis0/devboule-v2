@@ -312,6 +312,12 @@ export interface DesignAttachmentDocument {
 export interface DesignAttachmentFeedback {
   readonly kind: "progress" | "note" | "error";
   readonly text: string;
+  /**
+   * The failing command's raw text behind an `error` line, when one has one:
+   * the composer keeps it as the line's detail, so the mapped sentence does
+   * not silently drop the daemon's own words. App-authored lines carry none.
+   */
+  readonly detail?: string | null;
 }
 
 /**

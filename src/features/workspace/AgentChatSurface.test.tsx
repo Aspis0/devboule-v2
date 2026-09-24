@@ -1417,7 +1417,8 @@ describe("AgentChatSurface", () => {
 
     // Attaching is reading: the journal replays through the same channel,
     // with no resume involved. The old messages must show even though the
-    // composer stays disabled with its reason.
+    // composer stays disabled — the reopen bar carries the why, so no footer
+    // reason repeats it here.
     expect(sessionAttach).toHaveBeenCalledWith("rec-agent", null, expect.anything());
     await act(async () => {
       channelHarness.active?.({
@@ -1440,9 +1441,42 @@ describe("AgentChatSurface", () => {
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(true);
-    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
-      "This session is no longer available.",
-    );
+    expect(container.querySelector(".workspace-composer-hint")).toBeNull();
+  });
+
+  it("drops the recovered attach-state ERROR entry while the reopen bar says it once", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          daemonState="connected"
+          sessionId="rec-once"
+          title="Old chat"
+          observedState={{
+            type: "recovered",
+            generation: 2,
+            integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+          }}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({
+        type: "recovered",
+        integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+      });
+    });
+
+    // The controller still records the entry (its own test covers that); this
+    // surface does not render it while the recovered row's reopen bar carries
+    // the same attach-state fact — and the composer stays disabled regardless.
+    expect(container.textContent).not.toContain("This agent session is no longer available.");
+    expect(container.querySelector(".workspace-composer-hint")).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
   });
 
   it("reattaches when a recovered session is reopened into a new generation", async () => {
@@ -1473,9 +1507,9 @@ describe("AgentChatSurface", () => {
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
     ).toBe(true);
-    expect(container.querySelector(".workspace-composer-hint")?.textContent).toBe(
-      "This session is no longer available.",
-    );
+    // The reopen bar is the recovered state's one telling: no footer reason
+    // while it is shown, but the composer stays disabled until Reopen.
+    expect(container.querySelector(".workspace-composer-hint")).toBeNull();
 
     await act(async () => {
       root.render(

@@ -255,8 +255,11 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       // The command verifies before it puts anything in place, so a plugin that
       // arrives here is one that passed; there is no half-installed state to
-      // render.
-      set({ plugins: await pluginInstall(id, source), installing: null });
+      // render. The fresh inventory speaks for itself — same pairing a
+      // refresh success makes — so the PREVIOUS failure's mapped detail must
+      // not stay attached to it.
+      const inventory = await pluginInstall(id, source);
+      set({ plugins: inventory, pluginsProblem: null, installing: null });
       return true;
     } catch (cause) {
       set({ installing: null, installError: errorSentence(cause) });

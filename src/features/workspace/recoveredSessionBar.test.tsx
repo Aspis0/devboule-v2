@@ -180,4 +180,11 @@ describe("RecoveredSessionBar", () => {
     expect(container.querySelector('[data-testid="recovered-reopen-bar"]')).toBeNull();
     expect(container.querySelector('[data-testid="recovered-unresumable"]')).not.toBeNull();
   });
+
+  it("renders nothing for a recovered terminal: the pane carries that failure's one sentence", async () => {
+    await renderBar(recoveredSession({ kind: "terminal", resumable: false }));
+
+    expect(container.textContent).toBe("");
+    expect(sessionResume).not.toHaveBeenCalled();
+  });
 });

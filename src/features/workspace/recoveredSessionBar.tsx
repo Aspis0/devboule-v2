@@ -4,7 +4,7 @@ import { useState } from "react";
 import { sessionResume } from "../../lib/tauri";
 import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
 import { ErrorText } from "../../components/ErrorText";
-import type { Session } from "../../types/ipc";
+import { isAgentKind, type Session } from "../../types/ipc";
 
 export function RecoveredSessionBar({
   session,
@@ -20,6 +20,11 @@ export function RecoveredSessionBar({
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<ErrorSentence | null>(null);
   if (session === null) return null;
+  // A recovered terminal tells its story once, inside its own pane (the ended
+  // banner with its close-tab action). This bar's resume verdict is about
+  // agent transcripts; for a terminal it would be a second, differently
+  // worded telling of the same failure.
+  if (!isAgentKind(session.kind)) return null;
   const recovered = session.state.type === "recovered";
   const resumable = session.resumable === true;
   if (!recovered && !resumable) return null;

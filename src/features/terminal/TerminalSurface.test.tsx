@@ -376,3 +376,79 @@ describe("TerminalSurface observer wiring", () => {
     ).toBe(false);
   });
 });
+
+describe("a recovered terminal states its ended state once", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot> | null = null;
+
+  beforeEach(() => {
+    globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    ResizeObserverStub.instances = [];
+    vi.mocked(invoke).mockClear();
+  });
+
+  afterEach(async () => {
+    if (root !== null) {
+      await act(async () => root?.unmount());
+      root = null;
+    }
+    document.body.replaceChildren();
+  });
+
+  it("says the sentence once in the pane banner, with the close-tab action and no Ctrl+C", async () => {
+    // A recovered row's attach is refused: the controller produces the ended
+    // banner (terminalSession.ts), which must be the pane's only telling.
+    vi.mocked(invoke).mockImplementationOnce(async (command: string) => {
+      if (command === "session_attach") {
+        throw { code: "internal", message: "session attachment is not registered" };
+      }
+      return undefined;
+    });
+    const onCloseTab = vi.fn();
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <TerminalSurface
+          workspaceId="w1"
+          sessionId="session-1"
+          observedState={{
+            type: "recovered",
+            generation: 2,
+            integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+          }}
+          onCloseTab={onCloseTab}
+        />,
+      );
+    });
+    await act(async () => flush(100));
+
+    const sentence =
+      "This terminal ended with the previous daemon and cannot be reopened — close the tab or open a new one.";
+    const banner = container.querySelector(".workspace-terminal-banner");
+    expect(banner?.textContent).toContain(sentence);
+    // Once in the whole pane: the header status carries no second copy.
+    const pane = container.querySelector(".workspace-terminal-shell");
+    expect((pane?.textContent?.split(sentence).length ?? 0) - 1).toBe(1);
+    expect(container.querySelector(".workspace-terminal-status")?.textContent).toBe("");
+
+    // The dot takes the tab chip's tone for a recovered row — never green.
+    const dot = container.querySelector(".workspace-status-dot");
+    expect(dot?.className).toContain("workspace-dot-border");
+    expect(dot?.className).not.toContain("workspace-dot-green");
+
+    // No interrupt control on a terminal that has ended.
+    expect(container.querySelector(".workspace-terminal-interrupt")).toBeNull();
+
+    // The sentence's action, and the raw attach text as reachable detail.
+    expect(banner?.getAttribute("title")).toBe("session attachment is not registered");
+    const closeTab = container.querySelector<HTMLButtonElement>(
+      ".workspace-terminal-banner-action",
+    );
+    expect(closeTab?.textContent).toBe("Close tab");
+    if (closeTab === null) throw new Error("the close-tab action did not render");
+    await act(async () => closeTab.click());
+    expect(onCloseTab).toHaveBeenCalledTimes(1);
+  });
+});
