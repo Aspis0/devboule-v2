@@ -264,6 +264,65 @@ fn a_landed_move_marks_the_rosters_delegation_column_unattended() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The move handler emits **no text**: it applies the profile's mode and
+/// model to a child that is already running, and nothing from the profile's
+/// prompt field may enter a conversation that is under way. Driven through
+/// the real `set_agent_child_profile`, with the child's writer made
+/// observable (and its kind a family whose first prompt does not wait on the
+/// MCP handshake, so a wrong send would land in `received` instead of
+/// vanishing behind a gate).
+#[test]
+fn a_move_onto_a_spawn_prompt_profile_sends_nothing() {
+    let (dir, registry, journal) = registry_with_journal();
+    let owner = test_owner("s5b-mv-spawn");
+    let creator = compose_session_id(&owner.session_token(), "cr1").expect("id");
+    let child = compose_session_id(&owner.session_token(), "ch1").expect("id");
+    insert_live_agent(&registry, &creator, owner.clone());
+    let (_runtime, _mode_calls, _model_calls, _order) = insert_move_child(
+        &registry,
+        &journal,
+        &child,
+        owner.clone(),
+        &creator,
+        "Worker",
+        &["bypass"],
+        Some("model-a"),
+        true,
+        false,
+        false,
+    );
+    let received = Arc::new(Mutex::new(Vec::new()));
+    {
+        let mut map = registry.inner.lock().expect("registry");
+        let live = map
+            .get_mut(&child)
+            .and_then(RegistryEntry::as_peer_visible_mut)
+            .expect("live entry");
+        live.metadata.kind = SessionKind::Pi;
+        *live.writer.lock().expect("writer") =
+            Box::new(tests::RecordingWriter(Arc::clone(&received)));
+    }
+    // The resolver stands in for the store: the profile it names carries a
+    // spawn prompt, and the move's facts carry none of it.
+    registry
+        .set_agent_child_profile(&creator, "Worker", "Solo", &solo_resolve)
+        .expect("the move lands");
+    assert!(
+        received.lock().expect("received").is_empty(),
+        "a move writes nothing to the child"
+    );
+    let replay = journal.replay(&child).expect("replay");
+    assert!(
+        !replay
+            .events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentUserMessage { .. })),
+        "no user message may be journaled by a move"
+    );
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Mutant: the display name's fallback to the title dropped — a child with
 /// no display name of its own stays addressable by the title the roster
 /// shows beneath it.

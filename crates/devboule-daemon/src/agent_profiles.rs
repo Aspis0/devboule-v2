@@ -310,6 +310,32 @@ fn check_document(document: &mut AgentProfilesDocument) -> Result<(), String> {
     for (index, profile) in document.profiles.iter_mut().enumerate() {
         check_profile(profile, index + 1, &mut ids, &registry)?;
     }
+    // Enabled profiles may not share a name, document-wide: a creation
+    // resolves a profile **by name**, so two enabled ones with one name would
+    // be an ambiguity the creation could only refuse. Disabled rows are not
+    // candidates, so a disabled profile may still share a name with anyone.
+    // The name is echoed because `check_profile` has already bounded it (at
+    // most [`MAX_PROFILE_NAME_CHARS`] characters).
+    let mut enabled_names: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for profile in document
+        .profiles
+        .iter()
+        .filter(|profile| profile.enabled_for_agents)
+    {
+        *enabled_names.entry(profile.name.as_str()).or_insert(0) += 1;
+    }
+    let mut duplicated: Vec<&str> = enabled_names
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(name, _)| name)
+        .collect();
+    duplicated.sort_unstable();
+    if let Some(name) = duplicated.first() {
+        return Err(format!(
+            "the name '{name}' is used by more than one profile enabled for agents; a creation resolves a profile by name, so they could not be told apart"
+        ));
+    }
     Ok(())
 }
 
@@ -318,8 +344,10 @@ fn check_document(document: &mut AgentProfilesDocument) -> Result<(), String> {
 /// `position` is the profile's 1-based place in the list, which is how a
 /// refusal points at its row without echoing text that has not been bounded
 /// yet. `ids` is every id already admitted, in list order: a document that
-/// names one id twice is refused, and a document that names one **name** twice
-/// is not — nothing here looks a profile up by name.
+/// names one id twice is refused here. Names are **not** this function's
+/// business — two rows may share one — but the document-level rule below
+/// (`check_document`) refuses two **enabled** rows sharing a name, because a
+/// creation resolves a profile by name.
 fn check_profile(
     profile: &mut AgentProfile,
     position: usize,
@@ -796,9 +824,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Two profiles may share a name: nothing shadows anything, because nothing
-    /// here looks a profile up by name. Two profiles may **not** share an id,
-    /// and that refusal names the id.
+    /// Two **disabled** profiles may share a name, and either may share with
+    /// an enabled one: a creation resolves a profile by name, so only an
+    /// enabled pair would be an ambiguity, and that refusal lives
+    /// document-wide in `check_document`. Two profiles may **not** share an
+    /// id, and that refusal names the id.
     #[test]
     fn two_profiles_may_share_a_name_and_may_not_share_an_id() {
         let dir = temp_dir();
@@ -822,6 +852,39 @@ mod tests {
             .expect_err("one id twice must be refused");
         assert!(error.to_string().contains("p-1"), "{error}");
         // The refused document did not reach the memory or the file.
+        assert_eq!(names(&store.document()), ["Reviewer", "Reviewer"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two **enabled** profiles may not share a name: `devboule_create_agent`
+    /// resolves a profile **by name**, so two enabled ones with one name would
+    /// be an ambiguity the creation could only refuse. Disabled rows are not
+    /// candidates, so a disabled profile may still share a name with anyone.
+    #[test]
+    fn two_enabled_profiles_may_not_share_a_name() {
+        let dir = temp_dir();
+        let store = AgentProfilesStore::load(&dir);
+        let mut first = profile("p-1", "Reviewer");
+        let mut second = profile("p-2", "Reviewer");
+        first.enabled_for_agents = true;
+        second.enabled_for_agents = true;
+        let error = store
+            .set(document(vec![first, second]))
+            .expect_err("two enabled Reviewers must be refused");
+        let message = error.to_string();
+        assert!(message.contains("Reviewer"), "{message}");
+        assert!(message.contains("enabled"), "{message}");
+
+        // The refused document did not reach the memory or the file.
+        assert!(store.document().profiles.is_empty());
+
+        // One enabled twin and one disabled twin: the name is unambiguous, so
+        // the pair is kept exactly as the human ordered it.
+        let mut enabled = profile("p-1", "Reviewer");
+        enabled.enabled_for_agents = true;
+        store
+            .set(document(vec![enabled, profile("p-2", "Reviewer")]))
+            .expect("one enabled twin is not an ambiguity");
         assert_eq!(names(&store.document()), ["Reviewer", "Reviewer"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

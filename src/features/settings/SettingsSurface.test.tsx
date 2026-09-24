@@ -2529,6 +2529,28 @@ describe("Settings agents panel", () => {
     });
   });
 
+  it("refuses a rename that would put two enabled profiles on one name, before sending", async () => {
+    const scout = makeProfile({ id: "s1", name: "Scout", enabledForAgents: true });
+    const reviewer = makeProfile({ id: "r1", name: "Reviewer", enabledForAgents: true });
+    await renderAgentsPanel({ profiles: [scout, reviewer], standingInstructions: "" });
+
+    await act(async () => rowButton("Reviewer", "Edit").click());
+    await act(async () => undefined);
+    const nameField = container.querySelector<HTMLInputElement>(
+      '.agent-inline-editor input[aria-label="Profile name"]',
+    );
+    if (!nameField) throw new Error("name field did not render");
+    await typeText(nameField, "Scout");
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    // Refused before the write: the daemon's rule, named by the form first.
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Scout");
+    expect(alert?.textContent).toContain("enabled");
+  });
+
   it("saves an icon and clears it to none", async () => {
     await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
     vi.mocked(agentProfilesGet).mockResolvedValueOnce({

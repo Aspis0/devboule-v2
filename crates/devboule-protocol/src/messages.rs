@@ -2358,8 +2358,9 @@ pub struct ToolPolicyEntry {
 /// The daemon mints one when a caller leaves it empty, a human renaming a
 /// profile changes `name` and never `id`, and a session records the `id` it was
 /// started from — so a rename cannot make a running child report a profile that
-/// no longer exists, and two profiles may share a `name` without one shadowing
-/// the other. Nothing looks a profile up by name in this type.
+/// no longer exists. Two profiles may share a `name` only while at most one of
+/// them is enabled for agents: a creation resolves a profile **by name**, and
+/// the store refuses an enabled pair.
 ///
 /// `model`, `mode_id` and `thinking_option_id` are the provider's own
 /// vocabulary, stored verbatim and bounded by length. The daemon's catalog

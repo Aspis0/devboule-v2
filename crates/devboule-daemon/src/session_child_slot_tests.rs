@@ -30,6 +30,17 @@ struct SlotFixture {
 
 impl SlotFixture {
     fn new(label: &str) -> Self {
+        Self::build(label, None)
+    }
+
+    /// The same fixture, with standing instructions already in the runtime
+    /// directory: the profiles store the state attaches reads its file once,
+    /// at construction, so the document is on disk *before* the state exists.
+    fn new_with_standing(label: &str, standing: &str) -> Self {
+        Self::build(label, Some(standing))
+    }
+
+    fn build(label: &str, standing: Option<&str>) -> Self {
         let dir = crate::test_dirs::test_temp_dir("devboule-child-slot");
         // The user-provider rows are process-global (`user_providers::ROWS_STATE`),
         // and a refresh from a directory with no providers file retires whatever
@@ -44,6 +55,20 @@ impl SlotFixture {
             b"{ this fixture declares no providers",
         )
         .expect("the fixture's providers document");
+        if let Some(standing) = standing {
+            // The same on-disk trick for the profiles store: the document the
+            // state will load and attach carries the standing instructions a
+            // first prompt is composed from.
+            let document = devboule_protocol::AgentProfilesDocument {
+                standing_instructions: standing.to_string(),
+                ..devboule_protocol::AgentProfilesDocument::default()
+            };
+            std::fs::write(
+                dir.join(crate::agent_profiles::PROFILES_FILE),
+                serde_json::to_vec(&document).expect("the fixture's profiles document"),
+            )
+            .expect("write the profiles document");
+        }
         let state = ServerState::with_paths(
             format!("child-slot-{label}"),
             RuntimePaths::from_dir(dir.clone()),
@@ -83,7 +108,14 @@ impl SlotFixture {
     /// preset facts the ACP override harness serves. An empty `prompt` is a
     /// child whose first prompt never goes out.
     fn create(&self, prompt: &str) -> Result<Session, WireError> {
-        self.create_armed(prompt, |_sessions| {})
+        self.create_full(prompt, "", |_sessions| {})
+    }
+
+    /// The same creation with the resolved profile's spawn prompt in the
+    /// `AgentCreation`: the road under test carries it from the resolution
+    /// into the child's first prompt.
+    fn create_with_spawn(&self, prompt: &str, spawn_prompt: &str) -> Result<Session, WireError> {
+        self.create_full(prompt, spawn_prompt, |_sessions| {})
     }
 
     /// `arm` runs after the reservation and before the creation, which is the
@@ -91,6 +123,15 @@ impl SlotFixture {
     fn create_armed(
         &self,
         prompt: &str,
+        arm: impl FnOnce(&SessionRegistry),
+    ) -> Result<Session, WireError> {
+        self.create_full(prompt, "", arm)
+    }
+
+    fn create_full(
+        &self,
+        prompt: &str,
+        spawn_prompt: &str,
         arm: impl FnOnce(&SessionRegistry),
     ) -> Result<Session, WireError> {
         let creator = self
@@ -114,7 +155,7 @@ impl SlotFixture {
                 provider: "devboule-acp-stub".to_string(),
                 profile_id: "profile-slot".to_string(),
                 profile_name: "Slot child".to_string(),
-                spawn_prompt: String::new(),
+                spawn_prompt: spawn_prompt.to_string(),
                 delivery: crate::profile_delivery::ProfileDelivery::none(),
                 overlay: crate::provider_catalog::ToolOverlay::NONE,
                 labels: Default::default(),
@@ -255,6 +296,64 @@ fn the_creators_slot_survives_its_childs_birth_and_death() {
         );
         std::thread::sleep(Duration::from_millis(25));
     }
+    fixture.finish();
+}
+
+/// The creation hand-off, on the road itself: the spawn prompt carried in the
+/// `AgentCreation` — what `resolve_profile` copied out of the store — is what
+/// the creation send puts in front of the child, in the fixed order (standing
+/// instructions, spawn prompt, creation preamble, creator's prompt), journaled
+/// on the child as its `creation` line. A hand-off that passed `None` would
+/// leave the spawn text out of the composed first prompt entirely.
+#[test]
+fn a_created_childs_first_prompt_carries_the_spawn_prompt_in_order() {
+    let _env = AcpEnv::stub(&[]);
+    let fixture = SlotFixture::new_with_standing("spawn-order", "standing");
+
+    let child = fixture
+        .create_with_spawn("the task", "spawn")
+        .expect("the child is created and prompted");
+    let journal = fixture
+        .state
+        .sessions
+        .journal
+        .as_ref()
+        .expect("journal")
+        .clone();
+    let expected = format!(
+        "standing
+
+spawn
+
+{}
+
+the task",
+        crate::provider_catalog::AGENT_PREAMBLE
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut found: Option<String> = None;
+    while found.is_none() && Instant::now() < deadline {
+        if let Ok(replay) = journal.replay(&child.id) {
+            for event in &replay.events {
+                if let SessionEvent::AgentUserMessage {
+                    text,
+                    message_kind: UserMessageKind::Creation,
+                    ..
+                } = event
+                {
+                    found = Some(text.clone());
+                }
+            }
+        }
+        if found.is_none() {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    assert_eq!(
+        found.as_deref(),
+        Some(expected.as_str()),
+        "standing, then the profile's spawn prompt, then the preamble, then the task"
+    );
     fixture.finish();
 }
 

@@ -1096,10 +1096,25 @@ function AgentProfilesPanel() {
       setError({ sentence: refusal, detail: null });
       return;
     }
+    // A creation resolves a profile **by name**, so two enabled profiles with
+    // one name would be refused by the daemon; the form refuses first and
+    // says which name, before a write is sent at all.
+    const trimmedName = draft.name.trim();
+    if (draft.enabledForAgents) {
+      const clash = current.profiles.some(
+        (profile) => profile.id !== id && profile.enabledForAgents && profile.name === trimmedName,
+      );
+      if (clash) {
+        setError(
+          `The name '${trimmedName}' is already used by a profile enabled for agents; a creation resolves a profile by name, so they could not be told apart.`,
+        );
+        return;
+      }
+    }
     const updated = cloneDocument(current);
     const row = updated.profiles.find((profile) => profile.id === id);
     if (row === undefined) return;
-    row.name = draft.name.trim();
+    row.name = trimmedName;
     // An empty icon is none, and none is null on the wire — never "".
     row.icon = draft.icon.trim() === "" ? null : draft.icon.trim();
     row.note = draft.note;
@@ -1157,6 +1172,21 @@ function AgentProfilesPanel() {
     if (refusal !== null) {
       setError({ sentence: refusal, detail: null });
       return;
+    }
+    // The same name rule the edit road applies: a creation resolves a
+    // profile **by name**, so the new profile must not duplicate an enabled
+    // one, and the form says so before the write is sent.
+    const trimmedName = draft.name.trim();
+    if (draft.enabledForAgents) {
+      const clash = current.profiles.some(
+        (profile) => profile.enabledForAgents && profile.name === trimmedName,
+      );
+      if (clash) {
+        setError(
+          `The name '${trimmedName}' is already used by a profile enabled for agents; a creation resolves a profile by name, so they could not be told apart.`,
+        );
+        return;
+      }
     }
     const icon = draft.icon.trim();
     const profile: AgentProfile = {

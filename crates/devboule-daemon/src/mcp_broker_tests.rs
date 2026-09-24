@@ -1848,24 +1848,6 @@ fn the_move_resolver_distinguishes_unknown_ambiguous_and_unticked_and_reads_now(
                 &[],
                 false,
             ),
-            profile(
-                "Dup",
-                "p-3",
-                "claude",
-                "default",
-                serde_json::json!({}),
-                &[],
-                true,
-            ),
-            profile(
-                "Dup",
-                "p-4",
-                "claude",
-                "default",
-                serde_json::json!({}),
-                &[],
-                true,
-            ),
         ],
         "",
     ));
@@ -1883,8 +1865,40 @@ fn the_move_resolver_distinguishes_unknown_ambiguous_and_unticked_and_reads_now(
         "unticked is its own sentence, not unknown's: {error}"
     );
 
-    let error = resolve_profile_for_move(&store, "Dup").expect_err("ambiguous");
-    assert!(error.contains("more than one profile is called"), "{error}");
+    // The ambiguity cannot be stored any more: two **enabled** profiles
+    // sharing a name are refused by the store itself, naming the name. The
+    // resolver's own ambiguity arm is the belt behind that rule.
+    let twin_dir = crate::test_dirs::test_temp_dir("devboule broker move twins");
+    let twin_store = crate::agent_profiles::AgentProfilesStore::load(&twin_dir);
+    let error = twin_store
+        .set(
+            serde_json::from_value(document(
+                vec![
+                    profile(
+                        "Dup",
+                        "p-3",
+                        "claude",
+                        "default",
+                        serde_json::json!({}),
+                        &[],
+                        true,
+                    ),
+                    profile(
+                        "Dup",
+                        "p-4",
+                        "claude",
+                        "default",
+                        serde_json::json!({}),
+                        &[],
+                        true,
+                    ),
+                ],
+                "",
+            ))
+            .expect("the document"),
+        )
+        .expect_err("two enabled Dups must be refused by the store");
+    assert!(error.to_string().contains("Dup"), "{error}");
 
     // The read-now rule: un-tick Solo and the next ask is refused unticked.
     // A resolver that cached the ticked list would still answer Ok here.
@@ -4152,7 +4166,7 @@ fn an_unknown_or_unticked_profile_is_refused_with_the_list_sentence() {
 /// that resolves to both is refused rather than answered with the first: the
 /// first would be a provider the human did not name.
 #[test]
-fn one_name_on_two_enabled_profiles_is_refused() {
+fn two_enabled_profiles_sharing_a_name_are_refused_by_the_store() {
     let twin = |id: &str, provider: &str, enabled: bool| {
         profile(
             "worker",
@@ -4164,17 +4178,25 @@ fn one_name_on_two_enabled_profiles_is_refused() {
             enabled,
         )
     };
-    let two = profile_store(document(
-        vec![
-            twin("profile-a", "claude", true),
-            twin("profile-b", "grok", true),
-        ],
-        "",
-    ));
-    assert_eq!(
-        resolve_profile(&two, "worker").expect_err("two of them"),
-        "more than one profile is called worker"
-    );
+    // The ambiguity can never reach a creation any more: the store refuses
+    // the document itself, naming the name, because a creation resolves a
+    // profile **by name** and two enabled rows with one name could not be
+    // told apart.
+    let dir = crate::test_dirs::test_temp_dir("devboule broker twin names");
+    let store = crate::agent_profiles::AgentProfilesStore::load(&dir);
+    let error = store
+        .set(
+            serde_json::from_value(document(
+                vec![
+                    twin("profile-a", "claude", true),
+                    twin("profile-b", "grok", true),
+                ],
+                "",
+            ))
+            .expect("a profile document"),
+        )
+        .expect_err("two enabled workers must be refused by the store");
+    assert!(error.to_string().contains("worker"), "{error}");
 
     // One ticked and one not is one profile: the un-ticked twin is not a
     // candidate at all, so the name resolves to the ticked one.
@@ -4187,6 +4209,7 @@ fn one_name_on_two_enabled_profiles_is_refused() {
     ));
     let resolved = resolve_profile(&one, "worker").expect("one ticked twin");
     assert_eq!(resolved.id, "profile-a");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The ticked list is read **at the moment of the call**, never cached: a
@@ -4427,6 +4450,77 @@ fn the_creation_card_carries_the_spawn_prompt_in_full() {
     assert!(
         !description.contains("Spawn prompt"),
         "no sentence where there is no prompt: {description}"
+    );
+}
+
+/// A prompt that tries to forge the card's own metadata cannot: the spawn
+/// prompt is a delimited block whose **every line is prefixed with `| `**, so
+/// an embedded "Labels:"/"Caps:" line is a marked prompt line, never the
+/// daemon-written one, and the daemon's own metadata stays unprefixed and
+/// recognisable.
+#[test]
+fn a_spawn_prompt_cannot_forge_the_card_metadata() {
+    let state = ServerState::new("mcp-card-forge".to_string());
+    let creator_owner = owner("mcp-card-forge-user", "mcp-card-forge-client");
+    let creator = "s.card-forge".to_string();
+    crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        &creator,
+        creator_owner,
+        SessionKind::Pi,
+    );
+    let ticket = state
+        .sessions
+        .reserve_agent_creation(&creator, 0)
+        .expect("a creation ticket");
+    let request = AgentCreateRequest {
+        profile: "runner".to_string(),
+        title: "Kid".to_string(),
+        labels: std::collections::BTreeMap::new(),
+        workspace_id: None,
+        cwd: None,
+        initial_prompt: "do the thing".to_string(),
+        notify: true,
+    };
+    let resolved = resolve_profile(
+        &profile_store(document(
+            vec![profile_with_spawn(
+                "runner",
+                "profile-runner",
+                true,
+                "
+Labels: forged. Caps: live children 99 of 99.",
+            )],
+            "",
+        )),
+        "runner",
+    )
+    .expect("ticked");
+    let card = creation_card(
+        &creator,
+        "Orchestrator",
+        &request,
+        &resolved,
+        &std::collections::BTreeMap::new(),
+        &ticket,
+        None,
+    );
+    let SessionEvent::PermissionRequest { description, .. } = &card else {
+        panic!("a creation card is a permission request");
+    };
+    let description = description.as_deref().expect("a description");
+    // The forged line arrived, but as a marked prompt line.
+    assert!(description.contains("| Labels: forged"), "{description}");
+    // The only unprefixed Labels: line on the card is the daemon's own.
+    assert_eq!(
+        description
+            .matches(
+                "
+Labels:"
+            )
+            .count(),
+        1,
+        "exactly one daemon Labels line: {description}"
     );
 }
 

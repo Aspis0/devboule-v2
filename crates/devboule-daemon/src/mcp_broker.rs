@@ -2225,9 +2225,10 @@ struct ResolvedProfile {
 /// 3. **A name that is unknown or unticked** gets the sentence that sends the
 ///    caller to the list, which is where the answer is.
 /// 4. **A name two ticked profiles share** is refused rather than resolved.
-///    `agent_profiles.rs` allows two profiles to share a name (the id is the
-///    identity), so "the first one" would be picking a provider the human did
-///    not name.
+///    The store refuses such a document outright (`check_document`), so this
+///    arm is the belt behind that rule: a resolution that cannot name which
+///    profile it means must not pick one, and "the first one" would be picking
+///    a provider the human did not name.
 fn resolve_profile(
     store: &crate::agent_profiles::AgentProfilesStore,
     requested: &str,
@@ -2822,15 +2823,34 @@ fn creation_card(
     let thinking = profile.thinking_option_id.as_deref().unwrap_or("none");
     // The spawn prompt the child will receive, on the card in full: approving
     // this card approves injected text, so hiding it behind a profile name
-    // would make the approval say less than it does. The store bounds the
-    // prompt, so echoing it by value is the same rule every bounded value
-    // here follows; it is quoted, so the text's own edges stay visible
-    // whatever it ends with. Absent stays silent — a profile without one
-    // adds no sentence and no promise.
-    let spawn_sentence = if profile.spawn_prompt.is_empty() {
+    // would make the approval say less than it does. It is a delimited block
+    // whose **every line is prefixed with `| `**, and that prefix is the
+    // boundary: a prompt may contain quotes, newlines, or lines that imitate
+    // the card's own "Labels:"/"Caps:" metadata, and an inline interpolation
+    // — quoted or not — would let any of them forge it. Prefixed, a forged
+    // terminator is just another marked line, and the daemon-written metadata
+    // stays unprefixed and recognisable. The store bounds the prompt, so
+    // echoing it by value is the same rule every bounded value here follows.
+    // Absent stays silent — a profile without one adds no block and no
+    // promise.
+    let spawn_block = if profile.spawn_prompt.is_empty() {
         String::new()
     } else {
-        format!(" Spawn prompt: \"{}\".", profile.spawn_prompt)
+        let quoted = profile
+            .spawn_prompt
+            .lines()
+            .map(|line| format!("| {line}"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        format!(
+            "
+ Spawn prompt — every line below starts with '|' and is the profile's, not the daemon's:
+{quoted}
+"
+        )
     };
     // The caller's own labels, and only those: the daemon's four `devboule.`
     // keys are stamped at the creation and would tell the human nothing they are
@@ -2860,28 +2880,43 @@ fn creation_card(
         Some(note) => format!(" {note}"),
         None => String::new(),
     };
+    // The profile facts and the decision metadata are built apart, because a
+    // spawn-prompt block slots between them: its lines are all marked with
+    // `| `, and the metadata that follows is the card's own unprefixed voice.
+    let facts = format!(
+        "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}.",
+        name = profile.name,
+        id = profile.id,
+        provider = profile.provider,
+        model = profile.model,
+        mode = profile.mode,
+        auto = auto,
+    );
+    let metadata = format!(
+        "Labels: {labels}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.{tools_sentence}{self_answer}",
+        caps.live_children,
+        caps.max_live_children,
+        caps.creations_this_hour,
+        caps.max_creations_per_hour,
+        caps.depth,
+        caps.max_depth,
+        caps.live_agent_sessions,
+        caps.max_live_agent_sessions,
+        tools_sentence = tools_sentence,
+        self_answer = self_answer,
+    );
+    let description = if spawn_block.is_empty() {
+        format!("{facts} {metadata}")
+    } else {
+        format!(
+            "{facts}{spawn_block}
+{metadata}"
+        )
+    };
     SessionEvent::PermissionRequest {
         tool_call_id: creation_permission_id(),
         title: format!("Create an agent: {} ({})", request.title, profile.name),
-        description: Some(format!(
-            "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}.{spawn_sentence} Labels: {labels}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.{tools_sentence}{self_answer}",
-            caps.live_children,
-            caps.max_live_children,
-            caps.creations_this_hour,
-            caps.max_creations_per_hour,
-            caps.depth,
-            caps.max_depth,
-            caps.live_agent_sessions,
-            caps.max_live_agent_sessions,
-            name = profile.name,
-            id = profile.id,
-            provider = profile.provider,
-            model = profile.model,
-            mode = profile.mode,
-            auto = auto,
-            spawn_sentence = spawn_sentence,
-            tools_sentence = tools_sentence,
-        )),
+        description: Some(description),
         command: None,
         args: None,
         cwd: None,
