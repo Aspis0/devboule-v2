@@ -100,6 +100,24 @@ export function Shell({ activeSurface, children }: ShellProps) {
     }
   }
 
+  /**
+   * Hand focus back to the trigger without reopening what just closed. The
+   * armed suppression is what the trigger's onFocus consumes, so it is armed
+   * only when focus() will emit that event: with the trigger already active,
+   * focus() is a no-op, and an armed flag would swallow the next genuine
+   * focus instead — the crescent would then fail to open once.
+   */
+  function handFocusBackToTrigger() {
+    const trigger = triggerRef.current;
+    if (trigger === null) return;
+    if (document.activeElement === trigger) {
+      suppressTriggerFocusRef.current = false;
+      return;
+    }
+    suppressTriggerFocusRef.current = true;
+    trigger.focus();
+  }
+
   function pageBy(delta: -1 | 1) {
     const focusedElement = document.activeElement;
     pendingFocusRef.current = {
@@ -119,12 +137,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
       if (!navOpen) return;
       event.preventDefault();
       closeNav();
-      if (document.activeElement === triggerRef.current) {
-        suppressTriggerFocusRef.current = false;
-      } else {
-        suppressTriggerFocusRef.current = true;
-        triggerRef.current?.focus();
-      }
+      handFocusBackToTrigger();
       return;
     }
     if (!navOpen) return;
@@ -233,6 +246,10 @@ export function Shell({ activeSurface, children }: ShellProps) {
           id="devboule-crescent-navigation"
           ref={navigationRef}
           className={`crescent-nav${navOpen ? " crescent-nav-open" : ""}`}
+          // Opacity and tabIndex remove the closed points from the tab order
+          // but not from the accessibility tree; inert removes them from
+          // browse navigation too, so aria-expanded tells the truth.
+          inert={!navOpen}
           onPointerEnter={() => setNavOpen(true)}
           onPointerLeave={(event) => {
             if (event.clientY > 150) {
@@ -313,10 +330,8 @@ export function Shell({ activeSurface, children }: ShellProps) {
                   selectSurface(surface.key);
                   closeNav();
                   // The trigger takes focus back, but the choice just closed
-                  // the nav — the handback must not reopen it (the Escape
-                  // path suppresses the trigger's focus the same way).
-                  suppressTriggerFocusRef.current = true;
-                  triggerRef.current?.focus();
+                  // the nav — the handback must not reopen it.
+                  handFocusBackToTrigger();
                 }}
                 onFocus={() => setNavOpen(true)}
                 tabIndex={navOpen ? 0 : -1}

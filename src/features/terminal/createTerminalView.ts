@@ -64,6 +64,13 @@ export interface CreateTerminalViewOptions {
   onData: (data: string) => void;
   /** Route plain Ctrl+C through the controller's arm/confirm guard. */
   onCtrlC: () => void;
+  /**
+   * The document's fonts settled after this view opened. The cell may have
+   * changed shape while the host box did not move, so the session must fit
+   * again: only its resize path can send the new grid to the PTY, and fitting
+   * here would leave xterm on a grid the shell never hears about.
+   */
+  onFontsSettled: () => void;
 }
 
 export interface TerminalViewHandle {
@@ -164,10 +171,11 @@ export function createTerminalView(
   // arithmetic if it ever overflows again, so a future box or addon change
   // degrades to a clamped fit, never a clipped prompt. Cell metrics do not
   // depend on rows/cols, so a mid-render measurement is still the right cell.
-  // The addon's own proposal is the upper bound: it reserves the scrollbar's
-  // width, which the raw content-box arithmetic does not see, so clamping to
-  // it keeps the clamp overflow-only (it can shrink, never widen).
-  const clampToFitBox = (proposal: { cols: number; rows: number } | null): void => {
+  // It runs only behind runFit's proposal gate, so the addon's own proposal is
+  // the clamp's one upper bound: it reserves the scrollbar's width, which the
+  // raw content-box arithmetic does not see, and clamping to it keeps the
+  // clamp overflow-only (it can shrink, never widen).
+  const clampToFitBox = (proposal: { cols: number; rows: number }): void => {
     if (typeof host.querySelector !== "function") return; // stubbed hosts in tests
     if (terminal.rows === 0 || terminal.cols === 0) return;
     const screen: unknown = host.querySelector(".xterm-screen");
@@ -195,20 +203,51 @@ export function createTerminalView(
       width: screenBox.width / terminal.cols,
       height: screenBox.height / terminal.rows,
     };
-    if (!Number.isFinite(cell.width) || !Number.isFinite(cell.height) || cell.width <= 0) return;
+    // A zero screen on either axis is not a cell measurement: dividing by it
+    // yields Infinity, which would then travel to the PTY as a rows count.
+    // The addon's own grid stands instead.
+    if (
+      !Number.isFinite(cell.width) ||
+      !Number.isFinite(cell.height) ||
+      cell.width <= 0 ||
+      cell.height <= 0
+    ) {
+      return;
+    }
     const fitted = fitRowsCols(content, cell);
-    const cols = Math.min(fitted.cols, proposal?.cols ?? fitted.cols);
-    const rows = Math.min(fitted.rows, proposal?.rows ?? fitted.rows);
+    const cols = Math.min(fitted.cols, proposal.cols);
+    const rows = Math.min(fitted.rows, proposal.rows);
     if (cols !== terminal.cols || rows !== terminal.rows) {
       terminal.resize(cols, rows);
     }
   };
 
+  /** The host's content box, or null while it has none. */
+  const fitBox = (): { width: number; height: number } | null => {
+    const width = host.clientWidth;
+    const height = host.clientHeight;
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return null;
+    }
+    return { width, height };
+  };
+
+  /**
+   * Fit, or refuse to. FitAddon answers with no proposal while the renderer
+   * has no cell size (a zero cell width or height), and it proposes its
+   * 2-column/1-row floor for a host with no content box — a positive grid that
+   * would leave here as a real PTY resize, because the session sends whatever
+   * the view reports. No host box or no proposal therefore means no fit at
+   * all: the last good grid stands until the next observer tick.
+   */
   const runFit = (): boolean => {
+    if (fitBox() === null) return false;
     try {
       const proposal = fitAddon.proposeDimensions();
+      if (proposal === undefined || proposal === null) return false;
+      if (!(proposal.cols > 0) || !(proposal.rows > 0)) return false;
       fitAddon.fit();
-      clampToFitBox(proposal ?? null);
+      clampToFitBox(proposal);
       return true;
     } catch {
       return false;
@@ -228,11 +267,12 @@ export function createTerminalView(
   runFit();
   // The bundled JetBrains Mono can finish loading after the first fit: the
   // cell size changes while the host box does not, so the box observer never
-  // fires and the grid keeps the fallback font's shape. One refit when the
-  // document's fonts settle.
+  // fires and the grid keeps the fallback font's shape. The refit belongs to
+  // the session, because only its resize path tells the PTY; this reports the
+  // metric change instead.
   if (typeof document !== "undefined" && "fonts" in document) {
     void document.fonts.ready.then(() => {
-      if (!disposed) runFit();
+      if (!disposed) options.onFontsSettled();
     });
   }
 

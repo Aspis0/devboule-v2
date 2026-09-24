@@ -8,7 +8,7 @@ import type {
   PermissionResolved,
   UnverifiableTranscriptIntegrity,
 } from "../../types/ipc";
-import type { TerminalViewHandle } from "./createTerminalView";
+import type { CreateTerminalViewOptions, TerminalViewHandle } from "./createTerminalView";
 import type { TerminalSessionRegistry } from "./terminalRegistry";
 
 export type TerminalEvent = SessionEvent;
@@ -41,7 +41,7 @@ export interface TerminalSessionDeps {
   host: HTMLElement;
   createView: (
     host: HTMLElement,
-    options: { onData: (data: string) => void; onCtrlC: () => void },
+    options: CreateTerminalViewOptions,
   ) => Promise<TerminalViewHandle>;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   createChannel: (onEvent: (event: TerminalEvent) => void) => TerminalChannel;
@@ -177,6 +177,10 @@ export class TerminalSession {
       view = await this.deps.createView(this.deps.host, {
         onData: (data) => this.handleViewData(data),
         onCtrlC: () => this.requestCtrlC(),
+        // A font metric change moves the cell without moving the host box, so
+        // the observer above never fires: the view reports it and the one
+        // debounced fit-then-resize path below sends the new grid to the PTY.
+        onFontsSettled: () => this.requestResize(),
       });
     } catch (error: unknown) {
       this.showError(`Could not open the terminal view: ${errorMessage(error)}`);

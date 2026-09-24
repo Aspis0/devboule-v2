@@ -1466,7 +1466,7 @@ describe("the centre's pane decision", () => {
     expect(paneSessionOf("recovered-1", [{ id: "live-2" }])).toBeNull();
   });
 
-  it("another workspace's session is never a pane here", () => {
+  it("no selection means no pane, never a fallback row", () => {
     expect(paneSessionOf(null, strip)).toBeNull();
   });
 });

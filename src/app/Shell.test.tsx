@@ -286,4 +286,52 @@ describe("Shell crescent", () => {
     expect(point.getAttribute("tabindex")).toBe("-1");
     await act(async () => root.unmount());
   });
+
+  it("keeps the closed crescent out of the accessibility tree and reachable when open", async () => {
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    const navigation = container.querySelector<HTMLElement>(".crescent-nav");
+    if (sliver === null || navigation === null) throw new Error("crescent did not render");
+    const point = container.querySelector<HTMLButtonElement>('[aria-label="Open Polis"]');
+    if (point === null) throw new Error("Polis point did not render");
+
+    // Closed: opacity and tabIndex alone leave the invisible points in the
+    // screen reader's tree; inert takes them out of browse navigation too.
+    expect(sliver.getAttribute("aria-expanded")).toBe("false");
+    expect(navigation.hasAttribute("inert")).toBe(true);
+    expect(point.getAttribute("tabindex")).toBe("-1");
+
+    await act(async () => sliver.focus());
+    expect(sliver.getAttribute("aria-expanded")).toBe("true");
+    expect(navigation.hasAttribute("inert")).toBe(false);
+    expect(point.getAttribute("tabindex")).toBe("0");
+    await act(async () => root.unmount());
+  });
+
+  it("does not swallow the next trigger focus after a selection made while the trigger is focused", async () => {
+    const selectSurface = vi.fn();
+    useAppStore.setState({ plugins: inventory([READY]), selectSurface });
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    if (sliver === null) throw new Error("crescent did not render");
+    await act(async () => sliver.focus());
+
+    const point = container.querySelector<HTMLButtonElement>('[aria-label="Open Polis"]');
+    if (point === null) throw new Error("Polis point did not render");
+    // An assistive or programmatic activation that never moved focus: the
+    // trigger is still the active element, so the handback emits no focus
+    // event and must not arm the suppression.
+    await act(async () => point.click());
+
+    expect(selectSurface).toHaveBeenCalledWith("polis");
+    expect(sliver.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(sliver);
+
+    await act(async () => sliver.blur());
+    await act(async () => sliver.focus());
+    expect(sliver.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => root.unmount());
+  });
 });

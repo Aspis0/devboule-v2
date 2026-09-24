@@ -142,8 +142,12 @@ interface WorkspaceProps {
 /**
  * The session whose pane the centre may render: the selected id counts only
  * while the strip still has its tab. A row the strip hides (its close is in
- * flight, the roster carried it away) or another workspace's session must
- * never keep a pane up, and an empty strip means the empty state.
+ * flight, the roster carried it away) must never keep a pane up, and an empty
+ * strip means the empty state. The strip itself is the controller's whole
+ * session list minus those closing rows: it is NOT filtered by workspace, so a
+ * session from another workspace that is still listed here is accepted. That
+ * gap is pre-existing and belongs to the tab-strip slice's filtering, not to
+ * this decision.
  */
 export function paneSessionOf<S extends { id: string }>(
   selectedSessionId: string | null,
