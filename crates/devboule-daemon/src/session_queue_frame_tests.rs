@@ -9,12 +9,21 @@ use super::tests::{
     test_owner, tmp_delete_registry, RecordingWriter,
 };
 use super::{
-    Arc, ConnHandle, Duration, Instant, Mutex, OwnerId, RuntimePaths, SessionEvent,
-    SessionRegistry, SessionRuntime, MAX_WRITE_BYTES,
+    new_session_record, Arc, ConnHandle, Duration, Instant, Mutex, OwnerId, PersistStatus,
+    RuntimePaths, SessionEvent, SessionKind, SessionRegistry, SessionRuntime, MAX_WRITE_BYTES,
 };
 use devboule_protocol::{DaemonMessage, QueuedMessage, SessionEventEnvelope, MAX_FRAME_BYTES};
 
 const SESSION: &str = "s.q.frame";
+
+/// The session row every queue store rides on (fix pass 4's existence
+/// check): a production session always has its row before it can be queued
+/// for, and these harnesses say so too.
+fn ended_row(owner: &str) -> crate::journal::SessionRecord {
+    let mut record = new_session_record(SESSION, owner, None, SessionKind::Acp, "queue harness");
+    record.status = PersistStatus::Ended;
+    record
+}
 
 /// The budget the fix promises: the frame cap less what a later failure may
 /// add — a bounded error at its JSON-escaped worst, the field's own quotes,
@@ -74,6 +83,9 @@ fn failing_harness() -> (
 ) {
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    _journal
+        .create_session(ended_row(&owner.user))
+        .expect("the session row");
     let runtime = insert_live_agent_with_writer(
         &registry,
         SESSION,
@@ -178,6 +190,9 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
 fn the_add_budget_reserves_room_for_a_later_error() {
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    _journal
+        .create_session(ended_row(&owner.user))
+        .expect("the session row");
     let runtime = insert_live_agent_with_writer(
         &registry,
         SESSION,

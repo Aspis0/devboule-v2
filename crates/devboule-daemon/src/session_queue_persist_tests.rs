@@ -186,6 +186,16 @@ fn closing_a_session_with_items_queued_discards_them_before_and_after_a_restart(
     drop(first_registry);
     let first = daemon_over(&dir, true);
     first
+        .journal
+        .create_session(new_session_record(
+            SESSION,
+            &first.owner.user,
+            None,
+            SessionKind::Acp,
+            "Agent",
+        ))
+        .expect("journal row");
+    first
         .registry
         .queue_add(
             SESSION,

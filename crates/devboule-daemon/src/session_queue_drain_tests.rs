@@ -8,12 +8,21 @@ use super::tests::{
     test_owner, tmp_delete_registry,
 };
 use super::{
-    Arc, Barrier, ConnHandle, Duration, Instant, Mutex, OwnerId, SessionEvent, SessionRegistry,
-    SessionRuntime, Write,
+    new_session_record, Arc, Barrier, ConnHandle, Duration, Instant, Mutex, OwnerId, PersistStatus,
+    SessionEvent, SessionKind, SessionRegistry, SessionRuntime, Write,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const SESSION: &str = "s.q.2";
+
+/// The session row every queue store rides on (fix pass 4's existence
+/// check): a production session always has its row before it can be queued
+/// for, and these harnesses say so too.
+fn ended_row(owner: &str) -> crate::journal::SessionRecord {
+    let mut record = new_session_record(SESSION, owner, None, SessionKind::Acp, "queue harness");
+    record.status = PersistStatus::Ended;
+    record
+}
 
 /// A writer that records what it accepts and refuses every write while
 /// `fail` is set — one switch, so a test can park a drain and release it.
@@ -56,6 +65,9 @@ struct Harness {
 fn harness(fail: bool) -> Harness {
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    _journal
+        .create_session(ended_row(&owner.user))
+        .expect("the session row");
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let flag = Arc::new(AtomicBool::new(fail));
     let attempts = Arc::new(AtomicU64::new(0));

@@ -69,7 +69,7 @@ impl SessionRegistry {
             });
             Ok(())
         })?;
-        self.wake_queue_drain(session_id)?;
+        self.resume_queue_after_frame(session_id);
         Ok(())
     }
 
@@ -97,7 +97,7 @@ impl SessionRegistry {
             item.unconfirmed = false;
             Ok(())
         })?;
-        self.wake_queue_drain(session_id)?;
+        self.resume_queue_after_frame(session_id);
         Ok(())
     }
 
@@ -118,7 +118,7 @@ impl SessionRegistry {
             state.items.remove(position);
             Ok(())
         })?;
-        self.wake_queue_drain(session_id)?;
+        self.resume_queue_after_frame(session_id);
         Ok(())
     }
 
@@ -151,7 +151,7 @@ impl SessionRegistry {
             state.items.insert(to_index, item);
             Ok(())
         })?;
-        self.wake_queue_drain(session_id)?;
+        self.resume_queue_after_frame(session_id);
         Ok(())
     }
 }

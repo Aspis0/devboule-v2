@@ -409,12 +409,16 @@ fn a_frame_unpause_cannot_erase_a_newer_send_failure_pause() {
     });
 }
 
-/// Fix pass 4, P2: a frame whose unpause cannot be made durable must not
-/// answer success — the caller would walk away from a queue that a crash
-/// re-parks. The trigger refuses exactly the unpause write (the paused
-/// store passes), so the refusal is the unpause's alone.
+/// Fix pass 5, P2: an edit that committed is never reported as failed. The
+/// trigger refuses exactly the unpause write (the paused store passes), so
+/// the frame answers with its edit done and the queue still paused — the
+/// same answer send-now gives — instead of an error a client retry would
+/// answer with a duplicate item. The edit clears the item's error, so the
+/// wire snapshot after this failure shows an edited queue with no pause
+/// marker; saying "paused" on the wire would need a protocol field, which
+/// this pass reports instead of adding.
 #[test]
-fn a_frame_whose_unpause_cannot_be_stored_is_refused() {
+fn a_committed_edit_is_answered_even_when_its_unpause_cannot_be_stored() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
     seed_row(&journal, &owner);
@@ -437,23 +441,182 @@ fn a_frame_whose_unpause_cannot_be_stored_is_refused() {
             )
             .expect("the failing unpause");
     }
-    let error = registry
+    registry
         .queue_edit(SESSION, "queue-1", "doomed, edited", &owner, &conn)
-        .expect_err("the frame must not report success for an unstorable state");
-    assert_eq!(error.code, ErrorCode::Journal, "{}", error.message);
+        .expect("the committed edit is not reported as a failure");
+    let items = registry.queue_items_for_test(SESSION);
+    assert_eq!(items[0].text, "doomed, edited", "the edit is done");
     assert!(
         registry.queue_paused_for_test(SESSION),
-        "the queue stays paused on both sides of the refusal"
+        "the queue is still paused"
     );
 
     {
         let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
         raw.execute_batch("DROP TRIGGER session_queue_unpause_fails;")
             .expect("the sabotage dropped");
+        let paused: i64 = raw
+            .query_row(
+                "SELECT paused FROM session_queue_state WHERE session_id = ?1",
+                [SESSION],
+                |row| row.get(0),
+            )
+            .expect("the durable pause");
+        assert_eq!(paused, 1, "the disk still parks the queue");
     }
-    registry
-        .queue_edit(SESSION, "queue-1", "doomed, edited", &owner, &conn)
-        .expect("the retry lands once the store heals");
     let _ = dir;
     let _ = journal;
+}
+
+/// Fix pass 5, P1: a fence that fails must stop the close before anything
+/// irreversible. The session stays open — attach still answers for it — a
+/// later resume sends nothing while its turn runs, and a retry of the close
+/// once the store heals discards the queue for real.
+#[test]
+fn a_failed_fence_refuses_the_close_and_leaves_the_session_open() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("queue.user", "queue.client");
+    seed_row(&journal, &owner);
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let runtime = insert_live_agent_with_writer(
+        &registry,
+        SESSION,
+        owner.clone(),
+        Box::new(RecordingWriter(Arc::clone(&bytes))),
+    );
+    runtime.begin_turn();
+    let conn = ConnHandle::new(1);
+    registry
+        .queue_add(SESSION, "kept one", &[], &[], &owner, &conn)
+        .expect("add");
+    registry
+        .queue_add(SESSION, "kept two", &[], &[], &owner, &conn)
+        .expect("add");
+
+    {
+        let sabotage = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+        sabotage
+            .execute_batch(
+                "CREATE TRIGGER session_queue_fence_fails
+                 BEFORE UPDATE ON session_queue_state
+                 BEGIN SELECT RAISE(ABORT, 'simulated disk failure'); END;",
+            )
+            .expect("the failing fence");
+    }
+    let no_peer: Option<ConnPeer> = None;
+    let error = registry
+        .close(SESSION, &owner, &no_peer)
+        .expect_err("the fence failed; the close must be refused");
+    assert_eq!(error.code, ErrorCode::Journal, "{}", error.message);
+
+    // The session is still open: attach answers for it, which only a live
+    // registry entry does.
+    let live_conn = Arc::new(ConnHandle::new(7));
+    registry
+        .attach_with_subscription(SESSION, live_conn.id, None, &live_conn, &owner, false)
+        .expect("the refused close left the session open");
+
+    // A later resume sends nothing: the queue is the user's live queue and
+    // its turn is still running.
+    registry.queue_restore_and_drain(SESSION);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        written(&bytes).is_empty(),
+        "the refused close never sent the queue"
+    );
+
+    // Once the store heals, the same close succeeds and the queue is gone.
+    {
+        let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+        raw.execute_batch("DROP TRIGGER session_queue_fence_fails;")
+            .expect("the sabotage dropped");
+    }
+    registry
+        .close(SESSION, &owner, &no_peer)
+        .expect("the retried close discards the queue");
+    assert!(registry.queue_items_for_test(SESSION).is_empty());
+}
+
+/// Fix pass 5, P1: a timed-out unpause store is not a failure — the command
+/// is already in the journal and may still commit. Memory stays as the user
+/// asked (unpaused), and when the late commit lands, memory and disk agree.
+/// The journal loop is occupied, deterministically, by a giant append the
+/// hook enqueues right before the store: the store sits behind it past the
+/// shrunken rpc wait, then commits late.
+#[test]
+fn a_timed_out_unpause_store_keeps_memory_and_later_agrees_with_disk() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    let owner = test_owner("queue.user", "queue.client");
+    seed_row(&journal, &owner);
+    // The failing writer parks the queue for real: on an idle session the
+    // add's own wake drains, fails, and stores the durable pause.
+    let runtime =
+        insert_live_agent_with_writer(&registry, SESSION, owner.clone(), Box::new(FailingWriter));
+    let conn = ConnHandle::new(1);
+    registry
+        .queue_add(SESSION, "parked", &[], &[], &owner, &conn)
+        .expect("add");
+    wait_until("the failed drain to park the queue", || {
+        registry.queue_paused_for_test(SESSION)
+    });
+    // The turn holds the drain off from here on, so the only stores in
+    // flight are this test's.
+    runtime.begin_turn();
+
+    // The unpause store will time out: the rpc wait shrinks, and the hook
+    // parks a giant append in front of it — the loop grinds through the
+    // payload for longer than the wait before the store is even touched.
+    registry.set_rpc_wait_for_test(Duration::from_millis(100));
+    registry.set_before_queue_unpause_store_hook(Arc::new({
+        let journal = Arc::clone(&journal);
+        move || {
+            // Two heavy appends: the loop grinds through crc32, the blob
+            // writes and the snapshot pass for far longer than the shrunken
+            // wait before the unpause store is even dequeued.
+            for seq in [100, 101] {
+                assert!(
+                    journal.try_append(crate::journal::EventRecord {
+                        session_id: SESSION.to_string(),
+                        generation: 1,
+                        seq,
+                        kind: crate::journal::EventKind::Output,
+                        ts_ms: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("clock")
+                            .as_millis() as u64,
+                        payload: vec![0x20; 16 * 1024 * 1024],
+                    }),
+                    "the loop-occupying append is accepted"
+                );
+            }
+        }
+    }));
+
+    registry
+        .queue_edit(SESSION, "queue-1", "parked, edited", &owner, &conn)
+        .expect("the edit is durable; the timeout is not reported as its failure");
+
+    // The timeout did not undo the user's act in memory.
+    assert!(
+        !registry.queue_paused_for_test(SESSION),
+        "a timeout is not a failure: memory stays as the user asked"
+    );
+
+    // The late commit: once the loop is through the giant append, the
+    // queued store lands, and disk agrees with memory.
+    wait_until("the late commit to land", || {
+        let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+        let paused: i64 = raw
+            .query_row(
+                "SELECT paused FROM session_queue_state WHERE session_id = ?1",
+                [SESSION],
+                |row| row.get(0),
+            )
+            .expect("the state row");
+        paused == 0
+    });
+    assert!(
+        !registry.queue_paused_for_test(SESSION),
+        "memory and disk agree after the late commit"
+    );
 }

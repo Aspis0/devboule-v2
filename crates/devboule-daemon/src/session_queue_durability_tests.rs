@@ -10,6 +10,7 @@ use super::tests::{
 use super::{
     Arc, ConnHandle, Duration, ErrorCode, Mutex, RuntimePaths, SessionEvent, SessionRegistry,
 };
+use crate::journal::JournalError;
 
 const SESSION: &str = "s.q.dur";
 
@@ -173,9 +174,15 @@ fn a_queue_write_for_a_deleted_session_writes_nothing() {
         .queue_store(SESSION, &[row.clone()], 2, false)
         .expect("the store while the session exists");
     journal.delete_session(SESSION).expect("the delete");
-    journal
+    // A store for a session the journal no longer knows answers "session
+    // gone", so its caller never publishes an edit that was not stored.
+    let error = journal
         .queue_store(SESSION, &[row], 2, false)
-        .expect("a store for a deleted session is not an error");
+        .expect_err("a store for a deleted session must not report success");
+    assert!(
+        matches!(error, JournalError::SessionNotFound),
+        "expected session-gone, got {error:?}"
+    );
 
     let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
     let rows: i64 = raw

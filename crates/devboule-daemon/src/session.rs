@@ -662,6 +662,11 @@ pub struct SessionRegistry {
     interrupt_before_kill_hook: Arc<Mutex<Option<InterruptBeforeKillHook>>>,
     #[cfg(test)]
     queue_after_target_hook: Arc<Mutex<Option<QueueAfterTargetHook>>>,
+    /// Fix pass 5's red-test seam: the moment a frame's unpause store is
+    /// about to be sent, so the test can hold the journal's write lock past
+    /// the store's rpc wait.
+    #[cfg(test)]
+    before_queue_unpause_store_hook: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
     /// The agent-profile store, attached by `ServerState` once both exist
     /// (`create-from-profile`).
     ///
@@ -744,6 +749,8 @@ impl SessionRegistry {
             interrupt_before_kill_hook: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             queue_after_target_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            before_queue_unpause_store_hook: Arc::new(Mutex::new(None)),
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
         };
@@ -961,6 +968,25 @@ impl SessionRegistry {
         if let Some(hook) = hook {
             hook();
         }
+    }
+
+    /// Shrink the journal's rpc wait so a test can hold the write lock past
+    /// it (fix pass 5's red-test seam for the timeout rule).
+    #[cfg(test)]
+    fn set_rpc_wait_for_test(&self, wait: Duration) {
+        if let Some(journal) = self.journal.as_ref() {
+            journal.set_rpc_wait_for_test(wait);
+        }
+    }
+
+    /// Arm the one-shot callback that runs right before a frame's unpause
+    /// store is sent (fix pass 5's red-test seam).
+    #[cfg(test)]
+    fn set_before_queue_unpause_store_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .before_queue_unpause_store_hook
+            .lock()
+            .expect("queue test hook") = Some(hook);
     }
 
     /// Arm the one-shot callback that runs after a queue op resolved its
@@ -2844,6 +2870,30 @@ impl SessionRegistry {
     ) -> Result<bool, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        // The queue's fence goes before anything irreversible, and only for a
+        // close that is authorized — an unauthorized attempt must not pause
+        // anyone's queue as a side effect. If the fence cannot be stored the
+        // close is refused here: the session stays open, nothing is torn
+        // down, and the caller sees the journal error (fix pass 5). The
+        // critical section below re-checks the same ownership before it
+        // removes the entry. A session with no registry entry fences inside
+        // `queue_forget`, before that arm's own irreversible step.
+        let fence_authorized = {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            match map.get(session_id) {
+                Some(entry) => {
+                    check_user_owner(entry, owner, conn_peer)?;
+                    true
+                }
+                None => false,
+            }
+        };
+        if fence_authorized {
+            self.queue_fence_for_close(session_id)?;
+        }
         let session = {
             let mut map = self
                 .inner
@@ -2941,7 +2991,11 @@ impl SessionRegistry {
                         // The queue goes too — after the journal's own
                         // owner check above, which is the authorization this
                         // whole arm waits for (Q1) — and a failed discard is
-                        // reported like the other arms' (P1-3).
+                        // reported like the other arms' (P1-3). The fence
+                        // goes first, before the irreversible mark: a refused
+                        // fence leaves the row open and the caller sees the
+                        // journal error (fix pass 5).
+                        self.queue_fence_for_close(session_id)?;
                         let queue_discarded = self.queue_forget(session_id);
                         journal.try_mark_closed(session_id);
                         self.invalidate_journal_roster();

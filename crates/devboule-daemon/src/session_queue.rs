@@ -196,6 +196,21 @@ pub(super) fn bounded_queue_error(message: &str) -> String {
     message[..end].to_string()
 }
 
+/// The rows a store writes for these items — the one mapping between the
+/// in-memory items and their journal shape.
+pub(super) fn queue_records(items: &[QueuedMessage]) -> Vec<crate::journal::QueueRecord> {
+    items
+        .iter()
+        .map(|item| crate::journal::QueueRecord {
+            item_id: item.item_id.clone(),
+            text: item.text.clone(),
+            attachment_references: item.attachment_references.clone(),
+            error: item.error.clone(),
+            unconfirmed: item.unconfirmed,
+        })
+        .collect()
+}
+
 impl SessionRegistry {
     /// The session a queue op acts on: it exists, the caller may reach it, it
     /// is live, and it is an agent — a terminal has no queue, and the refusal
@@ -325,16 +340,7 @@ impl SessionRegistry {
         let Some(journal) = &self.journal else {
             return Ok(());
         };
-        let rows: Vec<crate::journal::QueueRecord> = items
-            .iter()
-            .map(|item| crate::journal::QueueRecord {
-                item_id: item.item_id.clone(),
-                text: item.text.clone(),
-                attachment_references: item.attachment_references.clone(),
-                error: item.error.clone(),
-                unconfirmed: item.unconfirmed,
-            })
-            .collect();
+        let rows = queue_records(items);
         journal
             .queue_store(session_id, &rows, next_id, paused)
             .map_err(|error| {
@@ -343,46 +349,51 @@ impl SessionRegistry {
             })
     }
 
-    /// A session is closing: the pause is made durable FIRST — the state row
-    /// flips to `paused` in its own transaction, carrying the state as it
-    /// was read under this module's lock — and only then is the discard
-    /// attempted. Fail closed (fix pass 4): a crash after the fence but
-    /// before, during, or after a refused clear leaves the surviving rows
-    /// paused on disk, so a restart can never send a queue the user asked to
-    /// discard. If even the fence cannot be stored, the clear is not
-    /// attempted at all — an unfenceable discard is not attempted — and the
-    /// close reports the failure with memory left matching the unpaused disk
-    /// state.
-    pub(super) fn queue_forget(&self, session_id: &str) -> Result<(), WireError> {
+    /// The close's fence, hoisted before any teardown (fix pass 5): the
+    /// surviving rows — loaded now if this process never touched them —
+    /// become durably paused while the session is still fully open, so a
+    /// refused close leaves an open session and a crash leaves a paused
+    /// queue. Memory is set to match the fence that landed.
+    pub(super) fn queue_fence_for_close(&self, session_id: &str) -> Result<(), WireError> {
         let Some(journal) = &self.journal else {
-            self.queue_state_discard(session_id);
             return Ok(());
         };
-        {
-            let mut queues = self.queues.lock();
-            self.ensure_queue_loaded(session_id, &mut queues)?;
-            if let Some(state) = queues.get_mut(session_id) {
-                if !state.items.is_empty() {
-                    let next_id = state.next_id;
-                    journal.queue_fence_paused(session_id, next_id)?;
-                    state.paused = true;
-                }
-            }
+        let mut queues = self.queues.lock();
+        self.ensure_queue_loaded(session_id, &mut queues)?;
+        let next_id = match queues.get(session_id) {
+            Some(state) if !state.items.is_empty() => state.next_id,
+            _ => return Ok(()),
+        };
+        journal
+            .queue_fence_paused(session_id, next_id)
+            .map_err(|error| {
+                eprintln!("message queue could not be fenced for {session_id}: {error}");
+                WireError::from(error)
+            })?;
+        if let Some(state) = queues.get_mut(session_id) {
+            state.paused = true;
         }
-        if let Err(error) = journal.queue_clear(session_id) {
-            eprintln!("message queue rows could not be cleared for {session_id}: {error}");
-            // The fence is already durable — it went before the clear. Memory
-            // keeps the state, paused to match, and the close reports the
-            // discard that did not happen (P1-3).
-            self.queues
-                .lock()
-                .get_mut(session_id)
-                .map(|state| state.paused = true);
-            return Err(WireError::new(
-                ErrorCode::Journal,
-                "This session's queued messages could not be discarded and \
-                 remain in the journal; try closing it again.",
-            ));
+        Ok(())
+    }
+
+    /// The discard behind an already-fenced close: the rows and their state
+    /// row go in one transaction, and the memory half follows. A clear the
+    /// journal refuses is reported — the fence went up before the close
+    /// began, so the surviving rows are paused on disk regardless (P1-3,
+    /// fix pass 5).
+    pub(super) fn queue_forget(&self, session_id: &str) -> Result<(), WireError> {
+        if let Some(journal) = &self.journal {
+            journal.queue_clear(session_id).map_err(|error| {
+                eprintln!("message queue rows could not be cleared for {session_id}: {error}");
+                self.queues
+                    .lock()
+                    .get_mut(session_id)
+                    .map(|state| state.paused = true);
+                WireError::new(
+                    ErrorCode::Journal,
+                    "This session's queued messages could not be discarded and                      remain in the journal; try closing it again.",
+                )
+            })?;
         }
         self.queue_state_discard(session_id);
         Ok(())

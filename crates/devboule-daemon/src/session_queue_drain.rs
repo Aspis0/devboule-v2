@@ -49,16 +49,52 @@ impl SessionRegistry {
                 if state.paused && !state.items.first().is_some_and(|item| item.unconfirmed) {
                     state.paused = false;
                     let items = state.snapshot();
-                    if let Err(error) = self.persist_queue(session_id, &items, state.next_id, false)
+                    #[cfg(test)]
+                    if let Some(hook) = self
+                        .before_queue_unpause_store_hook
+                        .lock()
+                        .ok()
+                        .and_then(|mut hook| hook.take())
                     {
-                        state.paused = true;
-                        return Err(error);
+                        hook();
+                    }
+                    // The store is made through the journal here, not
+                    // `persist_queue`, so the timeout kind survives: a timed
+                    // out store is not a refusal — the command was sent and
+                    // may still commit — so memory stays as the user asked
+                    // and only a definite error parks it again (fix pass 5).
+                    if let Some(journal) = &self.journal {
+                        let rows = super::session_queue::queue_records(&items);
+                        if let Err(error) =
+                            journal.queue_store(session_id, &rows, state.next_id, false)
+                        {
+                            let timeout = error.is_timeout();
+                            let error = WireError::from(error);
+                            if !timeout {
+                                state.paused = true;
+                            }
+                            return Err(error);
+                        }
                     }
                 }
             }
         }
         self.drain_step(session_id);
         Ok(())
+    }
+
+    /// The resume a queue frame ends with (fix pass 5): the frame's edit is
+    /// durable by the time this runs, so a resume whose unpause store failed
+    /// is logged — never returned, which would make a client retry a
+    /// committed edit — and the frame's snapshot shows the queue still
+    /// parked, the front item carrying the error that explains the pause.
+    pub(super) fn resume_queue_after_frame(&self, session_id: &str) {
+        if let Err(error) = self.wake_queue_drain(session_id) {
+            eprintln!(
+                "queue frame could not resume the drain for {session_id}: {}",
+                error.message
+            );
+        }
     }
 
     /// One drain pass, looping while it may still send: claim item 0 when no

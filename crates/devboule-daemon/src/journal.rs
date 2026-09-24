@@ -137,6 +137,14 @@ pub enum JournalError {
     Stopped,
 }
 
+impl JournalError {
+    /// A timeout is not a refusal: the command was sent and may still
+    /// commit, so callers must not undo memory for one (fix pass 5).
+    pub(crate) fn is_timeout(&self) -> bool {
+        matches!(self, Self::Timeout)
+    }
+}
+
 impl fmt::Display for JournalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -937,6 +945,10 @@ pub struct Journal {
     deletion_tx: mpsc::Sender<Vec<String>>,
     /// Taken once, by `set_retention_pruner`, to start the consumer with.
     deletion_rx: Mutex<Option<mpsc::Receiver<Vec<String>>>>,
+    /// How long one journal rpc waits for its reply before answering
+    /// `Timeout` — while a sent command may still commit later. The test
+    /// seam shrinks it to make that window deterministic.
+    rpc_wait_ms: AtomicU64,
     path: PathBuf,
 }
 
@@ -1005,6 +1017,7 @@ impl Journal {
             session_set_revision,
             deletion_tx,
             deletion_rx: Mutex::new(Some(deletion_rx)),
+            rpc_wait_ms: AtomicU64::new(u64::try_from(RPC_WAIT.as_millis()).unwrap_or(u64::MAX)),
             path: path_buf,
         })
     }
@@ -1794,7 +1807,20 @@ impl Journal {
         &self,
         make: impl FnOnce(mpsc::Sender<Result<T, JournalError>>) -> JournalCmd,
     ) -> Result<T, JournalError> {
-        self.rpc_with_wait(make, RPC_WAIT)
+        self.rpc_with_wait(
+            make,
+            Duration::from_millis(self.rpc_wait_ms.load(Ordering::Relaxed)),
+        )
+    }
+
+    /// Shrink the rpc wait so a test can hold the journal's write lock past
+    /// it and watch a command time out and then commit late.
+    #[cfg(test)]
+    pub(crate) fn set_rpc_wait_for_test(&self, wait: Duration) {
+        self.rpc_wait_ms.store(
+            u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
     }
 
     fn rpc_with_wait<T>(
@@ -1895,7 +1921,9 @@ fn queue_store(
         |row| row.get(0),
     )?;
     if exists == 0 {
-        return Ok(());
+        // Session gone: the caller must not publish an edit that was not
+        // stored (fix pass 5).
+        return Err(JournalError::SessionNotFound);
     }
     tx.execute(
         "DELETE FROM session_queue WHERE session_id = ?1",

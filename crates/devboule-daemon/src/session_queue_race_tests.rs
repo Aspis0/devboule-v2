@@ -13,12 +13,21 @@ use super::tests::{
     tmp_delete_registry, GatedWriter, RecordingWriter,
 };
 use super::{
-    Arc, Barrier, ConnHandle, Duration, Instant, Mutex, OwnerId, SessionEvent, SessionRegistry,
-    SessionRuntime,
+    new_session_record, Arc, Barrier, ConnHandle, Duration, Instant, Mutex, OwnerId, PersistStatus,
+    SessionEvent, SessionKind, SessionRegistry, SessionRuntime,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const SESSION: &str = "s.q.race";
+
+/// The session row every queue store rides on (fix pass 4's existence
+/// check): a production session always has its row before it can be queued
+/// for, and these harnesses say so too.
+fn ended_row(owner: &str) -> crate::journal::SessionRecord {
+    let mut record = new_session_record(SESSION, owner, None, SessionKind::Acp, "queue harness");
+    record.status = PersistStatus::Ended;
+    record
+}
 
 struct Harness {
     registry: SessionRegistry,
@@ -31,6 +40,9 @@ struct Harness {
 fn harness() -> Harness {
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    _journal
+        .create_session(ended_row(&owner.user))
+        .expect("the session row");
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let runtime = insert_live_agent_with_writer(
         &registry,
@@ -150,6 +162,9 @@ fn a_turn_ending_while_a_client_adds_loses_neither_message() {
 fn a_client_may_remove_the_item_the_drain_is_sending_and_it_stays_removed() {
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    _journal
+        .create_session(ended_row(&owner.user))
+        .expect("the session row");
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let entered = Arc::new(AtomicBool::new(false));
     let gate = Arc::new(Barrier::new(2));

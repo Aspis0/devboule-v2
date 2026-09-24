@@ -14,13 +14,22 @@ use super::tests::{
     test_owner, tmp_delete_registry, FailingWriter, RecordingWriter,
 };
 use super::{
-    Arc, ConnHandle, ConnPeer, ErrorCode, Mutex, OwnerId, SessionEvent, SessionKind,
-    SessionRegistry, MAX_QUEUE_ITEMS,
+    new_session_record, Arc, ConnHandle, ConnPeer, ErrorCode, Mutex, OwnerId, PersistStatus,
+    SessionEvent, SessionKind, SessionRegistry, MAX_QUEUE_ITEMS,
 };
 use crate::raster_metadata::clean_png;
 use devboule_protocol::QueuedMessage;
 
 const SESSION: &str = "s.q.1";
+
+/// The session row every queue store rides on (fix pass 4's existence
+/// check): a production session always has its row before it can be queued
+/// for, and these harnesses say so too.
+fn ended_row(owner: &str) -> crate::journal::SessionRecord {
+    let mut record = new_session_record(SESSION, owner, None, SessionKind::Acp, "queue harness");
+    record.status = PersistStatus::Ended;
+    record
+}
 
 /// A live attached agent with a recording writer and a running turn — the
 /// world every queue op is pinned in.
@@ -32,6 +41,9 @@ fn harness() -> (
 ) {
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    _journal
+        .create_session(ended_row(&owner.user))
+        .expect("the session row");
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let runtime = insert_live_agent_with_writer(
         &registry,
@@ -50,6 +62,9 @@ fn harness() -> (
 fn failing_harness() -> (SessionRegistry, OwnerId, Arc<ConnHandle>) {
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    _journal
+        .create_session(ended_row(&owner.user))
+        .expect("the session row");
     let runtime =
         insert_live_agent_with_writer(&registry, SESSION, owner.clone(), Box::new(FailingWriter));
     let conn = attach_live_agent_for_test(&runtime, SESSION, 1);
@@ -334,6 +349,9 @@ fn send_now_failure_returns_the_item_to_the_front_with_its_error() {
 fn a_close_between_resolve_and_commit_does_not_recreate_the_queue() {
     let (_dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    journal
+        .create_session(ended_row(&owner.user))
+        .expect("the session row");
     let runtime = insert_live_agent_with_writer(
         &registry,
         SESSION,
