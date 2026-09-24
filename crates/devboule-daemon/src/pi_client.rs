@@ -1139,11 +1139,12 @@ fn spawn_pi(
             )
         })?;
         let handle = child.as_raw_handle();
-        if let Err(error) = state
-            .process_job
-            .assign(handle)
-            .and_then(|()| process_job.assign(handle))
-        {
+        // The job is this agent's own, created empty: assigning into any job
+        // that already lived through other sessions is refused at the kernel
+        // with ERROR_ACCESS_DENIED once its hierarchy has parented terminated
+        // jobs (measured live: the first spawn after the last close failed
+        // until the daemon restarted).
+        if let Err(error) = process_job.assign(handle) {
             terminate_process(&mut child);
             remove_permission_extension(&extension_path);
             remove_bridge(&bridge_path);

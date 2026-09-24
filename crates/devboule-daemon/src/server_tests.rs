@@ -1930,7 +1930,7 @@ impl NpmInstallRunner for RecordingNpmRunner {
         _program: &std::path::Path,
         _prefix_args: &[String],
         args: &[String],
-        _job: &JobObject,
+        _job: &crate::process_tree::JobObject,
     ) -> crate::provider_update::NpmInstallResult {
         self.calls
             .lock()

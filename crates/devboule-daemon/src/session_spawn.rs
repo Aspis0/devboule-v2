@@ -961,8 +961,10 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     drop(writer);
     drop(master);
     // Closing the per-session KILL_ON_JOB_CLOSE job terminates the root and
-    // every descendant before wait(). The daemon-wide job remains open for
-    // other sessions and is the crash/no-cleanup backstop.
+    // every descendant before wait(). It is the only job this session ever
+    // had — no shared daemon-wide job exists — so the daemon's own death
+    // reaps the tree the same way: its handle to this job closes and
+    // KILL_ON_JOB_CLOSE fires.
     drop(process_job);
     // 3) Reap after the PTY endpoints are closed; this prevents a zombie
     //    and avoids the Windows ConPTY wait deadlock. The waiter thread

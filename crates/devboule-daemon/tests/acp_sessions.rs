@@ -2,7 +2,7 @@
 //!
 //! This test is intentionally separate from the known-flaky ignored ConPTY
 //! suite. It exercises direct stdio, malformed/partial-safe framing, stderr,
-//! CREATE_NO_WINDOW, two-level Job Object assignment, and close teardown.
+//! CREATE_NO_WINDOW, per-agent Job Object containment, and close teardown.
 //!
 //! The stub is built by the same `cargo test` invocation
 //! (`CARGO_BIN_EXE_devboule-acp-stub`), and a stale one ignores the knobs it
@@ -399,7 +399,7 @@ fn acp_create_no_window_is_asserted() {
 }
 
 #[test]
-fn acp_child_is_contained_in_the_two_level_job() {
+fn acp_child_is_contained_in_its_session_job() {
     let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let session = test.create_session();
@@ -412,6 +412,31 @@ fn acp_child_is_contained_in_the_two_level_job() {
         .session_close(&session.id)
         .expect("close ACP session");
     wait_until_gone(pid);
+}
+
+#[test]
+fn acp_create_after_the_last_close_still_contains_the_child() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let first = test.create_session();
+    let first_pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    test.client
+        .session_close(&first.id)
+        .expect("close the last agent session");
+    wait_until_gone(first_pid);
+    // The first stub is verified gone, so the next pid file write belongs
+    // to the second spawn.
+    std::fs::remove_file(test.pid_file()).expect("remove stale pid file");
+    let second = test.create_session();
+    let second_pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    assert!(
+        process_is_in_job(second_pid),
+        "an agent child spawned after the last close must still be contained in a Job Object"
+    );
+    test.client
+        .session_close(&second.id)
+        .expect("close the second ACP session");
+    wait_until_gone(second_pid);
 }
 
 #[test]

@@ -43,7 +43,6 @@ pub struct ServerState {
     shutdown_flag: Arc<Mutex<bool>>,
     shutdown_cvar: Arc<Condvar>,
     pub(super) idempotency: Mutex<IdempotencyStore>,
-    pub(crate) process_job: Arc<JobObject>,
     pub(crate) mcp: Arc<crate::mcp_broker::McpBroker>,
     /// Per-provider tool policy, read by the MCP broker on every
     /// `tools/list` and `tools/call` and written by `ToolPolicySet`. One
@@ -244,7 +243,6 @@ impl ServerState {
         // killed previous process left die here, at start — the sweep the
         // module's doc names, before any request can stage another.
         crate::workspace_file_preview::sweep(&paths.dir);
-        let process_job = Arc::new(JobObject::new()?);
         let mcp = Arc::new(crate::mcp_broker::McpBroker::new(&paths.dir)?);
         // Read before `paths` moves into the session registry below.
         let tool_policy = Arc::new(crate::tool_policy::ToolPolicyStore::load(&paths.dir));
@@ -301,7 +299,6 @@ impl ServerState {
             shutdown_flag: Arc::new(Mutex::new(false)),
             shutdown_cvar: Arc::new(Condvar::new()),
             idempotency: Mutex::new(IdempotencyStore::default()),
-            process_job,
             mcp,
             tool_policy,
             agent_profiles,

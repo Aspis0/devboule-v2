@@ -30,8 +30,12 @@ use devboule_protocol::{
 };
 use portable_pty::{CommandBuilder, PtySize};
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+use windows_sys::Win32::System::JobObjects::{
+    IsProcessInJob, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+};
 use windows_sys::Win32::System::Threading::{
-    GetProcessHandleCount, OpenProcess, TerminateProcess, WaitForSingleObject,
+    GetCurrentProcess, GetProcessHandleCount, OpenProcess, TerminateProcess, WaitForSingleObject,
     PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
@@ -95,6 +99,45 @@ impl Harness {
     fn spawn() -> Self {
         let (paths, dir) = unique_paths();
         let child = ChildGuard::spawn(&paths);
+        Self::after_child(paths, dir, child)
+    }
+
+    /// The live condition: a daemon that belongs to no job, which is how the
+    /// app launches it and the only state in which the defect appears. This
+    /// test process sits in the CI/paseo job, so the spawn asks for
+    /// `CREATE_BREAKAWAY_FROM_JOB`. `Err` names the limit the surrounding job
+    /// withholds; the caller records that instead of quietly testing a daemon
+    /// that cannot show the defect.
+    fn spawn_outside_any_job() -> Result<Self, String> {
+        let Some(flags) = current_job_limit_flags() else {
+            // No surrounding job: an ordinary child already inherits none.
+            return Ok(Self::spawn());
+        };
+        if flags & windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK != 0
+        {
+            let harness = Self::spawn();
+            let daemon_pid = harness.client("job-check").status().expect("status").pid;
+            let membership = job_membership(daemon_pid);
+            if membership.1 {
+                return Err(format!(
+                    "JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK did not detach daemon; membership={membership:?}"
+                ));
+            }
+            return Ok(harness);
+        }
+        if flags & JOB_OBJECT_LIMIT_BREAKAWAY_OK == 0 {
+            return Err(format!(
+                "surrounding job LimitFlags {flags:#010x} lack both breakaway limits"
+            ));
+        }
+        let (paths, dir) = unique_paths();
+        let child = spawn_daemon_breaking_away(&daemon_bin(), &paths)
+            .map_err(|error| format!("CREATE_BREAKAWAY_FROM_JOB refused: {error}"))?;
+        Ok(Self::after_child(paths, dir, ChildGuard { child }))
+    }
+
+    /// Bring a spawned daemon up and take ownership of it.
+    fn after_child(paths: RuntimePaths, dir: PathBuf, child: ChildGuard) -> Self {
         let mut harness = Self {
             paths,
             dir,
@@ -1464,6 +1507,150 @@ fn opening_and_closing_sessions_does_not_leak_daemon_handles() {
         final_count <= baseline + 8,
         "daemon handles accumulated across session close: baseline={baseline} final={final_count} peak={peak}"
     );
+}
+
+/// Whether this process and the daemon belong to a kernel job. Membership is
+/// inherited by children, so a daemon spawned without breakaway carries this
+/// process's membership; it is measured by pid anyway. The daemon must be
+/// **outside** every job for the defect to appear, which is why this state is
+/// recorded with every spawn-success measurement.
+fn job_membership(daemon_pid: u32) -> (bool, bool) {
+    let mut test_in_job = 0;
+    let ok = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut test_in_job) };
+    assert_ne!(ok, 0, "IsProcessInJob on the test process failed");
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, daemon_pid) };
+    assert!(
+        !handle.is_null(),
+        "could not open daemon {daemon_pid} for the job query"
+    );
+    let mut daemon_in_job = 0;
+    let ok = unsafe { IsProcessInJob(handle, std::ptr::null_mut(), &mut daemon_in_job) };
+    unsafe { CloseHandle(handle) };
+    assert_ne!(ok, 0, "IsProcessInJob on the daemon failed");
+    (test_in_job != 0, daemon_in_job != 0)
+}
+
+/// This process's job limit flags, or `None` when it is in no job.
+/// `JOB_OBJECT_LIMIT_BREAKAWAY_OK` is what lets a child be created with
+/// `CREATE_BREAKAWAY_FROM_JOB`, the only way a test running inside a job can
+/// put the daemon outside one.
+fn current_job_limit_flags() -> Option<u32> {
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        QueryInformationJobObject(
+            std::ptr::null_mut(),
+            JobObjectExtendedLimitInformation,
+            (&mut info as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(info.BasicLimitInformation.LimitFlags)
+}
+
+/// `spawn_daemon` plus `CREATE_BREAKAWAY_FROM_JOB`, so the daemon belongs to
+/// no job. The surrounding job must permit it (`JOB_OBJECT_LIMIT_BREAKAWAY_OK`);
+/// the caller checks that first and names the refusal otherwise.
+fn spawn_daemon_breaking_away(binary: &Path, paths: &RuntimePaths) -> std::io::Result<Child> {
+    use std::os::windows::process::CommandExt;
+    paths.ensure_dir()?;
+    let mut command = std::process::Command::new(binary);
+    command
+        .env("DEVBOULE_RUNTIME_DIR", &paths.dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // CREATE_NO_WINDOW (0x0800_0000) as `spawn_daemon` sets it, plus
+    // CREATE_BREAKAWAY_FROM_JOB (0x0100_0000).
+    command.creation_flags(0x0800_0000 | 0x0100_0000);
+    command.spawn()
+}
+
+/// The daemon the defect needs: outside every job when the surrounding job
+/// permits breakaway, otherwise inside this process's job with the obstacle
+/// printed. The fallback cannot show the defect, so the log says so.
+fn live_harness() -> (Harness, bool) {
+    match Harness::spawn_outside_any_job() {
+        Ok(harness) => (harness, true),
+        Err(reason) => {
+            println!(
+                "JOB_TREE outside_any_job=unavailable ({reason}); using a daemon that inherits this process's job, which cannot show the defect"
+            );
+            (Harness::spawn(), false)
+        }
+    }
+}
+
+#[test]
+#[ignore = "spawns real Windows ConPTY sessions; run locally with --ignored"]
+fn a_terminal_can_be_created_after_the_last_one_is_closed() {
+    let (harness, outside_any_job) = live_harness();
+    queue_command(&harness.paths, cmd_keep());
+    let client = harness.client("after-last-close");
+    let daemon_pid = client.status().expect("status").pid;
+    let membership = job_membership(daemon_pid);
+    println!(
+        "JOB_TREE after_last_close outside_any_job={outside_any_job} membership={membership:?} limit_flags={:?}",
+        current_job_limit_flags()
+    );
+    if outside_any_job {
+        assert!(
+            !membership.1,
+            "the breakaway daemon must be in no job; membership={membership:?}"
+        );
+    }
+    let first = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("first create");
+    client
+        .session_close(&first.id)
+        .expect("close the last terminal");
+    let second = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("a terminal must be creatable after the last one was closed");
+    println!(
+        "JOB_TREE after_last_close first={} second={}",
+        first.id, second.id
+    );
+    client.session_close(&second.id).expect("close it again");
+}
+
+#[test]
+#[ignore = "spawns real Windows ConPTY sessions; run locally with --ignored"]
+fn a_terminal_can_be_created_after_the_last_one_is_stopped() {
+    let (harness, outside_any_job) = live_harness();
+    queue_command(&harness.paths, cmd_keep());
+    let client = harness.client("after-last-stop");
+    let daemon_pid = client.status().expect("status").pid;
+    let membership = job_membership(daemon_pid);
+    println!(
+        "JOB_TREE after_last_stop outside_any_job={outside_any_job} membership={membership:?} limit_flags={:?}",
+        current_job_limit_flags()
+    );
+    if outside_any_job {
+        assert!(
+            !membership.1,
+            "the breakaway daemon must be in no job; membership={membership:?}"
+        );
+    }
+    let first = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("first create");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&first.id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach before the archive");
+    client
+        .session_stop(&first.id)
+        .expect("stop the last terminal");
+    let second = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("a terminal must be creatable after the last one was stopped");
+    println!(
+        "JOB_TREE after_last_stop first={} second={}",
+        first.id, second.id
+    );
+    client.session_close(&second.id).expect("close it");
 }
 
 #[test]

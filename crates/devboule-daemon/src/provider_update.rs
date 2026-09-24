@@ -77,8 +77,7 @@ impl NpmInstallRunner for ProcessNpmInstallRunner {
                 return NpmInstallResult {
                     exit_code,
                     log: bounded_log(
-                        format!("could not assign npm to the daemon Job Object: {error}")
-                            .as_bytes(),
+                        format!("could not assign npm to its install job: {error}").as_bytes(),
                     ),
                 };
             }

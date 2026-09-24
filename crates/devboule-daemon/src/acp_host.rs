@@ -1,6 +1,6 @@
 //! ACP client methods the agent calls on us: filesystem and terminals.
 //!
-//! Terminals reuse the daemon's ConPTY + Job Object path. `terminal/create`
+//! Terminals reuse the daemon's ConPTY path with a fresh per-terminal Job Object. `terminal/create`
 //! does not spawn until the user allows that exact command through the
 //! permission broker (`allow_once` / `reject_once`). If the agent omits
 //! `args`, the `command` string is a shell line: Windows writes it verbatim
@@ -106,7 +106,6 @@ pub(super) struct AcpHost {
     session_id: Mutex<String>,
     cwd: PathBuf,
     runtime_dir: PathBuf,
-    daemon_job: Arc<JobObject>,
     terminals: Mutex<HashMap<String, TerminalSlot>>,
     next_terminal: AtomicU64,
     max_terminals: usize,
@@ -184,25 +183,19 @@ fn is_utf8_continuation(byte: u8) -> bool {
 }
 
 impl AcpHost {
-    pub(super) fn new(cwd: PathBuf, runtime_dir: PathBuf, daemon_job: Arc<JobObject>) -> Arc<Self> {
-        Self::with_terminal_limit(cwd, runtime_dir, daemon_job, MAX_ACP_TERMINALS)
+    pub(super) fn new(cwd: PathBuf, runtime_dir: PathBuf) -> Arc<Self> {
+        Self::with_terminal_limit(cwd, runtime_dir, MAX_ACP_TERMINALS)
     }
 
     pub(super) fn cwd(&self) -> &Path {
         &self.cwd
     }
 
-    fn with_terminal_limit(
-        cwd: PathBuf,
-        runtime_dir: PathBuf,
-        daemon_job: Arc<JobObject>,
-        max_terminals: usize,
-    ) -> Arc<Self> {
+    fn with_terminal_limit(cwd: PathBuf, runtime_dir: PathBuf, max_terminals: usize) -> Arc<Self> {
         Arc::new(Self {
             session_id: Mutex::new(String::new()),
             cwd: canonicalize_existing_or_lexical(&cwd),
             runtime_dir: canonicalize_existing_or_lexical(&runtime_dir),
-            daemon_job,
             terminals: Mutex::new(HashMap::new()),
             next_terminal: AtomicU64::new(1),
             max_terminals,
@@ -485,7 +478,6 @@ impl AcpHost {
             &prepared.args,
             &cwd,
             &env,
-            Arc::clone(&self.daemon_job),
             limit,
             prepared.batch_file.clone(),
         );
@@ -1101,7 +1093,6 @@ fn spawn_acp_terminal(
     args: &[String],
     cwd: &Path,
     env: &[(String, String)],
-    daemon_job: Arc<JobObject>,
     output_limit: u64,
     batch_file: Option<PathBuf>,
 ) -> Result<Arc<AcpTerminal>, RpcError> {
@@ -1130,20 +1121,16 @@ fn spawn_acp_terminal(
         let handle = child.as_raw_handle().ok_or_else(|| {
             RpcError::internal("ACP terminal process has no native handle".to_string())
         })?;
-        if let Err(error) = daemon_job
-            .assign(handle)
-            .and_then(|()| process_job.assign(handle))
-        {
+        // The terminal's own job, created empty: a shared daemon-wide job
+        // would be refused with ERROR_ACCESS_DENIED once its hierarchy has
+        // parented terminated jobs.
+        if let Err(error) = process_job.assign(handle) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(RpcError::internal(format!(
                 "Could not contain the ACP terminal process: {error}"
             )));
         }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = &daemon_job;
     }
     let killer = child.clone_killer();
     let reader = pair.master.try_clone_reader().map_err(|error| {

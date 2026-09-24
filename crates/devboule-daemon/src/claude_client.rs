@@ -498,7 +498,7 @@ pub(super) fn spawn_process(
         launch_in_bypass_mode(args),
         launch_model_id(&delivery, &state.claude_models().models).as_deref(),
     );
-    spawn_claude_child(state, &command, args, requested_mode, &delivery, None)
+    spawn_claude_child(&command, args, requested_mode, &delivery, None)
 }
 
 /// A resumed child: the same launch minus the `--model` pin (the resumed
@@ -507,7 +507,6 @@ pub(super) fn spawn_process(
 /// deleted or rotated conversation reads as a hang, so its absence refuses
 /// here, naming the file, before any process exists.
 pub(super) fn spawn_process_resuming(
-    state: &Arc<ServerState>,
     command: PtyCommand,
     peer_session_id: String,
     mcp: Option<McpLaunchConfig>,
@@ -553,7 +552,6 @@ pub(super) fn spawn_process_resuming(
     }
     let args = push_resume_flag(launch_in_bypass_mode(args), &peer_session_id);
     spawn_claude_child(
-        state,
         &command,
         args,
         requested_mode,
@@ -566,7 +564,6 @@ pub(super) fn spawn_process_resuming(
 /// mode gate, the broker, the reader. Fresh and resumed differ only in the
 /// argv they arrive with and the peer id they report.
 fn spawn_claude_child(
-    state: &Arc<ServerState>,
     command: &PtyCommand,
     args: Vec<String>,
     requested_mode: String,
@@ -606,11 +603,12 @@ fn spawn_claude_child(
             )
         })?;
         let handle = child.as_raw_handle();
-        if let Err(error) = state
-            .process_job
-            .assign(handle)
-            .and_then(|()| process_job.assign(handle))
-        {
+        // The job is this agent's own, created empty: assigning into any job
+        // that already lived through other sessions is refused at the kernel
+        // with ERROR_ACCESS_DENIED once its hierarchy has parented terminated
+        // jobs (measured live: the first spawn after the last close failed
+        // until the daemon restarted).
+        if let Err(error) = process_job.assign(handle) {
             terminate_process(&mut child);
             return Err(WireError::new(
                 ErrorCode::Io,

@@ -296,9 +296,24 @@ pub(super) fn provider_update_reply(
         "-g".to_string(),
         format!("{package}@latest"),
     ];
+    // The install gets its own job, created empty: assigning into a job
+    // that already lived through other processes is refused at the kernel
+    // with ERROR_ACCESS_DENIED once its hierarchy has parented terminated
+    // jobs. It dies with the run, as a git probe's does.
+    let job = match crate::process_tree::JobObject::new() {
+        Ok(job) => job,
+        Err(error) => {
+            return DaemonMessage::ProviderUpdated {
+                id,
+                ok: false,
+                exit_code: None,
+                log: format!("could not create the npm install job: {error}"),
+            };
+        }
+    };
     let result = state
         .npm_install_runner
-        .run(&program, &prefix_args, &args, &state.process_job);
+        .run(&program, &prefix_args, &args, &job);
     let ok = result.exit_code == Some(0);
     if ok {
         state.invalidate_provider_update_caches(provider_id);
@@ -329,7 +344,9 @@ pub(super) fn probe_native_version(
         if agent.id == "claude" && std::env::var_os("DEVBOULE_TEST_NO_NETWORK").is_some() {
             return None;
         }
-        #[cfg(not(windows))]
+        // The production arm reads the agent row it was handed and gives the
+        // probe its own empty job; `state` carries only the test-build probe
+        // counter above.
         let _ = state;
         let fingerprint = executable_fingerprint(&agent.executable)?;
         let mut command = Command::new(&agent.executable);
@@ -349,11 +366,25 @@ pub(super) fn probe_native_version(
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000);
         }
+        // The probe gets its own job, created empty, like a git probe's:
+        // assigning into a job that already lived through other processes
+        // is refused at the kernel with ERROR_ACCESS_DENIED once its
+        // hierarchy has parented terminated jobs. The binding must live to
+        // the end of this function — the child is reaped below — because
+        // dropping the job earlier fires KILL_ON_JOB_CLOSE and kills the
+        // probe mid-run.
+        #[cfg(windows)]
+        let job = match crate::process_tree::JobObject::new() {
+            Ok(job) => job,
+            Err(_) => {
+                return None;
+            }
+        };
         let mut child = command.spawn().ok()?;
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
-            if state.process_job.assign(child.as_raw_handle()).is_err() {
+            if job.assign(child.as_raw_handle()).is_err() {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;

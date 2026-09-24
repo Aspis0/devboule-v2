@@ -256,7 +256,6 @@ fn poisoned_pending_response_tracking_publishes_an_agent_error() {
 #[test]
 fn vendor_switch_without_a_manifest_still_publishes_the_new_model() {
     use super::{AcpHost, AcpTransport};
-    use crate::process_tree::JobObject;
     use std::process::{Command, Stdio};
 
     let mut child = Command::new("cmd.exe")
@@ -268,7 +267,7 @@ fn vendor_switch_without_a_manifest_still_publishes_the_new_model() {
         .expect("cmd");
     let stdin = child.stdin.take().expect("stdin");
     let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
-    let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+    let host = AcpHost::new(cwd.clone(), cwd);
     let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
     transport.set_session_id("stub-session".to_string());
     let (broker, _) = test_broker();
@@ -301,7 +300,6 @@ fn vendor_switch_without_a_manifest_still_publishes_the_new_model() {
 fn negotiated_prompt_capabilities_are_kept_on_the_session_transport() {
     use super::{AcpHost, AcpTransport};
     use crate::acp_view::{PromptCapabilities, PromptCapabilityState};
-    use crate::process_tree::JobObject;
     use std::process::{Command, Stdio};
 
     let mut child = Command::new("cmd.exe")
@@ -313,7 +311,7 @@ fn negotiated_prompt_capabilities_are_kept_on_the_session_transport() {
         .expect("cmd");
     let stdin = child.stdin.take().expect("stdin");
     let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
-    let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+    let host = AcpHost::new(cwd.clone(), cwd);
     let transport = AcpTransport::new(stdin, host);
 
     // A session that never declared anything stays absent, not `false`.
@@ -338,7 +336,6 @@ fn negotiated_prompt_capabilities_are_kept_on_the_session_transport() {
 #[test]
 fn poisoned_manifest_lock_preserves_the_prior_model_catalog() {
     use super::{AcpHost, AcpTransport};
-    use crate::process_tree::JobObject;
     use std::process::{Command, Stdio};
 
     let mut child = Command::new("cmd.exe")
@@ -350,7 +347,7 @@ fn poisoned_manifest_lock_preserves_the_prior_model_catalog() {
         .expect("cmd");
     let stdin = child.stdin.take().expect("stdin");
     let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
-    let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+    let host = AcpHost::new(cwd.clone(), cwd);
     let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
     transport.remember_manifest(&SessionEvent::SessionManifest {
         provider_id: Some("stub".to_string()),
@@ -938,14 +935,9 @@ fn reattach_reemits_the_stored_session_manifest() {
 #[test]
 fn reader_finish_releases_terminals_left_by_a_dead_agent() {
     use super::AcpHost;
-    use crate::process_tree::JobObject;
     let cwd = crate::test_dirs::test_temp_dir("devboule-acp-finish-cwd");
     let runtime = crate::test_dirs::test_temp_dir("devboule-acp-finish-rt");
-    let host = AcpHost::new(
-        cwd.clone(),
-        runtime.clone(),
-        Arc::new(JobObject::new().expect("job")),
-    );
+    let host = AcpHost::new(cwd.clone(), runtime.clone());
     host.set_session_id("stub-session".to_string());
     let (broker, _) = test_broker();
     let session_runtime = Arc::new(SessionRuntime::for_acp(
@@ -998,7 +990,6 @@ fn reader_finish_releases_terminals_left_by_a_dead_agent() {
 #[test]
 fn killer_does_not_block_on_a_full_agent_stdin() {
     use super::{AcpHost, AcpKiller, AcpTransport};
-    use crate::process_tree::JobObject;
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -1012,7 +1003,7 @@ fn killer_does_not_block_on_a_full_agent_stdin() {
         .expect("ping");
     let stdin = child.stdin.take().expect("stdin");
     let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
-    let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+    let host = AcpHost::new(cwd.clone(), cwd);
     let transport = Arc::new(AcpTransport::new(stdin, host));
     transport.set_session_id("stub-session".to_string());
     let runtime = Arc::new(SessionRuntime::new());
@@ -1062,7 +1053,6 @@ fn killer_does_not_block_on_a_full_agent_stdin() {
 #[test]
 fn kill_unblocks_a_pending_terminal_create_gate() {
     use super::{AcpHost, AcpKiller, AcpTransport};
-    use crate::process_tree::JobObject;
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     use std::time::Instant;
@@ -1076,11 +1066,7 @@ fn kill_unblocks_a_pending_terminal_create_gate() {
         .expect("ping");
     let stdin = child.stdin.take().expect("stdin");
     let cwd = crate::test_dirs::test_temp_dir("devboule-acp-kill-gate");
-    let host = AcpHost::new(
-        cwd.clone(),
-        cwd.clone(),
-        Arc::new(JobObject::new().expect("job")),
-    );
+    let host = AcpHost::new(cwd.clone(), cwd.clone());
     host.set_session_id("stub-session".to_string());
     let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
     let runtime = SessionRuntime::for_acp(
@@ -1280,7 +1266,6 @@ fn permission_after_turn_cancel_is_not_shown_to_the_user() {
 #[test]
 fn cancel_closure_does_not_keep_transport_alive() {
     use super::{AcpHost, AcpTransport};
-    use crate::process_tree::JobObject;
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     let mut child = Command::new("ping.exe")
@@ -1293,7 +1278,7 @@ fn cancel_closure_does_not_keep_transport_alive() {
         .expect("ping");
     let stdin = child.stdin.take().expect("stdin");
     let cwd = crate::test_dirs::test_temp_dir("devboule-acp-host");
-    let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+    let host = AcpHost::new(cwd.clone(), cwd);
     let transport = Arc::new(AcpTransport::new(stdin, host));
     transport.bind_turn();
     let weak = Arc::downgrade(&transport);
@@ -1311,17 +1296,12 @@ fn cancel_closure_does_not_keep_transport_alive() {
 #[test]
 fn reader_keeps_dispatching_while_a_host_call_is_blocked() {
     use super::{AcpHost, AcpTransport};
-    use crate::process_tree::JobObject;
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     let cwd = crate::test_dirs::test_temp_dir("devboule-acp-e-cwd");
     let runtime_dir = crate::test_dirs::test_temp_dir("devboule-acp-e-rt");
-    let host = AcpHost::new(
-        cwd.clone(),
-        runtime_dir.clone(),
-        Arc::new(JobObject::new().expect("job")),
-    );
+    let host = AcpHost::new(cwd.clone(), runtime_dir.clone());
     host.set_session_id("stub-session".to_string());
     let gap = Arc::new(Barrier::new(2));
     host.set_create_gap(Arc::clone(&gap));

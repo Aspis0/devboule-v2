@@ -29,7 +29,6 @@ use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
 use crate::peer_policy::{peer_allows, ConnPeer, PeerDecision, PeerRole};
 use crate::peer_transport::{accept_peers, TokenBucket};
-use crate::process_tree::JobObject;
 use crate::provider_update::{NpmInstallRunner, ProcessNpmInstallRunner};
 use crate::secret_store::SecretStore;
 use crate::session::{ConnHandle, PendingEvent, SessionRegistry};

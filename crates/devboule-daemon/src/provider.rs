@@ -597,12 +597,12 @@ impl Provider for ClaudeProvider {
 
     fn spawn_resuming(
         &self,
-        state: &Arc<ServerState>,
+        _state: &Arc<ServerState>,
         command: super::PtyCommand,
         peer_session_id: String,
         mcp: Option<McpLaunchConfig>,
     ) -> Result<SpawnedSession, WireError> {
-        super::claude_client::spawn_process_resuming(state, command, peer_session_id, mcp)
+        super::claude_client::spawn_process_resuming(command, peer_session_id, mcp)
     }
 
     fn spawn_measures_health(&self) -> bool {
@@ -926,7 +926,7 @@ impl Provider for TerminalProvider {
 
     fn spawn(
         &self,
-        state: &Arc<ServerState>,
+        _state: &Arc<ServerState>,
         command: super::PtyCommand,
         _mcp: Option<McpLaunchConfig>,
         _delivery: ProfileDelivery,
@@ -935,7 +935,7 @@ impl Provider for TerminalProvider {
         // The PTY road, moved verbatim out of `spawn_session`'s fallthrough
         // (a move, not a rewrite): the same openpty, the same Windows job
         // containment, the same writer/reader wiring, the same teardowns.
-        open_pty_session(state, command, workspace_id)
+        open_pty_session(command, workspace_id)
     }
 
     fn stamp_session_provider(
@@ -1030,13 +1030,12 @@ impl Provider for TerminalProvider {
 }
 
 /// The PTY road, moved from `spawn_session`'s fallthrough. Every line is the
-/// road it replaced — the ConPTY DSR comment, the two-step job containment,
+/// road it replaced — the ConPTY DSR comment, the per-session job containment,
 /// the writer-before-reader ordering, the workspace mapping on the
 /// child-spawn step and nowhere else — with the final
 /// `start_spawned_session` hand-off staying at the shared call site, exactly
 /// as the four client roads hand their `SpawnedSession` back.
 fn open_pty_session(
-    state: &Arc<ServerState>,
     command: super::PtyCommand,
     workspace_id: Option<&str>,
 ) -> Result<SpawnedSession, WireError> {
@@ -1063,9 +1062,15 @@ fn open_pty_session(
     // portable-pty 0.9 exposes the native Windows process handle on Child,
     // but does not expose CREATE_SUSPENDED. Assign immediately after spawn so
     // the normal race window is only the interval between CreateProcessW and
-    // these calls. Closing it completely would require adapting portable-pty's
-    // ConPTY CreateProcessW seam to create suspended and resume after both
-    // assignments; that is deliberately not part of this milestone.
+    // this call. Closing it completely would require adapting portable-pty's
+    // ConPTY CreateProcessW seam to create suspended and resume after the
+    // assignment; that is deliberately not part of this milestone.
+    //
+    // The job is this session's own, created empty: assigning into any job
+    // that already lived through other sessions is refused at the kernel
+    // with ERROR_ACCESS_DENIED once its hierarchy has parented terminated
+    // jobs (measured live: the first spawn after the last close failed
+    // until the daemon restarted).
     #[cfg(windows)]
     let (process_job, os_handle) = {
         let process_job = match JobObject::new() {
@@ -1088,11 +1093,7 @@ fn open_pty_session(
                 ));
             }
         };
-        if let Err(error) = state
-            .process_job
-            .assign(process_handle)
-            .and_then(|()| process_job.assign(process_handle))
-        {
+        if let Err(error) = process_job.assign(process_handle) {
             super::terminate_spawned_child(pair, child);
             return Err(WireError::new(
                 ErrorCode::Io,

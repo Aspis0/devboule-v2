@@ -745,11 +745,12 @@ fn spawn_process_with_load(
             )
         })?;
         let handle = child.as_raw_handle();
-        if let Err(error) = state
-            .process_job
-            .assign(handle)
-            .and_then(|()| process_job.assign(handle))
-        {
+        // The job is this agent's own, created empty: assigning into any job
+        // that already lived through other sessions is refused at the kernel
+        // with ERROR_ACCESS_DENIED once its hierarchy has parented terminated
+        // jobs (measured live: the first spawn after the last close failed
+        // until the daemon restarted).
+        if let Err(error) = process_job.assign(handle) {
             terminate_process(&mut child);
             return Err(WireError::new(
                 ErrorCode::Io,
@@ -794,7 +795,6 @@ fn spawn_process_with_load(
     let host = AcpHost::new(
         command.cwd.clone(),
         state.sessions.runtime_dir().to_path_buf(),
-        Arc::clone(&state.process_job),
     );
     let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
     transport.bind_turn();
@@ -2906,7 +2906,7 @@ impl AcpReader {
             pending,
             session_id,
             permission_broker,
-            AcpHost::new(dir.clone(), dir, Arc::new(JobObject::new().expect("job"))),
+            AcpHost::new(dir.clone(), dir),
         )
     }
 

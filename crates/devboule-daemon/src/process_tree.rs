@@ -35,8 +35,10 @@ mod platform {
     };
 
     /// An owned Job Object configured to kill its members when this handle is
-    /// closed. The handle is intentionally not duplicated: the owner is the
-    /// daemon state for the daemon job and the live session for a session job.
+    /// closed. Every job is created empty for exactly one child tree, and the
+    /// handle is intentionally not duplicated: its owner is the code that
+    /// spawned that tree (the live session, the git probe, the npm install,
+    /// the version probe, the ACP terminal).
     #[derive(Debug)]
     pub struct JobObject {
         handle: HANDLE,

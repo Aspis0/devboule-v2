@@ -3,7 +3,6 @@
 use super::super::permission_broker::PermissionBroker;
 use super::super::{ConnHandle, SessionRuntime};
 use super::{slice_lines, AcpHost, BoundedBuffer, MAX_FS_BYTES};
-use crate::process_tree::JobObject;
 use devboule_protocol::{PermissionOutcome, SessionEvent};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,11 +21,7 @@ fn unique_dir(label: &str) -> PathBuf {
 fn host() -> TestDirs {
     let cwd = unique_dir("cwd");
     let runtime = unique_dir("runtime");
-    let host = AcpHost::new(
-        cwd.clone(),
-        runtime.clone(),
-        Arc::new(JobObject::new().expect("job")),
-    );
+    let host = AcpHost::new(cwd.clone(), runtime.clone());
     host.set_session_id("stub-session".to_string());
     TestDirs { host, cwd, runtime }
 }
@@ -280,12 +275,7 @@ fn kill_terminates_a_process_that_would_not_exit_alone() {
 fn concurrent_creates_never_exceed_the_live_terminal_limit() {
     let cwd = unique_dir("term-cwd");
     let runtime = unique_dir("term-runtime");
-    let host = AcpHost::with_terminal_limit(
-        cwd.clone(),
-        runtime.clone(),
-        Arc::new(JobObject::new().expect("job")),
-        2,
-    );
+    let host = AcpHost::with_terminal_limit(cwd.clone(), runtime.clone(), 2);
     host.set_session_id("stub-session".to_string());
     let (broker, _runtime) = bind_gate(&host);
     let _allow = AutoAllow::start(Arc::clone(&broker));
@@ -1141,11 +1131,7 @@ fn terminal_create_shell_line_runs_when_runtime_dir_has_a_space() {
         runtime.to_string_lossy().contains(' '),
         "fixture runtime dir must contain a space: {runtime:?}"
     );
-    let host = AcpHost::new(
-        cwd.clone(),
-        runtime.clone(),
-        Arc::new(JobObject::new().expect("job")),
-    );
+    let host = AcpHost::new(cwd.clone(), runtime.clone());
     host.set_session_id("stub-session".to_string());
     let (broker, _session) = bind_gate(&host);
     let _allow = AutoAllow::start(Arc::clone(&broker));
