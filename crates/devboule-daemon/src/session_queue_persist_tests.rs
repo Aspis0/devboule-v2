@@ -245,6 +245,15 @@ fn a_crash_mid_claim_comes_back_paused_and_is_never_resent() {
     let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
     let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
     let owner = test_owner("queue.user", "queue.client");
+    journal
+        .create_session(new_session_record(
+            SESSION,
+            &owner.user,
+            None,
+            SessionKind::Acp,
+            "the crash claim's session",
+        ))
+        .expect("the session row the claim's store rides on");
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let entered = Arc::new(AtomicBool::new(false));
     let gate = Arc::new(Barrier::new(2));

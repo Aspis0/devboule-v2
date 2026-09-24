@@ -10,9 +10,18 @@ use super::tests::{
     ended_record, insert_live_agent_with_writer, insert_transcript, test_owner,
     tmp_delete_registry, RecordingWriter,
 };
-use super::{Arc, ConnHandle, Duration, ErrorCode, Mutex, RetentionPatch};
+use super::{Arc, ConnHandle, Duration, ErrorCode, Journal, Mutex, OwnerId, RetentionPatch};
 
 const SESSION: &str = "s.q.life";
+
+/// The session row every queue write rides on (fix pass 4's existence
+/// check): production sessions always have one before they can be queued
+/// for, and the tests' registry-only shortcuts must say so too.
+fn seed_row(journal: &Journal, owner: &OwnerId) {
+    journal
+        .create_session(ended_record(SESSION, &owner.user))
+        .expect("the session row");
+}
 
 /// Fix pass 1, P2-7: deleting an ended session drops its queue state. The
 /// journal half of the deletion is the journal's own `delete_session`; what
@@ -59,6 +68,7 @@ fn deleting_a_session_drops_its_queue_and_a_later_frame_is_refused() {
 fn a_close_that_cannot_discard_the_queue_is_reported_and_a_resume_sends_nothing() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    seed_row(&journal, &owner);
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let runtime = insert_live_agent_with_writer(
         &registry,

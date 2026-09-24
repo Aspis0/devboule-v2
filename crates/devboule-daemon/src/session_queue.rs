@@ -343,41 +343,46 @@ impl SessionRegistry {
             })
     }
 
-    /// A session is closing: its queue is discarded, and the disk goes
-    /// FIRST — if the clear fails, the discard did not happen, so memory
-    /// keeps the state (paused, so nothing auto-sends it) and the error is
-    /// returned for the close to report. That keeps both halves of the rule
-    /// (P1-3): a queue the user discarded by closing never sends on its
-    /// own — the discarded ones are gone on disk and in memory — and memory
-    /// never claims a state the disk does not hold. A state that was never
-    /// loaded is loaded now, so the paused mark lands on what the surviving
-    /// rows actually say.
+    /// A session is closing: the pause is made durable FIRST — the state row
+    /// flips to `paused` in its own transaction, carrying the state as it
+    /// was read under this module's lock — and only then is the discard
+    /// attempted. Fail closed (fix pass 4): a crash after the fence but
+    /// before, during, or after a refused clear leaves the surviving rows
+    /// paused on disk, so a restart can never send a queue the user asked to
+    /// discard. If even the fence cannot be stored, the clear is not
+    /// attempted at all — an unfenceable discard is not attempted — and the
+    /// close reports the failure with memory left matching the unpaused disk
+    /// state.
     pub(super) fn queue_forget(&self, session_id: &str) -> Result<(), WireError> {
-        if let Some(journal) = &self.journal {
-            if let Err(error) = journal.queue_clear(session_id) {
-                eprintln!("message queue rows could not be cleared for {session_id}: {error}");
-                let mut queues = self.queues.lock();
-                if self.ensure_queue_loaded(session_id, &mut queues).is_ok() {
-                    if let Some(state) = queues.get_mut(session_id) {
-                        state.paused = true;
-                    }
+        let Some(journal) = &self.journal else {
+            self.queue_state_discard(session_id);
+            return Ok(());
+        };
+        {
+            let mut queues = self.queues.lock();
+            self.ensure_queue_loaded(session_id, &mut queues)?;
+            if let Some(state) = queues.get_mut(session_id) {
+                if !state.items.is_empty() {
+                    let next_id = state.next_id;
+                    journal.queue_fence_paused(session_id, next_id)?;
+                    state.paused = true;
                 }
-                // The pause is the fence a restart reads (P1-6), so it goes
-                // to the state row the failed clear does not touch — the
-                // trigger that refused the rows' deletion has no business
-                // with it. Best effort: a store too broken for even this
-                // write leaves the close's error as the only record.
-                if let Err(pause_error) = journal.queue_set_paused(session_id, true) {
-                    eprintln!(
-                        "message queue pause could not be persisted for {session_id}: {pause_error}"
-                    );
-                }
-                return Err(WireError::new(
-                    ErrorCode::Journal,
-                    "This session's queued messages could not be discarded and \
-                     remain in the journal; try closing it again.",
-                ));
             }
+        }
+        if let Err(error) = journal.queue_clear(session_id) {
+            eprintln!("message queue rows could not be cleared for {session_id}: {error}");
+            // The fence is already durable — it went before the clear. Memory
+            // keeps the state, paused to match, and the close reports the
+            // discard that did not happen (P1-3).
+            self.queues
+                .lock()
+                .get_mut(session_id)
+                .map(|state| state.paused = true);
+            return Err(WireError::new(
+                ErrorCode::Journal,
+                "This session's queued messages could not be discarded and \
+                 remain in the journal; try closing it again.",
+            ));
         }
         self.queue_state_discard(session_id);
         Ok(())

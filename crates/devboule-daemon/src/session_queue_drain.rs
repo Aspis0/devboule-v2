@@ -16,7 +16,9 @@
 //! — so no order between them exists to get wrong (see `session_queue.rs`).
 
 use super::session_messaging;
-use super::{Arc, ConnHandle, SendRequest, SessionRegistry, UserMessageAuthor, UserMessageKind};
+use super::{
+    Arc, ConnHandle, SendRequest, SessionRegistry, UserMessageAuthor, UserMessageKind, WireError,
+};
 
 impl SessionRegistry {
     /// A queue frame arrived: the pause a failed drain set is over (the
@@ -28,31 +30,35 @@ impl SessionRegistry {
     ///
     /// One fence stays down: while the front item is `unconfirmed` the
     /// pause is not cleared, because a frame about *another* message is not
-    /// permission to resend one whose outcome is unknown. The cleared pause
-    /// is stored too (P1-6): the durable mark must not outlive the memory's,
-    /// or a restart would re-park a queue the user has already acted on —
-    /// conservative, but a lie about the queue's state.
-    pub(super) fn wake_queue_drain(&self, session_id: &str) {
-        let mut unpaused = false;
+    /// permission to resend one whose outcome is unknown.
+    ///
+    /// The unpause is a whole-state store, read and sent under this module's
+    /// lock (fix pass 4): rows, counter and `paused=false` in one journal
+    /// transaction, carrying the state as it stands at the moment it is
+    /// sent. There is no standalone pause write left to race — a failure
+    /// that settles after this store holds the lock after it too, so the
+    /// newest state is always the one on disk, and a stored unpause can
+    /// never erase it. A store that fails re-parks memory to match the disk
+    /// and is returned: the frame must not answer success for a state the
+    /// journal refused — the caller sees a journal error and the queue stays
+    /// parked until the store heals and the frame is retried.
+    pub(super) fn wake_queue_drain(&self, session_id: &str) -> Result<(), WireError> {
         {
             let mut queues = self.queues.lock();
             if let Some(state) = queues.get_mut(session_id) {
-                if !state.items.first().is_some_and(|item| item.unconfirmed) {
-                    unpaused = state.paused;
+                if state.paused && !state.items.first().is_some_and(|item| item.unconfirmed) {
                     state.paused = false;
-                }
-            }
-        }
-        if unpaused {
-            if let Some(journal) = &self.journal {
-                if let Err(error) = journal.queue_set_paused(session_id, false) {
-                    eprintln!(
-                        "message queue unpause could not be persisted for {session_id}: {error}"
-                    );
+                    let items = state.snapshot();
+                    if let Err(error) = self.persist_queue(session_id, &items, state.next_id, false)
+                    {
+                        state.paused = true;
+                        return Err(error);
+                    }
                 }
             }
         }
         self.drain_step(session_id);
+        Ok(())
     }
 
     /// One drain pass, looping while it may still send: claim item 0 when no

@@ -860,12 +860,9 @@ enum JournalCmd {
         session_id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
-    /// Store the pause on its own — the close whose discard failed marks it
-    /// after the rows it could not clear, and a client's frame clears it
-    /// without touching the rows (P1-6).
-    QueuePause {
+    QueueFencePaused {
         session_id: String,
-        paused: bool,
+        next_id: u64,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
     Usage {
@@ -930,11 +927,16 @@ pub struct Journal {
     degraded_sessions: Arc<Mutex<HashMap<String, DropCounters>>>,
     stats: Arc<JournalStats>,
     session_set_revision: Arc<AtomicU64>,
-    /// What the sweep's deletions are reported to. Shared with the loop
-    /// through an arc rather than taken out at spawn, because the pruner is
-    /// installed by the registry a moment after the journal exists — and an
-    /// append that sweeps in that window must still report.
-    retention_pruner: Arc<Mutex<Option<RetentionPruner>>>,
+    /// The sweep's deletion reports, from the loop to the queue pruner: the
+    /// loop sends, one long-lived consumer receives, coalesces and prunes —
+    /// never on the loop's thread, which must never wait on the queue map's
+    /// lock (a queue write holds that lock across its journal round trip).
+    /// The channel is open from the moment the journal starts and buffers
+    /// whatever is swept before the registry installs the pruner, so a sweep
+    /// in that window is delivered, not dropped (fix pass 4).
+    deletion_tx: mpsc::Sender<Vec<String>>,
+    /// Taken once, by `set_retention_pruner`, to start the consumer with.
+    deletion_rx: Mutex<Option<mpsc::Receiver<Vec<String>>>>,
     path: PathBuf,
 }
 
@@ -972,8 +974,8 @@ impl Journal {
         let stats_thread = Arc::clone(&stats);
         let session_set_revision = Arc::new(AtomicU64::new(0));
         let session_set_revision_thread = Arc::clone(&session_set_revision);
-        let retention_pruner = Arc::new(Mutex::new(None));
-        let retention_pruner_thread = Arc::clone(&retention_pruner);
+        let (deletion_tx, deletion_rx) = mpsc::channel::<Vec<String>>();
+        let deletions_thread = deletion_tx.clone();
         let path_buf = path.to_path_buf();
         let thread_path = path_buf.clone();
         let join = std::thread::Builder::new()
@@ -989,7 +991,7 @@ impl Journal {
                         session_set_revision: session_set_revision_thread,
                     },
                     limits,
-                    retention_pruner_thread,
+                    deletions_thread,
                     thread_path,
                 )
             })
@@ -1001,7 +1003,8 @@ impl Journal {
             degraded_sessions,
             stats,
             session_set_revision,
-            retention_pruner,
+            deletion_tx,
+            deletion_rx: Mutex::new(Some(deletion_rx)),
             path: path_buf,
         })
     }
@@ -1042,16 +1045,31 @@ impl Journal {
         self.session_set_revision.load(Ordering::Acquire)
     }
 
-    /// Install what the sweep's deletions are reported to. Called once, by
-    /// the registry, right after both exist: retention deletes rows on this
-    /// thread, and the queue map those rows backed is pruned from that
-    /// report (P2-6) instead of waiting for a roster read no watcher may
-    /// ever ask for.
+    /// Install what the sweep's deletions are reported to, and start the one
+    /// long-lived consumer for them. Called once, by the registry, right
+    /// after both exist: retention deletes rows on the loop's thread, and
+    /// the queue map those rows backed is pruned from that report (P2-6)
+    /// instead of waiting for a roster read no watcher may ever ask for.
+    /// Reports swept before this call are buffered in the channel and land
+    /// with the consumer's first batches (fix pass 4).
     pub fn set_retention_pruner(&self, pruner: RetentionPruner) {
-        *self
-            .retention_pruner
+        let Some(rx) = self
+            .deletion_rx
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(pruner);
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        else {
+            // Already installed: the consumer owns the one receiver.
+            return;
+        };
+        if let Err(error) = std::thread::Builder::new()
+            .name("retention-queue-prune".to_string())
+            .spawn(move || prune_consumer(rx, pruner))
+        {
+            // The reports stay buffered in the channel; the roster-read
+            // prune is the fallback for as long as no consumer runs.
+            eprintln!("retention queue prune could not start: {error}");
+        }
     }
 
     /// Returns false if the queue was full or the writer is dead. The PTY
@@ -1489,22 +1507,22 @@ impl Journal {
         })
     }
 
+    /// The close's fence: the durable pause, written before the discard is
+    /// attempted, so a crash anywhere in the close leaves the surviving rows
+    /// paused (fix pass 4).
+    pub fn queue_fence_paused(&self, session_id: &str, next_id: u64) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::QueueFencePaused {
+            session_id: session_id.to_string(),
+            next_id,
+            reply,
+        })
+    }
+
     /// Delete one session's queue rows and its state row — the clear that
     /// close and delete call (P2-5, P2-7).
     pub fn queue_clear(&self, session_id: &str) -> Result<(), JournalError> {
         self.rpc(|reply| JournalCmd::QueueClear {
             session_id: session_id.to_string(),
-            reply,
-        })
-    }
-
-    /// Store the pause on its own, without touching the rows: the mark a
-    /// failed close-discard leaves after the rows it could not clear, and
-    /// the mark a client's frame clears when the pause is over (P1-6).
-    pub fn queue_set_paused(&self, session_id: &str, paused: bool) -> Result<(), JournalError> {
-        self.rpc(|reply| JournalCmd::QueuePause {
-            session_id: session_id.to_string(),
-            paused,
             reply,
         })
     }
@@ -1867,6 +1885,18 @@ fn queue_store(
     paused: bool,
 ) -> Result<(), JournalError> {
     let tx = conn.unchecked_transaction()?;
+    // The session's row must still exist: the check rides this same
+    // transaction, serialized with retention and the deletes on the one
+    // writer connection, so a queue write can never resurrect text for a
+    // session that has been removed (fix pass 4).
+    let exists: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+        [session_id],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(());
+    }
     tx.execute(
         "DELETE FROM session_queue WHERE session_id = ?1",
         [session_id],
@@ -1908,15 +1938,35 @@ fn queue_store(
     Ok(())
 }
 
-/// Store the pause on its own, keeping whatever counter the session has —
-/// the pause must not have to wait for a write that carries a counter.
-fn queue_pause(conn: &Connection, session_id: &str, paused: bool) -> Result<(), JournalError> {
-    conn.execute(
-        "INSERT INTO session_queue_state (session_id, next_id, paused)
-         VALUES (?1, 1, ?2)
-         ON CONFLICT(session_id) DO UPDATE SET paused = excluded.paused",
-        rusqlite::params![session_id, paused],
+/// The close's fence: the state row flips to `paused` in its own
+/// transaction, before the discard is attempted, and writes nothing else —
+/// the rows it fences were read from disk under the queue lock moments
+/// before, and no path writes rows outside `queue_store`, which the close
+/// has not called since. Refusing deletes therefore cannot refuse the fence
+/// (fix pass 4).
+fn queue_fence_paused(
+    conn: &Connection,
+    session_id: &str,
+    next_id: u64,
+) -> Result<(), JournalError> {
+    let tx = conn.unchecked_transaction()?;
+    let exists: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+        [session_id],
+        |row| row.get(0),
     )?;
+    if exists == 0 {
+        return Ok(());
+    }
+    let next_id = i64::try_from(next_id)
+        .map_err(|_| JournalError::InvalidRequest("queue id counter overflow".to_string()))?;
+    tx.execute(
+        "INSERT INTO session_queue_state (session_id, next_id, paused)
+         VALUES (?1, ?2, 1)
+         ON CONFLICT(session_id) DO UPDATE SET next_id = excluded.next_id, paused = 1",
+        rusqlite::params![session_id, next_id],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -1936,32 +1986,17 @@ fn queue_clear(conn: &Connection, session_id: &str) -> Result<(), JournalError> 
     Ok(())
 }
 
-/// Hand a sweep's deletions to the queue pruner on a thread of its own. The
-/// spawn is the deadlock guard: a queue write holds the queue map's lock
-/// across its journal round trip, so the loop — which that write is waiting
-/// on — must never take the lock itself. A thread that cannot start is a
-/// machine shutting down; the roster-read prune remains the fallback.
-fn report_retention_deletions(
-    pruner: &Arc<Mutex<Option<RetentionPruner>>>,
-    deleted_ids: &[String],
-) {
-    if deleted_ids.is_empty() {
-        return;
-    }
-    let pruner = pruner
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .as_ref()
-        .map(Arc::clone);
-    let Some(pruner) = pruner else {
-        return;
-    };
-    let ids: Vec<String> = deleted_ids.to_vec();
-    if let Err(error) = std::thread::Builder::new()
-        .name("retention-queue-prune".to_string())
-        .spawn(move || pruner(&ids))
-    {
-        eprintln!("retention queue prune could not start: {error}");
+/// The one long-lived queue pruner: it owns the receiving end of the sweep's
+/// deletion reports, coalesces whatever has piled up into one prune, and
+/// never runs on the journal loop's thread — the loop must never wait on the
+/// queue map's lock, which a queue write holds across its journal round
+/// trip.
+fn prune_consumer(rx: mpsc::Receiver<Vec<String>>, pruner: RetentionPruner) {
+    while let Ok(mut ids) = rx.recv() {
+        while let Ok(more) = rx.try_recv() {
+            ids.extend(more);
+        }
+        pruner(&ids);
     }
 }
 
@@ -1971,7 +2006,7 @@ fn journal_loop(
     queued: Arc<AtomicU64>,
     loop_state: JournalLoopState,
     limits: JournalLimits,
-    retention_pruner: Arc<Mutex<Option<RetentionPruner>>>,
+    deletions: mpsc::Sender<Vec<String>>,
     path: PathBuf,
 ) {
     let JournalLoopState {
@@ -2041,7 +2076,13 @@ fn journal_loop(
                         if roster_changed {
                             session_set_revision.fetch_add(1, Ordering::AcqRel);
                         }
-                        report_retention_deletions(&retention_pruner, &deleted_ids);
+                        if !deleted_ids.is_empty() && deletions.send(deleted_ids).is_err() {
+                            // The consumer is gone: the daemon is shutting
+                            // down, or the prune thread has died. The ids are
+                            // dropped; the roster-read prune is the only
+                            // fallback left while that is true.
+                            eprintln!("retention deletions could not be reported");
+                        }
                         if is_output {
                             stats.committed_frames.fetch_add(1, Ordering::Relaxed);
                             stats
@@ -2322,12 +2363,12 @@ fn journal_loop(
                 }
                 let _ = reply.send(result);
             }
-            JournalCmd::QueuePause {
+            JournalCmd::QueueFencePaused {
                 session_id,
-                paused,
+                next_id,
                 reply,
             } => {
-                let result = queue_pause(&conn, &session_id, paused);
+                let result = queue_fence_paused(&conn, &session_id, next_id);
                 if let Err(error) = &result {
                     on_write_error(error);
                 }

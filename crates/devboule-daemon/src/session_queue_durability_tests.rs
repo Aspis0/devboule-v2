@@ -4,7 +4,7 @@
 //! seam — the write-through in `session_queue.rs`.
 
 use super::tests::{
-    attach_live_agent_for_test, drain, insert_live_agent_with_writer, test_owner,
+    attach_live_agent_for_test, drain, ended_record, insert_live_agent_with_writer, test_owner,
     tmp_delete_registry, RecordingWriter,
 };
 use super::{
@@ -21,6 +21,9 @@ const SESSION: &str = "s.q.dur";
 fn a_journal_write_failure_is_returned_and_changes_nothing() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    journal
+        .create_session(ended_record(SESSION, &owner.user))
+        .expect("the session row");
     let runtime = insert_live_agent_with_writer(
         &registry,
         SESSION,
@@ -97,6 +100,9 @@ fn a_journal_write_failure_is_returned_and_changes_nothing() {
 fn an_item_id_is_never_reused_across_a_restart() {
     let (dir, registry, journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
+    journal
+        .create_session(ended_record(SESSION, &owner.user))
+        .expect("the session row");
     let runtime = insert_live_agent_with_writer(
         &registry,
         SESSION,
@@ -142,4 +148,50 @@ fn an_item_id_is_never_reused_across_a_restart() {
         .expect_err("a stale id names no live message");
     assert_eq!(stale.code, ErrorCode::InvalidRequest);
     assert_eq!(items[1].text, "three", "the live message is untouched");
+}
+
+/// Fix pass 4: a session whose row retention (or a user delete) has already
+/// removed gets nothing — the existence check rides the store's own
+/// transaction, so queue text can never outlive its session in SQLite.
+/// The deletion here happens before the store, standing in for the whole
+/// window between the mutation's liveness check and the journal write.
+#[test]
+fn a_queue_write_for_a_deleted_session_writes_nothing() {
+    let (dir, _registry, journal) = tmp_delete_registry();
+    let owner = test_owner("queue.user", "queue.client");
+    journal
+        .create_session(ended_record(SESSION, &owner.user))
+        .expect("the row the first store needs");
+    let row = crate::journal::QueueRecord {
+        item_id: "queue-1".to_string(),
+        text: "orphan candidate".to_string(),
+        attachment_references: Vec::new(),
+        error: None,
+        unconfirmed: false,
+    };
+    journal
+        .queue_store(SESSION, &[row.clone()], 2, false)
+        .expect("the store while the session exists");
+    journal.delete_session(SESSION).expect("the delete");
+    journal
+        .queue_store(SESSION, &[row], 2, false)
+        .expect("a store for a deleted session is not an error");
+
+    let raw = rusqlite::Connection::open(dir.join("journal.db")).expect("raw handle");
+    let rows: i64 = raw
+        .query_row(
+            "SELECT COUNT(*) FROM session_queue WHERE session_id = ?1",
+            [SESSION],
+            |row| row.get(0),
+        )
+        .expect("count the rows");
+    let state: i64 = raw
+        .query_row(
+            "SELECT COUNT(*) FROM session_queue_state WHERE session_id = ?1",
+            [SESSION],
+            |row| row.get(0),
+        )
+        .expect("count the state rows");
+    assert_eq!(rows, 0, "no queue rows for a deleted session");
+    assert_eq!(state, 0, "no queue state for a deleted session");
 }

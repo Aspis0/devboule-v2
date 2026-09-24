@@ -1678,3 +1678,43 @@ fn a_v15_migration_does_not_stamp_a_colliding_cwd_column() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Fix pass 4: the state table's `session_id` must be its primary key, or
+/// the store's and pause's `ON CONFLICT(session_id)` upserts have nothing
+/// to conflict on and every queue write fails after a clean open. A v15
+/// file that already carries a same-named three-column table without the
+/// key is refused before the stamp, and stays at 15.
+#[test]
+fn a_state_table_without_its_key_is_refused() {
+    let (_dir, path) = tmp_journal();
+    drop(Journal::open(&path).expect("the fresh journal that stamps 16"));
+    {
+        let raw = Connection::open(&path).expect("raw handle");
+        raw.execute_batch(
+            "DROP TABLE session_queue_state;
+             CREATE TABLE session_queue_state (
+                 session_id TEXT NOT NULL,
+                 next_id INTEGER NOT NULL,
+                 paused INTEGER NOT NULL
+             );
+             PRAGMA user_version = 15;",
+        )
+        .expect("the hostile v15 file");
+    }
+    let error = match Journal::open(&path) {
+        Ok(_) => panic!("a keyless state table cannot service the queue's upserts"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, JournalError::Corrupt(_)),
+        "expected the corrupt-journal refusal, got {error:?}"
+    );
+    let raw = Connection::open(&path).expect("raw handle");
+    let version: i32 = raw
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("the version");
+    assert_eq!(
+        version, 15,
+        "the refusal leaves the file at 15, openable by the previous build"
+    );
+}

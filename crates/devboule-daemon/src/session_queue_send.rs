@@ -104,8 +104,17 @@ impl SessionRegistry {
                     Ok(()) => {
                         // The rest of the queue belongs to the turn this send
                         // just started: wake the drain so it arms the hook for
-                        // that turn's end.
-                        self.wake_queue_drain(session_id);
+                        // that turn's end. A wake whose unpause cannot be
+                        // stored is logged, never reported as a failed send —
+                        // the send and the item's removal are durable, and a
+                        // retry would send a delivered message twice; the
+                        // parked rest waits for the next client frame.
+                        if let Err(error) = self.wake_queue_drain(session_id) {
+                            eprintln!(
+                                "send-now could not resume the queue for {session_id}: {}",
+                                error.message
+                            );
+                        }
                         Ok(())
                     }
                     Err(cleanup) => {

@@ -547,10 +547,14 @@ fn validate_queue_state(conn: &Connection) -> Result<(), JournalError> {
             "journal schema has an unexpected session_queue.unconfirmed column".to_string(),
         ));
     }
-    let expected: [(&str, &str, i32); 3] = [
-        ("session_id", "TEXT", 1),
-        ("next_id", "INTEGER", 1),
-        ("paused", "INTEGER", 1),
+    // `session_id` must be the table's primary key, not merely a column:
+    // the store's and pause's `ON CONFLICT(session_id)` upserts have nothing
+    // to conflict on without the key, and every queue write would fail after
+    // a clean open. `pk` is table_info's fifth column.
+    let expected: [(&str, &str, i32, i32); 3] = [
+        ("session_id", "TEXT", 1, 1),
+        ("next_id", "INTEGER", 1, 0),
+        ("paused", "INTEGER", 1, 0),
     ];
     let mut stmt = conn.prepare("PRAGMA table_info('session_queue_state')")?;
     let mut rows = stmt.query([])?;
@@ -559,7 +563,10 @@ fn validate_queue_state(conn: &Connection) -> Result<(), JournalError> {
         let name: String = row.get(1)?;
         let kind: String = row.get(2)?;
         let notnull: i32 = row.get(3)?;
-        let Some((expected_name, expected_kind, expected_notnull)) = expected.get(index) else {
+        let pk: i32 = row.get(5)?;
+        let Some((expected_name, expected_kind, expected_notnull, expected_pk)) =
+            expected.get(index)
+        else {
             return Err(JournalError::Corrupt(
                 "journal schema has an unexpected session_queue_state table".to_string(),
             ));
@@ -567,6 +574,7 @@ fn validate_queue_state(conn: &Connection) -> Result<(), JournalError> {
         if name != *expected_name
             || !kind.eq_ignore_ascii_case(expected_kind)
             || notnull != *expected_notnull
+            || pk != *expected_pk
         {
             return Err(JournalError::Corrupt(format!(
                 "journal schema has an unexpected session_queue_state.{name} column"
