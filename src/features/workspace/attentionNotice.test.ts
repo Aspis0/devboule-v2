@@ -77,6 +77,19 @@ describe("attentionRaised", () => {
     expect(attentionRaised(first, escalation)).toBe(true);
     expect(attentionRaised(undefined, escalation)).toBe(true);
   });
+
+  it("only a higher-priority reason is new at an equal timestamp", () => {
+    // finished < error < permission, the daemon's own order
+    // (AttentionReason::priority). A delayed lower-priority push at the
+    // same stamp is a stale duplicate, not a downgrade announcement.
+    expect(attentionRaised(attention("finished", 1000), attention("error", 1000))).toBe(true);
+    expect(attentionRaised(attention("error", 1000), attention("permission", 1000))).toBe(true);
+    expect(attentionRaised(attention("permission", 1000), attention("finished", 1000))).toBe(false);
+    expect(attentionRaised(attention("permission", 1000), attention("error", 1000))).toBe(false);
+    expect(attentionRaised(attention("permission", 1000), attention("permission", 1000))).toBe(
+      false,
+    );
+  });
 });
 
 describe("toastGate", () => {
@@ -466,6 +479,33 @@ describe("fireAttentionToast window gate", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a late downgrade invalidate the pending escalation toast", async () => {
+    forgetAttentionFor(new Set());
+    // The permission raise is pending in its window-state read...
+    let resolvePermissionRead: (state: WindowState) => void = () => undefined;
+    const permissionWindowState = (): Promise<WindowState> =>
+      new Promise((resolve) => {
+        resolvePermissionRead = resolve;
+      });
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    fireAttentionToast("d1", "agent one", attention("permission", 1000), {
+      send,
+      windowState: permissionWindowState,
+    });
+    // ...a delayed roster push arrives with finished at the SAME stamp: a
+    // downgrade, not a raise. It must be ignored entirely.
+    fireAttentionToast("d1", "agent one", attention("finished", 1000), {
+      send,
+      windowState: hiddenInTray,
+    });
+    resolvePermissionRead({ visible: false, focused: false, minimized: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    const sent = send.mock.calls[0]?.[0];
+    expect(sent?.title).toContain("needs approval");
+    vi.useRealTimers();
   });
 
   it("toasts a minimized window", async () => {

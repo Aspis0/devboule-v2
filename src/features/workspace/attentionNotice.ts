@@ -12,6 +12,17 @@ import type { Attention, AttentionReason } from "../../types/ipc";
  * unfocused.
  */
 
+/**
+ * The daemon's own escalation order (`AttentionReason::priority`): a raise
+ * at an equal timestamp is new only when its reason outranks the one the
+ * app already holds.
+ */
+const REASON_PRIORITY: Record<AttentionReason, number> = {
+  finished: 1,
+  error: 2,
+  permission: 3,
+};
+
 /** Human words for why a session wants attention, as the tab pill renders them. */
 export function sessionAttentionLabel(reason: AttentionReason): string {
   if (reason === "permission") return "needs approval";
@@ -20,9 +31,11 @@ export function sessionAttentionLabel(reason: AttentionReason): string {
 
 /**
  * Whether `next` is a NEW raise of attention. The roster is re-published
- * constantly, so identity is the timestamp: a raise the app has seen (same
- * `atMs`) must not fire again, no matter how many pushes carry it. An older
- * timestamp can only be a stale push, never a new event.
+ * constantly, so identity is the timestamp plus the reason: the daemon can
+ * replace a raise with a higher-priority one in the same millisecond
+ * (finished < error < permission, `AttentionReason::priority`), and that
+ * escalation must fire. An equal stamp with an equal or lower reason, or
+ * an older timestamp, is a duplicate or a stale push — never a new event.
  */
 export function attentionRaised(
   previous: Attention | undefined,
@@ -30,11 +43,8 @@ export function attentionRaised(
 ): boolean {
   if (next === undefined) return false;
   if (previous === undefined) return true;
-  // The daemon can replace a raise with a higher-priority reason in the
-  // same millisecond: equal stamps with a changed reason are new news.
-  return (
-    next.atMs > previous.atMs || (next.atMs === previous.atMs && next.reason !== previous.reason)
-  );
+  if (next.atMs !== previous.atMs) return next.atMs > previous.atMs;
+  return REASON_PRIORITY[next.reason] > REASON_PRIORITY[previous.reason];
 }
 
 /**

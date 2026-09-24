@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { startPresenceReporting, type PresenceDeps } from "./presence";
+import type { CommandArgs } from "../../lib/tauri";
 import type { WindowState } from "./attentionNotice";
 
 /** Lets an async emit settle before the assertions read the sends. */
@@ -76,11 +77,12 @@ describe("presence reporting", () => {
     });
   });
 
-  it("sends the focused session when the selection changes", () => {
+  it("sends the focused session when the selection changes", async () => {
     const env = createEnvironment();
     const reporter = createReporter(env);
 
     reporter.onSelectionChanged("session-a");
+    await flush();
 
     expect(env.invoke).toHaveBeenNthCalledWith(2, "session_presence", {
       focusedSessionId: "session-a",
@@ -88,13 +90,15 @@ describe("presence reporting", () => {
     });
   });
 
-  it("reports the app as unfocused on blur and focused again on focus", () => {
+  it("reports the app as unfocused on blur and focused again on focus", async () => {
     const env = createEnvironment();
     const reporter = createReporter(env);
     reporter.onSelectionChanged("session-a");
+    await flush();
 
     env.state.hasFocus = false;
     env.fire("blur");
+    await flush();
     expect(env.invoke).toHaveBeenNthCalledWith(3, "session_presence", {
       focusedSessionId: null,
       appVisible: false,
@@ -102,19 +106,22 @@ describe("presence reporting", () => {
 
     env.state.hasFocus = true;
     env.fire("focus");
+    await flush();
     expect(env.invoke).toHaveBeenNthCalledWith(4, "session_presence", {
       focusedSessionId: "session-a",
       appVisible: true,
     });
   });
 
-  it("reports hidden on visibilitychange and restores when visible again", () => {
+  it("reports hidden on visibilitychange and restores when visible again", async () => {
     const env = createEnvironment();
     const reporter = createReporter(env);
     reporter.onSelectionChanged("session-a");
+    await flush();
 
     env.state.visibilityState = "hidden";
     env.fire("visibilitychange", "document");
+    await flush();
     expect(env.invoke).toHaveBeenNthCalledWith(3, "session_presence", {
       focusedSessionId: null,
       appVisible: false,
@@ -122,16 +129,18 @@ describe("presence reporting", () => {
 
     env.state.visibilityState = "visible";
     env.fire("visibilitychange", "document");
+    await flush();
     expect(env.invoke).toHaveBeenNthCalledWith(4, "session_presence", {
       focusedSessionId: "session-a",
       appVisible: true,
     });
   });
 
-  it("does not re-send presence when nothing changed", () => {
+  it("does not re-send presence when nothing changed", async () => {
     const env = createEnvironment();
     const reporter = createReporter(env);
     reporter.onSelectionChanged("session-a");
+    await flush();
     const callsAfterSettling = env.invoke.mock.calls.length;
 
     // Repeating the same selection and firing events that do not change the
@@ -139,12 +148,14 @@ describe("presence reporting", () => {
     reporter.onSelectionChanged("session-a");
     env.fire("focus");
     env.fire("visibilitychange", "document");
+    await flush();
 
     expect(env.invoke).toHaveBeenCalledTimes(callsAfterSettling);
 
     // A real change produces exactly one new send.
     env.state.hasFocus = false;
     env.fire("blur");
+    await flush();
     expect(env.invoke).toHaveBeenCalledTimes(callsAfterSettling + 1);
   });
 
@@ -332,6 +343,77 @@ describe("presence reporting", () => {
     resolveSubscription(unlisten);
     await flush();
     expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the same presence again after a failed send", async () => {
+    // A rejected session_presence must not be swallowed by the dedupe: the
+    // next event sends the same pair again, or the daemon keeps stale
+    // attended presence forever.
+    const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
+    let fail = true;
+    const sent: Array<CommandArgs["session_presence"]> = [];
+    const invoke = vi.fn((_command: string, args: CommandArgs["session_presence"]) => {
+      sent.push(args);
+      if (fail) return Promise.reject(new Error("the pipe is gone"));
+      return Promise.resolve();
+    });
+    const reporter = startPresenceReporting({
+      invoke: invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      windowState: async (): Promise<WindowState> => ({
+        visible: true,
+        focused: true,
+        minimized: false,
+      }),
+    });
+    await flush();
+    expect(sent.length).toBe(1);
+    fail = false;
+    // The same pair again — an event fires, the failed send must be retried.
+    env.fire("focus");
+    await flush();
+    expect(sent.length).toBe(2);
+    expect(sent[1]).toEqual({ focusedSessionId: null, appVisible: true });
+    reporter.dispose();
+  });
+
+  it("waits for a presence write to settle before starting the next one", async () => {
+    const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
+    const sent: Array<CommandArgs["session_presence"]> = [];
+    let hidden = false;
+    let resolveFirst: (state: WindowState) => void = () => undefined;
+    const invoke = vi.fn((_command: string, args: CommandArgs["session_presence"]) => {
+      sent.push(args);
+      if (sent.length === 1) {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+    const reporter = startPresenceReporting({
+      invoke: invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      windowState: async (): Promise<WindowState> => ({
+        visible: !hidden,
+        focused: !hidden,
+        minimized: false,
+      }),
+    });
+    await flush();
+    expect(sent.length).toBe(1);
+    // The window hides while the first write is still unsettled: the hidden
+    // answer is applied, but its write waits for the first to settle.
+    hidden = true;
+    env.fire("visibilitychange", "document");
+    expect(sent.length).toBe(1);
+    resolveFirst({ visible: false, focused: false, minimized: false });
+    await flush();
+    expect(sent.length).toBe(2);
+    expect(sent[1]).toEqual({ focusedSessionId: null, appVisible: false });
+    reporter.dispose();
   });
 
   it("stops listening and sending after dispose", () => {

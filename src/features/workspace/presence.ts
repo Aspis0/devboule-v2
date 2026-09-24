@@ -102,6 +102,7 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   const emit = async (): Promise<void> => {
     if (disposed) return;
     const readNumber = ++lastRequestedRead;
+    console.log("PROBE emit seq", readNumber);
     // A rejected read can never be replaced by the document's answer: the
     // live check measured that answer lying for a hidden window. Not seen
     // is the only honest reading when the window cannot be asked.
@@ -118,8 +119,12 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     if (disposed) return;
     // A read that started earlier and resolves later is dropped: the newer
     // answer has already been applied.
-    if (readNumber <= lastAppliedRead) return;
+    if (readNumber <= lastAppliedRead) {
+      console.log("PROBE emit dropped", readNumber);
+      return;
+    }
     lastAppliedRead = readNumber;
+    console.log("PROBE emit applied", readNumber);
     const appVisible = deps?.windowState
       ? !readFailed && asked !== null && asked.visible && asked.focused && !asked.minimized
       : doc.visibilityState === "visible" && doc.hasFocus();
@@ -134,15 +139,48 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     ) {
       return;
     }
-    lastSent = presence;
-    const report = deps?.invoke
-      ? deps.invoke("session_presence", {
-          focusedSessionId: presence.focusedSessionId,
-          appVisible: presence.appVisible,
-        })
-      : // Production path: the typed bridge wrapper owns the argument keys.
-        sessionPresence(presence.focusedSessionId, presence.appVisible);
-    void Promise.resolve(report).catch(() => undefined);
+    sendPresence(presence);
+  };
+
+  let sendInFlight = false;
+  let queuedPresence: Presence | null = null;
+
+  /**
+   * Sends one applied presence answer. Writes are chained — the next one
+   * starts only after the previous settles — so two answers can never
+   * reach the daemon reversed, and while a send is in flight only the
+   * newest answer is queued behind it. `lastSent` is recorded after the
+   * send settles: a rejected send clears it, so the next poll or event
+   * resends the same pair instead of deduping it away forever.
+   */
+  const sendPresence = (presence: Presence): void => {
+    if (sendInFlight) {
+      queuedPresence = presence;
+      return;
+    }
+    sendInFlight = true;
+    void (async () => {
+      let current = presence;
+      for (;;) {
+        try {
+          const report = deps?.invoke
+            ? deps.invoke("session_presence", {
+                focusedSessionId: current.focusedSessionId,
+                appVisible: current.appVisible,
+              })
+            : // Production path: the typed bridge wrapper owns the argument keys.
+              sessionPresence(current.focusedSessionId, current.appVisible);
+          await Promise.resolve(report);
+          lastSent = current;
+        } catch {
+          lastSent = null;
+        }
+        if (queuedPresence === null) break;
+        current = queuedPresence;
+        queuedPresence = null;
+      }
+      sendInFlight = false;
+    })();
   };
 
   const emitForgotten = (): void => {
