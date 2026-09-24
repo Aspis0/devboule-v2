@@ -672,7 +672,8 @@ pub(crate) struct SessionCreateMeta {
     /// The origin to record. `None` means "this connection's", which is every
     /// human-started create; a created child passes its creator's stored origin.
     pub(crate) origin: Option<SessionOrigin>,
-    /// An already-confined working directory for the child.
+    /// The working directory in its stored spelling; the hand-off
+    /// (`resolve_creation_inputs`) converts it for the child.
     pub(crate) cwd: Option<PathBuf>,
     /// The profile this creation resolved, by its stable id
     /// (`create-from-profile`). `None` for every create that resolved no

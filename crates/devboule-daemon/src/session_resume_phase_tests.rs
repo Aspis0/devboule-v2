@@ -98,7 +98,10 @@ fn a_recorded_verbatim_cwd_reaches_the_resumed_child_in_its_plain_spelling() {
         "the fixture is verbatim: {stored}"
     );
     let mut row = acp_row(&id, &fixture.owner, "handle-verbatim");
-    let plain = crate::workspace::plain_path(&stored);
+    let plain = stored
+        .strip_prefix(r"\\?\")
+        .expect("the fixture is verbatim")
+        .to_string();
     row.cwd = Some(stored);
     let (command, _) = fixture
         .registry()

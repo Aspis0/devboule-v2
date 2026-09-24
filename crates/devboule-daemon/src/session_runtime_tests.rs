@@ -327,8 +327,11 @@ fn a_session_owes_its_first_prompt_once_and_a_replay_owes_none() {
 
 /// Teardown's failed-termination fallback rests on this one fact: the
 /// OS-death closure owns an Arc of the job, and releasing the slot drops
-/// the closure with everything it held — otherwise the handle never closes
-/// and KILL_ON_JOB_CLOSE cannot end the tree.
+/// the closure with everything it held — so teardown's own drop *can* be
+/// the last handle. Any holder the release cannot reach keeps the job
+/// until it finishes, and every holder runs its own `terminate()`. The
+/// test drives the after-failed-wait step production calls, so deleting
+/// the release inside it fails here.
 #[test]
 fn releasing_the_os_death_cascade_drops_what_its_closure_held() {
     let runtime = SessionRuntime::new();
@@ -338,7 +341,7 @@ fn releasing_the_os_death_cascade_drops_what_its_closure_held() {
         move || drop(Arc::clone(&held))
     }));
     assert_eq!(Arc::strong_count(&held), 2, "the cascade holds one Arc");
-    runtime.release_on_os_death();
+    super::super::session_spawn::release_after_failed_wait(&runtime);
     assert_eq!(
         Arc::strong_count(&held),
         1,

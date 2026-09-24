@@ -905,6 +905,9 @@ fn main() -> io::Result<()> {
                 // records method names only, which cannot tell *what* the
                 // daemon wrote; a test that asserts on the prompt's text needs
                 // the agent's own copy of it, not the daemon's transcript.
+                // Debug builds only, like the requests capture: a release stub
+                // must never append prompt text anywhere.
+                #[cfg(debug_assertions)]
                 if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_PROMPT_FILE") {
                     let _ = std::fs::OpenOptions::new()
                         .create(true)
@@ -1055,6 +1058,10 @@ fn emit(stdout: &mut impl Write, value: Value) -> io::Result<()> {
     // the question is always *what did the provider actually write*, and this
     // is the only place that knows.
     let text = serde_json::to_string(&value).map_err(io::Error::other)?;
+    // Debug builds only: these frames include the stub's echo of the
+    // verbatim prompt (`user_message_chunk`), and a release stub must never
+    // append prompt text anywhere.
+    #[cfg(debug_assertions)]
     if let Ok(file) = std::env::var("DEVBOULE_ACP_STUB_STDOUT_FILE") {
         let _ = std::fs::OpenOptions::new()
             .create(true)

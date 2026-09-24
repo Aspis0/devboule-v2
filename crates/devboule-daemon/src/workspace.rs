@@ -96,22 +96,11 @@ pub(crate) fn canonical_directory(path: &str) -> Result<PathBuf, WireError> {
 ///   or a space, resolves differently without the prefix (Win32 strips
 ///   trailing dots and spaces and claims reserved names only in the plain
 ///   namespace), so stripping would change the meaning;
-/// - a `\\?\UNC\` path keeps its spelling: its plain form is still UNC, so
-///   stripping removes none of the UNC-cwd hazard and only gives up the
-///   long-path guarantee.
+/// - a `\\?\UNC\` workspace keeps its prefix: a cmd-side child cannot use
+///   a UNC cwd either way.
 pub(crate) fn plain_path(path: &str) -> String {
     const MAX_PATH: usize = 260;
-    const VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
     const VERBATIM_PREFIX: &str = r"\\?\";
-    if path
-        .get(..VERBATIM_UNC_PREFIX.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(VERBATIM_UNC_PREFIX))
-        && path
-            .get(VERBATIM_UNC_PREFIX.len()..)
-            .is_some_and(is_verbatim_unc_suffix)
-    {
-        return path.to_string();
-    }
     if path
         .get(..VERBATIM_PREFIX.len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case(VERBATIM_PREFIX))
@@ -137,21 +126,16 @@ fn is_verbatim_drive_path(path: &str) -> bool {
     bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
 }
 
-fn is_verbatim_unc_suffix(path: &str) -> bool {
-    let mut components = path.split('\\');
-    components.next().is_some_and(|server| !server.is_empty())
-        && components.next().is_some_and(|share| !share.is_empty())
-}
-
 /// A plain path that would resolve differently from its verbatim spelling:
 /// **any** component — not just the last — that Win32 treats as a device, or
 /// trims, in the plain namespace but takes literally under `\\?\`: a child
 /// stripped of the prefix starts somewhere else when `release.` becomes
 /// `release` or `CON` is claimed mid-path.
 fn has_verbatim_only_component(path: &str) -> bool {
-    const RESERVED: [&str; 22] = [
+    const RESERVED: [&str; 28] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7",
+        "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
     ];
     let mut seen = false;
     for component in path
@@ -229,6 +213,9 @@ mod tests {
             r"\\?\C:\repo\con.txt\src"
         );
         assert_eq!(plain_path(r"\\?\C:\repo\lpt3\src"), r"\\?\C:\repo\lpt3\src");
+        // The superscript device names are not ASCII: the case fold must
+        // leave `¹` to compare exactly, mid-path.
+        assert_eq!(plain_path(r"\\?\C:\repo\COM¹\src"), r"\\?\C:\repo\COM¹\src");
     }
 
     /// Windows' MAX_PATH counts UTF-16 code units plus the terminating
@@ -266,13 +253,6 @@ mod tests {
         assert_eq!(plain_path(r"\\?\C:\proj\lpt9"), r"\\?\C:\proj\lpt9");
         assert_eq!(plain_path(r"\\?\C:\proj\name."), r"\\?\C:\proj\name.");
         assert_eq!(plain_path(r"\\?\C:\proj\name "), r"\\?\C:\proj\name ");
-        // A UNC path keeps its spelling: its plain form is still UNC.
-        assert_eq!(
-            plain_path(r"\\?\UNC\server\share\Project"),
-            r"\\?\UNC\server\share\Project"
-        );
-        assert_eq!(plain_path(r"\\?\UNC\"), r"\\?\UNC\");
-        assert_eq!(plain_path(r"\\?\UNC\server"), r"\\?\UNC\server");
         // Shapes the prefix rules do not recognize stay untouched, as do
         // paths that are already plain.
         assert_eq!(plain_path(r"\\?\"), r"\\?\");

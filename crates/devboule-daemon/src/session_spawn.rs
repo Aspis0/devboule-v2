@@ -968,15 +968,13 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     // so the bounded wait is what makes "the tree is dead before the
     // joins" true: the wait budget is the same one the joins get. If the
     // wait fails, that other Arc is what would keep the fallback below
-    // from ever running, so the callback is released here — dropping it is
-    // what lets the close be the job's last handle and KILL_ON_JOB_CLOSE
-    // end whatever tree is left in it.
+    // from ever running, so the callback is released next.
     if let Err(error) = process_job.terminate_and_wait(READER_JOIN_BUDGET) {
         eprintln!(
             "session {} could not terminate its job before teardown joins: {error}",
             runtime.session_id
         );
-        runtime.release_on_os_death();
+        release_after_failed_wait(&runtime);
     }
     drop(process_job);
     // 3) Reap after the PTY endpoints are closed; this prevents a zombie
@@ -999,6 +997,18 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     if finish_runtime {
         runtime.finish(None);
     }
+}
+
+/// Teardown's step after a failed job termination, before the caller drops
+/// its own job `Arc`: the callback is released so that drop *can* be the
+/// job's last handle. `fire_os_death`'s detached thread and `stop` may
+/// still hold the job `Arc`, so the close this drop misses arrives with
+/// the last of them — every holder runs its own `terminate()`, which is
+/// why a deferred close is deferred, not lost. Production calls this from
+/// `teardown_session_inner` and the seam test calls this same step, so
+/// deleting the release inside it fails the suite.
+pub(super) fn release_after_failed_wait(runtime: &SessionRuntime) {
+    runtime.release_on_os_death();
 }
 
 fn join_coalesce(handle: Option<JoinHandle<()>>, runtime: &SessionRuntime) {

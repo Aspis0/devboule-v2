@@ -210,7 +210,10 @@ fn a_carried_verbatim_cwd_is_converted_for_the_child_and_recorded_raw() {
             &meta,
         )
         .expect("resolution with no workspace lookup");
-    let plain = crate::workspace::plain_path(&stored);
+    let plain = stored
+        .strip_prefix(r"\\?\")
+        .expect("the fixture is verbatim")
+        .to_string();
     assert_eq!(
         resolved.command.cwd,
         PathBuf::from(&plain),
@@ -267,7 +270,10 @@ fn the_birth_row_keeps_the_stored_verbatim_cwd_while_the_child_gets_plain() {
             &meta,
         )
         .expect("resolution against the real workspace");
-    let plain = crate::workspace::plain_path(&stored);
+    let plain = stored
+        .strip_prefix(r"\\?\")
+        .expect("the fixture is verbatim")
+        .to_string();
     assert_eq!(
         resolved.command.cwd,
         PathBuf::from(&plain),
