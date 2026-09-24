@@ -1,6 +1,7 @@
 import { Component, type ReactNode, useEffect, useRef, useState } from "react";
 import { daemonDiagnostics } from "../../lib/tauri";
-import { errorSentence } from "../../lib/errorSentence";
+import { errorSentence, type ErrorSentence } from "../../lib/errorSentence";
+import { ErrorText } from "../../components/ErrorText";
 import type { DaemonDiagnostics } from "../../types/ipc";
 import { SettingsHeading } from "./SettingsSurface";
 
@@ -230,7 +231,13 @@ export class DiagnosticsErrorBoundary extends Component<
           <SettingsHeading title="Diagnostics" description={SAFETY_NOTE} />
           <div className="settings-card diagnostics-error" role="alert">
             <h3 className="settings-card-title">Could not render the diagnostics</h3>
-            <p>{errorSentence(this.state.error).sentence}</p>
+            <p>
+              <ErrorText
+                sentence={errorSentence(this.state.error).sentence}
+                detail={errorSentence(this.state.error).detail}
+                id="diagnostics-boundary-error"
+              />
+            </p>
             <p>
               The diagnostics response was not understood, but the rest of the app is still
               available.
@@ -261,7 +268,7 @@ export function DiagnosticsPanel() {
 
 function DiagnosticsPanelContent() {
   const [report, setReport] = useState<DaemonDiagnostics | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorSentence | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const activeLoadRef = useRef<(() => void) | null>(null);
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -286,7 +293,7 @@ function DiagnosticsPanelContent() {
       },
       (cause) => {
         activeLoadRef.current = null;
-        setError(errorSentence(cause).sentence);
+        setError(errorSentence(cause));
       },
     );
   }
@@ -329,7 +336,13 @@ function DiagnosticsPanelContent() {
         <SettingsHeading title="Diagnostics" description={SAFETY_NOTE} />
         <div className="settings-card diagnostics-error" role="alert">
           <h3 className="settings-card-title">Could not load the diagnostics</h3>
-          <p>{error}</p>
+          <p>
+            <ErrorText
+              sentence={error.sentence}
+              detail={error.detail}
+              id="diagnostics-load-error"
+            />
+          </p>
           <p>The daemon may not be answering right now — try again once it recovers.</p>
           <button type="button" className="diagnostics-retry" onClick={retry}>
             Try again

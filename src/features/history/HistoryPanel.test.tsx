@@ -425,6 +425,27 @@ describe("HistoryPanel", () => {
     );
   });
 
+  it("keeps the journal read's raw text as the alert's demoted detail", async () => {
+    // The rejection passes through to useTrackedRequest unmolested, so the
+    // mapped sentence renders and the daemon's own words stay reachable.
+    vi.mocked(journalUsage).mockRejectedValueOnce({
+      code: "journal",
+      message: "journal is corrupt: unexpected tail",
+    });
+    vi.mocked(sessionsList).mockResolvedValueOnce([]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<HistoryPanel now={now} search="" />);
+      await Promise.resolve();
+    });
+    await act(async () => undefined);
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Saved history could not be read or written.");
+    expect(alert?.querySelector(".error-detail-sr-only")?.textContent).toBe(
+      "journal is corrupt: unexpected tail",
+    );
+  });
+
   it("shows a load error without crashing", async () => {
     vi.mocked(journalUsage).mockRejectedValueOnce(new Error("history unavailable"));
     vi.mocked(sessionsList).mockResolvedValueOnce([]);

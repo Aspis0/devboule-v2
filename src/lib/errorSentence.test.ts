@@ -122,6 +122,16 @@ describe("the message-shape arms", () => {
     expect(sentence).not.toContain("attachment");
   });
 
+  it("keeps the reopen sentence for the bridge's 'no longer registered' loss", () => {
+    // src-tauri/src/client/mod.rs:544-546 — bind_with_cursor's own wording.
+    const { sentence } = errorSentence(
+      rejection("internal", "session attachment is no longer registered"),
+    );
+    expect(sentence).toBe(
+      "This view lost its live connection to the session. Reopen the tab to reconnect.",
+    );
+  });
+
   it("keeps the reopen sentence for a view that must re-attach before sending", () => {
     // client.rs:1668 — the bridge-side pre-flight.
     const { sentence } = errorSentence(
@@ -143,16 +153,26 @@ describe("the message-shape arms", () => {
     expect(sentence).not.toContain("Reopen");
   });
 
-  it("claims a blocking program only for an access refusal, and keeps the OS error as detail", () => {
-    // provider.rs ~1098 — the owner's "os error 5" sighting.
+  it("states a containment access refusal without diagnosing a blocker", () => {
+    // provider.rs:1057 -> 1096-1102: the process spawned and was then killed
+    // by the daemon's own job handling; acp_client.rs:748-752 measures the
+    // access denial as the daemon's own job hierarchy, never another program.
     const { sentence, detail } = errorSentence(
       rejection("io", "Could not contain the terminal process: Access is denied. (os error 5)"),
     );
-    expect(sentence).toBe(
-      "The system refused to start the terminal. Another program on this machine may be blocking it.",
-    );
+    expect(sentence).toBe("The system could not start the terminal.");
     expect(detail).toContain("Access is denied");
-    expect(sentence).not.toContain("os error");
+    expect(sentence).not.toContain("blocking");
+  });
+
+  it("does not take an OS code that merely starts with 5 for an access refusal", () => {
+    // session.rs:3307-3322 formats "(OS error {code}: ...)" — 50, 500, 577
+    // all contain "os error 5" as a substring.
+    const { sentence } = errorSentence(
+      rejection("io", "Could not contain the agent process: (OS error 50: not supported)"),
+    );
+    expect(sentence).toBe("The system could not start the agent.");
+    expect(sentence).not.toContain("blocking");
   });
 
   it("names the agent, not the terminal, for agent-process containment", () => {
@@ -160,26 +180,17 @@ describe("the message-shape arms", () => {
     const { sentence } = errorSentence(
       rejection("io", "Could not contain the ACP agent process: Access is denied. (os error 5)"),
     );
-    expect(sentence).toContain("the agent");
+    expect(sentence).toBe("The system could not start the agent.");
     expect(sentence).not.toContain("the terminal");
   });
 
-  it("does not claim a blocking program when the OS reports something else", () => {
+  it("states a spawn failure without an OS verdict as what happened, no diagnosis", () => {
     // session_terminal_transcript_tests.rs:815-818 (workspace_spawn_error,
     // session_workspaces.rs:427-435): resource exhaustion is not a block.
     const { sentence } = errorSentence(
       rejection("io", "Could not start the terminal shell. (OS error 1450: no system resources)"),
     );
     expect(sentence).toBe("The system could not start the terminal.");
-    expect(sentence).not.toContain("blocking");
-  });
-
-  it("states a containment failure without an OS verdict as what happened, no diagnosis", () => {
-    // acp_client.rs:757 family, non-access io text.
-    const { sentence } = errorSentence(
-      rejection("io", "Could not contain the ACP agent process: The handle is invalid."),
-    );
-    expect(sentence).toBe("The system could not start the agent.");
     expect(sentence).not.toContain("blocking");
   });
 
@@ -193,6 +204,19 @@ describe("the message-shape arms", () => {
       ),
     );
     expect(sentence).toBe(CODE_SENTENCES.io);
+  });
+
+  it("does not claim a workspace birth failed when a workspace was being removed", () => {
+    // worktree.rs:496-501 via session_workspaces.rs:284-300: the force-
+    // removal recovery on the DELETE path also says "leftover checkout".
+    const { sentence } = errorSentence(
+      rejection(
+        "workspace_unavailable",
+        "Could not remove worktree 'w-1': fatal: dirty tree; failed to remove leftover checkout C:\\repo\\x: remove failed",
+      ),
+    );
+    expect(sentence).toBe(CODE_SENTENCES.workspace_unavailable);
+    expect(sentence).not.toContain("created");
   });
 
   it("maps a failed workspace birth to its own sentence, not a journal claim", () => {
@@ -244,36 +268,5 @@ describe("causes that are not daemon rejections", () => {
 
   it("never returns an empty sentence for an empty daemon message", () => {
     expect(errorSentence(rejection("internal", "   ")).sentence.trim().length).toBeGreaterThan(0);
-  });
-});
-
-describe("the git pass-through arm", () => {
-  it("keeps the daemon's own git sentences verbatim — they are already the house mapping", () => {
-    // workspace_git_support.rs:22-129: every git refusal is a pathless
-    // sentence the daemon authored; the frontend renders it, it does not
-    // re-map it.
-    const sentences = [
-      rejection("io", "git could not be run"),
-      rejection("io", "status: git is not installed"),
-      rejection("io", "diff: git timed out"),
-      rejection("io", "stage: git could not be started"),
-      rejection("io", "commit exited with code 128"),
-      rejection("io", "another git process is using this repository; try again in a moment"),
-      rejection("invalid_request", "there is nothing staged to commit"),
-      rejection("invalid_request", "this workspace folder is not a git repository"),
-      rejection("invalid_request", "the requested path is outside the workspace folder"),
-      rejection("io", "git did not answer within the probe timeout"),
-    ];
-    for (const cause of sentences) {
-      const { sentence, detail } = errorSentence(cause);
-      const raw = (cause as { message: string }).message;
-      expect(sentence, raw).toBe(raw);
-      expect(detail).toBe(raw);
-    }
-  });
-
-  it("does not pass through look-alike texts that git does not own", () => {
-    const { sentence } = errorSentence(rejection("io", "npm err! git could not be run somewhere"));
-    expect(sentence).toBe(CODE_SENTENCES.io);
   });
 });

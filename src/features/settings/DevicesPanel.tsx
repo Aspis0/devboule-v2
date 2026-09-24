@@ -724,7 +724,7 @@ export function DevicesPanel() {
             <ErrorText
               sentence={listError.sentence}
               detail={listError.detail}
-              id="devices-list-error"
+              id="devices-list-error-initial"
             />
             <button type="button" className="settings-device-action" onClick={refresh}>
               Retry
@@ -753,7 +753,7 @@ export function DevicesPanel() {
             <ErrorText
               sentence={listError.sentence}
               detail={listError.detail}
-              id="devices-list-error"
+              id="devices-list-error-panel"
             />
             <button type="button" className="settings-device-action" onClick={refresh}>
               Retry

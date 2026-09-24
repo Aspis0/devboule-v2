@@ -26,7 +26,7 @@ import { errorSentence } from "../../lib/errorSentence";
 export type ArtifactSaveOutcome =
   | { status: "saved"; path: string }
   | { status: "cancelled" }
-  | { status: "failed"; message: string };
+  | { status: "failed"; message: string; detail: string | null };
 
 /**
  * Characters Windows refuses anywhere in a file name (`<>:"/\|?*`) plus every
@@ -100,7 +100,11 @@ export async function saveArtifactHtml(
   } catch (cause) {
     // The dialog itself failed (no answer was possible). That is a failure,
     // unlike a closed dialog, which resolves `null` instead of rejecting.
-    return { status: "failed", message: errorSentence(cause).sentence };
+    return {
+      status: "failed",
+      message: errorSentence(cause).sentence,
+      detail: errorSentence(cause).detail,
+    };
   }
   // `null` is the user closing the dialog. Nothing was written and nothing is
   // wrong; the caller shows nothing.
@@ -109,6 +113,10 @@ export async function saveArtifactHtml(
     const written = await writeArtifactFile(path, contents);
     return { status: "saved", path: written };
   } catch (cause) {
-    return { status: "failed", message: errorSentence(cause).sentence };
+    return {
+      status: "failed",
+      message: errorSentence(cause).sentence,
+      detail: errorSentence(cause).detail,
+    };
   }
 }

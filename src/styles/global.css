@@ -645,8 +645,9 @@ button:focus-visible {
   border: 0;
 }
 
-/* Visually hidden, announced: the raw detail a mapped error line keeps for
-   keyboards and screen readers (the mouse gets the same text as a tooltip). */
+/* Visually hidden, but read by screen readers in browse mode; nothing here
+   is keyboard-focusable, and user-select keeps the raw text out of the
+   clipboard when the visible line around it is copied. */
 .error-detail-sr-only {
   position: absolute;
   width: 1px;
@@ -656,4 +657,5 @@ button:focus-visible {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+  user-select: none;
 }

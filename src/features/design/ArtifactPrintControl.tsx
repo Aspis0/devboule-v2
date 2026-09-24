@@ -32,8 +32,12 @@ import {
 import type { DesignOutputMode } from "./designHost";
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import { errorSentence } from "../../lib/errorSentence";
+import { ErrorText } from "../../components/ErrorText";
 
-type PrintState = { kind: "idle" } | { kind: "closed" } | { kind: "failed"; message: string };
+type PrintState =
+  | { kind: "idle" }
+  | { kind: "closed" }
+  | { kind: "failed"; message: string; detail: string | null };
 
 /**
  * How long "Print dialog closed." stays up. Longer than the copy control's two
@@ -92,6 +96,7 @@ export function ArtifactPrintControl({
       if (report.status === "failed") {
         setPrintState({
           kind: "failed",
+          detail: null,
           message: report.message ?? "The print dialog could not be opened.",
         });
         return;
@@ -139,7 +144,8 @@ export function ArtifactPrintControl({
       // The document could not be assembled or the frame could not be mounted.
       // Nothing is printed and nothing is left behind.
       removeFrame();
-      setPrintState({ kind: "failed", message: errorSentence(cause).sentence });
+      const mapped = errorSentence(cause);
+      setPrintState({ kind: "failed", message: mapped.sentence, detail: mapped.detail });
     }
   }
 
@@ -164,8 +170,12 @@ export function ArtifactPrintControl({
         </span>
       ) : null}
       {printState.kind === "failed" ? (
-        <span className="design-provider-unavailable" role="status" title={printState.message}>
-          Print failed.
+        <span className="design-provider-unavailable" role="status">
+          <ErrorText
+            sentence={`Print failed. ${printState.message}`}
+            detail={printState.detail}
+            id="design-print-failed"
+          />
         </span>
       ) : null}
     </>

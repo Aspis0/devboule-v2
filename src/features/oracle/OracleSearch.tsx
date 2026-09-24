@@ -7,6 +7,7 @@ import type {
   OracleSearchResponse,
 } from "../../types/ipc";
 import type { TrackedRequestState } from "../../lib/trackedRequest";
+import { ErrorText } from "../../components/ErrorText";
 import { formatCount } from "../../lib/format";
 import {
   focusLineRange,
@@ -130,7 +131,11 @@ export const OracleSearch = memo(function OracleSearch({
         )}
         {searchState.status === "error" && (
           <div className="oracle-error-message" role="alert">
-            {searchState.message}
+            <ErrorText
+              sentence={searchState.message}
+              detail={searchState.detail}
+              id="oracle-search-error"
+            />
           </div>
         )}
         {searchState.status === "ready" && results.length === 0 && (

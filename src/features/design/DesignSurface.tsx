@@ -24,6 +24,7 @@ import type {
   PendingPermission,
   SectionNote,
 } from "./designHost";
+import { ErrorText } from "../../components/ErrorText";
 import { artifactSrcDoc } from "./artifactCsp";
 import { artifactSlideNotice, readArtifactSlideShape } from "./artifactSlides";
 import { ArtifactCopyControl } from "./ArtifactCopyControl";
@@ -2508,11 +2509,21 @@ const DesignMessageCard = memo(function DesignMessageCard({
           </div>
         )}
         {message.desc !== "" ? (
-          <div className="design-message-description">{message.desc}</div>
+          <div className="design-message-description">
+            <ErrorText
+              sentence={message.desc}
+              detail={message.errorDetail ?? null}
+              id={`design-desc-${message.id}`}
+            />
+          </div>
         ) : null}
         {message.groundingNotice ? (
           <div className="design-grounding-notice" role="status">
-            {message.groundingNotice}
+            <ErrorText
+              sentence={message.groundingNotice}
+              detail={message.groundingNoticeDetail ?? null}
+              id={`design-grounding-${message.id}`}
+            />
           </div>
         ) : null}
         <div className="design-message-actions">
@@ -5155,6 +5166,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                     // and not what a later reply happened to contain.
                     fencedHtmlBlockCount: result.fencedHtmlBlockCount,
                     groundingNotice: result.groundingNotice ?? null,
+                    groundingNoticeDetail: result.groundingNoticeDetail ?? null,
                     instruction: prompt,
                   }
                 : message,
@@ -5242,6 +5254,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                     status: "error",
                     title: "Generation failed",
                     desc: error instanceof Error ? error.message : "The design generation failed.",
+                    errorDetail:
+                      error instanceof Error && "detail" in error
+                        ? ((error as { detail?: string | null }).detail ?? null)
+                        : null,
                     transcript: streamingTranscriptRef.current,
                   }
                 : message,

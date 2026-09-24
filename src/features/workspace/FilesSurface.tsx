@@ -327,7 +327,7 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
         )
       ) : (
         <div className="workspace-files-tree">
-          {rows.map((row) =>
+          {rows.map((row, rowIndex) =>
             row.kind === "entry" ? (
               entryRow(row)
             ) : row.kind === "loading" ? (
@@ -349,7 +349,9 @@ export const FilesSurface = memo(function FilesSurface({ workspaceId }: FilesSur
                 <ErrorText
                   sentence={row.message.sentence}
                   detail={row.message.detail}
-                  id={`files-error-${row.path}`}
+                  // An index, never the path: a path may hold spaces, and
+                  // aria-describedby parses its value as an id list.
+                  id={`files-error-${rowIndex}`}
                 />
               </div>
             ) : (

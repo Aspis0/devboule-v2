@@ -62,25 +62,18 @@ const NAMED_PROVIDER_LOST =
  * refusal about a DIFFERENT session and must not match — it takes the
  * invalid_request row.
  */
-const LOST_VIEW = /not attached|attachment is not registered/;
+const LOST_VIEW = /not attached|attachment is (not|no longer) registered/;
 
-/** A workspace birth that failed at the worktree or its cleanup (session_workspaces.rs:135-141). */
-const WORKSPACE_BIRTH_FAILED = /^Could not add git worktree for|leftover checkout/;
+/**
+ * A workspace birth that failed at the worktree (session_workspaces.rs:135-141).
+ * Anchored to the create verb: the delete path's own "failed to remove
+ * leftover checkout" text (worktree.rs:496-501) must keep its
+ * workspace_unavailable row.
+ */
+const WORKSPACE_BIRTH_FAILED = /^Could not add git worktree for/;
 
 /** The process could not be started or kept: containment and spawn failures. */
 const PROCESS_START_FAILED = /^Could not contain |process job|^Could not start the terminal/;
-
-/** The one OS verdict "another program may be blocking it" is true for. */
-const ACCESS_REFUSED = /access (is )?denied|os error 5/i;
-
-/**
- * The git module's own sentences (workspace_git_support.rs:22-129): the
- * daemon authors every refusal there as a pathless, human sentence — the
- * house mapping this module generalises. Pass it through verbatim instead
- * of burying it under the generic io row.
- */
-const GIT_OWN_SENTENCE =
-  /^(?:this workspace folder|the workspace folder|git |another git process|there is nothing staged|the requested path)|: git (?:is not installed|timed out|could not be started)$|exited with code \d+$|was terminated before it could report a code$/;
 
 function providerName(message: string): string | null {
   const quoted = /'([^']+)'/.exec(message);
@@ -95,11 +88,6 @@ function providerName(message: string): string | null {
  * first; a message no arm claims falls through to the code table.
  */
 function shapeSentence(message: string): string | null {
-  if (GIT_OWN_SENTENCE.test(message)) {
-    // Git's sentence stands as the sentence; the raw and the readable are
-    // the same words here.
-    return message;
-  }
   if (NO_AGENT_ON_PATH.test(message)) {
     return "No agent CLI is installed on this machine. Install one — for example grok, claude, or gemini — then choose Refresh in Settings → Providers.";
   }
@@ -116,13 +104,12 @@ function shapeSentence(message: string): string | null {
     return "This workspace could not be created.";
   }
   if (PROCESS_START_FAILED.test(message)) {
+    // Containment failures happen after a successful spawn, when the daemon's
+    // own job handling refused or dropped the process (acp_client.rs:748-752
+    // measures the access denial as its own job hierarchy) — no outside
+    // verdict is true here, so state what happened and let the detail carry
+    // the OS line.
     const target = message.includes("terminal") ? "terminal" : "agent";
-    // "Another program may be blocking it" is a diagnosis; only an access
-    // refusal earns it. Every other OS error stays undescribed — the raw
-    // line rides in the detail.
-    if (ACCESS_REFUSED.test(message)) {
-      return `The system refused to start the ${target}. Another program on this machine may be blocking it.`;
-    }
     return `The system could not start the ${target}.`;
   }
   return null;

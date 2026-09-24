@@ -11,9 +11,10 @@ export interface ErrorTextProps {
 }
 
 /**
- * A mapped sentence whose raw detail stays reachable: `title` carries it for
- * the mouse, `aria-describedby` points at a visually hidden node for
- * keyboards and screen readers — `title` alone is reachable by neither.
+ * A mapped sentence whose raw detail stays present: `title` carries it for
+ * the mouse; `aria-describedby` points at a visually hidden node that
+ * screen readers read in browse mode. Neither channel is keyboard-focusable,
+ * so a keyboard-only user gets the sentence but not the detail.
  */
 export function ErrorText({ sentence, detail, id }: ErrorTextProps): ReactElement {
   const detailId = `${id}-detail`;

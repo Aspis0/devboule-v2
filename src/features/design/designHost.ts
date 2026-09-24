@@ -131,6 +131,13 @@ export interface DesignAssistantMessage {
    * folder, ungrounded by choice, or no folder attached).
    */
   groundingNotice?: string | null;
+  /** The demoted raw text behind `groundingNotice`, when it came from a rejection. */
+  groundingNoticeDetail?: string | null;
+  /**
+   * The demoted raw text behind a generation-failure `desc`, when the failure
+   * came from a rejection (a `SessionError`). Absent otherwise.
+   */
+  errorDetail?: string | null;
   /**
    * What the agent actually said and did for this generation, kept so the
    * conversation survives the run and later sessions. Absent means the host
@@ -201,6 +208,8 @@ export interface DesignGenerationResult {
    * or no folder attached). The surface renders it under the summary.
    */
   groundingNotice?: string | null;
+  /** The demoted raw text behind `groundingNotice`, when it came from a rejection. */
+  groundingNoticeDetail?: string | null;
 }
 
 /**

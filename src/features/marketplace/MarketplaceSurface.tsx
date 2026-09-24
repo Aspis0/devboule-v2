@@ -2,6 +2,7 @@ import "./marketplace.css";
 
 import { useMemo, useState } from "react";
 import { pluginState } from "../../lib/plugins";
+import { ErrorText } from "../../components/ErrorText";
 import { useAppStore } from "../../store/appStore";
 import { MOCK_MARKETPLACE_ENTRIES, type MarketplaceEntry, type MarketplaceKind } from "./mockData";
 
@@ -24,6 +25,7 @@ export function MarketplaceSurface() {
   const installedSkills = useAppStore((state) => state.installedSkills);
   const installSkill = useAppStore((state) => state.installSkill);
   const plugins = useAppStore((state) => state.plugins);
+  const pluginsProblem = useAppStore((state) => state.pluginsProblem);
   const installedSkillIds = useMemo(
     () => new Set(installedSkills.map((skill) => skill.id)),
     [installedSkills],
@@ -137,15 +139,21 @@ export function MarketplaceSurface() {
                       <span
                         className={`marketplace-plugin-status${installedPlugin?.kind === "ready" ? " marketplace-plugin-status-ready" : ""}`}
                       >
-                        {installedPlugin?.kind === "ready"
-                          ? "Installed"
-                          : installedPlugin?.kind === "unknown"
-                            ? `Install status unavailable — ${installedPlugin.problem}`
-                            : installedPlugin?.kind === "refused"
-                              ? "Installed but unavailable"
-                              : plugins === null
-                                ? "Checking plugin status."
-                                : "Install from the crescent +."}
+                        {installedPlugin?.kind === "ready" ? (
+                          "Installed"
+                        ) : installedPlugin?.kind === "unknown" ? (
+                          <ErrorText
+                            sentence={`Install status unavailable — ${installedPlugin.problem}`}
+                            detail={pluginsProblem?.detail ?? null}
+                            id="marketplace-plugin-problem"
+                          />
+                        ) : installedPlugin?.kind === "refused" ? (
+                          "Installed but unavailable"
+                        ) : plugins === null ? (
+                          "Checking plugin status."
+                        ) : (
+                          "Install from the crescent +."
+                        )}
                       </span>
                     ) : (
                       <button

@@ -13,12 +13,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { saveArtifactHtml } from "./artifactSave";
+import { ErrorText } from "../../components/ErrorText";
 
 type SaveState =
   | { kind: "idle" }
   | { kind: "saved"; path: string }
   | { kind: "cancelled" }
-  | { kind: "failed"; message: string };
+  | { kind: "failed"; message: string; detail: string | null };
 
 /**
  * How long the saved label stays up. Longer than the copy control's two
@@ -66,7 +67,7 @@ export function ArtifactSaveControl({ html, title }: { html: string; title: stri
         setSaveState({ kind: "cancelled" });
         break;
       case "failed":
-        setSaveState({ kind: "failed", message: outcome.message });
+        setSaveState({ kind: "failed", message: outcome.message, detail: outcome.detail });
         break;
     }
   }
@@ -92,8 +93,12 @@ export function ArtifactSaveControl({ html, title }: { html: string; title: stri
         </span>
       ) : null}
       {saveState.kind === "failed" ? (
-        <span className="design-provider-unavailable" role="status" title={saveState.message}>
-          Save failed.
+        <span className="design-provider-unavailable" role="status">
+          <ErrorText
+            sentence={`Save failed. ${saveState.message}`}
+            detail={saveState.detail}
+            id="design-save-failed"
+          />
         </span>
       ) : null}
     </>

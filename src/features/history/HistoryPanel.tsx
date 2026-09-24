@@ -27,20 +27,10 @@ const CLOSE_FIRST_REASON = "Archive the session before deleting it from history.
 const EMPTY_SESSIONS: Session[] = [];
 
 export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPanelProps) {
-  const loadUsage = useCallback(async (): Promise<JournalUsage> => {
-    try {
-      return await journalUsage();
-    } catch (cause) {
-      throw new Error(errorSentence(cause).sentence);
-    }
-  }, []);
-  const loadSessions = useCallback(async (): Promise<Session[]> => {
-    try {
-      return await sessionsList();
-    } catch (cause) {
-      throw new Error(errorSentence(cause).sentence);
-    }
-  }, []);
+  // The rejection is passed through untouched: useTrackedRequest owns the
+  // mapping, and re-wrapping it here would strip the raw text from detail.
+  const loadUsage = useCallback((): Promise<JournalUsage> => journalUsage(), []);
+  const loadSessions = useCallback((): Promise<Session[]> => sessionsList(), []);
   const usageRequest = useTrackedRequest<JournalUsage>(loadUsage, { status: "loading" }, true);
   const sessionsRequest = useTrackedRequest<Session[]>(loadSessions, { status: "loading" }, true);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);

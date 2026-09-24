@@ -2491,10 +2491,38 @@ describe("parser order", () => {
 });
 
 describe("one entry per failed send", () => {
-  it("does not add the daemon's agent_error frame beside the mapped send failure", async () => {
-    // session_messaging.rs:1026-1043 publishes agent_error with the same
-    // message immediately before returning the rejection, so a verbatim
-    // item plus the mapped catch showed one failure twice.
+  const RAW = "Could not send input to the terminal: broken pipe";
+
+  it("drops the daemon's agent_error frame that arrives after the send's rejection", async () => {
+    // Real wire order: the rejection is written synchronously
+    // (server/connection.rs:311); the agent_error it published waits in the
+    // attachment queue and arrives later (connection.rs:328-345).
+    const harness = makeHarness();
+    await harness.session.start();
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_send") {
+        return Promise.reject({ code: "io", message: RAW });
+      }
+      return undefined;
+    });
+
+    await expect(harness.session.send("hello")).resolves.toBe(false);
+
+    harness.emit({
+      type: "agent_error",
+      message: RAW,
+    } as unknown as Parameters<typeof harness.emit>[0]);
+
+    const errors = harness.session.getState().items.filter((item) => item.role === "error");
+    expect(errors).toHaveLength(1);
+    const item = errors[0];
+    expect(item.role === "error" && item.text).toBe(
+      "Could not send the message. A system or file operation failed on this machine.",
+    );
+    expect(item.role === "error" && item.detail).toContain("broken pipe");
+  });
+
+  it("drops a held frame once, in the reverse order, when its text is the rejection's", async () => {
     const harness = makeHarness();
     await harness.session.start();
     let settleSend: ((value: unknown) => void) | undefined;
@@ -2508,18 +2536,88 @@ describe("one entry per failed send", () => {
 
     harness.emit({
       type: "agent_error",
-      message: "Could not send input to the terminal: broken pipe",
+      message: RAW,
     } as unknown as Parameters<typeof harness.emit>[0]);
-    settleSend?.({ code: "io", message: "Could not send input to the terminal: broken pipe" });
+    settleSend?.({ code: "io", message: RAW });
     await sending;
 
     const errors = harness.session.getState().items.filter((item) => item.role === "error");
     expect(errors).toHaveLength(1);
     const item = errors[0];
-    expect(item.role === "error" && item.text).toBe(
-      "Could not send the message. A system or file operation failed on this machine.",
-    );
     expect(item.role === "error" && item.detail).toContain("broken pipe");
+  });
+
+  it("shows a held frame whose text differs from the rejection — a permission failure is never swallowed", async () => {
+    // Scenario A of review-E1-fix1 #2: the bridge's pre-flight refuses the
+    // send and publishes nothing, while the read loop's permission failure
+    // rode in during the flight. Exact-text matching keeps it.
+    const harness = makeHarness();
+    await harness.session.start();
+    let settleSend: ((value: unknown) => void) | undefined;
+    (harness.invoke as unknown as Mock).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          settleSend = reject as unknown as (value: unknown) => void;
+        }),
+    );
+    const sending = harness.session.send("hello");
+
+    harness.emit({
+      type: "agent_error",
+      message: "Could not auto-answer ACP permission request: tool-x",
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    settleSend?.({ code: "internal", message: "session attachment is not registered" });
+    await sending;
+
+    const errors = harness.session.getState().items.filter((item) => item.role === "error");
+    expect(errors).toHaveLength(2);
+    const texts = errors.map((item) => (item.role === "error" ? item.text : ""));
+    expect(texts.some((text) => text.includes("auto-answer ACP permission request"))).toBe(true);
+    expect(texts.some((text) => text.includes("lost its live connection"))).toBe(true);
+  });
+
+  it("with two overlapping sends, only the failed send's own frame is dropped", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    const settles: Array<{
+      resolve: (value: undefined) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    (harness.invoke as unknown as Mock).mockImplementation(async (command: string) => {
+      if (command === "session_send") {
+        return new Promise((resolve, reject) => {
+          settles.push({ resolve, reject });
+        });
+      }
+      return undefined;
+    });
+
+    const first = harness.session.send("a");
+    const second = harness.session.send("b");
+    // Send A rejects with its own text; send B is still in flight.
+    settles[0]?.reject({ code: "io", message: "write failed on A" });
+
+    // A's twin frame arrives while B is still in flight.
+    harness.emit({
+      type: "agent_error",
+      message: "write failed on A",
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    // B's own agent voice arrives too.
+    harness.emit({
+      type: "agent_error",
+      message: "B said: malformed output line",
+    } as unknown as Parameters<typeof harness.emit>[0]);
+    settles[1]?.resolve(undefined);
+    await Promise.all([first, second]);
+
+    const errors = harness.session.getState().items.filter((item) => item.role === "error");
+    const texts = errors.map((item) => (item.role === "error" ? item.text : ""));
+    // A's failure is recorded once, mapped.
+    expect(texts.filter((text) => text.includes("Could not send the message"))).toHaveLength(1);
+    // A's twin frame never shows verbatim.
+    expect(texts.filter((text) => text === "write failed on A")).toHaveLength(0);
+    // B's agent voice survives.
+    expect(texts).toContain("B said: malformed output line");
   });
 
   it("still shows an agent_error held during a send that succeeds — the agent's own voice", async () => {

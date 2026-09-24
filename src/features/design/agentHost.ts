@@ -564,7 +564,10 @@ export function groundedPrompt(
  */
 export interface FolderGrounding {
   results: readonly OracleResult[];
+  /** The sentence a person reads when the folder could not be used. */
   notice: string | null;
+  /** The demoted raw text behind that sentence, when it came from a rejection. */
+  noticeDetail: string | null;
 }
 
 /**
@@ -635,17 +638,27 @@ export async function resolveFolderGrounding(
     status = await oracleFolderStatus(folderPath);
   } catch (cause) {
     if (signal?.aborted) throw abortError();
-    return { results: [], notice: errorSentence(cause).sentence };
+    const mapped = errorSentence(cause);
+    return {
+      results: [],
+      notice: mapped.sentence,
+      noticeDetail: mapped.detail,
+    };
   }
   if (signal?.aborted) throw abortError();
   if (status.state !== "ready") {
-    return { results: [], notice: groundingNoticeFor(status, folderPath) };
+    return {
+      results: [],
+      notice: groundingNoticeFor(status, folderPath),
+      noticeDetail: null,
+    };
   }
   try {
     const response = await oracleAskFolder(folderPath, prompt);
-    return { results: response.results, notice: null };
+    return { results: response.results, notice: null, noticeDetail: null };
   } catch (cause) {
-    return { results: [], notice: errorSentence(cause).sentence };
+    const mapped = errorSentence(cause);
+    return { results: [], notice: mapped.sentence, noticeDetail: mapped.detail };
   }
 }
 
@@ -762,8 +775,20 @@ function observeToolEvent(
   });
 }
 
-function sessionError(prefix: string, cause: unknown): Error {
-  return new Error(`${prefix}: ${errorSentence(cause).sentence}`);
+/**
+ * The generation failure as an `Error` whose message is the plain sentence,
+ * with the rejection's raw text carried beside it so the surface can demote
+ * it under the sentence instead of losing it.
+ */
+export interface SessionError extends Error {
+  detail: string | null;
+}
+
+function sessionError(prefix: string, cause: unknown): SessionError {
+  const mapped = errorSentence(cause);
+  return Object.assign(new Error(`${prefix}: ${mapped.sentence}`), {
+    detail: mapped.detail,
+  });
 }
 
 function sameProvider(left: ProviderInfo | undefined, right: ProviderInfo | undefined): boolean {
@@ -1409,6 +1434,7 @@ export function createAgentHost(): DesignHost {
     // failed generation.
     let oracleResults: readonly OracleResult[] = [];
     let groundingNotice: string | null = null;
+    let groundingNoticeDetail: string | null = null;
     let promptGrounded = false;
     if (!grounded) {
       promptGrounded = false;
@@ -1419,7 +1445,9 @@ export function createAgentHost(): DesignHost {
         promptGrounded = true;
       } catch (cause) {
         oracleResults = [];
-        groundingNotice = errorSentence(cause).sentence;
+        const mapped = errorSentence(cause);
+        groundingNotice = mapped.sentence;
+        groundingNoticeDetail = mapped.detail;
         promptGrounded = false;
       }
     } else if (folderOption === null) {
@@ -1428,6 +1456,7 @@ export function createAgentHost(): DesignHost {
       const grounding = await resolveFolderGrounding(prompt, folderOption, signal);
       oracleResults = grounding.results;
       groundingNotice = grounding.notice;
+      groundingNoticeDetail = grounding.noticeDetail;
       promptGrounded = grounding.notice === null;
     }
     throwIfAborted(signal);
@@ -1546,6 +1575,7 @@ export function createAgentHost(): DesignHost {
           appliedSkillSlugs: [...skillSlugs],
           skillSelectionFallback: skillChoice.fallback,
           groundingNotice,
+          groundingNoticeDetail,
           // Verbatim from the request, never the `page` default applied above: the
           // default is what a caller that predates slides gets, not a shape that
           // caller declared, and the surface must be able to tell the two apart.

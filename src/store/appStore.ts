@@ -131,6 +131,12 @@ interface AppState {
    * not the same as "nothing is installed" and must not be drawn as if it were.
    */
   plugins: PluginInventory | null;
+  /**
+   * The mapped cause behind `plugins.problem` when the inventory is the
+   * fallback one (the lookup itself was refused). Kept beside the wire
+   * type, whose `problem` field must stay a string.
+   */
+  pluginsProblem: ErrorSentence | null;
   /** The id of the plugin whose install is in flight, if any. */
   installing: string | null;
   /** Why the last install did not happen. Cleared by success, refresh, or dismissal. */
@@ -217,6 +223,7 @@ export const useAppStore = create<AppState>((set) => ({
     ),
 
   plugins: null,
+  pluginsProblem: null,
   installing: null,
   installError: null,
   dismissInstallError: () => set({ installError: null }),
@@ -226,6 +233,7 @@ export const useAppStore = create<AppState>((set) => ({
       const inventory = again ? await pluginsRescan() : await pluginsList();
       set((state) => ({
         plugins: inventory,
+        pluginsProblem: null,
         // A successful rescan is the acknowledgement that an install now
         // exists on disk. Do not leave its old failure over a verified plugin.
         installError: inventory.plugins.some((plugin) => plugin.ready) ? null : state.installError,
@@ -234,7 +242,11 @@ export const useAppStore = create<AppState>((set) => ({
       // The command reports "I could not look" inside the inventory, so a
       // rejection means the app did not answer at all. Same shape either way:
       // one thing for the interface to render, and never silence.
-      set({ plugins: { root: "", plugins: [], problem: errorSentence(cause).sentence } });
+      const mapped = errorSentence(cause);
+      set({
+        plugins: { root: "", plugins: [], problem: mapped.sentence },
+        pluginsProblem: mapped,
+      });
     }
   },
 

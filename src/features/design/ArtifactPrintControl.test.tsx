@@ -177,10 +177,11 @@ describe("ArtifactPrintControl", () => {
     await reportFrom(frame, printReport("failed", "This WebView does not implement printing."));
 
     expect(frameInBody()).toBeNull();
-    expect(container.textContent).toBe("Print / PDFPrint failed.");
+    expect(container.textContent).toContain("Print failed.");
     const status = container.querySelector('[role="status"]');
-    expect(status?.textContent).toBe("Print failed.");
-    expect(status?.getAttribute("title")).toBe("This WebView does not implement printing.");
+    // The sentence renders; the cause rides in the tooltip and the hidden detail.
+    expect(status?.textContent).toContain("Print failed.");
+    expect(status?.textContent).toContain("This WebView does not implement printing.");
   });
 
   it("ignores reports that did not come from its own frame", async () => {
@@ -216,8 +217,8 @@ describe("ArtifactPrintControl", () => {
     await click();
 
     expect(frameInBody()).toBeNull();
-    expect(container.textContent).toBe("Print / PDFPrint failed.");
-    expect(container.querySelector('[role="status"]')?.getAttribute("title")).toBe(
+    expect(container.textContent).toContain("Print failed.");
+    expect(container.textContent).toContain(
       "The standalone export must carry the canvas policy (ARTIFACT_CSP) in exactly one meta tag",
     );
   });

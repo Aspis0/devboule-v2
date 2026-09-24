@@ -281,6 +281,8 @@ export class AgentSession {
   /** How many `session_send` calls are awaiting the daemon (see `holdAgentError`). */
   private sendDepth = 0;
   private readonly heldAgentErrors: string[] = [];
+  /** The last send rejection's raw text, until its twin frame is dropped (see `resolveHeldAgentErrors`). */
+  private recentSendRejection: string | null = null;
   private switchTimer: ReturnType<typeof setTimeout> | null = null;
   private modeTimer: ReturnType<typeof setTimeout> | null = null;
   private modeRequest = 0;
@@ -392,20 +394,25 @@ export class AgentSession {
         ...(attachmentReferences.length === 0 ? {} : { attachmentReferences }),
       });
       this.sendDepth -= 1;
-      this.flushHeldAgentErrors();
+      this.recentSendRejection = null;
+      this.resolveHeldAgentErrors();
       return true;
     } catch (error) {
       this.sendDepth -= 1;
-      // The held frames were published for THIS failure (the daemon publishes
-      // agent_error immediately before returning the rejection); the mapped
-      // entry below is the one record of it.
-      this.heldAgentErrors.length = 0;
+      // The daemon publishes agent_error with the same message it rejects
+      // with, but the rejection is written to the connection synchronously
+      // (server/connection.rs:311) while the event waits in the attachment
+      // queue — the rejection arrives FIRST. Remember the raw text so the
+      // late frame is dropped once below; held frames are resolved against
+      // it, exact matches only.
+      const mapped = errorSentence(error);
+      this.recentSendRejection = mapped.detail ?? mapped.sentence;
+      this.resolveHeldAgentErrors();
       // The daemon names its failures: a capability or validity refusal is
       // raised inside a live send path and only codes naming a gone view end
       // the session (see `FATAL_SEND_CODES`). A refused steer was joining a
       // turn the daemon is still running — record the sentence and leave the
       // turn alone; ending it would split the answer when the chunks resume.
-      const mapped = errorSentence(error);
       const detail = `Could not send the message. ${mapped.sentence}`;
       if (sendFailureKillsSession(error)) this.failSession(detail, mapped.detail ?? undefined);
       else if (joinsRunningTurn) this.noteError(detail, mapped.detail ?? undefined);
@@ -417,18 +424,24 @@ export class AgentSession {
   /**
    * An `agent_error` that arrives while a send is in flight may be the
    * daemon's own report of that send's failure rather than the agent's
-   * voice — the same failure the rejection below will name. Hold it until
-   * the send settles: a rejection drops the frame (one entry, already
-   * recorded mapped), a success flushes it verbatim (it was the agent's
-   * own prose after all).
+   * voice. Hold it only until the send settles; resolution is by exact
+   * text — a frame that does not equal the rejection's raw text is the
+   * agent's own prose (a permission failure, a malformed line, the
+   * bridge's reattach error) and must always appear.
    */
   private holdAgentError(message: string): void {
     this.heldAgentErrors.push(message);
   }
 
-  private flushHeldAgentErrors(): void {
+  /** Resolves held frames against the remembered rejection, exact matches
+   * only; everything else is recorded verbatim. The memory is one text,
+   * cleared on consumption or by the next successful send. */
+  private resolveHeldAgentErrors(): void {
     const held = this.heldAgentErrors.splice(0);
-    for (const text of held) this.noteError(text);
+    for (const text of held) {
+      if (text === this.recentSendRejection) this.recentSendRejection = null;
+      else this.noteError(text);
+    }
   }
 
   /**
@@ -753,11 +766,18 @@ export class AgentSession {
         // may instead be the daemon's own report of that send's failure (it
         // publishes, then rejects); hold it for the send's verdict so one
         // failure is one entry.
+        const message = event.message || "The agent reported an unknown error.";
         if (this.sendDepth > 0) {
-          this.holdAgentError(event.message || "The agent reported an unknown error.");
+          this.holdAgentError(message);
           return;
         }
-        this.noteError(event.message || "The agent reported an unknown error.");
+        if (message === this.recentSendRejection) {
+          // The rejection that just settled published this very frame on its
+          // way out; the mapped entry above is its one record.
+          this.recentSendRejection = null;
+          return;
+        }
+        this.noteError(message);
         return;
       case "available_commands":
         this.update({ availableCommands: event.commands });

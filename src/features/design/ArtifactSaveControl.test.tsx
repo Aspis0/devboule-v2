@@ -95,17 +95,18 @@ describe("ArtifactSaveControl", () => {
     mocks.saveArtifactHtml.mockResolvedValue({
       status: "failed",
       message: "writing `C:/tmp/Our menu.html` failed: Access is denied. (os error 5)",
+      detail: null,
     });
     await render();
 
     await click();
 
-    expect(container.textContent).toBe("Save HTMLSave failed.");
-    const status = container.querySelector('[role="status"]');
-    expect(status?.textContent).toBe("Save failed.");
-    expect(status?.getAttribute("title")).toBe(
+    expect(container.textContent).toContain("Save failed.");
+    expect(container.textContent).toContain(
       "writing `C:/tmp/Our menu.html` failed: Access is denied. (os error 5)",
     );
+    const status = container.querySelector('[role="status"]');
+    expect(status?.getAttribute("title")).toBeNull();
   });
 
   it("clears a failure when the next attempt is cancelled", async () => {

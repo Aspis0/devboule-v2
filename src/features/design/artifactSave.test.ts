@@ -82,7 +82,11 @@ describe("artifact save flow", () => {
 
     const outcome = await saveArtifactHtml(FRAGMENT, RUN_TITLE);
 
-    expect(outcome).toEqual({ status: "failed", message: "the dialog host is gone" });
+    expect(outcome).toEqual({
+      status: "failed",
+      message: "the dialog host is gone",
+      detail: null,
+    });
     expect(mocks.writeArtifactFile).not.toHaveBeenCalled();
   });
 
@@ -97,6 +101,7 @@ describe("artifact save flow", () => {
     expect(outcome).toEqual({
       status: "failed",
       message: "writing `C:/tmp/report.html` failed: Access is denied. (os error 5)",
+      detail: null,
     });
     expect(outcome.status).not.toBe("cancelled");
   });
