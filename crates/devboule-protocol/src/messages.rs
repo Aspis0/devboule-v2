@@ -2384,6 +2384,16 @@ pub struct AgentProfile {
     pub icon: Option<String>,
     #[serde(default)]
     pub note: String,
+    /// The profile's spawn prompt: daemon text injected at the start of the
+    /// first prompt of every agent **created** from this profile, between the
+    /// device's standing instructions and the creation preamble, in front of
+    /// whatever the creating agent asked. Spawn-only by design — the field is
+    /// read once, when the child is created — so moving a live child onto this
+    /// profile, or resuming one, injects nothing: there, the field would
+    /// silently do nothing, and a silence that looks like a delivery is the
+    /// trap this doc comment exists to name. Empty means none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub spawn_prompt: String,
     pub provider: String,
     pub model: String,
     pub mode_id: String,

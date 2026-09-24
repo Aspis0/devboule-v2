@@ -491,8 +491,12 @@ impl super::SessionRegistry {
         // it travels as `preset_preamble` and is composed by the send path, in one
         // place with the human's standing instructions in front of it
         // (`compose_first_prompt`), so every provider receives one string built by
-        // one rule.
+        // one rule. The resolved profile's spawn prompt rides beside it, in its
+        // fixed place between the standing instructions and the preamble; an
+        // empty one is the absent one, and it was read once when the creation
+        // was resolved — a later profile edit cannot reach this child.
         let prompt = creation.initial_prompt.clone();
+        let spawn_prompt = creation.spawn_prompt.clone();
         let owner = creation.creator.owner.clone();
         let internal_conn = ConnHandle::with_peer(0, None);
         let sent = self.send_with_subscription_timeout(&SendRequest {
@@ -500,9 +504,10 @@ impl super::SessionRegistry {
             subscription_id: 0,
             text: &prompt,
             attachments: &[],
-            // Empty by construction: the standing instructions, the preamble and
-            // the caller's text are the whole prompt, and `devboule_create_agent`
-            // has no parameter that names a stored attachment.
+            // Empty by construction: the standing instructions, the spawn
+            // prompt, the preamble and the caller's text are the whole
+            // prompt, and `devboule_create_agent` has no parameter that names
+            // a stored attachment.
             attachment_references: &[],
             owner: &owner,
             conn: &internal_conn,
@@ -512,6 +517,7 @@ impl super::SessionRegistry {
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: Some(crate::provider_catalog::AGENT_PREAMBLE),
+            spawn_prompt: (!spawn_prompt.is_empty()).then_some(spawn_prompt.as_str()),
             author: UserMessageAuthor::Creation,
             message_kind: UserMessageKind::Creation,
         });
@@ -1243,6 +1249,7 @@ impl super::SessionRegistry {
             // No preset preamble: the daemon's own report is not a creation's
             // prompt, and a child that was created already had its first one.
             preset_preamble: None,
+            spawn_prompt: None,
             // The daemon's own report about a child agent, never the person's
             // words: rendered as non-human alongside agent echoes.
             author: UserMessageAuthor::Agent,

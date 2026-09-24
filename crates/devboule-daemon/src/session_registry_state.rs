@@ -817,6 +817,14 @@ pub(crate) struct AgentCreation {
     /// transcript shows (`SessionEvent::AgentCreated`). A record of a birth: a
     /// rename afterwards does not rewrite it.
     pub(crate) profile_name: String,
+    /// The profile's spawn prompt, read when the creation was resolved: the
+    /// text the daemon itself puts in front of the child's first prompt,
+    /// behind the device's standing instructions and ahead of the creation
+    /// preamble and the creator's prompt. Empty means the profile carries
+    /// none. It travels down the creation road as data — resolved once, here —
+    /// so the send composes from what was resolved and a later edit to the
+    /// profile cannot reach a creation already under way.
+    pub(crate) spawn_prompt: String,
     /// Everything the profile delivers to the child — the mode, the model, the
     /// thinking option and the `autoAccept` constraint — as one typed value.
     /// The card names all of these; the child is started on all of these or the
@@ -898,10 +906,21 @@ pub struct SendRequest<'a> {
     /// prompt for a Design run, an agent message — and `Some(AGENT_PREAMBLE)` for
     /// the prompt an agent's creation sends to its child. It is a field of the
     /// request rather than something the send path looks up, so the ordering rule
-    /// (standing instructions, then this, then the prompt) is composed in exactly
-    /// one place and no session has to be searched for its preamble
-    /// (`create-from-profile`).
+    /// (standing instructions, then the profile's spawn prompt, then this, then
+    /// the prompt) is composed in exactly one place and no session has to be
+    /// searched for its preamble (`create-from-profile`).
     pub preset_preamble: Option<&'a str>,
+    /// The resolved profile's spawn prompt, when the caller is a creation from a
+    /// profile that carries one.
+    ///
+    /// A sibling of `preset_preamble` for the same reason: it is the caller's
+    /// data, read when the creation was resolved, not something the send path
+    /// looks up or re-reads later — so a prompt edited after the creation began
+    /// cannot reach a child that has already started being born. `None` for
+    /// every caller except that send, so profile text can only ever enter a
+    /// prompt through the one composition point, in its fixed place between
+    /// the standing instructions and the preamble.
+    pub spawn_prompt: Option<&'a str>,
     /// Who authored this prompt and what part it plays in the target transcript.
     /// Required so every caller states both facts independently.
     pub author: UserMessageAuthor,
@@ -923,8 +942,10 @@ pub(crate) struct MessageSlotRef<'a> {
 /// A session's first prompt, composed in the one place (`create-from-profile`).
 ///
 /// The order is fixed, and pinned by
-/// `standing_instructions_come_before_the_preset_preamble`: the human's
-/// **standing instructions**, then the **preset preamble** where the caller has
+/// `the_spawn_prompt_sits_between_the_standing_instructions_and_the_preamble`
+/// and `standing_instructions_come_before_the_preset_preamble`: the human's
+/// **standing instructions**, then the **profile's spawn prompt** where the
+/// creation carries one, then the **preset preamble** where the caller has
 /// one, then the prompt itself.
 ///
 /// One glue point, on the shared send path every provider's writer sits behind.
@@ -937,16 +958,21 @@ pub(crate) struct MessageSlotRef<'a> {
 /// exception.
 ///
 /// Everything empty means the prompt itself, **byte for byte**: a human who has
-/// written no standing instructions and a caller with no preamble get exactly
-/// today's prompt, with no separator and no trailing newline to show for a
-/// feature they are not using.
-pub(crate) fn compose_first_prompt(standing: &str, preamble: Option<&str>, prompt: &str) -> String {
-    match (standing.is_empty(), preamble) {
-        (true, None) => prompt.to_string(),
-        (true, Some(preamble)) => format!("{preamble}\n\n{prompt}"),
-        (false, None) => format!("{standing}\n\n{prompt}"),
-        (false, Some(preamble)) => format!("{standing}\n\n{preamble}\n\n{prompt}"),
-    }
+/// written no standing instructions, a profile with no spawn prompt, and a
+/// caller with no preamble get exactly the bare prompt, with no separator and
+/// no trailing newline to show for a feature they are not using.
+pub(crate) fn compose_first_prompt(
+    standing: &str,
+    spawn: Option<&str>,
+    preamble: Option<&str>,
+    prompt: &str,
+) -> String {
+    [Some(standing), spawn, preamble, Some(prompt)]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// The profile facts a `devboule_set_agent_profile` move delivers, resolved on

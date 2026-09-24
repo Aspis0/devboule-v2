@@ -2441,6 +2441,159 @@ describe("Settings agents panel", () => {
     });
   });
 
+  it("edits every field of a profile, the spawn prompt included, and saves them all", async () => {
+    const explorer = makeProfile();
+    // One installed provider, and no `provider_vocabulary` in the handshake:
+    // the model and mode fall back to free text, and the editor must still
+    // finish — the same sentence the create form offers.
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [
+        {
+          id: "grok",
+          executable: "C:\\cli\\grok.cmd",
+          acpAvailable: true,
+          authentication: "ok",
+          protocol: "acp",
+          origin: "user-binary",
+          installed: true,
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    await renderAgentsPanel({ profiles: [explorer], standingInstructions: "" });
+    // The store's read-back after the confirmed save, carrying every edit.
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: {
+        profiles: [
+          {
+            ...explorer,
+            name: "Scout",
+            note: "Maps the work before anyone builds.",
+            spawnPrompt: "Check the diff before you report.",
+            model: "grok-4-fast",
+            modeId: "reflect",
+            thinkingOptionId: "high",
+            features: { autoAccept: true },
+          },
+        ],
+        standingInstructions: "",
+      },
+    });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const editor = container.querySelector(".agent-inline-editor");
+    if (!editor) throw new Error("editor did not render");
+    const pick = <T extends HTMLElement>(selector: string): T => {
+      const element = editor.querySelector<T>(selector);
+      if (!element) throw new Error(`field ${selector} did not render`);
+      return element;
+    };
+    await typeText(pick<HTMLInputElement>("input"), "Scout");
+    await typeText(
+      pick<HTMLTextAreaElement>('textarea[aria-label="Profile note"]'),
+      "Maps the work before anyone builds.",
+    );
+    await typeText(
+      pick<HTMLTextAreaElement>('textarea[aria-label="Profile spawn prompt"]'),
+      "Check the diff before you report.",
+    );
+    await typeText(pick<HTMLInputElement>('[aria-label="Model"]'), "grok-4-fast");
+    await typeText(pick<HTMLInputElement>('[aria-label="Mode"]'), "reflect");
+    await typeText(pick<HTMLInputElement>('[aria-label="Thinking option"]'), "high");
+    await act(async () =>
+      pick<HTMLInputElement>(
+        'input[aria-label="Auto accept for children of this profile"]',
+      ).click(),
+    );
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    expect(agentProfilesSet).toHaveBeenCalledWith({
+      profiles: [
+        {
+          ...explorer,
+          name: "Scout",
+          note: "Maps the work before anyone builds.",
+          spawnPrompt: "Check the diff before you report.",
+          model: "grok-4-fast",
+          modeId: "reflect",
+          thinkingOptionId: "high",
+          features: { autoAccept: true },
+        },
+      ],
+      standingInstructions: "",
+    });
+  });
+
+  it("refuses a spawn prompt over 8 KiB with the size named and truncates nothing", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const spawnField = container.querySelector<HTMLTextAreaElement>(
+      '.agent-inline-editor textarea[aria-label="Profile spawn prompt"]',
+    );
+    if (!spawnField) throw new Error("spawn prompt field did not render");
+    // 4097 two-byte characters: 8194 UTF-8 bytes, 2 over the cap. The byte
+    // count is what the daemon enforces, so a char-counting UI would pass it.
+    const flood = "é".repeat(4097);
+    await typeText(spawnField, flood);
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).not.toHaveBeenCalled();
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("8194");
+    expect(alert?.textContent).toContain("8192");
+    // The refusal changed nothing: the field still holds every byte.
+    expect(spawnField.value).toBe(flood);
+  });
+
+  it("saves a cleared spawn prompt as the field's absence, never as an empty string", async () => {
+    const carrying = makeProfile({ spawnPrompt: "Check the diff before you report." });
+    await renderAgentsPanel({ profiles: [carrying], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const spawnField = container.querySelector<HTMLTextAreaElement>(
+      '.agent-inline-editor textarea[aria-label="Profile spawn prompt"]',
+    );
+    if (!spawnField) throw new Error("spawn prompt field did not render");
+    // Whitespace only: the daemon trims the field, so this is none, and the
+    // wire shape of none is the key's absence.
+    await typeText(spawnField, "   ");
+
+    await act(async () => sectionButton("Save").click());
+    await act(async () => undefined);
+
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
+    expect("spawnPrompt" in sent.profiles[0]).toBe(false);
+  });
+
+  it("says when the spawn prompt is sent and that running agents keep what they started with", async () => {
+    await renderAgentsPanel({ profiles: [makeProfile()], standingInstructions: "" });
+
+    await act(async () => rowButton("Explorer", "Edit").click());
+    await act(async () => undefined);
+
+    const editor = container.querySelector(".agent-inline-editor");
+    if (!editor) throw new Error("editor did not render");
+    expect(editor.textContent).toContain(
+      "Sent at the start of every agent created from this profile, before the creator's prompt",
+    );
+    expect(editor.textContent).toContain("Agents already running keep what they started with");
+    // The spawn prompt carries its own counter, in the daemon's units.
+    expect(editor.textContent).toContain("8192 bytes");
+  });
+
   it("keeps the editor's draft on screen under its error when a rename is refused", async () => {
     await renderAgentsPanel({
       profiles: [makeProfile({ id: "x1" })],
@@ -3149,6 +3302,29 @@ describe("Settings agents panel — new profile form", () => {
     await act(async () => undefined);
   }
 
+  /**
+   * Opens one stored row's editor. The form is shared with the New-profile
+   * flow, so the editor is told apart by the class only the create mode
+   * carries (`agent-profile-create`).
+   */
+  async function openRowEditor(name: string): Promise<HTMLElement> {
+    const row = Array.from(container.querySelectorAll<HTMLElement>(".agent-profile-row")).find(
+      (candidate) => candidate.textContent?.includes(name),
+    );
+    if (!row) throw new Error(`profile row ${name} did not render`);
+    const edit = Array.from(row.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent === "Edit",
+    );
+    if (!edit) throw new Error(`Edit button on ${name} did not render`);
+    await act(async () => edit.click());
+    await act(async () => undefined);
+    const editor = container.querySelector<HTMLElement>(
+      ".agent-inline-editor:not(.agent-profile-create)",
+    );
+    if (!editor) throw new Error(`the editor of ${name} did not render`);
+    return editor;
+  }
+
   function form(): HTMLElement {
     const element = container.querySelector<HTMLElement>(".agent-profile-create");
     if (!element) throw new Error("new-profile form did not render");
@@ -3495,6 +3671,55 @@ describe("Settings agents panel — new profile form", () => {
     // Free text, not an empty select: the human can finish the form.
     expect(modelControl().tagName).toBe("INPUT");
     expect(modeControl().tagName).toBe("INPUT");
+  });
+
+  it("shows a stored model and mode the provider no longer lists, instead of an empty field", async () => {
+    // The reply publishes one model and one mode, neither of them the row's.
+    // A select over published items alone would render both fields empty,
+    // hiding the values the human opened the editor to change; the stored
+    // value is appended and labelled as the saved one, so the row's value is
+    // visible, selected, and kept by a save that touches nothing else.
+    vi.mocked(providerVocabularyGet).mockResolvedValueOnce(
+      makeVocabulary({
+        models: {
+          state: "present",
+          origin: "provider",
+          items: [{ modelId: "claude-opus-4-6", name: "Claude Opus 4.6" }],
+        },
+        modes: { state: "present", origin: "provider", items: [{ id: "plan", name: "Plan" }] },
+      }),
+    );
+    const stored = storedProfile("p-1", { name: "Explorer" });
+    await renderAgentsPanel({ profiles: [stored], standingInstructions: "" }, VOCABULARY_DAEMON);
+    vi.mocked(agentProfilesGet).mockResolvedValueOnce({
+      document: { profiles: [stored], standingInstructions: "" },
+    });
+    const editor = await openRowEditor("Explorer");
+    await act(async () => undefined);
+
+    const model = editor.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    const mode = editor.querySelector<HTMLSelectElement>('select[aria-label="Mode"]');
+    if (!model || !mode) throw new Error("the model and mode selects did not render");
+    expect(selectValues(model)).toEqual(["", "claude-opus-4-6", "claude-sonnet-4-5"]);
+    expect(selectValues(mode)).toEqual(["", "plan", "default"]);
+    expect(model.value).toBe("claude-sonnet-4-5");
+    expect(mode.value).toBe("default");
+    expect(
+      Array.from(model.options).find((option) => option.value === "claude-sonnet-4-5")?.textContent,
+    ).toBe("claude-sonnet-4-5 (the value saved on this profile)");
+
+    // A save that changes no vocabulary field carries the stored pair, not
+    // the empty string a blank select would have left in the draft.
+    const save = Array.from(editor.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent === "Save",
+    );
+    if (!save) throw new Error("the editor's Save button did not render");
+    await act(async () => save.click());
+    await act(async () => undefined);
+    expect(agentProfilesSet).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(agentProfilesSet).mock.calls[0]?.[0] as AgentProfilesDocument;
+    expect(sent.profiles[0]?.model).toBe("claude-sonnet-4-5");
+    expect(sent.profiles[0]?.modeId).toBe("default");
   });
 
   it("says none and absent differently: a provider that answers 'I have none' is not a silent one", async () => {
@@ -4398,20 +4623,22 @@ describe("Settings agents panel — new profile form", () => {
 
     // The count is part of the net: a scenario that stops rendering its
     // sentence, or a new sentence nobody rendered here, moves this number.
-    // Thirty-nine: the delegation section's one sentence on this panel (an
+    // Forty-one: the delegation section's one sentence on this panel (an
     // older daemon's named absence — the switch itself is gated harder and
     // only renders when the handshake advertises permission_delegation), the
     // fifteen vocabulary sentences, the ACP suggestion
     // and the in-flight ask, the load-failed and loading sentences, the
     // off-switch pair and the no-note sentence, the delete-confirm copy,
-    // the editor hint, the three cap refusals, the model/mode refusals, the
+    // the editor's two hints (when the spawn prompt is sent, and that running
+    // agents keep what they started with), the thinking option's own hint,
+    // the three cap refusals, the model/mode refusals, the
     // two profile-cap sentences, the two catalog sentences, the heading
     // description, the intro copy, the three tick notes, and the standing
     // copy with its counter (whose numbers are tokenised, so every scenario
     // renders it into one net entry). A new sentence that does not come
     // through a scenario here moves this number; so does a sentence a
     // scenario stopped rendering.
-    expect(sentences).toHaveLength(39);
+    expect(sentences).toHaveLength(41);
     for (let i = 0; i < sentences.length; i++) {
       for (let j = i + 1; j < sentences.length; j++) {
         const a = sentences[i]!;

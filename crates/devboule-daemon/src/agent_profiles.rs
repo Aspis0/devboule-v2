@@ -1,5 +1,6 @@
-//! Agent profiles: the ordered list a creation resolves, and the standing
-//! instructions that travel with it.
+//! Agent profiles: the ordered list a creation resolves, and the two texts
+//! that travel from it — the device's standing instructions, and the
+//! per-profile spawn prompt read at resolution.
 //!
 //! The daemon is the only writer. The app sends `AgentProfilesSet` over the
 //! named pipe; the creation path reads the store **at the moment it resolves a
@@ -16,7 +17,11 @@
 //!
 //! Each device owns its own file. A profile is a local decision about what this
 //! machine may start, so paired devices do not inherit or propagate one
-//! another's profiles: `peer_policy.rs` refuses both requests to either role.
+//! another's profiles: neither side pushes its document to the other, and no
+//! creation on this machine resolves a profile from another device's file. A
+//! peer **holding the admin capability** may read and write this document over
+//! the wire — `peer_policy.rs` gates `AgentProfilesGet` and `AgentProfilesSet`
+//! on `CAP_ADMIN`, the same gate every other settings store here rides.
 //!
 //! **What this file failing means.** A document that cannot be read, parsed or
 //! admitted is quarantined exactly as a corrupt tool-policy file is, and the
@@ -71,6 +76,10 @@ pub(crate) const MAX_PROFILE_NOTE_BYTES: usize = 2 * 1024;
 
 /// The longest standing-instructions text, in bytes.
 pub(crate) const MAX_STANDING_INSTRUCTIONS_BYTES: usize = 8 * 1024;
+
+/// The longest spawn prompt, in bytes: the text a profile adds to the first
+/// prompt of every agent created from it.
+pub(crate) const MAX_PROFILE_SPAWN_PROMPT_BYTES: usize = 8 * 1024;
 
 /// The longest profile id, in bytes.
 pub(crate) const MAX_PROFILE_ID_BYTES: usize = 128;
@@ -361,6 +370,19 @@ fn check_profile(
         ));
     }
 
+    // The spawn prompt is prose like the note, and its empty form means none:
+    // trimmed to nothing it stores as nothing, so the composition never has to
+    // look at a blank half-line. Capped on the trimmed value — the size the
+    // refusal names is the size the store would keep.
+    let spawn_prompt = profile.spawn_prompt.trim();
+    if spawn_prompt.len() > MAX_PROFILE_SPAWN_PROMPT_BYTES {
+        return Err(format!(
+            "the spawn prompt of profile {position} is {} bytes, over the {MAX_PROFILE_SPAWN_PROMPT_BYTES}-byte cap",
+            spawn_prompt.len()
+        ));
+    }
+    profile.spawn_prompt = spawn_prompt.to_string();
+
     if let Some(icon) = profile.icon.as_deref() {
         let icon = icon.trim();
         if icon.is_empty() {
@@ -646,6 +668,7 @@ mod tests {
             name: name.to_string(),
             icon: None,
             note: String::new(),
+            spawn_prompt: String::new(),
             provider: "claude".to_string(),
             model: "claude-opus-4-6".to_string(),
             mode_id: "default".to_string(),
@@ -990,6 +1013,95 @@ mod tests {
             "the largest admitted document round-trips"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The spawn prompt is canonicalised the way the other prose fields are:
+    /// trimmed, and a prompt with nothing left means none. Over the cap is
+    /// refused with the size named, never truncated — the field is injected
+    /// into a child's first prompt, so half of one would be a rule the
+    /// profile never stated.
+    #[test]
+    fn a_spawn_prompt_is_trimmed_and_over_the_cap_refused_with_its_size() {
+        let dir = temp_dir();
+        let store = AgentProfilesStore::load(&dir);
+        assert_eq!(MAX_PROFILE_SPAWN_PROMPT_BYTES, 8 * 1024);
+
+        let mut padded = profile("p-1", "Padded");
+        padded.spawn_prompt = "   ".to_string();
+        store
+            .set(document(vec![padded]))
+            .expect("a whitespace-only prompt is none");
+        assert_eq!(store.document().profiles[0].spawn_prompt, "");
+
+        let mut carried = profile("p-1", "Carried");
+        carried.spawn_prompt = "  Check the diff before you report.  ".to_string();
+        store
+            .set(document(vec![carried]))
+            .expect("the trimmed prompt fits");
+        assert_eq!(
+            store.document().profiles[0].spawn_prompt,
+            "Check the diff before you report."
+        );
+
+        let mut long_prompt = profile("p-1", "Long");
+        long_prompt.spawn_prompt = "s".repeat(MAX_PROFILE_SPAWN_PROMPT_BYTES + 1);
+        let error = store
+            .set(document(vec![long_prompt]))
+            .expect_err("a spawn prompt over the cap must be refused");
+        assert!(error.to_string().contains("8193"), "{error}");
+        assert!(error.to_string().contains("8192"), "{error}");
+
+        // The refusal wrote nothing: the store still holds the trimmed prompt
+        // from the write above, whole, with nothing clipped to fit.
+        assert_eq!(
+            store.document().profiles[0].spawn_prompt,
+            "Check the diff before you report."
+        );
+
+        // Exactly the cap is admitted, and round-trips through the file.
+        let mut exact = profile("p-1", "Exact");
+        exact.spawn_prompt = "s".repeat(MAX_PROFILE_SPAWN_PROMPT_BYTES);
+        let exact = document(vec![exact]);
+        store.set(exact.clone()).expect("exactly the cap");
+        assert_eq!(store.document(), exact);
+        assert_eq!(
+            AgentProfilesStore::load(&dir).document(),
+            exact,
+            "the largest admitted prompt round-trips"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A document written before the field existed loads unchanged: the spawn
+    /// prompt is `serde(default)`, so its absence parses as none and every
+    /// other row keeps the shape it was saved with.
+    #[test]
+    fn an_old_document_without_a_spawn_prompt_loads_unchanged() {
+        let dir = temp_dir();
+        let old = serde_json::json!({
+            "profiles": [{
+                "id": "p-old",
+                "name": "Old",
+                "note": "",
+                "provider": "claude",
+                "model": "claude-opus-4-6",
+                "modeId": "default",
+                "features": {},
+                "enabledForAgents": false
+            }],
+            "standingInstructions": ""
+        });
+        std::fs::write(
+            dir.join(PROFILES_FILE),
+            serde_json::to_vec(&old).expect("json"),
+        )
+        .expect("write the old file");
+        let store = AgentProfilesStore::load(&dir);
+        assert_eq!(store.document().profiles.len(), 1);
+        assert_eq!(store.document().profiles[0].name, "Old");
+        assert_eq!(store.document().profiles[0].spawn_prompt, "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

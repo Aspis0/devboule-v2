@@ -134,6 +134,7 @@ fn a_resumed_child_keeps_its_birth_overlay_after_the_profile_changes() {
                 name: "Birth".to_string(),
                 icon: None,
                 note: String::new(),
+                spawn_prompt: String::new(),
                 provider: "claude".to_string(),
                 model: "claude-opus-4-6".to_string(),
                 mode_id: "default".to_string(),

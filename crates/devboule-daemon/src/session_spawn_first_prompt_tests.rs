@@ -61,6 +61,113 @@ fn codex_first_prompt_does_not_wait_for_mcp() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The spawn prompt rides the send road, not any provider writer: a
+/// creation-shaped send — the shape `create_session_for_agent` builds, and
+/// the only shape that sets the slot — carrying the resolved profile's
+/// prompt composes standing → spawn → preamble → prompt, and the same send
+/// without one is byte-identical to the shape the road already produced.
+/// This pins the field's journey through `SendRequest` to the one
+/// composition point; the order itself is `compose_first_prompt`'s, pinned
+/// in `session_creation_race_tests`.
+#[test]
+fn the_spawn_prompt_travels_the_send_road_in_front_of_the_preamble() {
+    let (dir, registry, journal) = tmp_delete_registry();
+    // Standing instructions come from the profile store, attached the way the
+    // server state attaches it: the store is read at the prompt, never cached.
+    let store_dir = crate::test_dirs::test_temp_dir("devboule spawn-prompt send");
+    let store = crate::agent_profiles::AgentProfilesStore::load(&store_dir);
+    let document = devboule_protocol::AgentProfilesDocument {
+        standing_instructions: "standing".to_string(),
+        ..devboule_protocol::AgentProfilesDocument::default()
+    };
+    store.set(document).expect("standing instructions");
+    registry.attach_agent_profiles(Arc::new(store));
+
+    let owner = test_owner("S-1-5-21-spawn", "process-spawn");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let runtime = insert_live_agent_with_kind_and_writer(
+        &registry,
+        "spawn-order-child",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::clone(&received))),
+    );
+    let conn = attach_live_agent_for_test(&runtime, "spawn-order-child", 37);
+    registry
+        .send_with_subscription_timeout(&SendRequest {
+            session_id: "spawn-order-child",
+            subscription_id: 0,
+            text: "the task",
+            attachments: &[],
+            attachment_references: &[],
+            owner: &owner,
+            conn: &conn,
+            mcp_timeout: crate::mcp_broker::ready_timeout(),
+            active_turn_behavior: None,
+            require_attachment: false,
+            interrupt_on_steer_refusal: true,
+            message_slot: None,
+            preset_preamble: Some(crate::provider_catalog::AGENT_PREAMBLE),
+            spawn_prompt: Some("spawn"),
+            author: UserMessageAuthor::Creation,
+            message_kind: UserMessageKind::Creation,
+        })
+        .expect("the spawn-shaped creation send writes");
+    assert_eq!(
+        &*received.lock().expect("received"),
+        format!(
+            "standing\n\nspawn\n\n{}\n\nthe task",
+            crate::provider_catalog::AGENT_PREAMBLE
+        )
+        .as_bytes(),
+        "standing, then the profile's spawn prompt, then the preamble, then the task"
+    );
+
+    // The same shape without a spawn prompt is what the road sent before the
+    // field existed: the absent slot is no blank line and no separator.
+    let without = Arc::new(Mutex::new(Vec::new()));
+    let runtime_without = insert_live_agent_with_kind_and_writer(
+        &registry,
+        "no-spawn-child",
+        owner.clone(),
+        SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::clone(&without))),
+    );
+    let conn_without = attach_live_agent_for_test(&runtime_without, "no-spawn-child", 38);
+    registry
+        .send_with_subscription_timeout(&SendRequest {
+            session_id: "no-spawn-child",
+            subscription_id: 0,
+            text: "the task",
+            attachments: &[],
+            attachment_references: &[],
+            owner: &owner,
+            conn: &conn_without,
+            mcp_timeout: crate::mcp_broker::ready_timeout(),
+            active_turn_behavior: None,
+            require_attachment: false,
+            interrupt_on_steer_refusal: true,
+            message_slot: None,
+            preset_preamble: Some(crate::provider_catalog::AGENT_PREAMBLE),
+            spawn_prompt: None,
+            author: UserMessageAuthor::Creation,
+            message_kind: UserMessageKind::Creation,
+        })
+        .expect("the bare creation-shaped send writes");
+    assert_eq!(
+        &*without.lock().expect("received"),
+        format!(
+            "standing\n\n{}\n\nthe task",
+            crate::provider_catalog::AGENT_PREAMBLE
+        )
+        .as_bytes(),
+    );
+
+    journal.shutdown();
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(store_dir);
+}
+
 #[test]
 fn resume_handle_refuses_the_terminal_before_any_registration() {
     // S9: the terminal's resume stays refused at the gate (it has no

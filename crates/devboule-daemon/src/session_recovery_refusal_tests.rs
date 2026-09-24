@@ -145,6 +145,7 @@ fn a_provider_that_refuses_the_handle_recovers_the_conversation_into_a_new_sessi
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: None,
+            spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
         })

@@ -1798,6 +1798,7 @@ fn agent_profiles_wire_contract_round_trips_with_its_exact_field_names() {
             name: "Reviewer".to_string(),
             icon: Some("eye".to_string()),
             note: "Use for a second opinion.".to_string(),
+            spawn_prompt: String::new(),
             provider: "claude".to_string(),
             model: "opus".to_string(),
             mode_id: "default".to_string(),
@@ -1870,6 +1871,7 @@ fn agent_profiles_wire_contract_round_trips_with_its_exact_field_names() {
                     name: "Bare".to_string(),
                     icon: None,
                     note: String::new(),
+                    spawn_prompt: String::new(),
                     provider: "pi".to_string(),
                     model: "gpt-5".to_string(),
                     mode_id: "ask".to_string(),
@@ -1963,6 +1965,84 @@ fn agent_profiles_wire_contract_round_trips_with_its_exact_field_names() {
         .name(),
         "AgentProfilesSet"
     );
+}
+
+/// The spawn prompt rides the profile as `spawnPrompt`, and its empty form
+/// is **omitted** rather than sent as `""`: a document where no profile
+/// carries one serialises exactly like the pre-field shape, which is what
+/// keeps an older daemon — `deny_unknown_fields` and all — reading a newer
+/// app's document until the first prompt is written. Its absence decodes as
+/// none, so an old document loads unchanged.
+#[test]
+fn a_profile_spawn_prompt_round_trips_and_its_absence_is_none() {
+    let mut carried = AgentProfile {
+        id: "p-9".to_string(),
+        name: "Sentinel".to_string(),
+        icon: None,
+        note: String::new(),
+        spawn_prompt: "Check the diff before you report.".to_string(),
+        provider: "claude".to_string(),
+        model: "opus".to_string(),
+        mode_id: "default".to_string(),
+        thinking_option_id: None,
+        features: serde_json::Map::new(),
+        tool_overlay: Vec::new(),
+        enabled_for_agents: true,
+    };
+    let set = ClientMessage::AgentProfilesSet {
+        id: 48,
+        document: AgentProfilesDocument {
+            profiles: vec![carried.clone()],
+            standing_instructions: String::new(),
+        },
+    };
+    let json = serde_json::to_value(&set).expect("json");
+    assert_eq!(
+        json["document"]["profiles"][0]["spawnPrompt"],
+        "Check the diff before you report."
+    );
+    assert_eq!(
+        serde_json::from_value::<ClientMessage>(json).expect("back"),
+        set,
+        "the carried prompt decodes to the same profile"
+    );
+
+    // Empty is omitted on the wire, never sent as an empty string.
+    carried.spawn_prompt = String::new();
+    let quiet = ClientMessage::AgentProfilesSet {
+        id: 49,
+        document: AgentProfilesDocument {
+            profiles: vec![carried],
+            standing_instructions: String::new(),
+        },
+    };
+    let json = serde_json::to_value(&quiet).expect("json");
+    assert!(
+        json["document"]["profiles"][0].get("spawnPrompt").is_none(),
+        "an empty prompt is omitted: {json}"
+    );
+
+    // ...and absence decodes as none: the pre-field document shape parses.
+    let old = serde_json::json!({
+        "type": "agent_profiles_set",
+        "id": 50,
+        "document": {
+            "profiles": [{
+                "id": "p-old",
+                "name": "Old",
+                "provider": "pi",
+                "model": "gpt-5",
+                "modeId": "ask",
+                "enabledForAgents": false
+            }],
+            "standingInstructions": ""
+        }
+    });
+    let decoded = serde_json::from_value::<ClientMessage>(old).expect("the old shape");
+    let ClientMessage::AgentProfilesSet { document, .. } = &decoded else {
+        panic!("the wrong variant decoded");
+    };
+    assert_eq!(document.profiles[0].spawn_prompt, "");
 }
 
 #[test]

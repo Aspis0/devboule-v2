@@ -511,24 +511,92 @@ fn a_readmitted_child_keeps_what_it_already_spent() {
 #[test]
 fn standing_instructions_come_before_the_preset_preamble() {
     assert_eq!(
-        super::compose_first_prompt("standing", Some("preamble"), "prompt"),
+        super::compose_first_prompt("standing", None, Some("preamble"), "prompt"),
         "standing\n\npreamble\n\nprompt"
     );
     assert_eq!(
-        super::compose_first_prompt("standing", None, "prompt"),
+        super::compose_first_prompt("standing", None, None, "prompt"),
         "standing\n\nprompt"
     );
     assert_eq!(
-        super::compose_first_prompt("", Some("preamble"), "prompt"),
+        super::compose_first_prompt("", None, Some("preamble"), "prompt"),
         "preamble\n\nprompt"
     );
     // The position that decides the property: the instructions are in front
     // of the preamble, and the preamble in front of the prompt.
-    let composed = super::compose_first_prompt("standing", Some("preamble"), "prompt");
+    let composed = super::compose_first_prompt("standing", None, Some("preamble"), "prompt");
     let standing = composed.find("standing").expect("the instructions");
     let preamble = composed.find("preamble").expect("the preamble");
     let prompt = composed.find("prompt").expect("the prompt");
     assert!(standing < preamble && preamble < prompt, "{composed}");
+}
+
+/// The spawn prompt's place, fixed by `create-from-profile`: the human's
+/// standing instructions, then the **profile's spawn prompt**, then the preset
+/// preamble, then the prompt. The spawn text is the profile the child was
+/// created from speaking before its creator does, so it sits behind the
+/// device-wide rules and in front of the creation's own preamble.
+#[test]
+fn the_spawn_prompt_sits_between_the_standing_instructions_and_the_preamble() {
+    assert_eq!(
+        super::compose_first_prompt("standing", Some("spawn"), Some("preamble"), "prompt"),
+        "standing\n\nspawn\n\npreamble\n\nprompt"
+    );
+    // The spawn text keeps its place without the standing instructions too:
+    // an absent half removes its separator, never reorders the rest.
+    assert_eq!(
+        super::compose_first_prompt("", Some("spawn"), Some("preamble"), "prompt"),
+        "spawn\n\npreamble\n\nprompt"
+    );
+    assert_eq!(
+        super::compose_first_prompt("standing", Some("spawn"), None, "prompt"),
+        "standing\n\nspawn\n\nprompt"
+    );
+    assert_eq!(
+        super::compose_first_prompt("", Some("spawn"), None, "prompt"),
+        "spawn\n\nprompt"
+    );
+    // The position that decides the property, spelled out on the full shape.
+    let composed =
+        super::compose_first_prompt("standing", Some("spawn"), Some("preamble"), "prompt");
+    let standing = composed.find("standing").expect("the instructions");
+    let spawn = composed.find("spawn").expect("the spawn prompt");
+    let preamble = composed.find("preamble").expect("the preamble");
+    let prompt = composed.find("prompt").expect("the prompt");
+    assert!(
+        standing < spawn && spawn < preamble && preamble < prompt,
+        "{composed}"
+    );
+}
+
+/// A profile without a spawn prompt composes exactly what the profileless
+/// rule composed: the absent field is no blank line and no separator, and
+/// every other half keeps the place it already had.
+#[test]
+fn an_absent_spawn_prompt_changes_no_composition_at_all() {
+    assert_eq!(
+        super::compose_first_prompt("standing", None, Some("preamble"), "prompt"),
+        "standing\n\npreamble\n\nprompt"
+    );
+    assert_eq!(
+        super::compose_first_prompt("", None, None, "the prompt"),
+        "the prompt"
+    );
+}
+
+/// An **empty** spawn prompt is the absent one: the store trims the field to
+/// exactly this value, so a profile saved with nothing to say composes
+/// nothing at all — the preamble follows the standing instructions directly.
+#[test]
+fn an_empty_spawn_prompt_is_the_absent_one() {
+    assert_eq!(
+        super::compose_first_prompt("standing", Some(""), Some("preamble"), "prompt"),
+        "standing\n\npreamble\n\nprompt"
+    );
+    assert_eq!(
+        super::compose_first_prompt("", Some(""), None, "the prompt"),
+        "the prompt"
+    );
 }
 
 /// An empty standing-instructions text leaves the prompt **byte for byte**
@@ -536,12 +604,12 @@ fn standing_instructions_come_before_the_preset_preamble() {
 #[test]
 fn empty_standing_instructions_change_no_prompt_at_all() {
     assert_eq!(
-        super::compose_first_prompt("", None, "the prompt"),
+        super::compose_first_prompt("", None, None, "the prompt"),
         "the prompt"
     );
     let today = format!("{}\n\n{}", "the preamble", "the prompt");
     assert_eq!(
-        super::compose_first_prompt("", Some("the preamble"), "the prompt"),
+        super::compose_first_prompt("", None, Some("the preamble"), "the prompt"),
         today,
         "an empty text adds nothing to the glue the preamble already had"
     );

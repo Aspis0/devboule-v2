@@ -338,6 +338,7 @@ fn a_resume_for_a_gone_directory_recovers_the_conversation_into_a_new_session() 
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: None,
+            spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
         })

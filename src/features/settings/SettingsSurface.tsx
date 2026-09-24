@@ -571,6 +571,10 @@ const PROVIDER_VOCABULARY_CAPABILITY = "provider_vocabulary";
 const MAX_PROFILE_NAME_CHARS = 60;
 const MAX_PROFILE_NOTE_BYTES = 2 * 1024;
 const MAX_STANDING_INSTRUCTIONS_BYTES = 8 * 1024;
+/** `MAX_PROFILE_SPAWN_PROMPT_BYTES` in `agent_profiles.rs`. */
+const MAX_PROFILE_SPAWN_PROMPT_BYTES = 8 * 1024;
+/** `MAX_PROFILE_FIELD_BYTES` in `agent_profiles.rs`: ids like the thinking option. */
+const MAX_PROFILE_FIELD_BYTES = 128;
 /**
  * `MAX_PROFILES` in `crates/devboule-daemon/src/agent_profiles.rs`. The 65th
  * creation is refused by the store, so the panel mirrors the number and says
@@ -740,13 +744,14 @@ function cloneDocument(document: AgentProfilesDocument): AgentProfilesDocument {
 }
 
 /**
- * The two text caps every profile write enforces — renaming an existing row
- * and creating a new one. Returns the refusal sentence sized in the daemon's
- * own units, or null when both texts fit. The name counts Unicode scalar
- * values (the daemon's `chars().count()`), the note UTF-8 bytes
- * (`String::len`); refusals name the size and nothing is ever truncated.
+ * The text caps every profile write enforces — renaming an existing row and
+ * creating a new one alike. Returns the refusal sentence sized in the
+ * daemon's own units, or null when every text fits. The name counts Unicode
+ * scalar values (the daemon's `chars().count()`), the note and the spawn
+ * prompt UTF-8 bytes (`String::len`); refusals name the size and nothing is
+ * ever truncated.
  */
-function profileTextsError(trimmedName: string, note: string): string | null {
+function profileTextsError(trimmedName: string, note: string, spawnPrompt: string): string | null {
   const trimmedChars = charCount(trimmedName);
   if (trimmedChars === 0) {
     return `A profile name is 1 to ${MAX_PROFILE_NAME_CHARS} characters.`;
@@ -758,6 +763,10 @@ function profileTextsError(trimmedName: string, note: string): string | null {
   if (noteBytes > MAX_PROFILE_NOTE_BYTES) {
     return `This note is ${noteBytes} bytes, over the ${MAX_PROFILE_NOTE_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
   }
+  const spawnBytes = utf8Bytes(spawnPrompt);
+  if (spawnBytes > MAX_PROFILE_SPAWN_PROMPT_BYTES) {
+    return `This spawn prompt is ${spawnBytes} bytes, over the ${MAX_PROFILE_SPAWN_PROMPT_BYTES}-byte cap. Nothing was saved and nothing was truncated.`;
+  }
   return null;
 }
 
@@ -765,12 +774,65 @@ function profileTextsError(trimmedName: string, note: string): string | null {
 interface NewProfileDraft {
   name: string;
   note: string;
+  spawnPrompt: string;
   provider: string;
   model: string;
   modeId: string;
+  /** "" saves none; the daemon stores null. */
+  thinkingOptionId: string;
   autoAccept: boolean;
   enabledForAgents: boolean;
   restrictPeers: boolean;
+}
+
+/**
+ * What the profile form's fields hold. It is the seed the form starts from
+ * and the draft an edit reports up, so an editor's typed text survives the
+ * row it renders in being removed and restored by an in-flight write.
+ */
+interface ProfileFormSeed {
+  name: string;
+  note: string;
+  spawnPrompt: string;
+  provider: string;
+  model: string;
+  modeId: string;
+  /** "" means none; the daemon stores null. */
+  thinkingOptionId: string;
+  /** The one feature the daemon interprets, read the way the daemon reads it. */
+  autoAccept: boolean;
+}
+
+/** The seed a new profile starts from: empty fields, no provider chosen yet. */
+const EMPTY_PROFILE_FORM_SEED: ProfileFormSeed = {
+  name: "",
+  note: "",
+  spawnPrompt: "",
+  provider: "",
+  model: "",
+  modeId: "",
+  thinkingOptionId: "",
+  autoAccept: false,
+};
+
+/**
+ * The stored row a form edits, as the fields hold it. `autoAccept` is the
+ * JSON boolean `true` and nothing else — the daemon's own reading
+ * (`profile_delivery.rs`) — and the feature keys this form cannot interpret
+ * are not read at all here: they travel verbatim on save, never silently
+ * dropped.
+ */
+function seedFromProfile(profile: AgentProfile): ProfileFormSeed {
+  return {
+    name: profile.name,
+    note: profile.note,
+    spawnPrompt: profile.spawnPrompt ?? "",
+    provider: profile.provider,
+    model: profile.model,
+    modeId: profile.modeId,
+    thinkingOptionId: profile.thinkingOptionId ?? "",
+    autoAccept: profile.features.autoAccept === true,
+  };
 }
 
 /**
@@ -843,32 +905,48 @@ function VocabularyField({
 }
 
 /**
- * The new-profile form, inline in the Agents panel — the panel's own shape
- * (its editor and delete confirm are inline too; nothing here needs a modal).
- * Its one hard rule: model and modeId are the provider's own vocabulary,
- * stored verbatim, so the form never invents one. It asks — through the
- * `provider_vocabulary` handshake gate — and renders the answer's three
- * states distinctly; when the daemon predates the query it says so in its
- * own words and falls back to free text, so a human can always finish.
+ * The profile form, inline in the Agents panel — the panel's own shape (the
+ * editor and the delete confirm are inline too; nothing here needs a modal).
+ * One form serves creating a profile and editing a stored one, because the
+ * fields are the same and the way to different values should not depend on
+ * whether the row exists yet. Its one hard rule: model and modeId are the
+ * provider's own vocabulary, stored verbatim, so the form never invents one.
+ * It asks — through the `provider_vocabulary` handshake gate — and renders
+ * the answer's three states distinctly; when the daemon predates the query
+ * it says so in its own words and falls back to free text, so a human can
+ * always finish.
  *
  * The vocabulary refetch on a provider change rides the same sequence-guard
  * cadence as the panel's document load: only the newest fetch may apply, so
  * a reply for the previously selected provider never lands in a form that
  * now shows another one.
  *
- * There is no thinking-option field on purpose: the vocabulary reply carries
- * no thinking axis (spec §4), and an empty control would invent one. A new
- * profile saves `thinkingOptionId: null`.
+ * What the two modes may touch differs, on purpose: creating a profile names
+ * its ticks too (agents-may-create, the peer tools overlay); editing one
+ * does not — the row carries the agents tick, and the overlay is the human's
+ * saved deny list, shown on the row and travelling verbatim on every save.
+ * The thinking option is a free-text field in both modes: the vocabulary
+ * reply carries no thinking axis, and the daemon publishes no list, so typed
+ * text is checked against the daemon's caps here and by the provider itself
+ * when a session starts.
  */
-function NewAgentProfileForm({
+function AgentProfileForm({
+  mode,
+  seed,
   providers,
   catalogLoading,
   catalogError,
   vocabularySupported,
   busy,
   onCreate,
+  onSaveSeed,
+  onSeedChange,
   onCancel,
 }: {
+  /** "create" opens with empty fields; "edit" seeds from the stored row. */
+  mode: "create" | "edit";
+  /** The fields' starting values: EMPTY_PROFILE_FORM_SEED, or the row's draft. */
+  seed: ProfileFormSeed;
   /** Installed providers only, catalog order. */
   providers: readonly ProviderInfo[];
   catalogLoading: boolean;
@@ -877,19 +955,40 @@ function NewAgentProfileForm({
   vocabularySupported: boolean;
   /** True while a panel write is in flight: Save must not start another. */
   busy: boolean;
+  /** Create mode's save. The panel validates and persists. */
   onCreate: (draft: NewProfileDraft) => void;
+  /** Edit mode's save: the seed fields, applied to the one row. */
+  onSaveSeed?: (seed: ProfileFormSeed) => void;
+  /** Edit mode's every keystroke, reported up so the draft survives the row. */
+  onSeedChange?: (seed: ProfileFormSeed) => void;
   onCancel: () => void;
 }) {
-  const [name, setName] = useState("");
-  const [note, setNote] = useState("");
-  const [providerId, setProviderId] = useState("");
-  const [model, setModel] = useState("");
-  const [mode, setMode] = useState("");
-  const [autoAccept, setAutoAccept] = useState(false);
+  const [name, setName] = useState(seed.name);
+  const [note, setNote] = useState(seed.note);
+  const [spawnPrompt, setSpawnPrompt] = useState(seed.spawnPrompt);
+  const [providerId, setProviderId] = useState(seed.provider);
+  const [model, setModel] = useState(seed.model);
+  const [modeId, setModeId] = useState(seed.modeId);
+  const [thinkingOptionId, setThinkingOptionId] = useState(seed.thinkingOptionId);
+  const [autoAccept, setAutoAccept] = useState(seed.autoAccept);
   const [enabledForAgents, setEnabledForAgents] = useState(false);
   const [restrictPeers, setRestrictPeers] = useState(false);
   const [vocabulary, setVocabulary] = useState<ProviderVocabulary | null>(null);
   const [vocabularyError, setVocabularyError] = useState<ErrorSentence | null>(null);
+  // The fields as they stand this render: the base every change reports up
+  // from, so the panel's draft always holds the whole form, never a patch.
+  function currentSeed(): ProfileFormSeed {
+    return {
+      name,
+      note,
+      spawnPrompt,
+      provider: providerId,
+      model,
+      modeId,
+      thinkingOptionId,
+      autoAccept,
+    };
+  }
   // Monotonic fetch sequence for the vocabulary query: a reply may apply
   // only while it is still the newest fetch. This — never the provider id
   // echoed back — is what keeps a slow answer for provider A out of a form
@@ -935,7 +1034,7 @@ function NewAgentProfileForm({
         if (reply.modes?.state === "absent") {
           const info = providers.find((provider) => provider.id === providerId);
           if (info?.protocol === "acp") {
-            setMode((current) => (current === "" ? ACP_MODE_SUGGESTION : current));
+            setModeId((current) => (current === "" ? ACP_MODE_SUGGESTION : current));
           }
         }
       })
@@ -973,38 +1072,84 @@ function NewAgentProfileForm({
     }),
   );
   const noteBytes = utf8Bytes(note);
+  const spawnBytes = utf8Bytes(spawnPrompt);
+
+  // A stored profile may name a provider that is not installed right now:
+  // the row still exists, so the picker must still be able to say so — the
+  // stored id is offered as its own option rather than rendering as a blank
+  // the human cannot read or keep.
+  const providerChoices =
+    providerId !== "" && !providers.some((provider) => provider.id === providerId)
+      ? [...providers.map((provider) => provider.id), providerId]
+      : providers.map((provider) => provider.id);
+
+  // An edit must not render a stored model or mode the provider no longer
+  // lists as an empty field: a select over published items alone would hide
+  // the very value the human opened the editor to change. The stored value
+  // is appended, labelled as the saved one, so it stays visible, stays
+  // selected, and is kept by a save that touches nothing else. Create mode
+  // has nothing stored, so its list is the answer's own.
+  const storedModelOption =
+    mode === "edit" && model !== "" && !modelsView.items.some((item) => item.value === model)
+      ? [{ value: model, label: `${model} (the value saved on this profile)` }]
+      : [];
+  const storedModeOption =
+    mode === "edit" && modeId !== "" && !modesView.items.some((item) => item.value === modeId)
+      ? [{ value: modeId, label: `${modeId} (the value saved on this profile)` }]
+      : [];
 
   function changeProvider(next: string) {
     // Reset the fields that depend on the answer before the fetch starts:
     // the old provider's selection must not survive into the new one.
     setProviderId(next);
     setModel("");
-    setMode("");
-  }
-
-  function submit() {
-    onCreate({
-      name,
-      note,
-      provider: providerId,
-      model,
-      modeId: mode,
-      autoAccept,
-      enabledForAgents,
-      restrictPeers,
+    setModeId("");
+    onSeedChange?.({
+      ...currentSeed(),
+      provider: next,
+      model: "",
+      modeId: "",
     });
   }
 
+  function submit() {
+    if (mode === "create") {
+      onCreate({
+        name,
+        note,
+        spawnPrompt,
+        provider: providerId,
+        model,
+        modeId,
+        thinkingOptionId,
+        autoAccept,
+        enabledForAgents,
+        restrictPeers,
+      });
+    } else {
+      onSaveSeed?.(currentSeed());
+    }
+  }
+
   return (
-    <div className="agent-inline-editor agent-profile-create">
-      <span className="settings-subheading">New profile</span>
+    <div
+      className={
+        mode === "create" ? "agent-inline-editor agent-profile-create" : "agent-inline-editor"
+      }
+    >
+      <span className="settings-subheading">
+        {mode === "create" ? "New profile" : "Edit profile"}
+      </span>
       <label className="device-field">
         Name
         <input
           aria-label="Profile name"
           value={name}
           disabled={busy}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => {
+            setName(event.target.value);
+            onSeedChange?.({ ...currentSeed(), name: event.target.value });
+          }}
         />
       </label>
       <label className="device-field">
@@ -1014,10 +1159,32 @@ function NewAgentProfileForm({
           value={note}
           disabled={busy}
           rows={3}
-          onChange={(event) => setNote(event.target.value)}
+          onChange={(event) => {
+            setNote(event.target.value);
+            onSeedChange?.({ ...currentSeed(), note: event.target.value });
+          }}
         />
         <span className="agent-byte-counter">
           {noteBytes} / {MAX_PROFILE_NOTE_BYTES} bytes
+        </span>
+      </label>
+      <label className="device-field">
+        Spawn prompt — the profile's own instructions for its children
+        <textarea
+          aria-label="Profile spawn prompt"
+          value={spawnPrompt}
+          disabled={busy}
+          rows={3}
+          onChange={(event) => {
+            setSpawnPrompt(event.target.value);
+            onSeedChange?.({ ...currentSeed(), spawnPrompt: event.target.value });
+          }}
+        />
+        <span className="agent-byte-counter">
+          {spawnBytes} / {MAX_PROFILE_SPAWN_PROMPT_BYTES} bytes
+        </span>
+        <span className="device-field-hint">
+          Sent at the start of every agent created from this profile, before the creator's prompt.
         </span>
       </label>
       <label className="device-field">
@@ -1035,9 +1202,9 @@ function NewAgentProfileForm({
           {!catalogLoading && catalogError === null && providers.length === 0 ? (
             <option value="">No provider installed</option>
           ) : null}
-          {providers.map((provider) => (
-            <option key={provider.id} value={provider.id}>
-              {provider.id}
+          {providerChoices.map((id) => (
+            <option key={id} value={id}>
+              {id}
             </option>
           ))}
         </select>
@@ -1083,12 +1250,15 @@ function NewAgentProfileForm({
             busy={busy}
             freeText={modelsView.freeText}
             hint={modelsView.hint}
-            items={modelsView.items}
-            onChange={setModel}
+            items={[...modelsView.items, ...storedModelOption]}
+            onChange={(next) => {
+              setModel(next);
+              onSeedChange?.({ ...currentSeed(), model: next });
+            }}
           />
           <VocabularyField
             label="Mode"
-            value={mode}
+            value={modeId}
             busy={busy}
             freeText={modesView.freeText}
             hint={modesView.hint}
@@ -1098,9 +1268,28 @@ function NewAgentProfileForm({
                 ? ACP_MODE_SUGGESTION_TEXT
                 : undefined
             }
-            items={modesView.items}
-            onChange={setMode}
+            items={[...modesView.items, ...storedModeOption]}
+            onChange={(next) => {
+              setModeId(next);
+              onSeedChange?.({ ...currentSeed(), modeId: next });
+            }}
           />
+          <label className="device-field">
+            Thinking option
+            <input
+              aria-label="Thinking option"
+              value={thinkingOptionId}
+              disabled={busy}
+              onChange={(event) => {
+                setThinkingOptionId(event.target.value);
+                onSeedChange?.({ ...currentSeed(), thinkingOptionId: event.target.value });
+              }}
+            />
+            <span className="device-field-hint">
+              The daemon keeps no list of thinking options: type the id the provider uses, or leave
+              this empty for none.
+            </span>
+          </label>
         </>
       ) : null}
       <label className="agent-profile-tick">
@@ -1109,7 +1298,10 @@ function NewAgentProfileForm({
           aria-label="Auto accept for children of this profile"
           checked={autoAccept}
           disabled={busy}
-          onChange={(event) => setAutoAccept(event.target.checked)}
+          onChange={(event) => {
+            setAutoAccept(event.target.checked);
+            onSeedChange?.({ ...currentSeed(), autoAccept: event.target.checked });
+          }}
         />
         <span>
           <span>Auto accept</span>
@@ -1120,127 +1312,57 @@ function NewAgentProfileForm({
           </span>
         </span>
       </label>
-      <label className="agent-profile-tick">
-        <input
-          type="checkbox"
-          aria-label="Available to agents"
-          checked={enabledForAgents}
-          disabled={busy}
-          onChange={(event) => setEnabledForAgents(event.target.checked)}
-        />
-        <span>
-          <span>Agents may create this</span>
-          <span className="agent-profile-tick-note">
-            Lets an agent start this kind of agent. If this profile answers its own permission
-            cards, its children run unattended.
-          </span>
-        </span>
-      </label>
-      <label className="agent-profile-tick">
-        <input
-          type="checkbox"
-          aria-label="Children cannot message peers or create further agents"
-          checked={restrictPeers}
-          disabled={busy}
-          onChange={(event) => setRestrictPeers(event.target.checked)}
-        />
-        <span>
-          <span>No peer contact and no further agents for children</span>
-          <span className="agent-profile-tick-note">
-            Children created from this profile cannot message other agents or create further agents.
-            They keep the agent roster, their read-only view.
-          </span>
-        </span>
-      </label>
+      {mode === "create" ? (
+        <>
+          <label className="agent-profile-tick">
+            <input
+              type="checkbox"
+              aria-label="Available to agents"
+              checked={enabledForAgents}
+              disabled={busy}
+              onChange={(event) => setEnabledForAgents(event.target.checked)}
+            />
+            <span>
+              <span>Agents may create this</span>
+              <span className="agent-profile-tick-note">
+                Lets an agent start this kind of agent. If this profile answers its own permission
+                cards, its children run unattended.
+              </span>
+            </span>
+          </label>
+          <label className="agent-profile-tick">
+            <input
+              type="checkbox"
+              aria-label="Children cannot message peers or create further agents"
+              checked={restrictPeers}
+              disabled={busy}
+              onChange={(event) => setRestrictPeers(event.target.checked)}
+            />
+            <span>
+              <span>No peer contact and no further agents for children</span>
+              <span className="agent-profile-tick-note">
+                Children created from this profile cannot message other agents or create further
+                agents. They keep the agent roster, their read-only view.
+              </span>
+            </span>
+          </label>
+        </>
+      ) : (
+        <p className="device-field-hint">
+          Changes apply to agents created from now on. Agents already running keep what they started
+          with. The tick on the row and the saved tool overlay stay as they are.
+        </p>
+      )}
       <div className="device-actions">
         <button
           type="button"
           className="settings-device-action"
-          disabled={busy || catalogLoading || providers.length === 0}
+          disabled={busy || (mode === "create" && (catalogLoading || providers.length === 0))}
           onClick={submit}
         >
-          Create profile
+          {mode === "create" ? "Create profile" : "Save"}
         </button>
         <button type="button" className="settings-device-action" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/**
- * One row's name/note editor — the only fields editable here on purpose.
- * Provider, model, mode, thinking option, features and the peer-contact
- * restriction are the provider's own vocabulary and the human's saved deny
- * list, stored verbatim, so this editor leaves them exactly as the
- * daemon holds them and the row displays them; the way to different values is
- * a new profile ([`NewAgentProfileForm`], which asks the daemon for the
- * vocabulary), not editing this one. The name is capped in characters, the
- * note in UTF-8 bytes — both refusals name the size, and nothing is ever
- * truncated.
- *
- * The fields are controlled from the panel: the draft lives one level up
- * (`editorDraft`, rule 3 of the write discipline), because the row this
- * editor renders in can be removed by an in-flight delete and restored by
- * that delete's revert — a draft kept in local state would unmount with the
- * row and remount empty.
- *
- * Save sits under the panel's `busy` lock like every other write trigger:
- * while a write is in flight the editor cannot start a second one, so a
- * revert can never land on a document the daemon has just refused.
- */
-function AgentProfileEditor({
-  name,
-  note,
-  busy,
-  onFieldChange,
-  onSave,
-  onClose,
-}: {
-  /** The draft the panel holds for this editor: the fields' values. */
-  name: string;
-  note: string;
-  /** True while a panel write is in flight: Save must not start another. */
-  busy: boolean;
-  /** Every keystroke, reported up so the draft survives this component. */
-  onFieldChange: (name: string, note: string) => void;
-  onSave: (name: string, note: string) => void;
-  onClose: () => void;
-}) {
-  const noteBytes = utf8Bytes(note);
-  return (
-    <div className="agent-inline-editor">
-      <label className="device-field">
-        Name
-        <input value={name} onChange={(event) => onFieldChange(event.target.value, note)} />
-      </label>
-      <label className="device-field">
-        Note — what a creating agent reads to choose this profile. Write it for the agent.
-        <textarea
-          value={note}
-          onChange={(event) => onFieldChange(name, event.target.value)}
-          rows={3}
-        />
-        <span className="agent-byte-counter">
-          {noteBytes} / {MAX_PROFILE_NOTE_BYTES} bytes
-        </span>
-      </label>
-      <p className="device-field-hint">
-        Provider, model, mode, features and the peer-contact restriction are shown on the row and
-        are not editable here. To change them, create a new profile with the values you want and
-        delete this one.
-      </p>
-      <div className="device-actions">
-        <button
-          type="button"
-          className="settings-device-action"
-          disabled={busy}
-          onClick={() => onSave(name, note)}
-        >
-          Save
-        </button>
-        <button type="button" className="settings-device-action" onClick={onClose}>
           Cancel
         </button>
       </div>
@@ -1465,10 +1587,11 @@ export function DelegationSetting({
  *   refused over the cap — never truncated.
  * - An empty state that reads as the off switch: nothing ticked means agents
  *   create nothing at all.
- * - The new-profile form ([`NewAgentProfileForm`]), which asks the daemon what
- *   a provider offers instead of inventing vocabulary, and falls back to free
- *   text — naming its own reason — when the daemon predates the query. It
- *   saves through the same `persist` path as every other write here.
+ * - The profile form ([`AgentProfileForm`]), shared by creating and editing,
+ *   which asks the daemon what a provider offers instead of inventing
+ *   vocabulary, and falls back to free text — naming its own reason — when
+ *   the daemon predates the query. It saves through the same `persist` path
+ *   as every other write here.
  *
  * The provider catalog for the form's picker comes through the same
  * `providersList` path `ProvidersPanel` uses. The two panels never mount
@@ -1504,9 +1627,7 @@ function AgentProfilesPanel() {
   // empty. Rule 3 of the write discipline (at `persist`) applies to it
   // exactly as to the standing draft below: no write that did not carry the
   // text may release it.
-  const [editorDraft, setEditorDraft] = useState<{ id: string; name: string; note: string } | null>(
-    null,
-  );
+  const [editorDraft, setEditorDraft] = useState<(ProfileFormSeed & { id: string }) | null>(null);
   // The new-profile form is open. Rendered closed by default; each open is a
   // fresh mount, so no stale draft survives a Cancel.
   const [creating, setCreating] = useState(false);
@@ -1741,23 +1862,72 @@ function AgentProfilesPanel() {
     void persist(updated);
   }
 
-  function saveProfileFields(id: string, name: string, note: string) {
+  function saveProfileFields(id: string, draft: ProfileFormSeed) {
     const current = documentRef.current;
     if (current === null) return;
-    const trimmed = name.trim();
+    const trimmed = draft.name.trim();
     // The caps are shared with the new-profile form: the name counts Unicode
     // scalar values — the daemon's `chars().count()` — not UTF-16 code units;
-    // the note counts UTF-8 bytes. Refuse and name the size; never clip.
-    const refusal = profileTextsError(trimmed, note);
+    // the note and the spawn prompt count UTF-8 bytes. Refuse and name the
+    // size; never clip.
+    const refusal = profileTextsError(trimmed, draft.note, draft.spawnPrompt);
     if (refusal !== null) {
       setError({ sentence: refusal, detail: null });
+      return;
+    }
+    const model = draft.model.trim();
+    const modeId = draft.modeId.trim();
+    // `model` and `modeId` are required, non-optional strings on the daemon
+    // side; the form refuses with its own sentence rather than shipping a
+    // write the store will bounce.
+    if (model === "") {
+      setError({ sentence: "Choose or type a model for the profile.", detail: null });
+      return;
+    }
+    if (modeId === "") {
+      setError({ sentence: "Choose or type a mode for the profile.", detail: null });
+      return;
+    }
+    const thinking = draft.thinkingOptionId.trim();
+    const thinkingBytes = utf8Bytes(thinking);
+    if (thinkingBytes > MAX_PROFILE_FIELD_BYTES) {
+      setError({
+        sentence: `The thinking option id is ${thinkingBytes} bytes, over the ${MAX_PROFILE_FIELD_BYTES}-byte cap. Nothing was saved and nothing was truncated.`,
+        detail: null,
+      });
       return;
     }
     const updated = cloneDocument(current);
     const row = updated.profiles.find((profile) => profile.id === id);
     if (row === undefined) return;
     row.name = trimmed;
-    row.note = note;
+    row.note = draft.note;
+    // The spawn prompt is trimmed here to what the daemon would store, and an
+    // empty one deletes the field — absent is its none shape on the wire, so
+    // a cleared prompt is saved as cleared, never as "".
+    const spawn = draft.spawnPrompt.trim();
+    if (spawn === "") {
+      delete row.spawnPrompt;
+    } else {
+      row.spawnPrompt = spawn;
+    }
+    row.provider = draft.provider;
+    row.model = model;
+    row.modeId = modeId;
+    row.thinkingOptionId = thinking === "" ? null : thinking;
+    // The one feature this form interprets, written the way the daemon reads
+    // it; every other stored key travels verbatim — they are words this form
+    // cannot interpret, never noise it may drop.
+    const features = { ...row.features };
+    if (draft.autoAccept) {
+      features.autoAccept = true;
+    } else {
+      delete features.autoAccept;
+    }
+    row.features = features;
+    // Untouched, on purpose: `id` is the identity, `icon` and the overlay are
+    // the human's saved deny list, `enabledForAgents` is the row's own tick,
+    // and the position is the order the agents read.
     // Close on CONFIRMATION, never on submission — the new-profile form's
     // rule, and there is one rule: a refusal must leave the editor on screen
     // with the human's draft in its fields, under the error, ready to retry.
@@ -1790,7 +1960,7 @@ function AgentProfilesPanel() {
       return;
     }
     const trimmedName = draft.name.trim();
-    const refusal = profileTextsError(trimmedName, draft.note);
+    const refusal = profileTextsError(trimmedName, draft.note, draft.spawnPrompt);
     if (refusal !== null) {
       setError({ sentence: refusal, detail: null });
       return;
@@ -1808,6 +1978,25 @@ function AgentProfilesPanel() {
       setError({ sentence: "Choose or type a mode for the profile.", detail: null });
       return;
     }
+    const thinking = draft.thinkingOptionId.trim();
+    const thinkingBytes = utf8Bytes(thinking);
+    if (thinkingBytes > MAX_PROFILE_FIELD_BYTES) {
+      setError({
+        sentence: `The thinking option id is ${thinkingBytes} bytes, over the ${MAX_PROFILE_FIELD_BYTES}-byte cap. Nothing was saved and nothing was truncated.`,
+        detail: null,
+      });
+      return;
+    }
+    const spawn = draft.spawnPrompt.trim();
+    if (utf8Bytes(spawn) > MAX_PROFILE_SPAWN_PROMPT_BYTES) {
+      // Unreachable through the form (the shared refusal fires first), but a
+      // guard on its own terms: the counter and the save agree on the cap.
+      setError({
+        sentence: `This spawn prompt is ${utf8Bytes(spawn)} bytes, over the ${MAX_PROFILE_SPAWN_PROMPT_BYTES}-byte cap. Nothing was saved and nothing was truncated.`,
+        detail: null,
+      });
+      return;
+    }
     const profile: AgentProfile = {
       // The daemon mints the id: an empty id means "new" (see the type's doc
       // comment). Names may repeat; identity is the id.
@@ -1818,9 +2007,9 @@ function AgentProfilesPanel() {
       provider: draft.provider,
       model,
       modeId,
-      // The vocabulary reply carries no thinking axis, so the form offers
-      // none; a new profile starts without one.
-      thinkingOptionId: null,
+      // The vocabulary reply carries no thinking axis, so the field is free
+      // text; empty saves none.
+      thinkingOptionId: thinking === "" ? null : thinking,
       features: draft.autoAccept ? { autoAccept: true } : {},
       // The human's tick, not an agent's argument: a profile that denies
       // peer contact makes children that cannot message peers or create
@@ -1830,6 +2019,11 @@ function AgentProfilesPanel() {
       // moment it is saved is a profile nobody deliberately ticked.
       enabledForAgents: draft.enabledForAgents,
     };
+    // Absent is the spawn prompt's none shape on the wire, so a profile born
+    // without one carries no key at all.
+    if (spawn !== "") {
+      profile.spawnPrompt = spawn;
+    }
     const updated = cloneDocument(current);
     // Append at the end: the human's order is the order agents read, and the
     // rows already there keep the positions the human gave them.
@@ -1924,7 +2118,9 @@ function AgentProfilesPanel() {
           </div>
         ) : null}
         {creating && document !== null ? (
-          <NewAgentProfileForm
+          <AgentProfileForm
+            mode="create"
+            seed={EMPTY_PROFILE_FORM_SEED}
             providers={installedProviders}
             catalogLoading={catalog === null && catalogError === null}
             catalogError={catalogError}
@@ -1965,9 +2161,8 @@ function AgentProfilesPanel() {
                   <span className="agent-profile-meta">
                     {profile.provider} · {profile.model} · mode {profile.modeId}
                   </span>
-                  {/* Read-only: provider, model, mode and the overlay are the provider's own
-                      vocabulary and the human's saved deny list, so they are shown, not edited.
-                      To change them, create a new profile and delete this one. */}
+                  {/* The overlay is the human's saved deny list: shown here, editable in
+                      neither mode of the form, travelling verbatim on every save. */}
                   {overlayDenialsDescription(profile.toolOverlay) === null ? null : (
                     <span className="agent-profile-note">
                       {overlayDenialsDescription(profile.toolOverlay)}
@@ -2007,11 +2202,12 @@ function AgentProfilesPanel() {
                     onClick={() => {
                       // Opening an editor is a fresh draft (rule 3): the
                       // panel drops any draft left from a previous editing
-                      // session. Closing one is the human abandoning it.
+                      // session and seeds this one from the stored row.
+                      // Closing one is the human abandoning it.
                       if (editing) closeEditor();
                       else {
                         setEditingId(profile.id);
-                        setEditorDraft(null);
+                        setEditorDraft({ id: profile.id, ...seedFromProfile(profile) });
                       }
                       setDeleteArmedId(null);
                     }}
@@ -2028,13 +2224,18 @@ function AgentProfilesPanel() {
                   </button>
                 </div>
                 {editing ? (
-                  <AgentProfileEditor
-                    name={editorDraft?.id === profile.id ? editorDraft.name : profile.name}
-                    note={editorDraft?.id === profile.id ? editorDraft.note : profile.note}
+                  <AgentProfileForm
+                    mode="edit"
+                    seed={editorDraft?.id === profile.id ? editorDraft : seedFromProfile(profile)}
+                    providers={installedProviders}
+                    catalogLoading={catalog === null && catalogError === null}
+                    catalogError={catalogError}
+                    vocabularySupported={providerVocabularySupported}
                     busy={busy}
-                    onFieldChange={(name, note) => setEditorDraft({ id: profile.id, name, note })}
-                    onSave={(name, note) => saveProfileFields(profile.id, name, note)}
-                    onClose={closeEditor}
+                    onCreate={createProfile}
+                    onSaveSeed={(draft) => saveProfileFields(profile.id, draft)}
+                    onSeedChange={(draft) => setEditorDraft({ id: profile.id, ...draft })}
+                    onCancel={closeEditor}
                   />
                 ) : null}
                 {deleteArmed ? (

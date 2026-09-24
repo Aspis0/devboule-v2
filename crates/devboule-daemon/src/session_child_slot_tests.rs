@@ -114,6 +114,7 @@ impl SlotFixture {
                 provider: "devboule-acp-stub".to_string(),
                 profile_id: "profile-slot".to_string(),
                 profile_name: "Slot child".to_string(),
+                spawn_prompt: String::new(),
                 delivery: crate::profile_delivery::ProfileDelivery::none(),
                 overlay: crate::provider_catalog::ToolOverlay::NONE,
                 labels: Default::default(),
@@ -232,6 +233,7 @@ fn the_creators_slot_survives_its_childs_birth_and_death() {
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: None,
+            spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
         })

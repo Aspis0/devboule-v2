@@ -307,6 +307,7 @@ impl super::SessionRegistry {
             message_slot: None,
             // No preset preamble: a client's prompt is not a creation's.
             preset_preamble: None,
+            spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
         })
@@ -548,6 +549,7 @@ impl super::SessionRegistry {
             message_slot: Some(&slot_ref),
             // No preset preamble: an agent message is not a creation's prompt.
             preset_preamble: None,
+            spawn_prompt: None,
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::IncomingA2a,
         });
@@ -605,6 +607,7 @@ impl super::SessionRegistry {
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: None,
+            spawn_prompt: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
         })
@@ -629,6 +632,7 @@ impl super::SessionRegistry {
             interrupt_on_steer_refusal,
             message_slot,
             preset_preamble,
+            spawn_prompt,
             author,
             message_kind,
         } = *request;
@@ -842,12 +846,15 @@ impl super::SessionRegistry {
         // The human's standing instructions ride the first prompt of every session
         // the daemon starts, and this is the one place a prompt is composed: a
         // session a human opens, a child an agent creates (which passes its preset
-        // preamble in `preset_preamble`) and the Design host all reach this line,
+        // preamble in `preset_preamble` and the resolved profile's spawn prompt in
+        // `spawn_prompt`) and the Design host all reach this line,
         // and every provider's writer sits behind it (`session.rs:4899`-style
         // writes in `acp_client.rs`, `claude_client.rs`, `codex_client.rs`,
-        // `pi_client.rs`). The order — standing instructions, then the preamble,
+        // `pi_client.rs`). The order — standing instructions, then the spawn
+        // prompt, then the preamble,
         // then the prompt — is fixed in `compose_first_prompt` and pinned by
-        // `standing_instructions_come_before_the_preset_preamble`.
+        // `the_spawn_prompt_sits_between_the_standing_instructions_and_the_preamble`
+        // and `standing_instructions_come_before_the_preset_preamble`.
         //
         // Three deliberate narrowings:
         //
@@ -878,7 +885,12 @@ impl super::SessionRegistry {
                     preset_preamble,
                     recovered.as_deref(),
                 );
-                compose_first_prompt(&self.standing_instructions(), preamble.as_deref(), text)
+                compose_first_prompt(
+                    &self.standing_instructions(),
+                    spawn_prompt,
+                    preamble.as_deref(),
+                    text,
+                )
             });
         let text = first_prompt.as_deref().unwrap_or(text);
         // (S4-10, S4-14) The last thing before the write: the slot's boundary must

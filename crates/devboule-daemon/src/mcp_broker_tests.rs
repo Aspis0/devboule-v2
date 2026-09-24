@@ -4045,6 +4045,26 @@ fn document(profiles: Vec<serde_json::Value>, standing: &str) -> serde_json::Val
     serde_json::json!({ "profiles": profiles, "standingInstructions": standing })
 }
 
+/// The resolver's [`profile`] with a spawn prompt saved on it.
+fn profile_with_spawn(
+    name: &str,
+    id: &str,
+    enabled: bool,
+    spawn_prompt: &str,
+) -> serde_json::Value {
+    let mut value = profile(
+        name,
+        id,
+        "claude",
+        "default",
+        serde_json::json!({}),
+        &[],
+        enabled,
+    );
+    value["spawnPrompt"] = serde_json::json!(spawn_prompt);
+    value
+}
+
 /// The card's three auto-accept wordings, one per arm of the tri-state:
 /// the affirmative names the mode that answers, the negative names the
 /// mode that asks, and the unknown asserts neither direction.
@@ -4276,6 +4296,160 @@ fn a_profile_resolves_to_exactly_what_was_saved() {
         devboule_protocol::UnattendedState::Yes,
         "the mode auto-answers permission prompts"
     );
+}
+
+/// The spawn prompt is part of what a resolution **is**: what was saved at
+/// the moment of the call is what the card names and the creation carries,
+/// and a profile without one resolves to none, not to a placeholder.
+#[test]
+fn a_spawn_prompt_resolves_with_the_profile_that_carries_it() {
+    let store = profile_store(document(
+        vec![profile_with_spawn(
+            "runner",
+            "profile-runner",
+            true,
+            "Check the diff before you report.",
+        )],
+        "",
+    ));
+    let resolved = resolve_profile(&store, "runner").expect("ticked");
+    assert_eq!(resolved.spawn_prompt, "Check the diff before you report.");
+
+    let bare = resolve_profile(
+        &profile_store(document(
+            vec![profile(
+                "bare",
+                "profile-bare",
+                "grok",
+                "default",
+                serde_json::json!({}),
+                &[],
+                true,
+            )],
+            "",
+        )),
+        "bare",
+    )
+    .expect("ticked");
+    assert_eq!(bare.spawn_prompt, "");
+}
+
+/// The card the human approves carries the spawn prompt the child will
+/// receive, in full: an approval that hid injected text behind a profile
+/// name would approve something else. A profile without one adds no
+/// sentence and no promise.
+#[test]
+fn the_creation_card_carries_the_spawn_prompt_in_full() {
+    let state = ServerState::new("mcp-card-spawn".to_string());
+    let creator_owner = owner("mcp-card-spawn-user", "mcp-card-spawn-client");
+    let creator = "s.card-spawn".to_string();
+    crate::session::insert_test_live_agent_with_kind(
+        &state.sessions,
+        &creator,
+        creator_owner,
+        SessionKind::Pi,
+    );
+    let ticket = state
+        .sessions
+        .reserve_agent_creation(&creator, 0)
+        .expect("a creation ticket");
+    let request = AgentCreateRequest {
+        profile: "runner".to_string(),
+        title: "Kid".to_string(),
+        labels: std::collections::BTreeMap::new(),
+        workspace_id: None,
+        cwd: None,
+        initial_prompt: "do the thing".to_string(),
+        notify: true,
+    };
+    let resolved = resolve_profile(
+        &profile_store(document(
+            vec![profile_with_spawn(
+                "runner",
+                "profile-runner",
+                true,
+                "Check the diff before you report.",
+            )],
+            "",
+        )),
+        "runner",
+    )
+    .expect("ticked");
+    let card = creation_card(
+        &creator,
+        "Orchestrator",
+        &request,
+        &resolved,
+        &std::collections::BTreeMap::new(),
+        &ticket,
+        None,
+    );
+    let SessionEvent::PermissionRequest { description, .. } = &card else {
+        panic!("a creation card is a permission request");
+    };
+    let description = description.as_deref().expect("a description");
+    assert!(
+        description.contains("Check the diff before you report."),
+        "the card carries the spawn prompt in full: {description}"
+    );
+
+    // A profile without a spawn prompt: silence, never a sentence about
+    // text that does not exist.
+    let bare = resolve_profile(
+        &profile_store(document(
+            vec![profile(
+                "runner",
+                "profile-runner",
+                "grok",
+                "default",
+                serde_json::json!({}),
+                &[],
+                true,
+            )],
+            "",
+        )),
+        "runner",
+    )
+    .expect("ticked");
+    let bare_card = creation_card(
+        &creator,
+        "Orchestrator",
+        &request,
+        &bare,
+        &std::collections::BTreeMap::new(),
+        &ticket,
+        None,
+    );
+    let SessionEvent::PermissionRequest { description, .. } = &bare_card else {
+        panic!("a creation card is a permission request");
+    };
+    let description = description.as_deref().expect("a description");
+    assert!(
+        !description.contains("Spawn prompt"),
+        "no sentence where there is no prompt: {description}"
+    );
+}
+
+/// The move road resolves through the same store and carries **no prompt**:
+/// `ChildProfileFacts` has no spawn slot, because a live child moved onto a
+/// profile is not created by the move — the profile's prompt field may not
+/// enter a conversation that is already under way.
+#[test]
+fn a_move_onto_a_spawn_prompt_profile_carries_no_prompt() {
+    let store = profile_store(document(
+        vec![profile_with_spawn(
+            "worker",
+            "profile-worker",
+            true,
+            "Check the diff before you report.",
+        )],
+        "",
+    ));
+    let facts = resolve_profile_for_move(&store, "worker").expect("ticked");
+    assert_eq!(facts.profile_id, "profile-worker");
+    assert_eq!(facts.mode_id, "default");
+    assert_eq!(facts.model, "the model the human saved");
+    assert_eq!(facts.thinking_option_id.as_deref(), Some("high"));
 }
 
 /// A retry of a creation that **committed** is answered by the idempotency

@@ -1436,12 +1436,15 @@ export interface ToolPolicyReply {
  * session records the `id` it was started from — so two profiles may share a
  * `name`. `model`, `modeId` and `thinkingOptionId` are the provider's own
  * vocabulary, stored verbatim. `toolOverlay` can only ever remove tools.
+ * `spawnPrompt` is daemon-injected text sent at the start of every agent
+ * created from this profile; it is absent when the profile carries none.
  */
 export interface AgentProfile {
   id: string;
   name: string;
   icon?: string | null;
   note: string;
+  spawnPrompt?: string;
   provider: string;
   model: string;
   modeId: string;

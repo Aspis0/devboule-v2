@@ -2200,6 +2200,11 @@ struct ResolvedProfile {
     thinking_option_id: Option<String>,
     /// The provider's feature values, exactly as saved.
     features: serde_json::Map<String, Value>,
+    /// The profile's spawn prompt, exactly as the store canonicalised it —
+    /// trimmed, empty means none. Read at the moment of the call: the card
+    /// names it and the creation carries it, so an edit to the profile after
+    /// the creation began changes neither.
+    spawn_prompt: String,
     overlay: crate::provider_catalog::ToolOverlay,
 }
 
@@ -2254,6 +2259,7 @@ fn resolve_profile(
         mode: profile.mode_id.clone(),
         thinking_option_id: profile.thinking_option_id.clone(),
         features: profile.features.clone(),
+        spawn_prompt: profile.spawn_prompt.clone(),
         // The profile's own deny list, applied on top of the provider's stored
         // policy — the same two places a preset's overlay was applied. The store
         // has already refused a name outside the broker's table, so this can
@@ -2583,6 +2589,11 @@ fn create_agent(
         // sentence a human reads names the profile the way they ticked it.
         profile_id: profile.id.clone(),
         profile_name: profile.name.clone(),
+        // What the card showed is what the child gets: the spawn prompt
+        // travels with the creation, resolved once, and the send composes it
+        // into the child's first prompt (standing instructions, then this,
+        // then the preamble, then the prompt).
+        spawn_prompt: profile.spawn_prompt.clone(),
         // What the card named is what the child gets: the profile's own mode,
         // model, thinking option and auto-accept tick, as the one typed
         // delivery the spawn path applies. A value that cannot be delivered
@@ -2809,6 +2820,18 @@ fn creation_card(
         &profile.mode,
     );
     let thinking = profile.thinking_option_id.as_deref().unwrap_or("none");
+    // The spawn prompt the child will receive, on the card in full: approving
+    // this card approves injected text, so hiding it behind a profile name
+    // would make the approval say less than it does. The store bounds the
+    // prompt, so echoing it by value is the same rule every bounded value
+    // here follows; it is quoted, so the text's own edges stay visible
+    // whatever it ends with. Absent stays silent — a profile without one
+    // adds no sentence and no promise.
+    let spawn_sentence = if profile.spawn_prompt.is_empty() {
+        String::new()
+    } else {
+        format!(" Spawn prompt: \"{}\".", profile.spawn_prompt)
+    };
     // The caller's own labels, and only those: the daemon's four `devboule.`
     // keys are stamped at the creation and would tell the human nothing they are
     // not already reading on this card.
@@ -2841,7 +2864,7 @@ fn creation_card(
         tool_call_id: creation_permission_id(),
         title: format!("Create an agent: {} ({})", request.title, profile.name),
         description: Some(format!(
-            "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}. Labels: {labels}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.{tools_sentence}{self_answer}",
+            "Asked for by '{creator_name}'. Profile '{name}' ({id}): provider {provider}, model {model}, mode {mode}, thinking {thinking}, features {features}, auto accept: {auto}.{spawn_sentence} Labels: {labels}. Caps: live children {} of {}, creations this hour {} of {}, depth {} of {}, live agent sessions {} of {}.{tools_sentence}{self_answer}",
             caps.live_children,
             caps.max_live_children,
             caps.creations_this_hour,
@@ -2856,6 +2879,7 @@ fn creation_card(
             model = profile.model,
             mode = profile.mode,
             auto = auto,
+            spawn_sentence = spawn_sentence,
             tools_sentence = tools_sentence,
         )),
         command: None,
