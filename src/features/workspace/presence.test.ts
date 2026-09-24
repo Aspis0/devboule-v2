@@ -382,6 +382,7 @@ describe("presence reporting", () => {
     const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
     const sent: Array<CommandArgs["session_presence"]> = [];
     let hidden = false;
+    let readsApplied = 0;
     let resolveFirst: (state: WindowState) => void = () => undefined;
     const invoke = vi.fn((_command: string, args: CommandArgs["session_presence"]) => {
       sent.push(args);
@@ -396,24 +397,64 @@ describe("presence reporting", () => {
       invoke: invoke as unknown as PresenceDeps["invoke"],
       window: env.window,
       document: env.document,
-      windowState: async (): Promise<WindowState> => ({
-        visible: !hidden,
-        focused: !hidden,
-        minimized: false,
-      }),
+      windowState: async (): Promise<WindowState> => {
+        readsApplied += 1;
+        return { visible: !hidden, focused: !hidden, minimized: false };
+      },
     });
     await flush();
     expect(sent.length).toBe(1);
-    // The window hides while the first write is still unsettled: the hidden
-    // answer is applied, but its write waits for the first to settle.
+    // The window hides while the first write is still unsettled. The second
+    // read applies, but the second INVOKE must not start while the first
+    // write is pending.
     hidden = true;
     env.fire("visibilitychange", "document");
+    await flush();
+    expect(readsApplied).toBe(2);
     expect(sent.length).toBe(1);
-    resolveFirst({ visible: false, focused: false, minimized: false });
+    resolveFirst({ visible: true, focused: true, minimized: false });
     await flush();
     expect(sent.length).toBe(2);
     expect(sent[1]).toEqual({ focusedSessionId: null, appVisible: false });
     reporter.dispose();
+  });
+
+  it("drops the queued answer when dispose lands while a send is in flight", async () => {
+    const env = createEnvironment({ visibilityState: "visible", hasFocus: true });
+    const sent: Array<CommandArgs["session_presence"]> = [];
+    let hidden = false;
+    let readsApplied = 0;
+    let resolveFirst: (state: WindowState) => void = () => undefined;
+    const invoke = vi.fn((_command: string, args: CommandArgs["session_presence"]) => {
+      sent.push(args);
+      if (sent.length === 1) {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+    const reporter = startPresenceReporting({
+      invoke: invoke as unknown as PresenceDeps["invoke"],
+      window: env.window,
+      document: env.document,
+      windowState: async (): Promise<WindowState> => {
+        readsApplied += 1;
+        return { visible: !hidden, focused: !hidden, minimized: false };
+      },
+    });
+    await flush();
+    expect(sent.length).toBe(1);
+    // B queues behind the in-flight A, and dispose lands before A settles.
+    hidden = true;
+    env.fire("visibilitychange", "document");
+    await flush();
+    expect(readsApplied).toBe(2);
+    reporter.dispose();
+    // Settling A must NOT send the queued B after disposal.
+    resolveFirst({ visible: true, focused: true, minimized: false });
+    await flush();
+    expect(sent.length).toBe(1);
   });
 
   it("stops listening and sending after dispose", () => {

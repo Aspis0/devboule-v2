@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Attention, SessionStateSnapshot } from "../../types/ipc";
+import type { Attention, AttentionReason, SessionStateSnapshot } from "../../types/ipc";
 import type { ToastContent, ToastDeps, WindowState } from "./attentionNotice";
 import {
   setAttentionHeldContentProvider,
@@ -76,6 +76,15 @@ describe("attentionRaised", () => {
     const escalation = attention("permission", 1000);
     expect(attentionRaised(first, escalation)).toBe(true);
     expect(attentionRaised(undefined, escalation)).toBe(true);
+  });
+
+  it("treats a reason the priority table does not know as new", () => {
+    // The TypeScript union does not validate the incoming IPC payload: a
+    // future daemon reason arrives as a string the table lacks. Unknown is
+    // not "lower" — at an equal stamp it is announced.
+    const known = attention("permission", 1000);
+    const unknown = { reason: "quantum" as AttentionReason, atMs: 1000 };
+    expect(attentionRaised(known, unknown)).toBe(true);
   });
 
   it("only a higher-priority reason is new at an equal timestamp", () => {

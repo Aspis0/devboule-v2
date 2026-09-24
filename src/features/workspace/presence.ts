@@ -102,7 +102,6 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   const emit = async (): Promise<void> => {
     if (disposed) return;
     const readNumber = ++lastRequestedRead;
-    console.log("PROBE emit seq", readNumber);
     // A rejected read can never be replaced by the document's answer: the
     // live check measured that answer lying for a hidden window. Not seen
     // is the only honest reading when the window cannot be asked.
@@ -119,12 +118,8 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     if (disposed) return;
     // A read that started earlier and resolves later is dropped: the newer
     // answer has already been applied.
-    if (readNumber <= lastAppliedRead) {
-      console.log("PROBE emit dropped", readNumber);
-      return;
-    }
+    if (readNumber <= lastAppliedRead) return;
     lastAppliedRead = readNumber;
-    console.log("PROBE emit applied", readNumber);
     const appVisible = deps?.windowState
       ? !readFailed && asked !== null && asked.visible && asked.focused && !asked.minimized
       : doc.visibilityState === "visible" && doc.hasFocus();
@@ -178,6 +173,12 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
         if (queuedPresence === null) break;
         current = queuedPresence;
         queuedPresence = null;
+        // A dispose that landed while this send was in flight owns the
+        // answer's fate: the queued report must never go out after it.
+        if (disposed) {
+          queuedPresence = null;
+          break;
+        }
       }
       sendInFlight = false;
     })();

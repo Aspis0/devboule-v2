@@ -44,7 +44,13 @@ export function attentionRaised(
   if (next === undefined) return false;
   if (previous === undefined) return true;
   if (next.atMs !== previous.atMs) return next.atMs > previous.atMs;
-  return REASON_PRIORITY[next.reason] > REASON_PRIORITY[previous.reason];
+  // A reason missing from the table is a third state, not "lower": the
+  // union does not validate the IPC payload, and an unknown raise is
+  // announced rather than silently treated as stale.
+  const nextPriority = REASON_PRIORITY[next.reason];
+  const previousPriority = REASON_PRIORITY[previous.reason];
+  if (nextPriority === undefined || previousPriority === undefined) return true;
+  return nextPriority > previousPriority;
 }
 
 /**
