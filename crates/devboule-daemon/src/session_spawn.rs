@@ -960,11 +960,17 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     //    command-side Arc clones remain.
     drop(writer);
     drop(master);
-    // Closing the per-session KILL_ON_JOB_CLOSE job terminates the root and
-    // every descendant before wait(). It is the only job this session ever
-    // had — no shared daemon-wide job exists — so the daemon's own death
-    // reaps the tree the same way: its handle to this job closes and
-    // KILL_ON_JOB_CLOSE fires.
+    // The job must end before the bounded joins, and by terminate rather
+    // than by handle close: an agent's on_os_death callback owns another
+    // Arc to this job inside the runtime, so a reader that outlives its
+    // join budget keeps the job — and any grandchild still holding the
+    // pipes — alive past this function. TerminateJobObject ends the tree
+    // here, the way session_stop does, and closes the descendants' pipe
+    // handles so a stuck reader reaches EOF and its join succeeds. The
+    // drop below then only releases the handle; the daemon's own death
+    // still reaps every tree the same way. A terminate refusal leaves the
+    // tree to the drop's KILL_ON_JOB_CLOSE, so the result is ignored.
+    let _ = process_job.terminate();
     drop(process_job);
     // 3) Reap after the PTY endpoints are closed; this prevents a zombie
     //    and avoids the Windows ConPTY wait deadlock. The waiter thread

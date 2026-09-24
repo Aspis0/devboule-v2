@@ -1139,11 +1139,8 @@ fn spawn_pi(
             )
         })?;
         let handle = child.as_raw_handle();
-        // The job is this agent's own, created empty: assigning into any job
-        // that already lived through other sessions is refused at the kernel
-        // with ERROR_ACCESS_DENIED once its hierarchy has parented terminated
-        // jobs (measured live: the first spawn after the last close failed
-        // until the daemon restarted).
+        // This agent's own fresh job; why no shared job is ever an
+        // assignment target is stated once, at open_pty_session.
         if let Err(error) = process_job.assign(handle) {
             terminate_process(&mut child);
             remove_permission_extension(&extension_path);

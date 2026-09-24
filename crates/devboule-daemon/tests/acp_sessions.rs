@@ -440,6 +440,40 @@ fn acp_create_after_the_last_close_still_contains_the_child() {
 }
 
 #[test]
+fn acp_close_kills_a_grandchild_that_holds_the_output_pipe() {
+    let _test_lock = lock_tests();
+    // The grandchild's pid file must be named before the daemon spawns the
+    // stub, which inherits this process's environment and passes it on.
+    let grandchild_file = std::env::temp_dir().join(format!(
+        "devboule acp grandchild {}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_millis()
+    ));
+    std::env::set_var("DEVBOULE_ACP_STUB_GRANDCHILD_PID_FILE", &grandchild_file);
+    let mut test = AcpTest::new(&[]);
+    test._env
+        .names
+        .push("DEVBOULE_ACP_STUB_GRANDCHILD_PID_FILE");
+
+    let session = test.create_session();
+    let grandchild_pid: u32 = wait_for_file(&grandchild_file)
+        .parse()
+        .expect("grandchild pid");
+    test.client
+        .session_close(&session.id)
+        .expect("close the agent session");
+    // The grandchild inherits the stub's stdout — the pipe the daemon's
+    // reader blocks on — so only the session job ending can close the pipe
+    // and let the reader reach EOF. A close whose job handle survives the
+    // bounded joins leaves the grandchild running.
+    wait_until_gone(grandchild_pid);
+    let _ = std::fs::remove_file(&grandchild_file);
+}
+
+#[test]
 fn acp_direct_argv_supports_paths_with_spaces_without_shell() {
     let _test_lock = lock_tests();
     let test = AcpTest::new(&["--direct-path-with-spaces"]);

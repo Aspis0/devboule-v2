@@ -1121,9 +1121,8 @@ fn spawn_acp_terminal(
         let handle = child.as_raw_handle().ok_or_else(|| {
             RpcError::internal("ACP terminal process has no native handle".to_string())
         })?;
-        // The terminal's own job, created empty: a shared daemon-wide job
-        // would be refused with ERROR_ACCESS_DENIED once its hierarchy has
-        // parented terminated jobs.
+        // This terminal's own fresh job; why no shared job is ever an
+        // assignment target is stated once, at open_pty_session.
         if let Err(error) = process_job.assign(handle) {
             let _ = child.kill();
             let _ = child.wait();

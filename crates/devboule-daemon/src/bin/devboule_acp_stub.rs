@@ -162,6 +162,26 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
     write_observation_files();
+    // Test-support scenario for the close path: a grandchild that inherits
+    // this process's stdout — the pipe the daemon reads — and outlives it,
+    // so the daemon's reader cannot reach EOF until the grandchild is dead.
+    // Its pid goes to the named file for the test to wait on.
+    if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_GRANDCHILD_PID_FILE") {
+        // Rust children inherit the parent's stdio by default, so cmd holds
+        // this process's stdout handle — the daemon side of the pipe — for
+        // as long as it runs.
+        let grandchild = std::process::Command::new("cmd.exe")
+            .args(["/c", "ping -t 127.0.0.1"])
+            .spawn();
+        match grandchild {
+            Ok(child) => {
+                let _ = std::fs::write(path, child.id().to_string());
+            }
+            Err(error) => {
+                eprintln!("stub grandchild spawn failed: {error}");
+            }
+        }
+    }
     eprintln!("stub-agent handshake stderr marker");
     let fail_initialize = std::env::args().any(|arg| arg == "--fail-initialize");
     let echo_user = !std::env::args().any(|arg| arg == "--no-user-echo");

@@ -296,10 +296,9 @@ pub(super) fn provider_update_reply(
         "-g".to_string(),
         format!("{package}@latest"),
     ];
-    // The install gets its own job, created empty: assigning into a job
-    // that already lived through other processes is refused at the kernel
-    // with ERROR_ACCESS_DENIED once its hierarchy has parented terminated
-    // jobs. It dies with the run, as a git probe's does.
+    // The install's own request-local job — it dies with the run, as a git
+    // probe's does; why no shared job is ever an assignment target is
+    // stated once, at open_pty_session.
     let job = match crate::process_tree::JobObject::new() {
         Ok(job) => job,
         Err(error) => {
@@ -366,13 +365,10 @@ pub(super) fn probe_native_version(
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000);
         }
-        // The probe gets its own job, created empty, like a git probe's:
-        // assigning into a job that already lived through other processes
-        // is refused at the kernel with ERROR_ACCESS_DENIED once its
-        // hierarchy has parented terminated jobs. The binding must live to
-        // the end of this function — the child is reaped below — because
-        // dropping the job earlier fires KILL_ON_JOB_CLOSE and kills the
-        // probe mid-run.
+        // The probe's own request-local job, like a git probe's. The
+        // binding must live to the end of this function — the child is
+        // reaped below — because dropping the job earlier fires
+        // KILL_ON_JOB_CLOSE and kills the probe mid-run.
         #[cfg(windows)]
         let job = match crate::process_tree::JobObject::new() {
             Ok(job) => job,

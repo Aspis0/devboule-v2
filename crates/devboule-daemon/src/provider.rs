@@ -1066,11 +1066,16 @@ fn open_pty_session(
     // ConPTY CreateProcessW seam to create suspended and resume after the
     // assignment; that is deliberately not part of this milestone.
     //
-    // The job is this session's own, created empty: assigning into any job
-    // that already lived through other sessions is refused at the kernel
-    // with ERROR_ACCESS_DENIED once its hierarchy has parented terminated
-    // jobs (measured live: the first spawn after the last close failed
-    // until the daemon restarted).
+    // The job is this session's own, created empty. MEASURED (live, the real
+    // app, 2026-09-23): after the last session had closed, assigning a new
+    // child to the daemon-wide shared job failed with ERROR_ACCESS_DENIED,
+    // and every later spawn failed the same way until the daemon restarted —
+    // so a shared job must never be an assignment target again. The kernel
+    // side of that refusal is NOT proven; one candidate (see RECON.md) is
+    // that a job whose hierarchy has parented since-terminated jobs cannot
+    // be re-armed as an assignment target. Each child gets a fresh job, and
+    // the question never comes up. Other spawn roads point here instead of
+    // restating this.
     #[cfg(windows)]
     let (process_job, os_handle) = {
         let process_job = match JobObject::new() {
