@@ -1,18 +1,18 @@
 import type { Attention, AttentionReason } from "../../types/ipc";
+import { lookedAtSessionId } from "./presence";
 
 /**
  * How a session's attention presents to the local user: the words for a
  * reason, the decision of when an OS toast may fire, what the toast says,
  * and the one place that sends it.
  *
- * The daemon already suppresses raises for a session a focused window is
- * looking at (daemon-side policy); nothing here repeats that rule. This
- * module's own gate is the window-level one: a toast is for a user who is
- * not looking at Devboule at all — hidden in the tray, minimized, or
- * unfocused. A raise the gate holds back because the window is seen but the
- * session's row is NOT rendered is parked, not consumed: the same place
- * that reports presence announces parked raises when the window next goes
- * unseen (`flushParkedAttentionRaises`).
+ * The gate is Paseo's per-agent rule (`session-context.tsx:271-277`): a
+ * raise is announced unless the user is looking at THIS session — the window
+ * actively seen AND this session the one this window shows. Which rows the
+ * tab strip draws is not the question the gate asks, so nothing here is
+ * parked or flushed: a raise for a session in another workspace announces
+ * while this window stays focused, and its toast quotes only what this window
+ * holds for it (see `heldContentForSession`).
  */
 
 /**
@@ -68,12 +68,16 @@ export interface WindowState {
 }
 
 /**
- * Whether an OS toast may fire: only when the user is not looking at the
- * window — hidden in the tray, minimized, or behind another window. A user
- * looking at Devboule (any surface) gets no toasts.
+ * Whether an OS toast may fire for `sessionId`: the user is away from THAT
+ * session. Away means the window is not actively seen (hidden in the tray,
+ * minimized, or behind another window), or this window shows some other
+ * session than the one that raised. Seeing the window alone does not make a
+ * raise seen: navigation scopes the strip to one workspace, so a raise in
+ * another one is news nobody has looked at.
  */
-export function toastGate(state: WindowState): boolean {
-  return !state.visible || state.minimized || !state.focused;
+export function toastGate(state: WindowState, sessionId: string, lookedAt: string | null): boolean {
+  const windowSeen = state.visible && state.focused && !state.minimized;
+  return !windowSeen || lookedAt !== sessionId;
 }
 
 /** ~220 characters of preview, Paseo's NOTIFICATION_PREVIEW_LIMIT. */
@@ -152,11 +156,12 @@ export function toastContent(
 /**
  * What the window that holds the cards hands the toast: content ONLY for a
  * session this window can see — a row this window's tab strip renders — and
- * only from what the app holds right now: a pending permission card, and
- * the last assistant message of a transcript on screen. A session the
- * window cannot see gets no content at all, so its toast carries the title
- * and the reason only. (A `Daemon`-role peer's own sessions never appear in
- * any local roster, so they never reach the toast path at all.)
+ * only from what the app holds right now: a pending permission card, and the
+ * last assistant message of a transcript on screen. A session the window does
+ * not render gets no content at all, so its toast carries the title and the
+ * reason only. (Paseo builds the body from the raising agent's own stream,
+ * which its store always carries; this app holds words for the rows on screen
+ * alone, so a raise elsewhere must not be dressed up in words it never had.)
  */
 export function heldContentForSession(
   inThisWindow: boolean,
@@ -179,36 +184,23 @@ export function heldContentForSession(
 }
 
 /**
- * What a window that renders sessions registers: the held-content function
- * the toast wording uses (built from the strip's rows, the permission queue
- * and the held transcripts — every input asked per call), and the
- * rendered-row predicate the same builder received. One registration, one
- * source — wording and dedupe ask the same predicate, never a second copy
- * of the strip's rows. Deliberately NO permission-queue oracle for the
- * park: only the pane session is ever attached, so the queue cannot tell
- * "answered" from "never seen" for an off-strip session — the roster's
- * attention (`noteRosterAttention`) is the one source for whether a parked
- * raise is still due.
+ * What a window that renders sessions registers: the words a toast may
+ * quote, built from the strip's rows, the permission queue and the held
+ * transcripts — every input asked per call, so a toast never speaks from a
+ * snapshot older than the raise it announces. Whether the raise ANNOUNCES at
+ * all is the gate's answer, never this provider's: it decides wording only.
  */
-export interface AttentionWindowProvider {
-  heldContent: (sessionId: string) => HeldContent | undefined;
-  rendered: (sessionId: string) => boolean;
-}
-
 export function workspaceHeldContentProvider(inputs: {
   rendered: (sessionId: string) => boolean;
   pending: (sessionId: string) => { title: string; description?: string } | undefined;
   heldAssistantText: (sessionId: string) => string | undefined;
-}): AttentionWindowProvider {
-  return {
-    heldContent: (sessionId) =>
-      heldContentForSession(
-        inputs.rendered(sessionId),
-        inputs.pending(sessionId),
-        inputs.heldAssistantText(sessionId),
-      ),
-    rendered: inputs.rendered,
-  };
+}): (sessionId: string) => HeldContent | undefined {
+  return (sessionId) =>
+    heldContentForSession(
+      inputs.rendered(sessionId),
+      inputs.pending(sessionId),
+      inputs.heldAssistantText(sessionId),
+    );
 }
 
 /**
@@ -231,135 +223,28 @@ export function heldAssistantTextFor(sessionId: string): string | undefined {
 /**
  * What the surface that renders sessions registered (the Workspace: its
  * strip is what "this window can see" means for the wording). Null between
- * registrations and on surfaces without a strip — an unknown rendered
- * answer never claims seen.
+ * registrations and on surfaces without a strip, where a toast quotes nothing.
  */
 let heldContentProvider: ((sessionId: string) => HeldContent | undefined) | null = null;
-let renderedInWindow: ((sessionId: string) => boolean) | null = null;
 
-export function setAttentionHeldContentProvider(provider: AttentionWindowProvider | null): void {
-  heldContentProvider = provider?.heldContent ?? null;
-  renderedInWindow = provider?.rendered ?? null;
-}
-
-/**
- * The daemon's current attention per listed session — the roster's own word
- * about what still needs someone. This is the ONE oracle for whether a
- * parked raise is still due: cleared means withdrawn, a changed raise means
- * the session moved on, and a session missing here is a session the roster
- * no longer lists.
- *
- * Only the PUSH may call this (the pushed snapshot actually carries the
- * attention field). The list refresh's `Session` rows have no attention
- * field at all — absent is not withdrawn — so the refresh may only prune
- * (`pruneRosterAttention`); stamping null there would discard every parked
- * raise on the next poll.
- */
-const rosterAttention = new Map<string, Attention | null>();
-
-export function noteRosterAttention(
-  entries: ReadonlyArray<{ id: string; attention: Attention | undefined }>,
+export function setAttentionHeldContentProvider(
+  provider: ((sessionId: string) => HeldContent | undefined) | null,
 ): void {
-  const listed = new Set<string>();
-  for (const { id, attention } of entries) {
-    listed.add(id);
-    if (attention === undefined) {
-      rosterAttention.set(id, null);
-      continue;
-    }
-    // The notifier's own staleness rule: a re-publication the toast path
-    // would refuse must not regress the entry either (an older push
-    // arriving after a newer one keeps the newer raise due).
-    const recorded = rosterAttention.get(id);
-    if (recorded !== null && recorded !== undefined && !attentionRaised(recorded, attention)) {
-      continue;
-    }
-    rosterAttention.set(id, attention);
-  }
-  for (const id of [...rosterAttention.keys()]) {
-    if (!listed.has(id)) rosterAttention.delete(id);
-  }
+  heldContentProvider = provider;
 }
 
 /**
- * The refresh's contribution: rows that left the roster leave the oracle,
- * and nothing else. The list's `Session` shape carries no attention field,
- * so this must never write — absent is not withdrawn.
+ * The last raise a toast fired (or was gate-blocked) for, per session.
+ * Paseo's own dedupe (`attentionNotifiedRef`, `session-context.tsx:281-287`):
+ * identity is the raise's timestamp, so a re-publication of the event the
+ * daemon already told us about never toasts twice.
  */
-export function pruneRosterAttention(listedIds: ReadonlySet<string>): void {
-  for (const id of [...rosterAttention.keys()]) {
-    if (!listedIds.has(id)) rosterAttention.delete(id);
-  }
-}
-
-/**
- * The window's last applied answer, reported by presence on every read it
- * applies. The raise's own window-state read starts before its await, so it
- * can be older than a seen→unseen flip that fired and was spent while the
- * read was in flight — the park decision asks this newer truth.
- */
-let windowCurrentlyUnseen = false;
-
-export function noteWindowUnseen(unseen: boolean): void {
-  windowCurrentlyUnseen = unseen;
-}
-
-/** The last raise a toast fired (or was gate-blocked) for, per session. */
 const lastFired = new Map<string, Attention>();
 
-/**
- * Raises the seen gate parked: the window was focused, but the strip did
- * not render the session's row, so nobody saw them. One per session — a
- * newer raise supersedes the parked one. They are announced once by
- * `flushParkedAttentionRaises` when the window next goes unseen, and
- * dropped when the daemon withdraws or moves the raise on, when the row
- * renders, when superseded, or when the session leaves the roster.
- * Module-level on purpose, and the ANNOUNCER is app-scope too (App starts
- * the presence reporter that flushes, never a surface): parked raises
- * survive switching to Settings or Design, a Workspace unmount, and a
- * remount — nothing a surface does can lose them.
- */
-interface ParkedRaise {
-  title: string;
-  attention: Attention;
-}
-const parkedRaises = new Map<string, ParkedRaise>();
-
-/** Forget raises of sessions that left the roster, so the maps cannot grow forever. */
+/** Forget raises of sessions that left the roster, so the map cannot grow forever. */
 export function forgetAttentionFor(sessionIds: ReadonlySet<string>): void {
   for (const id of [...lastFired.keys()]) {
     if (!sessionIds.has(id)) lastFired.delete(id);
-  }
-  for (const id of [...parkedRaises.keys()]) {
-    if (!sessionIds.has(id)) parkedRaises.delete(id);
-  }
-}
-
-/**
- * Announces parked raises once, then consumes them: the window just went
- * unseen (hide, minimise, blur), so "seen" can no longer hold any of them
- * back. Each raise is dropped if its row now renders (the user reached it),
- * or if the roster no longer stands behind it — attention withdrawn, the
- * session moved on to a newer raise, or the session gone. Without a
- * registered provider nothing is dropped for being "seen": an unknown
- * rendered answer never claims seen, so the raises still announce.
- */
-export function flushParkedAttentionRaises(deps?: Partial<ToastDeps>): void {
-  if (parkedRaises.size === 0) return;
-  const parked = [...parkedRaises];
-  parkedRaises.clear();
-  for (const [sessionId, raise] of parked) {
-    if (renderedInWindow?.(sessionId) ?? false) continue;
-    const current = rosterAttention.get(sessionId);
-    if (
-      current === null ||
-      current === undefined ||
-      current.atMs !== raise.attention.atMs ||
-      current.reason !== raise.attention.reason
-    ) {
-      continue;
-    }
-    fireAttentionToast(sessionId, raise.title, raise.attention, deps);
   }
 }
 
@@ -418,16 +303,6 @@ export interface ToastDeps {
 /** How long a failed toast waits before its one retry. */
 export const TOAST_RETRY_DELAY_MS = 1500;
 
-/**
- * The production toast path, called by the roster controller on every
- * attention transition. The window gate marks a raise as seen — the user was
- * looking at the app AND this window renders the session's row — and stops
- * there. A raise the gate holds for an unrendered row is parked for the
- * unseen flip, or announced at once when that flip already fired while this
- * window-state read was in flight. A send that throws waits once for
- * `TOAST_RETRY_DELAY_MS` and tries again; a second failure is dropped — the
- * raise was announced as far as this app can push it.
- */
 /** The OS truth about this window, asked at the moment it is needed. The
  *  document inside a hidden WebView2 keeps claiming visible and focused
  *  forever, so the answer can only come from the window itself. Both the
@@ -461,6 +336,14 @@ export function productionOnWindowFocusChange(
   });
 }
 
+/**
+ * The production toast path, called by the roster controller on every
+ * attention transition. The gate holds a raise back only when this window is
+ * actively seen AND shows the session that raised; everything else announces
+ * at once. A send that throws waits once for `TOAST_RETRY_DELAY_MS` and tries
+ * again; a second failure is dropped — the raise was announced as far as this
+ * app can push it.
+ */
 export function fireAttentionToast(
   sessionId: string,
   title: string,
@@ -468,16 +351,13 @@ export function fireAttentionToast(
   deps?: Partial<ToastDeps>,
 ): void {
   if (!attentionRaised(lastFired.get(sessionId), attention)) return;
-  // A newer raise needs no explicit park cleanup: if it parks, it replaces
-  // this session's entry under the same key; if it toasts or is consumed,
-  // `lastFired` holds it and the dedupe stops the stale park — and the
-  // flush's roster check drops a raise the daemon has moved past anyway.
+  // Claimed before the awaits, so a raise superseded while this one waited can
+  // be recognized by identity below — and a raise the gate holds back is spent
+  // as main spends it: the user was looking at the session that raised.
   lastFired.set(sessionId, attention);
   const state = deps?.windowState ?? productionWindowState;
   const send = deps?.send ?? defaultSend;
   void (async () => {
-    // A rejected read cannot say the user is looking: the window might be
-    // in the tray, so behave as if they are not — toast anyway.
     let snapshot: WindowState;
     try {
       snapshot = await state();
@@ -489,24 +369,10 @@ export function fireAttentionToast(
     // A raise paused in the read above is stale if a newer one has since
     // taken the slot: the newer toast must not be followed by this one.
     if (lastFired.get(sessionId) !== attention) return;
-    if (!toastGate(snapshot)) {
-      if (renderedInWindow?.(sessionId) ?? false) {
-        // Seen but not raised: the user was looking at the window.
-        return;
-      }
-      // The row is not rendered, so nobody has seen the raise — but this
-      // window-state read started before its await, and the window may
-      // have hidden while it was in flight (the reporter's flip fired and
-      // was spent). The newer truth wins: announce now instead of parking
-      // for a flip that never comes again.
-      if (!windowCurrentlyUnseen) {
-        lastFired.delete(sessionId);
-        parkedRaises.set(sessionId, { title, attention });
-        // Seen but not raised.
-        return;
-      }
-      // Fall through: the announce below lands, dedupe intact.
-    }
+    // Both halves of the gate are read at the moment of decision, not when
+    // the raise arrived: the user may have reached this session, or left it,
+    // while the window answer was in flight.
+    if (!toastGate(snapshot, sessionId, lookedAtSessionId())) return;
     const held = heldContentProvider?.(sessionId);
     const content = toastContent(title, attention.reason, held);
     try {

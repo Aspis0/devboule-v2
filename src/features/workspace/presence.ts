@@ -1,5 +1,5 @@
 import { sessionPresence, type CommandArgs } from "../../lib/tauri";
-import { noteWindowUnseen, type WindowState } from "./attentionNotice";
+import type { WindowState } from "./attentionNotice";
 
 /** How often production re-asks the window state: hiding the window fires
  *  no DOM event inside WebView2, so a poll is the safety net behind the
@@ -17,6 +17,11 @@ const DEFAULT_WINDOW_POLL_INTERVAL_MS = 5_000;
  * it reports at once on a focus change, because the daemon DROPS a raise
  * for an attended session: a presence lag on hide would be a lost raise,
  * not a late one.
+ *
+ * The stored selection is also the app's one answer to "which session is
+ * this window looking at": the toast gate reads it through
+ * `lookedAtSessionId()`, so what the window holds a toast back for and what
+ * the daemon is told can never drift apart.
  */
 export interface PresenceEventTargetLike {
   addEventListener(type: string, listener: () => void): void;
@@ -56,19 +61,11 @@ export interface PresenceDeps {
    * daemon, not delayed.
    */
   onWindowFocusChange?: (handler: (event: { payload: boolean }) => void) => Promise<() => void>;
-  /**
-   * Called when an applied window-state answer flips the window from seen
-   * to unseen (hide, minimise, blur). This is the transition the parked
-   * attention raises wait for, so App hands the flush in here — the same
-   * place that reports presence is the same place that knows the user
-   * stopped looking.
-   */
-  onWindowBecameUnseen?: () => void;
 }
 
 export interface PresenceReporter {
-  /** Call whenever the selected session changes. */
-  onSelectionChanged(focusedSessionId: string | null): void;
+  /** Re-report now: the session this window shows changed. */
+  onSelectionChanged(): void;
   dispose(): void;
 }
 
@@ -78,21 +75,30 @@ interface Presence {
 }
 
 /**
- * The reporter the app started (App, once per app run), and the selection it
- * should currently name. Selection changes are written from wherever the
- * selected session lives — the Workspace surface, which never sees this
- * module's wiring — through reportSelection. The reporter reads the stored
- * value at start instead of relying on live calls: React flushes a commit's
- * effects child-first, so a Workspace mounting in the same commit as App
- * reports before any reporter exists, and the stored value is what survives
- * that ordering.
+ * The reporter the app started (App, once per app run), and the ONE record of
+ * the session this window shows. The surface that owns the selection writes it
+ * through `reportSelection` — it never sees this module's wiring — and both
+ * consumers read that one record: the reporter names it in every presence
+ * report, and the toast gate asks it what the user is looking at. A reporter
+ * starting after its owner mounted finds the value already stored, because
+ * React flushes a commit's effects child-first: a Workspace mounting in the
+ * same commit as App reports before any reporter exists.
  */
 let activeReporter: PresenceReporter | null = null;
 let reportedSelection: string | null = null;
 
 export function reportSelection(focusedSessionId: string | null): void {
   reportedSelection = focusedSessionId;
-  activeReporter?.onSelectionChanged(focusedSessionId);
+  activeReporter?.onSelectionChanged();
+}
+
+/**
+ * The session this window shows, or `null` when no surface shows one. The
+ * toast gate asks this — not the tab strip — what the user is looking at,
+ * the same question the daemon's presence report answers.
+ */
+export function lookedAtSessionId(): string | null {
+  return reportedSelection;
 }
 
 /**
@@ -115,9 +121,8 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     return { onSelectionChanged: () => undefined, dispose: () => undefined };
   }
 
-  // The selection the bridge already holds: a reporter starting after its
-  // owner mounted (child effects run first) must not guess null.
-  let focusedSessionId: string | null = reportedSelection;
+  // The selection is not held here: `reportedSelection` is the one record, and
+  // every report reads it as it stands when the report is built.
   let lastSent: Presence | null = null;
   let disposed = false;
   // Every window-state read takes its sequence number before its await; a
@@ -126,10 +131,6 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   // and resolves later is dropped instead of overwriting a newer answer.
   let lastRequestedRead = 0;
   let lastAppliedRead = 0;
-  // The previously applied answer's visibility: the seen→unseen flip is the
-  // parked-raise flush trigger. Tracked separately from `lastSent` so a
-  // failed presence send can never hide or repeat a transition.
-  let lastAppliedVisible: boolean | null = null;
 
   const emit = async (): Promise<void> => {
     if (disposed) return;
@@ -155,16 +156,8 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
     const appVisible = deps?.windowState
       ? !readFailed && asked !== null && asked.visible && asked.focused && !asked.minimized
       : doc.visibilityState === "visible" && doc.hasFocus();
-    // The applied answer is the window's newest truth; the attention side
-    // needs it to decide park-now against announce-now (a raise's own
-    // window-state read can be older than this flip).
-    noteWindowUnseen(!appVisible);
-    if (lastAppliedVisible === true && appVisible === false) {
-      deps?.onWindowBecameUnseen?.();
-    }
-    lastAppliedVisible = appVisible;
     const presence: Presence = {
-      focusedSessionId: appVisible ? focusedSessionId : null,
+      focusedSessionId: appVisible ? reportedSelection : null,
       appVisible,
     };
     if (
@@ -254,8 +247,7 @@ export function startPresenceReporting(deps?: Partial<PresenceDeps>): PresenceRe
   emitForgotten();
 
   const reporter: PresenceReporter = {
-    onSelectionChanged(nextFocusedSessionId: string | null): void {
-      focusedSessionId = nextFocusedSessionId;
+    onSelectionChanged(): void {
       emitForgotten();
     },
     dispose(): void {

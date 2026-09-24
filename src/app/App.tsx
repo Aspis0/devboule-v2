@@ -6,7 +6,6 @@ import { useAppStore, type DesignSessionState } from "../store/appStore";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
 import { sharedSessionController } from "../features/workspace/workspaceSessions";
 import {
-  flushParkedAttentionRaises,
   productionOnWindowFocusChange,
   productionWindowState,
 } from "../features/workspace/attentionNotice";
@@ -135,14 +134,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    // Presence and the parked-raise announcer are app-scope, like the
-    // roster watch: raises keep arriving on every surface, so the window's
-    // unseen flip must flush them on every surface too — not only while
-    // Workspace happens to be mounted.
+    // Presence is app-scope, like the roster watch: raises keep arriving on
+    // every surface, so the daemon must be told what this window shows — and
+    // that it shows nothing — wherever the user is standing.
     const reporter = startPresenceReporting({
       windowState: productionWindowState,
       onWindowFocusChange: productionOnWindowFocusChange,
-      onWindowBecameUnseen: flushParkedAttentionRaises,
     });
     return () => reporter.dispose();
   }, []);

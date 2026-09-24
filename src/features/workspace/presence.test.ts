@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { reportSelection, startPresenceReporting, type PresenceDeps } from "./presence";
 import type { CommandArgs } from "../../lib/tauri";
 import type { WindowState } from "./attentionNotice";
@@ -66,6 +66,13 @@ function createReporter(env: ReturnType<typeof createEnvironment>) {
 }
 
 describe("presence reporting", () => {
+  // The reported selection is module state — the one record the reporter and
+  // the toast gate share — so every test starts from "no surface shows a
+  // session" rather than from whatever the previous test left behind.
+  beforeEach(() => {
+    reportSelection(null);
+  });
+
   it("reports presence once on startup so the daemon is not guessing", () => {
     const env = createEnvironment();
     createReporter(env);
@@ -106,9 +113,9 @@ describe("presence reporting", () => {
 
   it("sends the focused session when the selection changes", async () => {
     const env = createEnvironment();
-    const reporter = createReporter(env);
+    createReporter(env);
 
-    reporter.onSelectionChanged("session-a");
+    reportSelection("session-a");
     await flush();
 
     expect(env.invoke).toHaveBeenNthCalledWith(2, "session_presence", {
@@ -119,8 +126,8 @@ describe("presence reporting", () => {
 
   it("reports the app as unfocused on blur and focused again on focus", async () => {
     const env = createEnvironment();
-    const reporter = createReporter(env);
-    reporter.onSelectionChanged("session-a");
+    createReporter(env);
+    reportSelection("session-a");
     await flush();
 
     env.state.hasFocus = false;
@@ -142,8 +149,8 @@ describe("presence reporting", () => {
 
   it("reports hidden on visibilitychange and restores when visible again", async () => {
     const env = createEnvironment();
-    const reporter = createReporter(env);
-    reporter.onSelectionChanged("session-a");
+    createReporter(env);
+    reportSelection("session-a");
     await flush();
 
     env.state.visibilityState = "hidden";
@@ -165,14 +172,14 @@ describe("presence reporting", () => {
 
   it("does not re-send presence when nothing changed", async () => {
     const env = createEnvironment();
-    const reporter = createReporter(env);
-    reporter.onSelectionChanged("session-a");
+    createReporter(env);
+    reportSelection("session-a");
     await flush();
     const callsAfterSettling = env.invoke.mock.calls.length;
 
     // Repeating the same selection and firing events that do not change the
     // real visibility/focus answers must not produce any new sends.
-    reporter.onSelectionChanged("session-a");
+    reportSelection("session-a");
     env.fire("focus");
     env.fire("visibilitychange", "document");
     await flush();
@@ -184,41 +191,6 @@ describe("presence reporting", () => {
     env.fire("blur");
     await flush();
     expect(env.invoke).toHaveBeenCalledTimes(callsAfterSettling + 1);
-  });
-
-  it("calls onWindowBecameUnseen once per applied seen-to-unseen flip", async () => {
-    // The parked attention raises wait for exactly this transition, so it
-    // must fire once per flip — not on startup-unseen, not on repeated
-    // unseen answers, and independently of presence-send success.
-    const env = createEnvironment();
-    const becameUnseen = vi.fn();
-    startPresenceReporting({
-      invoke: env.invoke as unknown as PresenceDeps["invoke"],
-      window: env.window,
-      document: env.document,
-      onWindowBecameUnseen: becameUnseen,
-    });
-    await flush();
-    // Startup while seen: no transition.
-    expect(becameUnseen).not.toHaveBeenCalled();
-
-    env.state.hasFocus = false;
-    env.fire("blur");
-    await flush();
-    expect(becameUnseen).toHaveBeenCalledTimes(1);
-
-    // Still unseen: another blur is not another transition.
-    env.fire("blur");
-    await flush();
-    expect(becameUnseen).toHaveBeenCalledTimes(1);
-
-    env.state.hasFocus = true;
-    env.fire("focus");
-    await flush();
-    env.state.hasFocus = false;
-    env.fire("blur");
-    await flush();
-    expect(becameUnseen).toHaveBeenCalledTimes(2);
   });
 
   it("asks the window state, so a hidden window is reported hidden even while the page lies", async () => {
@@ -300,7 +272,7 @@ describe("presence reporting", () => {
       document: env.document,
       windowState,
     });
-    reporter.onSelectionChanged("session-a");
+    reportSelection("session-a");
     reporter.dispose();
 
     // The read was still pending when dispose landed; resolving it now must
@@ -366,7 +338,7 @@ describe("presence reporting", () => {
     expect(reads.length).toBe(1);
     // The window hides while the first read is still in flight; a second
     // read starts (the selection change re-emits).
-    reporter.onSelectionChanged("session-a");
+    reportSelection("session-a");
     expect(reads.length).toBe(2);
     // The newer read answers hidden first.
     reads[1]({ visible: false, focused: false, minimized: false });
@@ -528,7 +500,7 @@ describe("presence reporting", () => {
     env.fire("blur");
     env.state.visibilityState = "hidden";
     env.fire("visibilitychange", "document");
-    reporter.onSelectionChanged("session-a");
+    reportSelection("session-a");
 
     // Only the startup send remains.
     expect(env.invoke).toHaveBeenCalledTimes(1);

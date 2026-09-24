@@ -298,7 +298,9 @@ export function Workspace({
   // and the queue as they are now, and asks the close marks per call — a row
   // hidden by an in-flight close is not "visible in this window" even before
   // the daemon removes it from the roster. With the strip scoped to the
-  // selected workspace, "rendered" means rendered there.
+  // selected workspace, "rendered" means rendered there; it decides WORDING
+  // only, never whether the raise announces (the toast gate asks the looked-at
+  // session for that, Paseo's rule).
   const renderedSessionIds = useMemo(
     () => new Set(visibleSessions.map((session) => session.id)),
     [visibleSessions],
@@ -498,11 +500,11 @@ export function Workspace({
     void reconnectSessions();
     void refreshPeerNames();
   }, [daemon.state, reconnectSessions, refreshPeerNames, retryProjects]);
-  // The presence reporter itself is App's (one per app run, flushing parked
-  // raises on every surface); this surface only owns the selected session.
-  // Leaving the surface (Settings, Design) must withdraw the selection, so
-  // the daemon never suppresses a session's raises for a window that is not
-  // looking at it — the second effect's cleanup owns exactly that.
+  // The presence reporter itself is App's (one per app run, wherever the user
+  // is standing); this surface only owns the selected session. Leaving the
+  // surface (Settings, Design) must withdraw the selection, so neither the
+  // daemon nor the local toast gate keeps holding raises back for a session
+  // this window no longer shows — the second effect's cleanup owns exactly that.
   useEffect(() => {
     reportSelection(selectedSessionId);
   }, [selectedSessionId]);

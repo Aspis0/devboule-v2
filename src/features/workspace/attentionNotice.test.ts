@@ -3,10 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Attention, AttentionReason, Session, SessionStateSnapshot } from "../../types/ipc";
 import type { ToastContent, ToastDeps, WindowState } from "./attentionNotice";
 import {
-  setAttentionHeldContentProvider,
-  flushParkedAttentionRaises,
-  noteRosterAttention,
-  noteWindowUnseen,
   PREVIEW_LIMIT,
   TOAST_RETRY_DELAY_MS,
   attentionRaised,
@@ -15,12 +11,18 @@ import {
   heldContentForSession,
   previewFrom,
   sendWithPermission,
+  setAttentionHeldContentProvider,
   stripMarkdown,
   toastContent,
   toastGate,
   workspaceHeldContentProvider,
 } from "./attentionNotice";
-import { startPresenceReporting, type PresenceReporter } from "./presence";
+import {
+  lookedAtSessionId,
+  reportSelection,
+  startPresenceReporting,
+  type PresenceDeps,
+} from "./presence";
 import { createWorkspaceSessionController, sessionTitle } from "./workspaceSessions";
 
 // The live check measured this lie: with the window hidden in the tray the
@@ -124,14 +126,38 @@ describe("attentionRaised", () => {
 });
 
 describe("toastGate", () => {
-  it("stays silent while the window is focused, visible and not minimized", () => {
-    expect(toastGate({ visible: true, focused: true, minimized: false })).toBe(false);
+  // Paseo's rule: away from the WINDOW or away from the SESSION — the raise
+  // is silent only when the user is looking at the session that raised.
+  const seen = { visible: true, focused: true, minimized: false };
+
+  it("stays silent only for the raise of the session this window shows", () => {
+    expect(toastGate(seen, "a1", "a1")).toBe(false);
   });
 
-  it("fires when the window is hidden, minimized, or unfocused", () => {
-    expect(toastGate({ visible: false, focused: false, minimized: false })).toBe(true); // in the tray
-    expect(toastGate({ visible: true, focused: true, minimized: true })).toBe(true); // minimized
-    expect(toastGate({ visible: true, focused: false, minimized: false })).toBe(true); // behind
+  it("announces another session's raise while this window stays focused", () => {
+    // The case the window-level gate lost after navigation scoped the strip
+    // to one workspace: the raised tab is not on screen, and nobody looks at
+    // every tab at once.
+    expect(toastGate(seen, "a2", "a1")).toBe(true);
+    // No surface shows a session at all (Workspace unmounted, Settings).
+    expect(toastGate(seen, "a2", null)).toBe(true);
+  });
+
+  it("announces any raise when the window is hidden, minimized, or behind", () => {
+    expect(toastGate({ visible: false, focused: false, minimized: false }, "a1", "a1")).toBe(true);
+    expect(toastGate({ visible: true, focused: true, minimized: true }, "a1", "a1")).toBe(true);
+    expect(toastGate({ visible: true, focused: false, minimized: false }, "a1", "a1")).toBe(true);
+  });
+});
+
+describe("lookedAtSessionId, the gate's other half", () => {
+  // The gate and the daemon's presence report read ONE record: whatever the
+  // Workspace surface last reported, and nothing after it unmounts.
+  it("is the session the surface reported, until the surface withdraws it", () => {
+    reportSelection("a1");
+    expect(lookedAtSessionId()).toBe("a1");
+    reportSelection(null);
+    expect(lookedAtSessionId()).toBeNull();
   });
 });
 
@@ -236,20 +262,20 @@ describe("workspaceHeldContentProvider", () => {
       pending: () => ({ title: "Run npm install" }),
       heldAssistantText: () => "Deploy finished successfully",
     });
-    expect(provider.heldContent("agent-1")?.permissionText).toContain("Run npm install");
-    expect(provider.heldContent("agent-1")?.lastAssistantText).toContain("Deploy finished");
+    expect(provider("agent-1")?.permissionText).toContain("Run npm install");
+    expect(provider("agent-1")?.lastAssistantText).toContain("Deploy finished");
   });
 
-  it("asks the inputs on every call, so a hidden row is not quoted", () => {
+  it("asks the inputs on every call, so a row that left the strip is not quoted", () => {
     let rendered = true;
     const provider = workspaceHeldContentProvider({
       rendered: () => rendered,
       pending: () => ({ title: "Run npm install" }),
       heldAssistantText: () => "Deploy finished successfully",
     });
-    expect(provider.heldContent("agent-1")).toBeDefined();
+    expect(provider("agent-1")).toBeDefined();
     rendered = false;
-    expect(provider.heldContent("agent-1")).toBeUndefined();
+    expect(provider("agent-1")).toBeUndefined();
   });
 });
 
@@ -387,11 +413,9 @@ describe("fireAttentionToast delivery", () => {
   it("hands the provider's held content to the sender", async () => {
     vi.useFakeTimers();
     forgetAttentionFor(new Set());
-    setAttentionHeldContentProvider({
-      heldContent: (sessionId) =>
-        sessionId === "s3" ? { permissionText: "Run npm install" } : undefined,
-      rendered: () => true,
-    });
+    setAttentionHeldContentProvider((sessionId) =>
+      sessionId === "s3" ? { permissionText: "Run npm install" } : undefined,
+    );
     const send = vi.fn(async (_content: ToastContent) => undefined);
     fireAttentionToast("s3", "agent three", attention("permission", 1000), {
       send,
@@ -453,6 +477,9 @@ describe("fireAttentionToast window gate", () => {
     vi.useFakeTimers();
     documentClaimsVisibleAndFocused();
     forgetAttentionFor(new Set());
+    // No surface reports a selection here, so a seen window is not enough to
+    // hold any of these raises back — the per-session clause of the gate.
+    reportSelection(null);
   });
 
   afterEach(() => {
@@ -470,14 +497,16 @@ describe("fireAttentionToast window gate", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("stays silent for a window that is visible and focused", async () => {
+  it("stays silent for the session this window shows in a seen window", async () => {
     const send = vi.fn(async (_content: ToastContent) => undefined);
+    reportSelection("g2");
     fireAttentionToast("g2", "agent two", attention("finished", 1000), {
       send,
       windowState: onScreenFocused,
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
+    reportSelection(null);
   });
 
   it("toasts a same-millisecond escalation of an announced raise", async () => {
@@ -536,260 +565,24 @@ describe("fireAttentionToast window gate", () => {
   });
 });
 
-describe("fireAttentionToast seen gate needs the row rendered", () => {
-  // The strip is scoped to the selected workspace, so a focused window can
-  // still not render the raising session's row (another workspace's tab,
-  // search hidden). "Seen" is window seen AND row rendered: a raise whose
-  // row nobody saw is PARKED, and what announces it is the presence
-  // reporter's seen→unseen transition flushing the parked set — never a
-  // hand-called second fire.
-  let watchedFocus: { handler: ((event: { payload: boolean }) => void) | null };
-  let windowAnswer: WindowState;
-  let reporter: PresenceReporter | null = null;
-
-  // The production wiring, with this file's usual seams: the reporter owns
-  // the unseen transition; the flush callback is wired exactly like
-  // Workspace wires it, plus this file's injected send/window state.
-  const startReporter = (send: (content: ToastContent) => Promise<void>): void => {
-    windowAnswer = { visible: true, focused: true, minimized: false };
-    watchedFocus = { handler: null };
-    reporter = startPresenceReporting({
-      invoke: vi.fn(async () => undefined),
-      windowState: async () => windowAnswer,
-      onWindowFocusChange: async (handler) => {
-        watchedFocus.handler = handler;
-        return () => undefined;
-      },
-      onWindowBecameUnseen: () =>
-        flushParkedAttentionRaises({ send, windowState: async () => windowAnswer }),
-    });
-  };
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-    forgetAttentionFor(new Set());
-    noteRosterAttention([]);
-    // The window's last applied truth persists across tests, like the maps.
-    noteWindowUnseen(false);
-  });
-
-  afterEach(() => {
-    reporter?.dispose();
-    reporter = null;
-    setAttentionHeldContentProvider(null);
-    vi.useRealTimers();
-  });
-
-  it("an off-strip permission raise seen while focused announces once when presence reports unseen", async () => {
-    // Production truth for an off-strip session: the app never attached to
-    // it, so no permission card exists locally and the rendered predicate
-    // says no. The roster — not the queue — is what keeps the raise due.
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    startReporter(send);
-    await vi.advanceTimersByTimeAsync(0);
-    setAttentionHeldContentProvider(
-      workspaceHeldContentProvider({
-        rendered: () => false,
-        heldAssistantText: () => undefined,
-        pending: () => undefined,
-      }),
-    );
-    const raise = attention("permission", 1000);
-    noteRosterAttention([{ id: "v1", attention: raise }]);
-    fireAttentionToast("v1", "agent one", raise, {
-      send,
-      windowState: async () => windowAnswer,
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    // Seen window, unrendered row: parked, not announced, not consumed.
-    expect(send).not.toHaveBeenCalled();
-
-    // The user hides the window; the presence reporter applies the unseen
-    // answer and the flush announces the parked raise exactly once.
-    windowAnswer = { visible: false, focused: false, minimized: false };
-    watchedFocus.handler?.({ payload: false });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).toHaveBeenCalledTimes(1);
-
-    // A repeated unseen answer (the poll, another blur) does not re-announce.
-    watchedFocus.handler?.({ payload: false });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).toHaveBeenCalledTimes(1);
-  });
-
-  it("a parked raise whose row the user reached before hiding does not announce", async () => {
-    let rendered = false;
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    startReporter(send);
-    await vi.advanceTimersByTimeAsync(0);
-    setAttentionHeldContentProvider(
-      workspaceHeldContentProvider({
-        rendered: () => rendered,
-        heldAssistantText: () => undefined,
-        pending: () => undefined,
-      }),
-    );
-    const raise = attention("permission", 1000);
-    noteRosterAttention([{ id: "v2", attention: raise }]);
-    fireAttentionToast("v2", "agent two", raise, {
-      send,
-      windowState: async () => windowAnswer,
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).not.toHaveBeenCalled();
-
-    // The user switches to that workspace (the row renders), then hides.
-    rendered = true;
-    windowAnswer = { visible: false, focused: false, minimized: false };
-    watchedFocus.handler?.({ payload: false });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it("a parked raise whose attention the daemon cleared before the hide does not announce", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    startReporter(send);
-    await vi.advanceTimersByTimeAsync(0);
-    setAttentionHeldContentProvider(
-      workspaceHeldContentProvider({
-        rendered: () => false,
-        heldAssistantText: () => undefined,
-        pending: () => undefined,
-      }),
-    );
-    const raise = attention("permission", 1000);
-    noteRosterAttention([{ id: "v3", attention: raise }]);
-    fireAttentionToast("v3", "agent three", raise, {
-      send,
-      windowState: async () => windowAnswer,
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).not.toHaveBeenCalled();
-
-    // The daemon withdraws the raise (the next roster carries no attention
-    // for the session), then the window hides: nothing is due any more.
-    noteRosterAttention([{ id: "v3", attention: undefined }]);
-    windowAnswer = { visible: false, focused: false, minimized: false };
-    watchedFocus.handler?.({ payload: false });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it("an on-strip raise seen while focused stays consumed when the window hides", async () => {
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    startReporter(send);
-    await vi.advanceTimersByTimeAsync(0);
-    setAttentionHeldContentProvider(
-      workspaceHeldContentProvider({
-        rendered: () => true,
-        heldAssistantText: () => undefined,
-        pending: () => undefined,
-      }),
-    );
-    fireAttentionToast("v4", "agent four", attention("permission", 1000), {
-      send,
-      windowState: async () => windowAnswer,
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).not.toHaveBeenCalled();
-
-    // As on main: the raise was genuinely seen and stays consumed — the
-    // unseen transition flushes nothing.
-    windowAnswer = { visible: false, focused: false, minimized: false };
-    watchedFocus.handler?.({ payload: false });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it("a parked raise is never announced once a newer raise for the session has landed", async () => {
-    // No provider registered — the surfaces-without-a-strip case, which
-    // must park (an unknown rendered answer never claims seen) and must
-    // still announce at flush. The newer raise toasts immediately; whether
-    // through the dedupe (lastFired holds the newer raise) or the roster
-    // check, the stale park must stay silent afterwards.
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    const first = attention("finished", 1000);
-    noteRosterAttention([{ id: "w1", attention: first }]);
-    fireAttentionToast("w1", "agent one", first, { send, windowState: onScreenFocused });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).not.toHaveBeenCalled();
-
-    // The window hides and a newer raise lands for the same session: the
-    // newer one toasts at once, and the park must not still hold the stale
-    // raise behind it.
-    const newer = attention("finished", 2000);
-    fireAttentionToast("w1", "agent one", newer, { send, windowState: hiddenInTray });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).toHaveBeenCalledTimes(1);
-
-    flushParkedAttentionRaises({ send, windowState: hiddenInTray });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).toHaveBeenCalledTimes(1);
-  });
-
-  it("a raise parked by a stale seen read announces at once when the flip already fired", async () => {
-    // The raise's window-state read pauses in flight; the window hides and
-    // the reporter spends the only flip. When the stale read resolves
-    // "seen", parking would wait for a flip that never comes again — the
-    // newer window truth says announce now.
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    startReporter(send);
-    await vi.advanceTimersByTimeAsync(0);
-    setAttentionHeldContentProvider(
-      workspaceHeldContentProvider({
-        rendered: () => false,
-        heldAssistantText: () => undefined,
-        pending: () => undefined,
-      }),
-    );
-    const { windowState, resolveNext } = deferredWindowState();
-    fireAttentionToast("v5", "agent five", attention("finished", 1000), { send, windowState });
-    windowAnswer = { visible: false, focused: false, minimized: false };
-    watchedFocus.handler?.({ payload: false });
-    await vi.advanceTimersByTimeAsync(0);
-    // The flip fired on an empty park: nothing announced yet.
-    expect(send).not.toHaveBeenCalled();
-
-    resolveNext({ visible: true, focused: true, minimized: false });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).toHaveBeenCalledTimes(1);
-
-    // Announced, not parked: another flush adds nothing.
-    flushParkedAttentionRaises({ send, windowState: async () => windowAnswer });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).toHaveBeenCalledTimes(1);
-  });
-
-  it("a parked raise in a surface without a strip announces at flush", async () => {
-    // No provider registered: an unknown rendered answer must count as NOT
-    // seen — the raise parks here and the flush announces it. If unknown
-    // meant "seen", this raise would never reach its user.
-    const send = vi.fn(async (_content: ToastContent) => undefined);
-    const raise = attention("permission", 1000);
-    noteRosterAttention([{ id: "np1", attention: raise }]);
-    fireAttentionToast("np1", "agent one", raise, { send, windowState: onScreenFocused });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).not.toHaveBeenCalled();
-    flushParkedAttentionRaises({ send, windowState: hiddenInTray });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(send).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("the controller's roster notes feed the parked-raise oracle", () => {
-  // The oracle has two production writers and this is their only direct
-  // test: the push (whose snapshots carry the attention field) is
-  // authoritative, while the list refresh's `Session` rows carry no
-  // attention field at all — absent is not withdrawn, so the refresh may
-  // only prune.
+describe("the toast gate is Paseo's rule", () => {
+  // The production path: the real roster controller with the observer wiring
+  // `sharedSessionController` installs (one `fireAttentionToast` per NEW
+  // raise), the real held-content provider, and the real `reportSelection`
+  // bridge the Workspace effect drives — the real presence reporter where it
+  // matters. Only the OS is doubled: the window-state read and the sender,
+  // because a test has no window to hide and no toast service to read.
   let watched: { listener: ((snapshots: SessionStateSnapshot[]) => void) | null };
 
-  function makeController(send: (content: ToastContent) => Promise<void>) {
+  function harness(
+    send: (content: ToastContent) => Promise<void>,
+    windowState: () => Promise<WindowState>,
+    list: () => Promise<Session[]> = async () => [],
+  ) {
     watched = { listener: null };
-    const listed: Session[] = [];
     const controller = createWorkspaceSessionController(
       {
-        list: vi.fn(async () => listed),
+        list: vi.fn(list),
         create: vi.fn(async () => {
           throw new Error("not created here");
         }),
@@ -801,84 +594,208 @@ describe("the controller's roster notes feed the parked-raise oracle", () => {
         }),
       },
       (session, raised) =>
-        fireAttentionToast(session.id, sessionTitle(session), raised, {
-          send,
-          windowState: onScreenFocused,
-        }),
+        fireAttentionToast(session.id, sessionTitle(session), raised, { send, windowState }),
     );
-    return { controller, listed };
+    const release = controller.watch();
+    return { controller, release };
   }
 
-  const push = (atMs: number, withAttention = true): SessionStateSnapshot[] => [
-    {
-      id: "agent-1",
-      workspaceId: null,
-      kind: "acp",
-      title: "agent one",
-      state: { type: "live", generation: 1 },
+  /** Two live sessions in two workspaces; only one is in the strip at a time. */
+  function roster(raisedId: string | null, atMs = 2000): SessionStateSnapshot[] {
+    return [
+      ["workspace-a", "agent-one"],
+      ["workspace-b", "agent-two"],
+    ].map(([workspaceId, id]) => ({
+      id,
+      workspaceId,
+      kind: "acp" as const,
+      title: id,
+      state: { type: "live" as const, generation: 1 },
       elapsedMs: 0,
-      ...(withAttention ? { attention: { reason: "finished" as const, atMs } } : {}),
-    },
-  ];
-
-  const listRow = (): Session => ({
-    id: "agent-1",
-    workspaceId: null,
-    kind: "acp",
-    title: "agent one",
-    state: { type: "live", generation: 1 },
-    elapsedMs: 0,
-  });
+      ...(raisedId === id ? { attention: { reason: "finished" as const, atMs } } : {}),
+    }));
+  }
 
   beforeEach(() => {
     vi.useFakeTimers();
+    documentClaimsVisibleAndFocused();
     forgetAttentionFor(new Set());
-    noteRosterAttention([]);
-    noteWindowUnseen(false);
     setAttentionHeldContentProvider(null);
+    reportSelection(null);
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
-  it("a routine list refresh does not withdraw a parked raise", async () => {
+  it("announces another session's raise while this window stays focused", async () => {
     const send = vi.fn(async (_content: ToastContent) => undefined);
-    const { controller, listed } = makeController(send);
-    const release = controller.watch();
-    // First roster is the baseline; the second is a real raise.
-    watched.listener?.(push(1000));
-    watched.listener?.(push(2000));
+    const { release } = harness(send, onScreenFocused);
+    reportSelection("agent-one");
+    watched.listener?.(roster(null));
+    watched.listener?.(roster("agent-two"));
     await vi.advanceTimersByTimeAsync(0);
-    // Seen window and no strip here: parked, unannounced.
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].title).toBe("agent-two — finished");
+    release();
+  });
+
+  it("stays silent for the raise of the session this window shows", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { release } = harness(send, onScreenFocused);
+    reportSelection("agent-two");
+    watched.listener?.(roster(null));
+    watched.listener?.(roster("agent-two"));
+    await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
+    release();
+  });
 
-    // The refresh resolves with the reply's real shape: no attention field.
-    listed.push(listRow());
-    await controller.refresh();
+  it("announces every raise while the window is hidden, the shown session included", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { release } = harness(send, hiddenInTray);
+    reportSelection("agent-one");
+    watched.listener?.(roster(null));
+    watched.listener?.(roster("agent-one"));
+    watched.listener?.(roster("agent-two", 3000));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(2);
+    release();
+  });
 
-    flushParkedAttentionRaises({ send, windowState: hiddenInTray });
+  it("announces one raise once, however often the roster re-publishes it", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { release } = harness(send, onScreenFocused);
+    reportSelection("agent-one");
+    watched.listener?.(roster(null));
+    watched.listener?.(roster("agent-two"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    watched.listener?.(roster("agent-two"));
+    watched.listener?.(roster("agent-two"));
     await vi.advanceTimersByTimeAsync(0);
     expect(send).toHaveBeenCalledTimes(1);
     release();
   });
 
-  it("a push that withdraws the attention takes the parked raise with it", async () => {
+  it("holds a raise back when the switch that shows it landed first", async () => {
+    // One write, two readers: the surface's selection reaches the daemon
+    // through the real reporter AND decides the gate, from the same record.
     const send = vi.fn(async (_content: ToastContent) => undefined);
-    const { controller } = makeController(send);
-    const release = controller.watch();
-    watched.listener?.(push(1000));
-    watched.listener?.(push(2000));
+    const presence = vi.fn(async (_args: unknown) => undefined);
+    const reporter = startPresenceReporting({
+      invoke: presence as unknown as PresenceDeps["invoke"],
+      window: {
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+      document: {
+        visibilityState: "visible",
+        hasFocus: () => true,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+      windowState: onScreenFocused,
+    });
+    const { controller, release } = harness(send, onScreenFocused);
+    reportSelection("agent-one");
+    watched.listener?.(roster(null));
+
+    // The user navigates to workspace B: the strip's reconciliation selects
+    // agent-two, and the surface reports that selection BEFORE the raise.
+    controller.select("agent-two");
+    reportSelection(controller.getState().selectedSessionId);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(presence).toHaveBeenLastCalledWith("session_presence", {
+      focusedSessionId: "agent-two",
+      appVisible: true,
+    });
+
+    watched.listener?.(roster("agent-two"));
     await vi.advanceTimersByTimeAsync(0);
     expect(send).not.toHaveBeenCalled();
+    reporter.dispose();
+    release();
+  });
 
-    // The daemon withdraws: a push that carries no attention for the session.
-    watched.listener?.(push(3000, false));
+  it("a surface without a strip shows no session, so every raise announces", async () => {
+    // Settings or Design on screen: the Workspace unmounted and withdrew its
+    // selection, so nothing may be held back as "already looked at".
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { release } = harness(send, onScreenFocused);
+    reportSelection("agent-one");
+    watched.listener?.(roster(null));
+    reportSelection(null);
+    watched.listener?.(roster("agent-one"));
     await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    release();
+  });
 
-    flushParkedAttentionRaises({ send, windowState: hiddenInTray });
+  it("quotes the words of a row this window renders, and nothing for the rest", async () => {
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    const { release } = harness(send, hiddenInTray);
+    reportSelection("agent-one");
+    setAttentionHeldContentProvider(
+      workspaceHeldContentProvider({
+        rendered: (sessionId) => sessionId === "agent-one",
+        pending: () => undefined,
+        heldAssistantText: (sessionId) =>
+          sessionId === "agent-one" ? "Deploy finished successfully" : undefined,
+      }),
+    );
+    watched.listener?.(roster(null));
+    watched.listener?.(roster("agent-one"));
+    watched.listener?.(roster("agent-two", 3000));
     await vi.advanceTimersByTimeAsync(0);
-    expect(send).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(2);
+    // B2's live check: the tray toast for the session the user was reading
+    // quotes its answer; another session's toast says the reason and stops.
+    expect(send.mock.calls[0]?.[0].body).toBe("Deploy finished successfully");
+    expect(send.mock.calls[1]?.[0].body).toBe("finished");
+    release();
+  });
+
+  it("a refresh that drops a row from the strip does not re-announce its raise", async () => {
+    // `stripSessions` drops an ended row the daemon still lists. The dedupe
+    // is keyed to the daemon's roster, not to the strip's view, so the
+    // standing raise stays spent and the next push is silence: pruning
+    // against the stripped set made one event toast twice.
+    const send = vi.fn(async (_content: ToastContent) => undefined);
+    let ended = false;
+    const { controller, release } = harness(send, onScreenFocused, async () => [
+      {
+        id: "agent-two",
+        workspaceId: "workspace-b",
+        kind: "acp" as const,
+        title: "agent-two",
+        state: ended
+          ? {
+              type: "ended" as const,
+              generation: 1,
+              code: 0,
+              integrity: { kind: "complete" as const },
+            }
+          : ({ type: "live", generation: 1 } as const),
+        elapsedMs: 0,
+      },
+    ]);
+    reportSelection("agent-one");
+    watched.listener?.(roster(null));
+    watched.listener?.(roster("agent-two"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    ended = true;
+    await controller.refresh();
+    expect(controller.getState().sessions.map((session) => session.id)).not.toContain("agent-two");
+
+    // The daemon lists the row again with the SAME raise standing: silence.
+    ended = false;
+    watched.listener?.(roster("agent-two"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
     release();
   });
 });

@@ -19,13 +19,7 @@ import type {
 import { isAgentKind } from "../../types/ipc";
 import { boundByGraphemes } from "../../lib/graphemeBound";
 import { errorSentence } from "../../lib/errorSentence";
-import {
-  attentionRaised,
-  fireAttentionToast,
-  forgetAttentionFor,
-  noteRosterAttention,
-  pruneRosterAttention,
-} from "./attentionNotice";
+import { attentionRaised, fireAttentionToast, forgetAttentionFor } from "./attentionNotice";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
@@ -621,10 +615,11 @@ export function createWorkspaceSessionController(
       // it never publishes rows verbatim, or every refresh would strip the
       // ledger, creator and birth facts earlier pushes landed.
       const known = new Map(state.sessions.map((session) => [session.id, session]));
-      const listed = stripSessions(
-        workspaceSessions(await source.list()).map((row) => carrySession(row, known.get(row.id))),
+      const roster = workspaceSessions(await source.list()).map((row) =>
+        carrySession(row, known.get(row.id)),
       );
       if (generation !== refreshGeneration) return;
+      const listed = stripSessions(roster);
       publish({
         ...state,
         sessions: listed,
@@ -635,12 +630,11 @@ export function createWorkspaceSessionController(
       // A list refresh can be the only roster update that removes a row: it
       // prunes the row's dedupe entry the same way a push does, so a session
       // that returns re-announces, and the map cannot grow for the process
-      // lifetime while the watch is down.
-      forgetAttentionFor(new Set(listed.map((session) => session.id)));
-      // The list's `Session` rows carry no attention field at all — absent
-      // is not withdrawn — so the refresh only prunes the parked-raise
-      // oracle; stamping it here would discard every parked raise.
-      pruneRosterAttention(new Set(listed.map((session) => session.id)));
+      // lifetime while the watch is down. The prune asks the DAEMON's roster,
+      // never the strip's view: `stripSessions` drops ended rows the daemon
+      // still lists, and forgetting one of those lets its standing raise
+      // re-announce on the next push (a second toast for the same event).
+      forgetAttentionFor(new Set(roster.map((session) => session.id)));
     } catch {
       if (generation !== refreshGeneration) return;
       publish({ ...state, loading: false, error: LIST_ERROR });
@@ -753,12 +747,6 @@ export function createWorkspaceSessionController(
     // Rows that left the roster take their dedupe slot with them, so a
     // session that returns re-announces like the first arrival it is.
     forgetAttentionFor(new Set(sessions.map((session) => session.id)));
-    // The roster's attention state is the parked-raise oracle: noted on
-    // every application, so a withdrawn or moved-on raise is never
-    // announced from the park.
-    noteRosterAttention(
-      sessions.map((session) => ({ id: session.id, attention: session.attention })),
-    );
   };
 
   const create = async (
