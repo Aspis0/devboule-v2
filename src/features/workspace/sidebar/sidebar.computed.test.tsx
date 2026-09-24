@@ -176,6 +176,50 @@ describe("sidebar computed styles (real stylesheets, no app launch)", () => {
     expect(getComputedStyle(foot).paddingLeft).toBe("8px");
   });
 
+  it("the foot's rows sit on the body rows' 16px column", async () => {
+    // The composed left edge is what the eye sees: container padding plus
+    // the row's own padding must add up to the same 16px column the body
+    // rows start at. (The 994f6c1 pass shipped a 2px footer container, which
+    // put the Daemon row at 10px while body text sat at 16px.)
+    inject([
+      ".sidebar-body",
+      ".workspace-row",
+      ".workspace-sidebar-footer",
+      ".workspace-history-button",
+      ".sidebar-foot",
+    ]);
+    await renderWorkspace();
+
+    const px = (el: HTMLElement, prop: "paddingLeft" | "paddingRight") =>
+      Number.parseFloat(getComputedStyle(el)[prop]);
+
+    const body = document.querySelector<HTMLElement>(".sidebar-body");
+    const row = document.querySelector<HTMLElement>(".workspace-row");
+    const footer = document.querySelector<HTMLElement>(".workspace-sidebar-footer");
+    const historyButton = document.querySelector<HTMLElement>(".workspace-history-button");
+    const daemonRow = document.querySelector<HTMLElement>(".sidebar-foot");
+    for (const el of [body, row, footer, historyButton, daemonRow]) {
+      if (el === null) throw new Error("a sidebar column element did not render");
+    }
+
+    // eslint-disable-next-line no-console
+    console.log(
+      "DEBUG cols:",
+      px(body!, "paddingLeft"),
+      px(row!, "paddingLeft"),
+      px(footer!, "paddingLeft"),
+      px(historyButton!, "paddingLeft"),
+      px(daemonRow!, "paddingLeft"),
+    );
+    const bodyColumn = px(body!, "paddingLeft") + px(row!, "paddingLeft");
+    const historyColumn = px(footer!, "paddingLeft") + px(historyButton!, "paddingLeft");
+    const daemonColumn = px(footer!, "paddingLeft") + px(daemonRow!, "paddingLeft");
+
+    expect(bodyColumn).toBe(16);
+    expect(historyColumn).toBe(bodyColumn);
+    expect(daemonColumn).toBe(bodyColumn);
+  });
+
   it("the resize handle keeps its 6px track and col-resize cursor", async () => {
     inject([".workspace-resize-handle"]);
     await renderWorkspace();

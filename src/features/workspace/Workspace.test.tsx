@@ -1558,16 +1558,22 @@ describe("Workspace sessions", () => {
     expect(selectedRow?.textContent).toContain(createdWorkspace.title);
   });
 
-  it("two quick clicks on a project add with no local workspace mint only one", async () => {
-    // The review's mint defect: with the provider list pending, a second
-    // click must not start a second create once the first flow resolves.
+  it("the double-mint guard holds while the first create is pending: clicks inside the real window mint once", async () => {
+    // The review's window: providers resolve, the first workspaceCreate is
+    // still pending, and a second click arrives. Releasing the guard at
+    // provider resolution would mint a second look-alike workspace here.
     vi.mocked(workspacesList).mockResolvedValue([]);
-    vi.mocked(workspaceCreate).mockResolvedValue(createdWorkspace);
-    const pendingProviders = deferred<{
-      providers: (typeof grokProvider)[];
-      unreadableDirs: number;
-    }>();
-    vi.mocked(providersList).mockImplementation(() => pendingProviders.promise);
+    // Providers resolve immediately; the workspaceCreate below is what stays
+    // pending (the review's window: providers resolved, create in flight,
+    // second click arrives).
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [{ ...grokProvider, protocol: "acp" }],
+      unreadableDirs: 0,
+    });
+    // The first create stays pending: this is the window where an early
+    // guard release would mint a second look-alike workspace.
+    const pendingCreate = deferred<IpcWorkspace>();
+    vi.mocked(workspaceCreate).mockImplementationOnce(() => pendingCreate.promise);
     root = createRoot(container);
     await act(async () => root.render(<Workspace />));
     await act(async () => undefined);
@@ -1575,18 +1581,22 @@ describe("Workspace sessions", () => {
     const projectAdd = container.querySelector<HTMLButtonElement>(".workspace-project-add");
     if (projectAdd === null) throw new Error("project add control did not render");
     await act(async () => projectAdd.click());
+    await act(async () => undefined);
+    expect(workspaceCreate).toHaveBeenCalledTimes(1);
+    expect(sessionCreate).not.toHaveBeenCalled();
+
+    // Second click while the first create is still pending.
     await act(async () => projectAdd.click());
-    await act(async () => {
-      pendingProviders.resolve({
-        providers: [{ ...grokProvider, protocol: "acp" }],
-        unreadableDirs: 0,
-      });
-    });
+    await act(async () => undefined);
+    expect(workspaceCreate).toHaveBeenCalledTimes(1);
+
+    pendingCreate.resolve(createdWorkspace);
     await act(async () => undefined);
     await act(async () => undefined);
 
     expect(workspaceCreate).toHaveBeenCalledTimes(1);
     expect(sessionCreate).toHaveBeenCalledTimes(1);
+    expect(sessionCreate).toHaveBeenCalledWith(createdWorkspace.id, "acp", "grok");
   });
 
   it("dismisses the provider popover on outside mousedown without creating", async () => {
