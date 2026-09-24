@@ -1400,6 +1400,13 @@ impl SessionRuntime {
         self.turn_active.store(true, Ordering::Release);
     }
 
+    /// Whether a turn is running right now — read while the writer is held,
+    /// where `begin_turn` cannot slip between this and the write that follows
+    /// (fix pass 1, P1-1's admission).
+    pub(crate) fn turn_running(&self) -> bool {
+        self.turn_active.load(Ordering::Acquire)
+    }
+
     pub(crate) fn turn_counter(&self) -> u64 {
         self.turn_counter.load(Ordering::Acquire)
     }

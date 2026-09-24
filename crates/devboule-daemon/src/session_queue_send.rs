@@ -1,16 +1,21 @@
 //! Send-now: take one item out of the queue and send it as an `interrupt` —
-//! the queue's own synchronous send. The claim/restore shape here is the one
-//! `session_queue_drain.rs` mirrors: the item leaves (and the snapshot says
-//! so) before the send starts, and a failed send puts it back at the front
-//! with its error, which is Paseo's rule.
+//! the queue's own synchronous send. The claim keeps the row (flagged in
+//! flight) until the provider accepts, so a crash cannot lose it; a failed
+//! attempt restores the item at the front with its error and parks the queue
+//! — no automatic retry, the next attempt is a user act (fix pass 1, P1-4
+//! and P1-5).
 
-use super::*;
+use super::{
+    check_attached, no_such_item, not_found, session_origin_for, ActiveTurnBehavior, ConnHandle,
+    ErrorCode, OwnerId, SendRequest, SessionRegistry, UserMessageAuthor, UserMessageKind,
+    WireError,
+};
 
 impl SessionRegistry {
     /// Send one queued item immediately: the running turn is interrupted, the
-    /// text goes as a new turn (a plain send when nothing runs), and the item
-    /// is already out of the queue — on failure it returns to the front,
-    /// carrying the error for the snapshot to show.
+    /// text goes as a new turn (a plain send when nothing runs), and on
+    /// failure the item returns to the front carrying its error — Paseo's
+    /// rule — while the queue stays paused for the user's next move.
     pub(crate) fn queue_send_now(
         &self,
         session_id: &str,
@@ -23,10 +28,15 @@ impl SessionRegistry {
         check_attached(&runtime, conn, subscription_id)?;
         let taken = {
             let mut queues = self.queues.lock();
+            // The resolve above can be overtaken by a close or a delete;
+            // the claim must not recreate what they discarded (P2-5).
+            if !self.queue_session_live(session_id) {
+                return Err(not_found());
+            }
             self.ensure_queue_loaded(session_id, &mut queues)?;
             let state = queues
-                .entry(session_id.to_string())
-                .or_insert_with(|| QueueState::new(Vec::new()));
+                .get_mut(session_id)
+                .expect("ensure_queue_loaded inserts the state");
             if state.draining {
                 return Err(WireError::new(
                     ErrorCode::InvalidRequest,
@@ -36,10 +46,16 @@ impl SessionRegistry {
             let position = state
                 .position(item_id)
                 .ok_or_else(|| no_such_item(item_id))?;
-            state.draining = true;
-            let taken = state.items.remove(position);
-            let items = state.snapshot();
-            self.persist_queue(session_id, &items);
+            let mut trial = state.clone();
+            trial.draining = true;
+            trial.items[position].unconfirmed = true;
+            // The claim is written before it is taken: an unwritable store
+            // refuses the claim outright rather than sending a message the
+            // journal could not restore (P1-3, P1-4).
+            self.persist_queue(session_id, &trial.items, trial.next_id)?;
+            let taken = trial.items[position].clone();
+            let items = trial.snapshot();
+            *state = trial;
             runtime.publish_queue_snapshot(items);
             taken
         };
@@ -63,35 +79,82 @@ impl SessionRegistry {
             preset_preamble: None,
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
+            // The interrupt waited for its turn; if another turn started
+            // after that wait, this text must not enter it either (the same
+            // admission the drain gives).
+            require_no_turn_running: true,
         });
         match result {
             Ok(_) => {
-                self.edit_queue(session_id, &runtime, |state| {
+                // The provider accepted: the row leaves — unless the client
+                // removed or rewrote it mid-flight, which wins. A store that
+                // refuses this clear leaves the row flagged (the honest
+                // "unknown") and parks the queue; the send itself succeeded,
+                // so the caller is still told that.
+                let cleared = self.edit_queue(session_id, &runtime, |state| {
                     state.draining = false;
+                    if let Some(position) = state.position(&taken.item_id) {
+                        if state.items[position].unconfirmed {
+                            state.items.remove(position);
+                        }
+                    }
                     Ok(())
-                })?;
-                // The rest of the queue belongs to the turn this send just
-                // started: wake the drain so it arms the hook for that
-                // turn's end.
-                self.wake_queue_drain(session_id);
-                Ok(())
+                });
+                match cleared {
+                    Ok(()) => {
+                        // The rest of the queue belongs to the turn this send
+                        // just started: wake the drain so it arms the hook for
+                        // that turn's end.
+                        self.wake_queue_drain(session_id);
+                        Ok(())
+                    }
+                    Err(cleanup) => {
+                        eprintln!(
+                            "send-now could not record its success for {session_id}: {}",
+                            cleanup.message
+                        );
+                        self.park_queue_after_failed_write(session_id);
+                        Ok(())
+                    }
+                }
             }
             Err(error) => {
-                // Back to the front, with the error on the row — one edit, one
-                // snapshot: the item's return and its error are one fact.
-                let mut failed = taken;
-                failed.error = Some(error.message.clone());
-                self.edit_queue(session_id, &runtime, |state| {
+                let failed_id = taken.item_id.clone();
+                let restored = self.edit_queue(session_id, &runtime, |state| {
                     state.draining = false;
-                    state.items.insert(0, failed);
+                    // The failed attempt parks the queue, and this call is
+                    // deliberately the last thing it does: no wake, no
+                    // retry — the next attempt is a user act (P1-5).
+                    state.paused = true;
+                    if let Some(position) = state.position(&failed_id) {
+                        let mut item = state.items.remove(position);
+                        item.unconfirmed = false;
+                        item.error = Some(error.message.clone());
+                        state.items.insert(0, item);
+                    }
                     Ok(())
-                })?;
-                // A queue frame arrived (this one): the pause rule says the
-                // drain tries again now — it fails the same way and parks,
-                // bounded by exactly one retry per frame.
-                self.wake_queue_drain(session_id);
+                });
+                if let Err(cleanup) = restored {
+                    eprintln!(
+                        "send-now failure could not be recorded for {session_id}: {}",
+                        cleanup.message
+                    );
+                    self.park_queue_after_failed_write(session_id);
+                }
                 Err(error)
             }
+        }
+    }
+
+    /// A write-through failed after the claim already ended: keep memory on
+    /// the durable side of the line — items untouched, `draining` cleared
+    /// (it is not durable), and the queue parked so nothing auto-sends a
+    /// state the store and the daemon disagree about.
+    fn park_queue_after_failed_write(&self, session_id: &str) {
+        let mut queues = self.queues.lock();
+        if let Some(state) = queues.get_mut(session_id) {
+            state.draining = false;
+            state.paused = true;
         }
     }
 }

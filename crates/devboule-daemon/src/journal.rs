@@ -51,7 +51,7 @@ use journal_schema::{open_connection, sweep_audit};
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 16;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 17;
 
 /// How often the append path enforces the audit age floor and per-device cap.
 /// The session retention sweep is byte-driven, not time-driven, so the hourly
@@ -711,7 +711,13 @@ pub struct QueueRecord {
     pub text: String,
     pub attachment_references: Vec<devboule_protocol::AttachmentReference>,
     pub error: Option<String>,
+    pub unconfirmed: bool,
 }
+
+/// What `queue_load` answers: the rows in order, and the counter the next id
+/// climbs from when the store has one. Named because it rides the journal
+/// command channel, whose reply types clippy refuses to spell inline.
+pub type LoadedQueue = (Vec<QueueRecord>, Option<u64>);
 
 enum JournalCmd {
     Upsert(SessionRecord),
@@ -831,7 +837,7 @@ enum JournalCmd {
     },
     QueueLoad {
         session_id: String,
-        reply: mpsc::Sender<Result<Vec<QueueRecord>, JournalError>>,
+        reply: mpsc::Sender<Result<LoadedQueue, JournalError>>,
     },
     /// Replace one session's whole persisted queue with exactly `rows` —
     /// rows, or none when `rows` is empty. One command because one queue
@@ -839,6 +845,14 @@ enum JournalCmd {
     QueueStore {
         session_id: String,
         rows: Vec<QueueRecord>,
+        /// The next id this queue may mint, persisted with the rows so an id
+        /// issued before a restart can never come back as a different
+        /// message (P2-6).
+        next_id: u64,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    QueueClear {
+        session_id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
     Usage {
@@ -1406,7 +1420,9 @@ impl Journal {
     /// One session's persisted queue, in position order. A session nobody
     /// ever queued for answers the empty list — the same answer as no journal
     /// at all, which is what makes the two interchangeable at restore.
-    pub fn queue_load(&self, session_id: &str) -> Result<Vec<QueueRecord>, JournalError> {
+    /// One session's persisted queue in order, plus the counter the next id
+    /// climbs from when the store has one.
+    pub fn queue_load(&self, session_id: &str) -> Result<LoadedQueue, JournalError> {
         self.rpc(|reply| JournalCmd::QueueLoad {
             session_id: session_id.to_string(),
             reply,
@@ -1414,10 +1430,27 @@ impl Journal {
     }
 
     /// Replace one session's persisted queue with exactly `rows`.
-    pub fn queue_store(&self, session_id: &str, rows: &[QueueRecord]) -> Result<(), JournalError> {
+    /// Replace one session's queue with exactly `rows`, and the id counter
+    /// beside them — one transaction, so rows and counter never disagree.
+    pub fn queue_store(
+        &self,
+        session_id: &str,
+        rows: &[QueueRecord],
+        next_id: u64,
+    ) -> Result<(), JournalError> {
         self.rpc(|reply| JournalCmd::QueueStore {
             session_id: session_id.to_string(),
             rows: rows.to_vec(),
+            next_id,
+            reply,
+        })
+    }
+
+    /// Delete one session's queue rows and its id counter — the clear that
+    /// close and delete call (P2-5, P2-7).
+    pub fn queue_clear(&self, session_id: &str) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::QueueClear {
+            session_id: session_id.to_string(),
             reply,
         })
     }
@@ -1727,9 +1760,12 @@ impl Drop for Journal {
 /// the JSON we wrote is corruption, and corruption answers the corrupt-
 /// journal error rather than the empty queue: a queue that lost its rows
 /// must not read as a queue that was emptied.
-fn queue_load(conn: &Connection, session_id: &str) -> Result<Vec<QueueRecord>, JournalError> {
+fn queue_load(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<(Vec<QueueRecord>, Option<u64>), JournalError> {
     let mut stmt = conn.prepare(
-        "SELECT item_id, text, attachment_references, error FROM session_queue
+        "SELECT item_id, text, attachment_references, error, unconfirmed FROM session_queue
          WHERE session_id = ?1 ORDER BY position",
     )?;
     let mut rows = stmt.query([session_id])?;
@@ -1744,9 +1780,19 @@ fn queue_load(conn: &Connection, session_id: &str) -> Result<Vec<QueueRecord>, J
             text: row.get(1)?,
             attachment_references,
             error: row.get(3)?,
+            unconfirmed: row.get(4)?,
         });
     }
-    Ok(loaded)
+    let next_id = conn
+        .query_row(
+            "SELECT next_id FROM session_queue_counter WHERE session_id = ?1",
+            [session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|value| u64::try_from(value).unwrap_or(0))
+        .filter(|value| *value > 0);
+    Ok((loaded, next_id))
 }
 
 /// Replace one session's queue rows in a single transaction: delete what is
@@ -1755,6 +1801,7 @@ fn queue_store(
     conn: &Connection,
     session_id: &str,
     rows: &[QueueRecord],
+    next_id: u64,
 ) -> Result<(), JournalError> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
@@ -1772,18 +1819,42 @@ fn queue_store(
             })?;
         tx.execute(
             "INSERT INTO session_queue
-             (session_id, position, item_id, text, attachment_references, error)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (session_id, position, item_id, text, attachment_references, error, unconfirmed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 session_id,
                 position,
                 row.item_id,
                 row.text,
                 references_json,
-                row.error
+                row.error,
+                row.unconfirmed
             ],
         )?;
     }
+    let next_id = i64::try_from(next_id)
+        .map_err(|_| JournalError::InvalidRequest("queue id counter overflow".to_string()))?;
+    tx.execute(
+        "INSERT INTO session_queue_counter (session_id, next_id) VALUES (?1, ?2)
+         ON CONFLICT(session_id) DO UPDATE SET next_id = excluded.next_id",
+        rusqlite::params![session_id, next_id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Drop one session's rows and its id counter in one transaction — the clear
+/// behind close, delete, and every write-through that empties a queue.
+fn queue_clear(conn: &Connection, session_id: &str) -> Result<(), JournalError> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM session_queue WHERE session_id = ?1",
+        [session_id],
+    )?;
+    tx.execute(
+        "DELETE FROM session_queue_counter WHERE session_id = ?1",
+        [session_id],
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -2126,9 +2197,17 @@ fn journal_loop(
             JournalCmd::QueueStore {
                 session_id,
                 rows,
+                next_id,
                 reply,
             } => {
-                let result = queue_store(&conn, &session_id, &rows);
+                let result = queue_store(&conn, &session_id, &rows, next_id);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::QueueClear { session_id, reply } => {
+                let result = queue_clear(&conn, &session_id);
                 if let Err(error) = &result {
                     on_write_error(error);
                 }

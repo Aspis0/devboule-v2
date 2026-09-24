@@ -713,6 +713,13 @@ pub struct QueuedMessage {
     pub attachment_references: Vec<crate::messages::AttachmentReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Claimed by a send whose outcome the daemon never saw confirmed: set
+    /// while that send is in flight, and left set when the daemon died
+    /// before the provider's acceptance came back. The item then sits at the
+    /// front of the restored queue, paused, flagged "may not have been
+    /// sent" — the UI asks, and nothing resends it automatically (the Q1
+    /// delivery decision: never lost, never resent silently).
+    pub unconfirmed: bool,
 }
 
 /// Events sent over the Tauri Channel supplied to `session_attach`.

@@ -509,6 +509,7 @@ impl super::SessionRegistry {
             mcp_timeout: crate::mcp_broker::ready_timeout(),
             active_turn_behavior: None,
             require_attachment: false,
+            require_no_turn_running: false,
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: Some(crate::provider_catalog::AGENT_PREAMBLE),
@@ -1238,6 +1239,7 @@ impl super::SessionRegistry {
             mcp_timeout: crate::mcp_broker::ready_timeout(),
             active_turn_behavior: steer.then_some(ActiveTurnBehavior::Steer),
             require_attachment: false,
+            require_no_turn_running: false,
             interrupt_on_steer_refusal: steer,
             message_slot: None,
             // No preset preamble: the daemon's own report is not a creation's

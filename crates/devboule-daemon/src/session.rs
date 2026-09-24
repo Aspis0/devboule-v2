@@ -206,6 +206,12 @@ mod session_queue_drain;
 #[cfg(test)]
 #[path = "session_queue_drain_tests.rs"]
 mod session_queue_drain_tests;
+#[cfg(test)]
+#[path = "session_queue_durability_tests.rs"]
+mod session_queue_durability_tests;
+#[cfg(test)]
+#[path = "session_queue_lifecycle_tests.rs"]
+mod session_queue_lifecycle_tests;
 /// The four queue frame edits, one method per frame.
 #[path = "session_queue_ops.rs"]
 mod session_queue_ops;
@@ -274,8 +280,9 @@ pub(crate) use session_registry_state::{
 };
 #[cfg(test)]
 use session_registry_state::{
-    AgentMessageAfterAdmissionHook, DepositAfterOwnershipHook, JournalRosterAfterListHook,
-    CREATION_WINDOW, DEFERRED_SLOT_EXPIRY, WORKSPACE_PATH_CACHE_CAP,
+    AgentMessageAfterAdmissionHook, DepositAfterOwnershipHook, InterruptBeforeKillHook,
+    JournalRosterAfterListHook, QueueAfterTargetHook, SendAfterWriteHook, CREATION_WINDOW,
+    DEFERRED_SLOT_EXPIRY, WORKSPACE_PATH_CACHE_CAP,
 };
 /// The move road's named phases: `set_agent_child_profile` in the parent is
 /// the thin sequence, and this sibling holds the phases it composes. A
@@ -641,6 +648,12 @@ pub struct SessionRegistry {
     agent_message_after_admission_hook: Arc<Mutex<Option<AgentMessageAfterAdmissionHook>>>,
     #[cfg(test)]
     deposit_after_ownership_hook: Arc<Mutex<Option<DepositAfterOwnershipHook>>>,
+    #[cfg(test)]
+    send_after_write_hook: Arc<Mutex<Option<SendAfterWriteHook>>>,
+    #[cfg(test)]
+    interrupt_before_kill_hook: Arc<Mutex<Option<InterruptBeforeKillHook>>>,
+    #[cfg(test)]
+    queue_after_target_hook: Arc<Mutex<Option<QueueAfterTargetHook>>>,
     /// The agent-profile store, attached by `ServerState` once both exist
     /// (`create-from-profile`).
     ///
@@ -717,6 +730,12 @@ impl SessionRegistry {
             agent_message_after_admission_hook: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             deposit_after_ownership_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            send_after_write_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            interrupt_before_kill_hook: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            queue_after_target_hook: Arc::new(Mutex::new(None)),
             agent_profiles: std::sync::OnceLock::new(),
             delegation: std::sync::OnceLock::new(),
         };
@@ -874,6 +893,69 @@ impl SessionRegistry {
     fn fire_deposit_after_ownership_hook(&self) {
         let hook = self
             .deposit_after_ownership_hook
+            .lock()
+            .ok()
+            .and_then(|mut hook| hook.take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Arm the one-shot callback that runs after a send's bytes reached the
+    /// writer and before `begin_turn` (fix pass 1, P1-1's seam).
+    #[cfg(test)]
+    fn set_send_after_write_hook(&self, hook: SendAfterWriteHook) {
+        *self.send_after_write_hook.lock().expect("send test hook") = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn fire_send_after_write_hook(&self) {
+        let hook = self
+            .send_after_write_hook
+            .lock()
+            .ok()
+            .and_then(|mut hook| hook.take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Arm the one-shot callback that runs after an interrupt armed its wait
+    /// and before the killer fires (fix pass 1, P2-3's seam).
+    #[cfg(test)]
+    fn set_interrupt_before_kill_hook(&self, hook: InterruptBeforeKillHook) {
+        *self
+            .interrupt_before_kill_hook
+            .lock()
+            .expect("interrupt test hook") = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn fire_interrupt_before_kill_hook(&self) {
+        let hook = self
+            .interrupt_before_kill_hook
+            .lock()
+            .ok()
+            .and_then(|mut hook| hook.take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    /// Arm the one-shot callback that runs after a queue op resolved its
+    /// session and before the op mutates the queue (fix pass 1, P2-5's seam).
+    #[cfg(test)]
+    fn set_queue_after_target_hook(&self, hook: QueueAfterTargetHook) {
+        *self
+            .queue_after_target_hook
+            .lock()
+            .expect("queue test hook") = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn fire_queue_after_target_hook(&self) {
+        let hook = self
+            .queue_after_target_hook
             .lock()
             .ok()
             .and_then(|mut hook| hook.take());
@@ -1450,6 +1532,10 @@ impl SessionRegistry {
         journal
             .delete_session(session_id)
             .map_err(WireError::from)?;
+        // The journal's delete took the rows; the in-memory queue goes with
+        // them — the two halves of one discard, and a later queue frame finds
+        // no state to recreate (P2-7).
+        self.queue_forget(session_id);
         self.invalidate_journal_roster();
         if transcript_in_registry {
             if let Ok(mut map) = self.inner.lock() {

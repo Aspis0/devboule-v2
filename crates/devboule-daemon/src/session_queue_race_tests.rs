@@ -10,9 +10,12 @@
 
 use super::tests::{
     attach_live_agent_for_test, drain, insert_live_agent_with_writer, test_owner,
-    tmp_delete_registry, RecordingWriter,
+    tmp_delete_registry, GatedWriter, RecordingWriter,
 };
-use super::*;
+use super::{
+    Arc, Barrier, ConnHandle, Duration, Instant, Mutex, OwnerId, SessionEvent, SessionRegistry,
+    SessionRuntime,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const SESSION: &str = "s.q.race";
@@ -103,29 +106,6 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
-/// A writer that parks its first write until the test releases the gate —
-/// the window in which "the item the drain is taking" is observably in
-/// flight and out of the queue at the same time.
-struct GatedWriter {
-    entered: Arc<AtomicBool>,
-    gate: Arc<Barrier>,
-    bytes: Arc<Mutex<Vec<u8>>>,
-}
-
-impl Write for GatedWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if !self.entered.swap(true, Ordering::SeqCst) {
-            self.gate.wait();
-        }
-        self.bytes.lock().expect("writer").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn a_turn_ending_while_a_client_adds_loses_neither_message() {
     let h = harness();
@@ -162,8 +142,12 @@ fn a_turn_ending_while_a_client_adds_loses_neither_message() {
     );
 }
 
+/// Fix pass 1, P1-4 changed this race's answer: the claim no longer removes
+/// the item — it stays in the queue, flagged, so a crash cannot lose it.
+/// Mid-flight a client may remove it, and the successful settle must not
+/// resurrect what the client deleted.
 #[test]
-fn a_client_reaching_for_the_item_the_drain_is_taking_finds_it_already_gone() {
+fn a_client_may_remove_the_item_the_drain_is_sending_and_it_stays_removed() {
     let (_dir, registry, _journal) = tmp_delete_registry();
     let owner = test_owner("queue.user", "queue.client");
     let bytes = Arc::new(Mutex::new(Vec::new()));
@@ -181,8 +165,8 @@ fn a_client_reaching_for_the_item_the_drain_is_taking_finds_it_already_gone() {
     );
     let conn = attach_live_agent_for_test(&runtime, SESSION, 1);
 
-    // The add's synchronous wake carries the drain, so it must run on its
-    // own thread: the writer parks it mid-send, which is the window.
+    // The add's synchronous wake carries the drain, so it runs on its own
+    // thread: the writer parks it mid-send, which is the window.
     let adding = {
         let registry = registry.clone();
         let owner = owner.clone();
@@ -197,17 +181,18 @@ fn a_client_reaching_for_the_item_the_drain_is_taking_finds_it_already_gone() {
         entered.load(Ordering::SeqCst)
     });
 
-    // Mid-send: the claim already took the item out and published that, so
-    // both mutations find no such item — deterministically, not by timing.
-    let edit = registry
-        .queue_edit(SESSION, "queue-1", "edited mid-flight", &owner, &conn)
-        .expect_err("the item is not in the queue any more");
-    assert_eq!(edit.code, ErrorCode::InvalidRequest);
-    let remove = registry
-        .queue_remove(SESSION, "queue-1", &owner, &conn)
-        .expect_err("the item is not in the queue any more");
-    assert_eq!(remove.code, ErrorCode::InvalidRequest);
-    assert!(registry.queue_items_for_test(SESSION).is_empty());
+    // Mid-send the item is still in the queue — claimed and flagged, not
+    // gone — because the journal must keep it until the provider accepted
+    // the prompt (never lost). So a client's remove lands.
+    let items = registry.queue_items_for_test(SESSION);
+    assert_eq!(
+        items.len(),
+        1,
+        "the claimed item is still visible while its send is in flight"
+    );
+    registry
+        .queue_remove(SESSION, &items[0].item_id, &owner, &conn)
+        .expect("removing an item being sent is the client's right");
 
     gate.wait();
     adding
@@ -216,7 +201,10 @@ fn a_client_reaching_for_the_item_the_drain_is_taking_finds_it_already_gone() {
     wait_until("the claimed item to land", || {
         String::from_utf8_lossy(&bytes.lock().expect("writer")).contains("the claimed message")
     });
-    assert!(registry.queue_items_for_test(SESSION).is_empty());
+    assert!(
+        registry.queue_items_for_test(SESSION).is_empty(),
+        "the success settles without resurrecting what the client removed"
+    );
 }
 
 #[test]

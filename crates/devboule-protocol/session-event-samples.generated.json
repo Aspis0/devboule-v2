@@ -188,7 +188,8 @@
     "items": [
       {
         "itemId": "queue-1",
-        "text": ""
+        "text": "",
+        "unconfirmed": false
       }
     ],
     "type": "queue_snapshot"

@@ -82,6 +82,24 @@ pub(super) type AgentMessageAfterAdmissionHook = Arc<dyn Fn() + Send + Sync>;
 #[cfg(test)]
 pub(super) type DepositAfterOwnershipHook = Arc<dyn Fn() + Send + Sync>;
 
+/// Runs after the writer accepted a send's bytes and before `begin_turn`.
+/// Test-only: it is the only way to hold the writer across another send's
+/// idle check — the seam P1-1's admission test parks on.
+#[cfg(test)]
+pub(super) type SendAfterWriteHook = Arc<dyn Fn() + Send + Sync>;
+
+/// Runs after an interrupt armed its wait and before the killer fires.
+/// Test-only: it is the only way to end the targeted turn naturally inside
+/// that window — the seam P2-3's natural-end test parks on.
+#[cfg(test)]
+pub(super) type InterruptBeforeKillHook = Arc<dyn Fn() + Send + Sync>;
+
+/// Runs after a queue op resolved its session and before it mutates the
+/// queue. Test-only: it is the only way to land a close inside that gap —
+/// the seam P2-5's recreate-after-close test parks on.
+#[cfg(test)]
+pub(super) type QueueAfterTargetHook = Arc<dyn Fn() + Send + Sync>;
+
 #[derive(Clone)]
 pub(super) struct ConnectionPresence {
     pub(super) user: String,
@@ -873,6 +891,12 @@ pub struct SendRequest<'a> {
     pub mcp_timeout: Duration,
     pub active_turn_behavior: Option<ActiveTurnBehavior>,
     pub require_attachment: bool,
+    /// Only write while no turn is running — checked while the writer is
+    /// held, because `begin_turn` runs under that same lock, so the drain's
+    /// idle look and a regular send's turn start cannot slip past each other
+    /// (fix pass 1, P1-1). A `true` that loses the race gets
+    /// `TURN_STARTED_WHILE_WAITING` instead of a write into someone's turn.
+    pub require_no_turn_running: bool,
     /// Whether a `Steer` the provider cannot take may fall back to interrupting
     /// the running turn and replacing it (S4-01).
     ///

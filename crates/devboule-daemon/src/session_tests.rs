@@ -1170,14 +1170,24 @@ impl SessionKiller for EndTurnKiller {
         self.interrupts.fetch_add(1, Ordering::AcqRel);
         *self.text_present_at_interrupt.lock().expect("record") =
             Some(!self.bytes.lock().expect("writer").is_empty());
-        self.runtime.publish_agent_event(
-            SessionEvent::AgentFinished {
-                stop_reason: "interrupted".to_string(),
-                model_id: None,
-                usage: None,
-            },
-            None,
-        );
+        // Real providers report their turn's end from the reader thread, and
+        // the targeted interrupt (P2-3) calls this while holding the
+        // turn-hold: publishing synchronously here would make `finish_turn`
+        // wait for a hold this very call holds — a self-deadlock no provider
+        // has. The spawn keeps the fake honest about that shape.
+        let runtime = Arc::clone(&self.runtime);
+        let _ = std::thread::Builder::new()
+            .name("end-turn-for-test".to_string())
+            .spawn(move || {
+                runtime.publish_agent_event(
+                    SessionEvent::AgentFinished {
+                        stop_reason: "interrupted".to_string(),
+                        model_id: None,
+                        usage: None,
+                    },
+                    None,
+                );
+            });
     }
 
     fn clone_killer(&self) -> Box<dyn SessionKiller> {
@@ -1262,6 +1272,30 @@ impl Write for RecordingWriter {
             .lock()
             .expect("recording writer lock")
             .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A writer that parks its first write until the test releases the gate —
+/// the window in which "the item the drain is taking" is observably in
+/// flight. Shared by the race tests (claimed-before-provider-write) and the
+/// in-flight restart test (P1-4).
+pub(super) struct GatedWriter {
+    pub(super) entered: Arc<AtomicBool>,
+    pub(super) gate: Arc<Barrier>,
+    pub(super) bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Write for GatedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if !self.entered.swap(true, Ordering::SeqCst) {
+            self.gate.wait();
+        }
+        self.bytes.lock().expect("writer").extend_from_slice(bytes);
         Ok(bytes.len())
     }
 

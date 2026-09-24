@@ -5,9 +5,13 @@
 //! Written first, per the Q1 brief's red-first rule.
 
 use super::tests::{
-    insert_live_agent_with_writer, test_owner, tmp_delete_registry, RecordingWriter,
+    insert_live_agent_with_writer, test_owner, tmp_delete_registry, GatedWriter, RecordingWriter,
 };
-use super::*;
+use super::{
+    new_session_record, Arc, Barrier, ConnHandle, ConnPeer, Duration, Instant, Journal, Mutex,
+    OwnerId, RuntimePaths, SessionEvent, SessionKind, SessionRegistry, SessionRuntime,
+};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const SESSION: &str = "s.q.persist";
 
@@ -228,4 +232,89 @@ fn closing_a_session_with_items_queued_discards_them_before_and_after_a_restart(
         written(&second.bytes).is_empty(),
         "a closed session's queue must not come back from the journal"
     );
+}
+
+/// Fix pass 1, P1-4 (the delivery decision: never lost, never resent
+/// silently): a claim that was in flight when the daemon died comes back at
+/// the front of the restored queue, paused, and nothing resends it — the
+/// journal keeps the row until the provider accepted the prompt.
+#[test]
+fn a_crash_mid_claim_comes_back_paused_and_is_never_resent() {
+    let (dir, first_registry, first_journal) = tmp_delete_registry();
+    drop(first_registry);
+    let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+    let registry = SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
+    let owner = test_owner("queue.user", "queue.client");
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let entered = Arc::new(AtomicBool::new(false));
+    let gate = Arc::new(Barrier::new(2));
+    let runtime = insert_live_agent_with_writer(
+        &registry,
+        SESSION,
+        owner.clone(),
+        Box::new(GatedWriter {
+            entered: Arc::clone(&entered),
+            gate: Arc::clone(&gate),
+            bytes: Arc::clone(&bytes),
+        }),
+    );
+    let conn = ConnHandle::new(1);
+    let _ = runtime;
+    drop(first_journal);
+
+    // The session is idle, so this add's wake drains immediately and the
+    // claim parks inside the writer — the crash window.
+    let adding = {
+        let registry = registry.clone();
+        let owner = owner.clone();
+        let conn = Arc::clone(&conn);
+        std::thread::spawn(move || {
+            registry
+                .queue_add(SESSION, "in flight when it died", &[], &[], &owner, &conn)
+                .expect("the add reaches the writer before any crash")
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !entered.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "the drain never reached the writer"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        registry.queue_draining_for_test(SESSION),
+        "the claim is in flight"
+    );
+
+    // The crash: this registry is abandoned with the send parked, and a
+    // second daemon opens the same journal — the resume road's world.
+    let second = daemon_over(&dir, false);
+    second.registry.queue_restore_and_drain(SESSION);
+
+    let items = second.registry.queue_items_for_test(SESSION);
+    assert_eq!(
+        items.len(),
+        1,
+        "a claimed item is never lost: the journal still holds it"
+    );
+    assert_eq!(items[0].text, "in flight when it died");
+    assert!(
+        items[0].unconfirmed,
+        "flagged for the UI: it may not have been sent"
+    );
+    assert!(
+        second.registry.queue_paused_for_test(SESSION),
+        "it comes back paused"
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        written(&second.bytes).is_empty(),
+        "nothing resends it automatically"
+    );
+
+    // Release the dead daemon's writer only after the restart's assertions;
+    // nothing below this line asserts.
+    gate.wait();
+    let _ = adding.join();
 }

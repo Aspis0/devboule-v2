@@ -315,11 +315,41 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                     text TEXT NOT NULL,
                     attachment_references TEXT NOT NULL,
                     error TEXT,
+                    unconfirmed INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (session_id, position)
                  );",
             )?;
             // The pre-stamp guard, same ordering as v12 to v15.
             validate_queue_table(&tx)?;
+        }
+        if version < 17 {
+            // Fix pass 1: the in-flight mark (P1-4) and the id counter
+            // (P2-6). The column joins the queue a claim keeps until the
+            // provider accepts the prompt; the counter is what makes an id
+            // issued before a restart unable to come back as a different
+            // message. The ALTER is guarded because a database created by
+            // the previous v16 shape already has everything else here.
+            let mut probe = tx.prepare(
+                "SELECT COUNT(*) FROM pragma_table_info('session_queue')
+                 WHERE name = 'unconfirmed'",
+            )?;
+            let present: i64 = probe.query_row([], |row| row.get(0))?;
+            drop(probe);
+            if present == 0 {
+                tx.execute(
+                    "ALTER TABLE session_queue
+                     ADD COLUMN unconfirmed INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS session_queue_counter (
+                    session_id TEXT NOT NULL PRIMARY KEY,
+                    next_id INTEGER NOT NULL
+                 );",
+            )?;
+            // The pre-stamp guard, same ordering as v12 to v16.
+            validate_queue_v17(&tx)?;
         }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
@@ -337,8 +367,9 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     validate_v14_columns(&conn)?;
     // The v15 column, the same way (see [`is_our_cwd_shape`]).
     validate_v15_columns(&conn)?;
-    // The v16 queue table, the same way.
+    // The v16 queue table, the same way, and the v17 additions beside it.
     validate_queue_table(&conn)?;
+    validate_queue_v17(&conn)?;
     // A crash inside `sweep_audit` between dropping the triggers and
     // recreating them leaves the audit table writable, so the guarantee is
     // re-established on every open rather than trusted from the migration.
@@ -504,6 +535,60 @@ fn is_our_cwd_shape(shape: Option<(String, i32, Option<String>)>) -> bool {
     )
 }
 
+/// The two shapes v17 adds: `session_queue.unconfirmed` — INTEGER, NOT NULL,
+/// DEFAULT 0 (the rank-less boolean a claim writes) — and the id-counter
+/// table. Checked before the stamp inside the migration and after the commit
+/// on every open, the same rule the v16 table follows: a file this daemon
+/// cannot read is refused, never guessed at.
+fn validate_queue_v17(conn: &Connection) -> Result<(), JournalError> {
+    let mut probe = conn.prepare(
+        "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('session_queue')
+         WHERE name = 'unconfirmed'",
+    )?;
+    let shape: Option<(String, i32, Option<String>)> = probe
+        .query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .optional()?;
+    let ours = matches!(
+        shape,
+        Some((ref kind, 1, Some(ref default)))
+            if kind.eq_ignore_ascii_case("integer") && default == "0"
+    );
+    if !ours {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected session_queue.unconfirmed column".to_string(),
+        ));
+    }
+    let expected: [(&str, &str, i32); 2] = [("session_id", "TEXT", 1), ("next_id", "INTEGER", 1)];
+    let mut stmt = conn.prepare("PRAGMA table_info('session_queue_counter')")?;
+    let mut rows = stmt.query([])?;
+    let mut index = 0usize;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        let kind: String = row.get(2)?;
+        let notnull: i32 = row.get(3)?;
+        let Some((expected_name, expected_kind, expected_notnull)) = expected.get(index) else {
+            return Err(JournalError::Corrupt(
+                "journal schema has an unexpected session_queue_counter table".to_string(),
+            ));
+        };
+        if name != *expected_name
+            || !kind.eq_ignore_ascii_case(expected_kind)
+            || notnull != *expected_notnull
+        {
+            return Err(JournalError::Corrupt(format!(
+                "journal schema has an unexpected session_queue_counter.{name} column"
+            )));
+        }
+        index += 1;
+    }
+    if index != expected.len() {
+        return Err(JournalError::Corrupt(
+            "journal schema has an unexpected session_queue_counter table".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_v15_columns(conn: &Connection) -> Result<(), JournalError> {
     if !is_our_cwd_shape(column_shape(conn, "cwd")?) {
         return Err(JournalError::Corrupt(
@@ -520,13 +605,14 @@ fn validate_v15_columns(conn: &Connection) -> Result<(), JournalError> {
 /// leaves the file at 15, openable by the previous build — and again after
 /// the commit, so a file this build cannot read is refused rather than used.
 fn validate_queue_table(conn: &Connection) -> Result<(), JournalError> {
-    let expected: [(&str, &str, i32); 6] = [
+    let expected: [(&str, &str, i32); 7] = [
         ("session_id", "TEXT", 1),
         ("position", "INTEGER", 1),
         ("item_id", "TEXT", 1),
         ("text", "TEXT", 1),
         ("attachment_references", "TEXT", 1),
         ("error", "TEXT", 0),
+        ("unconfirmed", "INTEGER", 1),
     ];
     let mut stmt = conn.prepare("PRAGMA table_info('session_queue')")?;
     let mut rows = stmt.query([])?;

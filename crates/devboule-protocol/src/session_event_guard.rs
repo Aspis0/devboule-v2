@@ -70,6 +70,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
                 text: String::new(),
                 attachment_references: Vec::new(),
                 error: None,
+                unconfirmed: false,
             }],
         },
         AgentThought => SessionEvent::AgentThought {

@@ -4,7 +4,11 @@
 //! `edit_queue` (so the mutation, its rows and its snapshot are one step),
 //! and then wakes the drain, because every queue frame is what resumes it.
 
-use super::*;
+use super::{
+    no_such_item, validate_attachment_references, validate_attachments, AttachmentReference,
+    ConnHandle, ErrorCode, OwnerId, PromptAttachment, SessionRegistry, WireError, MAX_QUEUE_ITEMS,
+    MAX_WRITE_BYTES,
+};
 use devboule_protocol::QueuedMessage;
 
 impl SessionRegistry {
@@ -44,6 +48,7 @@ impl SessionRegistry {
                 text: text.to_string(),
                 attachment_references: references,
                 error: None,
+                unconfirmed: false,
             });
             Ok(())
         })?;
@@ -51,8 +56,10 @@ impl SessionRegistry {
         Ok(())
     }
 
-    /// Replace one item's text, keep its place, and clear any error the item
-    /// carried: new text has not failed yet.
+    /// Replace one item's text, keep its place, and clear what the old text
+    /// carried — its error and its unconfirmed mark: new text has not failed
+    /// yet and has never been sent, which is also the one act that clears an
+    /// in-flight item's fence (the user has rewritten it).
     pub(crate) fn queue_edit(
         &self,
         session_id: &str,
@@ -70,6 +77,7 @@ impl SessionRegistry {
             let item = &mut state.items[position];
             item.text = text;
             item.error = None;
+            item.unconfirmed = false;
             Ok(())
         })?;
         self.wake_queue_drain(session_id);

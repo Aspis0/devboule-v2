@@ -4,7 +4,7 @@
 //!
 //! Written before the frames existed, per the Q1 brief's red-first rule.
 
-use super::*;
+use super::{ActiveTurnBehavior, AttachmentReference, ClientMessage, SessionEvent};
 use crate::session::QueuedMessage;
 
 fn add_frame() -> ClientMessage {
@@ -116,6 +116,7 @@ fn the_queue_snapshot_event_carries_the_whole_queue() {
                 text: "first".to_string(),
                 attachment_references: Vec::new(),
                 error: None,
+                unconfirmed: false,
             },
             QueuedMessage {
                 item_id: "queue-2".to_string(),
@@ -126,6 +127,7 @@ fn the_queue_snapshot_event_carries_the_whole_queue() {
                     stored_bytes: 128,
                 }],
                 error: Some("the send failed".to_string()),
+                unconfirmed: false,
             },
         ],
     };

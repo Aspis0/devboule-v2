@@ -337,9 +337,10 @@ export class AgentSession {
   /**
    * Send one prompt. `activeTurnBehavior: "steer"` asks the daemon to deliver
    * this text into the turn that is already running instead of interrupting
-   * it; omitted, the daemon keeps its interrupt-and-replace default. This is
-   * the same path either way — steering is a property of the send, not a
-   * second send method.
+   * it; omitted, the daemon sends the prompt as it stands — it neither steers
+   * nor interrupts, and what a provider does with a prompt that arrives
+   * mid-turn is the provider's own. This is the same path either way —
+   * steering is a property of the send, not a second send method.
    *
    * A steer does not open a turn: the daemon writes the text into the turn in
    * flight and publishes the same `AgentUserMessage` echo every send produces
@@ -383,9 +384,10 @@ export class AgentSession {
         // the payload it produced before attachments existed. The daemon reads
         // an absent field as an empty list.
         ...(attachments.length === 0 ? {} : { attachments }),
-        // Omitted, not `"interrupt"`, for a plain send: the daemon's own
-        // default is interrupt-and-replace. Present only when the caller asked
-        // for a send to join the turn that is already running.
+        // Omitted, not `"interrupt"`, for a plain send: an absent field
+        // names no daemon-side behaviour — neither steering nor interrupting.
+        // Present only when the caller asked for a send to join the turn that
+        // is already running.
         ...(activeTurnBehavior === undefined ? {} : { activeTurnBehavior }),
         // Omitted, not empty, when the prompt names no stored attachment: a send
         // with no deposit behind it produces exactly the payload it produced

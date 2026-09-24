@@ -7,7 +7,10 @@ use super::tests::{
     attach_live_agent_for_test, drain, insert_live_agent_with_writer, install_end_turn_killer,
     test_owner, tmp_delete_registry, RecordingWriter,
 };
-use super::*;
+use super::{
+    new_session_record, ActiveTurnBehavior, Arc, ConnHandle, Journal, Mutex, OwnerId, SessionEvent,
+    SessionKind, SessionRegistry, SessionRuntime, WireError,
+};
 use devboule_protocol::NoticeSeverity;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -181,4 +184,54 @@ fn send_now_interrupts_the_running_turn_the_queue_was_holding() {
     );
     assert!(h.written().contains("queued and urgent"));
     assert!(h.registry.queue_items_for_test(SESSION).is_empty());
+}
+
+/// Fix pass 1, P2-3: the interrupt must target the turn it armed against.
+/// The seam ends that turn naturally — and starts the next one — between the
+/// arm and the kill: the killer must not be called at all, the next turn
+/// survives, and the text goes nowhere near it.
+#[test]
+fn a_natural_end_stops_the_interrupt_from_hitting_the_next_turn() {
+    let h = harness();
+    h.runtime.begin_turn(); // the turn this send will target
+    {
+        let runtime = Arc::clone(&h.runtime);
+        h.registry.set_interrupt_before_kill_hook(Arc::new(move || {
+            runtime.publish_agent_event(
+                SessionEvent::AgentFinished {
+                    stop_reason: "natural".to_string(),
+                    model_id: None,
+                    usage: None,
+                },
+                None,
+            );
+            runtime.begin_turn(); // whatever starts next must not be interrupted
+        }));
+    }
+
+    let error = h
+        .send_interrupt("after the race")
+        .expect_err("another turn is running; this send must not enter it");
+    assert!(
+        error.message.contains("a turn began"),
+        "the refusal names the race: {}",
+        error.message
+    );
+    assert_eq!(
+        h.interrupts.load(Ordering::Acquire),
+        0,
+        "the interrupt targets the turn it saw, or nothing"
+    );
+    assert!(
+        h.runtime.is_turn_active(h.runtime.turn_counter()),
+        "the next turn survives the old turn's interrupt"
+    );
+    assert!(!h.written().contains("after the race"));
+    assert!(
+        !drain(&h.conn).iter().any(|event| matches!(
+            event,
+            SessionEvent::SessionNotice { text, .. } if text == NOTICE
+        )),
+        "nothing was interrupted, so no interruption is announced"
+    );
 }

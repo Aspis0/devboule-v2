@@ -587,6 +587,13 @@ export interface QueuedMessage {
   }[];
   /** The failure of the send this item was last taken for, when it failed. */
   error?: string;
+  /**
+   * Claimed by a send whose outcome the daemon never saw confirmed — in
+   * flight now, or left over from a daemon that died mid-send. The item sits
+   * at the front, paused; the UI asks the user, and nothing resends it
+   * automatically.
+   */
+  unconfirmed: boolean;
 }
 
 export type RetentionSource = "default" | "user";

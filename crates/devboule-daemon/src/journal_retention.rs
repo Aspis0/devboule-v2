@@ -435,6 +435,10 @@ fn delete_session(
     // and on retention's alike: a row without its session has nothing to
     // drain into, and a restart must not resurrect it (Q1).
     conn.execute("DELETE FROM session_queue WHERE session_id = ?1", [id])?;
+    conn.execute(
+        "DELETE FROM session_queue_counter WHERE session_id = ?1",
+        [id],
+    )?;
     conn.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
     conn.execute(
         "INSERT INTO deleted_sessions (

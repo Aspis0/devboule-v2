@@ -17,6 +17,16 @@ use crate::release_guard::ReleaseGuard;
 /// plus slack; the bound is stated here so one number is the whole rule.
 pub(crate) const INTERRUPT_WAIT_BOUND: Duration = Duration::from_secs(10);
 
+/// The one sentence a send that promised to start from idle says when a turn
+/// began between its look and the writer (fix pass 1, P1-1). It is shared
+/// with the drain, which recognises it to put the item back untouched
+/// instead of recording a failure the message never had: no wire code names
+/// "the queue lost a race", and this refusal never reaches a client — the
+/// drain handles it, and a client's own interrupt send reports it as the
+/// error it is.
+pub(crate) const TURN_STARTED_WHILE_WAITING: &str =
+    "a turn began while this message waited for the session writer";
+
 impl super::SessionRegistry {
     /// Store one prompt attachment for a session and answer the reference the
     /// send that follows will name.
@@ -322,6 +332,9 @@ impl super::SessionRegistry {
             mcp_timeout: crate::mcp_broker::ready_timeout(),
             active_turn_behavior,
             require_attachment: true,
+            // An interrupt waited for its turn; if another turn started
+            // after that wait, this text must not enter it either.
+            require_no_turn_running: active_turn_behavior == Some(ActiveTurnBehavior::Interrupt),
             // The person at this machine, or a paired device: only the former
             // may have a refused steer fall back to an interrupt (S4-01).
             interrupt_on_steer_refusal: session_origin_for(&conn.conn_peer).is_local(),
@@ -565,6 +578,7 @@ impl super::SessionRegistry {
             // so a refused steer may only interrupt when the caller could have
             // asked for an interrupt itself (S4-01): a paired device's agent
             // message must not replace a running turn it may not stop.
+            require_no_turn_running: false,
             interrupt_on_steer_refusal: caller_origin.is_local(),
             message_slot: Some(&slot_ref),
             // No preset preamble: an agent message is not a creation's prompt.
@@ -623,6 +637,7 @@ impl super::SessionRegistry {
             mcp_timeout: timeout,
             active_turn_behavior: None,
             require_attachment: true,
+            require_no_turn_running: false,
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: None,
@@ -647,6 +662,7 @@ impl super::SessionRegistry {
             mcp_timeout,
             active_turn_behavior,
             require_attachment,
+            require_no_turn_running,
             interrupt_on_steer_refusal,
             message_slot,
             preset_preamble,
@@ -771,13 +787,27 @@ impl super::SessionRegistry {
                 let _ = ended_tx.send(());
             });
             if let Some(hook) = armed {
+                // The P2-3 seam: end the targeted turn naturally (and start
+                // whatever starts next) between the arm and the kill.
+                // Test-only, one shot.
+                #[cfg(test)]
+                self.fire_interrupt_before_kill_hook();
                 // Cloned, not moved: the steer branch below owns the original
                 // binding, and the two behaviours are separate `if` statements
                 // the borrow checker cannot tell apart. Every provider's own
                 // killer cancels its pending permission cards inside
                 // `interrupt()`, as on every interrupt path there is.
                 let mut killer = killer.clone_killer();
-                killer.interrupt();
+                // Aimed at the turn this send armed against: the turn-hold is
+                // the same lock that turn's end and `begin_turn` take, so a
+                // natural end in this window — and whatever starts after it —
+                // cannot catch a generic `interrupt()` (P2-3). The hold is
+                // released before the wait below, so a provider reporting the
+                // end from its reader thread is never blocked behind us for
+                // longer than this call takes.
+                let interrupted = runtime
+                    .with_active_turn(expected_turn, |_| killer.interrupt())
+                    .is_some();
                 if ended_rx.recv_timeout(INTERRUPT_WAIT_BOUND).is_err() {
                     runtime.off_turn_end(hook);
                     return Err(WireError::new(
@@ -788,15 +818,19 @@ impl super::SessionRegistry {
                         ),
                     ));
                 }
-                // The turn ended because the user's message interrupted it,
-                // and both halves of the record are this one call: a pushed
-                // `SessionNotice` for the transcript and the agent-report row
-                // `publish_session_notice` writes for the journal, so a later
-                // attach replays the same sentence.
-                runtime.publish_session_notice(
-                    "The running turn was interrupted by the user's message.".to_string(),
-                    devboule_protocol::NoticeSeverity::Info,
-                );
+                if interrupted {
+                    // Both halves of the record, and only when our interrupt
+                    // is what ended the turn: a natural end is not this
+                    // message's doing and must not be announced as one. A
+                    // pushed `SessionNotice` for the transcript and the
+                    // agent-report row `publish_session_notice` writes for
+                    // the journal, so a later attach replays the same
+                    // sentence.
+                    runtime.publish_session_notice(
+                        "The running turn was interrupted by the user's message.".to_string(),
+                        devboule_protocol::NoticeSeverity::Info,
+                    );
+                }
             }
         }
         if active_turn_behavior == Some(ActiveTurnBehavior::Steer) && is_agent {
@@ -1060,6 +1094,17 @@ impl super::SessionRegistry {
                 return Err(error);
             }
         };
+        // The admission, re-checked where it is atomic: `begin_turn` runs
+        // under this same writer lock, so a regular send that started a turn
+        // while this one waited cannot be observed here as idle (P1-1). The
+        // write below is exactly what must not enter that turn.
+        if require_no_turn_running && runtime.turn_running() {
+            drop(writer);
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                TURN_STARTED_WHILE_WAITING,
+            ));
+        }
         if let Err(error) = match plan {
             // Structured route: the text block (with any SVG path lines) plus
             // the image blocks go as one `session/prompt` content array on
@@ -1103,6 +1148,11 @@ impl super::SessionRegistry {
             }
             return Err(error);
         }
+        // The P1-1 seam: park here — holding the writer, between the write
+        // and `begin_turn` — which is the only place the drain's idle check
+        // can be split from a regular send's turn start. Test-only, one shot.
+        #[cfg(test)]
+        self.fire_send_after_write_hook();
         // The transcript id this delivery produced, when it produced one: the
         // `AgentUserMessage` an agent session echoes for accepted input. A
         // terminal has no transcript record and answers `None`.

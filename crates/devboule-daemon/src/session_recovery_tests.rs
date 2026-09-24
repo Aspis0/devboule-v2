@@ -335,6 +335,7 @@ fn a_resume_for_a_gone_directory_recovers_the_conversation_into_a_new_session() 
             mcp_timeout: crate::mcp_broker::ready_timeout(),
             active_turn_behavior: None,
             require_attachment: false,
+            require_no_turn_running: false,
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: None,

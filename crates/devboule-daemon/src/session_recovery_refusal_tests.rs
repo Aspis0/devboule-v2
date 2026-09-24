@@ -142,6 +142,7 @@ fn a_provider_that_refuses_the_handle_recovers_the_conversation_into_a_new_sessi
             mcp_timeout: crate::mcp_broker::ready_timeout(),
             active_turn_behavior: None,
             require_attachment: false,
+            require_no_turn_running: false,
             interrupt_on_steer_refusal: true,
             message_slot: None,
             preset_preamble: None,
