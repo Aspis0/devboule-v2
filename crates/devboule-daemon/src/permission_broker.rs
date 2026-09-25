@@ -207,7 +207,7 @@ pub(crate) struct PermissionBroker {
 /// the journal already holds gets no second card. One plain sentence — the
 /// person reading the transcript did not ask for protocol vocabulary.
 const REUSED_ID_NOTICE: &str =
-    "The agent reused a question id it had already answered, so this request was declined.";
+    "The agent reused the id of a question this session already closed, so this request was declined.";
 
 #[derive(Debug)]
 pub(super) enum PermissionResponseError {

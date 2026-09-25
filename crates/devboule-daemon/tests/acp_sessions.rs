@@ -1007,7 +1007,7 @@ fn acp_reused_answered_question_id_gets_no_card_and_one_plain_notice() {
                     text,
                     severity: NoticeSeverity::Info,
                 } if text
-                    == "The agent reused a question id it had already answered, so this request was declined."
+                    == "The agent reused the id of a question this session already closed, so this request was declined."
             )
         })
     });
