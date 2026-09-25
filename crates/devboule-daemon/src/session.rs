@@ -3295,6 +3295,21 @@ impl SessionRegistry {
         Ok(session.runtime())
     }
 
+    /// The live runtime for a send-path decision that must read current
+    /// state: a receipt hit answers the turn as it is now, not as the stored
+    /// reply saw it. `None` when the session is gone or invisible to this
+    /// peer — the caller then replays the stored answer.
+    pub(crate) fn agent_runtime_for(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Option<Arc<SessionRuntime>> {
+        let map = self.inner.lock().ok()?;
+        let entry = peer_entry(&map, session_id, owner, &conn.conn_peer).ok()?;
+        Some(entry.runtime())
+    }
+
     fn runtime_for_user(
         &self,
         session_id: &str,

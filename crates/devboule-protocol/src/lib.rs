@@ -148,7 +148,7 @@ pub use session::{
 /// `agent_background_tasks_changed`): the daemon and app are shipped together,
 /// and these output-only tags do not change existing request shapes. Revisit
 /// this if peers become independently versioned.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.

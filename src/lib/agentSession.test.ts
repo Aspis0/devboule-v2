@@ -2920,21 +2920,36 @@ describe("send disposition", () => {
     expect(state.lastFinished?.stopReason).toBe("end_turn");
   });
 
-  it("keeps waiting on a turn reply and on an absent disposition", async () => {
-    // `true` began a turn: only its finish settles. `undefined` is an older
-    // daemon with no disposition: today's wait, unchanged.
-    for (const reply of [true, undefined] as const) {
-      const harness = makeHarness();
-      await harness.session.start();
-      (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) =>
-        command === "session_send" ? reply : undefined,
-      );
+  it("keeps waiting on a turn reply", async () => {
+    // `true` means a turn is running: only its finish settles.
+    const harness = makeHarness();
+    await harness.session.start();
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) =>
+      command === "session_send" ? true : undefined,
+    );
 
-      await expect(harness.session.send("Say hello")).resolves.toBe(true);
-      expect(harness.session.getState().streaming).toBe(true);
+    await expect(harness.session.send("Say hello")).resolves.toBe(true);
+    expect(harness.session.getState().streaming).toBe(true);
 
-      harness.emit({ type: "agent_finished", stopReason: "end_turn" });
-      expect(harness.session.getState().streaming).toBe(false);
-    }
+    harness.emit({ type: "agent_finished", stopReason: "end_turn" });
+    expect(harness.session.getState().streaming).toBe(false);
+  });
+});
+
+describe("send disposition restore", () => {
+  it("keeps a newer finish over the stashed one", async () => {
+    // A finish that lands between the send and its reply is newer than the
+    // stashed one: the restore must not overwrite it.
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({ type: "agent_finished", stopReason: "end_turn" });
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command !== "session_send") return undefined;
+      harness.emit({ type: "agent_finished", stopReason: "stop" });
+      return false;
+    });
+
+    await expect(harness.session.send("/compact")).resolves.toBe(true);
+    expect(harness.session.getState().lastFinished?.stopReason).toBe("stop");
   });
 });

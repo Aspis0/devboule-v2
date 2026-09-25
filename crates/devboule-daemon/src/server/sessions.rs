@@ -591,7 +591,7 @@ fn session_create(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn session_send(
+pub(crate) fn session_send(
     state: &Arc<ServerState>,
     owner: &OwnerId,
     conn: &ConnHandle,
@@ -613,6 +613,18 @@ fn session_send(
     );
     if let Some(reply) = idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
     {
+        // A receipt hit for a send answers the turn as it is now, not as the
+        // stored reply saw it: a finished turn settles the retry, a running
+        // one keeps it waiting. Gone or invisible sessions replay the stored
+        // answer, as before.
+        if matches!(reply, DaemonMessage::SessionSend { .. }) {
+            if let Some(runtime) = state.sessions.agent_runtime_for(&session_id, owner, conn) {
+                return DaemonMessage::SessionSend {
+                    id,
+                    turn_active: runtime.is_running_turn(),
+                };
+            }
+        }
         return reply;
     }
     // The remote-attachment refusal is not here: `dispatch` refuses an
@@ -632,8 +644,8 @@ fn session_send(
         conn,
         active_turn_behavior,
     ) {
-        Ok(turn_started) => {
-            let reply = DaemonMessage::SessionSend { id, turn_started };
+        Ok(turn_active) => {
+            let reply = DaemonMessage::SessionSend { id, turn_active };
             remember(
                 state,
                 owner,
@@ -828,8 +840,8 @@ pub(super) fn remember(
 fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
     match message {
         DaemonMessage::Session { session, .. } => DaemonMessage::Session { id, session },
-        DaemonMessage::SessionSend { turn_started, .. } => {
-            DaemonMessage::SessionSend { id, turn_started }
+        DaemonMessage::SessionSend { turn_active, .. } => {
+            DaemonMessage::SessionSend { id, turn_active }
         }
         DaemonMessage::Ok { .. } => DaemonMessage::Ok { id },
         DaemonMessage::Sessions { sessions, .. } => DaemonMessage::Sessions { id, sessions },

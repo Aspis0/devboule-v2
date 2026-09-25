@@ -96,6 +96,11 @@ use journal_domain::*;
 
 #[path = "server/sessions.rs"]
 mod sessions;
+/// The real send path for the disposition tests: `dispatch` is peer-gated,
+/// this is the function it calls. Test-only so the production surface keeps
+/// one caller.
+#[cfg(test)]
+pub(crate) use sessions::session_send;
 pub(crate) use sessions::unix_millis;
 use sessions::*;
 pub(crate) use sessions::{

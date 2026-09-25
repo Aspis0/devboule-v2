@@ -10,12 +10,11 @@ use super::*;
 use crate::release_guard::ReleaseGuard;
 
 /// What one accepted send did: the transcript id it produced, if any, and
-/// whether it began a turn. The reply carries the disposition so the sender
-/// settles its optimistic turn on the answer instead of waiting for a finish
-/// that an out-of-band command never sends.
+/// whether a turn is running on the session as the reply goes out. The reply
+/// carries it so the sender waits for a finish only while one is owed.
 pub(crate) struct SendOutcome {
     pub message_id: Option<String>,
-    pub turn_started: bool,
+    pub turn_active: bool,
 }
 
 impl super::SessionRegistry {
@@ -320,7 +319,7 @@ impl super::SessionRegistry {
             author: UserMessageAuthor::Human,
             message_kind: UserMessageKind::Composer,
         })
-        .map(|outcome| outcome.turn_started)
+        .map(|outcome| outcome.turn_active)
     }
 
     pub(crate) fn agent_message_send(
@@ -774,7 +773,7 @@ impl super::SessionRegistry {
                     }
                     return Ok(SendOutcome {
                         message_id: Some(delivered_message_id),
-                        turn_started: false,
+                        turn_active: runtime.is_running_turn(),
                     });
                 }
             }
@@ -849,12 +848,11 @@ impl super::SessionRegistry {
                     // The steer's own echo id is the message the text became,
                     // so it is what this delivery answers with (audit S5-04):
                     // a caller that correlates to it names the message the
-                    // creator's transcript actually shows. No turn began for
-                    // this send — it joined the running one — so the reply
-                    // says so and the sender leaves that turn alone.
+                    // creator's transcript actually shows. The joined turn is
+                    // running, so the reply says so and the sender leaves it alone.
                     return Ok(SendOutcome {
                         message_id: delivered_message_id,
-                        turn_started: false,
+                        turn_active: runtime.is_running_turn(),
                     });
                 }
                 Some(Ok(false)) => {
@@ -1107,7 +1105,6 @@ impl super::SessionRegistry {
         // `AgentUserMessage` an agent session echoes for accepted input. A
         // terminal has no transcript record and answers `None`.
         let mut delivered_message_id: Option<String> = None;
-        let mut turn_started = false;
         if has_prompt {
             if let Some(runtime) = agent_runtime.as_ref() {
                 // The journal records `prompt`: on the fallback path that is
@@ -1124,16 +1121,20 @@ impl super::SessionRegistry {
                 // Activity and attention are separate facts, so publish both
                 // changes and let clients coalesce any render work.
                 runtime.begin_turn();
-                turn_started = true;
                 if runtime.clear_attention() {
                     runtime.request_transition();
                 }
             }
         }
         drop(writer);
+        // Read at the step that decides the send, after its own `begin_turn`
+        // above: true when this send began one or any other turn is running.
+        let turn_active = agent_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.is_running_turn());
         Ok(SendOutcome {
             message_id: delivered_message_id,
-            turn_started,
+            turn_active,
         })
     }
 

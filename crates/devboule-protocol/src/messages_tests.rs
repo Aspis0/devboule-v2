@@ -3549,14 +3549,11 @@ fn trace_name_is_a_static_constant_and_never_carries_the_payload() {
 fn the_send_reply_carries_whether_a_turn_began() {
     // The out-of-band disposition: a turn began, or one did not. The variant
     // survives the wire verbatim so a receipt can replay it under a retry id.
-    for turn_started in [true, false] {
-        let reply = DaemonMessage::SessionSend {
-            id: 7,
-            turn_started,
-        };
+    for turn_active in [true, false] {
+        let reply = DaemonMessage::SessionSend { id: 7, turn_active };
         let wire = serde_json::to_value(&reply).expect("json");
         assert_eq!(wire["type"], "session_send");
-        assert_eq!(wire["turnStarted"], turn_started);
+        assert_eq!(wire["turnActive"], turn_active);
         assert_eq!(
             serde_json::from_value::<DaemonMessage>(wire).expect("parse"),
             reply

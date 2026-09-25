@@ -5156,3 +5156,247 @@ fn live_session_families_count_agents_and_terminals_separately() {
     assert_eq!(agents, 3, "every provider-driven kind is an agent");
     assert_eq!(terminals, 2, "terminals are counted, never renamed agents");
 }
+
+/// An out-of-band command for the send-disposition tests: handled, never a turn.
+struct DispositionOob;
+impl OutOfBandCommands for DispositionOob {
+    fn handles_out_of_band(&self, text: &str) -> bool {
+        text == "/compact"
+    }
+    fn run_out_of_band(&self, _text: &str, _runtime: &Arc<SessionRuntime>) {}
+}
+
+/// One send through the real path — server `session_send` → registry → reply —
+/// against a planted live session. The peer gate is orthogonal (a refusal
+/// answers `Error` before any reply is built); what is pinned here is the
+/// disposition each accepted send carries.
+fn disposition_send(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    conn: &Arc<ConnHandle>,
+    id: u64,
+    session_id: &str,
+    text: &str,
+    key: Option<String>,
+) -> devboule_protocol::DaemonMessage {
+    crate::server::session_send(
+        state,
+        owner,
+        conn,
+        id,
+        session_id.to_string(),
+        91,
+        text.to_string(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        key,
+    )
+}
+
+fn plant_disposition_session(
+    state: &Arc<ServerState>,
+    session_id: &str,
+    owner: &OwnerId,
+) -> (Arc<SessionRuntime>, Arc<ConnHandle>) {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let runtime = insert_live_agent_with_out_of_band(
+        &state.sessions,
+        session_id,
+        owner.clone(),
+        devboule_protocol::SessionKind::Pi,
+        Box::new(RecordingWriter(Arc::clone(&received))),
+        Some(Arc::new(DispositionOob)),
+    );
+    let conn = attach_live_agent_for_test(&runtime, session_id, 91);
+    (runtime, conn)
+}
+
+#[test]
+fn a_normal_prompt_answers_turn_active() {
+    // A prompt began a turn, so the surface waits for its finish.
+    let dir = crate::test_dirs::test_temp_dir("devboule-send-disposition");
+    let state = ServerState::with_paths(
+        "test-instance".to_string(),
+        RuntimePaths::from_dir(dir.clone()),
+    )
+    .expect("state");
+    let owner = test_owner("S-1-5-21-disposition", "process-disposition");
+    let session_id = "s.disposition.prompt";
+    let (_runtime, conn) = plant_disposition_session(&state, session_id, &owner);
+    let reply = disposition_send(&state, &owner, &conn, 1, session_id, "hello", None);
+    assert!(
+        matches!(
+            reply,
+            devboule_protocol::DaemonMessage::SessionSend {
+                id: 1,
+                turn_active: true
+            }
+        ),
+        "a prompt began a turn: {reply:?}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_out_of_band_command_answers_turn_idle() {
+    // The command began no turn and none runs, so the surface settles instead
+    // of waiting for a finish that never comes.
+    let dir = crate::test_dirs::test_temp_dir("devboule-send-disposition-oob");
+    let state = ServerState::with_paths(
+        "test-instance".to_string(),
+        RuntimePaths::from_dir(dir.clone()),
+    )
+    .expect("state");
+    let owner = test_owner("S-1-5-21-disposition", "process-disposition");
+    let session_id = "s.disposition.oob";
+    let (_runtime, conn) = plant_disposition_session(&state, session_id, &owner);
+    let reply = disposition_send(&state, &owner, &conn, 1, session_id, "/compact", None);
+    assert!(
+        matches!(
+            reply,
+            devboule_protocol::DaemonMessage::SessionSend {
+                id: 1,
+                turn_active: false
+            }
+        ),
+        "no turn began and none runs: {reply:?}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_out_of_band_command_while_a_turn_runs_answers_turn_active() {
+    // The command began no turn, but one is running: the surface keeps
+    // waiting for that turn's finish.
+    let dir = crate::test_dirs::test_temp_dir("devboule-send-disposition-busy");
+    let state = ServerState::with_paths(
+        "test-instance".to_string(),
+        RuntimePaths::from_dir(dir.clone()),
+    )
+    .expect("state");
+    let owner = test_owner("S-1-5-21-disposition", "process-disposition");
+    let session_id = "s.disposition.busy";
+    let (runtime, conn) = plant_disposition_session(&state, session_id, &owner);
+    runtime.begin_turn();
+    let reply = disposition_send(&state, &owner, &conn, 1, session_id, "/compact", None);
+    assert!(
+        matches!(
+            reply,
+            devboule_protocol::DaemonMessage::SessionSend {
+                id: 1,
+                turn_active: true
+            }
+        ),
+        "another turn is running: {reply:?}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_receipt_hit_after_the_turn_finished_answers_turn_idle() {
+    // The receipt answers the turn as it is now: the first attempt's turn
+    // already finished, so the retry settles instead of waiting on history.
+    let dir = crate::test_dirs::test_temp_dir("devboule-send-disposition-receipt");
+    let state = ServerState::with_paths(
+        "test-instance".to_string(),
+        RuntimePaths::from_dir(dir.clone()),
+    )
+    .expect("state");
+    let owner = test_owner("S-1-5-21-disposition", "process-disposition");
+    let session_id = "s.disposition.receipt";
+    let (runtime, conn) = plant_disposition_session(&state, session_id, &owner);
+    let key = Some("disposition-once".to_string());
+    let first = disposition_send(
+        &state,
+        &owner,
+        &conn,
+        1,
+        session_id,
+        "/compact",
+        key.clone(),
+    );
+    assert!(
+        matches!(
+            first,
+            devboule_protocol::DaemonMessage::SessionSend {
+                id: 1,
+                turn_active: false
+            }
+        ),
+        "first attempt: {first:?}"
+    );
+    runtime.begin_turn();
+    // The turn ends the way a provider finish ends it — through the envelope
+    // path that runs `finish_turn` — not the daemon-event path, which never
+    // touches the turn flag.
+    runtime.publish_agent_event(
+        devboule_protocol::SessionEvent::AgentFinished {
+            stop_reason: "stop".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
+    let retry = disposition_send(&state, &owner, &conn, 2, session_id, "/compact", key);
+    assert!(
+        matches!(
+            retry,
+            devboule_protocol::DaemonMessage::SessionSend {
+                id: 2,
+                turn_active: false
+            }
+        ),
+        "the turn finished since: {retry:?}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_receipt_hit_while_the_turn_runs_answers_turn_active() {
+    // The mirror of the finished case: the stored answer says idle, but the
+    // turn is still running, so the retry waits for its finish instead of
+    // settling on history.
+    let dir = crate::test_dirs::test_temp_dir("devboule-send-disposition-receipt-busy");
+    let state = ServerState::with_paths(
+        "test-instance".to_string(),
+        RuntimePaths::from_dir(dir.clone()),
+    )
+    .expect("state");
+    let owner = test_owner("S-1-5-21-disposition", "process-disposition");
+    let session_id = "s.disposition.receipt.busy";
+    let (runtime, conn) = plant_disposition_session(&state, session_id, &owner);
+    let key = Some("disposition-busy-once".to_string());
+    let first = disposition_send(
+        &state,
+        &owner,
+        &conn,
+        1,
+        session_id,
+        "/compact",
+        key.clone(),
+    );
+    assert!(
+        matches!(
+            first,
+            devboule_protocol::DaemonMessage::SessionSend {
+                id: 1,
+                turn_active: false
+            }
+        ),
+        "first attempt: {first:?}"
+    );
+    runtime.begin_turn();
+    let retry = disposition_send(&state, &owner, &conn, 2, session_id, "/compact", key);
+    assert!(
+        matches!(
+            retry,
+            devboule_protocol::DaemonMessage::SessionSend {
+                id: 2,
+                turn_active: true
+            }
+        ),
+        "the turn still runs: {retry:?}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

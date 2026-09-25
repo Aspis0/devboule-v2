@@ -168,7 +168,7 @@ pub async fn session_send(
     active_turn_behavior: Option<String>,
     attachment_references: Option<Vec<AttachmentReference>>,
     idempotency_key: Option<String>,
-) -> Result<Option<bool>, CommandError> {
+) -> Result<bool, CommandError> {
     require_session_id(&id)?;
     require_write_size(&text)?;
     let attachments = attachments.unwrap_or_default();
@@ -692,13 +692,12 @@ mod tests {
     /// here.
     // The eight-type list is the test: it is the command's argument shape, and
     // factoring it into named parts would hide the thing being pinned.
-    // The reply says whether the send began a turn (`Some`); `None` stays
-    // silent for an older daemon — the app settles its optimistic turn on
-    // `Some(false)` instead of waiting for a finish that never comes.
+    // The reply says whether a turn is running: the app settles its
+    // optimistic turn on `false` instead of waiting for a finish.
     #[allow(clippy::type_complexity)]
     #[test]
     fn session_send_forwarder_has_the_frozen_tauri_signature() {
-        fn frozen<Fut: std::future::Future<Output = Result<Option<bool>, CommandError>>>(
+        fn frozen<Fut: std::future::Future<Output = Result<bool, CommandError>>>(
             _: fn(
                 State<'static, DaemonBridge>,
                 String,

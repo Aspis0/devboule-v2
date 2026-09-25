@@ -619,7 +619,7 @@ impl DaemonClient {
         attachment_references: &[AttachmentReference],
         active_turn_behavior: Option<ActiveTurnBehavior>,
         idempotency_key: Option<String>,
-    ) -> Result<Option<bool>, DaemonError> {
+    ) -> Result<bool, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {
             id,
@@ -631,10 +631,7 @@ impl DaemonClient {
             idempotency_key,
             active_turn_behavior,
         })? {
-            DaemonMessage::SessionSend { turn_started, .. } => Ok(Some(turn_started)),
-            // An older daemon answers every send with a bare Ok: no field,
-            // and no promise either way.
-            DaemonMessage::Ok { .. } => Ok(None),
+            DaemonMessage::SessionSend { turn_active, .. } => Ok(turn_active),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
