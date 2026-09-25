@@ -23,6 +23,26 @@ fn a_picked_prompt_command_sends_its_expanded_body() {
 }
 
 #[test]
+fn a_first_prompt_composes_around_a_picked_command() {
+    let home = TempDir::new("first-command-home");
+    let workspace = TempDir::new("first-command-cwd");
+    home.write(
+        "prompts/commit.md",
+        "---\ndescription: Draft it\n---\nDo $1\n",
+    );
+    let commands = home.commands(&workspace.0, false);
+    let composed =
+        "standing instructions\n\nspawn prompt\n\nrecovered context\n\n/prompts:commit release";
+    assert_eq!(
+        commands.prompt_input(composed),
+        Some(serde_json::json!([
+            { "type": "text", "text": "standing instructions\n\nspawn prompt\n\nrecovered context\n\nDo release\n" }
+        ])),
+        "the first-turn prefix survives command expansion once"
+    );
+}
+
+#[test]
 fn a_picked_skill_command_sends_the_skill_and_text_blocks() {
     let home = TempDir::new("skill-home");
     let workspace = TempDir::new("skill-cwd");
@@ -78,7 +98,7 @@ fn a_skill_named_goal_is_available_when_the_goal_builtin_is_gated_off() {
 }
 
 #[test]
-fn a_skill_marked_disabled_is_not_offered() {
+fn the_filesystem_fallback_ignores_the_enabled_front_matter_key() {
     let home = TempDir::new("disabled-skill-home");
     let workspace = TempDir::new("disabled-skill-cwd");
     workspace.write(
@@ -86,7 +106,13 @@ fn a_skill_marked_disabled_is_not_offered() {
         "---\nname: hidden\ndescription: Hidden\nenabled: false\n---\nBody.\n",
     );
     let commands = home.commands(&workspace.0, false);
-    assert_eq!(commands.prompt_input("/hidden"), None);
+    assert_eq!(
+        commands.prompt_input("/hidden"),
+        Some(serde_json::json!([
+            { "type": "skill", "name": "hidden", "path": workspace.0.join(".codex").join("skills").join("hidden").join("SKILL.md") },
+            { "type": "text", "text": "$hidden" }
+        ]))
+    );
 }
 
 #[test]
@@ -108,7 +134,7 @@ fn a_prompt_file_edited_after_the_session_starts_is_read_at_send_time() {
 }
 
 #[test]
-fn newly_added_prompts_expand_and_removed_menu_entries_fail_loudly() {
+fn the_session_start_snapshot_does_not_offer_new_prompts() {
     let home = TempDir::new("changing-home");
     let workspace = TempDir::new("changing-cwd");
     home.write("prompts/remove.md", "---\ndescription: Remove\n---\nbody\n");
@@ -116,15 +142,13 @@ fn newly_added_prompts_expand_and_removed_menu_entries_fail_loudly() {
     home.write("prompts/add.md", "---\ndescription: Add\n---\nnew\n");
     assert_eq!(
         commands.prompt_input_checked("/prompts:add"),
-        Ok(Some(
-            serde_json::json!([{ "type": "text", "text": "new\n" }])
-        )),
-        "the execution lookup observes a newly added file"
+        Ok(None),
+        "the send path uses the session-start catalogue snapshot"
     );
     std::fs::remove_file(home.0.join("prompts/remove.md")).expect("remove prompt fixture");
     assert!(commands.is_picked_command("/prompts:remove"));
     assert!(commands
         .prompt_input_checked("/prompts:remove")
-        .expect_err("a stale menu entry must not fall through as literal prompt text")
-        .contains("no longer available"));
+        .expect_err("the session-start snapshot still selects its saved prompt")
+        .contains("selected prompt file"));
 }

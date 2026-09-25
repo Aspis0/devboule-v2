@@ -169,9 +169,6 @@ impl SessionSteerer for UnsupportedSteerer {
 /// the input (Paseo records the submitted prompt first, then runs).
 pub(crate) trait OutOfBandCommands: Send + Sync {
     fn handles_out_of_band(&self, text: &str) -> bool;
-    fn skips_first_prompt_composition(&self, _text: &str) -> bool {
-        false
-    }
     fn run_out_of_band(&self, text: &str, runtime: &Arc<SessionRuntime>);
 }
 

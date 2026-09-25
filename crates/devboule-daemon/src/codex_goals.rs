@@ -12,10 +12,9 @@
 //! neither the flag nor the `goal` menu entry, because the flag is the only
 //! thing that turns the `thread/goal/*` requests on.
 
-#[cfg(not(test))]
-use std::path::Path;
-#[cfg(not(test))]
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// `CODEX_GOALS_MIN_VERSION` :170. Below it Codex rejects `--enable goals` at
 /// launch, so the flag must not be passed at all.
@@ -24,8 +23,10 @@ const CODEX_GOALS_MIN_VERSION: [u64; 3] = [0, 128, 0];
 /// How long one `--version` probe may take. Paseo's is 5 s
 /// (`diagnostic-utils.ts:138-147`), and a probe that outlives it reads as a
 /// binary without the feature.
-#[cfg(not(test))]
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+static PROBED_VERSIONS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Goals>>> =
+    OnceLock::new();
 
 /// The answer of the version gate.
 #[derive(Clone, Copy)]
@@ -56,15 +57,38 @@ impl Goals {
     /// Whether this Codex answers the goal requests. A no on any failure — a
     /// missing binary, an unparseable version, a probe that never answered —
     /// which is Paseo's own answer when the probe throws (:7049-7052).
-    #[cfg(not(test))]
-    pub(crate) fn probe(program: &str, prefix_args: &[String]) -> Self {
-        probe_once(Path::new(program), prefix_args)
+    pub(crate) fn probe(program: &str) -> Self {
+        let program = resolved_program_path(program);
+        if let Some(result) = PROBED_VERSIONS
+            .get_or_init(Default::default)
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&program).copied())
+        {
+            return result;
+        }
+        let result = probe_once(&program);
+        if let Ok(mut cache) = PROBED_VERSIONS.get_or_init(Default::default).lock() {
+            cache.insert(program, result);
+        }
+        result
     }
 }
 
-#[cfg(not(test))]
-fn probe_once(program: &Path, prefix_args: &[String]) -> Goals {
-    Goals::from_version_output(&version_output(program, prefix_args).unwrap_or_default())
+fn probe_once(program: &Path) -> Goals {
+    Goals::from_version_output(&version_output(program).unwrap_or_default())
+}
+
+fn resolved_program_path(program: &str) -> PathBuf {
+    let path = Path::new(program);
+    if path.components().count() > 1 {
+        return std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    }
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join(program))
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| std::fs::canonicalize(&candidate).ok())
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Run `<program> --version` and answer its stdout, or the empty string when
@@ -72,12 +96,11 @@ fn probe_once(program: &Path, prefix_args: &[String]) -> Goals {
 /// [`VERSION_PROBE_TIMEOUT`]. Paseo's `resolveBinaryVersion` answers
 /// `unknown`/`error: …` for the same cases; either way no version parses and
 /// the gate closes.
-#[cfg(not(test))]
-fn version_output(program: &Path, prefix_args: &[String]) -> Option<String> {
+fn version_output(program: &Path) -> Option<String> {
+    let started = Instant::now();
     let mut command = std::process::Command::new(program);
     command
-        .args(version_probe_args(prefix_args))
-        .arg("--version")
+        .args(version_probe_args())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -108,23 +131,23 @@ fn version_output(program: &Path, prefix_args: &[String]) -> Option<String> {
             return None;
         }
     };
-    let _ = child.kill();
-    let _ = child.wait();
+    let status = loop {
+        if let Some(status) = child.try_wait().ok()? {
+            break status;
+        }
+        if started.elapsed() >= VERSION_PROBE_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     let _ = reader.join();
-    Some(output)
+    status.success().then_some(output)
 }
 
-fn version_probe_args(prefix_args: &[String]) -> Vec<String> {
-    let prefix = if prefix_args.last().is_some_and(|arg| arg == "app-server") {
-        &prefix_args[..prefix_args.len() - 1]
-    } else {
-        prefix_args
-    };
-    prefix
-        .iter()
-        .cloned()
-        .chain(std::iter::once("--version".to_string()))
-        .collect()
+fn version_probe_args() -> [&'static str; 1] {
+    ["--version"]
 }
 
 /// `parseCodexVersion` :173-178 + `codexVersionAtLeast` :180-191: the first
@@ -224,9 +247,15 @@ extra"
     }
 
     #[test]
-    fn npm_shim_version_probe_keeps_the_script_and_drops_app_server() {
-        let args = vec!["C:/node/codex.js".to_string(), "app-server".to_string()];
-        assert_eq!(version_probe_args(&args), ["C:/node/codex.js", "--version"]);
-        assert_eq!(version_probe_args(&[]), ["--version"]);
+    fn version_probe_uses_paseos_program_only_shape_once() {
+        assert_eq!(version_probe_args(), ["--version"]);
+    }
+
+    #[test]
+    fn the_os_probe_is_available_to_tests_and_fails_closed() {
+        let missing = std::env::temp_dir().join("devboule-codex-probe-does-not-exist");
+        let missing = missing.to_string_lossy().into_owned();
+        assert!(!Goals::probe(&missing).enabled());
+        assert!(!Goals::probe(&missing).enabled());
     }
 }

@@ -6,13 +6,13 @@ use super::super::event_pull::ConnHandle;
 use super::super::permission_broker::PermissionBroker;
 use super::super::session_runtime::SessionRuntime;
 use super::{
-    carried_image_paths, codex_delivery, codex_local_image_entry, decline_input_result,
-    empty_commands, initialize_params, interrupt_params, mcp_launch, mode_values,
-    notification_frame, permission_decision, permission_decision_frame, plan_codex_prompt,
-    request_frame, send_interrupt_request, steer_params_if_current, thread_resume_params,
-    thread_start_params, turn_id_from_response, turn_start_params, turn_start_params_for_prompt,
-    turn_start_params_with_images, turn_steer_params, validate_mode, CodexReader, CodexRequests,
-    CodexSteerer, ThreadRoad,
+    carried_image_paths, codex_delivery, codex_local_image_entry, command_prompt_input,
+    decline_input_result, empty_commands, initialize_params, interrupt_params, mcp_launch,
+    mode_values, notification_frame, permission_decision, permission_decision_frame,
+    plan_codex_prompt, request_frame, send_interrupt_request, steer_params_if_current,
+    thread_resume_params, thread_start_params, turn_id_from_response, turn_start_params,
+    turn_start_params_for_prompt, turn_start_params_with_images, turn_steer_params, validate_mode,
+    CodexCommands, CodexReader, CodexRequests, CodexSteerer, ThreadRoad,
 };
 use crate::attachment_store::AttachmentStore;
 use crate::codex_view::{
@@ -972,6 +972,44 @@ fn an_svg_keeps_its_path_line_beside_codex_image_paths() {
     let input = params["input"].as_array().expect("array");
     assert_eq!(input.len(), 2);
     assert!(input[0]["text"].as_str().expect("text").ends_with(".svg]"));
+    assert_eq!(input[1]["type"], "localImage");
+}
+
+#[test]
+fn a_first_command_with_an_attachment_keeps_its_prefix_and_image_block() {
+    let temp = PlanTempDir::new("first-command-image");
+    let home = temp.0.join("home");
+    let cwd = temp.0.join("workspace");
+    std::fs::create_dir_all(home.join("prompts")).unwrap();
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(
+        home.join("prompts/commit.md"),
+        "---\ndescription: Draft\n---\nReview $1\n",
+    )
+    .unwrap();
+    let commands = CodexCommands::new(&home, Some(&cwd), false);
+    let text = "standing\n\nspawn\n\nrecovered\n\n/prompts:commit release";
+    let store = AttachmentStore::new(&temp.0.join("store"));
+    let mut plan = plan_codex_prompt(
+        &store,
+        "codex-first-command-image",
+        text,
+        &[plan_attachment(
+            "picture.png",
+            "image/png",
+            &clean_png(0x31),
+        )],
+    )
+    .expect("plan the attachment")
+    .expect("the raster plans a path");
+    plan.command_input = command_prompt_input(&commands, text).expect("expand command");
+
+    let input = plan.input_blocks();
+    assert_eq!(input.len(), 2);
+    assert_eq!(
+        input[0]["text"],
+        "standing\n\nspawn\n\nrecovered\n\nReview release\n"
+    );
     assert_eq!(input[1]["type"], "localImage");
 }
 

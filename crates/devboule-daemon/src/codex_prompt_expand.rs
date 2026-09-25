@@ -54,12 +54,25 @@ pub(crate) fn expand_prompt(template: &str, args: &str) -> String {
     }
     // Longest name first (Paseo's `sort((a, b) => b.length - a.length)` :796),
     // so `$branch_name` survives a `$branch` token.
+    named.sort_by(
+        |(left, _), (right, _)| match (array_index(left), array_index(right)) {
+            (Some(left), Some(right)) => left.cmp(&right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        },
+    );
     let mut names: Vec<&(String, String)> = named.iter().collect();
     names.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
     for (name, value) in names {
         out = replace_dollar_word(&out, name, value);
     }
     out.replace(DOLLAR_PLACEHOLDER, "$")
+}
+
+fn array_index(name: &str) -> Option<u32> {
+    let index = name.parse::<u32>().ok()?;
+    (index != u32::MAX && index.to_string() == name).then_some(index)
 }
 
 /// Paseo's named-token regex (:800-802): a dollar literal, the escaped name,
@@ -291,5 +304,6 @@ mod tests {
         assert_eq!(expand_prompt("A $name B", "name=$$"), "A $ B");
         assert_eq!(expand_prompt("A $name B", "name=$&"), "A $name B");
         assert_eq!(expand_prompt("$b/$a", "b=$a a=1"), "1/1");
+        assert_eq!(expand_prompt("$a", "a=$1 1=Z"), "$1");
     }
 }

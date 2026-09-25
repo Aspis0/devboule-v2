@@ -123,8 +123,6 @@ pub(crate) enum Answer {
 /// this binary has goals, and the answers a command is still owed.
 pub(crate) struct CodexCommands {
     entries: Vec<CommandEntry>,
-    codex_home: std::path::PathBuf,
-    cwd: Option<std::path::PathBuf>,
     goals_enabled: bool,
     /// Command requests written but not yet answered, keyed by the JSON-RPC id
     /// the answer will name.
@@ -146,8 +144,6 @@ impl CodexCommands {
     pub(crate) fn new(codex_home: &Path, cwd: Option<&Path>, goals_enabled: bool) -> Self {
         Self {
             entries: codex_command_catalog::command_table(codex_home, cwd, goals_enabled),
-            codex_home: codex_home.to_path_buf(),
-            cwd: cwd.map(Path::to_path_buf),
             goals_enabled,
             owed: Mutex::new(HashMap::new()),
         }
@@ -175,9 +171,8 @@ impl CodexCommands {
         }
     }
 
-    /// Register the answer `id` owes this command. `false` when the table is
-    /// full or the lock is gone: the request still goes out, only its notice is
-    /// dropped.
+    /// Register the answer `id` owes this command. `false` means the caller
+    /// must not send the request because its outcome could not be tracked.
     pub(crate) fn owe(&self, id: &str, command: &Command) -> bool {
         let Ok(mut owed) = self.owed.lock() else {
             return false;
@@ -211,7 +206,8 @@ impl CodexCommands {
     /// Custom prompts are expanded here because app-server text input does not
     /// expand them; skills carry the same skill and text blocks Paseo builds.
     pub(crate) fn prompt_input_checked(&self, text: &str) -> Result<Option<Value>, String> {
-        let Some((name, args)) = parse_slash(text) else {
+        let (prefix, command_text) = split_composed_command(text);
+        let Some((name, args)) = parse_slash(command_text) else {
             return Ok(None);
         };
         // An out-of-band name never becomes a prompt. Paseo cannot reach a
@@ -224,30 +220,37 @@ impl CodexCommands {
         if self.command(text).is_some() {
             return Ok(None);
         }
-        let entries = codex_command_catalog::command_table(
-            &self.codex_home,
-            self.cwd.as_deref(),
-            self.goals_enabled,
-        );
-        let Some(entry) = entries.iter().find(|entry| entry.name == name) else {
-            if self.entries.iter().any(|entry| entry.name == name) {
-                return Err(format!("Codex command /{name} is no longer available."));
-            }
+        let Some(entry) = self.entries.iter().find(|entry| entry.name == name) else {
             return Ok(None);
         };
         match (&entry.origin, args) {
-            (CommandOrigin::Prompt { path }, args) => Ok(Some(serde_json::json!([
-                { "type": "text", "text": expand_prompt(&prompt_body(path)?, args.unwrap_or_default()) }
-            ]))),
+            (CommandOrigin::Prompt { path }, args) => {
+                let body = expand_prompt(&prompt_body(path)?, args.unwrap_or_default());
+                let text = if prefix.is_empty() {
+                    body
+                } else {
+                    format!("{prefix}\n\n{body}")
+                };
+                Ok(Some(serde_json::json!([{ "type": "text", "text": text }])))
+            }
             (CommandOrigin::Skill { path }, args) => {
                 let text = match args {
                     Some(args) => format!("${} {}", entry.name, args),
                     None => format!("${}", entry.name),
                 };
-                Ok(Some(serde_json::json!([
-                    { "type": "skill", "name": entry.name, "path": path },
-                    { "type": "text", "text": text },
-                ])))
+                let mut input = Vec::new();
+                if !prefix.is_empty() {
+                    input.push(
+                        serde_json::json!({ "type": "text", "text": format!("{prefix}\n\n") }),
+                    );
+                }
+                input.push(serde_json::json!({
+                    "type": "skill",
+                    "name": entry.name,
+                    "path": path,
+                }));
+                input.push(serde_json::json!({ "type": "text", "text": text }));
+                Ok(Some(Value::Array(input)))
             }
             _ => Ok(None),
         }
@@ -259,17 +262,20 @@ impl CodexCommands {
     }
 
     pub(crate) fn is_picked_command(&self, text: &str) -> bool {
-        parse_slash(text).is_some_and(|(name, _)| {
-            self.entries.iter().any(|entry| entry.name == name)
-                || codex_command_catalog::command_table(
-                    &self.codex_home,
-                    self.cwd.as_deref(),
-                    self.goals_enabled,
-                )
-                .iter()
-                .any(|entry| entry.name == name)
-        })
+        let (_, command_text) = split_composed_command(text);
+        parse_slash(command_text)
+            .is_some_and(|(name, _)| self.entries.iter().any(|entry| entry.name == name))
     }
+}
+
+fn split_composed_command(text: &str) -> (&str, &str) {
+    // Composition joins the standing instructions and prompt with one blank line.
+    if let Some((prefix, command)) = text.rsplit_once("\n\n") {
+        if parse_slash(command).is_some() {
+            return (prefix, command);
+        }
+    }
+    ("", text)
 }
 
 /// The body of one custom prompt file, front matter removed

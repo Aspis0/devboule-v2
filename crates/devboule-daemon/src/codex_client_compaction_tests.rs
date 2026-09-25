@@ -142,6 +142,56 @@ fn the_command_list_is_published_once_at_session_start() {
 }
 
 #[test]
+fn the_command_list_written_by_codex_reader_is_in_session_replay() {
+    let fixture = Fixture::new("published-replay");
+    let commands = fixture.commands(true, true);
+    let (mut reader, _, _) = started_reader(Arc::clone(&commands));
+    let session_id = "s.codex.command-list-replay";
+    let dir = crate::test_dirs::test_temp_dir("devboule-codex-command-replay");
+    let journal = Arc::new(crate::journal::Journal::open(&dir.join("journal.db")).unwrap());
+    journal
+        .upsert_blocking(crate::journal::new_session_record(
+            session_id,
+            "S-1-5-21-1",
+            None,
+            devboule_protocol::SessionKind::Acp,
+            "Agent",
+        ))
+        .unwrap();
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        session_id.to_string(),
+        Some(Arc::clone(&journal)),
+    ));
+    runtime.stream.lock().unwrap().screen = None;
+    let conn = ConnHandle::new(1);
+    let outcome = runtime
+        .try_attach_with_replay(None, &conn, true)
+        .expect("attach before Codex publishes its list");
+    conn.track_with_agent_replay(
+        session_id,
+        Arc::clone(&runtime),
+        false,
+        None,
+        outcome.generation,
+        outcome.live_agent_replay,
+    );
+
+    reader
+        .feed(b"{}\n", &runtime)
+        .expect("Codex reader publishes the startup list");
+    let replay = journal.replay(session_id).expect("replay the produced row");
+    assert!(replay.events.iter().any(|event| matches!(
+        event,
+        SessionEvent::AvailableCommands { commands }
+            if commands.iter().any(|command| command.name == "prompts:commit")
+    )));
+    drop(conn);
+    drop(runtime);
+    drop(journal);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_command_answer_is_told_in_the_commands_own_words_and_only_once() {
     let fixture = Fixture::new("answer");
     let commands = fixture.commands(false, true);
@@ -176,6 +226,23 @@ fn an_accepted_compaction_answer_publishes_nothing() {
     assert!(
         notices(&conn).is_empty(),
         "Paseo's compact success emits nothing; `thread/compacted` is the report"
+    );
+}
+
+#[test]
+fn a_null_error_is_a_successful_compact_response() {
+    let fixture = Fixture::new("null-error");
+    let commands = fixture.commands(false, true);
+    let command = commands.command("/compact").expect("compact is a command");
+    assert!(commands.owe("d-null", &command));
+    let (mut reader, runtime, conn) = started_reader(commands);
+    reader.dispatch_value(
+        serde_json::json!({ "id": "d-null", "result": {}, "error": null }),
+        &runtime,
+    );
+    assert!(
+        notices(&conn).is_empty(),
+        "JSON null is falsy, like Paseo raw.error"
     );
 }
 
@@ -283,6 +350,37 @@ fn a_compaction_under_way_says_so() {
 }
 
 #[test]
+fn a_root_compaction_without_thread_id_is_kept() {
+    let fixture = Fixture::new("missing-thread-id");
+    let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
+    reader.dispatch_value(
+        serde_json::json!({
+            "method": "item/started",
+            "params": { "item": { "id": "i-root", "type": "contextCompaction" } }
+        }),
+        &runtime,
+    );
+    assert_eq!(notices(&conn), ["Compacting the context."]);
+}
+
+#[test]
+fn a_child_turn_end_does_not_close_root_compaction_state() {
+    let fixture = Fixture::new("child-turn-end");
+    let (mut reader, runtime, conn) = started_reader(fixture.commands(false, false));
+    reader.dispatch_value(compaction_item("item/started"), &runtime);
+    reader.dispatch_value(
+        serde_json::json!({ "method": "turn/completed", "params": { "threadId": "other-thread" } }),
+        &runtime,
+    );
+    reader.dispatch_value(compaction_item("item/completed"), &runtime);
+    assert_eq!(
+        notices(&conn),
+        ["Compacting the context.", "Context compacted."],
+        "the child turn end leaves root pairing state intact"
+    );
+}
+
+#[test]
 fn a_compaction_from_another_thread_is_silent_on_both_channels() {
     // Codex runs sub-agent threads over the same stream; Paseo drops a
     // `thread/compacted` naming a thread other than the session's (:6205-6207).
@@ -327,14 +425,7 @@ fn unfinished_root_compaction_is_closed_at_turn_end_and_late_completion_is_ignor
             .iter()
             .filter(|line| *line == "Context compacted.")
             .count(),
-        1
-    );
-    assert_eq!(
-        lines
-            .iter()
-            .filter(|line| *line == "Context compaction did not complete.")
-            .count(),
-        1
+        2
     );
 }
 

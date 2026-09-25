@@ -157,7 +157,8 @@ fn a_full_owed_table_tells_the_user_why_the_command_was_not_sent() {
         assert!(commands.owe(&format!("d-{index}"), &command));
     }
     let mut child = fixture.child(None);
-    let handler = out_of_band_on(stdin_of(&mut child), Arc::clone(&commands));
+    let stdin = stdin_of(&mut child);
+    let handler = out_of_band_on(Arc::clone(&stdin), Arc::clone(&commands));
     let runtime = Arc::new(super::super::SessionRuntime::new());
     runtime.stream.lock().unwrap().screen = None;
     let conn = super::super::event_pull::ConnHandle::new(1);
@@ -173,8 +174,25 @@ fn a_full_owed_table_tells_the_user_why_the_command_was_not_sent() {
         outcome.live_agent_replay,
     );
     handler.run_out_of_band("/compact", &runtime);
+    // The fake child answers requests in input order. A barrier request proves
+    // it has consumed every preceding write before the record file is checked.
+    stdin
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .write_all(
+            b"{\"jsonrpc\":\"2.0\",\"id\":\"barrier\",\"method\":\"barrier\",\"params\":{}}\n",
+        )
+        .expect("write the child barrier");
+    await_answers(&mut child, 1);
+    let recorded = fixture.recorded();
     let _ = child.kill();
     let _ = child.wait();
+    assert!(
+        recorded.iter().all(|(method, _)| method == "barrier"),
+        "the untracked command is not sent"
+    );
     let events: Vec<SessionEvent> = conn
         .pull_events()
         .into_iter()
@@ -183,13 +201,9 @@ fn a_full_owed_table_tells_the_user_why_the_command_was_not_sent() {
     assert_eq!(
         events,
         vec![SessionEvent::SessionNotice {
-            text: "Could not track the Codex command response; retry the command.".to_string(),
+            text: "The Codex command was not sent because its response could not be tracked. Retry it.".to_string(),
             severity: NoticeSeverity::Warning,
         }]
-    );
-    assert!(
-        fixture.recorded().is_empty(),
-        "the untracked command is not sent"
     );
 }
 
@@ -199,7 +213,11 @@ fn a_picked_command_is_refused_as_a_steer() {
     let steerer = CodexSteerer {
         stdin: std::sync::Arc::new(std::sync::Mutex::new(None)),
         next_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
-        state: super::command_test_support::thread_state(),
+        state: {
+            let state = super::command_test_support::thread_state();
+            state.set_turn(Some("turn-3".to_string()));
+            state
+        },
         requests: std::sync::Arc::new(CodexRequests::new()),
         commands: fixture.commands(true, false),
     };

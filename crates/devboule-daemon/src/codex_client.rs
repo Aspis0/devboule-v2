@@ -431,7 +431,7 @@ fn session_goals(command: &PtyCommand) -> Goals {
         )
     }
     #[cfg(not(test))]
-    Goals::probe(&command.program, &command.args)
+    Goals::probe(&command.program)
 }
 
 fn spawn_codex(
@@ -607,17 +607,13 @@ fn spawn_codex(
         commands: Arc::clone(&commands),
         pending: Vec::new(),
     };
-    // The static prompt route carries attachments, and a prompt that carries
-    // one is never a command (`resolveSlashCommandInvocation` takes a string
-    // prompt only, :4009) — so this route needs no command table and sends the
-    // text the human typed.
-    //
     // It sends Codex's own `turn/start`: it shares the
     // stdin, the request-id counter and the thread state with the writer.
     let static_prompt = Arc::new(CodexStaticPrompt::new(
         Arc::clone(&stdin),
         Arc::clone(&next_id),
         Arc::clone(&state),
+        Arc::clone(&commands),
     ));
     let killer = CodexKiller {
         process: Arc::clone(&process),
@@ -791,10 +787,6 @@ impl OutOfBandCommands for CodexOutOfBand {
         self.commands.command(text).is_some()
     }
 
-    fn skips_first_prompt_composition(&self, text: &str) -> bool {
-        self.commands.is_picked_command(text)
-    }
-
     fn run_out_of_band(&self, text: &str, runtime: &Arc<SessionRuntime>) {
         let Some(command) = self.commands.command(text) else {
             return;
@@ -808,7 +800,8 @@ impl OutOfBandCommands for CodexOutOfBand {
         let id = format!("d-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         if !self.commands.owe(&id, &command) {
             let _ = runtime.publish_daemon_event(command_notice(
-                "Could not track the Codex command response; retry the command.".to_string(),
+                "The Codex command was not sent because its response could not be tracked. Retry it."
+                    .to_string(),
                 true,
             ));
             return;
@@ -941,6 +934,7 @@ pub(crate) struct CodexStaticPrompt {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
     state: Arc<CodexState>,
+    commands: Arc<CodexCommands>,
 }
 
 impl CodexStaticPrompt {
@@ -948,11 +942,13 @@ impl CodexStaticPrompt {
         stdin: Arc<Mutex<Option<ChildStdin>>>,
         next_id: Arc<AtomicU64>,
         state: Arc<CodexState>,
+        commands: Arc<CodexCommands>,
     ) -> Self {
         Self {
             stdin,
             next_id,
             state,
+            commands,
         }
     }
 }
@@ -965,9 +961,10 @@ impl super::StaticImageSink for CodexStaticPrompt {
         text: &str,
         attachments: &[devboule_protocol::PromptAttachment],
     ) -> Result<Option<Box<dyn super::PlannedStaticPrompt>>, WireError> {
-        let Some(plan) = plan_codex_prompt(store, session_id, text, attachments)? else {
+        let Some(mut plan) = plan_codex_prompt(store, session_id, text, attachments)? else {
             return Ok(None);
         };
+        plan.command_input = command_prompt_input(&self.commands, text)?;
         Ok(Some(Box::new(CodexPlannedPrompt {
             stdin: Arc::clone(&self.stdin),
             next_id: Arc::clone(&self.next_id),
@@ -992,11 +989,13 @@ impl CodexPlannedPrompt {
     /// override are read at send time, the way the writer reads them, so a
     /// model switched between prompt and send is not sent a stale name.
     fn params(&self) -> Value {
-        turn_start_params_for_prompt(
+        let mut params = turn_start_params_for_prompt(
             &self.state,
             &self.plan.fallback_text,
             &self.plan.image_paths,
-        )
+        );
+        params["input"] = Value::Array(self.plan.input_blocks());
+        params
     }
 }
 
@@ -1009,7 +1008,22 @@ impl super::PlannedStaticPrompt for CodexPlannedPrompt {
     /// lines its own attachments left there and never as `localImage` paths:
     /// see `session::push_reference_path_lines`.
     fn append_reference_path_lines(&mut self, reference_paths: &[std::path::PathBuf]) {
+        let original_len = self.plan.fallback_text.len();
         super::push_reference_path_lines(&mut self.plan.fallback_text, reference_paths);
+        if let Some(input) = self.plan.command_input.as_mut() {
+            let added = &self.plan.fallback_text[original_len..];
+            if let Some(block) = input
+                .iter_mut()
+                .rev()
+                .find(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            {
+                let previous = block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                block["text"] = Value::String(format!("{previous}{added}"));
+            }
+        }
     }
 
     fn send(&self) -> Result<(), WireError> {
@@ -1021,6 +1035,16 @@ impl super::PlannedStaticPrompt for CodexPlannedPrompt {
             "Codex",
         )
     }
+}
+
+fn command_prompt_input(
+    commands: &CodexCommands,
+    text: &str,
+) -> Result<Option<Vec<Value>>, WireError> {
+    commands
+        .prompt_input_checked(text)
+        .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))
+        .map(|input| input.and_then(|input| input.as_array().cloned()))
 }
 
 struct CodexWriter {
@@ -1617,6 +1641,21 @@ fn turn_start_params_for_prompt(
 struct CodexPromptPlan {
     fallback_text: String,
     image_paths: Vec<std::path::PathBuf>,
+    command_input: Option<Vec<Value>>,
+}
+
+impl CodexPromptPlan {
+    fn input_blocks(&self) -> Vec<Value> {
+        let mut input = self.command_input.clone().unwrap_or_else(|| {
+            vec![serde_json::json!({ "type": "text", "text": self.fallback_text })]
+        });
+        input.extend(
+            self.image_paths
+                .iter()
+                .map(|path| codex_local_image_entry(path)),
+        );
+        input
+    }
 }
 
 /// The delivery Codex is authorised for: a fact about the protocol, not a
@@ -1673,6 +1712,7 @@ fn plan_codex_prompt(
     Ok(Some(CodexPromptPlan {
         fallback_text: super::prompt_text_with_fallback_paths(text, &fallback_paths),
         image_paths,
+        command_input: None,
     }))
 }
 
@@ -1802,9 +1842,15 @@ impl CodexReader {
         // Answered here rather than in the view: one of the two compaction
         // channels is keyed by the thread this session owns, and the pair has
         // to be counted against each other.
-        if let Some(event) = self.compactions.event(&value, &self.state.thread_id()) {
-            let _ = runtime.publish_daemon_event(event);
-            return;
+        let method = value.get("method").and_then(Value::as_str);
+        if matches!(
+            method,
+            Some("thread/compacted" | "item/started" | "item/completed")
+        ) {
+            if let Some(event) = self.compactions.event(&value, &self.state.thread_id()) {
+                let _ = runtime.publish_daemon_event(event);
+                return;
+            }
         }
         if value.get("method").and_then(Value::as_str)
             == Some("item/commandExecution/requestApproval")
@@ -1827,8 +1873,11 @@ impl CodexReader {
                         .map(str::to_string),
                 );
             } else if method == "turn/completed" {
-                for event in self.compactions.turn_ended() {
-                    let _ = runtime.publish_daemon_event(event);
+                let params = value.get("params").unwrap_or(&Value::Null);
+                if crate::codex_compaction::is_root_thread(params, &self.state.thread_id()) {
+                    for event in self.compactions.turn_ended() {
+                        let _ = runtime.publish_daemon_event(event);
+                    }
                 }
             } else if let Some(id) = value.get("id") {
                 let _ = send_frame(&self.stdin, &method_not_supported_frame(id), "Codex");
@@ -1841,13 +1890,16 @@ impl CodexReader {
             if let Some(turn_id) = turn_id_from_response(&value) {
                 self.state.set_turn(Some(turn_id));
             }
-            let error = value.get("error").map(|error| {
-                error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Codex returned an error without a message")
-                    .to_string()
-            });
+            let error = value
+                .get("error")
+                .filter(|error| !error.is_null())
+                .map(|error| {
+                    error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Codex returned an error without a message")
+                        .to_string()
+                });
             // A command's answer is told in the command's own words, Paseo's
             // including (``executeCompactCommand`` :5027-5031,
             // ``executeGoalSubcommand`` :5081-5085); any other response keeps

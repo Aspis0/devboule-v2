@@ -11,8 +11,8 @@
 //! `parseFrontMatter` :618-657, the built-in rows of `listCommands`
 //! :4952-4968).
 //!
-//! Nothing here is a hot path: [`command_table`] is called once per session
-//! start and its answer is what later decides how a typed command travels.
+//! [`command_table`] runs once at session start; its snapshot decides how a
+//! picked command travels for that session.
 //! A file that cannot be read is skipped, and no file content is ever logged —
 //! the same rule the front-matter fallbacks below follow.
 
@@ -207,12 +207,6 @@ fn skill_entries(codex_home: &Path, cwd: Option<&Path>) -> Vec<CommandEntry> {
                 continue;
             };
             let (front_matter, _) = front_matter(&content);
-            if front_matter
-                .get("enabled")
-                .is_some_and(|value| value == "false")
-            {
-                continue;
-            }
             let (Some(name), Some(description)) =
                 (front_matter.get("name"), front_matter.get("description"))
             else {
