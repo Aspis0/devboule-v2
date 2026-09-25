@@ -53,6 +53,20 @@ const durableChooserRequest: PermissionRequest = {
   ],
 };
 
+/** The stub's own question: three colours plus the refusal option. */
+const rejectOptionChooserRequest: PermissionRequest = {
+  type: "permission_request",
+  toolCallId: "tool-chooser",
+  title: "Which colour should the fence be?",
+  isChooser: true,
+  options: [
+    { optionId: "red", name: "Red", kind: "allow_once" },
+    { optionId: "green", name: "Green", kind: "allow_once" },
+    { optionId: "blue", name: "Blue", kind: "allow_once" },
+    { optionId: "none", name: "None", kind: "reject_once" },
+  ],
+};
+
 async function renderCard(request: PermissionRequest) {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -173,6 +187,32 @@ describe("PermissionCard chooser answers", () => {
       "Denied \u2014 the turn continues without it",
     );
     expect(card.querySelector("[role=alert]")).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("a chooser whose options include a refusal renders them all and its reject option resolves as Denied", async () => {
+    const { root, card } = await renderCard(rejectOptionChooserRequest);
+
+    // The refusal rides in as one of the agent's options, so the card keeps
+    // no plain Deny beside them: the option IS the refusal (review A2a #12
+    // found this branch untested).
+    expect(actionButtons(card).map((button) => button.textContent)).toEqual([
+      "Red",
+      "Green",
+      "Blue",
+      "None",
+    ]);
+    const none = findButton(card, "None");
+    if (none === undefined) throw new Error("the reject option button did not render");
+
+    await act(async () => none.click());
+
+    expect(card.querySelector(".permission-card-label")?.textContent).toBe(
+      "Denied \u2014 the turn continues without it",
+    );
+    expect(card.querySelector("[role=alert]")).toBeNull();
+    expect(card.querySelector(".permission-card-choice")?.textContent).toBe("Chosen: None");
 
     await act(async () => root.unmount());
   });
