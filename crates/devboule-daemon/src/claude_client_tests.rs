@@ -2524,7 +2524,7 @@ fn fast_mode_wait_refusals_name_claude_for_every_read_failure() {
         "the ACP agent did not answer within 15s; the creation is refused rather than awaited without end",
         "ACP agent closed stdout before the answer arrived.",
         "ACP stdio failed: broken pipe",
-        "the ACP agent wrote more than 256 bytes without a newline",
+        "the ACP agent wrote more than 10485760 bytes without a newline; the creation is refused rather than buffered without end",
     ] {
         let error = delivery_wait_error(WireError::new(ErrorCode::Io, source));
         assert!(error.message.contains("Claude"), "{source}: {}", error.message);

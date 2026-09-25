@@ -1577,7 +1577,7 @@ mod tests {
         let mut other_model = profile("p-grok-b", "Model B profile");
         other_model.provider = "grok".to_string();
         other_model.model = "glm-4.7".to_string();
-        other_model.features = serde_json::json!({ "engine": "m1" })
+        other_model.features = serde_json::json!({ "engine": "m1", "undeclared": true })
             .as_object()
             .expect("map")
             .clone();
@@ -1589,6 +1589,10 @@ mod tests {
             kept.features.get("engine").cloned(),
             Some(serde_json::json!("m1")),
             "the provider-wide answer preserves this declared value"
+        );
+        assert!(
+            !kept.features.contains_key("undeclared"),
+            "the ACP prune drops keys the declaration does not contain"
         );
 
         let mut this_model = other_model.clone();
@@ -1610,6 +1614,9 @@ mod tests {
             kept_on_other_model.get("engine").cloned(),
             Some(serde_json::json!("m1")),
             "the same provider-wide answer preserves the declared value here"
+        );
+        crate::provider_feature_probe::remove_answer_for_test(
+            &crate::provider_feature_probe::ProbeKey::new("grok"),
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

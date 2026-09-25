@@ -13,12 +13,11 @@
  * Three rules are what make the re-asking safe to hang off a Settings panel, and
  * each has a comment where it is enforced below:
  *
- * - **The question is keyed on the provider and on a model that has *settled*.**
- *   A model field is free text half the time, and one ask per keystroke would be
- *   one provider process per character. A select settles on change, a text field
- *   on blur (`settleModel`), and a reply is only trusted while it answers the
- *   settled value — which is also what stops a list read on one model from
- *   pruning a profile that names another.
+ * - **The question is asked for the provider and a settled model.** A model
+ *   field is free text half the time, and one ask per keystroke would be one
+ *   provider process per character. A select settles on change, a text field on
+ *   blur (`settleModel`); feature declarations remain provider-scoped and the
+ *   form applies the current model gate locally.
  * - **A stale reply is dropped, never adopted.** Two guards, one for a newer ask
  *   and one for a reply that names a different provider: what an old question
  *   learned must not dress the current one's controls.
@@ -146,6 +145,7 @@ export function useProviderVocabulary({
       .catch((cause: unknown) => {
         if (seqRef.current !== seq) return;
         stopPoll();
+        setVocabulary(null);
         setVocabularyError(errorSentence(cause));
       });
   }
@@ -192,26 +192,22 @@ export function useProviderVocabulary({
     chainRef.current += 1;
     stopPoll();
     // Keep the last reply for the model and mode axes while the new feature
-    // answer is pending; offered features remain gated by `answeredFor`.
+    // answer is pending; provider declarations are independent of the model.
     if (askNow) askRef.current(next);
   }
 
   // A reply for another provider is not this provider's answer, even in the
   // window before the effect clears it.
   const current = vocabulary !== null && vocabulary.provider === providerId;
-  // …and a reply for another model is not an answer to this one either. This is
-  // the guard that keeps a list read while the agent ran model A from pruning a
-  // profile that names model B — the daemon's cache and this check are the same
-  // rule at the two ends of the round-trip.
+  // The model-specific answer is used only for mode suggestions, which may
+  // depend on which model the provider session reported.
   const answeredFor = current && model === answeredModel;
   const vocabularyAnswered = answeredFor ? vocabulary : null;
   return {
-    vocabulary: current ? vocabulary : null,
     vocabularyCurrent: current ? vocabulary : null,
     vocabularyAnswered,
     vocabularyError,
-    /** The axes are read only when the reply is the answer to the current
-     *  question; `false` before that is what keeps the fields free-text. */
+    /** The axes are read from the latest reply for this provider. */
     vocabularyKnown: current || vocabularyError !== null,
     settleModel,
     /** Precomputed so the form and its tests read one thing. */

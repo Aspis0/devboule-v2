@@ -207,15 +207,10 @@ pub(crate) fn unavailable_axis() -> VocabularyFeatures {
 /// (suffix-tolerant: the CLI's `claude-opus-5-20260101[1m]` is the same model
 /// as the profile's `claude-opus-5-20260101`), is inside a row's gate.
 ///
-/// The comparison is the family's own, so a delivery and a form agree about
-/// which spelling of a model id carries a feature: [`VocabularyFeature::models`]
-/// stores the gate and this reads it the way the client that applies the value
-/// would.
+/// The spawn path uses this comparison before it sends the value to a child.
 ///
-/// The `[1m]` suffix is stripped from **both** sides here, because the stored
-/// gate carries it and a profile may name either spelling; the form answers
-/// from [`VocabularyFeature::offered_on`] alone and needs no second rule, since
-/// a gated declaration only ever reaches a client that reads it through here.
+/// The `[1m]` suffix is stripped from both sides because profile and provider
+/// model ids may use either spelling.
 pub(crate) fn offered_for(row: &VocabularyFeature, model_id: &str) -> bool {
     let model_id = model_id.strip_suffix("[1m]").unwrap_or(model_id);
     match &row.models {

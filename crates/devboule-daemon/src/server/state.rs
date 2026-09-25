@@ -62,7 +62,13 @@ pub struct ServerState {
     shutdown_flag: Arc<Mutex<bool>>,
     shutdown_cvar: Arc<Condvar>,
     pub(super) idempotency: Mutex<IdempotencyStore>,
-    pub(super) session_create_lock: Mutex<()>,
+    #[cfg(test)]
+    pub(super) session_create_test_gate: Mutex<
+        Option<(
+            std::sync::mpsc::SyncSender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
     pub(crate) mcp: Arc<crate::mcp_broker::McpBroker>,
     /// Per-provider tool policy, read by the MCP broker on every
     /// `tools/list` and `tools/call` and written by `ToolPolicySet`. One
@@ -326,7 +332,8 @@ impl ServerState {
             shutdown_flag: Arc::new(Mutex::new(false)),
             shutdown_cvar: Arc::new(Condvar::new()),
             idempotency: Mutex::new(IdempotencyStore::default()),
-            session_create_lock: Mutex::new(()),
+            #[cfg(test)]
+            session_create_test_gate: Mutex::new(None),
             mcp,
             tool_policy,
             agent_profiles,

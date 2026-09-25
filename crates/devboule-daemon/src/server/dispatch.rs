@@ -80,22 +80,49 @@ pub(super) fn dispatch(
         let spawn = std::thread::Builder::new()
             .name("daemon-session-create".to_string())
             .spawn(move || {
-                let _create_guard = worker_state
-                    .session_create_lock
+                let worker_started = Instant::now();
+                #[cfg(test)]
+                if let Some((entered, release)) = worker_state
+                    .session_create_test_gate
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                let reply = dispatch_immediate(
-                    &worker_state,
-                    &worker_owner,
-                    worker_request,
-                    &worker_conn,
-                    sessions_ok,
-                    journal_ok,
-                    typed_permissions_ok,
-                    devices_ok,
-                    &passed,
-                );
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take()
+                {
+                    let _ = entered.send(());
+                    let _ = release.recv_timeout(Duration::from_secs(10));
+                }
+                let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _create_guard = worker_conn
+                        .session_create_lock
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    dispatch_immediate(
+                        &worker_state,
+                        &worker_owner,
+                        worker_request,
+                        &worker_conn,
+                        sessions_ok,
+                        journal_ok,
+                        typed_permissions_ok,
+                        devices_ok,
+                        &passed,
+                    )
+                }))
+                .unwrap_or_else(|_| {
+                    DaemonMessage::Error(
+                        WireError::new(ErrorCode::Io, "session creation failed")
+                            .with_id(request_id.unwrap_or_default()),
+                    )
+                });
                 outbound.enqueue_reply(reply);
+                let took_ms = worker_started.elapsed().as_millis().to_string();
+                crate::rpc_trace::daemon_event(
+                    "dispatch_worker_end",
+                    "SessionCreate",
+                    request_id,
+                    worker_conn.id,
+                    &[("took_ms", took_ms.as_str())],
+                );
             });
         if spawn.is_err() {
             if let Some(id) = request_id {

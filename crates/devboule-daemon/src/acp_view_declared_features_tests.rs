@@ -253,6 +253,13 @@ fn the_mode_selector_is_excluded_by_its_values_and_not_only_its_name() {
                "options": [{"value": "default", "name": "Manual"},
                            {"value": "acceptEdits", "name": "Accept edits"}]}),
     );
+    let empty_position = with_mode_option(
+        &modes_json,
+        json!({"id": "mode-with-default", "type": "select", "currentValue": "default",
+               "options": [{"value": "", "name": "Provider default"},
+                           {"value": "default", "name": "Manual"},
+                           {"value": "acceptEdits", "name": "Accept edits"}]}),
+    );
     let a_real_feature = with_mode_option(
         &modes_json,
         json!({"id": "fast", "type": "select", "currentValue": "off",
@@ -269,6 +276,10 @@ fn the_mode_selector_is_excluded_by_its_values_and_not_only_its_name() {
     assert!(
         declared_features_from_options(&redressed, &[], Some(&modes)).is_empty(),
         "so is the same values under another name, once the modes block is known"
+    );
+    assert!(
+        declared_features_from_options(&empty_position, &[], Some(&modes)).is_empty(),
+        "an empty default choice does not make the mode selector a second feature control"
     );
     let kept = declared_features_from_options(&a_real_feature, &[], Some(&modes));
     assert_eq!(

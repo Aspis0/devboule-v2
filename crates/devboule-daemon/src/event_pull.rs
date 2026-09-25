@@ -160,6 +160,8 @@ pub struct ConnHandle {
     /// capability also closes that device's live connections, so a running
     /// connection can never keep a capability the row no longer grants.
     pub peer_caps: Vec<String>,
+    /// Async create workers for this connection must not race on its retry key.
+    pub(crate) session_create_lock: Mutex<()>,
     attached: Mutex<HashMap<u64, PullState>>,
     state_events: Mutex<VecDeque<SessionEventEnvelope>>,
     next_attachment_generation: AtomicU64,
@@ -206,6 +208,7 @@ impl ConnHandle {
             conn_peer,
             peer_caps,
             quit_intent,
+            session_create_lock: Mutex::new(()),
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),
             next_attachment_generation: AtomicU64::new(1),

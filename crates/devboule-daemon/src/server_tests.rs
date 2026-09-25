@@ -2100,56 +2100,147 @@ fn wait_for_worker_reply(conn: &ConnHandle) -> DaemonMessage {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn queued_session_frames_flow_while_creation_waits_off_dispatch() {
     let (path, state) = temp_state("create-worker-dispatch");
-    let owner = OwnerId::new("alex", "app").expect("owner");
-    let conn = ConnHandle::new(91);
+    use crate::transport::{connect_pipe, Listener, NamedPipeListener};
+
+    let owner = OwnerId::new(
+        crate::security::current_user_sid().expect("current user"),
+        format!("process-{}", std::process::id()),
+    )
+    .expect("owner");
     let other = crate::session::insert_test_live_agent(&state.sessions, "s.other", owner.clone());
-    state
-        .sessions
-        .attach_with_subscription("s.other", 1, None, &conn, &owner, false)
-        .expect("attach the other session");
-    let create_guard = state
-        .session_create_lock
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    *state
+        .session_create_test_gate
         .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let reply = dispatch(
-        &state,
-        &owner,
-        ClientMessage::SessionCreate {
+        .unwrap_or_else(|error| error.into_inner()) = Some((entered_tx, release_rx));
+
+    let paths = RuntimePaths::from_dir(path.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut listener = NamedPipeListener::bind(&paths, stop).expect("bind test pipe");
+    let server_state = Arc::clone(&state);
+    let server = std::thread::spawn(move || {
+        let file = listener.accept().expect("accept test pipe");
+        handle_client(Framed::new(file), server_state, None, QuitIntent::default())
+    });
+    let client = Framed::new(connect_pipe(&paths.pipe_name).expect("connect test pipe"));
+    client
+        .send(&ClientMessage::Hello(devboule_protocol::ClientHello::m3a(
+            owner.clone(),
+            "server-test",
+        )))
+        .expect("send hello");
+    assert!(matches!(
+        client
+            .recv_timeout::<DaemonMessage>(Duration::from_secs(2))
+            .expect("hello reply"),
+        DaemonMessage::Hello(_)
+    ));
+    client
+        .send(&ClientMessage::SessionAttach {
+            id: 40,
+            session_id: "s.other".to_string(),
+            subscription_id: 1,
+            from_cursor: None,
+        })
+        .expect("attach the other session");
+    assert!(matches!(
+        client
+            .recv_timeout::<DaemonMessage>(Duration::from_secs(2))
+            .expect("attach reply"),
+        DaemonMessage::SessionAttached { .. }
+    ));
+    client
+        .send(&ClientMessage::SessionCreate {
             id: 41,
             workspace_id: None,
-            kind: SessionKind::Claude,
+            kind: SessionKind::Acp,
             provider: Some("unknown-test-provider".to_string()),
             mode: None,
-            display_name: Some("   ".to_string()),
+            display_name: Some("Valid display name".to_string()),
             idempotency_key: None,
-        },
-        &conn,
-        true,
-        true,
-        true,
-        true,
-    );
-    assert!(
-        reply.is_none(),
-        "the dispatch loop hands creation to a worker"
-    );
-
+        })
+        .expect("send create");
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("create worker entered the wait");
     assert!(other.publish_agent_error("transcript frame".to_string()));
-    let frames = conn.pull_events();
-    assert!(
-        !frames.is_empty(),
-        "the other session's transcript is available"
-    );
-    for frame in &frames {
-        conn.event_sent(frame);
+    let mut transcript_arrived = false;
+    for _ in 0..32 {
+        let frame = client
+            .recv_timeout::<DaemonMessage>(Duration::from_secs(1))
+            .expect("transcript while create is waiting");
+        let is_agent_error = match frame {
+            DaemonMessage::Event(envelope) | DaemonMessage::SubscriptionEvent { envelope, .. } => {
+                matches!(envelope.event, SessionEvent::AgentError { .. })
+            }
+            _ => false,
+        };
+        if is_agent_error {
+            transcript_arrived = true;
+            break;
+        }
     }
+    assert!(
+        transcript_arrived,
+        "another session's transcript flowed during create"
+    );
+    release_tx.send(()).expect("release the create worker");
+    assert!(matches!(
+        client
+            .recv_timeout::<DaemonMessage>(Duration::from_secs(5))
+            .expect("create reply"),
+        DaemonMessage::Error(_)
+    ));
+    drop(client);
+    server
+        .join()
+        .expect("server thread")
+        .expect("handle client");
+    drop(state);
+    let _ = std::fs::remove_dir_all(path);
+}
 
-    drop(create_guard);
-    let created = wait_for_worker_reply(&conn);
-    assert!(matches!(created, DaemonMessage::Error(error) if error.id == Some(41)));
+#[test]
+fn a_panicked_create_lock_does_not_block_later_creates() {
+    let (path, state) = temp_state("create-lock-poison");
+    let conn = ConnHandle::new(92);
+    let lock_conn = Arc::clone(&conn);
+    let _ = std::thread::spawn(move || {
+        let _guard = lock_conn.session_create_lock.lock().expect("fresh lock");
+        panic!("simulate a failed create while it owns the connection lock");
+    })
+    .join();
+    let owner = OwnerId::new("alex", "app").expect("owner");
+    for id in [42, 43] {
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionCreate {
+                id,
+                workspace_id: None,
+                kind: SessionKind::Acp,
+                provider: Some("unknown-test-provider".to_string()),
+                mode: None,
+                display_name: Some("Valid display name".to_string()),
+                idempotency_key: None,
+            },
+            &conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .is_none());
+        assert!(
+            matches!(wait_for_worker_reply(&conn), DaemonMessage::Error(_)),
+            "create {id} should complete with its provider refusal"
+        );
+    }
     drop(state);
     let _ = std::fs::remove_dir_all(path);
 }
@@ -2158,10 +2249,12 @@ fn queued_session_frames_flow_while_creation_waits_off_dispatch() {
 fn provider_update_invalidates_the_acp_feature_answer() {
     let state = state();
     let key = crate::provider_feature_probe::ProbeKey::new("updated-acp-provider");
-    assert!(state.acp_features.claim(&key));
-    state
-        .acp_features
-        .finish(&key, crate::provider_feature_probe::Probe::Answered(vec![]));
+    let generation = state.acp_features.claim(&key).expect("claim");
+    state.acp_features.finish(
+        &key,
+        generation,
+        crate::provider_feature_probe::Probe::Answered(vec![]),
+    );
     crate::provider_feature_probe::record_answer_for_test(&key, vec![]);
 
     state.invalidate_provider_update_caches("updated-acp-provider");

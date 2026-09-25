@@ -45,6 +45,17 @@ pub(crate) fn cached_declarations(key: &ProbeKey) -> Option<Vec<VocabularyFeatur
         .cloned()
 }
 
+fn record_answer(key: &ProbeKey, declared: Vec<VocabularyFeature>) {
+    if let Ok(mut answers) = ACP_PROBE_ANSWERS.lock() {
+        if answers.len() >= MAX_CACHED_PROVIDERS && !answers.contains_key(key) {
+            if let Some(evict) = answers.keys().next().cloned() {
+                answers.remove(&evict);
+            }
+        }
+        answers.insert(key.clone(), declared);
+    }
+}
+
 /// The last answer each ACP read produced, kept beside the cache that serves
 /// the form so the profile store can prune with it. Written by [`acp_axis_for`]
 /// when a read finishes.
@@ -54,6 +65,27 @@ static ACP_PROBE_ANSWERS: std::sync::LazyLock<
 
 const MAX_CACHED_PROVIDERS: usize = 128;
 const UNAVAILABLE_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn probe_answer(
+    key: &ProbeKey,
+    read: impl FnOnce() -> Result<Vec<VocabularyFeature>, devboule_protocol::WireError>,
+) -> Probe {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)) {
+        Ok(Ok(declared)) => Probe::Answered(declared),
+        Ok(Err(error)) => {
+            eprintln!(
+                "acp feature read: {} learned nothing (provider error of {} bytes)",
+                key.provider,
+                error.message.len()
+            );
+            Probe::Unavailable
+        }
+        Err(_) => {
+            eprintln!("acp feature read: {} worker panicked", key.provider);
+            Probe::Unavailable
+        }
+    }
+}
 
 /// The feature axis of one named ACP provider: the cached answer
 /// for that pair if there is one, otherwise "being read now" and a started read.
@@ -78,49 +110,22 @@ pub(crate) fn acp_axis_for(
     if let Some(probe) = cache.peek(key) {
         return acp_axis_of(probe);
     }
-    if !cache.claim(key) {
+    let Some(generation) = cache.claim(key) else {
         // Lost the claim to a concurrent ask for the same pair. Whatever it has
         // left is the answer, and a second provider process is never started for
         // one question.
         return acp_axis_of(cache.peek(key).unwrap_or(Probe::Running));
-    }
+    };
     let worker_state = std::sync::Arc::clone(state);
     let worker_cache = std::sync::Arc::clone(cache);
     let worker_key = key.clone();
     let started = std::thread::Builder::new()
         .name("acp-feature-read".to_string())
         .spawn(move || {
-            let answer =
-                match crate::session::probe_declarations(&worker_state, &worker_key.provider) {
-                    Ok(declared) => {
-                        // Recorded for the profile store as well as the form: the
-                        // store prunes an ACP profile's keys against this list and
-                        // must not spawn a process to find it.
-                        if let Ok(mut answers) = ACP_PROBE_ANSWERS.lock() {
-                            if answers.len() >= MAX_CACHED_PROVIDERS {
-                                answers.clear();
-                            }
-                            answers.insert(worker_key.clone(), declared.clone());
-                        }
-                        Probe::Answered(declared)
-                    }
-                    Err(error) => {
-                        // A fixed sentence, and no provider text. An ACP error
-                        // message is provider-supplied, so a misconfigured agent that
-                        // echoes a private option or a credential in its error would
-                        // put that value in the daemon's log — and no profile feature
-                        // needs to be logged to trigger it. The byte length is the
-                        // part a support session can use: it tells an empty reply from
-                        // a long one without carrying either.
-                        eprintln!(
-                            "acp feature read: {} learned nothing (provider error of {} bytes)",
-                            worker_key.provider,
-                            error.message.len()
-                        );
-                        Probe::Unavailable
-                    }
-                };
-            worker_cache.finish(&worker_key, answer);
+            let answer = probe_answer(&worker_key, || {
+                crate::session::probe_declarations(&worker_state, &worker_key.provider)
+            });
+            worker_cache.finish(&worker_key, generation, answer);
         });
     if started.is_err() {
         // No thread to ask with. Release the claim so the next ask retries, and
@@ -138,8 +143,13 @@ pub(crate) fn acp_axis_for(
 /// shape decides.
 #[cfg(test)]
 pub(crate) fn record_answer_for_test(key: &ProbeKey, declared: Vec<VocabularyFeature>) {
+    record_answer(key, declared);
+}
+
+#[cfg(test)]
+pub(crate) fn remove_answer_for_test(key: &ProbeKey) {
     if let Ok(mut answers) = ACP_PROBE_ANSWERS.lock() {
-        answers.insert(key.clone(), declared);
+        answers.remove(key);
     }
 }
 fn acp_axis_of(probe: Probe) -> VocabularyFeatures {
@@ -167,12 +177,14 @@ pub(crate) enum Probe {
 #[derive(Default)]
 pub(crate) struct AcpProbeCache {
     answers: std::sync::Mutex<std::collections::HashMap<ProbeKey, ProbeEntry>>,
+    next_generation: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone)]
 struct ProbeEntry {
     probe: Probe,
     retry_after: Option<std::time::Instant>,
+    generation: u64,
 }
 
 impl AcpProbeCache {
@@ -193,10 +205,9 @@ impl AcpProbeCache {
 
     /// Claim the slot for `provider` and say whether this caller is the one
     /// that must run the read. A slot already `Running` or `Answered` stays
-    /// what it is; an `Unavailable` one is re-claimable, so a provider the
-    /// human has since installed is answered on the next ask rather than
-    /// pinned to the first failure.
-    pub(crate) fn claim(&self, key: &ProbeKey) -> bool {
+    /// what it is; an `Unavailable` one is re-claimable after its cooldown,
+    /// so a provider the human installed can be answered by a later ask.
+    pub(crate) fn claim(&self, key: &ProbeKey) -> Option<u64> {
         let mut answers = self
             .answers
             .lock()
@@ -207,7 +218,7 @@ impl AcpProbeCache {
                     .retry_after
                     .is_none_or(|at| at > std::time::Instant::now()) =>
             {
-                false
+                None
             }
             _ => {
                 if answers.len() >= MAX_CACHED_PROVIDERS {
@@ -215,23 +226,27 @@ impl AcpProbeCache {
                         answers.remove(&evict);
                     }
                 }
+                let generation = self
+                    .next_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 answers.insert(
                     key.clone(),
                     ProbeEntry {
                         probe: Probe::Running,
                         retry_after: None,
+                        generation,
                     },
                 );
-                true
+                Some(generation)
             }
         }
     }
 
-    pub(crate) fn finish(&self, key: &ProbeKey, probe: Probe) {
-        self.finish_at(key, probe, std::time::Instant::now());
+    pub(crate) fn finish(&self, key: &ProbeKey, generation: u64, probe: Probe) {
+        self.finish_at(key, generation, probe, std::time::Instant::now());
     }
 
-    fn finish_at(&self, key: &ProbeKey, probe: Probe, now: std::time::Instant) {
+    fn finish_at(&self, key: &ProbeKey, generation: u64, probe: Probe, now: std::time::Instant) {
         debug_assert!(
             !matches!(probe, Probe::Running),
             "a read finishes with an answer or a failure, never still running"
@@ -244,13 +259,20 @@ impl AcpProbeCache {
         // cache was cleared underneath the read (a provider update), and the
         // answer of a process that no longer describes the provider is not
         // worth putting back.
-        if answers.contains_key(key) {
+        if answers
+            .get(key)
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            if let Probe::Answered(declared) = &probe {
+                record_answer(key, declared.clone());
+            }
             answers.insert(
                 key.clone(),
                 ProbeEntry {
                     retry_after: matches!(&probe, Probe::Unavailable)
                         .then(|| now + UNAVAILABLE_RETRY_AFTER),
                     probe,
+                    generation,
                 },
             );
         }
@@ -297,11 +319,14 @@ mod tests {
     fn one_claim_per_running_read_and_a_failure_retries() {
         let cache = AcpProbeCache::default();
         let grok = ProbeKey::new(" grok ");
-        assert!(cache.claim(&grok), "the first ask claims the slot");
-        assert!(!cache.claim(&grok), "and the next ten do not start again");
-        cache.finish(&grok, Probe::Answered(vec![feature("engine")]));
+        let generation = cache.claim(&grok).expect("the first ask claims the slot");
         assert!(
-            !cache.claim(&grok),
+            cache.claim(&grok).is_none(),
+            "and later asks do not start again"
+        );
+        cache.finish(&grok, generation, Probe::Answered(vec![feature("engine")]));
+        assert!(
+            cache.claim(&grok).is_none(),
             "an answered read is not re-run by a claim"
         );
         assert!(matches!(cache.peek(&grok), Some(Probe::Answered(_))));
@@ -312,11 +337,13 @@ mod tests {
             cache.peek(&grok).is_none(),
             "an invalidation drops every model of that provider"
         );
-        assert!(cache.claim(&grok), "a provider update re-opens the read");
-        cache.finish(&grok, Probe::Unavailable);
+        let generation = cache
+            .claim(&grok)
+            .expect("a provider update re-opens the read");
+        cache.finish(&grok, generation, Probe::Unavailable);
         assert_eq!(cache.peek(&grok), Some(Probe::Unavailable));
         assert!(
-            !cache.claim(&grok),
+            cache.claim(&grok).is_none(),
             "a short failure cooldown prevents a spawn storm"
         );
     }
@@ -325,11 +352,11 @@ mod tests {
     fn unavailable_answers_expire_and_can_be_retried() {
         let cache = AcpProbeCache::default();
         let key = ProbeKey::new("grok");
-        assert!(cache.claim(&key));
+        let generation = cache.claim(&key).expect("claim");
         let expired_at = std::time::Instant::now() - UNAVAILABLE_RETRY_AFTER;
-        cache.finish_at(&key, Probe::Unavailable, expired_at);
+        cache.finish_at(&key, generation, Probe::Unavailable, expired_at);
         assert_eq!(cache.peek(&key), None);
-        assert!(cache.claim(&key));
+        assert!(cache.claim(&key).is_some());
     }
 
     /// A finish that arrives after the cache was cleared underneath the read
@@ -339,18 +366,45 @@ mod tests {
     fn a_finish_after_an_invalidate_writes_nothing() {
         let cache = AcpProbeCache::default();
         let trae = ProbeKey::new("trae");
-        assert!(cache.claim(&trae));
         cache.invalidate("trae");
-        cache.finish(&trae, Probe::Answered(vec![feature("fast")]));
-        assert_eq!(cache.peek(&trae), None, "the stale answer is dropped");
+        let stale_generation = cache.claim(&trae).expect("claim before invalidation");
+        cache.invalidate("trae");
+        let current_generation = cache.claim(&trae).expect("claim after invalidation");
+        cache.finish(
+            &trae,
+            stale_generation,
+            Probe::Answered(vec![feature("stale")]),
+        );
+        assert_eq!(cache.peek(&trae), Some(Probe::Running));
+        assert_eq!(
+            cached_declarations(&trae),
+            None,
+            "an in-flight read cannot repopulate the prune cache after invalidation"
+        );
+        cache.finish(
+            &trae,
+            current_generation,
+            Probe::Answered(vec![feature("fast")]),
+        );
+        assert!(cached_declarations(&trae).is_some());
+    }
+
+    #[test]
+    fn a_panicking_read_finishes_as_unavailable() {
+        let cache = AcpProbeCache::default();
+        let key = ProbeKey::new("panicking-probe");
+        let generation = cache.claim(&key).expect("claim");
+        let result = probe_answer(&key, || panic!("test read panicked"));
+        cache.finish(&key, generation, result);
+        assert_eq!(cache.peek(&key), Some(Probe::Unavailable));
     }
     #[test]
     fn cache_evicts_when_its_provider_bound_is_reached() {
         let cache = AcpProbeCache::default();
         for index in 0..=MAX_CACHED_PROVIDERS {
             let key = ProbeKey::new(&format!("provider-{index}"));
-            assert!(cache.claim(&key));
-            cache.finish(&key, Probe::Answered(vec![]));
+            let generation = cache.claim(&key).expect("claim");
+            cache.finish(&key, generation, Probe::Answered(vec![]));
         }
         let entries = cache.answers.lock().unwrap();
         assert!(entries.len() <= MAX_CACHED_PROVIDERS);

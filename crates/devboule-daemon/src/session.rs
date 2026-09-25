@@ -1674,11 +1674,10 @@ impl SessionRegistry {
             ) {
                 Ok(mcp) => mcp,
                 Err(error) => {
-                    // The row was born above, so it must still end — but not
-                    // here: this is the dispatch thread and the blocking send
-                    // is an unbounded 5 ms busy-loop, so the end rides a
-                    // throwaway thread like the resume path. The revision bump
-                    // on the end wakes roster readers once it lands.
+                    // The row was born above, so it must still end. The journal
+                    // send can busy-loop without a deadline, so its marker gets
+                    // a worker of its own; the revision bump wakes roster
+                    // readers once it lands.
                     if let Some(journal) = &self.journal {
                         spawn_async_end_marker(journal, &resolved.id, record_generation);
                     }

@@ -227,16 +227,6 @@ pub(crate) fn provider_vocabulary_reply(
     // past the cap, because the refusal sentence would otherwise repeat an
     // unbounded caller string into a frame the app renders.
     let provider = provider.trim();
-    let model = model.map(str::trim).filter(|model| !model.is_empty());
-    if model.is_some_and(|model| model.len() > MAX_QUERY_FIELD_BYTES) {
-        return DaemonMessage::Error(
-            WireError::new(
-                ErrorCode::InvalidRequest,
-                format!("the model exceeds the {MAX_QUERY_FIELD_BYTES}-byte cap"),
-            )
-            .with_id(id),
-        );
-    }
     if provider.len() > MAX_QUERY_FIELD_BYTES {
         return DaemonMessage::Error(
             WireError::new(
@@ -700,19 +690,18 @@ mod tests {
     }
 
     #[test]
-    fn an_over_cap_model_is_refused_without_echoing_it_whole() {
+    fn an_over_cap_model_is_ignored_when_the_provider_does_not_use_it() {
         let state = state();
         let flood = "x".repeat(700_000);
         let reply = provider_vocabulary_reply(&state, 92, "claude", Some(&flood), false);
-        let DaemonMessage::Error(error) = &reply else {
-            panic!("an over-cap model must be refused, got {reply:?}");
+        let DaemonMessage::ProviderVocabulary { id, provider, .. } = &reply else {
+            panic!("the unused model input must not refuse the vocabulary read: {reply:?}");
         };
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
-        assert_eq!(error.id, Some(92));
-        assert_eq!(error.message, "the model exceeds the 128-byte cap");
+        assert_eq!(*id, 92);
+        assert_eq!(provider, "claude");
         assert!(
             serde_json::to_vec(&reply)
-                .expect("the refusal serialises")
+                .expect("the response serialises")
                 .len()
                 <= devboule_protocol::MAX_FRAME_BYTES
         );

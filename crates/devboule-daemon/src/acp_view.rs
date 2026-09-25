@@ -738,6 +738,8 @@ fn is_the_mode_selector(
     let Some(modes) = modes else {
         return false;
     };
+    let choices = choices.iter().filter(|choice| !choice.id.is_empty());
+    let choices: Vec<_> = choices.collect();
     !choices.is_empty()
         && choices.len() == modes.available_modes.len()
         && choices.iter().all(|choice| {

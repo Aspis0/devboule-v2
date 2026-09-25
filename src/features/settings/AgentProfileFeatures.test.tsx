@@ -316,6 +316,45 @@ describe("the feature controls, as the form draws them", () => {
     expect(profileFeaturesFromDraft(draft, draft.offeredFeatures)).toEqual({ engine: "" });
   });
 
+  it("uses the provider default position to remove a saved feature", async () => {
+    vi.mocked(providerVocabularyGet).mockResolvedValue(vocabulary([ENGINE]));
+    const { onCreate } = await renderForm(draftOf({ features: { engine: "m1" } }));
+    const engine = container.querySelector<HTMLSelectElement>(
+      '[aria-label="Profile feature engine"]',
+    );
+    if (!engine) throw new Error("the engine select did not render");
+    await typeInto(engine, engine.options[0]?.value ?? "");
+    const button = Array.from(container.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent === "Create profile",
+    );
+    if (!button) throw new Error("the create button did not render");
+    await act(async () => button.click());
+    const draft = onCreate.mock.calls[0]?.[0] as ProfileFormSeed;
+    expect(profileFeaturesFromDraft(draft, draft.offeredFeatures)).toEqual({});
+  });
+
+  it("keeps a provider option equal to the default sentinel selectable", async () => {
+    const sentinel = "__devboule_profile_feature_unset__";
+    const feature = { ...ENGINE, options: [{ id: sentinel, label: "Literal value" }] };
+    vi.mocked(providerVocabularyGet).mockResolvedValue(vocabulary([feature]));
+    const { onCreate } = await renderForm(draftOf());
+    const select = container.querySelector<HTMLSelectElement>(
+      '[aria-label="Profile feature engine"]',
+    );
+    if (!select) throw new Error("the engine select did not render");
+    expect(select.options[0]?.value).not.toBe(sentinel);
+    expect(Array.from(select.options).some((option) => option.value === sentinel)).toBe(true);
+    await typeInto(select, sentinel);
+    expect(select.value).toBe(sentinel);
+    const button = Array.from(container.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent === "Create profile",
+    );
+    if (!button) throw new Error("the create button did not render");
+    await act(async () => button.click());
+    const draft = onCreate.mock.calls[0]?.[0] as ProfileFormSeed;
+    expect(profileFeaturesFromDraft(draft, draft.offeredFeatures)).toEqual({ engine: sentinel });
+  });
+
   it("redraws the list when the model moves outside a feature's gate", async () => {
     vi.mocked(providerVocabularyGet).mockResolvedValue(vocabulary([TICK, FAST]));
     await renderForm(draftOf());
@@ -386,6 +425,25 @@ describe("the feature controls, as the form draws them", () => {
       vi.advanceTimersByTimeAsync(POLL_MS * 3);
     });
     expect(vi.mocked(providerVocabularyGet).mock.calls.length).toBe(before);
+  });
+
+  it("replaces checking with the failure when a poll request rejects", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.mocked(providerVocabularyGet)
+      .mockResolvedValueOnce({
+        ...vocabulary([]),
+        features: { state: "absent", probing: true, items: [] },
+      })
+      .mockRejectedValueOnce(new Error("offline"));
+    await renderForm(draftOf());
+    expect(container.textContent).toContain("Checking what this provider offers");
+
+    await act(async () => {
+      vi.advanceTimersByTimeAsync(POLL_MS + 50);
+    });
+
+    expect(container.textContent).toContain("vocabulary query failed");
+    expect(container.textContent).not.toContain("Checking what this provider offers");
   });
 
   /// A read that failed says so, once, and keeps the tick. An empty feature

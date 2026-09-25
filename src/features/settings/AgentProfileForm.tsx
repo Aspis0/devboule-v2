@@ -197,10 +197,8 @@ export function AgentProfileForm({
     }),
   );
 
-  // The reply only counts while it is the answer to the question actually asked
-  // — provider *and* settled model, which is what `vocabularyAnswered` means.
-  // `null` means no answer in hand: nothing is drawn beyond the daemon's own
-  // tick, and nothing stored is judged away.
+  // Provider declarations stay visible while a model edit is pending; the
+  // current model filters only the model-gated rows.
   const offered = offeredFeatures(vocabularyCurrent, model);
   const probing = featuresAreProbing(vocabularyCurrent);
   const askedAndFailed = featuresAskFailed(vocabularyCurrent);

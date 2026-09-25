@@ -289,8 +289,8 @@ pub(crate) fn handle_client(
                     typed_permissions_ok,
                     devices_ok,
                 );
-                // Recorded even when the dispatch answers with nothing: the
-                // window it held the loop is the fact the log exists for.
+                // This measures dispatch work on the connection thread; async
+                // creates have their full duration in `dispatch_worker_end`.
                 let took_ms = dispatch_clock.elapsed().as_millis().to_string();
                 crate::rpc_trace::daemon_event(
                     "dispatch_end",

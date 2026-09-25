@@ -858,7 +858,7 @@ pub enum ClientMessage {
     ProviderVocabularyGet {
         id: u64,
         provider: String,
-        /// The asking form's model, used for static model-gated declarations.
+        /// The asking form's model, used by providers that need it to answer.
         /// ACP probes do not carry a model and are cached by provider alone.
         /// Defaulted, so a client older than the field still parses.
         #[serde(default, skip_serializing_if = "Option::is_none")]
