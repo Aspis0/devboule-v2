@@ -1255,6 +1255,7 @@ impl super::SessionRegistry {
             author: UserMessageAuthor::Agent,
             message_kind: UserMessageKind::SystemNotice,
         })
+        .map(|outcome| outcome.message_id)
     }
 
     /// Whether the stored row for `session_id` says the person at this machine

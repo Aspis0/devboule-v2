@@ -170,58 +170,45 @@ fn an_attachment_bypasses_the_out_of_band_route() {
 }
 
 #[test]
-fn an_out_of_band_command_settles_the_senders_optimistic_turn() {
-    // The sender opens its optimistic turn on every send and only an
-    // `agent_finished` closes it — but this door starts no turn, so without a
-    // finish here the surface stays working forever, through every outcome.
+fn the_send_reply_says_whether_a_turn_began() {
+    // The disposition Paseo answers with: an out-of-band command began no
+    // turn, while the fall-through prompt began one.
     let (dir, registry, journal) = tmp_delete_registry();
-    let owner = test_owner("S-1-5-21-oob-settle", "process-oob-settle");
-    let session_id = "oob-settle";
+    let owner = test_owner("S-1-5-21-oob-disp", "process-oob-disp");
+    let session_id = "oob-disposition";
     let (runtime, _checks, _runs, _received) =
         session_with_command_handler(&registry, session_id, &owner, "/goal clear");
-    let conn = attach_live_agent_for_test(&runtime, session_id, 94);
-
-    registry
-        .send_with_subscription(session_id, 94, "/goal clear", &[], &[], &owner, &conn)
-        .expect("the command is accepted");
-
-    let finishes: Vec<SessionEvent> = conn
-        .pull_events()
-        .into_iter()
-        .map(|event| event.envelope.event)
-        .filter(|event| matches!(event, SessionEvent::AgentFinished { .. }))
-        .collect();
-    assert_eq!(
-        finishes.len(),
-        1,
-        "one synthetic finish settles the optimistic turn the sender opened"
-    );
-    journal.shutdown();
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn an_out_of_band_command_leaves_a_live_turns_finish_alone() {
-    // The synthetic finish belongs to the sender's optimistic turn only: with
-    // a real turn running, its own finish settles the surface, and nothing
-    // here may pre-empt it.
-    let (dir, registry, journal) = tmp_delete_registry();
-    let owner = test_owner("S-1-5-21-oob-liveturn", "process-oob-liveturn");
-    let session_id = "oob-liveturn";
-    let (runtime, _checks, _runs, _received) =
-        session_with_command_handler(&registry, session_id, &owner, "/goal clear");
-    let conn = attach_live_agent_for_test(&runtime, session_id, 95);
-    runtime.begin_turn();
-
-    registry
-        .send_with_subscription(session_id, 95, "/goal clear", &[], &[], &owner, &conn)
-        .expect("the command is accepted");
+    let conn = attach_live_agent_for_test(&runtime, session_id, 96);
 
     assert!(
-        conn.pull_events()
-            .into_iter()
-            .all(|event| !matches!(event.envelope.event, SessionEvent::AgentFinished { .. })),
-        "a live turn keeps its own finish"
+        !registry
+            .send_with_subscription_behavior(
+                session_id,
+                96,
+                "/goal clear",
+                &[],
+                &[],
+                &owner,
+                &conn,
+                None
+            )
+            .expect("the command is accepted"),
+        "no turn began for the command"
+    );
+    assert!(
+        registry
+            .send_with_subscription_behavior(
+                session_id,
+                96,
+                "/model gpt-5.5",
+                &[],
+                &[],
+                &owner,
+                &conn,
+                None
+            )
+            .expect("the prompt is accepted"),
+        "the fall-through prompt began a turn"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(dir);

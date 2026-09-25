@@ -3544,3 +3544,22 @@ fn trace_name_is_a_static_constant_and_never_carries_the_payload() {
     assert_eq!(ClientMessage::SessionsList { id: 1 }.name(), "SessionsList");
     assert_eq!(ClientMessage::Ping { id: 1 }.name(), "Ping");
 }
+
+#[test]
+fn the_send_reply_carries_whether_a_turn_began() {
+    // The out-of-band disposition: a turn began, or one did not. The variant
+    // survives the wire verbatim so a receipt can replay it under a retry id.
+    for turn_started in [true, false] {
+        let reply = DaemonMessage::SessionSend {
+            id: 7,
+            turn_started,
+        };
+        let wire = serde_json::to_value(&reply).expect("json");
+        assert_eq!(wire["type"], "session_send");
+        assert_eq!(wire["turnStarted"], turn_started);
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(wire).expect("parse"),
+            reply
+        );
+    }
+}

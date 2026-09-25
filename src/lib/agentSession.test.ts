@@ -2899,3 +2899,42 @@ describe("context and plan usage", () => {
     expect(harness.session.getState().contextUsage).toBeNull();
   });
 });
+
+describe("send disposition", () => {
+  it("settles the optimistic turn when the reply says no turn began", async () => {
+    // An out-of-band command began no turn: the reply settles the optimistic
+    // arm — streaming off, Send offered — and the previous finish comes back
+    // so the header shows the real last turn again.
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({ type: "agent_finished", stopReason: "end_turn" });
+    expect(harness.session.getState().lastFinished?.stopReason).toBe("end_turn");
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) =>
+      command === "session_send" ? false : undefined,
+    );
+
+    await expect(harness.session.send("/compact")).resolves.toBe(true);
+
+    const state = harness.session.getState();
+    expect(state.streaming).toBe(false);
+    expect(state.lastFinished?.stopReason).toBe("end_turn");
+  });
+
+  it("keeps waiting on a turn reply and on an absent disposition", async () => {
+    // `true` began a turn: only its finish settles. `undefined` is an older
+    // daemon with no disposition: today's wait, unchanged.
+    for (const reply of [true, undefined] as const) {
+      const harness = makeHarness();
+      await harness.session.start();
+      (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) =>
+        command === "session_send" ? reply : undefined,
+      );
+
+      await expect(harness.session.send("Say hello")).resolves.toBe(true);
+      expect(harness.session.getState().streaming).toBe(true);
+
+      harness.emit({ type: "agent_finished", stopReason: "end_turn" });
+      expect(harness.session.getState().streaming).toBe(false);
+    }
+  });
+});

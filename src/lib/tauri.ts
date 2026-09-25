@@ -266,7 +266,14 @@ type CommandResults = {
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: SubscriptionId;
-  session_send: void;
+  /**
+   * Whether the accepted send began a turn. `false` for an out-of-band
+   * command or anything else accepted without one — the sender settles its
+   * optimistic turn on the answer. `null` (or an older daemon's absent
+   * answer) promises nothing either way: the sender keeps waiting for a
+   * finish, as it always did.
+   */
+  session_send: boolean | null;
   /** The reference to the bytes the deposit stored, exactly as the daemon stated it. */
   session_deposit: AttachmentReference;
   /** The stored bytes and MIME type, exactly as the daemon stated them. */

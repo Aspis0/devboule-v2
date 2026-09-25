@@ -632,8 +632,8 @@ fn session_send(
         conn,
         active_turn_behavior,
     ) {
-        Ok(()) => {
-            let reply = DaemonMessage::Ok { id };
+        Ok(turn_started) => {
+            let reply = DaemonMessage::SessionSend { id, turn_started };
             remember(
                 state,
                 owner,
@@ -828,6 +828,9 @@ pub(super) fn remember(
 fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
     match message {
         DaemonMessage::Session { session, .. } => DaemonMessage::Session { id, session },
+        DaemonMessage::SessionSend { turn_started, .. } => {
+            DaemonMessage::SessionSend { id, turn_started }
+        }
         DaemonMessage::Ok { .. } => DaemonMessage::Ok { id },
         DaemonMessage::Sessions { sessions, .. } => DaemonMessage::Sessions { id, sessions },
         DaemonMessage::Projects { projects, .. } => DaemonMessage::Projects { id, projects },

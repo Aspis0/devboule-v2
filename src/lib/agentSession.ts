@@ -441,11 +441,15 @@ export class AgentSession {
     // A steer only joins a turn when one is actually open; with no live turn
     // the daemon starts a new one, and so does the transcript.
     const joinsRunningTurn = activeTurnBehavior === "steer" && this.turnOpen;
+    // The sender arms its optimistic turn here; the reply below says whether
+    // a turn actually began. Stash what beginTurn clears so a "no turn"
+    // answer can put it back.
+    const previousFinished = this.state.lastFinished;
     if (!joinsRunningTurn) this.beginTurn();
     this.setStatus("running", { streaming: true });
     this.sendDepth += 1;
     try {
-      await this.deps.invoke("session_send", {
+      const turnStarted = await this.deps.invoke<boolean | null>("session_send", {
         id: this.deps.sessionId,
         subscriptionId,
         text: trimmed,
@@ -467,6 +471,15 @@ export class AgentSession {
         ...(attachmentReferences.length === 0 ? {} : { attachmentReferences }),
       });
       this.sendDepth -= 1;
+      if (turnStarted === false && !joinsRunningTurn && this.sendDepth === 0) {
+        // The daemon began no turn for this send (out-of-band command, empty
+        // send): settle the optimistic arm — the previous finish back,
+        // streaming off, turn closed — instead of waiting for a finish that
+        // never comes. A joined steer leaves the live turn alone, and an
+        // older daemon's absent answer keeps today's wait.
+        this.turnOpen = false;
+        this.setStatus("idle", { streaming: false, lastFinished: previousFinished });
+      }
       // A settled send clears nothing: a rejection earlier on the wire may
       // still be waiting for its twin frame (see `pendingSendRejections`).
       this.resolveHeldAgentErrors();

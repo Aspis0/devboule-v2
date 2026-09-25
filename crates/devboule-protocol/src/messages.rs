@@ -1416,6 +1416,16 @@ pub enum DaemonMessage {
     Ok {
         id: u64,
     },
+    /// The reply to [`ClientMessage::SessionSend`]: whether the accepted send
+    /// began a turn. `false` for an out-of-band command, an empty send, or
+    /// anything else accepted without `begin_turn` — the sender settles its
+    /// optimistic turn on the answer instead of waiting for a finish that
+    /// never comes. Older daemons answer every send with [`DaemonMessage::Ok`]:
+    /// no field there, and no promise either way.
+    SessionSend {
+        id: u64,
+        turn_started: bool,
+    },
     AgentMessageReceipt {
         id: u64,
         state: AgentMessageState,

@@ -5742,3 +5742,29 @@ fn a_relaunched_windows_old_refusal_does_not_decide_for_others() {
     };
     drop(guard_a2);
 }
+
+#[test]
+fn a_repeated_send_replays_the_no_turn_disposition() {
+    // The receipt stores the whole reply, disposition included: a repeated
+    // out-of-band send answers "no turn" again, under the retry's own id.
+    let (path, state) = temp_state("send-disposition-receipt");
+    let owner = OwnerId::new("test-user", "test-client").expect("owner");
+    super::sessions::remember(
+        &state,
+        &owner,
+        Some("send-once"),
+        "send:fp",
+        &DaemonMessage::SessionSend {
+            id: 1,
+            turn_started: false,
+        },
+    );
+    assert!(matches!(
+        super::sessions::idempotent_hit(&state, &owner, 2, Some("send-once"), "send:fp"),
+        Some(DaemonMessage::SessionSend {
+            id: 2,
+            turn_started: false
+        })
+    ));
+    let _ = std::fs::remove_dir_all(path);
+}

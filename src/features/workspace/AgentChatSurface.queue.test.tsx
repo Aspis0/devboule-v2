@@ -235,7 +235,7 @@ describe("AgentChatSurface queue keys", () => {
     pushActivity("idle");
     let refuseSend!: (cause: Error) => void;
     vi.mocked(sessionSend).mockImplementationOnce(
-      () => new Promise<void>((_resolve, reject) => (refuseSend = reject)),
+      () => new Promise<boolean | null>((_resolve, reject) => (refuseSend = reject)),
     );
     type("first");
     await clickSend();
@@ -275,9 +275,9 @@ describe("AgentChatSurface queue keys", () => {
     const otherQueueAction = () => other.querySelector('[data-testid="composer-queue-action"]');
     expect(otherQueueAction()).toBeNull();
 
-    let acceptSend!: () => void;
+    let acceptSend!: (turnStarted: boolean | null) => void;
     vi.mocked(sessionSend).mockImplementationOnce(
-      () => new Promise<void>((resolve) => (acceptSend = resolve)),
+      () => new Promise<boolean | null>((resolve) => (acceptSend = resolve)),
     );
     type("first");
     await clickSend();
@@ -285,7 +285,7 @@ describe("AgentChatSurface queue keys", () => {
     // (review fix-7 finding 4).
     expect(otherQueueAction()?.textContent).toBe("Queue message");
 
-    await act(async () => acceptSend());
+    await act(async () => acceptSend(true));
     await flush();
     expect(otherQueueAction()).toBeNull();
     await act(async () => otherRoot.unmount());

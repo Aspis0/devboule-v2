@@ -578,6 +578,7 @@ impl DaemonClient {
             None,
             None,
         )
+        .map(|_| ())
     }
 
     /// Send one prompt with the files attached to it and the pages already
@@ -618,7 +619,7 @@ impl DaemonClient {
         attachment_references: &[AttachmentReference],
         active_turn_behavior: Option<ActiveTurnBehavior>,
         idempotency_key: Option<String>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<bool>, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {
             id,
@@ -630,7 +631,10 @@ impl DaemonClient {
             idempotency_key,
             active_turn_behavior,
         })? {
-            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::SessionSend { turn_started, .. } => Ok(Some(turn_started)),
+            // An older daemon answers every send with a bare Ok: no field,
+            // and no promise either way.
+            DaemonMessage::Ok { .. } => Ok(None),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -2169,6 +2173,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Providers { id, .. }
         | DaemonMessage::ProviderUpdated { id, .. }
         | DaemonMessage::Ok { id }
+        | DaemonMessage::SessionSend { id, .. }
         | DaemonMessage::AgentMessageReceipt { id, .. }
         | DaemonMessage::Resume { id, .. }
         | DaemonMessage::SessionDeposited { id, .. }
