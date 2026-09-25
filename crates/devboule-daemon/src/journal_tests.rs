@@ -613,15 +613,8 @@ fn permission_decision_is_written_with_outcome_timestamp_and_payload() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Reversed by the live P1 fix (review-A2a): a reused id used to be refused
-/// here, which turned the second valid answer into `complete`'s
-/// broken-journal path — the agent told `cancelled`, the person shown a
-/// journal error for a valid pick. The row is the id's CURRENT card (its
-/// primary key says so): the latest answer lands on it, one row per key, and
-/// the per-answer history this table cannot hold lives in `events` as each
-/// answer's `PermissionAnswered` row.
 #[test]
-fn permission_reuse_updates_the_row_to_the_latest_answer() {
+fn permission_reuse_is_rejected_without_overwriting_the_audit_row() {
     let (dir, path) = tmp_journal();
     let journal = Journal::open(&path).expect("open");
     journal
@@ -635,9 +628,9 @@ fn permission_reuse_updates_the_row_to_the_latest_answer() {
             br#"{"decision":1}"#,
         )
         .expect("first permission row");
-    journal
-        .record_permission("s.permission.reuse", "tool-1", "deny", br#"{"decision":2}"#)
-        .expect("the reused id's own answer lands too");
+    assert!(journal
+        .record_permission("s.permission.reuse", "tool-1", "deny", br#"{"decision":2}"#,)
+        .is_err());
     journal.flush().expect("permission flush");
     let conn = Connection::open(&path).expect("inspect");
     let rows: i64 = conn
@@ -647,7 +640,7 @@ fn permission_reuse_updates_the_row_to_the_latest_answer() {
             |row| row.get(0),
         )
         .expect("permission rows");
-    assert_eq!(rows, 1, "one row per key: the id's current card");
+    assert_eq!(rows, 1);
     let row: (String, Vec<u8>) = conn
         .query_row(
             "SELECT outcome, payload FROM permissions
@@ -655,9 +648,9 @@ fn permission_reuse_updates_the_row_to_the_latest_answer() {
             ["s.permission.reuse", "tool-1"],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .expect("the row");
-    assert_eq!(row.0, "deny");
-    assert_eq!(row.1, br#"{"decision":2}"#);
+        .expect("original permission row");
+    assert_eq!(row.0, "allow_once");
+    assert_eq!(row.1, br#"{"decision":1}"#);
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -6,7 +6,8 @@ use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use devboule_protocol::{
-    PermissionOption, PermissionOutcome, SessionEvent, SessionOrigin, SessionOriginKind,
+    NoticeSeverity, PermissionOption, PermissionOutcome, SessionEvent, SessionOrigin,
+    SessionOriginKind,
 };
 
 use super::SessionRuntime;
@@ -202,10 +203,21 @@ pub(crate) struct PermissionBroker {
     after_take_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
+/// The transcript's one sentence for a refused repeat: an id whose decision
+/// the journal already holds gets no second card. One plain sentence — the
+/// person reading the transcript did not ask for protocol vocabulary.
+const REUSED_ID_NOTICE: &str =
+    "The agent reused a question id it had already answered, so this request was declined.";
+
 #[derive(Debug)]
 pub(super) enum PermissionResponseError {
     NotFound,
     InvalidRequest(String),
+    /// The id's decision is already in the journal: `register_with` refused
+    /// the card before it existed and put [`REUSED_ID_NOTICE`] up as the
+    /// transcript's one notice. The caller sends its cancelled frame and
+    /// adds no second message.
+    AlreadyRecorded,
     Io(io::Error),
 }
 
@@ -214,6 +226,7 @@ impl fmt::Display for PermissionResponseError {
         match self {
             Self::NotFound => formatter.write_str("permission request is no longer pending"),
             Self::InvalidRequest(message) => formatter.write_str(message),
+            Self::AlreadyRecorded => formatter.write_str(REUSED_ID_NOTICE),
             Self::Io(error) => write!(
                 formatter,
                 "could not answer ACP permission request: {error}"
@@ -295,6 +308,19 @@ impl PermissionBroker {
             }
         };
         validate_permission_request(&tool_call_id, &request)?;
+        // An id the journal already holds a decision for is DONE: a second
+        // card here would show a person an answer that can never be written
+        // (the audit row is write-once), and the agent would be told
+        // `cancelled` after the human spent the effort — the live P1
+        // (review-A2a). Refused before the card exists, from the one road
+        // every family registers through: no card, the family's own
+        // cancelled frame, and [`REUSED_ID_NOTICE`] as the transcript's one
+        // notice.
+        if runtime.permission_already_recorded(&tool_call_id) {
+            let _ =
+                runtime.publish_session_notice(REUSED_ID_NOTICE.to_string(), NoticeSeverity::Info);
+            return Err(PermissionResponseError::AlreadyRecorded);
+        }
         let pending = Arc::new(PendingPermission {
             responder,
             tool_call_id: tool_call_id.clone(),

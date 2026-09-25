@@ -1885,6 +1885,20 @@ impl SessionRuntime {
         notify_observers(&stream);
     }
 
+    /// Whether this session's journal already holds a decision for this
+    /// request id — the register-time refusal reads it: the permissions row
+    /// is write-once per (session, id), so a second card for an answered id
+    /// could never record its own answer. No journal means no decisions, and
+    /// a sick journal does not block registration either — the answer's own
+    /// write is where a journal failure is already reported.
+    pub(crate) fn permission_already_recorded(&self, tool_call_id: &str) -> bool {
+        self.journal.as_ref().is_some_and(|journal| {
+            journal
+                .permission_was_recorded_in_session(&self.session_id, tool_call_id)
+                .unwrap_or(false)
+        })
+    }
+
     pub(crate) fn record_permission_decision(
         &self,
         tool_call_id: &str,

@@ -19,7 +19,7 @@ use std::time::Duration;
 use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, SessionModel, WireError};
 use serde_json::Value;
 
-use super::permission_broker::{PermissionBroker, PermissionSender};
+use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
 use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
@@ -2086,12 +2086,16 @@ impl ClaudeReader {
                 acp_id,
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
             );
-            self.publish(
-                runtime,
-                SessionEvent::AgentError {
-                    message: format!("Could not queue Claude permission request: {error}"),
-                },
-            );
+            if !matches!(error, PermissionResponseError::AlreadyRecorded) {
+                // The repeat-refusal's one plain notice is already up; only
+                // the cancelled frame goes back for that case.
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: format!("Could not queue Claude permission request: {error}"),
+                    },
+                );
+            }
             return;
         }
         if runtime.permission_delivery_enabled() == Some(false) {

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{ErrorCode, NoticeSeverity, SessionEvent, WireError};
 use serde_json::Value;
 
-use super::permission_broker::{PermissionBroker, PermissionSender};
+use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
 use super::session_runtime::SessionRuntime;
 use super::{
     write_child_stdin, ModelSwitcher, PtyCommand, ReaderDispatch, SessionKiller, SessionSteerer,
@@ -1614,10 +1614,14 @@ impl CodexReader {
                 .ok()
                 .map(|mut ids| ids.remove(&broker_id));
             let _ = send_permission_decision(&self.stdin, value.get("id"), "cancel");
-            let _ = runtime.publish_session_notice(
-                format!("Could not queue Codex permission request: {error}"),
-                NoticeSeverity::Warning,
-            );
+            if !matches!(error, PermissionResponseError::AlreadyRecorded) {
+                // The repeat-refusal's one plain notice is already up; only
+                // the cancel decision goes back for that case.
+                let _ = runtime.publish_session_notice(
+                    format!("Could not queue Codex permission request: {error}"),
+                    NoticeSeverity::Warning,
+                );
+            }
             return;
         }
         self.publish(runtime, event, seq);

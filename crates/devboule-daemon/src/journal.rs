@@ -715,6 +715,11 @@ enum JournalCmd {
         request_id: String,
         reply: mpsc::Sender<Result<bool, JournalError>>,
     },
+    PermissionWasRecordedIn {
+        session_id: String,
+        request_id: String,
+        reply: mpsc::Sender<Result<bool, JournalError>>,
+    },
     PermissionCount {
         session_id: String,
         reply: mpsc::Sender<Result<u32, JournalError>>,
@@ -1030,6 +1035,24 @@ impl Journal {
     /// reveals nothing but the fact.
     pub fn permission_was_recorded(&self, request_id: &str) -> Result<bool, JournalError> {
         self.rpc(|reply| JournalCmd::PermissionWasRecorded {
+            request_id: request_id.to_string(),
+            reply,
+        })
+    }
+
+    /// Whether THIS session's journal holds a decision for this request id —
+    /// what the register-time refusal reads: the permissions row is
+    /// write-once per (session, id), so a second card for an id that is
+    /// already answered could never record its own answer. Both key parts,
+    /// unlike [`Self::permission_was_recorded`]: two sessions legitimately
+    /// use ids of their own.
+    pub fn permission_was_recorded_in_session(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> Result<bool, JournalError> {
+        self.rpc(|reply| JournalCmd::PermissionWasRecordedIn {
+            session_id: session_id.to_string(),
             request_id: request_id.to_string(),
             reply,
         })
@@ -1803,6 +1826,21 @@ fn journal_loop(
                     .query_row(
                         "SELECT COUNT(*) FROM permissions WHERE request_id = ?1",
                         params![&request_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                let _ = reply.send(Ok(count > 0));
+            }
+            JournalCmd::PermissionWasRecordedIn {
+                session_id,
+                request_id,
+                reply,
+            } => {
+                let count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM permissions
+                             WHERE session_id = ?1 AND request_id = ?2",
+                        params![&session_id, &request_id],
                         |row| row.get(0),
                     )
                     .unwrap_or(0);
@@ -2984,25 +3022,10 @@ fn mark_ended(
     Ok(())
 }
 
-/// One row per (session, id), holding that id's CURRENT answer. An agent may
-/// ask again under an id whose first card is already resolved — `register_with`
-/// only refuses while that card is pending — and the second answer has to
-/// land: the live P1 (review-A2a) was this insert refusing instead. The bare
-/// INSERT hit the primary key, `complete` read the refusal as a broken
-/// journal, the agent was told `cancelled` and the person who picked the
-/// reject option got a journal error for a valid answer. The per-answer
-/// history this table cannot hold is not lost: every answer also publishes
-/// its own `PermissionAnswered` row in `events`
-/// (`a_permission_answered_frame_records_agent_report_outcome` pins that).
 fn append_permission(conn: &Connection, record: &PermissionRecord) -> Result<(), JournalError> {
     conn.execute(
         "INSERT INTO permissions (session_id, request_id, ts_ms, outcome, payload, checksum)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(session_id, request_id) DO UPDATE SET
-             ts_ms = excluded.ts_ms,
-             outcome = excluded.outcome,
-             payload = excluded.payload,
-             checksum = excluded.checksum",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             &record.session_id,
             &record.request_id,

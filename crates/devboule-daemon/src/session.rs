@@ -2245,6 +2245,11 @@ impl SessionRegistry {
                     permission_broker::PermissionResponseError::InvalidRequest(_) => {
                         ErrorCode::InvalidRequest
                     }
+                    // Register-time only: `respond_with_option` cannot
+                    // return it, spelled so the match stays exhaustive.
+                    permission_broker::PermissionResponseError::AlreadyRecorded => {
+                        ErrorCode::InvalidRequest
+                    }
                     permission_broker::PermissionResponseError::Io(_) => ErrorCode::Io,
                 };
                 WireError::new(code, error.to_string())

@@ -236,6 +236,13 @@ fn main() -> io::Result<()> {
     // JSON-RPC error and the process keeps reading instead of exiting, so
     // the daemon observes a handshake failure against a live process.
     let fail_session_new = std::env::var_os("DEVBOULE_STUB_FAIL_SESSION_NEW").is_some();
+    // Every question carries a fresh tool call id — a real agent never names
+    // an id it has already answered (the daemon refuses such a repeat before
+    // it can become a card). The old reuse road exists for the one test that
+    // drives that refusal.
+    let reuse_permission_ids = std::env::var_os("DEVBOULE_ACP_STUB_REUSE_PERMISSION_IDS").is_some();
+    let mut permission_seq = 0u32;
+    let mut chooser_seq = 0u32;
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
     let stdout = io::stdout();
@@ -963,6 +970,12 @@ fn main() -> io::Result<()> {
                     // chooser, plus a refusal so the option set is whole.
                     chooser_active = true;
                     permission_request_id = Some(99);
+                    chooser_seq += 1;
+                    let tool_call_id = if reuse_permission_ids {
+                        "tool-chooser".to_string()
+                    } else {
+                        format!("tool-chooser-{chooser_seq}")
+                    };
                     emit(
                         &mut stdout,
                         json!({
@@ -974,7 +987,7 @@ fn main() -> io::Result<()> {
                                 "title": "Which colour should the fence be?",
                                 "description": "Which colour should the fence be?",
                                 "toolCall": {
-                                    "toolCallId": "tool-chooser",
+                                    "toolCallId": tool_call_id,
                                     "title": "Which colour should the fence be?",
                                     "status": "in_progress"
                                 },
@@ -997,6 +1010,12 @@ fn main() -> io::Result<()> {
                         std::thread::sleep(Duration::from_millis(delay_ms));
                     }
                     permission_request_id = Some(99);
+                    permission_seq += 1;
+                    let tool_call_id = if reuse_permission_ids {
+                        "tool-perm".to_string()
+                    } else {
+                        format!("tool-perm-{permission_seq}")
+                    };
                     emit(
                         &mut stdout,
                         json!({
@@ -1008,7 +1027,7 @@ fn main() -> io::Result<()> {
                                 "title": "Run command",
                                 "description": "The stub wants to run a command.",
                                 "toolCall": {
-                                    "toolCallId": "tool-perm",
+                                    "toolCallId": tool_call_id,
                                     "title": "Run command",
                                     "status": "in_progress"
                                 },

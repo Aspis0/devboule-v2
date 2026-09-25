@@ -20,7 +20,7 @@ use devboule_protocol::{
 };
 use serde_json::Value;
 
-use super::permission_broker::{PermissionBroker, PermissionSender};
+use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
 use super::PtyCommand;
 use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
@@ -2664,13 +2664,17 @@ impl PiReader {
                 .remove(&broker_id);
             send_extension_response(&self.stdin, Some(request_id), false)
                 .map_err(|send_error| format!("Could not deny Pi UI request: {send_error}"))?;
-            self.publish(
-                runtime,
-                SessionEvent::AgentError {
-                    message: format!("Could not queue Pi permission request: {error}"),
-                },
-                event_seq,
-            );
+            if !matches!(error, PermissionResponseError::AlreadyRecorded) {
+                // The repeat-refusal's one plain notice is already up; only
+                // the extension response goes back for that case.
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: format!("Could not queue Pi permission request: {error}"),
+                    },
+                    event_seq,
+                );
+            }
             return Ok(());
         }
         match self.permission_broker.auto_answer(request_id, runtime) {

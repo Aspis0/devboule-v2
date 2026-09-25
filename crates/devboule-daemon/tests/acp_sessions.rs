@@ -24,9 +24,9 @@ use devboule_daemon::{
     RuntimePaths, SessionStateHandler,
 };
 use devboule_protocol::{
-    AgentTaskState, AttentionReason, ClientHello, Cursor, ErrorCode, FinishArtifact, OwnerId,
-    PermissionOutcome, Persistence, PersistenceKind, ResumeResult, SessionEvent, SessionKind,
-    SessionStateSnapshot, WorkspaceIsolation,
+    AgentTaskState, AttentionReason, ClientHello, Cursor, ErrorCode, FinishArtifact,
+    NoticeSeverity, OwnerId, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
+    SessionEvent, SessionKind, SessionStateSnapshot, WorkspaceIsolation,
 };
 use rusqlite::Connection;
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -666,11 +666,11 @@ fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id()
         .expect("attach ACP session");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm")
+            matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm-1")
         })
     });
     test.client
-        .session_permission_respond(&session.id, "tool-perm", PermissionOutcome::AllowOnce)
+        .session_permission_respond(&session.id, "tool-perm-1", PermissionOutcome::AllowOnce)
         .expect("allow once");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
@@ -700,15 +700,15 @@ fn acp_resolved_permission_is_not_reopened_after_live_reattach() {
         .expect("prompt");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm")
+            matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm-1")
         })
     });
     test.client
-        .session_permission_respond(&session.id, "tool-perm", PermissionOutcome::AllowOnce)
+        .session_permission_respond(&session.id, "tool-perm-1", PermissionOutcome::AllowOnce)
         .expect("allow once");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::PermissionResolved { tool_call_id, .. } if tool_call_id == "tool-perm")
+            matches!(event, SessionEvent::PermissionResolved { tool_call_id, .. } if tool_call_id == "tool-perm-1")
         })
     });
     test.client
@@ -744,7 +744,7 @@ fn acp_resolved_permission_is_not_reopened_after_live_reattach() {
         "reattach must deliver the stored/journaled manifest exactly once"
     );
     assert!(!reattached.iter().any(|event| {
-        matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm")
+        matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm-1")
     }));
     drop(reattached);
     test.client
@@ -784,7 +784,7 @@ fn acp_chooser_reports_the_option_the_person_picked() {
                     options,
                     is_chooser: Some(true),
                     ..
-                } if tool_call_id == "tool-chooser"
+                } if tool_call_id == "tool-chooser-1"
                     && options.len() == 4
                     && options.iter().filter(|option| option.kind == "allow_once").count() == 3
             )
@@ -794,7 +794,7 @@ fn acp_chooser_reports_the_option_the_person_picked() {
         .session_permission_respond_with_subscription(
             &session.id,
             subscription,
-            "tool-chooser",
+            "tool-chooser-1",
             PermissionOutcome::AllowOnce,
             Some("blue"),
         )
@@ -824,7 +824,7 @@ fn acp_chooser_reports_the_option_the_person_picked() {
             .filter(|event| {
                 matches!(
                     event,
-                    SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-chooser"
+                    SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id.starts_with("tool-chooser")
                 )
             })
             .count()
@@ -844,11 +844,9 @@ fn acp_chooser_reports_the_option_the_person_picked() {
 }
 
 /// The reject option of a chooser, answered BY OPTION ID through the real
-/// respond path — the live check's second question, which the stub asks under
-/// the same `toolCallId` as its first (what any agent does when it reuses a
-/// resolved id). Pins the three things that answer must produce: the agent is
-/// told `selected` with the option id the person picked, the journal row for
-/// that card holds the deny, and the resolution the card reads is the reject
+/// respond path — the healthy road a fresh id takes: the agent is told
+/// `selected` with the option the person picked, the journal row for that
+/// card holds the deny, and the resolution the card reads is the reject
 /// option — Denied, not the daemon's "did not say" fallback.
 #[test]
 fn acp_chooser_reject_option_by_id_is_journaled_and_resolves_denied() {
@@ -865,8 +863,112 @@ fn acp_chooser_reject_option_by_id_is_journaled_and_resolves_denied() {
         .session_attach(&session.id, None, handler)
         .expect("attach ACP session");
 
-    // The first question, answered by id: its journal row is what the
-    // second answer has to contend with, exactly as live.
+    test.client
+        .session_send(&session.id, "chooser")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::PermissionRequest {
+                    tool_call_id,
+                    options,
+                    is_chooser: Some(true),
+                    ..
+                } if tool_call_id == "tool-chooser-1"
+                    && options.len() == 4
+                    && options.iter().filter(|option| option.kind == "allow_once").count() == 3
+            )
+        })
+    });
+    test.client
+        .session_permission_respond_with_subscription(
+            &session.id,
+            subscription,
+            "tool-chooser-1",
+            PermissionOutcome::Deny,
+            Some("none"),
+        )
+        .expect("the reject pick is an answer, not an error");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "You picked none")
+        })
+    });
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::PermissionResolved {
+                    tool_call_id,
+                    selected_option_id: Some(option_id),
+                    selected_option_kind: Some(kind),
+                    selected_option_name: Some(name),
+                    ..
+                } if tool_call_id == "tool-chooser-1"
+                    && option_id == "none"
+                    && kind == "reject_once"
+                    && name == "None"
+            )
+        })
+    });
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn"
+            )
+        })
+    });
+
+    test.client
+        .journal_usage()
+        .expect("flush the permission row");
+    let connection = Connection::open(test._harness.paths.journal_file()).expect("open journal");
+    let outcome: String = connection
+        .query_row(
+            "SELECT outcome FROM permissions WHERE session_id = ?1 AND request_id = ?2",
+            [&session.id, "tool-chooser-1"],
+            |row| row.get(0),
+        )
+        .expect("the deny row exists for the fresh id");
+    assert_eq!(outcome, "deny");
+    drop(connection);
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+/// A second question under an id whose answer the journal already holds
+/// never becomes a card: the person would answer it and the write-once audit
+/// row could not take the answer, so the agent would be told `cancelled`
+/// after the human spent the effort (the live P1). The repeat is refused
+/// before the card exists — the agent's own refusal frame comes back and the
+/// transcript gets its one plain notice — and the first answer's row is
+/// untouched. The stub asks reused ids only when the test asks for them
+/// (`DEVBOULE_ACP_STUB_REUSE_PERMISSION_IDS`), the way it did before every
+/// question carried a fresh id.
+#[test]
+fn acp_reused_answered_question_id_gets_no_card_and_one_plain_notice() {
+    let _test_lock = lock_tests();
+    std::env::set_var("DEVBOULE_ACP_STUB_REUSE_PERMISSION_IDS", "1");
+    let mut test = AcpTest::new(&[]);
+    test._env
+        .names
+        .push("DEVBOULE_ACP_STUB_REUSE_PERMISSION_IDS");
+    let session = test.create_session();
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    let subscription = test
+        .client
+        .session_attach(&session.id, None, handler)
+        .expect("attach ACP session");
+
+    // The first question under the reused id: an ordinary card, answered by
+    // its option — this is the row the audit keeps.
     test.client
         .session_send(&session.id, "chooser")
         .expect("first prompt");
@@ -893,65 +995,40 @@ fn acp_chooser_reject_option_by_id_is_journaled_and_resolves_denied() {
         })
     });
 
-    // The second question — same toolCallId — answered with the reject
-    // option by its id.
+    // The repeat — same id — is refused before any card exists.
     test.client
         .session_send(&session.id, "chooser")
         .expect("second prompt");
     wait_for(&events, Duration::from_secs(5), |events| {
-        events
-            .iter()
-            .filter(|event| {
-                matches!(
-                    event,
-                    SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-chooser"
-                )
-            })
-            .count()
-            == 2
-    });
-    test.client
-        .session_permission_respond_with_subscription(
-            &session.id,
-            subscription,
-            "tool-chooser",
-            PermissionOutcome::Deny,
-            Some("none"),
-        )
-        .expect("the reject pick is an answer, not an error");
-    wait_for(&events, Duration::from_secs(5), |events| {
-        events.iter().any(|event| {
-            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "You picked none")
-        })
-    });
-    wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
             matches!(
                 event,
-                SessionEvent::PermissionResolved {
-                    tool_call_id,
-                    selected_option_id: Some(option_id),
-                    selected_option_kind: Some(kind),
-                    selected_option_name: Some(name),
-                    ..
-                } if tool_call_id == "tool-chooser"
-                    && option_id == "none"
-                    && kind == "reject_once"
-                    && name == "None"
+                SessionEvent::SessionNotice {
+                    text,
+                    severity: NoticeSeverity::Info,
+                } if text
+                    == "The agent reused a question id it had already answered, so this request was declined."
             )
         })
     });
-    wait_for(&events, Duration::from_secs(5), |events| {
-        events.iter().any(|event| {
+    let card_count = events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter(|event| {
             matches!(
                 event,
-                SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn"
+                SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-chooser"
             )
+        })
+        .count();
+    assert_eq!(card_count, 1, "the repeat never became a card");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "You cancelled")
         })
     });
 
-    // The journal's own word for the row the card answers wrote: deny, and
-    // the row exists at all — the live check's failure was this insert.
     test.client
         .journal_usage()
         .expect("flush the permission row");
@@ -962,8 +1039,11 @@ fn acp_chooser_reject_option_by_id_is_journaled_and_resolves_denied() {
             [&session.id, "tool-chooser"],
             |row| row.get(0),
         )
-        .expect("the deny row exists for the reused id");
-    assert_eq!(outcome, "deny");
+        .expect("the first answer's row still exists");
+    assert_eq!(
+        outcome, "allow_once",
+        "the audit row keeps the first answer"
+    );
     drop(connection);
     test.client
         .session_close(&session.id)
@@ -5520,7 +5600,7 @@ fn a_child_parked_on_a_card_tells_its_creator_once_and_finishes_after_the_answer
     // report arrives with the artifact the same way it does without a park.
     let _child_events = test.attach(&child);
     test.client
-        .session_permission_respond(&child.id, "tool-perm", PermissionOutcome::AllowOnce)
+        .session_permission_respond(&child.id, "tool-perm-1", PermissionOutcome::AllowOnce)
         .expect("answer the child's card");
     wait_for(&events, Duration::from_secs(60), |events| {
         events

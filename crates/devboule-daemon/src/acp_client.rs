@@ -32,7 +32,8 @@ use crate::process_tree::{JobObject, ProcessHandle};
 use crate::server::ServerState;
 
 use super::permission_broker::{
-    PermissionBroker, MAX_ACP_PERMISSION_FIELD_BYTES, MAX_ACP_PERMISSION_OPTIONS,
+    PermissionBroker, PermissionResponseError, MAX_ACP_PERMISSION_FIELD_BYTES,
+    MAX_ACP_PERMISSION_OPTIONS,
 };
 use super::PtyCommand;
 use super::{
@@ -3950,11 +3951,20 @@ impl AcpReader {
         let pending = match self.permission_broker.register(id, event.clone(), runtime) {
             Ok(pending) => pending,
             Err(error) => {
-                self.cancel_permission_request(
-                    id,
-                    runtime,
-                    format!("Could not queue ACP permission request: {error}"),
-                );
+                if matches!(error, PermissionResponseError::AlreadyRecorded) {
+                    // The register refusal put the transcript's one plain
+                    // notice up; only the cancelled frame goes back.
+                    let _ = self.permission_broker.send(
+                        id,
+                        serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                    );
+                } else {
+                    self.cancel_permission_request(
+                        id,
+                        runtime,
+                        format!("Could not queue ACP permission request: {error}"),
+                    );
+                }
                 return;
             }
         };
