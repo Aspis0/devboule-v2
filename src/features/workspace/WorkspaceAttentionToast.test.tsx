@@ -60,14 +60,16 @@ const rosterOf = (
   }));
 
 /**
- * Let the toast path finish. It awaits the window answer, the notification
- * plugin's module, the permission command and the sender, and the plugin's own
- * hop is not a microtask — under a full-suite load it needs more than one turn
- * of the (fake) clock, so this bounded pump is what makes "no toast" and "the
- * toast has landed" the same answer here and in the file run alone.
+ * Wait for the toasts this test expects to have landed, then give any other
+ * publication a turn too. The path awaits the window answer, the notification
+ * plugin's module, the permission command and the sender, and those hops are not
+ * all microtasks — a fixed pump was flaky, so the expected set is waited for and
+ * the extra settling is what keeps "held back" from being merely "not yet".
  */
-async function settleToastPath(): Promise<void> {
-  for (let turn = 0; turn < 40; turn += 1) await vi.advanceTimersByTimeAsync(1);
+async function settleToastPath(expected: string[], mark: number): Promise<void> {
+  await vi.waitFor(() => expect(titlesSince(mark)).toEqual(expected), { timeout: 4_000 });
+  for (let turn = 0; turn < 20; turn += 1) await vi.advanceTimersByTimeAsync(1);
+  expect(titlesSince(mark)).toEqual(expected);
 }
 
 /** The daemon's push, called as the channel calls it: no act, no React flush. */
@@ -154,9 +156,6 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  // Every publication this test started has to finish before the next one
-  // inherits a withdrawn record: a suppressed raise is deliberately left due.
-  await settleToastPath();
   await afterEachHarness();
 });
 
@@ -188,8 +187,7 @@ describe("the toast gate, judged by the surface's own write", () => {
         { id: "agent-two", workspace: "workspace-2", raisedAt: 2_000 },
       ]),
     );
-    await settleToastPath();
-    expect(titlesSince(before)).toEqual(["agent-one — finished"]);
+    await settleToastPath(["agent-one — finished"], before);
   });
 
   it("withdraws the record with the surface, so nothing is held back for a session nobody shows", async () => {
@@ -207,7 +205,6 @@ describe("the toast gate, judged by the surface's own write", () => {
     // app-scope — and the raise for the session the user last saw is due.
     const before = sentToasts();
     pushRoster(rosterOf([{ id: "agent-one", workspace: "workspace-1", raisedAt: 4_000 }]));
-    await settleToastPath();
-    expect(titlesSince(before)).toEqual(["agent-one — finished"]);
+    await settleToastPath(["agent-one — finished"], before);
   });
 });
