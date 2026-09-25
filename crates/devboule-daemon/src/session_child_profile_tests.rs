@@ -124,7 +124,7 @@ fn a_landed_move_pushes_the_fresh_row_to_the_transition_sink() {
     let _ = registry.state_snapshots(&owner);
     let sink_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let fired = Arc::clone(&sink_log);
-    registry.set_transition_sink(Arc::new(move |pushed| {
+    registry.set_transition_sink(Arc::new(move |pushed, _snapshots| {
         fired.lock().expect("sink log").push(pushed.user.clone());
     }));
     registry
@@ -188,7 +188,7 @@ fn the_sink_reads_the_moved_row_the_push_announces() {
     let recorded = Arc::clone(&seen);
     let reader = registry.clone();
     let watched = child.clone();
-    registry.set_transition_sink(Arc::new(move |pushed| {
+    registry.set_transition_sink(Arc::new(move |pushed, _snapshots| {
         let found = reader
             .state_snapshots(&pushed)
             .into_iter()

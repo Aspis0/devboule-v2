@@ -63,7 +63,7 @@ fn sweep_os_liveness(
         }
         let callback = sink.lock().ok().and_then(|guard| guard.clone());
         if let Some(callback) = callback {
-            callback(owner);
+            callback(owner, None);
         }
     }
 }

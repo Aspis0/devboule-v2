@@ -382,6 +382,11 @@ impl PermissionBroker {
         // at birth). Fired after the lock is dropped, so the observer sees a
         // consistent table and cannot re-enter it.
         runtime.notify_permission_park(&pending.request);
+        // The status this session publishes is "a card awaits an answer" from
+        // this moment. The event that carried the request here was published
+        // before the card existed, so the publisher's own check could not have
+        // seen it: this is the point the fact becomes true.
+        runtime.publish_activity_change();
         Ok(pending)
     }
 

@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -25,6 +25,18 @@ use crate::journal::{output_record, Journal, Replay};
 use crate::outbound::ConnOut;
 use crate::process_tree::ProcessHandle;
 use crate::screen::Screen;
+
+/// The byte a published status is remembered as. Written as a match beside
+/// [`AgentActivityState`] rather than a cast: four states and a sentinel, and
+/// the compiler checks the arms.
+fn activity_code(state: AgentActivityState) -> u8 {
+    match state {
+        AgentActivityState::Idle => 0,
+        AgentActivityState::Working => 1,
+        AgentActivityState::Blocked => 2,
+        AgentActivityState::Unknown => 3,
+    }
+}
 
 fn integrity_counters(integrity: TranscriptIntegrity) -> (u64, u64) {
     match integrity {
@@ -151,6 +163,10 @@ pub(crate) struct SessionRuntime {
     pub(crate) journal_replays: AtomicU64,
     turn_counter: AtomicU64,
     turn_active: AtomicBool,
+    /// The turn status last *published* on this session's roster row, kept so a
+    /// change can be announced and a non-change stays quiet. [`SessionRuntime::
+    /// activity`] is the live reading; this is what clients were told.
+    published_activity: AtomicU8,
     /// The turn-hold: taken by a `Steer`'s admission (`with_active_turn`),
     /// by `begin_turn`, and by the `AgentFinished` transition (`finish_turn`).
     /// Holding it across the provider write is what makes steer admission
@@ -268,7 +284,7 @@ type PermissionParkHook = Arc<dyn Fn(&SessionEvent) + Send + Sync>;
 
 struct AttentionHooks {
     suppressed: Arc<dyn Fn() -> bool + Send + Sync>,
-    notify: Arc<dyn Fn() + Send + Sync>,
+    prepare: Arc<dyn Fn() -> Box<dyn FnOnce() + Send> + Send + Sync>,
 }
 
 pub(crate) struct LiveAgentReplay {
@@ -476,6 +492,9 @@ impl SessionRuntime {
             journal_replays: AtomicU64::new(0),
             turn_counter: AtomicU64::new(0),
             turn_active: AtomicBool::new(false),
+            // Nothing has been published yet, so the first reading of a live
+            // session is a change and reaches the client that attached for it.
+            published_activity: AtomicU8::new(activity_code(AgentActivityState::Idle)),
             turn_hold: Mutex::new(()),
             turn_end_hooks: Mutex::new(Vec::new()),
             next_turn_end_hook: AtomicU64::new(1),
@@ -1351,7 +1370,11 @@ impl SessionRuntime {
         if was_silent {
             self.notify_roster();
         }
-        self.raise_attention_for_event(&event);
+        let changed = self.mark_activity_changed();
+        let raised = self.raise_attention_for_event(&event);
+        if changed && !raised {
+            self.request_transition();
+        }
         // A turn that ended is reported here rather than through attention:
         // see [`Self::finish_notify`]. One call per `AgentFinished`, and the
         // report path itself is gated on the child actually being one.
@@ -1361,12 +1384,58 @@ impl SessionRuntime {
         Some(event)
     }
 
-    /// Start a turn. Taken under the turn-hold so a steer's admission cannot
+    /// Start a turn before the provider write, so a steer's admission cannot
     /// observe "a turn is running" before the provider has the prompt that
     /// starts it.
     pub(crate) fn begin_turn(&self) {
-        let _hold = self.lock_turn_hold();
-        self.turn_active.store(true, Ordering::Release);
+        let push = {
+            let _hold = self.lock_turn_hold();
+            self.turn_active.store(true, Ordering::Release);
+            self.mark_activity_changed()
+                .then(|| self.prepare_roster_transition())
+                .flatten()
+        };
+        // Captured under the same lock as finish_turn, so each snapshot matches
+        // the edge it follows. Delivery runs after the release, so two racing
+        // transitions on one session can still arrive out of order.
+        if let Some(push) = push {
+            push();
+        }
+    }
+
+    /// The turn status as the roster publishes it: `blocked` while a card waits
+    /// for an answer, `working` while a turn runs, `idle` for a live session with
+    /// neither, `unknown` once the process is gone. The same derivation the child
+    /// tool reads, so a row and a tool can never disagree.
+    pub(crate) fn activity(&self) -> AgentActivityState {
+        crate::agent_activity::derive_activity(
+            !self.process_exited(),
+            self.is_running_turn(),
+            self.permission_pending(),
+        )
+    }
+
+    /// Announce this session's turn status unless it is the status this runtime
+    /// last announced. Every change is told, because the row a client holds is a
+    /// value it has to be able to trust.
+    pub(crate) fn publish_activity_change(&self) {
+        if self.mark_activity_changed() {
+            self.request_transition();
+        }
+    }
+
+    /// Record the status and say whether it moved, without pushing. Callers that
+    /// also publish attention can use that push to carry the changed status.
+    pub(crate) fn mark_activity_changed(&self) -> bool {
+        let code = activity_code(self.activity());
+        self.published_activity.swap(code, Ordering::AcqRel) != code
+    }
+
+    /// Push the current roster after an activity or attention change.
+    pub(crate) fn request_transition(&self) {
+        if let Some(push) = self.prepare_roster_transition() {
+            push();
+        }
     }
 
     pub(crate) fn turn_counter(&self) -> u64 {
@@ -1417,17 +1486,24 @@ impl SessionRuntime {
     /// hooks run after the hold is released: they take other locks, and this
     /// is the reader thread.
     fn finish_turn(&self) {
-        let ended = {
+        let (ended, push) = {
             let _hold = self.lock_turn_hold();
-            if self.turn_active.swap(false, Ordering::AcqRel) {
+            let ended = if self.turn_active.swap(false, Ordering::AcqRel) {
                 self.turn_counter.fetch_add(1, Ordering::AcqRel);
                 true
             } else {
                 false
-            }
+            };
+            let push = (ended && self.mark_activity_changed())
+                .then(|| self.prepare_roster_transition())
+                .flatten();
+            (ended, push)
         };
         if ended {
             self.fire_turn_end_hooks();
+        }
+        if let Some(push) = push {
+            push();
         }
     }
 
@@ -1606,11 +1682,17 @@ impl SessionRuntime {
         if was_silent {
             self.notify_roster();
         }
-        self.raise_attention_for_event(&event);
         if matches!(&event, SessionEvent::AgentFinished { .. }) {
             self.finish_turn();
-            // The same "a turn ended" fact the finish report hangs off (`S5`
-            // §3): this publisher is the one an ACP provider's events take.
+        }
+        let changed = self.mark_activity_changed();
+        let raised = self.raise_attention_for_event(&event);
+        if changed && !raised {
+            self.request_transition();
+        }
+        if matches!(&event, SessionEvent::AgentFinished { .. }) {
+            // A turn that ended is reported here rather than through
+            // attention: see [`Self::finish_notify`].
             self.notify_finished();
         }
         was_silent
@@ -1680,6 +1762,17 @@ impl SessionRuntime {
     pub(crate) fn permission_pending(&self) -> bool {
         self.permission_broker()
             .is_some_and(|broker| broker.pending_len() > 0)
+    }
+
+    /// Capture the roster now; the returned closure pushes that immutable
+    /// snapshot after the caller releases its state lock.
+    fn prepare_roster_transition(&self) -> Option<Box<dyn FnOnce() + Send>> {
+        let prepare = self
+            .attention_hooks
+            .lock()
+            .ok()
+            .and_then(|hooks| hooks.as_ref().map(|hooks| Arc::clone(&hooks.prepare)));
+        prepare.map(|prepare| prepare())
     }
 
     /// Append one metadata mark. Called by the central agent-event
@@ -2114,10 +2207,13 @@ impl SessionRuntime {
     pub(crate) fn set_attention_hooks(
         &self,
         suppressed: Arc<dyn Fn() -> bool + Send + Sync>,
-        notify: Arc<dyn Fn() + Send + Sync>,
+        prepare: Arc<dyn Fn() -> Box<dyn FnOnce() + Send> + Send + Sync>,
     ) {
         if let Ok(mut hooks) = self.attention_hooks.lock() {
-            *hooks = Some(AttentionHooks { suppressed, notify });
+            *hooks = Some(AttentionHooks {
+                suppressed,
+                prepare,
+            });
         }
     }
 
@@ -2155,38 +2251,46 @@ impl SessionRuntime {
         attention.take().is_some()
     }
 
-    fn raise_attention_for_event(&self, event: &SessionEvent) {
+    /// Whether the attention step of a publication pushed this session's row. It
+    /// returns false when presence suppressed the raise and when an existing
+    /// raise of equal or higher priority was kept — the cases where a status
+    /// change would otherwise go unannounced.
+    fn raise_attention_for_event(&self, event: &SessionEvent) -> bool {
         let reason = match event {
             SessionEvent::AgentFinished { .. } => AttentionReason::Finished,
             SessionEvent::AgentError { .. } => AttentionReason::Error,
             SessionEvent::PermissionRequest { .. } => AttentionReason::Permission,
-            _ => return,
+            _ => return false,
         };
-        self.raise_attention(reason);
+        self.raise_attention(reason)
     }
 
-    fn raise_attention(&self, reason: AttentionReason) {
-        let hooks = self.attention_hooks.lock().ok().and_then(|hooks| {
-            hooks
-                .as_ref()
-                .map(|hooks| (Arc::clone(&hooks.suppressed), Arc::clone(&hooks.notify)))
-        });
+    /// Whether the raise took the row to a client: `false` on every path that
+    /// stayed silent — no hooks, a suppressed presence, a raise already standing
+    /// at equal or higher priority — which is exactly when a status change has to
+    /// speak for itself.
+    fn raise_attention(&self, reason: AttentionReason) -> bool {
+        let hooks = self
+            .attention_hooks
+            .lock()
+            .ok()
+            .and_then(|hooks| hooks.as_ref().map(|hooks| Arc::clone(&hooks.suppressed)));
         // Attention is the transaction guard: hold it while consulting
         // presence so the suppression decision and the write cannot be
         // separated by a focus update. The global order is attention ->
         // presence; set_presence releases its presence guard before it calls
         // clear_attention, so it never holds these locks in reverse.
         let Ok(mut attention) = self.attention.lock() else {
-            return;
+            return false;
         };
-        if hooks.as_ref().is_some_and(|(suppressed, _)| suppressed()) {
-            return;
+        if hooks.as_ref().is_some_and(|suppressed| suppressed()) {
+            return false;
         }
         if attention
             .as_ref()
             .is_some_and(|current| current.reason.priority() >= reason.priority())
         {
-            return;
+            return false;
         }
         *attention = Some(Attention {
             reason,
@@ -2198,9 +2302,8 @@ impl SessionRuntime {
                 .unwrap_or(u64::MAX),
         });
         drop(attention);
-        if let Some((_, notify)) = hooks {
-            notify();
-        }
+        self.request_transition();
+        hooks.is_some()
     }
 
     pub(crate) fn notify_roster(&self) {

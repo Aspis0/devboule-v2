@@ -1107,36 +1107,29 @@ impl BridgeInner {
         &self,
         subscription_id: SubscriptionId,
     ) -> Result<(), DaemonError> {
-        let _lifecycle = self
-            .client_lifecycle
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let session_id = self
-            .attachments
-            .session_id_for(subscription_id)
-            .ok_or_else(|| {
-                DaemonError::Protocol("session attachment is not registered".to_string())
-            })?;
-        let client = self
-            .client
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone()
-            .ok_or_else(|| {
-                self.attachments.remove(subscription_id);
-                DaemonError::ConnectionLost
-            })?;
-        match client.session_detach_with_subscription(&session_id, subscription_id) {
-            Ok(()) => {
-                self.attachments.remove(subscription_id);
-                Ok(())
-            }
-            Err(DaemonError::ConnectionLost) => {
-                self.attachments.remove(subscription_id);
-                Err(DaemonError::ConnectionLost)
-            }
-            Err(error) => Err(error),
-        }
+        let (session_id, client) = {
+            let _lifecycle = self
+                .client_lifecycle
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let session_id = self
+                .attachments
+                .session_id_for(subscription_id)
+                .ok_or_else(|| {
+                    DaemonError::Protocol("session attachment is not registered".to_string())
+                })?;
+            let client = self
+                .client
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone();
+            // Every caller forgets its id before the detach goes out and never
+            // retries it, so a mapping kept past a failed detach had no reader
+            // and only grew the table (review fix-7 finding 7).
+            self.attachments.remove(subscription_id);
+            (session_id, client.ok_or(DaemonError::ConnectionLost)?)
+        };
+        client.session_detach_with_subscription(&session_id, subscription_id)
     }
 
     pub(crate) fn session_close(

@@ -73,6 +73,13 @@ vi.mock("../../lib/tauri", () => ({
   sessionPresence: vi.fn(async () => undefined),
   daemonRestart: vi.fn(async () => undefined),
   sessionPermissionRespond: vi.fn(async () => undefined),
+  // The queue's bearer calls, so a test that lets the production owner attach
+  // one fails on a counted mock rather than on a missing export.
+  sessionAttach: vi.fn(async () => 41),
+  sessionDetach: vi.fn(async () => undefined),
+  sessionSend: vi.fn(async () => undefined),
+  sessionInterrupt: vi.fn(async () => undefined),
+  createSessionChannel: vi.fn(() => ({})),
   createSessionStateChannel: vi.fn((onSnapshot: (snapshots: unknown[]) => void) => ({
     onSnapshot,
   })),
@@ -105,159 +112,174 @@ vi.mock("../terminal/TerminalSurface", () => ({
   ),
 }));
 
+// What the mocked chat surface was handed, per session: the workspace's
+// queue prop is asserted through it (identity, one per session, discard).
+const surfaceQueues = vi.hoisted(() => ({ bySession: new Map<string, unknown>() }));
+
 vi.mock("./AgentChatSurface", () => ({
   AgentChatSurface: ({
     sessionId,
     auxiliary,
+    hasPendingPermission,
+    queue,
     onPermissionRequest,
     onPermissionResolved,
   }: {
     sessionId: string;
     auxiliary?: ReactNode;
+    hasPendingPermission?: boolean;
+    queue?: unknown;
     onPermissionRequest?: (
       sessionId: string,
       subscriptionId: number,
       request: PermissionRequest,
     ) => void;
     onPermissionResolved?: (sessionId: string, resolution: PermissionResolved) => void;
-  }) => (
-    <div data-testid="agent-chat-surface">
-      {sessionId}
-      <div className="workspace-conversation">{auxiliary}</div>
-      <div data-testid="mock-composer" />
-      <button
-        type="button"
-        data-testid="emit-permission-a"
-        onClick={() =>
-          onPermissionRequest?.(sessionId, 41, {
-            type: "permission_request",
-            toolCallId: "tool-a",
-            title: "Run command",
-            command: "cmd.exe",
-            args: ["/c", "echo", "alpha"],
-            cwd: "C:\\alpha",
-            options: [
-              { optionId: "allow", name: "Allow once", kind: "allow_once" },
-              { optionId: "deny", name: "Deny", kind: "reject_once" },
-            ],
-          })
-        }
-      />
-      <button
-        type="button"
-        data-testid="emit-permission-a-renewed"
-        onClick={() =>
-          onPermissionRequest?.(sessionId, 42, {
-            type: "permission_request",
-            toolCallId: "tool-a",
-            title: "Run command",
-            command: "cmd.exe",
-            args: ["/c", "echo", "alpha"],
-            cwd: "C:\\alpha",
-            options: [
-              { optionId: "allow", name: "Allow once", kind: "allow_once" },
-              { optionId: "deny", name: "Deny", kind: "reject_once" },
-            ],
-          })
-        }
-      />
-      <button
-        type="button"
-        data-testid="emit-permission-b"
-        onClick={() =>
-          onPermissionRequest?.(sessionId, 41, {
-            type: "permission_request",
-            toolCallId: "tool-b",
-            title: "Run command",
-            command: "ping.exe",
-            args: ["-n", "1", "127.0.0.1"],
-            cwd: "C:\\beta",
-            options: [
-              { optionId: "allow", name: "Allow once", kind: "allow_once" },
-              { optionId: "deny", name: "Deny", kind: "reject_once" },
-            ],
-          })
-        }
-      />
-      <button
-        type="button"
-        data-testid="emit-permission-resolved"
-        onClick={() =>
-          onPermissionResolved?.(sessionId, { type: "permission_resolved", toolCallId: "tool-a" })
-        }
-      />
-      <button
-        type="button"
-        data-testid="emit-permission-resolved-creator-allow-always"
-        onClick={() =>
-          onPermissionResolved?.(sessionId, {
-            type: "permission_resolved",
-            toolCallId: "tool-a",
-            answeredBy: "s.creator.1",
-            selectedOptionId: "allow-always",
-            selectedOptionKind: "allow_always",
-            selectedOptionName: "Allow always",
-          })
-        }
-      />
-      <button
-        type="button"
-        data-testid="emit-permission-resolved-silent"
-        onClick={() =>
-          onPermissionResolved?.(sessionId, {
-            type: "permission_resolved",
-            toolCallId: "tool-a",
-            answeredBy: null,
-          })
-        }
-      />
-      <button
-        type="button"
-        data-testid="emit-permission-resolved-creator-allowed"
-        onClick={() =>
-          onPermissionResolved?.(sessionId, {
-            type: "permission_resolved",
-            toolCallId: "tool-a",
-            answeredBy: "s.creator.1",
-            selectedOptionId: "allow",
-            selectedOptionKind: "allow_once",
-            selectedOptionName: "Allow once",
-          })
-        }
-      />
-      <button
-        type="button"
-        data-testid="emit-permission-resolved-creator-denied"
-        onClick={() =>
-          onPermissionResolved?.(sessionId, {
-            type: "permission_resolved",
-            toolCallId: "tool-a",
-            answeredBy: "s.creator.1",
-            selectedOptionId: "deny",
-            selectedOptionKind: "reject_once",
-            selectedOptionName: "Deny",
-          })
-        }
-      />
-      <button
-        type="button"
-        data-testid="emit-permission-shared"
-        onClick={() =>
-          onPermissionRequest?.(sessionId, 41, {
-            type: "permission_request",
-            toolCallId: "shared-tool",
-            title: "Run command",
-            command: `shared-${sessionId}`,
-            cwd: `C:\\${sessionId}`,
-            options: [
-              { optionId: "allow", name: "Allow once", kind: "allow_once" },
-              { optionId: "deny", name: "Deny", kind: "reject_once" },
-            ],
-          })
-        }
-      />
-    </div>
-  ),
+  }) => {
+    surfaceQueues.bySession.set(sessionId, queue);
+    return (
+      <div data-testid="agent-chat-surface">
+        {sessionId}
+        <div
+          data-testid="pending-permission"
+          data-pending={String(hasPendingPermission === true)}
+        />
+        <div className="workspace-conversation">{auxiliary}</div>
+        <div data-testid="mock-composer" />
+        <button
+          type="button"
+          data-testid="emit-permission-a"
+          onClick={() =>
+            onPermissionRequest?.(sessionId, 41, {
+              type: "permission_request",
+              toolCallId: "tool-a",
+              title: "Run command",
+              command: "cmd.exe",
+              args: ["/c", "echo", "alpha"],
+              cwd: "C:\\alpha",
+              options: [
+                { optionId: "allow", name: "Allow once", kind: "allow_once" },
+                { optionId: "deny", name: "Deny", kind: "reject_once" },
+              ],
+            })
+          }
+        />
+        <button
+          type="button"
+          data-testid="emit-permission-a-renewed"
+          onClick={() =>
+            onPermissionRequest?.(sessionId, 42, {
+              type: "permission_request",
+              toolCallId: "tool-a",
+              title: "Run command",
+              command: "cmd.exe",
+              args: ["/c", "echo", "alpha"],
+              cwd: "C:\\alpha",
+              options: [
+                { optionId: "allow", name: "Allow once", kind: "allow_once" },
+                { optionId: "deny", name: "Deny", kind: "reject_once" },
+              ],
+            })
+          }
+        />
+        <button
+          type="button"
+          data-testid="emit-permission-b"
+          onClick={() =>
+            onPermissionRequest?.(sessionId, 41, {
+              type: "permission_request",
+              toolCallId: "tool-b",
+              title: "Run command",
+              command: "ping.exe",
+              args: ["-n", "1", "127.0.0.1"],
+              cwd: "C:\\beta",
+              options: [
+                { optionId: "allow", name: "Allow once", kind: "allow_once" },
+                { optionId: "deny", name: "Deny", kind: "reject_once" },
+              ],
+            })
+          }
+        />
+        <button
+          type="button"
+          data-testid="emit-permission-resolved"
+          onClick={() =>
+            onPermissionResolved?.(sessionId, { type: "permission_resolved", toolCallId: "tool-a" })
+          }
+        />
+        <button
+          type="button"
+          data-testid="emit-permission-resolved-creator-allow-always"
+          onClick={() =>
+            onPermissionResolved?.(sessionId, {
+              type: "permission_resolved",
+              toolCallId: "tool-a",
+              answeredBy: "s.creator.1",
+              selectedOptionId: "allow-always",
+              selectedOptionKind: "allow_always",
+              selectedOptionName: "Allow always",
+            })
+          }
+        />
+        <button
+          type="button"
+          data-testid="emit-permission-resolved-silent"
+          onClick={() =>
+            onPermissionResolved?.(sessionId, {
+              type: "permission_resolved",
+              toolCallId: "tool-a",
+              answeredBy: null,
+            })
+          }
+        />
+        <button
+          type="button"
+          data-testid="emit-permission-resolved-creator-allowed"
+          onClick={() =>
+            onPermissionResolved?.(sessionId, {
+              type: "permission_resolved",
+              toolCallId: "tool-a",
+              answeredBy: "s.creator.1",
+              selectedOptionId: "allow",
+              selectedOptionKind: "allow_once",
+              selectedOptionName: "Allow once",
+            })
+          }
+        />
+        <button
+          type="button"
+          data-testid="emit-permission-resolved-creator-denied"
+          onClick={() =>
+            onPermissionResolved?.(sessionId, {
+              type: "permission_resolved",
+              toolCallId: "tool-a",
+              answeredBy: "s.creator.1",
+              selectedOptionId: "deny",
+              selectedOptionKind: "reject_once",
+              selectedOptionName: "Deny",
+            })
+          }
+        />
+        <button
+          type="button"
+          data-testid="emit-permission-shared"
+          onClick={() =>
+            onPermissionRequest?.(sessionId, 41, {
+              type: "permission_request",
+              toolCallId: "shared-tool",
+              title: "Run command",
+              command: `shared-${sessionId}`,
+              cwd: `C:\\${sessionId}`,
+              options: [
+                { optionId: "allow", name: "Allow once", kind: "allow_once" },
+                { optionId: "deny", name: "Deny", kind: "reject_once" },
+              ],
+            })
+          }
+        />
+      </div>
+    );
+  },
 }));
 
 import {
@@ -288,7 +310,10 @@ import type {
   WorkspaceGitStatus,
 } from "../../types/ipc";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
+import type { MessageQueue } from "./messageQueue";
 import { resetSharedSessionControllerForTests, sharedSessionController } from "./workspaceSessions";
+import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
+import { createSenderProbe, type SenderProbe } from "./queueSenderDouble";
 import { createDelegationController } from "../../lib/delegation";
 import type { SessionStateSnapshot } from "../../types/ipc";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
@@ -492,11 +517,18 @@ function newTabMenuItem(container: HTMLElement, label: string): HTMLButtonElemen
 describe("Workspace sessions", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
+  let sender: SenderProbe;
 
   beforeEach(() => {
     // The shared controller is app-lifetime in production; a test must not
     // inherit the roster a previous test left in it.
     resetSharedSessionControllerForTests();
+    // The queue owner is app-lifetime too, and its sender is the wire a queued
+    // message leaves on: both are reset and counted, never left to the last test.
+    resetSharedSessionQueueOwnerForTests();
+    sender = createSenderProbe();
+    sharedSessionQueueOwner({ newSender: sender.newSender });
+    surfaceQueues.bySession.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);
@@ -2064,6 +2096,250 @@ describe("Workspace sessions", () => {
     const composer = container.querySelector('[data-testid="mock-composer"]');
     if (composer === null) throw new Error("composer did not render");
     expect(conversation?.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("marks the chat surface permission-pending only while a card is unanswered", async () => {
+    // The queue's permission rule is computed by the Workspace (queueing
+    // behind an unanswered card would strand the message), so the surface's
+    // fact is asserted end-to-end, not only at the prop.
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+    // The + opens the new-tab menu (the flow this test predates the rebase
+    // brought in); "Agent" is the create.
+    const agentItem = [
+      ...container.ownerDocument.querySelectorAll<HTMLButtonElement>("[role='menuitem']"),
+    ].find((button) => button.textContent === "Agent");
+    if (agentItem === undefined) throw new Error("+ menu item did not render: Agent");
+    await act(async () => agentItem.click());
+    await act(async () => undefined);
+
+    const pending = () =>
+      container.querySelector('[data-testid="pending-permission"]')?.getAttribute("data-pending");
+    expect(pending()).toBe("false");
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]")?.click(),
+    );
+    expect(pending()).toBe("true");
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-resolved]")?.click(),
+    );
+    expect(pending()).toBe("false");
+  });
+
+  function queuedTexts(queue: MessageQueue): string[] {
+    let items: readonly { text: string }[] = [];
+    const stop = queue.subscribe((next) => {
+      items = next;
+    });
+    stop();
+    return items.map((item) => item.text);
+  }
+
+  // The queue the Workspace handed the mock surface for one session.
+  function handedQueue(sessionId: string): MessageQueue {
+    const queue = surfaceQueues.bySession.get(sessionId);
+    if (queue === undefined) throw new Error(`no queue was handed for ${sessionId}`);
+    return queue as MessageQueue;
+  }
+
+  function rosterRow(
+    id: string,
+    activity?: "idle" | "working" | "blocked" | "unknown",
+  ): SessionStateSnapshot {
+    return {
+      id,
+      workspaceId: "workspace-1",
+      kind: "acp" as const,
+      // The strip shows the row's own title, and the tests click the tab by it.
+      title: id.replace("agent-", "agent "),
+      state: { type: "live" as const, generation: 1 },
+      elapsedMs: 0,
+      ...(activity === undefined ? {} : { activity }),
+    };
+  }
+
+  async function pushRoster(snapshots: SessionStateSnapshot[]): Promise<void> {
+    const listener = vi.mocked(createSessionStateChannel).mock.calls[0]?.[0] as
+      | ((snapshots: SessionStateSnapshot[]) => void)
+      | undefined;
+    await act(async () => {
+      listener?.(snapshots);
+    });
+  }
+
+  it("hands the surface one queue per session, and the same one when you come back", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      acpSession("agent-a", "agent a"),
+      acpSession("agent-b", "agent b"),
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await pushRoster([rosterRow("agent-a"), rosterRow("agent-b")]);
+
+    const queueA = handedQueue("agent-a");
+    await act(async () => {
+      queueA.add("yours first", []);
+    });
+
+    const tabB = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")].find(
+      (tab) => tab.textContent?.includes("agent b"),
+    );
+    if (tabB === undefined) throw new Error("session B tab did not render");
+    await act(async () => tabB.click());
+    await act(async () => undefined);
+
+    const queueB = handedQueue("agent-b");
+    expect(queueB).not.toBe(queueA); // one queue per session, not one for all
+
+    const tabA = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")].find(
+      (tab) => tab.textContent?.includes("agent a"),
+    );
+    if (tabA === undefined) throw new Error("session A tab did not render");
+    await act(async () => tabA.click());
+    await act(async () => undefined);
+
+    // The same object, with the same item on it: the hook resubscribes only on
+    // identity change, and the row never left.
+    expect(handedQueue("agent-a")).toBe(queueA);
+    expect(queuedTexts(queueA)).toEqual(["yours first"]);
+  });
+
+  it("sends what you queued after you leave the Workspace, in the order you queued it", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await pushRoster([rosterRow("agent-a")]);
+
+    const queueA = handedQueue("agent-a");
+    await act(async () => {
+      queueA.add("first after", []);
+      queueA.add("second after", []);
+    });
+
+    // Settings takes the screen: the Workspace unmounts, and with the old
+    // ownership every queue in it went with it (review F1).
+    await act(async () => root.unmount());
+    expect(queuedTexts(queueA)).toEqual(["first after", "second after"]);
+
+    // The turn the user queued during closes, and the queue sends the head. The
+    // daemon opens that send's turn before it answers, so the second row waits
+    // for that turn's end: the edge into idle is what moves the row.
+    sender.holdNextWrite();
+    await pushRoster([rosterRow("agent-a", "working")]);
+    await pushRoster([rosterRow("agent-a", "idle")]);
+    await pushRoster([rosterRow("agent-a", "working")]);
+    sender.releaseWrites();
+    await act(async () => undefined);
+    expect(sender.sent.map((message) => message.text)).toEqual(["first after"]);
+
+    await pushRoster([rosterRow("agent-a", "idle")]);
+    await act(async () => undefined);
+    expect(sender.sent.map((message) => message.text)).toEqual(["first after", "second after"]);
+    expect(queuedTexts(queueA)).toEqual([]); // the rows are gone when you come back
+  });
+
+  it("sends the last message you queued, not the ones behind it", async () => {
+    // Review fix-1 P1-1: the queue released its own bearer on the way to
+    // sending the only row it had, so the last message of a background tab was
+    // the one that never arrived. One row is the case that catches it.
+    vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await pushRoster([rosterRow("agent-a")]);
+
+    const queueA = handedQueue("agent-a");
+    await act(async () => {
+      queueA.add("the only one", []);
+    });
+    await act(async () => root.unmount());
+
+    // One row, and the message that never arrives is the one at the back of the
+    // old release rule: nothing else is pending, so nothing would have saved it.
+    await pushRoster([rosterRow("agent-a", "working")]);
+    await pushRoster([rosterRow("agent-a", "idle")]);
+    await act(async () => undefined);
+
+    expect(sender.sent.map((message) => message.text)).toEqual(["the only one"]);
+    expect(queuedTexts(queueA)).toEqual([]);
+  });
+
+  it("sends a background tab's queue when its turn ends, without showing the tab", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      acpSession("agent-a", "agent a"),
+      acpSession("agent-b", "agent b"),
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await pushRoster([rosterRow("agent-a"), rosterRow("agent-b")]);
+
+    const queueA = handedQueue("agent-a");
+    await act(async () => {
+      queueA.add("while you read B", []);
+    });
+
+    const tabB = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")].find(
+      (tab) => tab.textContent?.includes("agent b"),
+    );
+    if (tabB === undefined) throw new Error("session B tab did not render");
+    await act(async () => tabB.click());
+    await act(async () => undefined);
+    await pushRoster([rosterRow("agent-a", "working"), rosterRow("agent-b", "idle")]);
+    await pushRoster([rosterRow("agent-a", "idle"), rosterRow("agent-b", "idle")]);
+    await act(async () => undefined);
+
+    expect(sender.sent.map((message) => message.text)).toEqual(["while you read B"]);
+    expect(queuedTexts(queueA)).toEqual([]);
+    expect(container.textContent).toContain("agent b"); // and B is what was on screen
+  });
+
+  it("drops the queue when the roster drops the session, and keeps it through a refresh", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([acpSession("agent-a", "agent a")]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+    await pushRoster([rosterRow("agent-a")]);
+
+    const queueA = handedQueue("agent-a");
+    await act(async () => {
+      queueA.add("kept across a list", []);
+    });
+
+    // A reconnect goes straight through the list, and the tab strip's derived
+    // list drops the row with it. A list is not the daemon's word that a
+    // session is gone, so the queue stands (review F2).
+    vi.mocked(sessionsList).mockResolvedValue([]);
+    await act(async () => sharedSessionController().refresh());
+    expect(queuedTexts(queueA)).toEqual(["kept across a list"]);
+
+    // The full push no longer names it: closed, archived or deleted, and the
+    // queue goes with its session, as Paseo's does when an agent leaves the
+    // directory.
+    await pushRoster([]);
+    expect(queuedTexts(queueA)).toEqual([]);
   });
 
   it("renders the description in its own compact class", async () => {

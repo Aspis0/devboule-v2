@@ -883,8 +883,8 @@ fn session_send_accepts_only_the_steer_active_turn_behavior() {
     // field is present, so `default` does not apply) and a differently-cased
     // spelling of the one behaviour. Both must be refused by the decoder,
     // which is where the daemon's own frame reader refuses them: a steer the
-    // daemon read as "the default" would be an interrupt-and-replace the
-    // caller never asked for.
+    // daemon read as "the default" would be a plain send the caller never asked
+    // for.
     assert!(serde_json::from_str::<ClientMessage>(
             r#"{"type":"session_send","id":7,"sessionId":"s.a.1","subscriptionId":11,"text":"hello","activeTurnBehavior":""}"#
         )
@@ -1169,6 +1169,8 @@ fn session_state_broadcast_is_a_compact_event_snapshot() {
                 unattended: UnattendedState::No,
                 labels: Default::default(),
                 delegation: None,
+
+                activity: None,
             }],
         },
     });

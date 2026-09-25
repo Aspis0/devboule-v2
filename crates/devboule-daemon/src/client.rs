@@ -418,12 +418,10 @@ impl DaemonClient {
             session_id: session_id.to_string(),
             subscription_id,
         });
+        self.unsubscribe(subscription_id);
+        self.remove_pending_subscription_for_id(subscription_id);
         match result? {
-            DaemonMessage::Ok { .. } => {
-                self.unsubscribe(subscription_id);
-                self.remove_pending_subscription_for_id(subscription_id);
-                Ok(())
-            }
+            DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -578,6 +576,7 @@ impl DaemonClient {
             &[],
             &[],
             None,
+            None,
         )
     }
 
@@ -594,7 +593,22 @@ impl DaemonClient {
     /// list is the honest value for a caller that holds no reference, and it is
     /// what every send before the composer had a deposit path passed.
     ///
+    /// Send one prompt, naming the send's retry identity.
+    ///
+    /// `idempotency_key` is `None` for every send the app does not intend to
+    /// repeat — a composer prompt is one keystroke — and the queued item's own
+    /// id names the ones it does, so a rung of that queue's retry ladder that
+    /// the daemon already took is answered from its receipt instead of running
+    /// the same prompt a second time (`server/sessions.rs::send_fingerprint`
+    /// is what refuses a key reused with different bytes).
+    ///
     /// [`PromptAttachment`]: devboule_protocol::PromptAttachment
+    // The frame carries seven fields and the client names them one for one, as
+    // the daemon's own `session_send` dispatcher does (`server/sessions.rs`,
+    // same allow there): a params struct invented to quiet the lint would be a
+    // second shape for one wire message, with nothing in it that the frame does
+    // not already name.
+    #[allow(clippy::too_many_arguments)]
     pub fn session_send_with_subscription(
         &self,
         session_id: &str,
@@ -603,6 +617,7 @@ impl DaemonClient {
         attachments: &[PromptAttachment],
         attachment_references: &[AttachmentReference],
         active_turn_behavior: Option<ActiveTurnBehavior>,
+        idempotency_key: Option<String>,
     ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {
@@ -612,7 +627,7 @@ impl DaemonClient {
             text: text.to_string(),
             attachments: attachments.to_vec(),
             attachment_references: attachment_references.to_vec(),
-            idempotency_key: None,
+            idempotency_key,
             active_turn_behavior,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),

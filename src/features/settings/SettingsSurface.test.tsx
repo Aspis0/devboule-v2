@@ -1450,9 +1450,11 @@ describe("Settings removed placeholder rows", () => {
     await act(async () => undefined);
 
     expect(container.textContent).not.toContain("Crescent reveal zone");
-    expect(container.textContent).not.toContain("Default send");
+    // "Default send" was a placeholder once; it is a real setting now and its
+    // presence is asserted below. These are the rows that must stay gone.
     expect(container.textContent).not.toContain("Daemon shuts down with the app");
     expect(container.textContent).not.toContain("Telemetry");
+    expect(container.textContent).toContain("Default send");
     expect(container.textContent).toContain("Retention limits");
   });
 

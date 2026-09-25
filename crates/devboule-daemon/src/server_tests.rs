@@ -479,7 +479,7 @@ fn unchanged_roster_transition_is_not_resent() {
     state.watch_sessions(&owner, &conn);
     assert_eq!(conn.pull_state_events().len(), 1, "initial snapshot");
 
-    state.broadcast_session_state(&owner);
+    state.broadcast_session_state(&owner, None);
 
     assert!(
         conn.pull_state_events().is_empty(),

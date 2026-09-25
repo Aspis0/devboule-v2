@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { composerActionLabel } from "../../lib/sendBehavior";
 
 export interface WorkspaceCommand {
   name: string;
@@ -10,13 +11,36 @@ export interface WorkspaceCommand {
 /** Height cap of the growing textarea: eight 20px lines. */
 const TEXTAREA_MAX_HEIGHT_PX = 160;
 
+const COMPOSER_PLACEHOLDER = "Message the agent, or type / for commands";
+
+/** The draft the queue hands back: applied once, then dropped. `focus` is
+ * false for an Edit (the row rule owns that focus) and true for a refused
+ * steer, whose text the user must look at. */
+interface RestoredDraft {
+  text: string;
+  focus: boolean;
+  nonce: number;
+}
+
 interface WorkspaceComposerProps {
   streaming: boolean;
+  turnActive: boolean;
+  queueAllowed?: boolean;
   disabled?: boolean;
   disabledReason: string | null;
   availableCommands?: readonly WorkspaceCommand[];
   onSend: (text: string) => void;
+  /** Queue the composer's text while the turn runs; absent, Enter always sends. */
+  onQueue?: (text: string) => void;
+  /** The resolved setting: Enter queues while the turn runs (the permission rule flips it to steer). */
+  enterQueues?: boolean;
   onStop?: () => void;
+  /** Rows above the composer: the session's queued follow-ups. */
+  queuedTrack?: ReactNode;
+  /** Draft handed back by the queue, applied once per nonce. */
+  restoreDraft?: RestoredDraft | null;
+  /** Handed the textarea element so the parent can put the focus back here. */
+  captureTextarea?: (element: HTMLTextAreaElement | null) => void;
   /** Pickers rendered on the left of the control bar, below the textarea. */
   controls?: ReactNode;
   /** Context ring for the control bar, between the pickers and the actions —
@@ -34,11 +58,18 @@ function commandQuery(input: string): string | null {
 
 export const WorkspaceComposer = memo(function WorkspaceComposer({
   streaming,
+  turnActive,
+  queueAllowed = true,
   disabled = false,
   disabledReason,
   availableCommands = [],
   onSend,
+  onQueue,
+  enterQueues = false,
   onStop,
+  queuedTrack = null,
+  restoreDraft = null,
+  captureTextarea,
   controls = null,
   contextMeter = null,
 }: WorkspaceComposerProps) {
@@ -54,12 +85,47 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     textarea.style.overflowY = overflowing ? "auto" : "hidden";
   }, [input]);
 
+  // A queue hand-back (an Edit's text, a refused steer's text) is applied
+  // once, keyed by its nonce; only a refused steer also takes the focus,
+  // because an Edit's focus follows the row rule in the track.
+  useEffect(() => {
+    if (restoreDraft === null) return;
+    setInput(restoreDraft.text);
+    if (restoreDraft.focus) textareaRef.current?.focus();
+  }, [restoreDraft]);
+
   const sendInput = useCallback(() => {
     const text = input.trim();
     if (!text || disabled) return;
     onSend(text);
     setInput("");
   }, [disabled, input, onSend, setInput]);
+
+  const queueInput = useCallback(() => {
+    const text = input.trim();
+    if (!text || disabled || onQueue === undefined) return;
+    onQueue(text);
+    setInput("");
+  }, [disabled, input, onQueue, setInput]);
+
+  const queueAvailable = turnActive && queueAllowed && !disabled && onQueue !== undefined;
+  const defaultActionQueues = enterQueues && queueAvailable;
+
+  const runDefaultAction = useCallback(() => {
+    if (defaultActionQueues) queueInput();
+    else sendInput();
+  }, [defaultActionQueues, queueInput, sendInput]);
+
+  // Paseo's runAlternateSendAction: with the queue default the alternate key
+  // sends; with the steer default it queues onto a running turn, and does
+  // nothing when there is no turn to queue onto.
+  const runAlternateAction = useCallback(() => {
+    if (enterQueues) {
+      sendInput();
+      return;
+    }
+    if (queueAvailable) queueInput();
+  }, [enterQueues, queueAvailable, queueInput, sendInput]);
 
   const handleComposerKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -71,9 +137,10 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
-      sendInput();
+      if (event.ctrlKey || event.metaKey) runAlternateAction();
+      else runDefaultAction();
     },
-    [sendInput],
+    [runAlternateAction, runDefaultAction],
   );
 
   const query = commandQuery(input);
@@ -82,6 +149,8 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       ? []
       : availableCommands.filter((command) => command.name.toLowerCase().includes(query));
   const commandMenuVisible = !disabled && query !== null && availableCommands.length > 0;
+  // Paseo's submit-button words on the button that does what Enter does.
+  const actionLabel = composerActionLabel(defaultActionQueues);
 
   const selectCommand = useCallback(
     (command: WorkspaceCommand) => {
@@ -93,6 +162,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 
   return (
     <div className="workspace-composer-wrap">
+      {queuedTrack}
       {commandMenuVisible ? (
         <div className="workspace-command-menu" role="listbox" aria-label="Available commands">
           <div className="workspace-command-menu-heading">Agent commands</div>
@@ -120,13 +190,14 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
       ) : null}
       <div className="workspace-composer">
         <textarea
-          ref={textareaRef}
+          ref={(element) => {
+            textareaRef.current = element;
+            captureTextarea?.(element);
+          }}
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleComposerKeyDown}
-          placeholder={
-            streaming ? "Steer the running turn…" : "Message the agent, or type / for commands"
-          }
+          placeholder={COMPOSER_PLACEHOLDER}
           rows={1}
           aria-label="Message the agent"
           disabled={disabled}
@@ -139,6 +210,18 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
             ) : null}
           </div>
           {contextMeter}
+          {queueAvailable ? (
+            <button
+              type="button"
+              className="workspace-secondary-action workspace-queue-action"
+              data-testid="composer-queue-action"
+              title={actionLabel}
+              onClick={runDefaultAction}
+              disabled={disabled || !input.trim()}
+            >
+              {actionLabel}
+            </button>
+          ) : null}
           {streaming && onStop ? (
             <button
               type="button"

@@ -136,17 +136,28 @@ pub async fn session_presence(
 /// against the session's store. Optional for the same reason as the inline list
 /// — a caller that predates deposits sends no key and gets the empty list.
 ///
+/// `idempotency_key` is the send's retry identity. Absent for every send the
+/// app does not intend to repeat; the app's message queue names the queued
+/// item's own id, so a rung of its retry ladder that the daemon already took
+/// is answered from the receipt rather than run again as a second prompt.
+///
 /// `active_turn_behavior` is the same kind of optional key for the slice-4
 /// steering field: `"steer"` asks the daemon to deliver this text into a turn
-/// that is already running, `"queue"` asks it to hold the text for the next
-/// turn, and an absent key keeps the old interrupt-and-replace default. The
-/// value travels as the protocol's own string; the daemon owns what the two
-/// words mean.
+/// that is already running, and an absent key asks nothing of a running turn —
+/// the plain path starts its turn and interrupts nothing, so a caller that
+/// means to replace a running turn sends `session_interrupt` first. The only
+/// other spelling the protocol carries is refused here, so a misspelling costs
+/// an `InvalidRequest` rather than a frame the daemon answers with an error.
 ///
 /// The word is parsed to the protocol's own type on the way in
 /// (`parse_active_turn_behavior` below), so a value the daemon would refuse is
-/// refused here as `InvalidRequest` instead of travelling as a frame the daemon
-/// answers with an error.
+/// refused as `InvalidRequest` before it leaves.
+//
+// The argument list is the wire's own: Tauri's macro reads these parameters to
+// build the command's JS argument names, so the struct that would quiet
+// `too_many_arguments` here would rename the keys `src/lib/tauri.ts` sends.
+// The frozen-signature test in this file is what keeps the eight honest.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn session_send(
     bridge: State<'_, DaemonBridge>,
@@ -156,6 +167,7 @@ pub async fn session_send(
     attachments: Option<Vec<PromptAttachment>>,
     active_turn_behavior: Option<String>,
     attachment_references: Option<Vec<AttachmentReference>>,
+    idempotency_key: Option<String>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     require_write_size(&text)?;
@@ -163,6 +175,7 @@ pub async fn session_send(
     require_attachment_limits(&attachments)?;
     let attachment_references = attachment_references.unwrap_or_default();
     require_attachment_reference_limits(&id, &attachment_references)?;
+    require_idempotency_key(idempotency_key.as_deref())?;
     let active_turn_behavior = parse_active_turn_behavior(active_turn_behavior.as_deref())?;
     let client = require_client(&bridge)?;
     let inner = bridge.shared();
@@ -175,6 +188,7 @@ pub async fn session_send(
             &attachments,
             &attachment_references,
             active_turn_behavior,
+            idempotency_key,
         )
     })
     .await
@@ -401,6 +415,21 @@ fn require_session_id(id: &str) -> Result<(), CommandError> {
     validate_session_id(id).map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
 }
 
+/// The send's retry identity, checked on this side of the pipe as well.
+///
+/// Same reason as [`require_attachment_limits`]: the daemon runs
+/// `validate_idempotency_key` on every keyed request, and a key this side
+/// invented wrong — an empty one, a character the wire's id alphabet does not
+/// carry — should cost the caller a rejection, not a round trip that the daemon
+/// answers after the frame has already been queued.
+fn require_idempotency_key(key: Option<&str>) -> Result<(), CommandError> {
+    let Some(key) = key else {
+        return Ok(());
+    };
+    devboule_protocol::validate_idempotency_key(key)
+        .map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
+}
+
 fn require_write_size(text: &str) -> Result<(), CommandError> {
     if text.len() > MAX_WRITE_BYTES {
         return Err(CommandError::new(
@@ -452,11 +481,11 @@ fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
 
 /// The app's `active_turn_behavior` word, as the protocol's own type.
 ///
-/// The word travels as the protocol's (`"steer"`; absent is the daemon's
-/// interrupt-and-replace default), so the parse is the protocol's too: serde is
-/// what says which words exist, and a word the daemon would refuse is refused
-/// here as `InvalidRequest` instead of travelling as a frame the daemon answers
-/// with an error.
+/// The word travels as the protocol's (`"steer"`; absent asks nothing of a
+/// running turn), so the parse is the protocol's too: serde is what says which
+/// words exist, and a word the daemon would refuse is refused here as
+/// `InvalidRequest` instead of travelling as a frame the daemon answers with an
+/// error.
 fn parse_active_turn_behavior(
     word: Option<&str>,
 ) -> Result<Option<ActiveTurnBehavior>, CommandError> {
@@ -488,6 +517,21 @@ mod tests {
     }
 
     #[test]
+    fn a_send_retry_identity_is_checked_before_the_pipe() {
+        // The shape the app's message queue puts on a queued or steered send.
+        require_idempotency_key(Some("s.app-4242.00000001.queued-3")).expect("queue key");
+        require_idempotency_key(None).expect("a plain send names no identity");
+        let empty = require_idempotency_key(Some("")).expect_err("rejected");
+        assert_eq!(empty.code, ErrorCode::InvalidRequest);
+        // The wire's own alphabet and cap, so a key the daemon could never
+        // store is refused as a round trip it does not make.
+        let colon = require_idempotency_key(Some("queued:3")).expect_err("rejected");
+        assert_eq!(colon.code, ErrorCode::InvalidRequest);
+        let long = require_idempotency_key(Some(&"k".repeat(129))).expect_err("rejected");
+        assert_eq!(long.code, ErrorCode::InvalidRequest);
+    }
+
+    #[test]
     fn oversized_write_is_invalid_request() {
         require_write_size(&"x".repeat(MAX_WRITE_BYTES)).expect("at cap");
         let error = require_write_size(&"x".repeat(MAX_WRITE_BYTES + 1)).expect_err("rejected");
@@ -500,7 +544,7 @@ mod tests {
         assert_eq!(
             parse_active_turn_behavior(None).expect("absent"),
             None,
-            "an absent key is the daemon's interrupt-and-replace default"
+            "an absent key is the plain send that interrupts nothing"
         );
         assert_eq!(
             parse_active_turn_behavior(Some("steer")).expect("steer"),
@@ -637,6 +681,34 @@ mod tests {
         ) {
         }
         frozen(session_attachment_read);
+    }
+
+    /// The Tauri boundary `src/lib/tauri.ts` is written against: `{ id,
+    /// subscriptionId, text, attachments?, activeTurnBehavior?,
+    /// attachmentReferences?, idempotencyKey? }` in, nothing out. The last name
+    /// is the queue's retry identity, and this is the one place all eight are
+    /// written down together — the manifest in `src/lib/tauri.ts` is checked
+    /// against the TS type by its own guard, and the type against this command
+    /// here.
+    // The eight-type list is the test: it is the command's argument shape, and
+    // factoring it into named parts would hide the thing being pinned.
+    #[allow(clippy::type_complexity)]
+    #[test]
+    fn session_send_forwarder_has_the_frozen_tauri_signature() {
+        fn frozen<Fut: std::future::Future<Output = Result<(), CommandError>>>(
+            _: fn(
+                State<'static, DaemonBridge>,
+                String,
+                SubscriptionId,
+                String,
+                Option<Vec<PromptAttachment>>,
+                Option<String>,
+                Option<Vec<AttachmentReference>>,
+                Option<String>,
+            ) -> Fut,
+        ) {
+        }
+        frozen(session_send);
     }
 
     /// The sibling of `session_close`'s shape: `{ id, subscription_id? }` in,

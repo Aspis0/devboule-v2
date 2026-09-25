@@ -74,6 +74,8 @@ fn attention_uses_camel_case_and_omits_absent_snapshot_value() {
         unattended: UnattendedState::No,
         labels: Default::default(),
         delegation: None,
+
+        activity: None,
     };
     let encoded = serde_json::to_value(snapshot).expect("snapshot json");
     assert_eq!(encoded["workspaceId"], "ws-1");
@@ -111,6 +113,8 @@ fn snapshot_carries_the_display_name_and_the_creator_in_camel_case() {
             answered: 3,
             state: DelegationRunState::Active,
         }),
+
+        activity: None,
     };
     let encoded = serde_json::to_value(&snapshot).expect("snapshot json");
     assert_eq!(encoded["displayName"], "worker");
@@ -1482,6 +1486,8 @@ fn the_roster_snapshot_carries_the_marker_on_every_push() {
         unattended: UnattendedState::Yes,
         labels: Default::default(),
         delegation: None,
+
+        activity: None,
     };
     for (state, word) in [
         (UnattendedState::Yes, "yes"),

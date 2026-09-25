@@ -20,13 +20,13 @@
 //!   versions and which binary to update. Neither side may hang or try to
 //!   parse the rest of the stream as the other version.
 //!
-//! This crate speaks only version [`PROTOCOL_VERSION`] (5), with
-//! [`PROTOCOL_MIN_VERSION`] also 5. Older dialects are refused: required
-//! fields (`created_at_ms`, `Workspace.path`, subscription identity) were
-//! added and the daemon always serializes the current struct, so agreeing on
-//! an older version
-//! would not produce an old-shaped payload. Bumping
-//! `PROTOCOL_MIN_VERSION` is how an old dialect is dropped.
+//! This crate speaks only the current dialect. An optional field can still
+//! require a version bump when the app depends on its meaning; for example,
+//! queue safety depends on activity readings for live rows. Required fields and
+//! changed field types also require a bump. The daemon always serializes the
+//! current struct, so agreeing on an older version would not produce an
+//! old-shaped payload. Update [`PROTOCOL_MIN_VERSION`] when an older dialect
+//! can no longer be used safely.
 //!
 //! Capabilities are an open string set, independently negotiated as the
 //! intersection of what both sides listed. Unknown capability names MUST be
@@ -130,8 +130,9 @@ pub use session::{
 
 /// Current protocol dialect spoken by this crate.
 ///
-/// A field added with `#[serde(default)]` is backward compatible and needs
-/// no bump (`cwd`). A required field is a breaking change and requires
+/// A field added with `#[serde(default)]` can be backward compatible and need
+/// no bump (`cwd`), unless the app depends on the field's semantics. A required
+/// field is a breaking change and requires
 /// bumping both this constant and [`PROTOCOL_MIN_VERSION`] (`created_at_ms`,
 /// `Workspace.path`), and so is a field that changes **type** with the key
 /// kept: 4 → 5 moved `unattended` from an optional JSON boolean to the
@@ -147,11 +148,11 @@ pub use session::{
 /// `agent_background_tasks_changed`): the daemon and app are shipped together,
 /// and these output-only tags do not change existing request shapes. Revisit
 /// this if peers become independently versioned.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.
-pub const PROTOCOL_MIN_VERSION: u32 = 5;
+pub const PROTOCOL_MIN_VERSION: u32 = PROTOCOL_VERSION;
 
 /// Well-known capability names. These are strings on the wire so a peer that
 /// does not know a name can still complete the handshake.
@@ -731,8 +732,7 @@ mod tests {
 
     #[test]
     fn protocol_version_and_min_match() {
-        assert_eq!(PROTOCOL_VERSION, 5);
-        assert_eq!(PROTOCOL_MIN_VERSION, 5);
+        assert_eq!(PROTOCOL_MIN_VERSION, PROTOCOL_VERSION);
     }
 
     #[test]

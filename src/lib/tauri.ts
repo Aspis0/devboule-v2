@@ -145,8 +145,14 @@ export type CommandArgs = {
      */
     attachments?: readonly PromptAttachment[];
     /**
-     * Omitted for a plain send, which is what every caller before steering
-     * did: the daemon's default for an absent field is interrupt-and-replace.
+     * Omitted for a plain send, which is what every caller before steering did:
+     * an absent key keeps the frame the one that predates idempotency. Present
+     * on a queued or steered send, whose retry identity is the queue item's own
+     * id: the daemon answers a re-sent key from its receipt instead of running
+     * the same prompt twice (review F4).
+     */
+    idempotencyKey?: string;
+    /**
      * Present only when a turn is already running and the send must join it.
      */
     activeTurnBehavior?: ActiveTurnBehavior;
@@ -410,6 +416,7 @@ export const COMMAND_ARG_KEYS = {
     "attachments",
     "activeTurnBehavior",
     "attachmentReferences",
+    "idempotencyKey",
   ],
   session_deposit: ["id", "attachment"],
   session_attachment_read: ["reference"],
@@ -725,15 +732,16 @@ export const sessionSend = (
   attachments?: readonly PromptAttachment[],
   activeTurnBehavior?: ActiveTurnBehavior,
   attachmentReferences?: readonly AttachmentReference[],
+  idempotencyKey?: string,
 ) =>
   invokeTyped("session_send", {
     id,
     subscriptionId,
     text,
     ...(attachments === undefined || attachments.length === 0 ? {} : { attachments }),
-    // Absent for a plain send: the daemon reads an absent field as
-    // interrupt-and-replace, and an explicit `undefined` would travel as a
-    // key the old wire never carried.
+    // Absent for a plain send: the daemon starts a turn with it and interrupts
+    // nothing. Present only when the caller asked the text to join the turn that
+    // is already running.
     ...(activeTurnBehavior === undefined ? {} : { activeTurnBehavior }),
     // Same rule for the references: absent, never empty. A send that names no
     // stored attachment is every send that predates the deposit path, and its
@@ -741,6 +749,9 @@ export const sessionSend = (
     ...(attachmentReferences === undefined || attachmentReferences.length === 0
       ? {}
       : { attachmentReferences }),
+    // Absent, never empty: a send with no retry identity is every send that
+    // predates the queue, and the daemon's ledger keys nothing on it.
+    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
   });
 /**
  * Stores one attachment for a session and answers the reference a later

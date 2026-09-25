@@ -487,6 +487,17 @@ mod session_resume_tests;
 #[cfg(test)]
 #[path = "session_roster_access_tests.rs"]
 mod session_roster_access_tests;
+/// The silence-and-liveness tests carved out of `session_tests` (its lines
+/// 1067-1262 at `d00145f`): the threshold transition emitted once, the queued
+/// silence dropped when output or an exit lands first, the ACP roster notice on
+/// leaving silent, the OS liveness probe that marks an exit without EOF, and an
+/// elapsed time that keeps a recovered session's unknown life unknown. A move,
+/// not a rewrite - its proof is the byte comparison against `session_tests.rs`
+/// at the commit before it, not a test.
+/// The turn status the roster row carries, and the transitions that push it.
+#[cfg(test)]
+#[path = "session_roster_activity_tests.rs"]
+mod session_roster_activity_tests;
 /// The first-prompt-and-MCP-wait tests carved out of `session_tests` (its lines
 /// 2807-2926 at `040e890`): Pi and Codex each deliver the first prompt without
 /// waiting on the MCP handshake, the resume handle refuses the families it was
@@ -534,13 +545,6 @@ mod session_terminal_input_tests;
 #[cfg(test)]
 #[path = "session_terminal_ownership_tests.rs"]
 mod session_terminal_ownership_tests;
-/// The silence-and-liveness tests carved out of `session_tests` (its lines
-/// 1067-1262 at `d00145f`): the threshold transition emitted once, the queued
-/// silence dropped when output or an exit lands first, the ACP roster notice on
-/// leaving silent, the OS liveness probe that marks an exit without EOF, and an
-/// elapsed time that keeps a recovered session's unknown life unknown. A move,
-/// not a rewrite - its proof is the byte comparison against `session_tests.rs`
-/// at the commit before it, not a test.
 #[cfg(test)]
 #[path = "session_terminal_silence_tests.rs"]
 mod session_terminal_silence_tests;
@@ -989,20 +993,20 @@ impl SessionRegistry {
         }
     }
 
-    fn emit_transition(&self, owner: &OwnerId) {
+    fn emit_transition(&self, owner: &OwnerId, snapshots: Vec<SessionStateSnapshot>) {
         let sink = self
             .transition_sink
             .lock()
             .ok()
             .and_then(|current| current.clone());
         if let Some(sink) = sink {
-            sink(owner.clone());
+            sink(owner.clone(), Some(snapshots));
         }
     }
 
     fn notify_session_transition(&self, owner: &OwnerId, session_id: &str) {
         self.refresh_state_snapshot(owner, session_id);
-        self.emit_transition(owner);
+        self.emit_transition(owner, self.state_snapshots(owner));
     }
 
     /// The delegation facts one snapshot row carries, or `None` for a session
@@ -1094,28 +1098,39 @@ impl SessionRegistry {
                 let sessions = map
                     .values()
                     .filter(|entry| entry.owner().user == owner.user && !entry.is_configuring())
-                    .map(|entry| (entry.to_session(), entry.runtime().attention()))
-                    .collect::<Vec<_>>();
+                    .map(|entry| {
+                        let runtime = entry.runtime();
+                        let activity = runtime.activity();
+                        (entry.to_session(), runtime.attention(), Some(activity))
+                    })
+                    .collect::<Vec<(
+                        Session,
+                        Option<devboule_protocol::Attention>,
+                        Option<AgentActivityState>,
+                    )>>();
                 (sessions, hidden_ids)
             })
             .unwrap_or_default();
         let mut sessions = sessions_from_map;
         let live_ids = sessions
             .iter()
-            .map(|(session, _)| session.id.clone())
+            .map(|(session, _, _)| session.id.clone())
             .collect::<std::collections::HashSet<_>>();
         if let Some(rows) = self.journal_roster() {
             sessions.extend(rows.into_iter().filter_map(|row| {
                 if live_ids.contains(&row.id) || hidden_ids.contains(&row.id) {
                     return None;
                 }
-                (row.owner == owner.user).then(|| (row.to_session(), None))
+                // A journal row has no runtime to hold a turn, so it has no
+                // status: `None`, which the app must read as "unknown", never as
+                // "idle".
+                (row.owner == owner.user).then(|| (row.to_session(), None, None))
             }));
         }
         sessions.sort_by(|left, right| left.0.id.cmp(&right.0.id));
         sessions
             .into_iter()
-            .map(|(session, attention)| {
+            .map(|(session, attention, activity)| {
                 let delegation = self.delegation_state_for(&session);
                 SessionStateSnapshot {
                     id: session.id,
@@ -1141,6 +1156,7 @@ impl SessionRegistry {
                     unattended: session.unattended,
                     labels: session.labels,
                     delegation,
+                    activity,
                 }
             })
             .collect()
@@ -1170,6 +1186,7 @@ impl SessionRegistry {
                         unattended: session.unattended,
                         labels: session.labels,
                         delegation,
+                        activity: Some(entry.runtime().activity()),
                     }
                 })
         });
@@ -1202,14 +1219,21 @@ impl SessionRegistry {
         });
         let registry = self.clone();
         let owner = owner.clone();
-        let notify = Arc::new(move || {
-            registry.notify_session_transition(&owner, &session_id);
-            // The same transition is what a creator is owed a report about
-            // (`S5` §3). The claim inside is idempotent, so the many
-            // transitions an ordinary session raises cost one hash lookup.
-            registry.report_child_events(&session_id);
+        let prepare = Arc::new(move || {
+            registry.refresh_state_snapshot(&owner, &session_id);
+            let snapshots = registry.state_snapshots(&owner);
+            let registry = registry.clone();
+            let owner = owner.clone();
+            let session_id = session_id.clone();
+            Box::new(move || {
+                registry.emit_transition(&owner, snapshots);
+                // The same transition is what a creator is owed a report about
+                // (`S5` §3). The claim inside is idempotent, so the many
+                // transitions an ordinary session raises cost one hash lookup.
+                registry.report_child_events(&session_id);
+            }) as Box<dyn FnOnce() + Send>
         });
-        runtime.set_attention_hooks(suppressed, notify);
+        runtime.set_attention_hooks(suppressed, prepare);
         // The delegated-surfacing observer, installed in the same place with
         // the same facts in scope: one observer per child, called once per
         // parked card, deciding at that moment whether the creator is told.

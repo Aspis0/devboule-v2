@@ -366,7 +366,7 @@ fn clear_child_attention_after_answer_clears_only_raised_attention() {
     // observation: the tail ran and pushed nothing.
     let sink_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let fired = Arc::clone(&sink_log);
-    registry.set_transition_sink(Arc::new(move |pushed| {
+    registry.set_transition_sink(Arc::new(move |pushed, _snapshots| {
         fired.lock().expect("sink log").push(pushed.user.clone());
     }));
     registry.clear_child_attention_after_answer(&child);
@@ -385,7 +385,7 @@ fn clear_child_attention_after_answer_clears_only_raised_attention() {
     // push may appear here.
     let raised_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let counted = Arc::clone(&raised_log);
-    registry.set_transition_sink(Arc::new(move |pushed| {
+    registry.set_transition_sink(Arc::new(move |pushed, _snapshots| {
         counted.lock().expect("sink log").push(pushed.user.clone());
     }));
     registry.clear_child_attention_after_answer(&child);

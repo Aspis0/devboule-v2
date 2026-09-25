@@ -23,8 +23,14 @@ pub enum SessionKind {
 }
 
 /// What a send does when the target agent already has a turn running.
-/// Omitting this field preserves the interrupt-and-replace behavior; only
-/// steering is an explicit alternative in this protocol revision.
+///
+/// `Steer` asks the daemon to write the text into that turn. Omitting the
+/// field asks nothing of it: the plain path writes the prompt to the session
+/// and interrupts nothing, and the only interrupt on that route is the
+/// steer-refusal fallback (`session_messaging.rs::send_with_subscription_timeout`).
+/// A caller that means to replace a running turn must send `SessionInterrupt`
+/// itself and wait for that turn's own end — `DECISIONS.md` decision 3, and
+/// review F6 found this comment claiming the opposite of what the code does.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActiveTurnBehavior {
@@ -384,6 +390,20 @@ pub struct SessionStateSnapshot {
     /// `sessions_list` struct) does not carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<DelegationState>,
+    /// The turn status the daemon holds for this session: `working` while a
+    /// prompt turn runs, `blocked` while a permission card waits for an answer,
+    /// `idle` when a live session has neither, `unknown` when no process runs
+    /// (`crate::agent_activity::derive_activity`, the same derivation the tool
+    /// reads). This is the fact an app needs in order to know it may send, and
+    /// it is carried on **every** push for the reason `attention` is not
+    /// enough: a raise is a *notification* that presence suppresses for the
+    /// session some client of this user is looking at, while this is a state
+    /// every client is told about, on every change of it.
+    ///
+    /// `None` means this journal row has no runtime to report a status for. It
+    /// is never read as `idle`: an absent status has to be waited for, not acted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<AgentActivityState>,
 }
 
 /// The delegation ledger for one agent-created child (snapshot only).

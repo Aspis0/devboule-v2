@@ -118,7 +118,14 @@ fn turn_activity_uses_a_generation_token_and_clears_on_finish() {
     runtime.begin_turn();
     let turn = runtime.turn_counter();
     assert!(runtime.is_turn_active(turn));
-    runtime.finish_turn();
+    runtime.publish_agent_event(
+        SessionEvent::AgentFinished {
+            stop_reason: "end_turn".to_string(),
+            model_id: None,
+            usage: None,
+        },
+        None,
+    );
     assert!(!runtime.is_turn_active(turn));
     assert_ne!(runtime.turn_counter(), turn);
 }

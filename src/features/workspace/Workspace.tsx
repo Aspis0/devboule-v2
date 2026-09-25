@@ -17,6 +17,7 @@ import { NewProjectDialog } from "../../components/NewProjectDialog";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
+import { sharedSessionQueueOwner } from "./sessionQueueOwner";
 import { CloseConfirm } from "./CloseConfirm";
 import { WorkspaceNewTabMenu } from "./WorkspaceNewTabMenu";
 import { SessionTabMenu } from "./SessionTabMenu";
@@ -241,6 +242,9 @@ export function Workspace({
   // own rows exist: the provider's inputs are what this render puts on
   // screen, never a ref a later effect fills.
   const daemon = useWorkspaceDaemon();
+  useEffect(() => {
+    if (daemon.state !== "connected") sharedSessionQueueOwner().onDisconnect();
+  }, [daemon.state]);
   // The empty provider picker's action hands the user to Settings → Providers
   // (the surface opens on that tab), so the flow needs the app's one switcher.
   const selectSurface = useAppStore((state) => state.selectSurface);
@@ -288,8 +292,18 @@ export function Workspace({
   // list is still shown when the Workspace mounts again.
   const [closeActions] = useState(() =>
     sharedCloseActions({
-      archive: (id) => sessionStop(id),
-      destroy: (id) => sessionClose(id),
+      // An explicit close or archive takes the queued messages with the
+      // session: the journal keeps the row, so the roster would go on naming a
+      // session the user just removed and its queue would never be dropped by
+      // the absence rule alone (`sessionQueueOwner.ts::closeSession`).
+      archive: (id) =>
+        sessionStop(id).then(() => {
+          sharedSessionQueueOwner().closeSession(id);
+        }),
+      destroy: (id) =>
+        sessionClose(id).then(() => {
+          sharedSessionQueueOwner().closeSession(id);
+        }),
     }),
   );
   const knownWorkspaceIds = useMemo(
@@ -470,6 +484,12 @@ export function Workspace({
   // or another workspace's session must never keep a pane up — an empty strip
   // means the empty state.
   const paneSession = paneSessionOf(selectedSessionId, visibleSessions);
+  // The queue the pane's session drains into belongs to the app, not to this
+  // surface: the owner holds one per session for the whole run, so opening
+  // Settings, switching tabs or a refresh that rebuilds the strip cannot
+  // destroy a message the user queued (review F1, F2, F13).
+  const sessionQueue =
+    paneSession === null ? null : sharedSessionQueueOwner().queueFor(paneSession.id);
   // The names the roster carries, for the badge that resolves a child's
   // `createdBy` back to the session that created it. Memoized on the roster:
   // the map is a projection of the same array the tab strip maps over, and
@@ -976,6 +996,10 @@ export function Workspace({
     ) ??
     permissionQueue.find((item) => item.sessionId === selectedSessionId) ??
     null;
+  // An unanswered card parks the turn: the chat surface turns Enter's queue
+  // action into a steer while one is open (queueing would strand the message).
+  const hasPendingPermission =
+    selectedPermission !== null && selectedPermission.resolution === undefined;
   // The strip's status slot carries progress and the count, never an error
   // text: a failure has its own one line (the spec's inline error line), so
   // the slot never becomes its second, third and fourth surface.
@@ -1473,6 +1497,11 @@ export function Workspace({
                 daemonState={daemon.state}
                 sessionRoster={sessions}
                 deviceNames={peerNames}
+                hasPendingPermission={hasPendingPermission}
+                // The app-level owner's queue for this session (see
+                // `sessionQueue`): the surface binds its controller to it, and
+                // Enter mid-turn queues instead of interrupting (review P1-1).
+                queue={sessionQueue}
                 auxiliary={
                   selectedPermission !== null ? (
                     <WorkspacePermissionCard

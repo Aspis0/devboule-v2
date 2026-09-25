@@ -11,7 +11,8 @@
 
 use super::*;
 
-pub(super) type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
+pub(super) type TransitionSink =
+    Arc<dyn Fn(OwnerId, Option<Vec<SessionStateSnapshot>>) + Send + Sync>;
 pub(super) type JournalRosterCache = Arc<Mutex<Option<(u64, Vec<SessionRecord>)>>>;
 
 /// One client answer to a pending permission request.

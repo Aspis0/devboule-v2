@@ -953,8 +953,8 @@ describe("ACP agent session", () => {
 
   it("does not collapse a running turn when a switch is refused", async () => {
     // D3: a refused switch is not a turn failure. Collapsing the turn here
-    // dropped the Stop button while the agent kept working, and turned the
-    // next Enter into interrupt-and-replace instead of a steer.
+    // dropped the Stop button while the agent kept working, and the next Enter
+    // found no running turn to steer into.
     const harness = makeHarness();
     await harness.session.start();
     await harness.session.send("Keep going");

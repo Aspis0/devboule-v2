@@ -1,4 +1,14 @@
-import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  useCallback,
+  type ReactNode,
+} from "react";
 import {
   createSessionChannel,
   sessionAttach,
@@ -58,6 +68,14 @@ import { DaemonNoticeCard } from "./DaemonNoticeCard";
 import { A2aMessageCard, type A2aNameSource } from "./A2aMessageCard";
 import { A2aOutgoingMessageCard } from "./A2aOutgoingMessageCard";
 import { setHeldAssistantText } from "./attentionNotice";
+import { QueueTrack } from "./QueueTrack";
+import type { MessageQueue } from "./messageQueue";
+import { useMessageQueue } from "./useMessageQueue";
+import {
+  getSendBehavior,
+  resolveActiveSendBehavior,
+  subscribeSendBehavior,
+} from "../../lib/sendBehavior";
 
 // One classifier owns both whether input is disabled and the sentence explaining it.
 export function composerDisabledReason(
@@ -103,6 +121,16 @@ interface AgentChatSurfaceProps {
    * paired device with it.
    */
   deviceNames?: ReadonlyMap<string, string>;
+  /** An unanswered permission card parks this session's turn; Enter's queue
+   * action becomes steer while one is open (queueing would strand the message). */
+  hasPendingPermission?: boolean;
+  /**
+   * The session's queue of unsent follow-ups, held in memory by the workspace
+   * (one per session, as in Paseo) and handed down. Handed none, the surface
+   * renders no rows and no queue actions and Enter always sends — the
+   * workspace never ships that mode.
+   */
+  queue?: MessageQueue | null;
   onPermissionRequest?: (
     sessionId: string,
     subscriptionId: SubscriptionId,
@@ -131,19 +159,36 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
     const attachments = args?.attachments as readonly PromptAttachment[] | undefined;
     const text = typeof args?.text === "string" ? args.text : "";
     const subscriptionId = args?.subscriptionId as SubscriptionId;
-    // The controller only ever names the one behaviour that differs from the
-    // daemon's default. Anything else is a bug on this side of the wire and is
-    // refused loudly: silently dropping it would turn a misspelling into an
-    // interrupt-and-replace the caller never asked for.
+    // The controller only ever names the one behaviour that differs from a
+    // plain send. Anything else is a bug on this side of the wire and is
+    // refused loudly: silently dropping it would turn a misspelling into a
+    // plain send the caller never asked for.
     const behavior = args?.activeTurnBehavior;
     if (behavior !== undefined && behavior !== "steer") {
       return Promise.reject(new Error(`Unsupported active turn behavior: ${String(behavior)}`));
     }
     const activeTurnBehavior: ActiveTurnBehavior | undefined = behavior;
-    if (attachments === undefined && activeTurnBehavior === undefined) {
+    // The queue's retry identity, absent for every send that has none. It is
+    // the one argument here that a caller may name alone, so the arity ladder
+    // below has to count it.
+    const key = args?.idempotencyKey;
+    const idempotencyKey = typeof key === "string" ? key : undefined;
+    if (
+      attachments === undefined &&
+      activeTurnBehavior === undefined &&
+      idempotencyKey === undefined
+    ) {
       return sessionSend(id, subscriptionId, text) as Promise<T>;
     }
-    return sessionSend(id, subscriptionId, text, attachments, activeTurnBehavior) as Promise<T>;
+    return sessionSend(
+      id,
+      subscriptionId,
+      text,
+      attachments,
+      activeTurnBehavior,
+      undefined,
+      idempotencyKey,
+    ) as Promise<T>;
   }
   if (command === "session_set_model") {
     return sessionSetModel(
@@ -715,6 +760,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   daemonState,
   sessionRoster,
   deviceNames,
+  hasPendingPermission = false,
+  queue = null,
   onPermissionRequest,
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
@@ -744,6 +791,72 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     );
     return { sessionById, deviceNames: deviceNames ?? new Map<string, string>() };
   }, [sessionRoster, deviceNames]);
+
+  // The composer's handed-back draft. `focus` is false for an Edit, whose
+  // focus follows the row rule in the track; true for a refusal, whose text
+  // the user must look at before sending it again.
+  const [restoreDraft, setRestoreDraft] = useState<{
+    text: string;
+    focus: boolean;
+    nonce: number;
+  } | null>(null);
+  const restoreNonceRef = useRef(0);
+  const handDraftBack = useCallback((text: string, focus: boolean) => {
+    restoreNonceRef.current += 1;
+    setRestoreDraft({ text, focus, nonce: restoreNonceRef.current });
+  }, []);
+
+  // One queue per session, held by the app for as long as the session is in
+  // the roster and handed down here; without one the surface renders no rows
+  // and no queue actions, and Enter keeps sending as it always has.
+  const composerQueue = useMessageQueue(
+    queue ?? null,
+    useMemo(
+      () => ({
+        onEditRestored: (text: string) => handDraftBack(text, false),
+        onSteerRefused: (text: string) => handDraftBack(text, true),
+        onQueueRefused: (text: string) => handDraftBack(text, true),
+      }),
+      [handDraftBack],
+    ),
+  );
+
+  // The composer takes the focus back when the queue hands it over (an emptied
+  // track, a refused steer's or queue's text).
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const captureComposerTextarea = useCallback((element: HTMLTextAreaElement | null) => {
+    composerTextareaRef.current = element;
+  }, []);
+  const focusComposer = useCallback(() => {
+    composerTextareaRef.current?.focus();
+  }, []);
+
+  // The setting's resolved default. Queueing behind a permission prompt would
+  // strand the message, so the queue action becomes steer while a card is open.
+  const sendBehavior = useSyncExternalStore(subscribeSendBehavior, getSendBehavior);
+  const enterQueues =
+    queue != null && resolveActiveSendBehavior(sendBehavior, hasPendingPermission) === "queue";
+  // The session's one predicate, read from the queue every surface on this
+  // session shares, so two panes cannot disagree about a send in flight.
+  const turnActive = composerQueue.turnActive;
+
+  const sendSession = useCallback(
+    async (
+      text: string,
+      attachments?: readonly PromptAttachment[],
+      idempotencyKey?: string,
+    ): Promise<boolean> => {
+      const session = sessionRef.current;
+      if (session === null) return false;
+      queue?.submissionStarted();
+      try {
+        return await session.send(text, attachments, undefined, [], idempotencyKey);
+      } finally {
+        queue?.submissionSettled();
+      }
+    },
+    [queue],
+  );
 
   // An attachment is valid for exactly one `(sessionId, generation)` pair.
   // Resume keeps the id but increments the generation, so this is the signal
@@ -775,6 +888,22 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       session.dispose();
     };
   }, [onPermissionRequest, onPermissionResolved, sessionId, observedState?.generation]);
+
+  // While this surface is on screen, the queue's sends and interrupts ride the
+  // controller it owns, read at call time so a recreated controller (resume,
+  // reconnect) answers for the same queue the owner holds. Detaching hands the
+  // queue back to the sender it runs on with no view, so a row is never left
+  // with nowhere to go. What this effect does *not* do is decide when to send: a
+  // visible session's queue is armed by the same roster edge as a hidden one, and
+  // a second path that guesses from the transcript is what the reviews kept
+  // breaking (review F1, F3, F13; fix-4's rule).
+  useEffect(() => {
+    if (queue === null) return;
+    return queue.attach({
+      send: (text, attachments, idempotencyKey) => sendSession(text, attachments, idempotencyKey),
+      interrupt: () => sessionRef.current?.interrupt() ?? Promise.resolve(),
+    });
+  }, [queue, sendSession]);
 
   // Zed's pattern: re-apply the remembered effort once, on the first manifest
   // of the session. The confirmation manifest is just another manifest here —
@@ -857,6 +986,30 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   );
   const disabledReason = composerDisabledReason(osGone, daemonGone, state.status);
   const composerDisabled = disabledReason !== null;
+  // Memoized so a streamed token re-renders the transcript, never the rows:
+  // the element's identity only moves when the queue's snapshot does.
+  const queuedTrack = useMemo(
+    () =>
+      queue === null ? null : (
+        <QueueTrack
+          items={composerQueue.items}
+          onSteer={composerQueue.steerRow}
+          onEdit={composerQueue.editRow}
+          onDelete={composerQueue.deleteRow}
+          onMove={composerQueue.moveRow}
+          onEmptied={focusComposer}
+        />
+      ),
+    [
+      queue,
+      composerQueue.items,
+      composerQueue.steerRow,
+      composerQueue.editRow,
+      composerQueue.deleteRow,
+      composerQueue.moveRow,
+      focusComposer,
+    ],
+  );
   return (
     <div id={id} className="workspace-agent-shell" role="tabpanel" aria-label="Agent chat">
       <div className="workspace-agent-toolbar">
@@ -905,18 +1058,36 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           {journalLossCopy(state.journalLoss)}
         </div>
       ) : null}
+      {composerQueue.error !== null ? (
+        <div className="workspace-queue-error" role="alert" data-testid="queue-error">
+          {composerQueue.error}
+        </div>
+      ) : null}
       <WorkspaceComposer
         streaming={state.streaming && !osGone}
+        turnActive={turnActive}
+        queueAllowed={!hasPendingPermission}
         disabled={composerDisabled}
         disabledReason={recoveredAttach ? null : disabledReason}
         availableCommands={state.availableCommands}
-        onSend={(text) =>
-          // A send while the agent is mid-turn steers that turn; an idle send
-          // omits the field and the daemon keeps its interrupt-and-replace
-          // default. Enter is the steering key: the send button is the Stop
-          // button while the turn runs, and the textarea stays enabled.
-          void sessionRef.current?.send(text, [], state.streaming ? "steer" : undefined)
-        }
+        queuedTrack={queuedTrack}
+        restoreDraft={restoreDraft}
+        onQueue={queue === null ? undefined : composerQueue.queueMessage}
+        enterQueues={enterQueues}
+        captureTextarea={captureComposerTextarea}
+        onSend={(text) => {
+          // A running turn with a queue in hand goes through the queue's steer,
+          // which interrupts and then waits for the daemon's turn-over. An idle
+          // session takes the plain send it always took — and a refusal puts
+          // the text back in the composer instead of losing it (review F9).
+          if ((turnActive || hasPendingPermission) && queue !== null) {
+            composerQueue.steerComposer(text);
+            return;
+          }
+          void sendSession(text).then((sent: boolean) => {
+            if (!sent) handDraftBack(text, true);
+          });
+        }}
         onStop={() => void sessionRef.current?.interrupt()}
         contextMeter={
           <SessionContextMeter

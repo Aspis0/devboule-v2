@@ -235,6 +235,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::ProtocolVersionMismatch);
         assert!(err.message.contains("daemon is older"));
         assert!(err.message.contains("Update the daemon"));
+        assert!(err.message.contains("reinstall the app"));
     }
 
     #[test]
@@ -245,56 +246,30 @@ mod tests {
         assert!(err.message.contains("Update the app"));
     }
 
+    /// A peer that predates live-row activity must fail at the handshake in both directions,
+    /// before the queue can mistake a missing reading for an idle session. Reverting the
+    /// minimum makes both `unwrap_err()`s panic.
     #[test]
-    fn current_crate_refuses_a_v1_peer() {
+    fn current_crate_refuses_pre_activity_peer() {
+        let older = PROTOCOL_VERSION - 1;
         let err = negotiate(
             &client(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
-            &daemon(1, 1),
+            &daemon(older, older),
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::ProtocolVersionMismatch);
         assert!(err.message.contains("daemon is older"));
+        assert!(err.message.contains("Update the daemon"));
+        assert!(err.message.contains("reinstall the app"));
 
         let err = negotiate(
-            &client(1, 1),
-            &daemon(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
-        )
-        .unwrap_err();
-        assert_eq!(err.code, ErrorCode::ProtocolVersionMismatch);
-        assert!(err.message.contains("daemon is newer"));
-    }
-
-    /// The pair the 4 → 5 bump exists for (audit R2b-1 §7): a peer still
-    /// speaking 4/4 — the dialect that carried `unattended` as a JSON
-    /// boolean — must be refused at the handshake in **both** directions,
-    /// with the remedy sentence each direction owes. At 4/4 both sides
-    /// agreed and the failure moved to the first `Session` frame, a terminal
-    /// decode error the supervisor reads as an ordinary reconnect handoff, so
-    /// the roster never loaded and no update sentence ever appeared. Reverting
-    /// the constants makes both `unwrap_err()`s panic.
-    #[test]
-    fn current_crate_refuses_a_v4_peer() {
-        // An old client against this daemon: the daemon is the newer one, and
-        // the client is told to update the app.
-        let err = negotiate(
-            &client(4, 4),
+            &client(older, older),
             &daemon(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
         )
         .unwrap_err();
         assert_eq!(err.code, ErrorCode::ProtocolVersionMismatch);
         assert!(err.message.contains("daemon is newer"));
         assert!(err.message.contains("Update the app"));
-
-        // This client against an old daemon: the daemon is the older one, and
-        // the client is told to update the daemon (or reinstall the app).
-        let err = negotiate(
-            &client(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
-            &daemon(4, 4),
-        )
-        .unwrap_err();
-        assert_eq!(err.code, ErrorCode::ProtocolVersionMismatch);
-        assert!(err.message.contains("daemon is older"));
-        assert!(err.message.contains("Update the daemon"));
     }
 
     #[test]

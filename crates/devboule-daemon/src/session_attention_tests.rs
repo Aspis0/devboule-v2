@@ -75,7 +75,7 @@ fn attention_clear_cannot_complete_during_the_suppression_decision() {
             release.wait();
             false
         }),
-        Arc::new(|| {}),
+        Arc::new(|| Box::new(|| {}) as Box<dyn FnOnce() + Send>),
     );
 
     let raising = Arc::clone(&runtime);

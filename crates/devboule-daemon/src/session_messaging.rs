@@ -832,7 +832,7 @@ impl super::SessionRegistry {
                         runtime.mark_journal_degraded();
                     }
                     if runtime.clear_attention() {
-                        self.notify_session_transition(owner, session_id);
+                        runtime.request_transition();
                     }
                     // The steer's own echo id is the message the text became,
                     // so it is what this delivery answers with (audit S5-04):
@@ -1103,9 +1103,11 @@ impl super::SessionRegistry {
                     Some(message_id) => delivered_message_id = Some(message_id),
                     None => return Err(internal("Agent input could not be recorded.")),
                 }
+                // Activity and attention are separate facts, so publish both
+                // changes and let clients coalesce any render work.
                 runtime.begin_turn();
                 if runtime.clear_attention() {
-                    self.notify_session_transition(owner, session_id);
+                    runtime.request_transition();
                 }
             }
         }

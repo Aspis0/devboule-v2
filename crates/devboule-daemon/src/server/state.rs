@@ -6,6 +6,7 @@
 use super::*;
 use crate::daemon_record::ExitReason;
 use crate::release_guard::ReleaseGuard;
+use devboule_protocol::SessionStateSnapshot;
 
 /// The accept path's cached `peers` snapshot.
 struct PeerTableView {
@@ -379,11 +380,13 @@ impl ServerState {
             provider_update_npm_command: Mutex::new(None),
         });
         let state_for_transitions = Arc::downgrade(&state);
-        state.sessions.set_transition_sink(Arc::new(move |owner| {
-            if let Some(state) = state_for_transitions.upgrade() {
-                state.broadcast_session_state(&owner);
-            }
-        }));
+        state
+            .sessions
+            .set_transition_sink(Arc::new(move |owner, snapshots| {
+                if let Some(state) = state_for_transitions.upgrade() {
+                    state.broadcast_session_state(&owner, snapshots);
+                }
+            }));
         // The quiet sweep: one notice per quiet spell, never an action. A
         // minute cadence divides the 20-minute threshold twenty times; the
         // thread dies with the state (a failed upgrade ends the loop).
@@ -448,7 +451,11 @@ impl ServerState {
             .remove(&conn_id);
     }
 
-    pub(super) fn broadcast_session_state(&self, owner: &OwnerId) {
+    pub(super) fn broadcast_session_state(
+        &self,
+        owner: &OwnerId,
+        snapshots: Option<Vec<SessionStateSnapshot>>,
+    ) {
         let mut watchers = self
             .session_watchers
             .lock()
@@ -456,7 +463,7 @@ impl ServerState {
         if !watchers.values().any(|watch| watch.owner == *owner) {
             return;
         }
-        let snapshots = self.sessions.state_snapshots(owner);
+        let snapshots = snapshots.unwrap_or_else(|| self.sessions.state_snapshots(owner));
         for watch in watchers.values_mut().filter(|watch| watch.owner == *owner) {
             if watch.last_snapshot.as_ref() == Some(&snapshots) {
                 continue;

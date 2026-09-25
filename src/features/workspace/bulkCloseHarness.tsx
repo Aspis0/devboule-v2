@@ -99,6 +99,8 @@ vi.mock("./AgentChatSurface", () => ({
 import { projectsList, providersList, sessionsList, workspacesList } from "../../lib/tauri";
 import { Workspace } from "./Workspace";
 import { resetSharedCloseActionsForTests } from "./closeActions";
+import { resetSharedSessionQueueOwnerForTests, sharedSessionQueueOwner } from "./sessionQueueOwner";
+import { createSenderProbe } from "./queueSenderDouble";
 import type { Workspace as IpcWorkspace } from "../../types/ipc";
 
 export function agentSession(
@@ -342,6 +344,11 @@ export function bulkErrorBlock(): HTMLElement {
 export function beforeEachHarness(): void {
   vi.useFakeTimers();
   resetSharedCloseActionsForTests();
+  // The queue owner is app-lifetime like the close store, and a close now
+  // reaches it; a test of a different file must not inherit either its queues
+  // or a bearer that would call the wire this harness never mocks.
+  resetSharedSessionQueueOwnerForTests();
+  sharedSessionQueueOwner({ newSender: createSenderProbe().newSender });
   watchListener = null;
   window.localStorage.clear();
   container = document.createElement("div");

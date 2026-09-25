@@ -323,15 +323,15 @@ export type SendIntent = "interrupt" | "steer" | "queue";
 /**
  * What a `session_send` does when the target session already has a turn
  * running: the protocol's `SessionSend.activeTurnBehavior`. Omitting the field
- * is the daemon's default — interrupt the running turn and replace it — so the
- * only member here is the one value that differs from it: `"steer"` delivers
- * the text into the running turn. The protocol's third word, `"interrupt"`, is
- * never sent and is expressed by leaving the field off; the wider `SendIntent`
- * above spells all three and has no caller.
+ * asks nothing of a running turn — the plain path starts its turn and interrupts
+ * nothing (`session_messaging.rs`) — so the only member here is the value that
+ * differs from it: `"steer"` delivers the text into the running turn. A caller
+ * that means to replace a running turn sends `sessionInterrupt` first and waits
+ * for that turn's own end, which is what the message queue does.
  *
- * `"queue"` is deliberately absent: no daemon branch implements it, and a
- * value the daemon silently treats as interrupt-and-replace would be a type
- * that promises behaviour nothing delivers. It can come back with the branch.
+ * `"queue"` is deliberately absent: no daemon branch implements it, and a value
+ * the daemon silently treats as a plain send would be a type that promises
+ * behaviour nothing delivers. It can come back with the branch.
  */
 export type ActiveTurnBehavior = "steer";
 
@@ -763,6 +763,12 @@ export interface Session {
   /** Mirror of the roster snapshot's attention; the frontend only renders it. */
   attention?: Attention;
   /**
+   * Mirror of the roster snapshot's turn status — what tells a queued message the
+   * session has turned idle. Absent means this journal row has no runtime to
+   * report a status for, which is **not** idle.
+   */
+  activity?: AgentActivityState;
+  /**
    * Where the session came from. Absent means the daemon did not say — a
    * record written before the field existed, or a roster push that omitted it
    * for a row no list response has described yet. Absent is a third state, not
@@ -936,6 +942,15 @@ export interface Attention {
   atMs: number;
 }
 
+/**
+ * The daemon's headline for what a session is doing, derived from facts it holds
+ * rather than from a hook's report (`agent_activity.rs::derive_activity`):
+ * `blocked` while a permission card waits, `working` while a turn runs, `idle`
+ * for a live session with neither, `unknown` when no process runs. The wire names
+ * match herdr's `pane.report_agent` states, so a hook payload reads the same.
+ */
+export type AgentActivityState = "idle" | "working" | "blocked" | "unknown";
+
 /** Compact daemon push used to update the workspace tab roster. */
 export interface SessionStateSnapshot {
   id: Id;
@@ -944,6 +959,16 @@ export interface SessionStateSnapshot {
   title: string;
   state: SessionState;
   elapsedMs: number | null;
+  /**
+   * The turn status the daemon derives for the session — the same reading its
+   * child tool gives, so a row and a tool cannot disagree. This is what tells a
+   * queued message when it may go: `working` and `blocked` both mean a turn owns
+   * the session, `idle` means nothing does, and `unknown` means there is no
+   * process to have a turn. Present on every push from a daemon that carries it;
+   * **absent is not `idle`** — a journal row with no runtime says nothing, and
+   * a queue that may not send waits.
+   */
+  activity?: AgentActivityState;
   /** Absent when the session needs no attention; suppression is daemon-side. */
   attention?: Attention;
   /**
@@ -1262,7 +1287,7 @@ export type SessionEvent =
       seq: number;
       source: string;
       agent: string;
-      state: "idle" | "working" | "blocked" | "unknown";
+      state: AgentActivityState;
       message?: string;
       reportSeq?: number;
       agentSessionId?: string;

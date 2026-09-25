@@ -2214,7 +2214,7 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector('button[aria-label="Stop the current turn"]')).toBeNull();
   });
 
-  it("steers into the running turn and keeps the transcript in that turn", async () => {
+  it("with no queue handed over, a mid-turn Enter sends plainly and queues nothing", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -2238,8 +2238,8 @@ describe("AgentChatSurface", () => {
     const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
     if (setValue === undefined) throw new Error("textarea value setter did not exist");
 
-    // Idle: the behavior is left off the send entirely, so the daemon keeps its
-    // interrupt-and-replace default.
+    // Idle: the behavior is left off the send entirely, and an absent key is a
+    // plain send that interrupts nothing.
     setValue.call(textarea, "First task");
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await act(async () => send.click());
@@ -2261,8 +2261,8 @@ describe("AgentChatSurface", () => {
     const conversation = container.querySelector(".workspace-conversation");
     if (conversation === null) throw new Error("conversation did not render");
 
-    // Mid-turn: Enter is the steering key. The composer stays enabled (the
-    // button is Stop, not Send) and the textarea takes the next steer.
+    // Mid-turn, with no queue there is no queue action and no steer channel:
+    // Enter sends the text as its own plain send, no behavior on the wire.
     expect(textarea.disabled).toBe(false);
     setValue.call(textarea, "Turn left instead");
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
@@ -2271,37 +2271,19 @@ describe("AgentChatSurface", () => {
         new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
       );
     });
-    const steerCall = vi.mocked(sessionSend).mock.calls[1] ?? [];
-    expect(steerCall[1]).toBe(channelHarness.activeSubscriptionId);
-    expect(steerCall[2]).toBe("Turn left instead");
-    expect(steerCall[4]).toBe("steer");
+    expect(vi.mocked(sessionSend).mock.calls).toHaveLength(2);
+    const midTurnCall = vi.mocked(sessionSend).mock.calls[1] ?? [];
+    expect(midTurnCall[0]).toBe("steer-agent");
+    expect(midTurnCall[1]).toBe(channelHarness.activeSubscriptionId);
+    expect(midTurnCall[2]).toBe("Turn left instead");
+    expect(midTurnCall).toHaveLength(3);
+    expect(textarea.value).toBe("");
+    expect(container.querySelector('[data-testid="queue-row"]')).toBeNull();
 
-    // The accepted steer arrives as the daemon's own echo: `publish_agent_user_message`
-    // publishes the `agent_user_message` every accepted input publishes once the
-    // provider has taken the text, and journals `Steered` beside it. The
-    // transcript must show one bubble per message and one answer bubble: a
-    // second turn would have split the answer instead of continuing it, and a
-    // local echo of its own send would show the steer twice.
-    await act(async () => {
-      channelHarness.active?.({
-        type: "agent_user_message",
-        author: "human",
-        messageId: "user-2",
-        text: "Turn left instead",
-      });
-      channelHarness.active?.({ type: "agent_message", messageId: "answer-1", text: "ing" });
-    });
-    expect(conversation.querySelectorAll(".workspace-chat-user")).toHaveLength(2);
-    expect(
-      Array.from(conversation.querySelectorAll(".workspace-chat-user")).filter((element) =>
-        element.textContent?.includes("Turn left instead"),
-      ),
-    ).toHaveLength(1);
+    // Nothing was parked anywhere: one bubble per message, one answer, still
+    // mid-turn, the working row up and no finish line written.
+    expect(conversation.querySelectorAll(".workspace-chat-user")).toHaveLength(1);
     expect(conversation.querySelectorAll(".workspace-chat-assistant")).toHaveLength(1);
-    expect(conversation.querySelector(".workspace-chat-assistant")?.textContent).toContain(
-      "Working",
-    );
-    // Still mid-turn: the working row is up and no finish line was written.
     expect(container.querySelector(".workspace-chat-typing")).not.toBeNull();
     expect(container.querySelector(".workspace-chat-finish")).toBeNull();
     expect(textarea.disabled).toBe(false);

@@ -203,7 +203,7 @@ fn the_attention_a_parked_card_raised_clears_when_the_delegated_answer_lands() {
     // own, which is not the tail's doing.
     let sink_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let fired = Arc::clone(&sink_log);
-    registry.set_transition_sink(Arc::new(move |pushed| {
+    registry.set_transition_sink(Arc::new(move |pushed, _snapshots| {
         fired.lock().expect("sink log").push(pushed.user.clone());
     }));
     answer(
@@ -219,9 +219,23 @@ fn the_attention_a_parked_card_raised_clears_when_the_delegated_answer_lands() {
         "the tail cleared the attention the card raised"
     );
     assert_eq!(
-        *sink_log.lock().expect("sink log"),
-        vec![owner.user.clone()],
-        "the tail pushed exactly one transition for the owner"
+        // Answering a delegated card moves two facts on one row: the attention
+        // the card stood under clears, and the turn status stops being `blocked`.
+        // Since the roster began carrying that status (`SessionStateSnapshot::
+        // activity`), the tail is owed one transition per fact rather than one
+        // per moment — the same owner, pushed for each thing that changed.
+        sink_log.lock().expect("sink log").len(),
+        2,
+        "the tail pushed for the owner: once for the cleared raise, once for the \
+         status the card's leaving changed"
+    );
+    assert!(
+        sink_log
+            .lock()
+            .expect("sink log")
+            .iter()
+            .all(|pushed| pushed == &owner.user),
+        "and for no other owner"
     );
     journal.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
@@ -255,7 +269,7 @@ fn a_refused_answer_leaves_the_childs_attention_up() {
     // Same discipline: the sink sees only what the answer itself does.
     let sink_log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let fired = Arc::clone(&sink_log);
-    registry.set_transition_sink(Arc::new(move |pushed| {
+    registry.set_transition_sink(Arc::new(move |pushed, _snapshots| {
         fired.lock().expect("sink log").push(pushed.user.clone());
     }));
     let error = answer(

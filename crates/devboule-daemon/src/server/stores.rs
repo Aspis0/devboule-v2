@@ -156,7 +156,7 @@ pub(super) fn delegation_set(
                     .collect();
                 state.sessions.invalidate_state_roster_cache();
                 for owner in owners {
-                    state.broadcast_session_state(&owner);
+                    state.broadcast_session_state(&owner, None);
                 }
             }
             DaemonMessage::DelegationSetOk {

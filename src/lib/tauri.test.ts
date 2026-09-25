@@ -475,10 +475,11 @@ describe("create and attach command wrappers", () => {
 
     await sessionSend("s.owner.1", 41, "keep going", undefined, "steer");
 
-    // The key is absent, not `undefined`, for a plain send (asserted above):
-    // an absent `activeTurnBehavior` is the daemon's interrupt-and-replace
-    // default, and the Rust parity guard checks this manifest against the
-    // command's own parameter list.
+    // The key is absent, not `undefined`, for a plain send (asserted above),
+    // and the same rule now covers the retry identity. An absent
+    // `activeTurnBehavior` is the plain send that interrupts nothing — it starts
+    // its turn and leaves a running one alone — and the Rust parity guard
+    // checks this manifest against the command's own parameter list.
     expect(invoke).toHaveBeenCalledWith("session_send", {
       id: "s.owner.1",
       subscriptionId: 41,
@@ -492,7 +493,31 @@ describe("create and attach command wrappers", () => {
       "attachments",
       "activeTurnBehavior",
       "attachmentReferences",
+      "idempotencyKey",
     ]);
+  });
+
+  it("carries the queue item's identity on the send that has one, and on no other", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionSend("s.owner.1", 41, "again", undefined, undefined, [], "s.owner.1.queued-3");
+    expect(invoke).toHaveBeenCalledWith("session_send", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+      text: "again",
+      idempotencyKey: "s.owner.1.queued-3",
+    });
+
+    // A plain composer send names no identity, and its frame is the one that
+    // predates the queue: no key, not an empty one.
+    vi.mocked(invoke).mockClear();
+    await sessionSend("s.owner.1", 41, "first time");
+    expect(invoke).toHaveBeenCalledWith("session_send", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+      text: "first time",
+    });
   });
 
   it("names the stored attachments in the send only when it holds any", async () => {

@@ -400,10 +400,15 @@ export class AgentSession {
 
   /**
    * Send one prompt. `activeTurnBehavior: "steer"` asks the daemon to deliver
-   * this text into the turn that is already running instead of interrupting
-   * it; omitted, the daemon keeps its interrupt-and-replace default. This is
-   * the same path either way — steering is a property of the send, not a
-   * second send method.
+   * this text into the turn that is already running; **omitted, the send starts
+   * a fresh turn and interrupts nothing** — the plain path writes the prompt to
+   * the session and the only interrupt the daemon performs on it is the
+   * steer-refusal fallback (`session_messaging.rs`, the `Steer` branch). A
+   * caller that means to replace a running turn must interrupt it first.
+   *
+   * `idempotencyKey` is that key a retry needs: the same text sent again with
+   * the same key is answered from the daemon's receipt instead of running a
+   * second prompt. A plain composer send has no retry identity and sends none.
    *
    * A steer does not open a turn: the daemon writes the text into the turn in
    * flight and publishes the same `AgentUserMessage` echo every send produces
@@ -425,6 +430,7 @@ export class AgentSession {
     attachments: readonly PromptAttachment[] = [],
     activeTurnBehavior?: ActiveTurnBehavior,
     attachmentReferences: readonly AttachmentReference[] = [],
+    idempotencyKey?: string,
   ): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || this.disposed || !this.started || !this.attached) return false;
@@ -447,10 +453,13 @@ export class AgentSession {
         // the payload it produced before attachments existed. The daemon reads
         // an absent field as an empty list.
         ...(attachments.length === 0 ? {} : { attachments }),
-        // Omitted, not `"interrupt"`, for a plain send: the daemon's own
-        // default is interrupt-and-replace. Present only when the caller asked
-        // for a send to join the turn that is already running.
+        // Absent for a plain send: the daemon starts a turn with it and
+        // interrupts nothing. Present only when the caller asked the text to
+        // join the turn that is already running.
         ...(activeTurnBehavior === undefined ? {} : { activeTurnBehavior }),
+        // Absent, never empty: a send with no retry identity is every send that
+        // predates the queue, and its frame must not grow a key.
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
         // Omitted, not empty, when the prompt names no stored attachment: a send
         // with no deposit behind it produces exactly the payload it produced
         // before deposits existed, and the daemon reads an absent field as an

@@ -48,6 +48,7 @@ import { OraclePanel } from "../oracle/OraclePanel";
 import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import { CloseBehaviorSetting } from "./CloseBehaviorSetting";
+import { SendBehaviorSetting } from "./SendBehaviorSetting";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
 import "./settings.css";
 
@@ -1996,6 +1997,7 @@ function GeneralPanel() {
     <div id="settings-panel-general" role="tabpanel" aria-label="General">
       <AppearanceSection />
       <CloseBehaviorSetting />
+      <SendBehaviorSetting />
       <JournalRetentionPanel />
     </div>
   );

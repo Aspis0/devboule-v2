@@ -139,6 +139,8 @@ fn stop_test_snapshot(id: &str, state: SessionState) -> SessionStateSnapshot {
         unattended: devboule_protocol::UnattendedState::Unknown,
         labels: std::collections::BTreeMap::new(),
         delegation: None,
+
+        activity: None,
     }
 }
 
@@ -743,6 +745,8 @@ fn generation_bump_discards_the_old_sequence_but_keeps_the_session_binding() {
         unattended: devboule_protocol::UnattendedState::No,
         labels: Default::default(),
         delegation: None,
+
+        activity: None,
     }]);
     registry.reattach_all(&new_client);
 
@@ -799,6 +803,8 @@ fn ended_while_disconnected_is_delivered_as_ended_without_an_attach() {
         unattended: devboule_protocol::UnattendedState::No,
         labels: Default::default(),
         delegation: None,
+
+        activity: None,
     }]);
     registry.reattach_all(&new_client);
 
@@ -1041,6 +1047,8 @@ fn roster_snapshot(id: &str) -> SessionStateSnapshot {
         unattended: devboule_protocol::UnattendedState::No,
         labels: Default::default(),
         delegation: None,
+
+        activity: None,
     }
 }
 
