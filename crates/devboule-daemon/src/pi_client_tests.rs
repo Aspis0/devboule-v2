@@ -1589,6 +1589,78 @@ fn a_pi_that_takes_the_steer_is_steered_with_the_frame_the_round_trip_wrote() {
 }
 
 #[test]
+fn steering_a_slash_input_is_refused_as_paseo_refuses_it() {
+    // Paseo `pi/agent.ts:1417-1419`: "Pi rejects steer RPCs that are
+    // extension commands", so a `/…` input is never steered — it answers
+    // `Ok(false)`, the refusal that sends the caller down its pre-existing
+    // interrupt-and-replace, where the text can run directly. No child is
+    // needed: the refusal must happen *before* a frame is written, which is
+    // what the childless control proves — a write attempt would error.
+    let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+    let mut steerer = PiSteerer {
+        control: Arc::new(PiControl::new(stdin, Arc::new(AtomicU64::new(1)))),
+    };
+    assert!(
+        matches!(
+            steer_through_the_turn(&mut steerer, "/goal x"),
+            Some(Ok(false))
+        ),
+        "a slash input is refused for steering, not written and not an error"
+    );
+    assert!(
+        matches!(
+            steer_through_the_turn(&mut steerer, "plain text"),
+            Some(Err(_))
+        ),
+        "a non-slash steer keeps the old road: with no child its write fails as a transport error, which is not the refusal"
+    );
+}
+
+#[test]
+fn a_get_commands_reply_row_publishes_the_command_list_with_the_rows_sequence() {
+    // The row is the list: the reader journals every row and publishes what
+    // the view derives from it, carrying that row's sequence so an attach's
+    // replay seam can drop its own copy (the contract every other pi row
+    // keeps). Today the `response` arm returns early and nothing is derived.
+    let broker =
+        super::super::permission_broker::PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+    let (runtime, conn) = attached_runtime("pi-commands-dispatch", broker);
+    let stdin: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+    let mut reader = reader_with_control(Arc::new(PiControl::new(
+        Arc::clone(&stdin),
+        Arc::new(AtomicU64::new(1)),
+    )));
+    let reply = serde_json::from_str::<serde_json::Value>(
+        r#"{"id":"c-7","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"goal","description":"Set the session goal","source":"extension","input":{"hint":"<objective>"}}]}}"#,
+    )
+    .expect("recorded reply");
+    reader
+        .dispatch_value(reply, &runtime)
+        .expect("the reply row dispatches");
+    let commands = conn
+        .pull_events()
+        .into_iter()
+        .find_map(|event| match event.envelope.event {
+            SessionEvent::AvailableCommands { commands } => Some(commands),
+            _ => None,
+        })
+        .expect("the reply row is where the list is published");
+    let listed = commands
+        .iter()
+        .map(|command| (command.name.as_str(), command.hint.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        listed,
+        [
+            ("compact", Some("[instructions]")),
+            ("autocompact", Some("[on|off|toggle]")),
+            ("goal", Some("<objective>")),
+        ],
+        "the two seeds with their hints, and the reply's own hint kept"
+    );
+}
+
+#[test]
 fn the_static_route_answers_for_the_model_current_at_prompt_time() {
     // The route reads the live catalog rather than a copy taken at spawn:
     // a model switched since then must not be answered for with the inputs
@@ -2216,6 +2288,7 @@ mod lifecycle_tests {
             agent_version: None,
             pending_delivery,
             pending_codex_verify: None,
+            out_of_band: None,
         }
     }
 

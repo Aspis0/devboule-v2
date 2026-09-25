@@ -1016,6 +1016,7 @@ fn spawn_process_with_load(
         // existed; nothing is left for the session reader to answer.
         pending_delivery: None,
         pending_codex_verify: None,
+        out_of_band: None,
     })
 }
 

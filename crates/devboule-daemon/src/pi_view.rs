@@ -3,7 +3,7 @@
 //! Pi's RPC wire has no ACP-style tool ancestry or subagent type. The adapter
 //! therefore emits those fields as `None` by protocol choice.
 
-use devboule_protocol::{SessionEvent, TurnUsage};
+use devboule_protocol::{AvailableCommandView, SessionEvent, TurnUsage};
 use serde_json::Value;
 
 use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
@@ -34,8 +34,96 @@ pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
         "tool_execution_start" => tool_execution_start(value).into_iter().collect(),
         "tool_execution_end" => tool_execution_end(value).into_iter().collect(),
         "turn_end" => turn_end(value),
+        // The list reply: delivered to its waiter by the reader *and*
+        // derived here, so the published list and the row replay re-derives
+        // are one fact (the ACP road's contract, kept on this one too).
+        "response" => commands_from_reply(value)
+            .map(|commands| SessionEvent::AvailableCommands { commands })
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
+}
+
+/// The two built-ins pi's own `get_commands` reply omits — measured: neither
+/// `compact` nor `autocompact` is among the names a live reply returned
+/// (RECON A5-common §A.3) — seeded exactly as Paseo seeds them
+/// (`pi/agent.ts:117-130`, merged at `:139-151`), with the argument hints
+/// Paseo gives them.
+pub(crate) fn seeded_commands() -> Vec<AvailableCommandView> {
+    vec![
+        AvailableCommandView {
+            name: "compact".to_string(),
+            description: "Manually compact the session context".to_string(),
+            hint: Some("[instructions]".to_string()),
+        },
+        AvailableCommandView {
+            name: "autocompact".to_string(),
+            description: "Toggle automatic context compaction".to_string(),
+            hint: Some("[on|off|toggle]".to_string()),
+        },
+    ]
+}
+
+/// The list one `get_commands` reply carries, merged over the seeds by name —
+/// Paseo's `mapPiSlashCommands` rule (`pi/agent.ts:139-151`): a repeated
+/// name takes the reply's description (falling back to its `source`, which
+/// is what Paseo shows when there is none), and pi's own `input.hint` is
+/// kept, which Paseo drops (`:151`). `None` for every row that is not a
+/// successful reply: the seeds for a failed one are published by the waiter
+/// that asked, not by this row.
+fn commands_from_reply(value: &Value) -> Option<Vec<AvailableCommandView>> {
+    if value.get("type").and_then(Value::as_str) != Some("response")
+        || value.get("command").and_then(Value::as_str) != Some("get_commands")
+        || value.get("success").and_then(Value::as_bool) != Some(true)
+    {
+        return None;
+    }
+    let mut merged = seeded_commands();
+    // A success that carries no usable array still shows the seeds: a list
+    // the daemon can offer, exactly as a failure leaves it.
+    let Some(entries) = value
+        .get("data")
+        .and_then(|data| data.get("commands"))
+        .and_then(Value::as_array)
+    else {
+        return Some(merged);
+    };
+    for entry in entries {
+        let Some(name) = entry.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let description = entry
+            .get("description")
+            .and_then(Value::as_str)
+            .filter(|description| !description.is_empty())
+            .or_else(|| entry.get("source").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string();
+        let hint = entry
+            .get("input")
+            .and_then(|input| input.get("hint"))
+            .and_then(Value::as_str)
+            .filter(|hint| !hint.is_empty())
+            .map(str::to_string);
+        match merged.iter_mut().find(|command| command.name == name) {
+            Some(existing) => {
+                existing.description = description;
+                if hint.is_some() {
+                    existing.hint = hint;
+                }
+            }
+            None => merged.push(AvailableCommandView {
+                name: name.to_string(),
+                description,
+                hint,
+            }),
+        }
+    }
+    Some(merged)
 }
 
 fn message_update_events(value: &Value) -> Vec<SessionEvent> {
@@ -307,5 +395,67 @@ mod tests {
                 && max_tokens.is_none()
                 && !live
         ));
+    }
+
+    #[test]
+    fn a_get_commands_reply_publishes_its_commands_over_the_two_seeds() {
+        // The reply pi was measured to send (RECON A5-common §A.2): one id,
+        // `command`, `success`, and `data.commands` of name/description/
+        // source/input.hint entries. Paseo seeds pi's two built-ins itself
+        // because the reply omits them (`pi/agent.ts:117-130`); we keep
+        // `input.hint`, which Paseo drops (`pi/agent.ts:151`).
+        let reply = parse(
+            r#"{"id":"c-7","type":"response","command":"get_commands","success":true,"data":{"commands":[{"name":"goal","description":"Set the session goal","source":"extension","input":{"hint":"<objective>"}},{"name":"skill:pdf","source":"skill"},{"name":"compact","description":"pi's own words","source":"prompt"}]}}"#,
+        );
+        match events_from_line(&reply).as_slice() {
+            [SessionEvent::AvailableCommands { commands }] => {
+                let listed = commands
+                    .iter()
+                    .map(|command| {
+                        (
+                            command.name.as_str(),
+                            command.description.as_str(),
+                            command.hint.as_deref(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    listed,
+                    [
+                        // seeds first, in Paseo's order, with their hints;
+                        // a name the reply repeats keeps the reply's
+                        // description and the seeded hint (the reply never
+                        // carries the built-ins — RECON §A.3 — but if it
+                        // did, its own description still wins).
+                        ("compact", "pi's own words", Some("[instructions]")),
+                        (
+                            "autocompact",
+                            "Toggle automatic context compaction",
+                            Some("[on|off|toggle]")
+                        ),
+                        ("goal", "Set the session goal", Some("<objective>")),
+                        // no description → Paseo's source fallback
+                        ("skill:pdf", "skill", None),
+                    ]
+                );
+            }
+            other => panic!("expected one command list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_get_commands_reply_that_fails_publishes_nothing_and_so_does_any_other_response() {
+        // An error reply, and any other control response: the reader routes
+        // every `response` row through the view, and only a successful
+        // `get_commands` carries a list. The seeds for a failed reply are
+        // published by the waiter that asked, not by this row.
+        let refused = parse(
+            r#"{"id":"c-8","type":"response","command":"get_commands","success":false,"error":"Unknown command: get_commands"}"#,
+        );
+        let other_command = parse(
+            r#"{"id":"c-9","type":"response","command":"set_model","success":true,"data":{"provider":"p","id":"m"}}"#,
+        );
+        assert!(events_from_line(&refused).is_empty());
+        assert!(events_from_line(&other_command).is_empty());
     }
 }

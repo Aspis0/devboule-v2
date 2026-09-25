@@ -669,6 +669,7 @@ impl super::SessionRegistry {
             writer,
             image_sink,
             static_image_sink,
+            out_of_band,
             runtime,
             killer,
             mut steerer,
@@ -685,6 +686,7 @@ impl super::SessionRegistry {
                 Arc::clone(&session.writer),
                 session.image_sink.clone(),
                 session.static_image_sink.clone(),
+                session.out_of_band.clone(),
                 Arc::clone(&session.runtime),
                 session.killer.clone_killer(),
                 session.steerer.clone_steerer(),
@@ -740,6 +742,30 @@ impl super::SessionRegistry {
             }
             if has_prompt && !runtime.can_publish_agent_user_message() {
                 return Err(internal("Agent input could not be recorded."));
+            }
+        }
+        // Paseo meets every prompt with the provider's side-effect commands
+        // before it allocates a turn or considers a steer
+        // (`agent-prompt.ts:112-116`): `/compact` and `/autocompact` leave as
+        // pi's own rpcs, are recorded like any input, begin no turn, and do
+        // not interrupt the one that is running. Only a bare text prompt can
+        // be one — a prompt carrying attachments is the structured input
+        // Paseo's string-only check never matches. The first-prompt
+        // composition below is deliberately skipped: standing instructions
+        // belong to a prompt pi will turn on, and the flag stays owed for
+        // the next one.
+        if attachments.is_empty() && attachment_references.is_empty() {
+            if let Some(commands) = out_of_band.as_ref() {
+                if commands.handles_out_of_band(text) {
+                    let delivered_message_id = runtime
+                        .publish_agent_user_message(text.to_string(), author, message_kind)
+                        .ok_or_else(|| internal("Agent input could not be recorded."))?;
+                    commands.run_out_of_band(text, &runtime);
+                    if runtime.clear_attention() {
+                        self.notify_session_transition(owner, session_id);
+                    }
+                    return Ok(Some(delivered_message_id));
+                }
             }
         }
         if active_turn_behavior == Some(ActiveTurnBehavior::Steer) && is_agent {

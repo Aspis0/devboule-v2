@@ -1247,6 +1247,15 @@ impl SessionRuntime {
             .is_some()
     }
 
+    /// Publish an event the daemon authors itself and journal it as an
+    /// `AgentReport` row, so replay derives it back the way it derives
+    /// `AgentError` and `SessionNotice`. For an event whose only source is
+    /// a decision made here: no provider row carries it, so the envelope
+    /// path has nothing to re-derive from.
+    pub(crate) fn publish_daemon_event(&self, event: SessionEvent) -> bool {
+        self.publish_journaled_agent_event(|_, _| event).is_some()
+    }
+
     pub(crate) fn publish_session_notice(&self, text: String, severity: NoticeSeverity) -> bool {
         let (event, generation, seq) = {
             let Ok(mut stream) = self.lock_stream() else {

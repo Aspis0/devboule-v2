@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use devboule_protocol::{
-    AgentBackgroundTask, AgentTaskStatus, SessionEvent, SessionModeStateView, SessionModeView,
-    SessionModel, ToolLocation, TurnUsage, UnattendedState,
+    AgentBackgroundTask, AgentTaskStatus, AvailableCommandView, SessionEvent, SessionModeStateView,
+    SessionModeView, SessionModel, ToolLocation, TurnUsage, UnattendedState,
 };
 use serde_json::Value;
 
@@ -126,18 +126,46 @@ impl ClaudeView {
             }],
             None => Vec::new(),
         };
-        vec![SessionEvent::SessionManifest {
+        let mut events = vec![SessionEvent::SessionManifest {
             provider_id: Some("claude".to_string()),
             current_model_id: model,
             models,
             modes: self.mode_state(),
-        }]
+        }];
+        if let Some(commands) = Self::slash_commands_from(envelope) {
+            events.push(SessionEvent::AvailableCommands { commands });
+        }
+        events
     }
 
     fn mode_state(&self) -> Option<SessionModeStateView> {
         Some(mode_state(
             self.current_mode.as_deref().unwrap_or("default"),
         ))
+    }
+
+    /// `slash_commands` off the init frame: a flat array of names carrying
+    /// no descriptions and no hints (RECON A5-common §C), so each publishes
+    /// with the empty description `AvailableCommandView` requires. The field
+    /// is cwd-dependent and not every build sends it; absent means no event,
+    /// so the menu keeps whatever it had. `terminal_slash_commands` is a
+    /// separate list the CLI answers itself and is deliberately not
+    /// published.
+    fn slash_commands_from(envelope: &Value) -> Option<Vec<AvailableCommandView>> {
+        let names = envelope.get("slash_commands")?.as_array()?;
+        Some(
+            names
+                .iter()
+                .filter_map(|name| {
+                    let name = name.as_str()?.trim();
+                    (!name.is_empty()).then(|| AvailableCommandView {
+                        name: name.to_string(),
+                        description: String::new(),
+                        hint: None,
+                    })
+                })
+                .collect(),
+        )
     }
 
     fn ingest_stream_event(&mut self, envelope: &Value) -> Vec<SessionEvent> {
@@ -967,6 +995,80 @@ mod tests {
         assert_eq!(
             envelope["subtype"], "init",
             "derivation must not consume the envelope"
+        );
+    }
+
+    /// The shape of a real init envelope with its command list, invented
+    /// values throughout (RECON A5-common §C): every key the measured init
+    /// carries, none of the probe's paths, user names, project names or
+    /// session ids. `slash_commands` is a flat array of names — no
+    /// descriptions, no hints — and `terminal_slash_commands` is a separate
+    /// list this daemon does not publish.
+    fn init_frame_with_slash_commands() -> Value {
+        json!({
+            "type": "system",
+            "subtype": "init",
+            "cwd": r"C:\work\sample-project",
+            "session_id": "00000000-0000-4000-8000-000000000001",
+            "tools": ["Bash", "Read", "Edit"],
+            "mcp_servers": [],
+            "model": "claude-test-model",
+            "permissionMode": "default",
+            "slash_commands": ["clear", "compact", "autocompact", "model", "usage"],
+            "terminal_slash_commands": ["doctor", "reload-plugins"],
+            "apiKeySource": "test",
+            "claude_code_version": "0.0.0-test",
+            "output-style": "default",
+            "agents": [],
+            "skills": [],
+            "plugins": [],
+            "capabilities": {},
+            "analytics_disabled": false,
+            "uuid": "00000000-0000-4000-8000-000000000002",
+            "memory_paths": [],
+            "messaging_socket_path": "",
+            "fast_mode_state": "disabled",
+            "fast_mode_disabled_reason": null,
+            "powershell_path": ""
+        })
+    }
+
+    #[test]
+    fn system_init_publishes_the_slash_commands_it_carries() {
+        let mut mapper = view();
+        let events = mapper.ingest(&init_frame_with_slash_commands());
+        match events.as_slice() {
+            [SessionEvent::SessionManifest { .. }, SessionEvent::AvailableCommands { commands }] => {
+                let names = commands
+                    .iter()
+                    .map(|command| command.name.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    names,
+                    ["clear", "compact", "autocompact", "model", "usage"],
+                    "the list is the init's own array, in its own order"
+                );
+                assert!(
+                    commands
+                        .iter()
+                        .all(|command| command.description.is_empty() && command.hint.is_none()),
+                    "a flat name array carries no descriptions and no hints"
+                );
+            }
+            other => panic!("expected manifest then commands, got {other:?}"),
+        }
+    }
+
+    /// The companion guard: an init without the field keeps publishing the
+    /// manifest it has always published and adds no command list (green by
+    /// construction — its sibling above is the red one).
+    #[test]
+    fn an_init_without_slash_commands_publishes_no_command_list() {
+        let mut mapper = view();
+        let events = mapper.ingest(&init_frame());
+        assert!(
+            matches!(events.as_slice(), [SessionEvent::SessionManifest { .. }]),
+            "nothing changes for an init that carries no commands: {events:?}"
         );
     }
 

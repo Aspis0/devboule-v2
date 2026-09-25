@@ -161,6 +161,17 @@ impl SessionSteerer for UnsupportedSteerer {
     }
 }
 
+/// A provider's own side-effect commands, dispatched before a turn starts
+/// (Paseo `agent-prompt.ts:112-116` → `agent-manager.ts:2353`): the text is
+/// a command the provider executes itself — never written as a prompt, and
+/// no turn begun for it. `handles_out_of_band` recognises the text;
+/// `run_out_of_band` performs it, and a caller runs it only after recording
+/// the input (Paseo records the submitted prompt first, then runs).
+pub(crate) trait OutOfBandCommands: Send + Sync {
+    fn handles_out_of_band(&self, text: &str) -> bool;
+    fn run_out_of_band(&self, text: &str, runtime: &Arc<SessionRuntime>);
+}
+
 pub(crate) trait ModelSwitcher: Send + Sync {
     fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError>;
     fn set_mode(&self, _mode_id: &str) -> Result<(), WireError> {
@@ -260,6 +271,10 @@ pub(super) struct PtySession {
     /// it outside the writer lock and sends it under that hold, the shape the
     /// ACP sibling above already uses.
     pub(super) static_image_sink: Option<Arc<dyn StaticImageSink>>,
+    /// The same side-effect command seam the spawn carries, next to the
+    /// routes a send consults. `Some` only for the family that has such
+    /// commands (today: pi).
+    pub(super) out_of_band: Option<Arc<dyn OutOfBandCommands>>,
     pub(super) reader_handle: Option<JoinHandle<()>>,
     pub(super) coalesce_handle: Option<JoinHandle<()>>,
     pub(super) runtime: Arc<SessionRuntime>,
@@ -286,6 +301,9 @@ pub(crate) struct SpawnedSession {
     /// for a terminal. Carried through spawn so `start_spawned_session` can
     /// install it next to `image_sink`.
     pub(super) static_image_sink: Option<Arc<dyn StaticImageSink>>,
+    /// The same side-effect command seam the spawn carries, next to the
+    /// routes a send consults. `Some` only for the family that has such
+    /// commands (today: pi).
     pub(super) reader: Box<dyn Read + Send>,
     /// ACP supplies a structured decoder. Terminal sessions use the shared
     /// byte coalescer, which is constructed by `start_spawned_session`.
@@ -311,6 +329,11 @@ pub(crate) struct SpawnedSession {
     /// only when a carrier was installed (`Some` road); `None` — today's only
     /// road — changes nothing.
     pub(super) pending_codex_verify: Option<codex_client::CodexVerifyBundle>,
+    /// A provider's side-effect commands, consulted by a send before a turn
+    /// or a steer is considered (Paseo `agent-prompt.ts:112-116`). `Some`
+    /// only where such commands exist (today: pi); every other family
+    /// passes `None`.
+    pub(super) out_of_band: Option<Arc<dyn OutOfBandCommands>>,
 }
 
 pub(super) struct PtyKiller {

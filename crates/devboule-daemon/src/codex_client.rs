@@ -519,6 +519,7 @@ fn spawn_codex(
         // existed; nothing is left for the session reader to answer.
         pending_delivery: None,
         pending_codex_verify,
+        out_of_band: None,
     })
 }
 

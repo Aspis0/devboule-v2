@@ -23,8 +23,8 @@ use serde_json::Value;
 use super::permission_broker::{PermissionBroker, PermissionResponseError, PermissionSender};
 use super::PtyCommand;
 use super::{
-    write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
-    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
+    write_child_stdin, ModelSwitcher, OutOfBandCommands, ReaderDispatch, SessionKiller,
+    SessionRuntime, SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild, TurnToken,
 };
 use crate::acp_view::PromptCapabilityState;
 use crate::atomic::atomic_write;
@@ -32,6 +32,13 @@ use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 use crate::profile_delivery::ProfileDelivery;
 use crate::server::ServerState;
+
+/// Pi's slash-command surface: the `get_commands` request the reader waits
+/// on, and the two commands pi executes itself. A child of this file — it
+/// needs the control channel that lives here, and its tests drive this
+/// client's reader and writer.
+#[path = "pi_commands.rs"]
+mod commands;
 
 const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
 const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
@@ -1252,6 +1259,19 @@ fn spawn_pi(
         Arc::clone(&controls),
     ));
     let control = Arc::new(PiControl::new(Arc::clone(&stdin), Arc::clone(&next_id)));
+    // The list request goes out immediately after the handshake (Paseo asks
+    // once, `pi/agent.ts:1658-1664`): registered and written, never awaited
+    // on this thread — the reply was measured to take tens of seconds, and
+    // neither the session's start nor a prompt may sit on it. The reader
+    // starts the waiter that turns the reply into the menu.
+    let commands_reply = commands::begin_get_commands(&control);
+    // Paseo's `tryHandleOutOfBand` dispatch (`pi/agent.ts:1667-1691`): pi is
+    // the only family whose side-effect commands exist today, so pi is the
+    // only spawn that builds the seam a send consults.
+    let out_of_band: Option<Arc<dyn OutOfBandCommands>> =
+        Some(Arc::new(commands::PiOutOfBandCommands {
+            control: Arc::clone(&control),
+        }));
     let writer = PiWriter {
         stdin: Arc::clone(&stdin),
         next_id: Arc::clone(&next_id),
@@ -1276,7 +1296,8 @@ fn spawn_pi(
         Arc::clone(&stdin),
         Arc::clone(&permission_extension_active),
     )
-    .with_extension_path(extension_path.clone());
+    .with_extension_path(extension_path.clone())
+    .with_commands_reply(commands_reply);
     let stderr_source = PiStderr::start(stderr).map_err(|error| {
         terminate_shared_process(&process);
         remove_permission_extension(&extension_path);
@@ -1323,6 +1344,7 @@ fn spawn_pi(
         // sends Pi's own `prompt` frame.
         image_sink: None,
         static_image_sink: Some(static_prompt),
+        out_of_band,
         reader: Box::new(stdout),
         reader_dispatch: Some(Box::new(reader_dispatch)),
         stderr: Some(Box::new(stderr_source)),
@@ -2289,6 +2311,14 @@ impl SessionSteerer for PiSteerer {
         text: &str,
         turn: &mut TurnToken<'_>,
     ) -> Result<bool, WireError> {
+        // Paseo refuses to steer a slash input (`pi/agent.ts:1417-1419`:
+        // "Pi rejects steer RPCs that are extension commands"), so it keeps
+        // the interrupt-and-replace fallback where the text can run
+        // directly. Refused before a frame is written, which is what makes
+        // this `Ok(false)` and not a transport error.
+        if commands::parse_slash_invocation(text).is_some() {
+            return Ok(false);
+        }
         // The steer goes through the id-correlated round-trip rather than a
         // bare write (S4-01 of the provider fix): a write only says the bytes
         // reached the pipe, and Pi's `success: false` response would then be
@@ -2548,6 +2578,7 @@ struct PiReader {
     control: Arc<PiControl>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     permission_extension_active: Arc<AtomicBool>,
+    commands_reply: Option<commands::PiCommandsReply>,
     extension_path: PathBuf,
 }
 
@@ -2574,12 +2605,20 @@ impl PiReader {
             control,
             stdin,
             permission_extension_active,
+            commands_reply: None,
             extension_path: PathBuf::new(),
         }
     }
 
     fn with_extension_path(mut self, extension_path: PathBuf) -> Self {
         self.extension_path = extension_path;
+        self
+    }
+
+    /// The list request the spawn wrote, handed over so the first feed can
+    /// start its waiter against the live runtime.
+    fn with_commands_reply(mut self, reply: commands::PiCommandsReply) -> Self {
+        self.commands_reply = Some(reply);
         self
     }
 
@@ -2595,6 +2634,13 @@ impl PiReader {
         let event_seq = runtime.journal_agent_envelope(&value);
         if value.get("type").and_then(Value::as_str) == Some("response") {
             let _ = self.control.deliver(&value);
+            // The list reply is two things at once: an answer for the waiter
+            // that asked (delivered above), and a row whose derivation is the
+            // published list — the same contract every other row keeps, so
+            // replay derives the same list from the same journaled row.
+            for event in crate::pi_view::events_from_line(&value) {
+                self.publish(runtime, event, event_seq);
+            }
             return Ok(());
         }
         if let Some(session_id) = session_id_from_value(&value) {
@@ -2793,6 +2839,13 @@ impl ReaderDispatch for PiReader {
             let manifest = self.manifest.take().expect("checked above");
             let manifest = runtime.store_session_manifest(manifest);
             self.publish(runtime, manifest, None);
+            // The first feed is the first moment this reader holds a runtime,
+            // and `reader_loop` makes it with an empty read before any child
+            // output arrives — so the list waiter starts here, detached from
+            // every send path that must not wait for pi's slow reply.
+            if let Some(reply) = self.commands_reply.take() {
+                commands::spawn_commands_waiter(reply, Arc::clone(runtime));
+            }
             for value in std::mem::take(&mut self.deferred) {
                 self.dispatch_value(value, runtime)?;
             }

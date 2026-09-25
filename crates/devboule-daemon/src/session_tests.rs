@@ -187,6 +187,7 @@ pub(super) fn insert_move_child(
         writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
         image_sink: None,
         static_image_sink: None,
+        out_of_band: None,
         reader_handle: None,
         coalesce_handle: None,
         runtime: Arc::clone(&runtime),
@@ -1279,8 +1280,35 @@ pub(super) fn insert_live_agent_with_turn_control(
         writer,
         image_sink,
         static_image_sink,
+        None,
         killer,
         steerer,
+        None,
+    )
+}
+
+/// A live agent whose sends consult `out_of_band` — the seam the side-effect
+/// command tests drive — with the plain-text writer the fall-through road
+/// would have used, so a test can tell which of the two the text took.
+pub(super) fn insert_live_agent_with_out_of_band(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+    kind: SessionKind,
+    writer: Box<dyn Write + Send>,
+    out_of_band: Option<Arc<dyn OutOfBandCommands>>,
+) -> Arc<SessionRuntime> {
+    insert_live_agent_full(
+        registry,
+        id,
+        owner,
+        kind,
+        writer,
+        None,
+        None,
+        out_of_band,
+        Box::new(NoopKiller),
+        Box::new(UnsupportedSteerer),
         None,
     )
 }
@@ -1301,6 +1329,7 @@ pub(super) fn insert_live_agent_in_workspace(
         Box::new(FailingWriter) as Box<dyn Write + Send>,
         None,
         None,
+        None,
         Box::new(NoopKiller),
         Box::new(UnsupportedSteerer),
         Some(workspace_id.to_string()),
@@ -1316,6 +1345,7 @@ fn insert_live_agent_full(
     writer: Box<dyn Write + Send>,
     image_sink: Option<Arc<AcpPromptSink>>,
     static_image_sink: Option<Arc<dyn StaticImageSink>>,
+    out_of_band: Option<Arc<dyn OutOfBandCommands>>,
     killer: Box<dyn SessionKiller>,
     steerer: Box<dyn SessionSteerer>,
     workspace_id: Option<String>,
@@ -1359,6 +1389,7 @@ fn insert_live_agent_full(
         // assertions below pin the honest fallback.
         image_sink,
         static_image_sink,
+        out_of_band,
         reader_handle: None,
         coalesce_handle: None,
         runtime: Arc::clone(&runtime),
@@ -1540,6 +1571,7 @@ pub(super) fn insert_live_with_writer(
         // A terminal has no structured prompt route.
         image_sink: None,
         static_image_sink: None,
+        out_of_band: None,
         reader_handle: None,
         coalesce_handle: None,
         runtime,
@@ -1753,6 +1785,7 @@ fn invalid_claude_effort_is_rejected_before_switcher() {
         // Not an ACP session under test: no structured prompt route.
         image_sink: None,
         static_image_sink: None,
+        out_of_band: None,
         reader_handle: None,
         coalesce_handle: None,
         runtime: Arc::clone(&runtime),
@@ -1874,6 +1907,7 @@ fn invalid_session_mode_is_rejected_without_changing_the_manifest() {
         // exercises the plain-text session, not the sink.
         image_sink: None,
         static_image_sink: None,
+        out_of_band: None,
         reader_handle: None,
         coalesce_handle: None,
         runtime: Arc::clone(&runtime),

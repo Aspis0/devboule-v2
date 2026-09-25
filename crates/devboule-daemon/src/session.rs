@@ -221,8 +221,8 @@ use session_items::{
 #[cfg(test)]
 use session_items::{check_owner, elapsed_ms_since_last_life, session_nonce, session_unique};
 pub(crate) use session_items::{
-    session_origin_for, ModelSwitcher, ReaderDispatch, SessionKiller, SessionSteerer,
-    SpawnedSession, StderrSource, StdioWaitableChild,
+    session_origin_for, ModelSwitcher, OutOfBandCommands, ReaderDispatch, SessionKiller,
+    SessionSteerer, SpawnedSession, StderrSource, StdioWaitableChild,
 };
 pub use session_items::{
     COALESCE_FLUSH, COALESCE_MAX_BYTES, PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES,
